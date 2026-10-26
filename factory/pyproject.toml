@@ -28,9 +28,10 @@ pythonVersion = "3.12"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = [".*", "build", "dist", "*.egg", "venv", "fixtures"]
-addopts = "-m 'not container'"
+addopts = "-m 'not container and not github'"
 markers = [
     "container: needs a running dockerd (Rancher Desktop); run with -m container",
+    "github: pushes to jackgeek/climon2 and runs real Windows CI; run with -m github",
 ]
 
 [tool.ruff]

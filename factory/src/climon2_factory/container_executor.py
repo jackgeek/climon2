@@ -11,8 +11,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from climon2_factory.ports import Outcome, TestReport, TestResult
-from climon2_factory.reports import MAX_REPORT_BYTES, parse_report
+from climon2_factory.ports import TestReport
+from climon2_factory.reports import (
+    MAX_REPORT_BYTES,
+    build_failed_report,
+    collected_tests,
+    failed_report,
+    parse_report,
+)
 
 LABEL = "local-container"
 CONTAINERS_DIR = Path(__file__).resolve().parents[2] / "containers"
@@ -102,11 +108,9 @@ class ContainerExecutor:
             exit_code = box.wait(self._time_limit_s)
             if exit_code is None:
                 reason = f"acceptance run timed out after {self._time_limit_s:g}s"
-                return _all_failed(collected, reason, "<run>")
+                return failed_report(collected, reason, LABEL)
             if exit_code == BUILD_FAILED:
-                build = TestResult("build", Outcome.FAILED, box.logs())
-                not_run = _all_failed(collected, "not run: build failed", "<run>").results
-                return TestReport(LABEL, (build, *not_run))
+                return build_failed_report(collected, box.logs(), LABEL)
             return parse_report(box.read("/out/report.xml"), collected, exit_code, LABEL)
 
     def _collect(self, archive: bytes, test_dirs: Sequence[str]) -> tuple[str, ...] | TestReport:
@@ -119,8 +123,8 @@ class ContainerExecutor:
             return ()
         if exit_code != 0:
             reason = f"collection failed (exit {exit_code}):\n{output}"
-            return TestReport(LABEL, (TestResult("<collect>", Outcome.FAILED, reason),))
-        return tuple(line for line in output.splitlines() if "::" in line and line == line.strip())
+            return failed_report((), reason, LABEL, fallback="<collect>")
+        return collected_tests(output)
 
     def _vendor(self, archive: bytes, workspace: Path, product: str) -> str | None:
         """A volume holding the product's locked crates, fetched once per Cargo.lock.
@@ -217,8 +221,3 @@ def _workspace_tar(workspace: Path) -> bytes:
         for entry in sorted(os.listdir(workspace)):
             archive.add(workspace / entry, arcname=entry, filter=keep)
     return buffer.getvalue()
-
-
-def _all_failed(expected: tuple[str, ...], reason: str, fallback: str) -> TestReport:
-    tests = expected or (fallback,)
-    return TestReport(LABEL, tuple(TestResult(t, Outcome.FAILED, reason) for t in tests))

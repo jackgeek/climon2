@@ -1,0 +1,72 @@
+# Windows gate for factory candidates. Only the factory pushes factory/** branches.
+# Results are uploaded as artifacts and re-parsed by the factory as untrusted input.
+name: factory-windows
+on:
+  push:
+    branches: ["factory/**"]
+permissions:
+  contents: read
+concurrency:
+  group: factory-windows-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  acceptance:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUST_VERSION: 1.96.0
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned tools
+        run: |
+          python -m pip install --require-hashes -r factory/containers/requirements.txt
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+      - name: Collect expected tests (before any product code is built)
+        run: |
+          mkdir -p out/collected
+          shopt -s nullglob
+          dirs=(features/*/tests)
+          if [ ${#dirs[@]} -eq 0 ]; then
+            : > out/collected/collected.txt
+            echo 5 > out/collected/exit-code.txt
+            exit 0
+          fi
+          set +e
+          python -m pytest -p no:cacheprovider --rootdir=. --collect-only -q "${dirs[@]}" \
+            > out/collected/collected.txt 2>&1
+          echo $? > out/collected/exit-code.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: collected
+          path: out/collected
+      - name: Build climon2
+        run: |
+          mkdir -p out/results
+          set +e
+          (cd climon2 && cargo build --release --locked) > out/results/build.log 2>&1
+          echo $? > out/results/build-exit-code.txt
+      - name: Acceptance tests
+        run: |
+          [ "$(cat out/results/build-exit-code.txt)" = 0 ] || exit 0
+          shopt -s nullglob
+          dirs=(features/*/tests)
+          [ ${#dirs[@]} -gt 0 ] || exit 0
+          set +e
+          CLIMON2_BIN_DIR="$PWD/climon2/target/release" python -m pytest -p no:cacheprovider \
+            --rootdir=. --junitxml=out/results/report.xml "${dirs[@]}"
+          echo $? > out/results/exit-code.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: results
+          path: out/results
