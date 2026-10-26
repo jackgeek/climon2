@@ -35,12 +35,12 @@ features/
     brief.md                    User prose given to the Contract Author
     contract.md                 Feature contract                      [protected once approved]
     findings/                   Reviewer findings and dispositions
-    approvals/                  Approval records                      [protected]
     tests/                      Acceptance tests                      [Test Author only]
 climon2/                        Climon2 (Rust)
   Cargo.toml, Cargo.lock, rust-toolchain.toml
   src/
 .github/workflows/              CI                                    [protected]
+.factory/records/<artifact>/    Append-only manifests and approval decisions [protected]
 ```
 
 Protected paths can be changed only by the user through normal commits, never by an agent during a feature run. The factory cannot modify itself during a feature run.
@@ -135,7 +135,8 @@ See [ADR-0001](../adr/0001-content-addressed-artifacts.md).
 - **Content addressing:** every artifact is content-addressed. Its manifest records the hashes of its inputs, including role prompts and skills.
 - **Staleness:** validity is always recomputed and never cached. An artifact whose recorded inputs no longer match is stale and cannot advance the run.
 - **Approvals:** an approval binds to one artifact hash. Superseded artifacts are kept as history.
-- **Storage:** contracts, findings, approvals and tests are stored in the repository. Run state is stored locally.
+- **Storage:** contracts, findings, approvals and tests are stored in the repository. Each artifact (named like `<feature-id>/contract`) has append-only JSON manifests and decisions under `.factory/records/<artifact>/`. Run state is stored locally.
+- **Path safety:** artifact paths must stay inside the repository and may not contain or pass through symlinks.
 
 ### Persistence and recovery
 
@@ -219,4 +220,4 @@ The factory is built conversationally and test-first, through pull requests, in 
 **Stack:** Python 3.12, uv, pytest, pyright (strict on core) and ruff.
 
 - Factory tests run locally and are deterministic. A separate smoke test exercises real Copilot.
-- Validation command: `uv run pyright && uv run pytest factory/tests`
+- Validation command (from `factory/`): `uv run pyright && uv run pytest && uv run ruff check && uv run ruff format --check`
