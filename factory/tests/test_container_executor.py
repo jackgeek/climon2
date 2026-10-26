@@ -115,3 +115,28 @@ def test_the_host_workspace_is_never_modified(executor: ContainerExecutor, works
 
 def snapshot(root: Path) -> dict[str, bytes]:
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+def test_a_lockfile_is_resolved_for_a_project_without_building_it(
+    executor: ContainerExecutor, workspace: Path
+) -> None:
+    lock = workspace / "climon2" / "Cargo.lock"
+    lock.unlink()
+
+    message = executor.lock_crates(workspace, "climon2")
+
+    assert 'name = "itoa"' in lock.read_text()
+    assert "Cargo.lock" in message
+    assert not (workspace / "climon2" / "target").exists()
+
+
+def test_a_lockfile_that_cannot_be_resolved_is_reported(
+    executor: ContainerExecutor, workspace: Path
+) -> None:
+    manifest = workspace / "climon2" / "Cargo.toml"
+    manifest.write_text(manifest.read_text() + 'no-such-crate-climon2 = "9.9"\n')
+
+    message = executor.lock_crates(workspace, "climon2")
+
+    assert "failed" in message
+    assert "no-such-crate-climon2" in message

@@ -113,6 +113,19 @@ class ContainerExecutor:
                 return build_failed_report(collected, box.logs(), LABEL)
             return parse_report(box.read("/out/report.xml"), collected, exit_code, LABEL)
 
+    def lock_crates(self, workspace: Path, project: str) -> str:
+        """Regenerate `<project>/Cargo.lock` in the workspace. Networked, but builds nothing."""
+        archive = _workspace_tar(workspace)
+        with self._container(
+            archive, ["/opt/factory/lock-crates.sh", project], network="bridge"
+        ) as box:
+            exit_code = box.wait(600)
+            if exit_code != 0:
+                return f"updating {project}/Cargo.lock failed (exit {exit_code}):\n{box.logs()}"
+            lock = box.read("/out/Cargo.lock")
+        (workspace / project / "Cargo.lock").write_bytes(lock)
+        return f"{project}/Cargo.lock updated"
+
     def _collect(self, archive: bytes, test_dirs: Sequence[str]) -> tuple[str, ...] | TestReport:
         """The expected tests, collected where no product code is ever built or run."""
         command = ["python3", "-m", "pytest", "-p", "no:cacheprovider", "--rootdir=/work"]

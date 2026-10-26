@@ -7,7 +7,9 @@ authors = [
     { name = 'Brodie "Jack" Allan', email = "jackgeek@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "agent-framework-github-copilot>=2.1.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.10.12,<0.11.0"]
@@ -28,11 +30,12 @@ pythonVersion = "3.12"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = [".*", "build", "dist", "*.egg", "venv", "fixtures"]
-addopts = "-m 'not container and not github and not macos'"
+addopts = "-m 'not container and not github and not macos and not copilot'"
 markers = [
     "container: needs a running dockerd (Rancher Desktop); run with -m container",
     "github: pushes to jackgeek/climon2 and runs real Windows CI; run with -m github",
     "macos: runs acceptance tests natively on this Mac; run with -m macos",
+    "copilot: runs real GitHub Copilot agents (uses premium requests); run with -m copilot",
 ]
 
 [tool.ruff]
