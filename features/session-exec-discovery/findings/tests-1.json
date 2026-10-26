@@ -1,0 +1,10 @@
+{
+  "artifact": "session-exec-discovery/tests",
+  "reviewed_hash": "sha256:8df55eccf18988ff2ccafe58e0bef87ec38004fe1ede93fc498daa264de2fee0",
+  "findings": [
+    {
+      "severity": "advisory",
+      "summary": "test_exec.py::test_immediate_exit_drains_final_output_and_preserves_status[125] can't tell the command's own 125 from a climon2-owned 125. For example, an implementation that drains the marker and then fails with `climon2: client disconnected` passes that parameter. Stderr goes to the terminal here, so also assert that `term.text` contains no `climon2: ` diagnostic, matching what test_lifecycle.py's S9 test does with its stderr file."
+    }
+  ]
+}

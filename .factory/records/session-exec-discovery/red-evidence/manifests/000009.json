@@ -1,0 +1,11 @@
+{
+  "name": "session-exec-discovery/red-evidence",
+  "hash": "sha256:81a631f0d3cc48dd9d0a34c8dd420963e1a5120a0e245ae8b7217ba607924242",
+  "paths": [
+    "features/session-exec-discovery/evidence/red.json"
+  ],
+  "inputs": {
+    "artifact:session-exec-discovery/tests": "sha256:8df55eccf18988ff2ccafe58e0bef87ec38004fe1ede93fc498daa264de2fee0"
+  },
+  "recorded_at": "2026-10-26T06:47:34.159078+00:00"
+}

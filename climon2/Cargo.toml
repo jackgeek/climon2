@@ -1,0 +1,34 @@
+[package]
+name = "climon2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+semver = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+socket2 = { version = "0.5", features = ["all"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Memory", "Win32_System_IO", "Win32_Networking_WinSock"] }
+
+[[bin]]
+name = "climon2"
+path = "src/main.rs"
+
+[[bin]]
+name = "climon2-cli"
+path = "src/main.rs"
+
+[[bin]]
+name = "climon2-daemon"
+path = "src/main.rs"
+
+[[bin]]
+name = "climon2-client"
+path = "src/main.rs"
