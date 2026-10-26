@@ -79,8 +79,9 @@ A role's model must be available. The factory never substitutes another model si
 - Agents run through Microsoft Agent Framework's `GitHubCopilotAgent` (`agent-framework-github-copilot`).
 - **Tools:**
   - All built-in Copilot tools are denied: no shell, URL fetching, or unscoped file access. Two layers enforce this: the session's `available_tools` allow-list holds only the role's tools, and the permission handler approves only those custom tools and refuses everything else.
-  - Read tools (`read_file`, `list_files`, `search`) are given to every role. Write tools are scoped to the role's paths, and `.git` is never reachable.
-  - `update_lockfile` (Test Author, Implementer) regenerates `Cargo.lock` in a networked container, so dependencies can be added without giving agents network access. `run_acceptance_tests` (Implementer) runs the per-attempt budgeted Linux build and tests.
+  - Tool names carry a `factory_` prefix. An allow-listed name also enables any same-named host tool (Copilot or IDE), which shadows ours and escapes the path checks.
+  - Read tools (`factory_read_file`, `factory_list_files`, `factory_search`) are given to every role. Output stays under 16 KB, below the 20 KiB at which Copilot moves a result to a temp file the agent can't read, so long files are read a page at a time. Write tools (`factory_write_file`, `factory_replace_text`, `factory_delete_file`) are scoped to the role's paths, and `.git` is never reachable.
+  - `factory_update_lockfile` (Test Author, Implementer) regenerates `Cargo.lock` in a networked container, so dependencies can be added without giving agents network access. `factory_run_acceptance_tests` (Implementer) runs the per-attempt budgeted Linux build and tests.
   - Each role gets path-scoped custom tools that the factory enforces in Python. Paths are resolved through `..` and symlinks before checking.
   - Agents have no network access, credentials or tokens. Pushing and calling CI are factory functions, never agent tools.
 - **Prompts:** `factory/roles/_common.md` plus `factory/roles/<role>.md`, including the contract format (numbered `B` requirements, `S` scenarios citing them) and the scaffold and negative-control rules.
@@ -92,7 +93,7 @@ A role's model must be available. The factory never substitutes another model si
   - Test Author: tdd
   - Implementer: codebase-design and diagnosing-bugs
   - Reviewer: codebase-design
-- **Completion:** every agent step must end with a typed `submit_*` tool call. Ending without one fails the step.
+- **Completion:** every agent step must end with a typed `factory_submit_*` tool call. Ending without one fails the step.
 - **Limits:** each agent invocation is limited to 60 minutes; CI waiting time doesn't count. Only one feature run can be active at a time.
 - **Findings:** each finding is either blocking or advisory. The user can override any finding.
 
