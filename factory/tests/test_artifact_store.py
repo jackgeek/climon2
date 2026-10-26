@@ -109,6 +109,23 @@ def test_rejected_artifact_reports_rejection(repo: Path) -> None:
     assert store.status("f1/contract").state is State.REJECTED
 
 
+def test_re_recording_identical_content_against_new_inputs_needs_a_fresh_approval(
+    repo: Path,
+) -> None:
+    write(repo, "features/f1/brief.md", "# Brief\n")
+    store = ArtifactStore(repo)
+    paths = ["features/f1/contract.md"]
+    version = store.record("f1/contract", paths, path_inputs=["features/f1/brief.md"])
+    store.approve("f1/contract", version.hash)
+    write(repo, "features/f1/brief.md", "# Brief, revised\n")
+
+    again = store.record("f1/contract", paths, path_inputs=["features/f1/brief.md"])
+
+    assert again.hash == version.hash
+    assert store.status("f1/contract").state is State.UNAPPROVED
+    assert [len(e.decisions) for e in store.history("f1/contract")] == [1, 0]
+
+
 def test_re_recording_keeps_earlier_versions_and_decisions_in_history(repo: Path) -> None:
     store = ArtifactStore(repo)
     v1 = store.record("f1/contract", paths=["features/f1/contract.md"])

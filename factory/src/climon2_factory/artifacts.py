@@ -62,6 +62,7 @@ class Decision:
 @dataclass(frozen=True)
 class HistoryEntry:
     hash: str
+    paths: tuple[str, ...]
     inputs: dict[str, str]
     decisions: tuple[Decision, ...]
 
@@ -110,7 +111,8 @@ class ArtifactStore:
         changed = tuple(k for k, h in manifest["inputs"].items() if not self._input_current(k, h))
         if changed:
             return Status(state=State.STALE, hash=current, changed_inputs=changed)
-        decisions = [d for d in self._decisions(name) if d["hash"] == current]
+        latest = len(_read_all(self._records / name / "manifests")) - 1
+        decisions = [d for d in self._decisions(name) if d["manifest"] == latest]
         if not decisions:
             return Status(state=State.UNAPPROVED, hash=current)
         return Status(state=State(decisions[-1]["decision"]), hash=current)
@@ -126,21 +128,28 @@ class ArtifactStore:
         return [
             HistoryEntry(
                 hash=m["hash"],
+                paths=tuple(m["paths"]),
                 inputs=m["inputs"],
                 decisions=tuple(
                     Decision(d["decision"], d["reason"], d["decided_at"])
                     for d in decisions
-                    if d["hash"] == m["hash"]
+                    if d["manifest"] == seq
                 ),
             )
-            for m in _read_all(self._records / name / "manifests")
+            for seq, m in enumerate(_read_all(self._records / name / "manifests"))
         ]
 
     def _decide(self, name: str, hash: str, decision: State, reason: str | None) -> None:
         status = self.status(name)
         if status.state in _NOT_CURRENT or hash != status.hash:
             raise ApprovalRefused(f"{name}: {hash} is not the current recorded hash")
-        record = {"hash": hash, "decision": decision.value, "reason": reason, "decided_at": _now()}
+        record = {
+            "hash": hash,
+            "manifest": len(_read_all(self._records / name / "manifests")) - 1,
+            "decision": decision.value,
+            "reason": reason,
+            "decided_at": _now(),
+        }
         _append(self._records / name / "decisions", record)
 
     def _input_current(self, key: str, recorded_hash: str) -> bool:
