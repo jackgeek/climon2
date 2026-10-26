@@ -27,6 +27,11 @@ pythonVersion = "3.12"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = [".*", "build", "dist", "*.egg", "venv", "fixtures"]
+addopts = "-m 'not container'"
+markers = [
+    "container: needs a running dockerd (Rancher Desktop); run with -m container",
+]
 
 [tool.ruff]
 line-length = 100
