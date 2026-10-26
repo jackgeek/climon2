@@ -131,7 +131,7 @@ class ContainerExecutor:
         command = ["python3", "-m", "pytest", "-p", "no:cacheprovider", "--rootdir=/work"]
         with self._container(archive, [*command, "--collect-only", "-q", *test_dirs]) as box:
             exit_code = box.wait(self._time_limit_s)
-            output = box.logs()
+            output = box.stdout()
         if exit_code == 5:
             return ()
         if exit_code != 0:
@@ -202,6 +202,11 @@ class _Box:
     def logs(self) -> str:
         result = self._docker("logs", self._name, check=False)
         return (result.stdout + result.stderr).decode(errors="replace")[-_LOG_TAIL:]
+
+    def stdout(self) -> str:
+        """The container's whole stdout, unlike the tail-only, stderr-mixed `logs`."""
+        result = self._docker("logs", self._name, check=False)
+        return result.stdout.decode(errors="replace")
 
     def read(self, path: str) -> bytes:
         """One file from the container, or b"" if absent. Oversized files are truncated so the

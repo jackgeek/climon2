@@ -74,8 +74,10 @@ class Terminal:
     def expect(
         self, pattern: "str | re.Pattern[str]", timeout: float = DEFAULT_TIMEOUT
     ) -> re.Match[str]:
-        """Wait for `pattern` (a regex) in the plain-text output after the previous match."""
-        regex = re.compile(pattern) if isinstance(pattern, str) else pattern
+        """Wait for `pattern` (a regex) in the plain-text output after the previous match.
+        A string pattern is multiline: `^` and `$` match at line boundaries, so `^` also
+        matches where the previous match ended on a newline."""
+        regex = re.compile(pattern, re.MULTILINE) if isinstance(pattern, str) else pattern
         deadline = time.monotonic() + timeout
         with self._lock:
             while True:

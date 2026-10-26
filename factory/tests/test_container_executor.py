@@ -140,3 +140,20 @@ def test_a_lockfile_that_cannot_be_resolved_is_reported(
 
     assert "failed" in message
     assert "no-such-crate-climon2" in message
+
+
+def test_every_test_is_collected_however_long_the_collection_output(
+    executor: ContainerExecutor, workspace: Path
+) -> None:
+    tests = workspace / "features/many/tests"
+    tests.mkdir(parents=True)
+    (tests / "test_many.py").write_text(
+        "import pytest\n\n\n"
+        "@pytest.mark.parametrize('n', range(300), ids=lambda n: f'case-{n:04}-' + 'x' * 60)\n"
+        "def test_many(n):\n    pass\n"
+    )
+
+    report = executor.run_acceptance(workspace, ("many",), None)
+
+    assert len(report.results) == 300
+    assert all(r.outcome is P for r in report.results)
