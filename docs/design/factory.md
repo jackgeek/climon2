@@ -26,9 +26,13 @@ factory/                        The factory (Python)                  [protected
   skills/<role>/                Curated skills given to each role
   containers/Dockerfile         Pinned build/test image
   tests/                        Factory tests (deterministic, fake agents)
+conftest.py                     Loads the harness fixtures for every acceptance test [protected]
 harness/                        Acceptance-test harness (pytest)      [protected]
-  drivers/                      Real PTY (Unix) and ConPTY (Windows) terminal drivers
-  fixture/                      Terminal fixture program
+  README.md                     The harness API, written for the Test Author
+  terminal.py                   Real PTY (Unix) and ConPTY (Windows, pywinpty) terminal driver
+  fixture_program.py            Generic terminal fixture program
+  plugin.py                     pytest fixtures (install layout, home, env, terminals)
+  tests/                        Harness self-tests, run on all three platforms
 features/
   ROADMAP.md                    Ordered features and dependencies     [protected]
   <feature-id>/
@@ -208,6 +212,9 @@ Agents never execute code on the host. See [ADR-0002](../adr/0002-agents-never-e
 - **Cross-user rejection:** this test runs on every platform. On the Mac it needs a hidden standard user, `climon2-test`, created once by a user-run setup script with a narrow sudoers rule. If that user is missing, the gate fails.
 - **Clean validation:** final validation uses a fresh workspace, verified to be at the candidate's commit.
 - **Provenance:** the exact tested binaries are retained with provenance. Releases are unsigned for now.
+- **Implementation:** see `harness/README.md`. The root `conftest.py` loads `harness.plugin`, so every gate (container, Windows CI, native macOS) gets the same fixtures. pywinpty is pinned by hash for Windows in the universal `factory/containers/requirements.txt`.
+- **Harness self-tests:** `harness/tests/` checks the drivers, the fixture program and every required shell. Run them from the repository root with `factory/.venv/bin/python -m pytest -p no:cacheprovider --rootdir=. harness/tests`. They were validated on all three platforms (macOS natively, Linux in the factory image, and Windows Server 2025 CI through a throwaway `factory/` branch).
+- **Known gap:** tests and product run as the same user, so cross-user rejection can't yet be proven from inside a gate. Product code could also turn an expected failure into a skip. Both are deferred.
 
 ## Releases
 
