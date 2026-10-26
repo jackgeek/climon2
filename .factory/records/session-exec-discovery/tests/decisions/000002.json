@@ -1,0 +1,7 @@
+{
+  "hash": "sha256:9fde2c042d0079d65270e808e1c1d06c6ae0a73478bbdb898f51489684460bf1",
+  "manifest": 5,
+  "decision": "rejected",
+  "reason": "Fix findings/tests-4.json: (1) for cmd.exe skip the C2_PROMPT wait (echo is off under /q) and rely on the output marker; keep prompt waits for other shells. (2) In test_windows_launcher_job_excludes_daemon_and_command_and_closes_client, inspect the real daemon's job and console via record['daemon_pid'] with native queries rather than a probe wrapper's PID, so a conforming CLI/daemon is not broken by the wrapper. Change nothing else.",
+  "decided_at": "2026-10-26T04:18:59.369631+00:00"
+}
