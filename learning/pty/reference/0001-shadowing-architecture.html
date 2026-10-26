@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PTY Shadowing Architecture Reference</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main>
+  <p class="eyebrow">Reference 0001</p>
+  <h1>Where shadowing lives</h1>
+  <p class="lede">A PTY gives one host process a terminal-shaped byte channel. Shadowing is the host's policy for copying that channel to additional clients.</p>
+
+  <div class="diagram" aria-label="PTY shadowing architecture">
+    <div class="node">Shell<br><small>slave side</small></div>
+    <div class="arrow">⇄</div>
+    <div class="node">PTY host<br><small>master owner</small></div>
+    <div class="arrow">⇄</div>
+    <div class="node">Owner + shadows<br><small>fan-out policy</small></div>
+  </div>
+
+  <table>
+    <thead><tr><th>Concern</th><th>Unix/macOS</th><th>Windows ConPTY</th></tr></thead>
+    <tbody>
+      <tr><td>Host-facing channel</td><td>One PTY master file descriptor</td><td>Separate input and output pipe handles</td></tr>
+      <tr><td>Child-facing terminal</td><td>PTY slave becomes the controlling terminal</td><td>Child is created with an <code>HPCON</code> process attribute</td></tr>
+      <tr><td>Terminal protocol</td><td>Bytes plus terminal driver behavior</td><td>UTF-8 text and virtual-terminal sequences</td></tr>
+      <tr><td>Shadowing</td><td colspan="2">Not supplied by the PTY API. Your host copies output, arbitrates input, tracks size, and owns lifecycle.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Minimal invariants</h2>
+  <ol>
+    <li>Exactly one session object owns the platform PTY or pseudoconsole handles.</li>
+    <li>Every output byte is read once from the platform boundary, then distributed.</li>
+    <li>Read-only shadows never write into the child input channel.</li>
+    <li>Interactive input has an explicit owner or arbitration rule.</li>
+    <li>A slow shadow cannot indefinitely block the shell or every other viewer.</li>
+  </ol>
+
+  <p><a href="../lessons/0001-the-shadow-point.html">Return to lesson 0001</a></p>
+</main>
+</body>
+</html>

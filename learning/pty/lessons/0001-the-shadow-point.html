@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0001: The Shadow Point</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main>
+  <p class="eyebrow">Lesson 0001 · PTY session shadowing</p>
+  <h1>Find the shadow point</h1>
+  <p class="lede">Your first win: identify the exact boundary where a normal PTY host becomes a shadowable session host.</p>
+
+  <h2>1. A PTY is a pair, not a screen</h2>
+  <p>On Unix, a pseudoterminal is two connected virtual character devices: a <strong>master</strong> and a <strong>slave</strong>. The shell believes the slave is a real terminal. Your host reads and writes the master.</p>
+
+  <div class="diagram" aria-label="Basic Unix PTY data flow">
+    <div class="node">Shell<br><small>stdin/stdout/stderr</small></div>
+    <div class="arrow">⇄</div>
+    <div class="node">PTY slave<br><small>terminal behavior</small></div>
+    <div class="arrow">⇄</div>
+    <div class="node">PTY master<br><small>your host</small></div>
+  </div>
+
+  <p>Writing a control character such as Control-C to the master can cause the terminal driver to signal the foreground process group. Reading the master yields what the terminal application wrote through the slave. This is why a PTY is more than two ordinary pipes.<sup><a href="#source-pty">1</a></sup></p>
+
+  <div class="callout">
+    <strong>Key distinction:</strong> the kernel supplies one master/slave terminal channel. It does not supply “viewer A,” “viewer B,” permissions, replay, or backpressure policy.
+  </div>
+
+  <h2>2. Shadowing starts after the master</h2>
+  <p>A session becomes shadowable when the host reads output from the master once and fans those bytes out to multiple clients. Input travels in the opposite direction, but only according to an explicit policy.</p>
+
+  <div class="diagram" aria-label="Shadowable PTY data flow">
+    <div class="node">Shell<br><small>PTY slave</small></div>
+    <div class="arrow">⇄</div>
+    <div class="node">Session host<br><small>owns PTY master</small></div>
+    <div class="arrow">⇄</div>
+    <div class="node">Owner + shadows<br><small>your policy</small></div>
+  </div>
+
+  <p>The <strong>session host</strong> is the shadow point. It owns the PTY master, reads each output chunk, and decides who receives it. For the first implementation, a shadow is read-only: it receives output but cannot send input.</p>
+
+  <h2>3. The first Rust shape</h2>
+  <p>Rust ownership maps neatly onto the architecture: one value owns the PTY master and therefore owns the session's platform lifetime.</p>
+
+  <pre><code>struct Session {
+    // Later: the PTY master handle.
+    viewers: Vec&lt;Viewer&gt;,
+}
+
+struct Viewer {
+    can_write: bool,
+}</code></pre>
+
+  <p><code>Vec&lt;Viewer&gt;</code> is a growable list. The field belongs to the <code>Session</code>; when the session is dropped, its fields are dropped too. We will use this ownership rule later to make cleanup explicit rather than accidental.<sup><a href="#source-rust">4</a></sup></p>
+
+  <h2>4. ConPTY changes the boundary, not the feature</h2>
+  <p>ConPTY does not expose a Unix-style master/slave pair. The Windows host creates separate synchronous input and output channels, creates an <code>HPCON</code>, and starts the child with that pseudoconsole attached.<sup><a href="#source-conpty-create">3</a></sup> ConPTY emits UTF-8 terminal data to the host-facing output channel.<sup><a href="#source-conpty">2</a></sup></p>
+
+  <p>Your shadowing layer still sits on the host side:</p>
+
+  <table>
+    <thead><tr><th>Unix/macOS</th><th>Windows</th><th>Your portable concept</th></tr></thead>
+    <tbody>
+      <tr><td>Read PTY master</td><td>Read ConPTY output pipe</td><td>Receive session output</td></tr>
+      <tr><td>Write PTY master</td><td>Write ConPTY input pipe</td><td>Send permitted input</td></tr>
+      <tr><td>Resize with terminal ioctl</td><td>Call <code>ResizePseudoConsole</code></td><td>Update session dimensions</td></tr>
+    </tbody>
+  </table>
+
+  <div class="exercise">
+    <p class="caption">Retrieval practice</p>
+    <p>Answer before opening each explanation.</p>
+    <details>
+      <summary>Where should output be duplicated for shadows?</summary>
+      <p>After the host reads the PTY master or ConPTY output channel, not by giving each viewer direct ownership of the platform handle.</p>
+    </details>
+    <details>
+      <summary>Does the PTY itself know which viewer is read-only?</summary>
+      <p>No. Viewer permissions and input arbitration belong to the session host.</p>
+    </details>
+    <details>
+      <summary>What is the portable abstraction across Unix and ConPTY?</summary>
+      <p>A session-owned input channel, output channel, resize operation, and lifecycle—not a universal “master file descriptor.”</p>
+    </details>
+  </div>
+
+  <h2>5. Make the model concrete</h2>
+  <p>Draw three boxes on paper: <em>shell</em>, <em>session host</em>, and <em>viewers</em>. Add one bidirectional arrow between shell and host. Add one output arrow from host to every viewer, but an input arrow only from the owner. If you can explain why the fan-out belongs in the middle box, you have the architecture needed for the first implementation.</p>
+
+  <p>Keep the compact <a href="../reference/0001-shadowing-architecture.html">shadowing architecture reference</a> nearby. The next lesson will create a Rust binary and represent this session boundary before touching unsafe process setup.</p>
+
+  <h2>Primary reading</h2>
+  <p>Read the short <a id="source-pty" href="https://man7.org/linux/man-pages/man7/pty.7.html"><code>pty(7)</code> manual page</a>, especially its opening description of master-to-slave and slave-to-master flow.</p>
+
+  <h2>Sources</h2>
+  <ol>
+    <li><a href="https://man7.org/linux/man-pages/man7/pty.7.html"><code>pty(7)</code> — Linux manual pages</a></li>
+    <li><a id="source-conpty" href="https://learn.microsoft.com/en-us/windows/console/pseudoconsoles">Pseudoconsoles — Microsoft Learn</a></li>
+    <li><a id="source-conpty-create" href="https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session">Creating a Pseudoconsole session — Microsoft Learn</a></li>
+    <li><a id="source-rust" href="https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html">What Is Ownership? — The Rust Programming Language</a></li>
+  </ol>
+
+  <footer>Ask your teaching agent about anything unclear—especially why a PTY is not equivalent to ordinary stdin/stdout pipes.</footer>
+</main>
+</body>
+</html>
