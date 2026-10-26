@@ -1,0 +1,11 @@
+{
+  "name": "session-exec-discovery/tests-findings",
+  "hash": "sha256:fb75624fae116e9a889c32bff01b49795531862b7948991505c9bd1c9e65d8a2",
+  "paths": [
+    "features/session-exec-discovery/findings/tests-1.json"
+  ],
+  "inputs": {
+    "artifact:session-exec-discovery/tests": "sha256:9468c54d6f2c2e06dda88473973b5bc14e2cc155350b5ae5c626daa40726b509"
+  },
+  "recorded_at": "2026-10-26T04:13:14.767199+00:00"
+}

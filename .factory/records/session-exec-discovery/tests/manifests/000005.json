@@ -1,0 +1,15 @@
+{
+  "name": "session-exec-discovery/tests",
+  "hash": "sha256:9fde2c042d0079d65270e808e1c1d06c6ae0a73478bbdb898f51489684460bf1",
+  "paths": [
+    "features/session-exec-discovery/tests",
+    "features/session-exec-discovery/negative-controls.json",
+    "features/session-exec-discovery/negative-controls/trimmed-current",
+    "features/session-exec-discovery/negative-controls/lost-empty-argument",
+    "features/session-exec-discovery/negative-controls/pid-only-discovery"
+  ],
+  "inputs": {
+    "artifact:session-exec-discovery/contract": "sha256:ad390c9ac38fd11c8fb6fce465ec973a8bcf1fd67f9bb554fe9057737376bd14"
+  },
+  "recorded_at": "2026-10-26T04:14:47.268154+00:00"
+}

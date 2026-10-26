@@ -1,0 +1,20 @@
+[
+  {
+    "name": "lost-empty-argument",
+    "path": "features/session-exec-discovery/negative-controls/lost-empty-argument",
+    "target_test": "features/session-exec-discovery/tests/test_launcher.py::test_launcher_preserves_boundaries_environment_directory_and_handles[plain]",
+    "expected_failure": "launcher must preserve every argument boundary and value"
+  },
+  {
+    "name": "trimmed-current",
+    "path": "features/session-exec-discovery/negative-controls/trimmed-current",
+    "target_test": "features/session-exec-discovery/tests/test_launcher.py::test_invalid_current_is_rejected_without_startup[leading-space]",
+    "expected_failure": "climon2-owned failure must return 125"
+  },
+  {
+    "name": "pid-only-discovery",
+    "path": "features/session-exec-discovery/negative-controls/pid-only-discovery",
+    "target_test": "features/session-exec-discovery/tests/test_discovery.py::test_live_pid_without_matching_hello_is_not_a_live_session[True]",
+    "expected_failure": "a live PID without matching hello must be hidden"
+  }
+]
