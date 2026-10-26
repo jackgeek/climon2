@@ -161,7 +161,10 @@ Agents never execute code on the host. See [ADR-0002](../adr/0002-agents-never-e
   - Each run uses a fresh container built from a factory-owned, pinned Dockerfile (Ubuntu 24.04, pinned Rust, `x86_64-pc-windows-gnu` with MinGW, Python and pytest, bash/sh). The image is referenced by digest.
   - The worktree is copied in. There are no mounts except a read-only cargo cache, which is filled by a separate networked `cargo fetch --locked` step.
   - Containers run with `--network none`, no credentials, and CPU, memory and time limits.
-  - Results are re-parsed outside the container as untrusted input.
+  - Results are re-parsed outside the container as untrusted input. The expected tests are collected first in a separate container that never builds or runs product code. The JUnit report is then cross-checked against that list and against pytest's real exit code: missing, duplicate or unknown results fail, skips and errors fail, and a non-zero exit with a clean report fails every test. Known gap: product code runs as the same user as pytest, so it could still turn a skip into a pass. Running the product as a separate user closes this, and is part of the harness (build step 5).
+  - Run contract: the subject (`climon2/`, or a negative control directory) is a Cargo project built with `cargo build --release --locked --offline`. Tests find its binaries through `CLIMON2_BIN_DIR`. Test IDs are pytest node IDs (`features/<id>/tests/test_x.py::test_y`), so a negative control's target test is a node ID. A build failure is reported as a `build` result, with every test "not run".
+  - Crates: a separate networked container runs `cargo vendor --locked`, which downloads sources but builds nothing. It fills a Docker volume keyed by the `Cargo.lock` hash, which is mounted read-only into test containers.
+  - The workspace is copied in as root-owned files, excluding `.git`, `.factory`, `factory/`, `target/` and virtualenvs. Tests and product code run as an unprivileged user with all capabilities dropped.
 - **GitHub:**
   - Only the factory pushes, only to `factory/*` branches, and only for declared candidates.
   - CI uses a read-only `GITHUB_TOKEN` and no secrets.
@@ -223,3 +226,4 @@ The factory is built conversationally and test-first, through pull requests, in 
 
 - Factory tests run locally and are deterministic. A separate smoke test exercises real Copilot.
 - Validation command (from `factory/`): `uv run pyright && uv run pytest && uv run ruff check && uv run ruff format --check`
+- Executor tests need real infrastructure and are opt-in: `uv run pytest -m container` needs Rancher Desktop running with the moby engine (`~/.rd/docker.sock`).
