@@ -28,6 +28,8 @@ class Deps:
     macos: MacOS
     notifier: Notifier
     clock: Clock
+    # Runs the Implementer's Windows tests locally instead of on CI; CI stays the gate.
+    windows_vm: Executor | None = None
 
 
 class Refused(Exception):
@@ -56,7 +58,15 @@ def main(argv: Sequence[str], deps: Deps) -> int:
         return EXIT_OK if exit.code == 0 else EXIT_REFUSED
 
     runs = RunStore(deps.state_dir)
-    workflow = Workflow(deps.repo_root, runs, deps.agents, deps.executor, deps.github, deps.macos)
+    workflow = Workflow(
+        deps.repo_root,
+        runs,
+        deps.agents,
+        deps.executor,
+        deps.github,
+        deps.macos,
+        windows_vm=deps.windows_vm,
+    )
     try:
         match args.command:
             case "start":
