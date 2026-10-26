@@ -139,6 +139,12 @@
       "skillPath": "skills/engineering/triage/SKILL.md",
       "computedHash": "a683e69163e23630f39c05a50fb9d83a3795a6a6fbd317357669e082cd43a158"
     },
+    "ub-mode": {
+      "source": "unclebob/ub-mode",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "e2e28ad6f12ce3bc1e5be6676b0dcd88c217957c79c512b418c241fa2e5825a0"
+    },
     "wait-what": {
       "source": "mattpocock/skills",
       "sourceType": "github",
