@@ -1,0 +1,4 @@
+[package]
+name = "climon2"
+version = "0.0.0"
+edition = "2024"
