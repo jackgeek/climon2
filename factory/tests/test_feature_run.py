@@ -532,6 +532,34 @@ def test_the_implementer_may_run_the_windows_tests_on_its_own_candidate_branches
     ]
 
 
+def test_with_a_local_windows_vm_the_implementer_runs_windows_tests_there_instead_of_ci(
+    factory: Factory,
+) -> None:
+    seen: list[TestReport] = []
+
+    def implements_on_windows(request: AgentRequest) -> ImplementationSubmitted:
+        write(request.workspace, "climon2/src/main.rs", "fn main() {}\n")
+        assert request.run_windows_tests is not None
+        try:
+            while True:
+                seen.append(request.run_windows_tests())
+        except RunBudgetExhausted:
+            pass
+        return ImplementationSubmitted()
+
+    tests_hash = reach_tests_approval(factory, implementer=[implements_on_windows])
+    factory.executor = FakeExecutor(passing_gate)
+    factory.windows_vm = FakeExecutor(failing_gate)
+    factory.github = FakeGitHub(windows=windows_passes)
+
+    factory("approve", "f1/tests", tests_hash)
+
+    assert len(seen) == 10
+    assert seen[0] == failing_gate(factory.repo, ("f1",), None)
+    assert factory.windows_vm.calls == [AcceptanceCall(("f1",), None)] * 10
+    assert factory.github.pushes == [f"factory/{run_id(factory)}-a1"]
+
+
 def passing_gate(workspace: Path, features: tuple[str, ...], subject: str | None) -> TestReport:
     return report(("test_exec_runs_command", P, ""), ("test_list_hides_dead_sessions", P, ""))
 
@@ -763,6 +791,18 @@ def test_an_interrupted_implementer_step_is_rerun_and_still_counts_as_an_attempt
     assert code == 0
     assert factory.agents.roles.count(Role.IMPLEMENTER) == 3
     assert "implementation failed after 3 attempts" in out
+
+
+def test_status_during_an_unfinished_step_names_the_step(factory: Factory) -> None:
+    tests_hash = reach_tests_approval(factory, implementer=[crashes])
+    factory.executor = FakeExecutor(failing_gate)
+    with pytest.raises(Crash):
+        factory("approve", "f1/tests", tests_hash)
+
+    code, out = factory("status")
+
+    assert code == 0
+    assert "in progress: implement (attempt 1)" in out
 
 
 def test_resume_retries_a_failed_step(factory: Factory) -> None:

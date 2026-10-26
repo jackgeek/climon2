@@ -1,6 +1,8 @@
 """The local-container Executor against a real dockerd. Run with `pytest -m container`."""
 
+import io
 import shutil
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -157,3 +159,23 @@ def test_every_test_is_collected_however_long_the_collection_output(
 
     assert len(report.results) == 300
     assert all(r.outcome is P for r in report.results)
+
+
+def test_the_locked_crates_are_exported_for_offline_builds_elsewhere(
+    executor: ContainerExecutor, workspace: Path
+) -> None:
+    archive = executor.vendored_crates(workspace, "climon2")
+
+    assert archive is not None
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        names = tar.getnames()
+    assert any(name.startswith("crates/itoa-") for name in names)
+    assert not (workspace / "climon2" / "target").exists()
+
+
+def test_a_project_without_a_lockfile_has_no_crates_to_export(
+    executor: ContainerExecutor, workspace: Path
+) -> None:
+    (workspace / "climon2" / "Cargo.lock").unlink()
+
+    assert executor.vendored_crates(workspace, "climon2") is None

@@ -1,0 +1,18 @@
+{
+  "artifact": "session-exec-discovery/contract",
+  "reviewed_hash": "sha256:ad390c9ac38fd11c8fb6fce465ec973a8bcf1fd67f9bb554fe9057737376bd14",
+  "findings": [
+    {
+      "severity": "advisory",
+      "summary": "Terminology overload: B3 requires the missing selected version folder diagnostic to contain `runtime directory is missing`, while B13/S13 use `runtime directory` for the per-user socket directory (XDG_RUNTIME_DIR / LOCALAPPDATA\\climon2\\run). Both are testable as written, but the shared phrase makes the diagnostics harder to tell apart for users and test authors. Consider `version directory is missing` in B3/S2, which fits the glossary's 'Runtime version'."
+    },
+    {
+      "severity": "advisory",
+      "summary": "B19 says each JSON object 'contains all the B11 metadata fields' but does not say whether extra members are allowed. Tests may reasonably check either 'exactly' or 'at least'. Say which one so S19 is unambiguous and the JSON shape stays stable for later amendments."
+    },
+    {
+      "severity": "advisory",
+      "summary": "B18 counts truncation after escaping, so a `\\uNNNN` escape or a `'\\''` quote sequence can be cut partway at scalar 79. That is acceptable as a display rule, but S19 should include at least one 81-scalar case where the cut falls inside an escape. That stops implementations from 'helpfully' backing off to an escape boundary and producing different output."
+    }
+  ]
+}

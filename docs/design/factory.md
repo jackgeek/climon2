@@ -81,7 +81,7 @@ A role's model must be available. The factory never substitutes another model si
   - All built-in Copilot tools are denied: no shell, URL fetching, or unscoped file access. Two layers enforce this: the session's `available_tools` allow-list holds only the role's tools, and the permission handler approves only those custom tools and refuses everything else.
   - Tool names carry a `factory_` prefix. An allow-listed name also enables any same-named host tool (Copilot or IDE), which shadows ours and escapes the path checks.
   - Read tools (`factory_read_file`, `factory_list_files`, `factory_search`) are given to every role. Output stays under 16 KB, below the 20 KiB at which Copilot moves a result to a temp file the agent can't read, so long files are read a page at a time. Write tools (`factory_write_file`, `factory_replace_text`, `factory_delete_file`) are scoped to the role's paths, and `.git` is never reachable.
-  - `factory_update_lockfile` (Test Author, Implementer) regenerates `Cargo.lock` in a networked container, so dependencies can be added without giving agents network access. `factory_run_acceptance_tests` (Implementer) runs the per-attempt budgeted Linux build and tests; `factory_run_windows_tests` (Implementer) pushes the workspace to a `factory/<run>-a<n>-w<k>` branch and returns that Windows CI run's results. Test summaries are bounded to the host's output limit.
+  - `factory_update_lockfile` (Test Author, Implementer) regenerates `Cargo.lock` in a networked container, so dependencies can be added without giving agents network access. `factory_run_acceptance_tests` (Implementer) runs the per-attempt budgeted Linux build and tests; `factory_run_windows_tests` (Implementer) runs the Windows tests in the local Windows VM when it has been built (≤10 runs per attempt); otherwise it pushes the workspace to a `factory/<run>-a<n>-w<k>` branch and returns that Windows CI run's results (≤3 runs per attempt). Test summaries are bounded to the host's output limit.
   - Each role gets path-scoped custom tools that the factory enforces in Python. Paths are resolved through `..` and symlinks before checking.
   - Agents have no network access, credentials or tokens. Pushing and calling CI are factory functions, never agent tools.
 - **Prompts:** `factory/roles/_common.md` plus `factory/roles/<role>.md`, including the contract format (numbered `B` requirements, `S` scenarios citing them) and the scaffold and negative-control rules.
@@ -103,7 +103,7 @@ A role's model must be available. The factory never substitutes another model si
 brief ─▶ Contract Author ─▶ Reviewer (≤2 rounds) ─▶ ✋ approve contract
       ─▶ Test Author (tests, negative controls, fixture use, scaffold, red evidence)
       ─▶ Reviewer ─▶ ✋ approve tests + red evidence
-      ─▶ Implementer (≤3 attempts × 3 h, ≤10 container runs and ≤3 Windows CI runs per attempt)
+      ─▶ Implementer (≤3 attempts × 3 h, ≤10 container runs and ≤10 local-VM or ≤3 Windows CI runs per attempt)
       ─▶ candidate: Linux container gate + GitHub Windows (MSVC)
       ─▶ ✋ approve macOS run of this commit ─▶ native macOS gate
       ─▶ Reviewer ─▶ factory opens PR ─▶ ✋ user merges
@@ -168,6 +168,7 @@ Agents never execute code on the host. See [ADR-0002](../adr/0002-agents-never-e
 |---|---|---|
 | Local Rancher Desktop containers (dockerd) | Inner loop, Linux gate, Windows GNU cross-compile check | `local-container` |
 | GitHub Actions `windows-2025` | Windows gate for declared candidates (MSVC) | `github` |
+| Local VirtualBox Windows Server 2025 VM (optional) | Implementer's Windows inner loop (MSVC); never a gate | `windows-vm` |
 | GitHub Actions full matrix | Release only | `github` |
 | Native macOS (this Intel Mac) | macOS gate, after per-commit user approval | `macos-native` |
 
@@ -185,6 +186,7 @@ Agents never execute code on the host. See [ADR-0002](../adr/0002-agents-never-e
   - Agents cannot change workflows, the harness or the factory.
   - The factory verifies that CI results belong to the expected commit hash.
   - A candidate is the workspace committed on top of HEAD through a temporary index, so the user's HEAD, index and working tree are untouched. It is force-pushed, so re-pushing a branch on resume replaces the earlier candidate.
+  - **Local Windows VM** (`windows_vm.py`, built by `factory/windows-vm/create-vm.sh`): a Windows Server 2025 evaluation VM on a VirtualBox host-only network with no internet. Every run restores the `clean` snapshot, uploads the workspace and the locked crates (exported from the container vendor cache) over SSH, collects, builds offline, runs pytest, and powers the VM off. The factory uses it for `factory_run_windows_tests` only when the snapshot exists; Windows CI remains the gate. See `factory/windows-vm/README.md`.
   - Pushing to `factory/**` triggers `.github/workflows/factory-windows.yml`. It collects the expected tests before anything is built, then builds `climon2/` with `cargo build --release --locked` and runs every `features/*/tests`. The collected list, build result, JUnit report and exit codes are uploaded as artifacts. The factory finds the run by commit and workflow path, then applies the same untrusted-report cross-checks as the containers. Missing artifacts fail every test with the run's conclusion.
 - **macOS:**
   - The user approves each commit after the Windows and Linux gates pass. The factory highlights build-time code changes (`build.rs`, proc macros, Cargo files, new dependencies).
@@ -247,6 +249,6 @@ The factory is built conversationally and test-first, through pull requests, in 
 
 - Factory tests run locally and are deterministic. A separate smoke test exercises real Copilot.
 - Validation command (from `factory/`): `uv run pyright && uv run pytest && uv run ruff check && uv run ruff format --check`
-- Executor tests need real infrastructure and are opt-in: `uv run pytest -m container` needs Rancher Desktop running with the moby engine (`~/.rd/docker.sock`). `uv run pytest -m github` needs `gh` logged in with push access to climon2. It pushes throwaway `factory/test-*` branches to climon2 itself, waits for real Windows CI, opens and closes a PR, and deletes the branches afterwards.
+- Executor tests need real infrastructure and are opt-in: `uv run pytest -m container` needs Rancher Desktop running with the moby engine (`~/.rd/docker.sock`). `uv run pytest -m github` needs `gh` logged in with push access to climon2. It pushes throwaway `factory/test-*` branches to climon2 itself, waits for real Windows CI, opens and closes a PR, and deletes the branches afterwards. `uv run pytest -m windows_vm` needs the local Windows VM and Rancher Desktop.
 `uv run pytest -m copilot` runs real Copilot agents (Contract Author and Reviewer) in a throwaway repository, using premium requests; it needs the `copilot` CLI logged in.
 `uv run pytest -m macos` runs the native macOS gate on this Mac; the first run installs the factory toolchain (about 30 seconds).
