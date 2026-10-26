@@ -1,10 +1,12 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
 def climon2() -> str:
-    return str(Path(os.environ["CLIMON2_BIN_DIR"]) / "climon2")
+    name = "climon2.exe" if sys.platform == "win32" else "climon2"
+    return str(Path(os.environ["CLIMON2_BIN_DIR"]) / name)
 
 
 def test_greets() -> None:
