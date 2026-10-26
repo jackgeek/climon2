@@ -40,6 +40,10 @@ _Avoid_: Dead session, orphan
 The per-session record in climon2 home that describes a session and how to reach its daemon.
 _Avoid_: Session file, PTY file
 
+**Runtime directory**:
+The private, per-user directory holding the sockets that clients use to reach session daemons, one per climon2 home.
+_Avoid_: Socket dir, run dir, temp dir
+
 ## Installation
 
 **Launcher**:
