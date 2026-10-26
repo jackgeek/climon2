@@ -24,6 +24,7 @@ from climon2_factory.ports import (
     TestsSubmitted,
 )
 from climon2_factory.runs import Run, RunStore
+from climon2_factory.traceability import contract_problems, coverage_problems
 
 MAX_REVIEW_ROUNDS = 2
 MAX_ATTEMPTS = 3
@@ -560,7 +561,22 @@ class Workflow:
 
     def _review(self, run: Run, phase: _Phase) -> None:
         submission = self._agent(Role.REVIEWER, run, phase.review_stage)
-        self._route_findings(run, phase, _expect(submission, ReviewSubmitted).findings)
+        findings = self._traceability(run, phase) + _expect(submission, ReviewSubmitted).findings
+        self._route_findings(run, phase, findings)
+
+    def _traceability(self, run: Run, phase: _Phase) -> tuple[Finding, ...]:
+        feature_dir = self._repo / "features" / run.feature
+        contract_path = feature_dir / "contract.md"
+        contract = contract_path.read_text() if contract_path.is_file() else ""
+        if phase is _CONTRACT:
+            problems = contract_problems(contract)
+        else:
+            sources = {
+                str(p.relative_to(self._repo)): p.read_text(errors="replace")
+                for p in sorted((feature_dir / "tests").rglob("*.py"))
+            }
+            problems = coverage_problems(contract, sources)
+        return tuple(Finding(Severity.BLOCKING, p) for p in problems)
 
     def _route_findings(self, run: Run, phase: _Phase, findings: tuple[Finding, ...]) -> None:
         """Blocking findings return the artifact to its author, at most MAX_REVIEW_ROUNDS times."""

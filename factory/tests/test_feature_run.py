@@ -22,8 +22,32 @@ from climon2_factory.ports import (
     TestsSubmitted,
 )
 
+CONTRACT = """# Contract: f1
 
-def drafts_contract(text: str = "# Contract\n"):
+## Purpose
+Run a command in a session.
+
+## Behavior
+- **B1.** `climon2 exec cmd` runs cmd.
+
+## Scenarios
+- **S1** (B1). Given a shell, when I exec, then it runs.
+
+## Platforms and shells
+All.
+
+## Out of scope
+Nothing.
+
+## Depends on
+None.
+
+## Open questions
+None.
+"""
+
+
+def drafts_contract(text: str = CONTRACT):
     def behaviour(request: AgentRequest) -> ContractSubmitted:
         write(request.workspace, f"features/{request.feature}/contract.md", text)
         return ContractSubmitted()
@@ -88,7 +112,10 @@ ADVISORY = Finding(Severity.ADVISORY, "Consider naming the error code")
 def test_blocking_findings_send_the_contract_back_for_one_revision(factory: Factory) -> None:
     factory.agents = FakeAgents(
         {
-            Role.CONTRACT_AUTHOR: [drafts_contract("v1\n"), drafts_contract("v2\n")],
+            Role.CONTRACT_AUTHOR: [
+                drafts_contract(CONTRACT + "v1\n"),
+                drafts_contract(CONTRACT + "v2\n"),
+            ],
             Role.REVIEWER: [reviews(BLOCKING), reviews()],
         }
     )
@@ -104,14 +131,17 @@ def test_blocking_findings_send_the_contract_back_for_one_revision(factory: Fact
     ]
     assert factory.agents.calls[2].findings == (BLOCKING,)
     contract = ArtifactStore(factory.repo).status("f1/contract")
-    assert (factory.repo / "features/f1/contract.md").read_text() == "v2\n"
+    assert (factory.repo / "features/f1/contract.md").read_text() == CONTRACT + "v2\n"
     assert f"factory approve f1/contract {contract.hash}" in out
 
 
 def test_blocking_findings_after_two_rounds_pause_with_the_findings(factory: Factory) -> None:
     factory.agents = FakeAgents(
         {
-            Role.CONTRACT_AUTHOR: [drafts_contract("v1\n"), drafts_contract("v2\n")],
+            Role.CONTRACT_AUTHOR: [
+                drafts_contract(CONTRACT + "v1\n"),
+                drafts_contract(CONTRACT + "v2\n"),
+            ],
             Role.REVIEWER: [reviews(BLOCKING), reviews(BLOCKING)],
         }
     )
@@ -124,6 +154,25 @@ def test_blocking_findings_after_two_rounds_pause_with_the_findings(factory: Fac
     contract = ArtifactStore(factory.repo).status("f1/contract")
     assert f"factory approve f1/contract {contract.hash}" in out
     assert "blocking: Scenario S2 cites no requirement" in factory("status")[1]
+
+
+def test_an_untraceable_contract_goes_back_to_its_author_with_the_problems(
+    factory: Factory,
+) -> None:
+    factory.agents = FakeAgents(
+        {
+            Role.CONTRACT_AUTHOR: [drafts_contract("# Contract\n"), drafts_contract()],
+            Role.REVIEWER: [reviews(), reviews()],
+        }
+    )
+
+    code, _ = factory("start", "f1")
+
+    assert code == 0
+    assert len(factory.agents.roles) == 4
+    revision = factory.agents.calls[2]
+    assert revision.task == "revise-contract"
+    assert Finding(Severity.BLOCKING, "contract has no '## Purpose' section") in revision.findings
 
 
 def test_advisory_findings_do_not_block_and_are_shown(factory: Factory) -> None:
@@ -146,10 +195,12 @@ NO_LIVENESS = NegativeControl(
 )
 
 
-def writes_tests(*controls: NegativeControl):
+def writes_tests(*controls: NegativeControl, cites: str = "S1 (B1)"):
     def behaviour(request: AgentRequest) -> TestsSubmitted:
         write(
-            request.workspace, f"features/{request.feature}/tests/test_exec.py", "def test(): ...\n"
+            request.workspace,
+            f"features/{request.feature}/tests/test_exec.py",
+            f'def test():\n    """{cites}"""\n',
         )
         write(request.workspace, "climon2/src/main.rs", "fn main() { unimplemented!() }\n")
         for control in controls:
@@ -282,10 +333,32 @@ def test_bad_red_evidence_sends_the_tests_back_to_the_test_author(
     assert factory.agents.calls[3].findings == (Finding(Severity.BLOCKING, expected),)
 
 
+def test_tests_that_miss_a_scenario_go_back_to_the_test_author(factory: Factory) -> None:
+    contract_hash = reach_contract_approval(
+        factory,
+        test_author=[writes_tests(NO_LIVENESS, cites="B1 only"), writes_tests(NO_LIVENESS)],
+        reviewer=[reviews(), reviews()],
+    )
+    factory.executor = FakeExecutor(red_run)
+
+    code, _ = factory("approve", "f1/contract", contract_hash)
+
+    assert code == 0
+    assert factory.agents.roles[2:] == [
+        Role.TEST_AUTHOR,
+        Role.REVIEWER,
+        Role.TEST_AUTHOR,
+        Role.REVIEWER,
+    ]
+    assert factory.agents.calls[4].findings == (
+        Finding(Severity.BLOCKING, "scenario S1 is not cited by any test"),
+    )
+
+
 def test_rejecting_sends_the_artifact_to_a_fresh_author_with_the_reason(factory: Factory) -> None:
     first_hash = reach_contract_approval(
         factory,
-        contract_author=[drafts_contract("v2\n")],
+        contract_author=[drafts_contract(CONTRACT + "v2\n")],
         reviewer=[reviews()],
     )
 
@@ -407,7 +480,9 @@ def test_implementer_changes_outside_climon2_fail_the_attempt_and_are_reverted(
             "implementer changed protected path features/f1/tests/test_exec.py",
         ),
     )
-    assert (factory.repo / "features/f1/tests/test_exec.py").read_text() == "def test(): ...\n"
+    assert (
+        factory.repo / "features/f1/tests/test_exec.py"
+    ).read_text() == 'def test():\n    """S1 (B1)"""\n'
     assert not (factory.repo / "features/f1/new.md").exists()
     assert ArtifactStore(factory.repo).status("f1/tests").state is State.APPROVED
 
@@ -576,7 +651,7 @@ def test_a_directly_edited_contract_is_rereviewed_and_resets_downstream_work(
         reviewer=[reviews(), reviews()],
         test_author=[writes_tests(NO_LIVENESS)],
     )
-    write(factory.repo, "features/f1/contract.md", "# Contract, edited by hand\n")
+    write(factory.repo, "features/f1/contract.md", CONTRACT + "Edited by hand.\n")
 
     code, out = factory("status")
     assert "f1/contract changed since approval: edited directly" in out
@@ -592,7 +667,7 @@ def test_a_directly_edited_contract_is_rereviewed_and_resets_downstream_work(
     new_hash = ArtifactStore(factory.repo).status("f1/contract").hash
     assert new_hash is not None
     assert f"awaiting approval: f1/contract {new_hash}" in out
-    assert (factory.repo / "features/f1/contract.md").read_text() == "# Contract, edited by hand\n"
+    assert (factory.repo / "features/f1/contract.md").read_text() == CONTRACT + "Edited by hand.\n"
 
     factory.executor = FakeExecutor(red_run)
     code, out = factory("approve", "f1/contract", new_hash)
@@ -602,7 +677,7 @@ def test_a_directly_edited_contract_is_rereviewed_and_resets_downstream_work(
 
 def test_changed_inputs_send_an_approved_artifact_back_to_its_author(factory: Factory) -> None:
     reach_tests_approval(
-        factory, contract_author=[drafts_contract("# Contract v2\n")], reviewer=[reviews()]
+        factory, contract_author=[drafts_contract(CONTRACT + "v2\n")], reviewer=[reviews()]
     )
     write(factory.repo, "features/f1/brief.md", "# Brief, revised\n")
 
@@ -716,7 +791,7 @@ def test_abort_leaves_an_open_delivery_pr_for_the_user(factory: Factory) -> None
 
 def test_show_prints_an_artifacts_state_and_decision_history(factory: Factory) -> None:
     first_hash = reach_contract_approval(
-        factory, contract_author=[drafts_contract("v2\n")], reviewer=[reviews()]
+        factory, contract_author=[drafts_contract(CONTRACT + "v2\n")], reviewer=[reviews()]
     )
     factory("reject", "f1/contract", "--reason", "add a resize scenario")
     new_hash = ArtifactStore(factory.repo).status("f1/contract").hash

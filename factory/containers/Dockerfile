@@ -25,7 +25,7 @@ COPY requirements.txt /opt/factory/requirements.txt
 RUN python3 -m venv /opt/pytest \
  && /opt/pytest/bin/pip install --no-cache-dir --require-hashes -r /opt/factory/requirements.txt
 
-COPY run-acceptance.sh vendor-crates.sh /opt/factory/
+COPY run-acceptance.sh vendor-crates.sh lock-crates.sh /opt/factory/
 RUN chmod 755 /opt/factory/*.sh \
  && useradd --create-home --uid 10001 runner \
  && mkdir -p /work /out /build /vendor \

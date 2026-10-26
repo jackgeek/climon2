@@ -74,9 +74,12 @@ A role's model must be available. The factory never substitutes another model si
 
 - Agents run through Microsoft Agent Framework's `GitHubCopilotAgent` (`agent-framework-github-copilot`).
 - **Tools:**
-  - All built-in Copilot tools are denied: no shell, URL fetching, or unscoped file access.
+  - All built-in Copilot tools are denied: no shell, URL fetching, or unscoped file access. Two layers enforce this: the session's `available_tools` allow-list holds only the role's tools, and the permission handler approves only those custom tools and refuses everything else.
+  - Read tools (`read_file`, `list_files`, `search`) are given to every role. Write tools are scoped to the role's paths, and `.git` is never reachable.
+  - `update_lockfile` (Test Author, Implementer) regenerates `Cargo.lock` in a networked container, so dependencies can be added without giving agents network access. `run_acceptance_tests` (Implementer) runs the per-attempt budgeted Linux build and tests.
   - Each role gets path-scoped custom tools that the factory enforces in Python. Paths are resolved through `..` and symlinks before checking.
   - Agents have no network access, credentials or tokens. Pushing and calling CI are factory functions, never agent tools.
+- **Prompts:** `factory/roles/_common.md` plus `factory/roles/<role>.md`, including the contract format (numbered `B` requirements, `S` scenarios citing them) and the scaffold and negative-control rules.
 - **Context:** each agent starts with a small bundle and can read more on demand.
   - The bundle contains the role prompt, `CONTEXT.md`, the relevant approved artifacts, and a repository map.
   - Retries receive the diff, failures and findings, never earlier transcripts.
@@ -111,7 +114,11 @@ Rules:
   - Out of scope
   - Depends on
 
-  The factory checks traceability mechanically.
+  The factory checks traceability mechanically (`traceability.py`) and adds each problem as a blocking finding beside the Reviewer's:
+  - every section is present;
+  - requirements (`- **B1.** …`) and scenarios (`- **S1** (B1, B2). …`) are numbered without gaps;
+  - every scenario cites existing requirements, and every requirement is cited by a scenario;
+  - at tests review, every scenario is cited (`S<n>`) by at least one test file.
 - **Regression:** the acceptance tests of every previously delivered feature are permanent regression gates.
 - **Amendments:** changing a delivered contract requires a contract amendment, approved like a new contract.
 - **Red evidence:** before implementation starts, the factory runs the tests against an explicitly unimplemented scaffold.
@@ -231,4 +238,5 @@ The factory is built conversationally and test-first, through pull requests, in 
 - Factory tests run locally and are deterministic. A separate smoke test exercises real Copilot.
 - Validation command (from `factory/`): `uv run pyright && uv run pytest && uv run ruff check && uv run ruff format --check`
 - Executor tests need real infrastructure and are opt-in: `uv run pytest -m container` needs Rancher Desktop running with the moby engine (`~/.rd/docker.sock`). `uv run pytest -m github` needs `gh` logged in with push access to climon2. It pushes throwaway `factory/test-*` branches to climon2 itself, waits for real Windows CI, opens and closes a PR, and deletes the branches afterwards.
+`uv run pytest -m copilot` runs real Copilot agents (Contract Author and Reviewer) in a throwaway repository, using premium requests; it needs the `copilot` CLI logged in.
 `uv run pytest -m macos` runs the native macOS gate on this Mac; the first run installs the factory toolchain (about 30 seconds).
