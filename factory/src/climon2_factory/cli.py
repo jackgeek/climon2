@@ -41,6 +41,9 @@ def main(argv: Sequence[str], deps: Deps) -> int:
     start.add_argument("feature")
     commands.add_parser("status", help="show the active feature run")
     commands.add_parser("resume", help="continue the active feature run")
+    commands.add_parser("abort", help="end the active feature run")
+    show = commands.add_parser("show", help="show an artifact's state and history")
+    show.add_argument("artifact")
     approve = commands.add_parser("approve", help="approve one artifact hash and continue")
     approve.add_argument("artifact")
     approve.add_argument("hash")
@@ -62,6 +65,10 @@ def main(argv: Sequence[str], deps: Deps) -> int:
                 _approve(args.artifact, args.hash, deps, runs, workflow)
             case "resume":
                 _report(workflow.resume(_require_active(runs)), deps)
+            case "abort":
+                _report(workflow.abort(_require_active(runs)), deps)
+            case "show":
+                _show(args.artifact, deps)
             case "reject":
                 _reject(args.artifact, args.reason, deps, runs, workflow)
             case _:
@@ -123,6 +130,28 @@ def _require_active(runs: RunStore) -> Run:
     if run is None:
         raise Refused("no active feature run")
     return run
+
+
+def _show(artifact: str, deps: Deps) -> None:
+    store = ArtifactStore(deps.repo_root)
+    try:
+        status = store.status(artifact)
+    except ValueError as invalid:
+        raise Refused(str(invalid)) from invalid
+    history = store.history(artifact)
+    if not history:
+        raise Refused(f"{artifact} has never been recorded")
+    print(f"{artifact}: {status.state} {status.hash}")
+    for path in history[-1].paths:
+        print(f"  {path}")
+    for changed in status.changed_inputs:
+        print(f"  input changed: {changed}")
+    print("history:")
+    for number, entry in enumerate(history, start=1):
+        decisions = "".join(
+            f" {d.decision}: {d.reason}" if d.reason else f" {d.decision}" for d in entry.decisions
+        )
+        print(f"  {number} {entry.hash}{decisions}")
 
 
 def _status(runs: RunStore, workflow: Workflow) -> None:

@@ -688,3 +688,65 @@ def test_a_pr_opened_just_before_a_crash_is_found_not_reopened(factory: Factory)
     assert len(factory.github.prs) == 1
     assert factory.agents.roles.count(Role.REVIEWER) == 3
     assert "awaiting merge of PR #1" in out
+
+
+def test_abort_ends_the_active_run_so_another_can_start(factory: Factory) -> None:
+    reach_contract_approval(factory)
+
+    code, out = factory("abort")
+
+    assert code == 0
+    assert "f1 run aborted" in out
+    assert factory("status")[1].strip() == "No active feature run."
+    code, out = factory("abort")
+    assert code == 2
+    assert "no active feature run" in out
+
+
+def test_abort_leaves_an_open_delivery_pr_for_the_user(factory: Factory) -> None:
+    candidate_hash = reach_macos_approval(factory, implementer=[implements()], reviewer=[reviews()])
+    factory.macos = FakeMacOS(macos_passes)
+    factory("approve", "f1/candidate", candidate_hash)
+
+    code, out = factory("abort")
+
+    assert code == 0
+    assert "PR #1 is still open" in out
+
+
+def test_show_prints_an_artifacts_state_and_decision_history(factory: Factory) -> None:
+    first_hash = reach_contract_approval(
+        factory, contract_author=[drafts_contract("v2\n")], reviewer=[reviews()]
+    )
+    factory("reject", "f1/contract", "--reason", "add a resize scenario")
+    new_hash = ArtifactStore(factory.repo).status("f1/contract").hash
+
+    code, out = factory("show", "f1/contract")
+
+    assert code == 0
+    assert out.splitlines() == [
+        f"f1/contract: unapproved {new_hash}",
+        "  features/f1/contract.md",
+        "history:",
+        f"  1 {first_hash} rejected: add a resize scenario",
+        f"  2 {new_hash}",
+    ]
+
+
+def test_show_names_the_inputs_that_made_an_artifact_stale(factory: Factory) -> None:
+    reach_contract_approval(factory)
+    write(factory.repo, "CONTEXT.md", "# Context, revised\n")
+
+    code, out = factory("show", "f1/contract")
+
+    assert code == 0
+    assert out.splitlines()[0].startswith("f1/contract: stale ")
+    assert "  input changed: path:CONTEXT.md" in out.splitlines()
+
+
+@pytest.mark.parametrize("name", ["../etc/passwd", "f1/never-recorded"])
+def test_show_refuses_unknown_artifacts(factory: Factory, name: str) -> None:
+    code, out = factory("show", name)
+
+    assert code == 2
+    assert name in out

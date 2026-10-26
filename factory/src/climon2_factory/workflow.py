@@ -46,6 +46,7 @@ REVIEW_CANDIDATE = "review-candidate"
 OPEN_PR = "open-pr"
 AWAIT_MERGE = "await-merge"
 DELIVERED = "delivered"
+ABORTED = "aborted"
 _STAGES = (
     DRAFT_CONTRACT,
     REVIEW_CONTRACT,
@@ -203,6 +204,18 @@ class Workflow:
             edited = status.state not in (State.STALE, State.MISSING)
             return Staleness(name, edited, status.changed_inputs)
         return None
+
+    def abort(self, run: Run) -> Pause:
+        details: tuple[str, ...] = ()
+        if run.pr_number is not None and self._github.pr_state(run.pr_number) == "open":
+            details = (f"PR #{run.pr_number} is still open; close it on GitHub if unwanted",)
+        run.stage = ABORTED
+        self._runs.finish(run)
+        return Pause(
+            reason=f"{run.feature} run aborted",
+            next_command="factory start <feature>",
+            details=details,
+        )
 
     def awaiting(self, run: Run) -> str | None:
         """The artifact this run is waiting for the user to decide, if any."""

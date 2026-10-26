@@ -62,6 +62,7 @@ class Decision:
 @dataclass(frozen=True)
 class HistoryEntry:
     hash: str
+    paths: tuple[str, ...]
     inputs: dict[str, str]
     decisions: tuple[Decision, ...]
 
@@ -127,6 +128,7 @@ class ArtifactStore:
         return [
             HistoryEntry(
                 hash=m["hash"],
+                paths=tuple(m["paths"]),
                 inputs=m["inputs"],
                 decisions=tuple(
                     Decision(d["decision"], d["reason"], d["decided_at"])
