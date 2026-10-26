@@ -1,6 +1,6 @@
 # Frozen, dependency-free launcher contract
 
-The launcher is the one file shared by every installed version. Because sessions must survive upgrades, its contract is frozen forever: read `<climon2 executable home>/current` (one line, naming a version folder), then run `<climon2 executable home>/<version>/climon2` with the arguments unchanged. Any launcher can therefore drive any version, older or newer. The launcher uses only `std` (no crates.io dependencies, enforced by a test), which keeps its attack surface small and reduces the need to replace it.
+The launcher is the one file shared by every installed version. Because sessions must survive upgrades, its contract is frozen forever: read `<climon2 executable home>/current` (one line, naming a version folder), then run `<climon2 executable home>/<version>/climon2-cli` with the arguments unchanged. Any launcher can therefore drive any version, older or newer. The launcher has no dependencies at all, not even workspace crates (enforced by a test; see ADR 0004), which keeps its attack surface small and reduces the need to replace it.
 
 ## Considered options
 
