@@ -1,0 +1,18 @@
+{
+  "artifact": "session-exec-discovery/tests",
+  "reviewed_hash": "sha256:fc96a8e47f6258e6d059152021d908271b9af6fc744b2d72cd38e78ae8db5795",
+  "findings": [
+    {
+      "severity": "blocking",
+      "summary": "test_lifecycle.py::test_required_interactive_shell_is_discoverable_and_survives_terminal_ctrl_c (Unix branch) sends `\\x03` and then requires `term.expect(r\"\\^C\")`. S20 asks only that the shell and `exec` keep running, that a later input command emits a second marker, and that both listing forms still find the session. It never requires a visible `^C` echo. On macOS, zsh (ZLE) turns ECHO off at its prompt and does not print `^C` on SIGINT, so the expect times out for every conforming implementation. Echo also depends on readline's version, and on whether the daemon's PTY termios includes ECHOCTL, which the contract leaves to the implementation. Fix: drop the `\\^C` expect. To avoid matching a stale prompt, first wait for the prompt printed after the previous marker (SHELL_42 or AFTER_23) before sending `\\x03`. After the interrupt, wait for a fresh `C2_PROMPT> `, then send the AFTER marker command."
+    },
+    {
+      "severity": "advisory",
+      "summary": "test_discovery.py::test_missing_state_directories_list_as_empty still asserts that `list` does not create `<home>/sessions`. B16 and S17 don't forbid creating it: they only say missing directories mean no sessions. This was raised in tests-1 and has not been addressed. Drop the assertion or get the contract amended."
+    },
+    {
+      "severity": "advisory",
+      "summary": "The Windows probe wrappers for climon2-daemon in test_exec.py and test_resolution.py start the real daemon as a separate child through `Command::status`. As a result, the PID the CLI spawned and the wrapper's job and console differ from the real daemon's. This was raised in tests-1 and tests-2 and is unchanged. Prefer inspecting `record[\"daemon_pid\"]` natively instead of wrapping the daemon."
+    }
+  ]
+}

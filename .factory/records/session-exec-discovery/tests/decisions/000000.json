@@ -1,0 +1,7 @@
+{
+  "hash": "sha256:81e6647b6482e0d839e25abfc5c48ca48fc9c14d6fb1eccc4c1f029193b3a6a9",
+  "manifest": 1,
+  "decision": "rejected",
+  "reason": "Address findings/tests-2.json: (1) BLOCKING: on Windows read owner/DACL via CreateFileW(READ_CONTROL, share all, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS) + GetSecurityInfo, for files, dirs and AF_UNIX socket reparse points. (2) list --json comparisons check only the B11 fields per object ({k: obj[k] for k in FIELDS}) plus order, allowing extra members. (3) Use a fractional created_at below .5 (e.g. .250Z) so truncation vs rounding is not assumed. (4) Run ps with LC_ALL=en_US.UTF-8 on macOS (or match by PID ancestry). (5) Add a dangling <guid>.pty symlink case on Unix that must be skipped silently.",
+  "decided_at": "2026-10-26T03:53:46.298859+00:00"
+}

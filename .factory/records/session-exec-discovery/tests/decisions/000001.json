@@ -1,0 +1,7 @@
+{
+  "hash": "sha256:69b5f458767e82c8bb2f8955f0c5d27902d005fed12eb17be76b263faa0c7685",
+  "manifest": 3,
+  "decision": "rejected",
+  "reason": "Fix findings/tests-3.json exactly as the reviewer suggests: (1) dangling .pty symlink: allow exit 0 + empty-list stdout with stderr either empty or one 'climon2: ignoring session metadata:' line naming the path; still assert the symlink is untouched. (2) Windows daemon console: assert term.pid, cli pid and client pid are not in daemon['console'] instead of requiring an empty list. (3) Add the lower-bound deadline cases: a fragmented hello whose last byte arrives ~1.5s after connect still gets a matching reply, and a fake endpoint replying validly after ~1.2s is still listed. Change nothing else.",
+  "decided_at": "2026-10-26T04:06:15.602685+00:00"
+}
