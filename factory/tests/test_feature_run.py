@@ -9,10 +9,12 @@ from climon2_factory.ports import (
     AgentRequest,
     ContractSubmitted,
     Finding,
+    ImplementationSubmitted,
     NegativeControl,
     Outcome,
     ReviewSubmitted,
     Role,
+    RunBudgetExhausted,
     Severity,
     TestReport,
     TestResult,
@@ -277,3 +279,144 @@ def test_bad_red_evidence_sends_the_tests_back_to_the_test_author(
     assert code == 0
     assert factory.agents.roles[2:] == [Role.TEST_AUTHOR, Role.TEST_AUTHOR, Role.REVIEWER]
     assert factory.agents.calls[3].findings == (Finding(Severity.BLOCKING, expected),)
+
+
+def test_rejecting_sends_the_artifact_to_a_fresh_author_with_the_reason(factory: Factory) -> None:
+    first_hash = reach_contract_approval(
+        factory,
+        contract_author=[drafts_contract("v2\n")],
+        reviewer=[reviews()],
+    )
+
+    code, out = factory("reject", "f1/contract", "--reason", "add a resize scenario")
+
+    assert code == 0
+    assert factory.agents.roles[2:] == [Role.CONTRACT_AUTHOR, Role.REVIEWER]
+    revision = factory.agents.calls[2]
+    assert revision.task == "revise-contract"
+    assert revision.findings == (
+        Finding(Severity.BLOCKING, "user rejected: add a resize scenario"),
+    )
+    store = ArtifactStore(factory.repo)
+    new_hash = store.status("f1/contract").hash
+    assert new_hash != first_hash
+    assert f"factory approve f1/contract {new_hash}" in out
+    assert [d.decision for d in store.history("f1/contract")[0].decisions] == ["rejected"]
+
+
+def test_rejection_requires_a_reason(factory: Factory) -> None:
+    reach_contract_approval(factory)
+
+    code, _ = factory("reject", "f1/contract")
+
+    assert code == 2
+    assert ArtifactStore(factory.repo).status("f1/contract").state is State.UNAPPROVED
+
+
+def test_only_the_artifact_the_run_is_waiting_for_can_be_decided(factory: Factory) -> None:
+    reach_contract_approval(factory)
+    write(factory.repo, "features/f1/other.md", "x\n")
+    other = ArtifactStore(factory.repo).record("f1/other", paths=["features/f1/other.md"])
+
+    approve_code, approve_out = factory("approve", "f1/other", other.hash)
+    reject_code, _ = factory("reject", "f1/other", "--reason", "no")
+
+    assert (approve_code, reject_code) == (2, 2)
+    assert "waiting for f1/contract" in approve_out
+    assert ArtifactStore(factory.repo).status("f1/other").state is State.UNAPPROVED
+
+
+def reach_tests_approval(factory: Factory, **more: list) -> str:
+    contract_hash = reach_contract_approval(
+        factory, test_author=[writes_tests(NO_LIVENESS)], reviewer=[reviews()], **more
+    )
+    factory.executor = FakeExecutor(red_run)
+    factory("approve", "f1/contract", contract_hash)
+    hash = ArtifactStore(factory.repo).status("f1/tests").hash
+    assert hash is not None
+    return hash
+
+
+def implements(
+    text: str = "fn main() {}\n", runs: int = 0, also_writes: dict[str, str] | None = None
+):
+    def behaviour(request: AgentRequest) -> ImplementationSubmitted:
+        write(request.workspace, "climon2/src/main.rs", text)
+        for rel, content in (also_writes or {}).items():
+            write(request.workspace, rel, content)
+        assert request.run_tests is not None
+        try:
+            for _ in range(runs):
+                request.run_tests()
+        except RunBudgetExhausted:
+            pass
+        return ImplementationSubmitted()
+
+    return behaviour
+
+
+def failing_gate(workspace: Path, features: tuple[str, ...], subject: str | None) -> TestReport:
+    return report(
+        ("test_exec_runs_command", F, "exit code 1"),
+        ("test_list_hides_dead_sessions", P, ""),
+    )
+
+
+def test_three_failed_attempts_pause_the_run_with_the_failures(factory: Factory) -> None:
+    tests_hash = reach_tests_approval(
+        factory, implementer=[implements("a\n"), implements("b\n"), implements("c\n")]
+    )
+    factory.executor = FakeExecutor(failing_gate)
+
+    code, out = factory("approve", "f1/tests", tests_hash)
+
+    assert code == 0
+    implementer_calls = [c for c in factory.agents.calls if c.role is Role.IMPLEMENTER]
+    assert len(implementer_calls) == 3
+    failure = Finding(Severity.BLOCKING, "test_exec_runs_command failed: exit code 1")
+    assert [c.findings for c in implementer_calls] == [(), (failure,), (failure,)]
+    assert factory.executor.calls == [AcceptanceCall(("f1",), None)] * 3
+    assert "implementation failed after 3 attempts" in out
+    assert "Next: factory resume" in out
+    assert "implementation failed after 3 attempts" in factory("status")[1]
+
+
+def test_implementer_changes_outside_climon2_fail_the_attempt_and_are_reverted(
+    factory: Factory,
+) -> None:
+    tampered = {
+        "features/f1/tests/test_exec.py": "def test(): assert True\n",
+        "features/f1/new.md": "sneaky\n",
+    }
+    tests_hash = reach_tests_approval(
+        factory,
+        implementer=[implements(also_writes=tampered), implements(), implements()],
+    )
+    factory.executor = FakeExecutor(failing_gate)
+
+    factory("approve", "f1/tests", tests_hash)
+
+    second = [c for c in factory.agents.calls if c.role is Role.IMPLEMENTER][1]
+    assert second.findings == (
+        Finding(Severity.BLOCKING, "implementer changed protected path features/f1/new.md"),
+        Finding(
+            Severity.BLOCKING,
+            "implementer changed protected path features/f1/tests/test_exec.py",
+        ),
+    )
+    assert (factory.repo / "features/f1/tests/test_exec.py").read_text() == "def test(): ...\n"
+    assert not (factory.repo / "features/f1/new.md").exists()
+    assert ArtifactStore(factory.repo).status("f1/tests").state is State.APPROVED
+
+
+def test_each_attempt_may_run_the_tests_at_most_ten_times(factory: Factory) -> None:
+    tests_hash = reach_tests_approval(
+        factory, implementer=[implements(runs=11), implements(), implements()]
+    )
+    factory.executor = FakeExecutor(failing_gate)
+
+    factory("approve", "f1/tests", tests_hash)
+
+    first = next(c for c in factory.agents.calls if c.role is Role.IMPLEMENTER)
+    assert first.findings == ()
+    assert len(factory.executor.calls) == 10 + 3

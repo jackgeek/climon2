@@ -1,7 +1,7 @@
 """Persistent feature-run state, stored outside the repo under the factory state directory."""
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -11,6 +11,8 @@ class Run:
     feature: str
     stage: str
     review_round: int = 0
+    attempts: int = 0
+    attempt_findings: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
 
 
 class RunStore:
@@ -28,7 +30,9 @@ class RunStore:
         self._active.write_text(run.run_id + "\n")
 
     def load(self, run_id: str) -> Run:
-        return Run(**json.loads((self._runs / run_id / "run.json").read_text()))
+        data = json.loads((self._runs / run_id / "run.json").read_text())
+        data["attempt_findings"] = [tuple(f) for f in data.get("attempt_findings", [])]
+        return Run(**data)
 
     def save(self, run: Run) -> None:
         directory = self._runs / run.run_id

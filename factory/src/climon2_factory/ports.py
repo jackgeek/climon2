@@ -1,5 +1,6 @@
 """System-boundary ports. Real implementations arrive in build steps 3 and 4; tests use fakes."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -32,6 +33,11 @@ class AgentRequest:
     task: str
     workspace: Path
     findings: tuple[Finding, ...] = ()
+    run_tests: "Callable[[], TestReport] | None" = None
+
+
+class RunBudgetExhausted(Exception):
+    """The agent has used all of this attempt's acceptance-test runs."""
 
 
 @dataclass(frozen=True)
@@ -61,7 +67,12 @@ class TestsSubmitted:
     negative_controls: tuple[NegativeControl, ...]
 
 
-Submission = ContractSubmitted | ReviewSubmitted | TestsSubmitted
+@dataclass(frozen=True)
+class ImplementationSubmitted:
+    pass
+
+
+Submission = ContractSubmitted | ReviewSubmitted | TestsSubmitted | ImplementationSubmitted
 
 
 class Agents(Protocol):

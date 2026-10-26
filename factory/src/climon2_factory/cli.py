@@ -40,7 +40,13 @@ def main(argv: Sequence[str], deps: Deps) -> int:
     approve = commands.add_parser("approve", help="approve one artifact hash and continue")
     approve.add_argument("artifact")
     approve.add_argument("hash")
-    args = parser.parse_args(argv)
+    reject = commands.add_parser("reject", help="reject the awaited artifact and revise it")
+    reject.add_argument("artifact")
+    reject.add_argument("--reason", required=True)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exit:
+        return EXIT_OK if exit.code == 0 else EXIT_REFUSED
 
     runs = RunStore(deps.state_dir)
     workflow = Workflow(deps.repo_root, runs, deps.agents, deps.executor)
@@ -50,6 +56,8 @@ def main(argv: Sequence[str], deps: Deps) -> int:
                 _start(args.feature, deps, runs, workflow)
             case "approve":
                 _approve(args.artifact, args.hash, deps, runs, workflow)
+            case "reject":
+                _reject(args.artifact, args.reason, deps, runs, workflow)
             case _:
                 _status(runs, workflow)
     except Refused as refusal:
@@ -74,12 +82,26 @@ def _start(feature: str, deps: Deps, runs: RunStore, workflow: Workflow) -> None
 
 
 def _approve(artifact: str, hash: str, deps: Deps, runs: RunStore, workflow: Workflow) -> None:
-    run = _require_active(runs)
+    run = _require_awaiting(runs, workflow, artifact)
     try:
         ArtifactStore(deps.repo_root).approve(artifact, hash)
     except ApprovalRefused as refusal:
         raise Refused(str(refusal)) from refusal
     _report(workflow.advance(run), deps)
+
+
+def _reject(artifact: str, reason: str, deps: Deps, runs: RunStore, workflow: Workflow) -> None:
+    run = _require_awaiting(runs, workflow, artifact)
+    workflow.reject(run, reason)
+    _report(workflow.advance(run), deps)
+
+
+def _require_awaiting(runs: RunStore, workflow: Workflow, artifact: str) -> Run:
+    run = _require_active(runs)
+    awaiting = workflow.awaiting(run)
+    if awaiting != artifact:
+        raise Refused(f"feature run {run.run_id} is waiting for {awaiting}, not {artifact}")
+    return run
 
 
 def _require_active(runs: RunStore) -> Run:

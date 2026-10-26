@@ -11,10 +11,12 @@ from climon2_factory.ports import (
     ContractSubmitted,
     Executor,
     Finding,
+    ImplementationSubmitted,
     NegativeControl,
     Outcome,
     ReviewSubmitted,
     Role,
+    RunBudgetExhausted,
     Severity,
     Submission,
     TestReport,
@@ -23,6 +25,9 @@ from climon2_factory.ports import (
 from climon2_factory.runs import Run, RunStore
 
 MAX_REVIEW_ROUNDS = 2
+MAX_ATTEMPTS = 3
+MAX_RUNS_PER_ATTEMPT = 10
+IMPLEMENTER_WRITABLE = "climon2/"
 
 DRAFT_CONTRACT = "draft-contract"
 REVIEW_CONTRACT = "review-contract"
@@ -31,6 +36,9 @@ WRITE_TESTS = "write-tests"
 RED_RUN = "red-run"
 REVIEW_TESTS = "review-tests"
 AWAIT_TESTS_APPROVAL = "await-tests-approval"
+IMPLEMENT = "implement"
+AWAIT_IMPLEMENTATION_DECISION = "await-implementation-decision"
+WINDOWS_GATE = "windows-gate"
 
 
 class StepFailed(Exception):
@@ -65,7 +73,7 @@ _CONTRACT = _Phase(
     WRITE_TESTS,
 )
 _TESTS = _Phase(
-    "tests", Role.TEST_AUTHOR, WRITE_TESTS, REVIEW_TESTS, AWAIT_TESTS_APPROVAL, "implement"
+    "tests", Role.TEST_AUTHOR, WRITE_TESTS, REVIEW_TESTS, AWAIT_TESTS_APPROVAL, IMPLEMENT
 )
 _PHASES = (_CONTRACT, _TESTS)
 
@@ -83,6 +91,11 @@ class Workflow:
             if run.stage == RED_RUN:
                 self._red_run(run)
                 continue
+            if run.stage == IMPLEMENT:
+                self._implement(run)
+                continue
+            if run.stage == AWAIT_IMPLEMENTATION_DECISION:
+                return self.pause(run)
             phase = self._phase(run.stage)
             if run.stage == phase.author_stage:
                 self._author(run, phase)
@@ -94,7 +107,29 @@ class Workflow:
             else:
                 return self.pause(run)
 
+    def awaiting(self, run: Run) -> str | None:
+        """The artifact this run is waiting for the user to decide, if any."""
+        for phase in _PHASES:
+            if run.stage == phase.approval_stage:
+                return self._name(run, phase)
+        return None
+
+    def reject(self, run: Run, reason: str) -> None:
+        phase = self._phase(run.stage)
+        name = self._name(run, phase)
+        hash = self._store.status(name).hash
+        assert hash is not None
+        self._store.reject(name, hash, reason)
+        run.review_round = 0
+        self._move(run, phase.author_stage)
+
     def pause(self, run: Run) -> Pause:
+        if run.stage == AWAIT_IMPLEMENTATION_DECISION:
+            return Pause(
+                reason=f"implementation failed after {run.attempts} attempts",
+                next_command="factory resume (grants new attempts) or factory abort",
+                details=tuple(f"{s}: {m}" for s, m in run.attempt_findings),
+            )
         phase = self._phase(run.stage)
         name = self._name(run, phase)
         hash = self._store.status(name).hash
@@ -106,7 +141,7 @@ class Workflow:
         )
 
     def _author(self, run: Run, phase: _Phase) -> None:
-        findings = self._current_findings(run, phase)
+        findings = self._current_findings(run, phase) + self._rejections(run, phase)
         task = f"revise-{phase.kind}" if findings else phase.author_stage
         submission = self._agent(phase.author, run, task, findings)
         if phase is _CONTRACT:
@@ -170,6 +205,79 @@ class Workflow:
         else:
             self._move(run, REVIEW_TESTS)
 
+    def _implement(self, run: Run) -> None:
+        gate_features = self._delivered_features()
+        runs_used = 0
+
+        def run_tests() -> TestReport:
+            nonlocal runs_used
+            if runs_used >= MAX_RUNS_PER_ATTEMPT:
+                raise RunBudgetExhausted(f"{MAX_RUNS_PER_ATTEMPT} runs used in this attempt")
+            runs_used += 1
+            return self._executor.run_acceptance(self._repo, gate_features, None)
+
+        previous = tuple(Finding(Severity(s), m) for s, m in run.attempt_findings)
+        before = self._protected_snapshot()
+        submission = self._agents.run(
+            AgentRequest(
+                role=Role.IMPLEMENTER,
+                feature=run.feature,
+                task="implement",
+                workspace=self._repo,
+                findings=previous,
+                run_tests=run_tests,
+            )
+        )
+        _expect(submission, ImplementationSubmitted)
+        findings = self._revert_protected_changes(before)
+        if not findings:
+            gate = self._executor.run_acceptance(self._repo, gate_features, None)
+            findings = _gate_failures(gate)
+        run.attempts += 1
+        run.attempt_findings = [(f.severity.value, f.summary) for f in findings]
+        if not findings:
+            self._move(run, WINDOWS_GATE)
+        elif run.attempts >= MAX_ATTEMPTS:
+            self._move(run, AWAIT_IMPLEMENTATION_DECISION)
+        else:
+            self._move(run, IMPLEMENT)
+
+    def _delivered_features(self) -> tuple[str, ...]:
+        """Every feature whose acceptance tests are approved: the regression gate."""
+        features = self._repo / "features"
+        return tuple(
+            sorted(
+                d.name
+                for d in features.iterdir()
+                if d.is_dir() and self._store.status(f"{d.name}/tests").state is State.APPROVED
+            )
+        )
+
+    def _protected_snapshot(self) -> dict[str, bytes]:
+        return {
+            rel: path.read_bytes()
+            for path in self._repo.rglob("*")
+            if path.is_file()
+            and not (rel := path.relative_to(self._repo).as_posix()).startswith(
+                (IMPLEMENTER_WRITABLE, ".git/")
+            )
+        }
+
+    def _revert_protected_changes(self, before: dict[str, bytes]) -> tuple[Finding, ...]:
+        after = self._protected_snapshot()
+        changed = sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
+        for rel in changed:
+            path = self._repo / rel
+            if rel in before:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(before[rel])
+            else:
+                path.unlink()
+        return tuple(
+            Finding(Severity.BLOCKING, f"implementer changed protected path {rel}")
+            for rel in changed
+        )
+
     def _negative_controls(self, run: Run) -> list[dict[str, str]]:
         path = self._repo / f"features/{run.feature}/negative-controls.json"
         return json.loads(path.read_text())
@@ -215,6 +323,18 @@ class Workflow:
             return ()
         return tuple(Finding(Severity(f["severity"]), f["summary"]) for f in record["findings"])
 
+    def _rejections(self, run: Run, phase: _Phase) -> tuple[Finding, ...]:
+        """The user's rejection of the artifact as it is now, if that is its latest decision."""
+        name = self._name(run, phase)
+        current = self._store.status(name).hash
+        for version in reversed(self._store.history(name)):
+            if version.hash == current and version.decisions:
+                latest = version.decisions[-1]
+                if latest.decision == State.REJECTED:
+                    return (Finding(Severity.BLOCKING, f"user rejected: {latest.reason}"),)
+                return ()
+        return ()
+
     def _agent(
         self, role: Role, run: Run, task: str, findings: tuple[Finding, ...] = ()
     ) -> Submission:
@@ -243,6 +363,16 @@ def _expect[T](submission: Submission, expected: type[T]) -> T:
     if not isinstance(submission, expected):
         raise StepFailed(f"expected {expected.__name__}, got {type(submission).__name__}")
     return submission
+
+
+def _gate_failures(report: TestReport) -> tuple[Finding, ...]:
+    if not report.results:
+        return (Finding(Severity.BLOCKING, "no acceptance tests ran"),)
+    return tuple(
+        Finding(Severity.BLOCKING, f"{r.test_id} failed: {r.message}")
+        for r in report.results
+        if r.outcome is not Outcome.PASSED
+    )
 
 
 def _red_problems(
