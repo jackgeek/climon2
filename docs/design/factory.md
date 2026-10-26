@@ -170,6 +170,8 @@ Agents never execute code on the host. See [ADR-0002](../adr/0002-agents-never-e
   - CI uses a read-only `GITHUB_TOKEN` and no secrets.
   - Agents cannot change workflows, the harness or the factory.
   - The factory verifies that CI results belong to the expected commit hash.
+  - A candidate is the workspace committed on top of HEAD through a temporary index, so the user's HEAD, index and working tree are untouched. It is force-pushed, so re-pushing a branch on resume replaces the earlier candidate.
+  - Pushing to `factory/**` triggers `.github/workflows/factory-windows.yml`. It collects the expected tests before anything is built, then builds `climon2/` with `cargo build --release --locked` and runs every `features/*/tests`. The collected list, build result, JUnit report and exit codes are uploaded as artifacts. The factory finds the run by commit and workflow path, then applies the same untrusted-report cross-checks as the containers. Missing artifacts fail every test with the run's conclusion.
 - **macOS:**
   - The user approves each commit after the Windows and Linux gates pass. The factory highlights build-time code changes (`build.rs`, proc macros, Cargo files, new dependencies).
   - The run uses a fresh clone, an allow-listed environment with a temporary HOME, a factory-owned `RUSTUP_HOME`/`CARGO_HOME`, and offline locked cargo.
@@ -226,4 +228,4 @@ The factory is built conversationally and test-first, through pull requests, in 
 
 - Factory tests run locally and are deterministic. A separate smoke test exercises real Copilot.
 - Validation command (from `factory/`): `uv run pyright && uv run pytest && uv run ruff check && uv run ruff format --check`
-- Executor tests need real infrastructure and are opt-in: `uv run pytest -m container` needs Rancher Desktop running with the moby engine (`~/.rd/docker.sock`).
+- Executor tests need real infrastructure and are opt-in: `uv run pytest -m container` needs Rancher Desktop running with the moby engine (`~/.rd/docker.sock`). `uv run pytest -m github` needs `gh` logged in with push access to climon2. It pushes throwaway `factory/test-*` branches to climon2 itself, waits for real Windows CI, opens and closes a PR, and deletes the branches afterwards.

@@ -80,3 +80,24 @@ def _junit_name(node_id: str) -> tuple[str, str]:
     path, *scopes, name = node_id.split("::")
     module = path.removesuffix(".py").replace("/", ".")
     return ".".join([module, *scopes]), name
+
+
+def collected_tests(collect_output: str) -> tuple[str, ...]:
+    """Node ids from `pytest --collect-only -q` output."""
+    return tuple(
+        line for line in collect_output.splitlines() if "::" in line and line == line.strip()
+    )
+
+
+def failed_report(
+    tests: Sequence[str], reason: str, label: str, fallback: str = "<run>"
+) -> TestReport:
+    """Every test failed for one reason; a placeholder result if there are no tests."""
+    names = tuple(tests) or (fallback,)
+    return TestReport(label, tuple(TestResult(t, Outcome.FAILED, reason) for t in names))
+
+
+def build_failed_report(expected: Sequence[str], build_log: str, label: str) -> TestReport:
+    build = TestResult("build", Outcome.FAILED, build_log)
+    not_run = tuple(TestResult(t, Outcome.FAILED, "not run: build failed") for t in expected)
+    return TestReport(label, (build, *not_run))
