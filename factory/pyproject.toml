@@ -33,11 +33,12 @@ pythonVersion = "3.12"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = [".*", "build", "dist", "*.egg", "venv", "fixtures"]
-addopts = "-m 'not container and not github and not macos and not copilot'"
+addopts = "-m 'not container and not github and not macos and not copilot and not windows_vm'"
 markers = [
     "container: needs a running dockerd (Rancher Desktop); run with -m container",
     "github: pushes to jackgeek/climon2 and runs real Windows CI; run with -m github",
     "macos: runs acceptance tests natively on this Mac; run with -m macos",
+    "windows_vm: runs acceptance tests in the local VirtualBox Windows VM; run with -m windows_vm",
     "copilot: runs real GitHub Copilot agents (uses premium requests); run with -m copilot",
 ]
 

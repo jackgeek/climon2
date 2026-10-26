@@ -1,0 +1,34 @@
+{
+  "artifact": "session-exec-discovery/contract",
+  "reviewed_hash": "sha256:0acf3fd383e76e973602877a0e5e4b958f9752031b793ad61597fa4c8747ad18",
+  "findings": [
+    {
+      "severity": "blocking",
+      "summary": "B6 requires Ctrl+C typed at the terminal to reach the command with normal terminal semantics on every platform. No scenario checks this on Unix: S3 only sends Ctrl+C on Windows, and S9 and S20 never send it. A client that never puts the user's terminal into raw mode would pass every test. Ctrl+C would then deliver SIGINT to the CLI/client, kill it, and end the session, so `exec` returns 125 `client disconnected` and the command never sees the interrupt. Fix: add a Unix case to S3 or S9. Send ^C (\\x03) to a running fixture or shell inside `exec`. Then check that the command, not climon2, handles it: for example, an interactive shell survives and runs a later marker command, or the fixture exits with 130 and `exec` returns 130 instead of 125."
+    },
+    {
+      "severity": "blocking",
+      "summary": "B5 is ambiguous about Windows command resolution. It says a bare command is resolved using the inherited PATH and that no shell is added. It does not say whether PATHEXT is applied, so it is unclear whether `climon2 exec pwsh` must find `pwsh.exe`. It also does not say whether the current directory is searched first, as CreateProcess does by default, or how `.cmd`/`.bat` targets are handled; launching those requires cmd.exe. The brief's motivating example, `climon2 exec copilot --resume`, commonly resolves to an npm `copilot.cmd` shim on Windows. Fix: specify Windows resolution exactly: PATH only or current directory first, PATHEXT applied or not, and whether `.cmd`/`.bat` are supported (and how, given the no-shell rule) or rejected with a 125 `cannot launch` diagnostic. Add an S5 or S6 case for each choice: a bare name without extension and a batch target."
+    },
+    {
+      "severity": "advisory",
+      "summary": "B19 requires JSON to escape 'C0/C1 control characters', but DEL (U+007F) is in neither range. B18 escapes DEL, and S19 includes DEL in its inputs, so a JSON writer that emits DEL literally would satisfy B19 as worded. The brief says 'JSON-escapes control characters'. State the same range as B18 (U+0000\u2013U+001F and U+007F\u2013U+009F) for JSON too."
+    },
+    {
+      "severity": "advisory",
+      "summary": "B6 and S9 require 'terminal modes restored' but don't say how this is observed, especially on Windows, where ConPTY console modes are not visible through the harness `Terminal`. Name an observable check, for example running `exec` from a controlled shell, then confirming echo and line editing work (or `stty -a` on Unix). Otherwise test authors may make the check vacuous."
+    },
+    {
+      "severity": "advisory",
+      "summary": "B3 covers 'invalid invocation' in general, but the only scenario for it is `exec` without a command (S5). Unknown subcommands, a bare `climon2`, and `list` with unexpected arguments or flags have no scenario. Consider adding one or two of these to S2 or S5 to check 125, `usage:` and empty stdout."
+    },
+    {
+      "severity": "advisory",
+      "summary": "B16 hides a record whose `session_id` differs from its filename GUID, but doesn't say whether this counts as a malformed record (stderr `ignoring session metadata` warning) or as a silently hidden stale record. S17 doesn't cover it. Pick one and add it to S17."
+    },
+    {
+      "severity": "advisory",
+      "summary": "B13 and S13 on macOS: `sun_path` is limited to 104 bytes, and per-test temporary directories (/var/folders/..., plus the harness's space and Unicode path segments) can exceed that. A test that sets a private XDG_RUNTIME_DIR beneath the pytest tmp directory could fail a correct implementation with a `socket path` error. Tell test authors to use a short private runtime directory for positive cases, and keep the 'too-long path' negative case separate."
+    }
+  ]
+}
