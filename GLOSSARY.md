@@ -61,3 +61,13 @@ _Avoid_: Data dir, state dir, config dir
 **Climon2 error code**:
 The single exit code climon2 uses for its own failures, distinct from the command's exit codes.
 _Avoid_: Internal error code, failure code
+
+## Testing
+
+**Generic terminal fixture**:
+A climon2-owned test program that checks the session contract (args, cwd, environment, exit status, resize) without depending on any shell.
+_Avoid_: Test shell, dummy command
+
+**TUI fixture**:
+A climon2-owned full-screen test program that exercises alternate screen, cursor queries, mouse, bracketed paste, and resize redraws.
+_Avoid_: Fake app, mock TUI
