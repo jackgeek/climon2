@@ -74,6 +74,10 @@ _Avoid_: Install directory, exe dir, `CLIMON2_EXE`
 The directory where climon2 keeps its data; `~/.climon2` unless `CLIMON2_HOME` overrides it.
 _Avoid_: Data dir, state dir, config dir
 
+**Installer**:
+The program shipped in a release archive that places that release's version into a climon2 executable home and makes it the current version.
+_Avoid_: Setup, install script, `climon2 install`
+
 **Climon2 error code**:
 The single exit code climon2 uses for its own failures, chosen by convention to be unlikely to be confused with the command's exit codes.
 _Avoid_: Internal error code, failure code
@@ -87,3 +91,11 @@ _Avoid_: Test shell, dummy command
 **TUI fixture**:
 A climon2-owned full-screen test program that exercises alternate screen, cursor queries, mouse, bracketed paste, and resize redraws.
 _Avoid_: Fake app, mock TUI
+
+**Smoke test**:
+The single end-to-end check that a freshly installed climon2 can start a bash session from bash, be listed, exit with the command's status, and leave nothing behind.
+_Avoid_: Sanity test, canary
+
+**Release gate**:
+A check that must pass before a version can be released.
+_Avoid_: Quality gate, CI check
