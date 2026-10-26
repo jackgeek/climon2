@@ -34,4 +34,4 @@ Rules:
 - `Depends on` lists earlier feature ids, or "None".
 - `Open questions` lists the decisions you made that the brief didn't settle, each with your recommendation. Write "None" if there are none.
 
-Write the file with `write_file`, re-read it, then call `submit_contract`.
+Write the file with `factory_write_file`, re-read it, then call `factory_submit_contract`.

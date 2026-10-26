@@ -32,7 +32,7 @@ class Recorder:
 
 
 def test_contract_author_gets_its_model_prompt_skills_and_tools(tmp_path: Path) -> None:
-    converse = Recorder("submit_contract")
+    converse = Recorder("factory_submit_contract")
     agents = CopilotAgents(no_locks, converse=converse, time_limit_s=42)
 
     submission = agents.run(AgentRequest(Role.CONTRACT_AUTHOR, "f1", "draft-contract", tmp_path))
@@ -47,12 +47,13 @@ def test_contract_author_gets_its_model_prompt_skills_and_tools(tmp_path: Path) 
         "self-grilling",
     }
     assert set(session.tools) == {
-        "read_file",
-        "list_files",
-        "search",
-        "write_file",
-        "delete_file",
-        "submit_contract",
+        "factory_read_file",
+        "factory_list_files",
+        "factory_search",
+        "factory_write_file",
+        "factory_replace_text",
+        "factory_delete_file",
+        "factory_submit_contract",
     }
     assert session.working_directory == tmp_path
     assert session.time_limit_s == 42
@@ -60,7 +61,7 @@ def test_contract_author_gets_its_model_prompt_skills_and_tools(tmp_path: Path) 
 
 
 def test_findings_are_in_the_task_message(tmp_path: Path) -> None:
-    converse = Recorder("submit_contract")
+    converse = Recorder("factory_submit_contract")
     finding = Finding(Severity.BLOCKING, "B3 is not observable")
 
     CopilotAgents(no_locks, converse=converse).run(
@@ -72,7 +73,7 @@ def test_findings_are_in_the_task_message(tmp_path: Path) -> None:
 
 def test_reviewer_findings_are_returned(tmp_path: Path) -> None:
     converse = Recorder(
-        "submit_review", findings=[{"severity": "advisory", "summary": "rename S2"}]
+        "factory_submit_review", findings=[{"severity": "advisory", "summary": "rename S2"}]
     )
 
     submission = CopilotAgents(no_locks, converse=converse).run(

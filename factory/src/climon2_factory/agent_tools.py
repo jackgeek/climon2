@@ -24,8 +24,8 @@ LockCrates = Callable[[Path, str], str]
 """Regenerate `<project>/Cargo.lock` in the workspace, outside the agent's reach."""
 
 MAX_READ_BYTES = 400_000
-MAX_LISTED = 3000
-MAX_HITS = 300
+MAX_OUTPUT_BYTES = 16_000
+"""Below the 20 KiB at which Copilot moves a tool result to a temp file the agent can't read."""
 _UNLISTED = {".git", "target", ".venv", "__pycache__", "node_modules", ".pytest_cache"}
 
 
@@ -52,23 +52,29 @@ class Toolbox:
         }
         self._writable = writable[request.role]
         functions: dict[str, Callable[..., str]] = {
-            "read_file": self.read_file,
-            "list_files": self.list_files,
-            "search": self.search,
+            "factory_read_file": self.read_file,
+            "factory_list_files": self.list_files,
+            "factory_search": self.search,
         }
         if self._writable:
-            functions |= {"write_file": self.write_file, "delete_file": self.delete_file}
+            functions |= {
+                "factory_write_file": self.write_file,
+                "factory_replace_text": self.replace_text,
+                "factory_delete_file": self.delete_file,
+            }
         if request.role in (Role.TEST_AUTHOR, Role.IMPLEMENTER):
-            functions["update_lockfile"] = self.update_lockfile
+            functions["factory_update_lockfile"] = self.update_lockfile
         if request.role is Role.IMPLEMENTER and request.run_tests is not None:
-            functions["run_acceptance_tests"] = self.run_acceptance_tests
+            functions["factory_run_acceptance_tests"] = self.run_acceptance_tests
         submit: dict[Role, Callable[..., str]] = {
             Role.CONTRACT_AUTHOR: self.submit_contract,
             Role.TEST_AUTHOR: self.submit_tests,
             Role.IMPLEMENTER: self.submit_implementation,
             Role.REVIEWER: self.submit_review,
         }
-        functions[submit[request.role].__name__] = submit[request.role]
+        functions[f"factory_{submit[request.role].__name__}"] = submit[request.role]
+        # Prefixed: an allowed name also enables any same-named host tool (Copilot or IDE),
+        # which shadows ours and escapes these path checks.
         self.functions = functions
 
     @property
@@ -80,15 +86,34 @@ class Toolbox:
             raise ToolRefused(f"{name} is not available to the {self._request.role}")
         return self.functions[name](**arguments)
 
-    def read_file(self, path: str) -> str:
-        """Read a UTF-8 text file in the repository. `path` is relative to the repository root."""
+    def read_file(self, path: str, start_line: int = 1, end_line: int = 0) -> str:
+        """Read a UTF-8 text file in the repository. `path` is relative to the repository root.
+        Long files are returned a page at a time, ending with the `start_line` to continue from.
+        `end_line` (inclusive, 0 for the end) limits the page."""
         target = self._path(path)
         if not target.is_file():
             raise ToolRefused(f"{path} is not a file")
         data = target.read_bytes()
         if len(data) > MAX_READ_BYTES:
             raise ToolRefused(f"{path} is larger than {MAX_READ_BYTES} bytes")
-        return data.decode(errors="replace")
+        lines = data.decode(errors="replace").splitlines(keepends=True)
+        first = max(start_line, 1)
+        last = min(end_line or len(lines), len(lines))
+        page: list[str] = []
+        size = 0
+        for line in lines[first - 1 : last]:
+            if size + len(line.encode()) > MAX_OUTPUT_BYTES and page:
+                break
+            page.append(line[:MAX_OUTPUT_BYTES])
+            size += len(page[-1].encode())
+        shown = first + len(page) - 1
+        if first == 1 and shown == len(lines):
+            return "".join(page)
+        trailer = f"[lines {first}-{shown} of {len(lines)}"
+        if shown < last:
+            trailer += f"; continue with start_line={shown + 1}"
+        text = "".join(page)
+        return text + ("" if text.endswith("\n") or not text else "\n") + trailer + "]"
 
     def list_files(self, path: str = ".") -> str:
         """List the files under a repository directory, one relative path per line."""
@@ -96,8 +121,7 @@ class Toolbox:
         if not root.is_dir():
             raise ToolRefused(f"{path} is not a directory")
         files = sorted(self._rel(p) for p in self._walk(root))
-        listed = "\n".join(files[:MAX_LISTED])
-        return listed + (f"\n… {len(files) - MAX_LISTED} more" if len(files) > MAX_LISTED else "")
+        return _bounded(files, "more files; list a subdirectory")
 
     def search(self, pattern: str, path: str = ".") -> str:
         """Search text files under a repository path for a Python regular expression.
@@ -115,9 +139,7 @@ class Toolbox:
             for number, line in enumerate(text.splitlines(), start=1):
                 if regex.search(line):
                     hits.append(f"{self._rel(file)}:{number}: {line[:300]}")
-                    if len(hits) >= MAX_HITS:
-                        return "\n".join(hits) + "\n… more matches not shown"
-        return "\n".join(hits) or "no matches"
+        return _bounded(hits, "more matches; narrow the pattern or path") if hits else "no matches"
 
     def write_file(self, path: str, content: str) -> str:
         """Create or replace a file with `content`. Parent directories are created."""
@@ -125,6 +147,19 @@ class Toolbox:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
         return f"wrote {self._rel(target)} ({len(content)} characters)"
+
+    def replace_text(self, path: str, old: str, new: str) -> str:
+        """Replace the one exact occurrence of `old` in a file with `new`, leaving the rest as is.
+        Refused if `old` occurs zero or several times; include more context to make it unique."""
+        target = self._writable_path(path)
+        if not target.is_file():
+            raise ToolRefused(f"{path} is not a file")
+        text = target.read_text()
+        count = text.count(old) if old else 0
+        if count != 1:
+            raise ToolRefused(f"`old` occurs {count} times in {path}; it must occur exactly once")
+        target.write_text(text.replace(old, new))
+        return f"replaced 1 passage in {self._rel(target)}"
 
     def delete_file(self, path: str) -> str:
         """Delete a file."""
@@ -252,3 +287,14 @@ class Toolbox:
                 continue
             found.append(path)
         return found
+
+
+def _bounded(lines: list[str], what: str) -> str:
+    shown: list[str] = []
+    size = 0
+    for line in lines:
+        size += len(line.encode()) + 1
+        if size > MAX_OUTPUT_BYTES:
+            return "\n".join(shown) + f"\n… {len(lines) - len(shown)} {what}"
+        shown.append(line)
+    return "\n".join(shown)
