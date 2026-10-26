@@ -136,6 +136,8 @@ Rules:
 
 Each command advances the run to its next pause and exits. Pauses print the next step and raise a macOS notification.
 
+Run it from anywhere in the repository with `uv run --project factory factory <command>` (or `uv run factory …` inside `factory/`). It works on the repository containing the current directory and keeps run state in `~/.climon2-factory/`. Docker and the macOS toolchain are only set up when a step first needs them.
+
 ### Artifacts and approvals
 
 See [ADR-0001](../adr/0001-content-addressed-artifacts.md).

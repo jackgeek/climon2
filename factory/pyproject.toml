@@ -11,6 +11,9 @@ dependencies = [
     "agent-framework-github-copilot>=2.1.0",
 ]
 
+[project.scripts]
+factory = "climon2_factory.wiring:entry"
+
 [build-system]
 requires = ["uv_build>=0.10.12,<0.11.0"]
 build-backend = "uv_build"
