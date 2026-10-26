@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from climon2_factory.github_client import GitHubClient
+from climon2_factory.github_client import GitHubClient, windows_report
 from climon2_factory.ports import Outcome, TestResult
 
 REPO = "jackgeek/climon2"
@@ -68,6 +68,29 @@ def candidates(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Candidates]
         subprocess.run(
             ["git", "push", "-q", "origin", "--delete", branch], cwd=workspace, check=False
         )
+
+
+def test_windows_results_cover_every_collected_test_however_long_the_list(
+    tmp_path: Path,
+) -> None:
+    ids = [f"features/f1/tests/test_hello.py::test_{'x' * 200}_{n}" for n in range(300)]
+    (tmp_path / "collected").mkdir()
+    (tmp_path / "collected/collected.txt").write_text("\n".join(ids) + "\n\n300 tests\n")
+    (tmp_path / "collected/exit-code.txt").write_text("0\n")
+    (tmp_path / "results").mkdir()
+    (tmp_path / "results/build-exit-code.txt").write_text("0\n")
+    (tmp_path / "results/exit-code.txt").write_text("0\n")
+    cases = "".join(
+        f'<testcase classname="features.f1.tests.test_hello" name="{i.split("::")[1]}" />'
+        for i in ids
+    )
+    (tmp_path / "results/report.xml").write_text(
+        f"<testsuites><testsuite>{cases}</testsuite></testsuites>"
+    )
+
+    report = windows_report(tmp_path, "success")
+
+    assert report.results == tuple(TestResult(i, P) for i in ids)
 
 
 @pytest.mark.github

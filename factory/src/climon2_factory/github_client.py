@@ -59,7 +59,7 @@ class GitHubClient:
         with tempfile.TemporaryDirectory() as tmp:
             download = ["run", "download", str(run["id"]), "--repo", self._repo, "--dir", tmp]
             self._gh(*download, check=False)
-            report = _windows_report(Path(tmp), str(run["conclusion"]))
+            report = windows_report(Path(tmp), str(run["conclusion"]))
         return CiResult(str(run["head_sha"]), report)
 
     def changed_files(self, workspace: Path, commit: str) -> tuple[str, ...]:
@@ -127,13 +127,13 @@ class GitHubClient:
         return result.stdout.strip()
 
 
-def _windows_report(artifacts: Path, conclusion: str) -> TestReport:
+def windows_report(artifacts: Path, conclusion: str) -> TestReport:
     collected_dir = artifacts / "collected"
     results = artifacts / "results"
     if not (collected_dir / "exit-code.txt").is_file():
         return failed_report((), f"Windows CI produced no results ({conclusion})", LABEL)
     collect_exit = _int(collected_dir / "exit-code.txt")
-    collect_output = _text(collected_dir / "collected.txt")
+    collect_output = _text(collected_dir / "collected.txt", MAX_REPORT_BYTES)
     if collect_exit not in (0, 5):
         reason = f"collection failed (exit {collect_exit}):\n{collect_output}"
         return failed_report((), reason, LABEL, fallback="<collect>")
@@ -151,8 +151,9 @@ def _windows_report(artifacts: Path, conclusion: str) -> TestReport:
     return parse_report(xml, expected, test_exit, LABEL)
 
 
-def _text(path: Path) -> str:
-    return path.read_text(errors="replace")[-20_000:] if path.is_file() else ""
+def _text(path: Path, limit: int = 20_000) -> str:
+    """The end of a log, or all of a listing up to `limit` characters."""
+    return path.read_text(errors="replace")[-limit:] if path.is_file() else ""
 
 
 def _int(path: Path) -> int | None:

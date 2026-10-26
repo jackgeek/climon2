@@ -17,6 +17,7 @@ from climon2_factory.ports import (
     RunBudgetExhausted,
     Severity,
     Submission,
+    TestReport,
     TestsSubmitted,
 )
 
@@ -66,6 +67,8 @@ class Toolbox:
             functions["factory_update_lockfile"] = self.update_lockfile
         if request.role is Role.IMPLEMENTER and request.run_tests is not None:
             functions["factory_run_acceptance_tests"] = self.run_acceptance_tests
+        if request.role is Role.IMPLEMENTER and request.run_windows_tests is not None:
+            functions["factory_run_windows_tests"] = self.run_windows_tests
         submit: dict[Role, Callable[..., str]] = {
             Role.CONTRACT_AUTHOR: self.submit_contract,
             Role.TEST_AUTHOR: self.submit_tests,
@@ -181,16 +184,13 @@ class Toolbox:
         """Build climon2 and run the acceptance tests in a fresh Linux container. Each call uses
         one of this attempt's limited runs."""
         assert self._request.run_tests is not None
-        try:
-            report = self._request.run_tests()
-        except RunBudgetExhausted as exhausted:
-            return f"no runs left: {exhausted}"
-        passed = sum(r.outcome is Outcome.PASSED for r in report.results)
-        failed = [r for r in report.results if r.outcome is Outcome.FAILED]
-        lines = [f"{passed} passed, {len(failed)} failed ({report.label})"]
-        for result in failed:
-            lines += [f"FAILED {result.test_id}", result.message[-6000:], ""]
-        return "\n".join(lines)
+        return _run_summary(self._request.run_tests)
+
+    def run_windows_tests(self) -> str:
+        """Push the workspace as a candidate and run the acceptance tests on Windows CI. Slow
+        (10-20 minutes); each call uses one of this attempt's few Windows runs."""
+        assert self._request.run_windows_tests is not None
+        return _run_summary(self._request.run_windows_tests)
 
     def submit_contract(self) -> str:
         """Submit features/<feature>/contract.md as finished. This ends your step."""
@@ -289,12 +289,31 @@ class Toolbox:
         return found
 
 
-def _bounded(lines: list[str], what: str) -> str:
+def _bounded(lines: list[str], what: str, limit: int = MAX_OUTPUT_BYTES) -> str:
     shown: list[str] = []
     size = 0
     for line in lines:
         size += len(line.encode()) + 1
-        if size > MAX_OUTPUT_BYTES:
+        if size > limit - 100:
             return "\n".join(shown) + f"\n… {len(lines) - len(shown)} {what}"
         shown.append(line)
     return "\n".join(shown)
+
+
+def _run_summary(run: Callable[[], TestReport]) -> str:
+    try:
+        report = run()
+    except RunBudgetExhausted as exhausted:
+        return f"no runs left: {exhausted}"
+    passed = sum(r.outcome is Outcome.PASSED for r in report.results)
+    failed = [r for r in report.results if r.outcome is Outcome.FAILED]
+    summary = f"{passed} passed, {len(failed)} failed ({report.label})\n"
+    for shown, result in enumerate(failed):
+        block = f"FAILED {result.test_id}\n{result.message[-3000:]}\n\n"
+        if len((summary + block).encode()) > MAX_OUTPUT_BYTES // 2:
+            rest = [f"FAILED {r.test_id}" for r in failed[shown:]]
+            return summary + _bounded(
+                rest, "more failures", MAX_OUTPUT_BYTES - len(summary.encode())
+            )
+        summary += block
+    return summary

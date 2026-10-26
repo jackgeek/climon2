@@ -57,7 +57,7 @@ class _LazyContainers:
 
 class _LazyAgents:
     def __init__(self, containers: _LazyContainers) -> None:
-        self._agents = CopilotAgents(lock_crates=containers.lock_crates)
+        self._agents = CopilotAgents(lock_crates=containers.lock_crates, time_limit_s=3 * 3600)
 
     def run(self, request: AgentRequest) -> Submission:
         return self._agents.run(request)
