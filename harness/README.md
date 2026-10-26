@@ -18,7 +18,7 @@ Tests run from the repository root with `CLIMON2_BIN_DIR` pointing at the releas
 ## `Terminal`
 
 - `send(text)` types text. `send_line(text)` types text and Enter (`\r`).
-- `expect(regex, timeout=DEFAULT_TIMEOUT) -> re.Match` waits for the pattern in the plain-text output after the previous match, and raises `TerminalTimeout` (an `AssertionError`) with the unmatched output if it doesn't appear. Remember that the terminal echoes what you type: expect output that differs from the typed text.
+- `expect(regex, timeout=DEFAULT_TIMEOUT) -> re.Match` waits for the pattern in the plain-text output after the previous match, and raises `TerminalTimeout` (an `AssertionError`) with the unmatched output if it doesn't appear. Remember that the terminal echoes what you type: expect output that differs from the typed text. String patterns are multiline, so `^` and `$` match at line boundaries, including where the previous match ended. After sending Ctrl+C (`\x03`), expect the program's response (such as a new prompt) before typing more: the terminal discards typed-ahead input on an interrupt.
 - `text` is all output as plain text (see `clean`); `output` is raw, including escape sequences.
 - `resize(cols, rows)`, `alive`, `pid`.
 - `wait(timeout=DEFAULT_TIMEOUT) -> int` waits for the program to exit and returns its exit code (a negative signal number on Unix if it was killed by a signal).

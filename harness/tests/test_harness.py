@@ -88,6 +88,19 @@ def test_expect_fails_with_the_output_when_the_pattern_never_appears(
         term.expect("never printed", timeout=1)
 
 
+def test_a_line_anchor_matches_where_the_previous_match_ended(
+    terminal: Spawn, fixture_program: list[str]
+) -> None:
+    term = terminal(fixture_program)
+    ready(term)
+    term.send_line("echo SECOND")
+    term.expect(r"echo SECOND\n")
+
+    line = term.expect(r"(?:^|\n)(ECHO .*)\n", timeout=5)
+
+    assert line.group(1) == 'ECHO "SECOND"'
+
+
 def test_closing_kills_a_running_program(terminal: Spawn, fixture_program: list[str]) -> None:
     term = terminal(fixture_program)
     pid = ready(term)["pid"]
