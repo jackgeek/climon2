@@ -35,6 +35,7 @@ class AgentRequest:
     findings: tuple[Finding, ...] = ()
     run_tests: "Callable[[], TestReport] | None" = None
     run_windows_tests: "Callable[[], TestReport] | None" = None
+    run_macos_tests: "Callable[[], TestReport] | None" = None
 
 
 class RunBudgetExhausted(Exception):
@@ -155,4 +156,9 @@ class MacOS(Protocol):
     def run_acceptance(self, commit: str, features: tuple[str, ...]) -> TestReport:
         """Run the features' acceptance tests natively on this Mac against a fresh clone at
         `commit`. Only called after the user approves the candidate."""
+        ...
+
+    def run_workspace(self, workspace: Path, features: tuple[str, ...]) -> TestReport:
+        """Build the workspace's climon2 and run the features' acceptance tests natively on
+        this Mac, sandboxed: no network and no writes outside the run's own directory."""
         ...

@@ -69,6 +69,8 @@ class Toolbox:
             functions["factory_run_acceptance_tests"] = self.run_acceptance_tests
         if request.role is Role.IMPLEMENTER and request.run_windows_tests is not None:
             functions["factory_run_windows_tests"] = self.run_windows_tests
+        if request.role is Role.IMPLEMENTER and request.run_macos_tests is not None:
+            functions["factory_run_macos_tests"] = self.run_macos_tests
         submit: dict[Role, Callable[..., str]] = {
             Role.CONTRACT_AUTHOR: self.submit_contract,
             Role.TEST_AUTHOR: self.submit_tests,
@@ -191,6 +193,13 @@ class Toolbox:
         (10-20 minutes); each call uses one of this attempt's few Windows runs."""
         assert self._request.run_windows_tests is not None
         return _run_summary(self._request.run_windows_tests)
+
+    def run_macos_tests(self) -> str:
+        """Build the workspace natively on macOS and run the acceptance tests there, sandboxed
+        (no network). Use it for macOS-specific behaviour the Linux container cannot show; each
+        call uses one of this attempt's limited macOS runs."""
+        assert self._request.run_macos_tests is not None
+        return _run_summary(self._request.run_macos_tests)
 
     def submit_contract(self) -> str:
         """Submit features/<feature>/contract.md as finished. This ends your step."""

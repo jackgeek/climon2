@@ -102,9 +102,21 @@ class FakeGitHub:
 
 
 class FakeMacOS:
-    def __init__(self, script: Callable[[str], TestReport] | None = None) -> None:
+    def __init__(
+        self,
+        script: Callable[[str], TestReport] | None = None,
+        workspace: AcceptanceScript | None = None,
+    ) -> None:
         self._script = script
+        self._workspace = workspace
         self.commits: list[str] = []
+        self.workspace_runs: list[tuple[Path, tuple[str, ...]]] = []
+
+    def run_workspace(self, workspace: Path, features: tuple[str, ...]) -> TestReport:
+        self.workspace_runs.append((workspace, features))
+        if self._workspace is None:
+            raise AssertionError("unexpected macOS workspace run")
+        return self._workspace(workspace, features, None)
 
     def run_acceptance(self, commit: str, features: tuple[str, ...]) -> TestReport:
         self.commits.append(commit)

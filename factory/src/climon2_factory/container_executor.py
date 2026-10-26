@@ -93,7 +93,7 @@ class ContainerExecutor:
     def run_acceptance(
         self, workspace: Path, features: tuple[str, ...], subject: str | None
     ) -> TestReport:
-        archive = _workspace_tar(workspace)
+        archive = workspace_tar(workspace)
         test_dirs = tuple(f"features/{f}/tests" for f in features)
         collected = self._collect(archive, test_dirs)
         if isinstance(collected, TestReport):
@@ -115,7 +115,7 @@ class ContainerExecutor:
 
     def lock_crates(self, workspace: Path, project: str) -> str:
         """Regenerate `<project>/Cargo.lock` in the workspace. Networked, but builds nothing."""
-        archive = _workspace_tar(workspace)
+        archive = workspace_tar(workspace)
         with self._container(
             archive, ["/opt/factory/lock-crates.sh", project], network="bridge"
         ) as box:
@@ -125,6 +125,19 @@ class ContainerExecutor:
             lock = box.read("/out/Cargo.lock")
         (workspace / project / "Cargo.lock").write_bytes(lock)
         return f"{project}/Cargo.lock updated"
+
+    def vendored_crates(self, workspace: Path, product: str) -> bytes | None:
+        """A tar of `crates/`, the product's locked dependency sources, or None when there are
+        none (no Cargo.lock, or no dependencies). Lets an Executor without network build
+        offline from the same cache."""
+        volume = self._vendor(workspace_tar(workspace), workspace, product)
+        if volume is None:
+            return None
+        probe = ["test", "-d", "/vendor/crates"]
+        with self._container(None, probe, mounts=(f"{volume}:/vendor:ro",)) as box:
+            if box.wait(60) != 0:
+                return None
+            return self._docker("cp", f"{box.name}:/vendor/crates", "-").stdout
 
     def _collect(self, archive: bytes, test_dirs: Sequence[str]) -> tuple[str, ...] | TestReport:
         """The expected tests, collected where no product code is ever built or run."""
@@ -188,30 +201,30 @@ class ContainerExecutor:
 class _Box:
     def __init__(self, docker: Docker, name: str) -> None:
         self._docker = docker
-        self._name = name
+        self.name = name
 
     def wait(self, timeout_s: float) -> int | None:
         """The container's exit code, or None if it was killed for running too long."""
         try:
-            result = self._docker("wait", self._name, timeout=timeout_s)
+            result = self._docker("wait", self.name, timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            self._docker("kill", self._name, check=False)
+            self._docker("kill", self.name, check=False)
             return None
         return int(result.stdout.decode().strip())
 
     def logs(self) -> str:
-        result = self._docker("logs", self._name, check=False)
+        result = self._docker("logs", self.name, check=False)
         return (result.stdout + result.stderr).decode(errors="replace")[-_LOG_TAIL:]
 
     def stdout(self) -> str:
         """The container's whole stdout, unlike the tail-only, stderr-mixed `logs`."""
-        result = self._docker("logs", self._name, check=False)
+        result = self._docker("logs", self.name, check=False)
         return result.stdout.decode(errors="replace")
 
     def read(self, path: str) -> bytes:
         """One file from the container, or b"" if absent. Oversized files are truncated so the
         report parser rejects them."""
-        result = self._docker("cp", f"{self._name}:{path}", "-", check=False)
+        result = self._docker("cp", f"{self.name}:{path}", "-", check=False)
         if result.returncode != 0:
             return b""
         with tarfile.open(fileobj=io.BytesIO(result.stdout)) as archive:
@@ -223,7 +236,7 @@ class _Box:
             return data.read(MAX_REPORT_BYTES + 1)
 
 
-def _workspace_tar(workspace: Path) -> bytes:
+def workspace_tar(workspace: Path) -> bytes:
     """The workspace, minus VCS data, build output and the factory, as root-owned files."""
 
     def keep(info: tarfile.TarInfo) -> tarfile.TarInfo | None:

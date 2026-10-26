@@ -1,0 +1,7 @@
+#!/bin/bash
+# Testing wrapper: runs the release climon2-cli with all arguments, e.g. `./c2 exec bash`.
+# Rebuilds first if the sources changed (cargo is a no-op when the binary is up to date).
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cargo build --manifest-path "$ROOT/climon2/Cargo.toml" --release --locked --quiet >&2
+exec "$ROOT/climon2/target/release/climon2-cli" "$@"

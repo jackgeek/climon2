@@ -11,7 +11,8 @@ from climon2_factory.container_executor import ContainerExecutor, Docker, build_
 from climon2_factory.copilot_agents import CopilotAgents
 from climon2_factory.github_client import GitHubClient
 from climon2_factory.native_macos import NativeMacOS, Toolchain
-from climon2_factory.ports import AgentRequest, Submission, TestReport
+from climon2_factory.ports import AgentRequest, Executor, Submission, TestReport
+from climon2_factory.windows_vm import WindowsVM, WindowsVMExecutor
 
 REPOSITORY = "jackgeek/climon2"
 
@@ -35,7 +36,16 @@ def real_deps(repo_root: Path, home: Path) -> Deps:
         macos=_LazyMacOS(repo_root, home),
         notifier=MacNotifier(),
         clock=SystemClock(),
+        windows_vm=_windows_vm(executor),
     )
+
+
+def _windows_vm(containers: "_LazyContainers") -> Executor | None:
+    """The local Windows VM if it has been built (windows-vm/create-vm.sh); else Windows CI."""
+    vm = WindowsVM.default()
+    if not vm.available():
+        return None
+    return WindowsVMExecutor(vm, containers.vendored_crates)
 
 
 class _LazyContainers:
@@ -53,6 +63,9 @@ class _LazyContainers:
 
     def lock_crates(self, workspace: Path, project: str) -> str:
         return self._executor.lock_crates(workspace, project)
+
+    def vendored_crates(self, workspace: Path, project: str) -> bytes | None:
+        return self._executor.vendored_crates(workspace, project)
 
 
 class _LazyAgents:
@@ -76,6 +89,9 @@ class _LazyMacOS:
 
     def run_acceptance(self, commit: str, features: tuple[str, ...]) -> TestReport:
         return self._macos.run_acceptance(commit, features)
+
+    def run_workspace(self, workspace: Path, features: tuple[str, ...]) -> TestReport:
+        return self._macos.run_workspace(workspace, features)
 
 
 class MacNotifier:

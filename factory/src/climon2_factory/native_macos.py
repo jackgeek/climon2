@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import pwd
 import re
 import shutil
 import signal
@@ -9,11 +10,12 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Sequence
+import uuid
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from climon2_factory.container_executor import CONTAINERS_DIR
+from climon2_factory.container_executor import CONTAINERS_DIR, workspace_tar
 from climon2_factory.ports import TestReport
 from climon2_factory.reports import (
     MAX_REPORT_BYTES,
@@ -92,6 +94,12 @@ class Toolchain:
         marker.touch()
         return toolchain
 
+    @property
+    def rust_bin(self) -> Path:
+        """The pinned toolchain's own binaries, bypassing the rustup proxies."""
+        [toolchain] = (self.rustup_home / "toolchains").glob(f"{RUST_VERSION}-*")
+        return toolchain / "bin"
+
     def cargo_env(self, home: Path) -> dict[str, str]:
         return {
             "PATH": f"{self.cargo_home / 'bin'}:/usr/bin:/bin:/usr/sbin:/sbin",
@@ -122,10 +130,38 @@ class NativeMacOS:
     def run_acceptance(self, commit: str, features: tuple[str, ...]) -> TestReport:
         if not _COMMIT.fullmatch(commit):
             raise ValueError(f"not a full commit hash: {commit!r}")
-        run = _Run(self._root / commit, time.monotonic() + self._time_limit_s)
+
+        def checkout(work: Path) -> None:
+            archive = _check(["git", "archive", "--format=tar", commit], cwd=self._source).stdout
+            _check(["tar", "-xf", "-", "-C", str(work)], stdin=archive)
+
+        return self._guarded(self._root / commit, features, checkout, sandboxed=False)
+
+    def run_workspace(self, workspace: Path, features: tuple[str, ...]) -> TestReport:
+        """Test the workspace as it is. It holds agent-written code, so everything that runs
+        that code is sandboxed: no network, no writes outside the run directory and the
+        temporary directories, and no reads of the user's home."""
+
+        def copy(work: Path) -> None:
+            _check(["tar", "-xf", "-", "-C", str(work)], stdin=workspace_tar(workspace))
+
+        directory = self._root / f"workspace-{uuid.uuid4().hex[:12]}"
+        return self._guarded(directory, features, copy, sandboxed=True)
+
+    def _guarded(
+        self,
+        directory: Path,
+        features: tuple[str, ...],
+        populate: Callable[[Path], None],
+        sandboxed: bool,
+    ) -> TestReport:
+        run = _Run(directory, time.monotonic() + self._time_limit_s)
         shutil.rmtree(run.dir, ignore_errors=True)
         try:
-            return self._run(commit, features, run)
+            work = run.dir / "work"
+            work.mkdir(parents=True)
+            populate(work)
+            return self._run(work, features, run, sandboxed)
         except _TimedOut:
             reason = f"acceptance run timed out after {self._time_limit_s:g}s"
             return failed_report(run.expected, reason, LABEL)
@@ -133,38 +169,119 @@ class NativeMacOS:
             _sweep(run.dir)
             shutil.rmtree(run.dir, ignore_errors=True)
 
-    def _run(self, commit: str, features: Sequence[str], run: "_Run") -> TestReport:
-        work, home, target = run.dir / "work", run.dir / "home", run.dir / "target"
-        for d in (work, home, target):
-            d.mkdir(parents=True)
-        archive = _check(["git", "archive", "--format=tar", commit], cwd=self._source).stdout
-        _check(["tar", "-xf", "-", "-C", str(work)], stdin=archive)
+    def _run(self, work: Path, features: Sequence[str], run: "_Run", sandboxed: bool) -> TestReport:
+        home, target = run.dir / "home", run.dir / "target"
+        for d in (home, target):
+            d.mkdir()
         test_dirs = [f"features/{f}/tests" for f in features]
         pytest = [str(self._toolchain.python), "-m", "pytest", "-p", "no:cacheprovider"]
-        cargo = str(self._toolchain.cargo)
         env = {**self._toolchain.cargo_env(home), "CARGO_TARGET_DIR": str(target)}
+        jail: list[str] = []
+        cargo = [str(self._toolchain.cargo)]
+        if sandboxed:
+            jail = ["/usr/bin/sandbox-exec", "-p", _profile(run.dir, self._toolchain)]
+            # The rustup proxies may write to the shared toolchain; the sandbox forbids that.
+            env["PATH"] = f"{self._toolchain.rust_bin}:{env['PATH']}"
+            env["CARGO_HOME"] = str(run.dir / "cargo-home")
+            env["PATH"] = f"{_unprivileged_tools(run.dir / 'bin')}:{env['PATH']}"
+            cargo = [str(self._toolchain.rust_bin / "cargo")]
 
-        exit_code, output = run.step([*pytest, "--collect-only", "-q", *test_dirs], work, env)
+        exit_code, output = run.step(
+            [*jail, *pytest, "--collect-only", "-q", *test_dirs], work, env
+        )
         if exit_code not in (0, 5):
             reason = f"collection failed (exit {exit_code}):\n{_tail(output)}"
             return failed_report((), reason, LABEL, fallback="<collect>")
         run.expected = collected_tests(output.decode(errors="replace"))
 
         product = work / "climon2"
-        exit_code, output = run.step([cargo, "fetch", "--locked"], product, env)
-        if exit_code != 0:
-            log = f"cargo fetch failed:\n{_tail(output)}"
-            return build_failed_report(run.expected, log, LABEL)
-        build = [cargo, "build", "--release", "--locked", "--offline"]
-        exit_code, output = run.step(build, product, env)
+        build = [*cargo, "build", "--release", "--locked", "--offline"]
+        if sandboxed:
+            # Fetching needs the network, so it runs unsandboxed; it resolves the lockfile and
+            # downloads sources but runs none of the workspace's code.
+            vendor = run.dir / "vendor"
+            fetch = [str(self._toolchain.cargo), "vendor", "--locked", "--versioned-dirs"]
+            fetch_env = self._toolchain.cargo_env(home)
+            exit_code, output = run.step([*fetch, str(vendor)], product, fetch_env)
+            if exit_code != 0:
+                return build_failed_report(
+                    run.expected, f"cargo vendor failed:\n{_tail(output)}", LABEL
+                )
+            build += [
+                "--config",
+                'source.crates-io.replace-with="vendored"',
+                "--config",
+                f"source.vendored.directory={_quoted(str(vendor))}",
+            ]
+        else:
+            exit_code, output = run.step([*cargo, "fetch", "--locked"], product, env)
+            if exit_code != 0:
+                log = f"cargo fetch failed:\n{_tail(output)}"
+                return build_failed_report(run.expected, log, LABEL)
+        exit_code, output = run.step([*jail, *build], product, env)
         if exit_code != 0:
             return build_failed_report(run.expected, _tail(output), LABEL)
 
         report = run.dir / "report.xml"
         test_env = {**env, "CLIMON2_BIN_DIR": str(target / "release")}
-        exit_code, _ = run.step([*pytest, f"--junitxml={report}", *test_dirs], work, test_env)
+        exit_code, _ = run.step(
+            [*jail, *pytest, f"--junitxml={report}", *test_dirs], work, test_env
+        )
         xml = report.read_bytes()[: MAX_REPORT_BYTES + 1] if report.is_file() else b""
         return parse_report(xml, run.expected, exit_code, LABEL)
+
+
+def _profile(run_dir: Path, toolchain: Toolchain) -> str:
+    """A sandbox-exec profile: no network but local sockets, writes only to the run directory,
+    the temporary directories and devices, and none of the user's home is readable but the
+    run directory and the toolchain."""
+    home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+    python_base = Path(os.path.realpath(toolchain.python)).parents[1]
+    readable = [run_dir.resolve(), toolchain.home.resolve(), python_base]
+
+    def path(p: Path) -> str:
+        return _quoted(str(p))
+
+    return "\n".join(
+        [
+            "(version 1)",
+            "(allow default)",
+            "(deny network*)",
+            "(allow network* (local unix-socket) (remote unix-socket))",
+            "(deny file-write*)",
+            f"(allow file-write* (subpath {path(run_dir.resolve())})"
+            + ' (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/dev"))',
+            f"(deny file-read* (subpath {path(home)}))",
+            "(allow file-read* " + " ".join(f"(subpath {path(p)})" for p in readable) + ")",
+            "(allow file-read-metadata "
+            + " ".join(f"(literal {path(a)})" for a in _ancestors(readable, home))
+            + ")",
+        ]
+    )
+
+
+# The sandbox cannot exec setuid binaries; ad-hoc signed copies work for this user's processes.
+SETUID_TOOLS = (Path("/bin/ps"),)
+
+
+def _unprivileged_tools(directory: Path) -> Path:
+    directory.mkdir()
+    for tool in SETUID_TOOLS:
+        copy = directory / tool.name
+        shutil.copyfile(tool, copy)
+        copy.chmod(0o755)
+        _check(["/usr/bin/codesign", "--force", "--sign", "-", str(copy)])
+    return directory
+
+
+def _ancestors(paths: Sequence[Path], within: Path) -> list[Path]:
+    """The directories inside `within` that lead to `paths`, so those paths can be resolved."""
+    return sorted({a for p in paths for a in (p, *p.parents) if a.is_relative_to(within)})
+
+
+def _quoted(value: str) -> str:
+    """A double-quoted string, valid in both TOML and sandbox profiles."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 class _TimedOut(Exception):

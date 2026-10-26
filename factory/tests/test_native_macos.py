@@ -134,3 +134,56 @@ def leftover_sleeps() -> str:
     return subprocess.run(
         ["pgrep", "-f", "^sleep 2999$"], capture_output=True, text=True, check=False
     ).stdout
+
+
+ESCAPE = "features/escape/tests/test_escape.py"
+
+
+def test_the_implementer_s_workspace_is_tested_as_it_is_without_a_commit(
+    toolchain: Toolchain, repo: Path, runs: Path
+) -> None:
+    shutil.copy(
+        FIXTURE / "features/f1/negative-controls/wrong-greeting/src/main.rs",
+        repo / "climon2/src/main.rs",
+    )
+
+    report = NativeMacOS(repo, toolchain, runs).run_workspace(repo, ("f1",))
+
+    assert report.label == "macos-native"
+    assert [(r.test_id, r.outcome) for r in report.results] == [(GREETS, F), (EXITS, P)]
+    assert list(runs.iterdir()) == []
+
+
+def test_a_workspace_run_has_no_network(toolchain: Toolchain, repo: Path, runs: Path) -> None:
+    report = NativeMacOS(repo, toolchain, runs).run_workspace(repo, ("net",))
+
+    [result] = report.results
+    assert (result.test_id, result.outcome) == (
+        "features/net/tests/test_net.py::test_reaches_the_network",
+        F,
+    )
+
+
+def test_a_workspace_run_cannot_touch_the_users_home(
+    toolchain: Toolchain, repo: Path, runs: Path
+) -> None:
+    canary = Path.home() / ".climon2-sandbox-canary"
+    canary.unlink(missing_ok=True)
+
+    report = NativeMacOS(repo, toolchain, runs).run_workspace(repo, ("escape",))
+
+    assert [(r.test_id, r.outcome) for r in report.results] == [
+        (f"{ESCAPE}::test_writes_into_the_users_home", F),
+        (f"{ESCAPE}::test_reads_the_users_home", F),
+    ]
+    assert not canary.exists()
+
+
+def test_a_workspace_run_can_use_ps_despite_the_sandbox(
+    toolchain: Toolchain, repo: Path, runs: Path
+) -> None:
+    report = NativeMacOS(repo, toolchain, runs).run_workspace(repo, ("ps",))
+
+    assert report.results == (
+        TestResult("features/ps/tests/test_ps.py::test_lists_its_own_process", P),
+    )

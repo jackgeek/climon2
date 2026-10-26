@@ -30,6 +30,8 @@ MAX_REVIEW_ROUNDS = 2
 MAX_ATTEMPTS = 3
 MAX_RUNS_PER_ATTEMPT = 10
 MAX_WINDOWS_RUNS_PER_ATTEMPT = 3
+MAX_WINDOWS_VM_RUNS_PER_ATTEMPT = 10
+MAX_MACOS_RUNS_PER_ATTEMPT = 10
 IMPLEMENTER_WRITABLE = "climon2/"
 
 DRAFT_CONTRACT = "draft-contract"
@@ -137,8 +139,10 @@ class Workflow:
         executor: Executor,
         github: GitHub,
         macos: MacOS,
+        windows_vm: Executor | None = None,
     ) -> None:
         self._macos = macos
+        self._windows_vm = windows_vm
         self._repo = repo_root
         self._runs = runs
         self._agents = agents
@@ -257,6 +261,12 @@ class Workflow:
             )
         if run.stage == AWAIT_MACOS_APPROVAL:
             return self._macos_pause(run)
+        if all(run.stage != p.approval_stage for p in _PHASES):
+            attempt = f" (attempt {run.attempts})" if run.stage == IMPLEMENT else ""
+            return Pause(
+                reason=f"in progress: {run.stage}{attempt}",
+                next_command="factory resume, if the factory process is no longer running",
+            )
         phase = self._phase(run.stage)
         name = self._name(run, phase)
         hash = self._store.status(name).hash
@@ -383,16 +393,33 @@ class Workflow:
 
         windows_runs_used = 0
 
+        windows_budget = (
+            MAX_WINDOWS_RUNS_PER_ATTEMPT
+            if self._windows_vm is None
+            else MAX_WINDOWS_VM_RUNS_PER_ATTEMPT
+        )
+
         def run_windows_tests() -> TestReport:
             nonlocal windows_runs_used
-            if windows_runs_used >= MAX_WINDOWS_RUNS_PER_ATTEMPT:
-                raise RunBudgetExhausted(
-                    f"{MAX_WINDOWS_RUNS_PER_ATTEMPT} Windows runs used in this attempt"
-                )
+            if windows_runs_used >= windows_budget:
+                raise RunBudgetExhausted(f"{windows_budget} Windows runs used in this attempt")
             windows_runs_used += 1
+            if self._windows_vm is not None:
+                return self._windows_vm.run_acceptance(self._repo, gate_features, None)
             branch = f"factory/{run.run_id}-a{run.attempts}-w{windows_runs_used}"
             commit = self._github.push_candidate(self._repo, branch)
             return self._github.windows_ci(commit).report
+
+        macos_runs_used = 0
+
+        def run_macos_tests() -> TestReport:
+            nonlocal macos_runs_used
+            if macos_runs_used >= MAX_MACOS_RUNS_PER_ATTEMPT:
+                raise RunBudgetExhausted(
+                    f"{MAX_MACOS_RUNS_PER_ATTEMPT} macOS runs used in this attempt"
+                )
+            macos_runs_used += 1
+            return self._macos.run_workspace(self._repo, gate_features)
 
         previous = tuple(Finding(Severity(s), m) for s, m in run.attempt_findings)
         # Counted before the agent runs, so an attempt interrupted by a crash is not refunded.
@@ -408,6 +435,7 @@ class Workflow:
                 findings=previous,
                 run_tests=run_tests,
                 run_windows_tests=run_windows_tests,
+                run_macos_tests=run_macos_tests,
             )
         )
         _expect(submission, ImplementationSubmitted)

@@ -20,6 +20,7 @@ class Factory:
     macos: FakeMacOS = field(default_factory=FakeMacOS)
     notifier: FakeNotifier = field(default_factory=FakeNotifier)
     clock: FakeClock = field(default_factory=FakeClock)
+    windows_vm: FakeExecutor | None = None
 
     def __call__(self, *argv: str) -> tuple[int, str]:
         self.capsys.readouterr()
@@ -32,6 +33,7 @@ class Factory:
             macos=self.macos,
             notifier=self.notifier,
             clock=self.clock,
+            windows_vm=self.windows_vm,
         )
         code = main(list(argv), deps)
         captured = self.capsys.readouterr()

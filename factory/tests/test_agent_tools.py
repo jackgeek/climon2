@@ -43,6 +43,7 @@ def toolbox(
     run_tests: object = None,
     locks: Locks | None = None,
     run_windows_tests: object = None,
+    run_macos_tests: object = None,
 ) -> Toolbox:
     request = AgentRequest(
         role,
@@ -51,6 +52,7 @@ def toolbox(
         repo,
         run_tests=run_tests,  # type: ignore[arg-type]
         run_windows_tests=run_windows_tests,  # type: ignore[arg-type]
+        run_macos_tests=run_macos_tests,  # type: ignore[arg-type]
     )
     return Toolbox(request, locks or Locks())
 
@@ -76,6 +78,7 @@ def test_the_implementer_can_run_the_acceptance_tests_when_the_factory_allows(re
 
     assert "factory_run_acceptance_tests" in box.tool_names
     assert "factory_run_windows_tests" not in box.tool_names
+    assert "factory_run_macos_tests" not in box.tool_names
 
 
 @pytest.mark.parametrize(
@@ -239,6 +242,24 @@ def test_windows_runs_are_summarised_and_budgeted(repo: Path) -> None:
     assert "FAILED t::w" in summary
     assert "ConPTY closed" in summary
     assert "3 Windows runs used" in box.call("factory_run_windows_tests")
+
+
+def test_macos_runs_are_summarised_and_budgeted(repo: Path) -> None:
+    runs = iter([TestReport("macos", (TestResult("t::m", Outcome.FAILED, "EINVAL"),))])
+
+    def run_macos_tests() -> TestReport:
+        report = next(runs, None)
+        if report is None:
+            raise RunBudgetExhausted("10 macOS runs used in this attempt")
+        return report
+
+    box = toolbox(repo, Role.IMPLEMENTER, run_macos_tests=run_macos_tests)
+
+    summary = box.call("factory_run_macos_tests")
+    assert "0 passed, 1 failed (macos)" in summary
+    assert "FAILED t::m" in summary
+    assert "EINVAL" in summary
+    assert "10 macOS runs used" in box.call("factory_run_macos_tests")
 
 
 def test_a_run_with_many_long_failures_fits_the_hosts_output_limit(repo: Path) -> None:
