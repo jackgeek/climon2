@@ -52,6 +52,10 @@ class FakeExecutor:
         return self._script(workspace, features, subject)
 
 
+class Crash(Exception):
+    """The factory process dying mid-step (power cut, kill -9, laptop lid)."""
+
+
 class FakeGitHub:
     """Each push yields commit c1, c2, …; Windows CI answers from a script keyed by commit."""
 
@@ -65,6 +69,7 @@ class FakeGitHub:
         self.pushes: list[str] = []
         self.prs: list[tuple[str, str, str]] = []
         self.pr_states: dict[int, str] = {}
+        self.crash_after_opening_pr = False
 
     def push_candidate(self, workspace: Path, branch: str) -> str:
         self.pushes.append(branch)
@@ -82,7 +87,15 @@ class FakeGitHub:
         self.prs.append((branch, title, body))
         number = len(self.prs)
         self.pr_states[number] = "open"
+        if self.crash_after_opening_pr:
+            raise Crash("factory killed after opening the PR")
         return number
+
+    def find_pr(self, branch: str) -> int | None:
+        for number, (pr_branch, _, _) in enumerate(self.prs, start=1):
+            if pr_branch == branch:
+                return number
+        return None
 
     def pr_state(self, number: int) -> str:
         return self.pr_states[number]

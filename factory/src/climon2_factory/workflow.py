@@ -43,6 +43,7 @@ WINDOWS_GATE = "windows-gate"
 AWAIT_MACOS_APPROVAL = "await-macos-approval"
 MACOS_GATE = "macos-gate"
 REVIEW_CANDIDATE = "review-candidate"
+OPEN_PR = "open-pr"
 AWAIT_MERGE = "await-merge"
 DELIVERED = "delivered"
 _STAGES = (
@@ -59,6 +60,7 @@ _STAGES = (
     AWAIT_MACOS_APPROVAL,
     MACOS_GATE,
     REVIEW_CANDIDATE,
+    OPEN_PR,
     AWAIT_MERGE,
     DELIVERED,
 )
@@ -160,6 +162,9 @@ class Workflow:
                 continue
             if run.stage == REVIEW_CANDIDATE:
                 self._review_candidate(run)
+                continue
+            if run.stage == OPEN_PR:
+                self._open_pr(run)
                 continue
             if run.stage == AWAIT_MERGE:
                 return self._await_merge(run)
@@ -362,6 +367,9 @@ class Workflow:
             return self._executor.run_acceptance(self._repo, gate_features, None)
 
         previous = tuple(Finding(Severity(s), m) for s, m in run.attempt_findings)
+        # Counted before the agent runs, so an attempt interrupted by a crash is not refunded.
+        run.attempts += 1
+        self._runs.save(run)
         before = self._protected_snapshot()
         submission = self._agents.run(
             AgentRequest(
@@ -378,7 +386,6 @@ class Workflow:
         if not findings:
             gate = self._executor.run_acceptance(self._repo, gate_features, None)
             findings = _gate_failures(gate)
-        run.attempts += 1
         if findings:
             self._attempt_failed(run, findings)
         else:
@@ -431,7 +438,6 @@ class Workflow:
                 run, tuple(Finding(f.severity, f"review: {f.summary}") for f in blocking)
             )
             return
-        assert run.candidate_branch is not None
         body = "\n".join(
             [
                 f"Delivers feature `{run.feature}` (factory run `{run.run_id}`).",
@@ -446,9 +452,18 @@ class Workflow:
                 *(["- none"] if not findings else []),
             ]
         )
-        run.pr_number = self._github.open_pr(
-            run.candidate_branch, f"Deliver feature {run.feature}", body
-        )
+        run.pr_body = body
+        self._move(run, OPEN_PR)
+
+    def _open_pr(self, run: Run) -> None:
+        """Reconciles with GitHub first: a PR opened just before a crash is adopted, not reopened."""
+        assert run.candidate_branch is not None and run.pr_body is not None
+        number = self._github.find_pr(run.candidate_branch)
+        if number is None:
+            number = self._github.open_pr(
+                run.candidate_branch, f"Deliver feature {run.feature}", run.pr_body
+            )
+        run.pr_number = number
         self._move(run, AWAIT_MERGE)
 
     def _await_merge(self, run: Run) -> Pause:

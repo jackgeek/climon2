@@ -141,6 +141,10 @@ class GitHub(Protocol):
         """Open a pull request from `branch` into main and return its number."""
         ...
 
+    def find_pr(self, branch: str) -> int | None:
+        """The pull request already opened from `branch`, if any."""
+        ...
+
     def pr_state(self, number: int) -> str:
         """One of "open", "merged" or "closed"."""
         ...

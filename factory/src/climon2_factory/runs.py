@@ -14,6 +14,7 @@ class Run:
     attempts: int = 0
     candidate_commit: str | None = None
     candidate_branch: str | None = None
+    pr_body: str | None = None
     pr_number: int | None = None
     attempt_findings: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
 

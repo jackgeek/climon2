@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 from conftest import Factory
-from fakes import AcceptanceCall, FakeAgents, FakeExecutor, FakeGitHub, FakeMacOS, write
+from fakes import AcceptanceCall, Crash, FakeAgents, FakeExecutor, FakeGitHub, FakeMacOS, write
 
 from climon2_factory.artifacts import ArtifactStore, State
 from climon2_factory.ports import (
@@ -635,3 +635,56 @@ def test_directly_edited_tests_get_a_fresh_red_run_and_review(factory: Factory) 
     assert factory.agents.calls[-1].task == "review-tests"
     new_hash = ArtifactStore(factory.repo).status("f1/tests").hash
     assert f"awaiting approval: f1/tests {new_hash}" in out
+
+
+def crashes(request: AgentRequest) -> ImplementationSubmitted:
+    raise Crash("factory killed mid-step")
+
+
+def test_an_interrupted_implementer_step_is_rerun_and_still_counts_as_an_attempt(
+    factory: Factory,
+) -> None:
+    tests_hash = reach_tests_approval(
+        factory, implementer=[crashes, implements("b\n"), implements("c\n")]
+    )
+    factory.executor = FakeExecutor(failing_gate)
+    with pytest.raises(Crash):
+        factory("approve", "f1/tests", tests_hash)
+
+    code, out = factory("resume")
+
+    assert code == 0
+    assert factory.agents.roles.count(Role.IMPLEMENTER) == 3
+    assert "implementation failed after 3 attempts" in out
+
+
+def test_resume_retries_a_failed_step(factory: Factory) -> None:
+    tests_hash = reach_tests_approval(factory, implementer=[implements()])
+    factory.executor = FakeExecutor(passing_gate)
+    results = [windows_passes("someone-elses-commit"), windows_passes("c2")]
+    factory.github = FakeGitHub(windows=lambda commit: results.pop(0))
+    assert factory("approve", "f1/tests", tests_hash)[0] == 1
+
+    code, out = factory("resume")
+
+    assert code == 0
+    assert factory.agents.roles.count(Role.IMPLEMENTER) == 1
+    assert factory.github.pushes == [f"factory/{run_id(factory)}-a1"] * 2
+    assert "awaiting macOS approval" in out
+    assert "(commit c2)" in out
+
+
+def test_a_pr_opened_just_before_a_crash_is_found_not_reopened(factory: Factory) -> None:
+    candidate_hash = reach_macos_approval(factory, implementer=[implements()], reviewer=[reviews()])
+    factory.macos = FakeMacOS(macos_passes)
+    factory.github.crash_after_opening_pr = True
+    with pytest.raises(Crash):
+        factory("approve", "f1/candidate", candidate_hash)
+    factory.github.crash_after_opening_pr = False
+
+    code, out = factory("resume")
+
+    assert code == 0
+    assert len(factory.github.prs) == 1
+    assert factory.agents.roles.count(Role.REVIEWER) == 3
+    assert "awaiting merge of PR #1" in out

@@ -143,7 +143,8 @@ See [ADR-0001](../adr/0001-content-addressed-artifacts.md).
 
 - **Checkpoints:** workflow state is checkpointed after every step.
 - **Interrupted agent steps:** after a crash, an interrupted agent step is discarded and rerun. Attempt and time counts that were already consumed are not refunded.
-- **External side effects:** pushes, CI runs and PRs are recorded as intents before they happen, then reconciled against GitHub when the run resumes.
+- **External side effects:** pushes, CI runs and PRs are recorded as intents before they happen, then reconciled against GitHub when the run resumes. The stage itself is the intent: candidates go to a deterministic `factory/<run-id>-a<attempt>` branch (re-pushing is harmless, since CI results are checked against the new commit), and the PR for that branch is looked up before one is opened.
+- **Failed steps:** a step that fails (e.g. CI reports the wrong commit) leaves the run at that stage; `factory resume` retries it.
 
 ## Execution environments
 
