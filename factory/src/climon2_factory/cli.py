@@ -109,6 +109,9 @@ def _reject(artifact: str, reason: str, deps: Deps, runs: RunStore, workflow: Wo
 
 def _require_awaiting(runs: RunStore, workflow: Workflow, artifact: str) -> Run:
     run = _require_active(runs)
+    stale = workflow.stale(run)
+    if stale is not None:
+        raise Refused(f"{stale.describe()}; run factory resume")
     awaiting = workflow.awaiting(run)
     if awaiting != artifact:
         raise Refused(f"feature run {run.run_id} is waiting for {awaiting}, not {artifact}")

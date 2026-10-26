@@ -14,7 +14,6 @@ from climon2_factory.ports import (
     GitHub,
     ImplementationSubmitted,
     MacOS,
-    NegativeControl,
     Outcome,
     ReviewSubmitted,
     Role,
@@ -46,6 +45,23 @@ MACOS_GATE = "macos-gate"
 REVIEW_CANDIDATE = "review-candidate"
 AWAIT_MERGE = "await-merge"
 DELIVERED = "delivered"
+_STAGES = (
+    DRAFT_CONTRACT,
+    REVIEW_CONTRACT,
+    AWAIT_CONTRACT_APPROVAL,
+    WRITE_TESTS,
+    RED_RUN,
+    REVIEW_TESTS,
+    AWAIT_TESTS_APPROVAL,
+    IMPLEMENT,
+    AWAIT_IMPLEMENTATION_DECISION,
+    WINDOWS_GATE,
+    AWAIT_MACOS_APPROVAL,
+    MACOS_GATE,
+    REVIEW_CANDIDATE,
+    AWAIT_MERGE,
+    DELIVERED,
+)
 BUILD_TIME_FILES = ("build.rs", "Cargo.toml", "Cargo.lock")
 
 
@@ -61,6 +77,24 @@ class Pause:
 
 
 @dataclass(frozen=True)
+class Staleness:
+    """An artifact approved earlier in the run that is no longer approved as it stands."""
+
+    artifact: str
+    edited: bool
+    changed_inputs: tuple[str, ...]
+
+    def describe(self) -> str:
+        if self.edited:
+            why = "edited directly"
+        elif self.changed_inputs:
+            why = ", ".join(f"input changed: {i}" for i in self.changed_inputs)
+        else:
+            why = "missing"
+        return f"{self.artifact} changed since approval: {why}"
+
+
+@dataclass(frozen=True)
 class _Phase:
     """An author → review → approval cycle producing one artifact."""
 
@@ -70,6 +104,8 @@ class _Phase:
     review_stage: str
     approval_stage: str
     next_stage: str
+    recorded_stage: str
+    """Where a freshly recorded artifact goes next, on its way to review."""
 
 
 _CONTRACT = _Phase(
@@ -79,9 +115,10 @@ _CONTRACT = _Phase(
     REVIEW_CONTRACT,
     AWAIT_CONTRACT_APPROVAL,
     WRITE_TESTS,
+    REVIEW_CONTRACT,
 )
 _TESTS = _Phase(
-    "tests", Role.TEST_AUTHOR, WRITE_TESTS, REVIEW_TESTS, AWAIT_TESTS_APPROVAL, IMPLEMENT
+    "tests", Role.TEST_AUTHOR, WRITE_TESTS, REVIEW_TESTS, AWAIT_TESTS_APPROVAL, IMPLEMENT, RED_RUN
 )
 _PHASES = (_CONTRACT, _TESTS)
 
@@ -105,6 +142,9 @@ class Workflow:
         self._store = ArtifactStore(repo_root)
 
     def advance(self, run: Run) -> Pause:
+        stale = self.stale(run)
+        if stale is not None:
+            self._return_to(run, stale)
         while True:
             if run.stage == RED_RUN:
                 self._red_run(run)
@@ -141,6 +181,24 @@ class Workflow:
             else:
                 return self.pause(run)
 
+    def stale(self, run: Run) -> Staleness | None:
+        """The first approved upstream artifact that has changed, while the run is in flight.
+
+        Once a PR is open, the PR review takes over and staleness no longer moves the run."""
+        position = _STAGES.index(run.stage)
+        if position >= _STAGES.index(AWAIT_MERGE):
+            return None
+        for phase in _PHASES:
+            if position <= _STAGES.index(phase.approval_stage):
+                return None
+            name = self._name(run, phase)
+            status = self._store.status(name)
+            if status.state is State.APPROVED:
+                continue
+            edited = status.state not in (State.STALE, State.MISSING)
+            return Staleness(name, edited, status.changed_inputs)
+        return None
+
     def awaiting(self, run: Run) -> str | None:
         """The artifact this run is waiting for the user to decide, if any."""
         if run.stage == AWAIT_MACOS_APPROVAL:
@@ -166,6 +224,9 @@ class Workflow:
         return self.advance(run)
 
     def pause(self, run: Run) -> Pause:
+        stale = self.stale(run)
+        if stale is not None:
+            return Pause(reason=stale.describe(), next_command="factory resume")
         if run.stage == AWAIT_MERGE:
             return self._merge_pause(run)
         if run.stage == AWAIT_IMPLEMENTATION_DECISION:
@@ -186,39 +247,77 @@ class Workflow:
             details=details,
         )
 
+    def _return_to(self, run: Run, stale: Staleness) -> None:
+        """Send the run back to a changed artifact; everything downstream of it is redone.
+
+        A direct edit is the user's revision and goes to review; changed inputs need the author."""
+        phase = next(p for p in _PHASES if self._name(run, p) == stale.artifact)
+        run.review_round = 0
+        run.attempts = 0
+        run.attempt_findings = []
+        run.candidate_commit = None
+        run.candidate_branch = None
+        if not stale.edited:
+            self._move(run, phase.author_stage)
+            return
+        if phase is _CONTRACT:
+            self._record_contract(run)
+        else:
+            self._record_tests(run, self._negative_controls(run))
+        self._move(run, phase.recorded_stage)
+
     def _author(self, run: Run, phase: _Phase) -> None:
-        findings = self._current_findings(run, phase) + self._rejections(run, phase)
+        findings = (
+            self._current_findings(run, phase)
+            + self._rejections(run, phase)
+            + self._changed_inputs(run, phase)
+        )
         task = f"revise-{phase.kind}" if findings else phase.author_stage
         submission = self._agent(phase.author, run, task, findings)
         if phase is _CONTRACT:
             _expect(submission, ContractSubmitted)
-            self._store.record(
-                self._name(run, phase),
-                paths=[f"features/{run.feature}/contract.md"],
-                path_inputs=[f"features/{run.feature}/brief.md", "CONTEXT.md"],
-            )
-            self._move(run, REVIEW_CONTRACT)
+            self._record_contract(run)
         else:
-            self._record_tests(run, _expect(submission, TestsSubmitted).negative_controls)
-            self._move(run, RED_RUN)
+            controls = _expect(submission, TestsSubmitted).negative_controls
+            _write_json(
+                self._repo / f"features/{run.feature}/negative-controls.json",
+                [
+                    {
+                        "name": c.name,
+                        "path": c.path,
+                        "target_test": c.target_test,
+                        "expected_failure": c.expected_failure,
+                    }
+                    for c in controls
+                ],
+            )
+            self._record_tests(run, self._negative_controls(run))
+        self._move(run, phase.recorded_stage)
 
-    def _record_tests(self, run: Run, controls: tuple[NegativeControl, ...]) -> None:
-        declared = f"features/{run.feature}/negative-controls.json"
-        _write_json(
-            self._repo / declared,
-            [
-                {
-                    "name": c.name,
-                    "path": c.path,
-                    "target_test": c.target_test,
-                    "expected_failure": c.expected_failure,
-                }
-                for c in controls
-            ],
+    def _changed_inputs(self, run: Run, phase: _Phase) -> tuple[Finding, ...]:
+        status = self._store.status(self._name(run, phase))
+        if status.state is not State.STALE:
+            return ()
+        return tuple(
+            Finding(Severity.BLOCKING, f"input changed since approval: {i}")
+            for i in status.changed_inputs
         )
+
+    def _record_contract(self, run: Run) -> None:
+        self._store.record(
+            f"{run.feature}/contract",
+            paths=[f"features/{run.feature}/contract.md"],
+            path_inputs=[f"features/{run.feature}/brief.md", "CONTEXT.md"],
+        )
+
+    def _record_tests(self, run: Run, controls: list[dict[str, str]]) -> None:
         self._store.record(
             f"{run.feature}/tests",
-            paths=[f"features/{run.feature}/tests", declared, *(c.path for c in controls)],
+            paths=[
+                f"features/{run.feature}/tests",
+                f"features/{run.feature}/negative-controls.json",
+                *(c["path"] for c in controls),
+            ],
             artifact_inputs=[f"{run.feature}/contract"],
         )
 
@@ -475,14 +574,10 @@ class Workflow:
     def _rejections(self, run: Run, phase: _Phase) -> tuple[Finding, ...]:
         """The user's rejection of the artifact as it is now, if that is its latest decision."""
         name = self._name(run, phase)
-        current = self._store.status(name).hash
-        for version in reversed(self._store.history(name)):
-            if version.hash == current and version.decisions:
-                latest = version.decisions[-1]
-                if latest.decision == State.REJECTED:
-                    return (Finding(Severity.BLOCKING, f"user rejected: {latest.reason}"),)
-                return ()
-        return ()
+        if self._store.status(name).state is not State.REJECTED:
+            return ()
+        latest = self._store.history(name)[-1].decisions[-1]
+        return (Finding(Severity.BLOCKING, f"user rejected: {latest.reason}"),)
 
     def _agent(
         self, role: Role, run: Run, task: str, findings: tuple[Finding, ...] = ()

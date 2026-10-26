@@ -329,8 +329,9 @@ def test_only_the_artifact_the_run_is_waiting_for_can_be_decided(factory: Factor
 
 def reach_tests_approval(factory: Factory, **more: list) -> str:
     reviewer = [reviews(), *more.pop("reviewer", [])]
+    test_author = [writes_tests(NO_LIVENESS), *more.pop("test_author", [])]
     contract_hash = reach_contract_approval(
-        factory, test_author=[writes_tests(NO_LIVENESS)], reviewer=reviewer, **more
+        factory, test_author=test_author, reviewer=reviewer, **more
     )
     factory.executor = FakeExecutor(red_run)
     factory("approve", "f1/contract", contract_hash)
@@ -564,3 +565,73 @@ def test_blocking_candidate_review_fails_the_attempt(factory: Factory) -> None:
     assert second.findings == (
         Finding(Severity.BLOCKING, "review: Scenario S2 cites no requirement"),
     )
+
+
+def test_a_directly_edited_contract_is_rereviewed_and_resets_downstream_work(
+    factory: Factory,
+) -> None:
+    candidate_hash = reach_macos_approval(
+        factory,
+        implementer=[implements()],
+        reviewer=[reviews(), reviews()],
+        test_author=[writes_tests(NO_LIVENESS)],
+    )
+    write(factory.repo, "features/f1/contract.md", "# Contract, edited by hand\n")
+
+    code, out = factory("status")
+    assert "f1/contract changed since approval: edited directly" in out
+
+    code, out = factory("approve", "f1/candidate", candidate_hash)
+    assert code == 2
+    assert "f1/contract changed since approval" in out
+
+    code, out = factory("resume")
+    assert code == 0
+    assert factory.agents.calls[-1].role is Role.REVIEWER
+    assert factory.agents.calls[-1].task == "review-contract"
+    new_hash = ArtifactStore(factory.repo).status("f1/contract").hash
+    assert new_hash is not None
+    assert f"awaiting approval: f1/contract {new_hash}" in out
+    assert (factory.repo / "features/f1/contract.md").read_text() == "# Contract, edited by hand\n"
+
+    factory.executor = FakeExecutor(red_run)
+    code, out = factory("approve", "f1/contract", new_hash)
+    assert factory.agents.roles[-2:] == [Role.TEST_AUTHOR, Role.REVIEWER]
+    assert "awaiting approval: f1/tests" in out
+
+
+def test_changed_inputs_send_an_approved_artifact_back_to_its_author(factory: Factory) -> None:
+    reach_tests_approval(
+        factory, contract_author=[drafts_contract("# Contract v2\n")], reviewer=[reviews()]
+    )
+    write(factory.repo, "features/f1/brief.md", "# Brief, revised\n")
+
+    code, out = factory("status")
+    assert "f1/contract changed since approval: input changed: path:features/f1/brief.md" in out
+
+    code, out = factory("resume")
+
+    assert code == 0
+    author = factory.agents.calls[-2]
+    assert author.role is Role.CONTRACT_AUTHOR
+    assert author.task == "revise-contract"
+    assert author.findings == (
+        Finding(Severity.BLOCKING, "input changed since approval: path:features/f1/brief.md"),
+    )
+    assert factory.agents.calls[-1].task == "review-contract"
+    new_hash = ArtifactStore(factory.repo).status("f1/contract").hash
+    assert f"awaiting approval: f1/contract {new_hash}" in out
+
+
+def test_directly_edited_tests_get_a_fresh_red_run_and_review(factory: Factory) -> None:
+    reach_macos_approval(factory, implementer=[implements()], reviewer=[reviews()])
+    write(factory.repo, "features/f1/tests/test_more.py", "def test_more(): ...\n")
+    factory.executor = FakeExecutor(red_run)
+
+    code, out = factory("resume")
+
+    assert code == 0
+    assert [c.subject for c in factory.executor.calls] == [None, NO_LIVENESS.path]
+    assert factory.agents.calls[-1].task == "review-tests"
+    new_hash = ArtifactStore(factory.repo).status("f1/tests").hash
+    assert f"awaiting approval: f1/tests {new_hash}" in out

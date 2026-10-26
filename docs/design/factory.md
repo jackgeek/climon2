@@ -121,6 +121,7 @@ Rules:
 - **Failure handling:** three failed attempts pause the run for the user.
 - **Rejections:** a rejection sends the artifact to a fresh session of the same role, followed by another review. There is no cap on revisions.
 - **Direct edits:** the user may edit artifacts directly, and edits are still reviewed.
+- **Upstream changes:** if an approved artifact changes mid-run, the run returns to it and all downstream work (attempts, candidate) is redone. A direct edit is recorded as the user's revision and goes to review (tests get a fresh red run first). An artifact made stale by changed inputs goes back to its author, with the changed inputs as findings. `status` names the changed artifact and inputs, and approvals are refused until `factory resume`. Once the delivery PR is open, the PR review takes over.
 
 ### Factory CLI
 
@@ -134,7 +135,7 @@ See [ADR-0001](../adr/0001-content-addressed-artifacts.md).
 
 - **Content addressing:** every artifact is content-addressed. Its manifest records the hashes of its inputs, including role prompts and skills.
 - **Staleness:** validity is always recomputed and never cached. An artifact whose recorded inputs no longer match is stale and cannot advance the run.
-- **Approvals:** an approval binds to one artifact hash. Superseded artifacts are kept as history.
+- **Approvals:** an approval binds to one artifact hash as recorded with its inputs, so re-recording (even with identical content) needs a fresh decision. Superseded artifacts are kept as history.
 - **Storage:** contracts, findings, approvals and tests are stored in the repository. Each artifact (named like `<feature-id>/contract`) has append-only JSON manifests and decisions under `.factory/records/<artifact>/`. Run state is stored locally.
 - **Path safety:** artifact paths must stay inside the repository and may not contain or pass through symlinks.
 
