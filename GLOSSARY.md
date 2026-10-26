@@ -92,6 +92,10 @@ _Avoid_: Test shell, dummy command
 A climon2-owned full-screen test program that exercises alternate screen, cursor queries, mouse, bracketed paste, and resize redraws.
 _Avoid_: Fake app, mock TUI
 
+**Shell profile**:
+The test harness's description of how to start one shell in a controlled way and drive it in tests; the only place climon2 knows about specific shells.
+_Avoid_: Shell config, shell adapter
+
 **Smoke test**:
 The single end-to-end check that a freshly installed climon2 can start a bash session from bash, be listed, exit with the command's status, and leave nothing behind.
 _Avoid_: Sanity test, canary
