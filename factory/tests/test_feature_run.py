@@ -2,11 +2,12 @@ from pathlib import Path
 
 import pytest
 from conftest import Factory
-from fakes import AcceptanceCall, FakeAgents, FakeExecutor, write
+from fakes import AcceptanceCall, FakeAgents, FakeExecutor, FakeGitHub, FakeMacOS, write
 
 from climon2_factory.artifacts import ArtifactStore, State
 from climon2_factory.ports import (
     AgentRequest,
+    CiResult,
     ContractSubmitted,
     Finding,
     ImplementationSubmitted,
@@ -327,8 +328,9 @@ def test_only_the_artifact_the_run_is_waiting_for_can_be_decided(factory: Factor
 
 
 def reach_tests_approval(factory: Factory, **more: list) -> str:
+    reviewer = [reviews(), *more.pop("reviewer", [])]
     contract_hash = reach_contract_approval(
-        factory, test_author=[writes_tests(NO_LIVENESS)], reviewer=[reviews()], **more
+        factory, test_author=[writes_tests(NO_LIVENESS)], reviewer=reviewer, **more
     )
     factory.executor = FakeExecutor(red_run)
     factory("approve", "f1/contract", contract_hash)
@@ -420,3 +422,145 @@ def test_each_attempt_may_run_the_tests_at_most_ten_times(factory: Factory) -> N
     first = next(c for c in factory.agents.calls if c.role is Role.IMPLEMENTER)
     assert first.findings == ()
     assert len(factory.executor.calls) == 10 + 3
+
+
+def passing_gate(workspace: Path, features: tuple[str, ...], subject: str | None) -> TestReport:
+    return report(("test_exec_runs_command", P, ""), ("test_list_hides_dead_sessions", P, ""))
+
+
+def windows_passes(commit: str) -> CiResult:
+    return CiResult(commit=commit, report=report(("test_exec_runs_command", P, "")))
+
+
+def test_a_candidate_passing_linux_and_windows_waits_for_macos_approval(factory: Factory) -> None:
+    tests_hash = reach_tests_approval(factory, implementer=[implements()])
+    factory.executor = FakeExecutor(passing_gate)
+    factory.github = FakeGitHub(
+        windows=windows_passes, changed=("climon2/Cargo.toml", "climon2/src/main.rs")
+    )
+
+    code, out = factory("approve", "f1/tests", tests_hash)
+
+    assert code == 0
+    assert factory.github.pushes == [f"factory/{run_id(factory)}-a1"]
+    candidate = ArtifactStore(factory.repo).status("f1/candidate")
+    assert candidate.state is State.UNAPPROVED
+    assert f"awaiting macOS approval: f1/candidate {candidate.hash} (commit c1)" in out
+    assert "build-time change: climon2/Cargo.toml" in out
+    assert "build-time change: climon2/src/main.rs" not in out
+    assert f"Next: factory approve f1/candidate {candidate.hash}" in out
+
+
+def test_windows_failures_fail_the_attempt(factory: Factory) -> None:
+    tests_hash = reach_tests_approval(factory, implementer=[implements(), implements("v2\n")])
+    factory.executor = FakeExecutor(passing_gate)
+    results = [
+        CiResult("c1", report(("test_exec_runs_command", F, "ConPTY closed early"))),
+        CiResult("c2", report(("test_exec_runs_command", P, ""))),
+    ]
+    factory.github = FakeGitHub(windows=lambda commit: results.pop(0))
+
+    code, out = factory("approve", "f1/tests", tests_hash)
+
+    assert code == 0
+    second = [c for c in factory.agents.calls if c.role is Role.IMPLEMENTER][1]
+    assert second.findings == (
+        Finding(Severity.BLOCKING, "windows: test_exec_runs_command failed: ConPTY closed early"),
+    )
+    assert "(commit c2)" in out
+
+
+def test_ci_results_for_another_commit_are_not_trusted(factory: Factory) -> None:
+    tests_hash = reach_tests_approval(factory, implementer=[implements()])
+    factory.executor = FakeExecutor(passing_gate)
+    factory.github = FakeGitHub(windows=lambda commit: windows_passes("someone-elses-commit"))
+
+    code, out = factory("approve", "f1/tests", tests_hash)
+
+    assert code == 1
+    assert "step failed" in out
+    assert "someone-elses-commit" in out
+    assert "Next: factory resume" in out
+    assert ArtifactStore(factory.repo).status("f1/candidate").state is not State.UNAPPROVED
+
+
+def run_id(factory: Factory) -> str:
+    return (factory.state_dir / "active").read_text().strip()
+
+
+def macos_passes(commit: str) -> TestReport:
+    return TestReport("macos-native", (TestResult("test_exec_runs_command", P),))
+
+
+def reach_macos_approval(factory: Factory, **more: list) -> str:
+    tests_hash = reach_tests_approval(factory, **more)
+    factory.executor = FakeExecutor(passing_gate)
+    factory.github = FakeGitHub(windows=windows_passes)
+    factory("approve", "f1/tests", tests_hash)
+    hash = ArtifactStore(factory.repo).status("f1/candidate").hash
+    assert hash is not None
+    return hash
+
+
+def test_an_approved_candidate_is_validated_on_macos_reviewed_and_merged(
+    factory: Factory,
+) -> None:
+    candidate_hash = reach_macos_approval(
+        factory, implementer=[implements()], reviewer=[reviews(ADVISORY)]
+    )
+    factory.macos = FakeMacOS(macos_passes)
+
+    code, out = factory("approve", "f1/candidate", candidate_hash)
+
+    assert code == 0
+    assert factory.macos.commits == ["c1"]
+    assert factory.agents.calls[-1].role is Role.REVIEWER
+    assert factory.agents.calls[-1].task == "review-candidate"
+    branch, title, body = factory.github.prs[0]
+    assert branch == f"factory/{run_id(factory)}-a1"
+    assert "f1" in title
+    assert "advisory: Consider naming the error code" in body
+    assert "awaiting merge of PR #1" in out
+    assert "Next: factory resume" in out
+
+    assert "awaiting merge of PR #1" in factory("resume")[1]
+
+    factory.github.pr_states[1] = "merged"
+    code, out = factory("resume")
+    assert code == 0
+    assert "f1 delivered" in out
+    assert factory("status")[1].strip() == "No active feature run."
+
+
+def test_macos_failures_fail_the_attempt(factory: Factory) -> None:
+    candidate_hash = reach_macos_approval(factory, implementer=[implements(), implements("v2\n")])
+    factory.macos = FakeMacOS(
+        lambda commit: TestReport(
+            "macos-native", (TestResult("test_exec_runs_command", F, "zsh hung"),)
+        )
+    )
+
+    code, out = factory("approve", "f1/candidate", candidate_hash)
+
+    assert code == 0
+    second = [c for c in factory.agents.calls if c.role is Role.IMPLEMENTER][1]
+    assert second.findings == (
+        Finding(Severity.BLOCKING, "macos: test_exec_runs_command failed: zsh hung"),
+    )
+    new_hash = ArtifactStore(factory.repo).status("f1/candidate").hash
+    assert new_hash != candidate_hash
+    assert f"awaiting macOS approval: f1/candidate {new_hash} (commit c2)" in out
+
+
+def test_blocking_candidate_review_fails_the_attempt(factory: Factory) -> None:
+    candidate_hash = reach_macos_approval(
+        factory, implementer=[implements(), implements("v2\n")], reviewer=[reviews(BLOCKING)]
+    )
+    factory.macos = FakeMacOS(macos_passes)
+
+    factory("approve", "f1/candidate", candidate_hash)
+
+    second = [c for c in factory.agents.calls if c.role is Role.IMPLEMENTER][1]
+    assert second.findings == (
+        Finding(Severity.BLOCKING, "review: Scenario S2 cites no requirement"),
+    )

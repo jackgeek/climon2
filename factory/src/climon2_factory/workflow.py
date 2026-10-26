@@ -11,7 +11,9 @@ from climon2_factory.ports import (
     ContractSubmitted,
     Executor,
     Finding,
+    GitHub,
     ImplementationSubmitted,
+    MacOS,
     NegativeControl,
     Outcome,
     ReviewSubmitted,
@@ -39,6 +41,12 @@ AWAIT_TESTS_APPROVAL = "await-tests-approval"
 IMPLEMENT = "implement"
 AWAIT_IMPLEMENTATION_DECISION = "await-implementation-decision"
 WINDOWS_GATE = "windows-gate"
+AWAIT_MACOS_APPROVAL = "await-macos-approval"
+MACOS_GATE = "macos-gate"
+REVIEW_CANDIDATE = "review-candidate"
+AWAIT_MERGE = "await-merge"
+DELIVERED = "delivered"
+BUILD_TIME_FILES = ("build.rs", "Cargo.toml", "Cargo.lock")
 
 
 class StepFailed(Exception):
@@ -79,11 +87,21 @@ _PHASES = (_CONTRACT, _TESTS)
 
 
 class Workflow:
-    def __init__(self, repo_root: Path, runs: RunStore, agents: Agents, executor: Executor) -> None:
+    def __init__(
+        self,
+        repo_root: Path,
+        runs: RunStore,
+        agents: Agents,
+        executor: Executor,
+        github: GitHub,
+        macos: MacOS,
+    ) -> None:
+        self._macos = macos
         self._repo = repo_root
         self._runs = runs
         self._agents = agents
         self._executor = executor
+        self._github = github
         self._store = ArtifactStore(repo_root)
 
     def advance(self, run: Run) -> Pause:
@@ -94,7 +112,23 @@ class Workflow:
             if run.stage == IMPLEMENT:
                 self._implement(run)
                 continue
+            if run.stage == WINDOWS_GATE:
+                self._windows_gate(run)
+                continue
+            if run.stage == MACOS_GATE:
+                self._macos_gate(run)
+                continue
+            if run.stage == REVIEW_CANDIDATE:
+                self._review_candidate(run)
+                continue
+            if run.stage == AWAIT_MERGE:
+                return self._await_merge(run)
             if run.stage == AWAIT_IMPLEMENTATION_DECISION:
+                return self.pause(run)
+            if run.stage == AWAIT_MACOS_APPROVAL:
+                if self._store.status(self._candidate(run)).state is State.APPROVED:
+                    self._move(run, MACOS_GATE)
+                    continue
                 return self.pause(run)
             phase = self._phase(run.stage)
             if run.stage == phase.author_stage:
@@ -109,6 +143,8 @@ class Workflow:
 
     def awaiting(self, run: Run) -> str | None:
         """The artifact this run is waiting for the user to decide, if any."""
+        if run.stage == AWAIT_MACOS_APPROVAL:
+            return self._candidate(run)
         for phase in _PHASES:
             if run.stage == phase.approval_stage:
                 return self._name(run, phase)
@@ -123,13 +159,23 @@ class Workflow:
         run.review_round = 0
         self._move(run, phase.author_stage)
 
+    def resume(self, run: Run) -> Pause:
+        if run.stage == AWAIT_IMPLEMENTATION_DECISION:
+            run.attempts = 0
+            self._move(run, IMPLEMENT)
+        return self.advance(run)
+
     def pause(self, run: Run) -> Pause:
+        if run.stage == AWAIT_MERGE:
+            return self._merge_pause(run)
         if run.stage == AWAIT_IMPLEMENTATION_DECISION:
             return Pause(
                 reason=f"implementation failed after {run.attempts} attempts",
                 next_command="factory resume (grants new attempts) or factory abort",
                 details=tuple(f"{s}: {m}" for s, m in run.attempt_findings),
             )
+        if run.stage == AWAIT_MACOS_APPROVAL:
+            return self._macos_pause(run)
         phase = self._phase(run.stage)
         name = self._name(run, phase)
         hash = self._store.status(name).hash
@@ -234,13 +280,116 @@ class Workflow:
             gate = self._executor.run_acceptance(self._repo, gate_features, None)
             findings = _gate_failures(gate)
         run.attempts += 1
-        run.attempt_findings = [(f.severity.value, f.summary) for f in findings]
-        if not findings:
+        if findings:
+            self._attempt_failed(run, findings)
+        else:
+            run.attempt_findings = []
             self._move(run, WINDOWS_GATE)
-        elif run.attempts >= MAX_ATTEMPTS:
+
+    def _attempt_failed(self, run: Run, findings: tuple[Finding, ...]) -> None:
+        run.attempt_findings = [(f.severity.value, f.summary) for f in findings]
+        if run.attempts >= MAX_ATTEMPTS:
             self._move(run, AWAIT_IMPLEMENTATION_DECISION)
         else:
             self._move(run, IMPLEMENT)
+
+    def _windows_gate(self, run: Run) -> None:
+        branch = f"factory/{run.run_id}-a{run.attempts}"
+        commit = self._github.push_candidate(self._repo, branch)
+        ci = self._github.windows_ci(commit)
+        if ci.commit != commit:
+            raise StepFailed(f"Windows CI reported commit {ci.commit}, expected {commit}")
+        failures = _gate_failures(ci.report)
+        if failures:
+            self._attempt_failed(
+                run, tuple(Finding(f.severity, f"windows: {f.summary}") for f in failures)
+            )
+            return
+        self._store.record(
+            self._candidate(run), paths=["climon2"], artifact_inputs=[f"{run.feature}/tests"]
+        )
+        run.candidate_commit = commit
+        run.candidate_branch = branch
+        self._move(run, AWAIT_MACOS_APPROVAL)
+
+    def _macos_gate(self, run: Run) -> None:
+        assert run.candidate_commit is not None
+        report = self._macos.run_acceptance(run.candidate_commit, self._delivered_features())
+        failures = _gate_failures(report)
+        if failures:
+            self._attempt_failed(
+                run, tuple(Finding(f.severity, f"macos: {f.summary}") for f in failures)
+            )
+        else:
+            self._move(run, REVIEW_CANDIDATE)
+
+    def _review_candidate(self, run: Run) -> None:
+        submission = self._agent(Role.REVIEWER, run, "review-candidate")
+        findings = _expect(submission, ReviewSubmitted).findings
+        blocking = tuple(f for f in findings if f.severity is Severity.BLOCKING)
+        if blocking:
+            self._attempt_failed(
+                run, tuple(Finding(f.severity, f"review: {f.summary}") for f in blocking)
+            )
+            return
+        assert run.candidate_branch is not None
+        body = "\n".join(
+            [
+                f"Delivers feature `{run.feature}` (factory run `{run.run_id}`).",
+                "",
+                (
+                    f"Candidate commit {run.candidate_commit} passed the Linux container gate, "
+                    "Windows CI and the approved native macOS gate."
+                ),
+                "",
+                "Reviewer findings:",
+                *(f"- {f.severity}: {f.summary}" for f in findings),
+                *(["- none"] if not findings else []),
+            ]
+        )
+        run.pr_number = self._github.open_pr(
+            run.candidate_branch, f"Deliver feature {run.feature}", body
+        )
+        self._move(run, AWAIT_MERGE)
+
+    def _await_merge(self, run: Run) -> Pause:
+        assert run.pr_number is not None
+        if self._github.pr_state(run.pr_number) == "merged":
+            run.stage = DELIVERED
+            self._runs.finish(run)
+            return Pause(
+                reason=f"{run.feature} delivered", next_command="factory start <next feature>"
+            )
+        return self._merge_pause(run)
+
+    def _merge_pause(self, run: Run) -> Pause:
+        assert run.pr_number is not None
+        if self._github.pr_state(run.pr_number) == "closed":
+            return Pause(
+                reason=f"PR #{run.pr_number} was closed without merging",
+                next_command="factory abort",
+            )
+        return Pause(reason=f"awaiting merge of PR #{run.pr_number}", next_command="factory resume")
+
+    def _macos_pause(self, run: Run) -> Pause:
+        name = self._candidate(run)
+        hash = self._store.status(name).hash
+        commit = run.candidate_commit
+        assert commit is not None
+        build_time = tuple(
+            f"build-time change: {path}"
+            for path in self._github.changed_files(self._repo, commit)
+            if path.rsplit("/", 1)[-1] in BUILD_TIME_FILES
+        )
+        return Pause(
+            reason=f"awaiting macOS approval: {name} {hash} (commit {commit})",
+            next_command=f"factory approve {name} {hash}",
+            details=build_time,
+        )
+
+    @staticmethod
+    def _candidate(run: Run) -> str:
+        return f"{run.feature}/candidate"
 
     def _delivered_features(self) -> tuple[str, ...]:
         """Every feature whose acceptance tests are approved: the regression gate."""

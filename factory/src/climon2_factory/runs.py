@@ -12,6 +12,9 @@ class Run:
     stage: str
     review_round: int = 0
     attempts: int = 0
+    candidate_commit: str | None = None
+    candidate_branch: str | None = None
+    pr_number: int | None = None
     attempt_findings: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
 
 
@@ -28,6 +31,10 @@ class RunStore:
     def create(self, run: Run) -> None:
         self.save(run)
         self._active.write_text(run.run_id + "\n")
+
+    def finish(self, run: Run) -> None:
+        self.save(run)
+        self._active.unlink()
 
     def load(self, run_id: str) -> Run:
         data = json.loads((self._runs / run_id / "run.json").read_text())

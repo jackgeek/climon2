@@ -8,11 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from climon2_factory.artifacts import ApprovalRefused, ArtifactStore
-from climon2_factory.ports import Agents, Clock, Executor, Notifier
+from climon2_factory.ports import Agents, Clock, Executor, GitHub, MacOS, Notifier
 from climon2_factory.runs import Run, RunStore
-from climon2_factory.workflow import DRAFT_CONTRACT, Pause, Workflow
+from climon2_factory.workflow import DRAFT_CONTRACT, Pause, StepFailed, Workflow
 
 EXIT_OK = 0
+EXIT_STEP_FAILED = 1
 EXIT_REFUSED = 2
 _FEATURE_ID = re.compile(r"[a-z0-9][a-z0-9-]*")
 
@@ -23,6 +24,8 @@ class Deps:
     state_dir: Path
     agents: Agents
     executor: Executor
+    github: GitHub
+    macos: MacOS
     notifier: Notifier
     clock: Clock
 
@@ -37,6 +40,7 @@ def main(argv: Sequence[str], deps: Deps) -> int:
     start = commands.add_parser("start", help="start a feature run")
     start.add_argument("feature")
     commands.add_parser("status", help="show the active feature run")
+    commands.add_parser("resume", help="continue the active feature run")
     approve = commands.add_parser("approve", help="approve one artifact hash and continue")
     approve.add_argument("artifact")
     approve.add_argument("hash")
@@ -49,13 +53,15 @@ def main(argv: Sequence[str], deps: Deps) -> int:
         return EXIT_OK if exit.code == 0 else EXIT_REFUSED
 
     runs = RunStore(deps.state_dir)
-    workflow = Workflow(deps.repo_root, runs, deps.agents, deps.executor)
+    workflow = Workflow(deps.repo_root, runs, deps.agents, deps.executor, deps.github, deps.macos)
     try:
         match args.command:
             case "start":
                 _start(args.feature, deps, runs, workflow)
             case "approve":
                 _approve(args.artifact, args.hash, deps, runs, workflow)
+            case "resume":
+                _report(workflow.resume(_require_active(runs)), deps)
             case "reject":
                 _reject(args.artifact, args.reason, deps, runs, workflow)
             case _:
@@ -63,6 +69,11 @@ def main(argv: Sequence[str], deps: Deps) -> int:
     except Refused as refusal:
         print(f"factory: {refusal}", file=sys.stderr)
         return EXIT_REFUSED
+    except StepFailed as failure:
+        print(f"step failed: {failure}")
+        print("Next: factory resume")
+        deps.notifier.notify(f"step failed: {failure}")
+        return EXIT_STEP_FAILED
     return EXIT_OK
 
 

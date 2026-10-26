@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from fakes import FakeAgents, FakeClock, FakeExecutor, FakeNotifier, write
+from fakes import FakeAgents, FakeClock, FakeExecutor, FakeGitHub, FakeMacOS, FakeNotifier, write
 
 from climon2_factory.cli import Deps, main
 
@@ -16,6 +16,8 @@ class Factory:
     capsys: pytest.CaptureFixture[str]
     agents: FakeAgents = field(default_factory=lambda: FakeAgents({}))
     executor: FakeExecutor = field(default_factory=FakeExecutor)
+    github: FakeGitHub = field(default_factory=FakeGitHub)
+    macos: FakeMacOS = field(default_factory=FakeMacOS)
     notifier: FakeNotifier = field(default_factory=FakeNotifier)
     clock: FakeClock = field(default_factory=FakeClock)
 
@@ -26,6 +28,8 @@ class Factory:
             state_dir=self.state_dir,
             agents=self.agents,
             executor=self.executor,
+            github=self.github,
+            macos=self.macos,
             notifier=self.notifier,
             clock=self.clock,
         )

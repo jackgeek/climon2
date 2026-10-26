@@ -116,3 +116,38 @@ class Notifier(Protocol):
 
 class Clock(Protocol):
     def now(self) -> datetime: ...
+
+
+@dataclass(frozen=True)
+class CiResult:
+    commit: str
+    report: TestReport
+
+
+class GitHub(Protocol):
+    def push_candidate(self, workspace: Path, branch: str) -> str:
+        """Commit the workspace to `branch`, push it, and return the commit SHA."""
+        ...
+
+    def windows_ci(self, commit: str) -> CiResult:
+        """Wait for the Windows acceptance workflow on `commit` and return its result."""
+        ...
+
+    def changed_files(self, workspace: Path, commit: str) -> tuple[str, ...]:
+        """Files `commit` changes relative to the main branch."""
+        ...
+
+    def open_pr(self, branch: str, title: str, body: str) -> int:
+        """Open a pull request from `branch` into main and return its number."""
+        ...
+
+    def pr_state(self, number: int) -> str:
+        """One of "open", "merged" or "closed"."""
+        ...
+
+
+class MacOS(Protocol):
+    def run_acceptance(self, commit: str, features: tuple[str, ...]) -> TestReport:
+        """Run the features' acceptance tests natively on this Mac against a fresh clone at
+        `commit`. Only called after the user approves the candidate."""
+        ...

@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from climon2_factory.ports import AgentRequest, Role, Submission, TestReport
+from climon2_factory.ports import AgentRequest, CiResult, Role, Submission, TestReport
 
 Script = Callable[[AgentRequest], Submission]
 AcceptanceScript = Callable[[Path, tuple[str, ...], str | None], TestReport]
@@ -50,6 +50,54 @@ class FakeExecutor:
         if self._script is None:
             raise AssertionError("unexpected acceptance run")
         return self._script(workspace, features, subject)
+
+
+class FakeGitHub:
+    """Each push yields commit c1, c2, …; Windows CI answers from a script keyed by commit."""
+
+    def __init__(
+        self,
+        windows: Callable[[str], CiResult] | None = None,
+        changed: tuple[str, ...] = ("climon2/src/main.rs",),
+    ) -> None:
+        self._windows = windows
+        self._changed = changed
+        self.pushes: list[str] = []
+        self.prs: list[tuple[str, str, str]] = []
+        self.pr_states: dict[int, str] = {}
+
+    def push_candidate(self, workspace: Path, branch: str) -> str:
+        self.pushes.append(branch)
+        return f"c{len(self.pushes)}"
+
+    def windows_ci(self, commit: str) -> CiResult:
+        if self._windows is None:
+            raise AssertionError("unexpected Windows CI request")
+        return self._windows(commit)
+
+    def changed_files(self, workspace: Path, commit: str) -> tuple[str, ...]:
+        return self._changed
+
+    def open_pr(self, branch: str, title: str, body: str) -> int:
+        self.prs.append((branch, title, body))
+        number = len(self.prs)
+        self.pr_states[number] = "open"
+        return number
+
+    def pr_state(self, number: int) -> str:
+        return self.pr_states[number]
+
+
+class FakeMacOS:
+    def __init__(self, script: Callable[[str], TestReport] | None = None) -> None:
+        self._script = script
+        self.commits: list[str] = []
+
+    def run_acceptance(self, commit: str, features: tuple[str, ...]) -> TestReport:
+        self.commits.append(commit)
+        if self._script is None:
+            raise AssertionError("unexpected macOS run")
+        return self._script(commit)
 
 
 @dataclass
