@@ -54,12 +54,16 @@ _Avoid_: Active version, default version
 The packaged directory structure containing the launcher, `current`, and one folder per version.
 _Avoid_: Install directory, bundle
 
+**Climon2 executable home**:
+The directory holding the install layout: the launcher, `current`, and the version folders.
+_Avoid_: Install directory, exe dir, `CLIMON2_EXE`
+
 **Climon2 home**:
 The directory where climon2 keeps its data; `~/.climon2` unless `CLIMON2_HOME` overrides it.
 _Avoid_: Data dir, state dir, config dir
 
 **Climon2 error code**:
-The single exit code climon2 uses for its own failures, distinct from the command's exit codes.
+The single exit code climon2 uses for its own failures, chosen by convention to be unlikely to be confused with the command's exit codes.
 _Avoid_: Internal error code, failure code
 
 ## Testing
