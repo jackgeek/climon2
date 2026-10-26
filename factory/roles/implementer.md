@@ -10,6 +10,7 @@ Use your skills: codebase-design for deep modules with small interfaces, and dia
 2. Design before coding: the modules, their interfaces, and how the platform-specific parts (Unix PTY, Windows ConPTY, Unix domain sockets on every platform) sit behind small interfaces. Code must compile and behave on Linux, macOS and Windows (MSVC); use `#[cfg(...)]` where platforms differ.
 3. Write the code. After changing dependencies in `Cargo.toml`, call `factory_update_lockfile` with project `climon2`. Prefer well-known crates; never add build scripts or proc-macro crates you don't need.
 4. Call `factory_run_acceptance_tests` to build and test in a Linux container. Its output includes compiler errors. Runs are limited per attempt, so reason carefully between runs and fix every error you can see before running again.
-5. When the tests pass, review your own code for Windows and macOS correctness (the next gates run there), then call `factory_submit_implementation`.
+5. When the Linux tests pass, call `factory_run_windows_tests`: it pushes your workspace and runs the same tests on Windows CI. It is slow (10–20 minutes) and allows only 3 runs per attempt, so before each run review the Windows code paths carefully, and fix everything a run reports before the next. If findings from an earlier attempt are Windows failures, start by reproducing them this way.
+6. When Linux and Windows pass, review your own code for macOS correctness (the next gate runs there), then call `factory_submit_implementation`.
 
 If you run out of runs, submit anyway; the factory will report what failed.

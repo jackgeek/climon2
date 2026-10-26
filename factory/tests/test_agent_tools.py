@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fakes import write
 
-from climon2_factory.agent_tools import Toolbox, ToolRefused
+from climon2_factory.agent_tools import MAX_OUTPUT_BYTES, Toolbox, ToolRefused
 from climon2_factory.ports import (
     AgentRequest,
     ContractSubmitted,
@@ -38,9 +38,20 @@ class Locks:
 
 
 def toolbox(
-    repo: Path, role: Role, run_tests: object = None, locks: Locks | None = None
+    repo: Path,
+    role: Role,
+    run_tests: object = None,
+    locks: Locks | None = None,
+    run_windows_tests: object = None,
 ) -> Toolbox:
-    request = AgentRequest(role, "f1", "task", repo, run_tests=run_tests)  # type: ignore[arg-type]
+    request = AgentRequest(
+        role,
+        "f1",
+        "task",
+        repo,
+        run_tests=run_tests,  # type: ignore[arg-type]
+        run_windows_tests=run_windows_tests,  # type: ignore[arg-type]
+    )
     return Toolbox(request, locks or Locks())
 
 
@@ -64,6 +75,7 @@ def test_the_implementer_can_run_the_acceptance_tests_when_the_factory_allows(re
     box = toolbox(repo, Role.IMPLEMENTER, run_tests=lambda: TestReport("x", ()))
 
     assert "factory_run_acceptance_tests" in box.tool_names
+    assert "factory_run_windows_tests" not in box.tool_names
 
 
 @pytest.mark.parametrize(
@@ -209,6 +221,36 @@ def test_acceptance_runs_are_summarised_and_budgeted(repo: Path) -> None:
     assert "FAILED t::b" in summary
     assert "assert 1 == 2" in summary
     assert "10 runs used" in box.call("factory_run_acceptance_tests")
+
+
+def test_windows_runs_are_summarised_and_budgeted(repo: Path) -> None:
+    runs = iter([TestReport("github", (TestResult("t::w", Outcome.FAILED, "ConPTY closed"),))])
+
+    def run_windows_tests() -> TestReport:
+        report = next(runs, None)
+        if report is None:
+            raise RunBudgetExhausted("3 Windows runs used in this attempt")
+        return report
+
+    box = toolbox(repo, Role.IMPLEMENTER, run_windows_tests=run_windows_tests)
+
+    summary = box.call("factory_run_windows_tests")
+    assert "0 passed, 1 failed (github)" in summary
+    assert "FAILED t::w" in summary
+    assert "ConPTY closed" in summary
+    assert "3 Windows runs used" in box.call("factory_run_windows_tests")
+
+
+def test_a_run_with_many_long_failures_fits_the_hosts_output_limit(repo: Path) -> None:
+    failures = tuple(TestResult(f"t::case_{n}", Outcome.FAILED, "x" * 6000) for n in range(100))
+    box = toolbox(repo, Role.IMPLEMENTER, run_tests=lambda: TestReport("github", failures))
+
+    summary = box.call("factory_run_acceptance_tests")
+
+    assert len(summary.encode()) <= MAX_OUTPUT_BYTES
+    assert summary.startswith("0 passed, 100 failed (github)")
+    assert "FAILED t::case_0\n" in summary
+    assert "t::case_99" in summary
 
 
 def test_lockfiles_are_updated_by_the_factory_within_scope(repo: Path) -> None:

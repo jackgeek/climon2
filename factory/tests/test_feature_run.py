@@ -500,6 +500,38 @@ def test_each_attempt_may_run_the_tests_at_most_ten_times(factory: Factory) -> N
     assert len(factory.executor.calls) == 10 + 3
 
 
+def test_the_implementer_may_run_the_windows_tests_on_its_own_candidate_branches(
+    factory: Factory,
+) -> None:
+    seen: list[TestReport] = []
+
+    def implements_on_windows(request: AgentRequest) -> ImplementationSubmitted:
+        write(request.workspace, "climon2/src/main.rs", "fn main() {}\n")
+        assert request.run_windows_tests is not None
+        try:
+            while True:
+                seen.append(request.run_windows_tests())
+        except RunBudgetExhausted:
+            pass
+        return ImplementationSubmitted()
+
+    tests_hash = reach_tests_approval(factory, implementer=[implements_on_windows])
+    factory.executor = FakeExecutor(passing_gate)
+    factory.github = FakeGitHub(windows=windows_passes)
+
+    factory("approve", "f1/tests", tests_hash)
+
+    run = run_id(factory)
+    assert len(seen) == 3
+    assert seen[0] == windows_passes("c1").report
+    assert factory.github.pushes == [
+        f"factory/{run}-a1-w1",
+        f"factory/{run}-a1-w2",
+        f"factory/{run}-a1-w3",
+        f"factory/{run}-a1",
+    ]
+
+
 def passing_gate(workspace: Path, features: tuple[str, ...], subject: str | None) -> TestReport:
     return report(("test_exec_runs_command", P, ""), ("test_list_hides_dead_sessions", P, ""))
 

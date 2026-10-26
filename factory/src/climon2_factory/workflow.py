@@ -29,6 +29,7 @@ from climon2_factory.traceability import contract_problems, coverage_problems
 MAX_REVIEW_ROUNDS = 2
 MAX_ATTEMPTS = 3
 MAX_RUNS_PER_ATTEMPT = 10
+MAX_WINDOWS_RUNS_PER_ATTEMPT = 3
 IMPLEMENTER_WRITABLE = "climon2/"
 
 DRAFT_CONTRACT = "draft-contract"
@@ -380,6 +381,19 @@ class Workflow:
             runs_used += 1
             return self._executor.run_acceptance(self._repo, gate_features, None)
 
+        windows_runs_used = 0
+
+        def run_windows_tests() -> TestReport:
+            nonlocal windows_runs_used
+            if windows_runs_used >= MAX_WINDOWS_RUNS_PER_ATTEMPT:
+                raise RunBudgetExhausted(
+                    f"{MAX_WINDOWS_RUNS_PER_ATTEMPT} Windows runs used in this attempt"
+                )
+            windows_runs_used += 1
+            branch = f"factory/{run.run_id}-a{run.attempts}-w{windows_runs_used}"
+            commit = self._github.push_candidate(self._repo, branch)
+            return self._github.windows_ci(commit).report
+
         previous = tuple(Finding(Severity(s), m) for s, m in run.attempt_findings)
         # Counted before the agent runs, so an attempt interrupted by a crash is not refunded.
         run.attempts += 1
@@ -393,6 +407,7 @@ class Workflow:
                 workspace=self._repo,
                 findings=previous,
                 run_tests=run_tests,
+                run_windows_tests=run_windows_tests,
             )
         )
         _expect(submission, ImplementationSubmitted)

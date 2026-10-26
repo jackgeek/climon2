@@ -34,6 +34,7 @@ class AgentRequest:
     workspace: Path
     findings: tuple[Finding, ...] = ()
     run_tests: "Callable[[], TestReport] | None" = None
+    run_windows_tests: "Callable[[], TestReport] | None" = None
 
 
 class RunBudgetExhausted(Exception):

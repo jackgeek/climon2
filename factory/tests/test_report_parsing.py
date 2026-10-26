@@ -100,7 +100,21 @@ def test_a_test_reported_more_than_once_fails() -> None:
         )
     )
 
-    assert report.results[0] == TestResult(HELLO, F, "reported more than once")
+    assert report.results[0] == TestResult(HELLO, F, "reported more than once:\nno")
+
+
+def test_a_failure_with_a_teardown_error_keeps_both_messages() -> None:
+    report = parse(
+        junit(
+            case("features.f1.tests.test_hello", "test_greets", '<failure message="timed out" />'),
+            case("features.f1.tests.test_hello", "test_greets", '<error message="on teardown" />'),
+            PASS_LIST,
+        )
+    )
+
+    assert report.results[0] == TestResult(
+        HELLO, F, "reported more than once:\ntimed out\nerror: on teardown"
+    )
 
 
 def test_a_clean_report_from_a_failed_pytest_run_fails_every_test() -> None:

@@ -52,7 +52,10 @@ def _accounted(test_id: str, results: list[TestResult]) -> TestResult:
     if not results:
         return TestResult(test_id, Outcome.FAILED, "no result reported")
     if len(results) > 1:
-        return TestResult(test_id, Outcome.FAILED, "reported more than once")
+        messages = [r.message for r in results if r.message]
+        return TestResult(
+            test_id, Outcome.FAILED, "\n".join(["reported more than once:", *messages])
+        )
     return results[0]
 
 
