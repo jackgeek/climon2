@@ -28,10 +28,11 @@ pythonVersion = "3.12"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = [".*", "build", "dist", "*.egg", "venv", "fixtures"]
-addopts = "-m 'not container and not github'"
+addopts = "-m 'not container and not github and not macos'"
 markers = [
     "container: needs a running dockerd (Rancher Desktop); run with -m container",
     "github: pushes to jackgeek/climon2 and runs real Windows CI; run with -m github",
+    "macos: runs acceptance tests natively on this Mac; run with -m macos",
 ]
 
 [tool.ruff]

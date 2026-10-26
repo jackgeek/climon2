@@ -174,8 +174,10 @@ Agents never execute code on the host. See [ADR-0002](../adr/0002-agents-never-e
   - Pushing to `factory/**` triggers `.github/workflows/factory-windows.yml`. It collects the expected tests before anything is built, then builds `climon2/` with `cargo build --release --locked` and runs every `features/*/tests`. The collected list, build result, JUnit report and exit codes are uploaded as artifacts. The factory finds the run by commit and workflow path, then applies the same untrusted-report cross-checks as the containers. Missing artifacts fail every test with the run's conclusion.
 - **macOS:**
   - The user approves each commit after the Windows and Linux gates pass. The factory highlights build-time code changes (`build.rs`, proc macros, Cargo files, new dependencies).
-  - The run uses a fresh clone, an allow-listed environment with a temporary HOME, a factory-owned `RUSTUP_HOME`/`CARGO_HOME`, and offline locked cargo.
-  - It has a 30-minute limit and is followed by a sweep for leftover processes.
+  - The run uses a fresh checkout of the commit (`git archive` from the local repo, so unpushed and unreferenced candidate commits work) in `~/.climon2-factory/macos-runs/<commit>/`, which is deleted afterwards.
+  - The environment is built from scratch, not inherited: a temporary HOME, a minimal PATH, and a factory-owned toolchain in `~/.climon2-factory/toolchain` (rustup-init pinned by hash, the pinned Rust, and pytest installed from the hashed container requirements).
+  - Only the requested features' tests are collected, before anything is built. Crates are fetched with `cargo fetch --locked`, then built with `cargo build --release --locked --offline`. The report goes through the same untrusted-report cross-checks.
+  - Each step runs in its own process group. The run has a 30-minute limit, after which the whole group is killed. Afterwards, any of the user's processes whose working directory is still inside the run directory are killed (found with `lsof`; macOS hides process environments, so an environment marker can't be used). Known gap: a process that changes directory elsewhere, or reaches the network, escapes, until a macOS VM is evaluated.
   - Unattended macOS runs are deferred until a macOS VM is evaluated (see [research](../research/macos-execution-isolation.md)).
 - **Toolchains** are pinned everywhere. Only x64 is supported. Shipped Windows binaries are MSVC builds from GitHub; the GNU target is used only for early compile checks.
 
@@ -229,3 +231,4 @@ The factory is built conversationally and test-first, through pull requests, in 
 - Factory tests run locally and are deterministic. A separate smoke test exercises real Copilot.
 - Validation command (from `factory/`): `uv run pyright && uv run pytest && uv run ruff check && uv run ruff format --check`
 - Executor tests need real infrastructure and are opt-in: `uv run pytest -m container` needs Rancher Desktop running with the moby engine (`~/.rd/docker.sock`). `uv run pytest -m github` needs `gh` logged in with push access to climon2. It pushes throwaway `factory/test-*` branches to climon2 itself, waits for real Windows CI, opens and closes a PR, and deletes the branches afterwards.
+`uv run pytest -m macos` runs the native macOS gate on this Mac; the first run installs the factory toolchain (about 30 seconds).
