@@ -1,0 +1,7 @@
+{
+  "hash": "sha256:1fbe0eec176cdf7e03f9f464ec0c961c58cdfbbc8c0f001604041fa54b983c30",
+  "manifest": 1,
+  "decision": "rejected",
+  "reason": "Two changes. (1) Reviewer advisory on S10/B9: name exactly when exec must report client loss - when the client process is killed while the invoking terminal stays open, exec returns 125 with 'client disconnected'; keep the hedge only for a closed invoking terminal. (2) S14/B14: the acceptance gates run every test as one unprivileged user and no second OS account exists (a documented harness gap), so acceptance tests cannot attempt a connection as another user. Keep B14 as a requirement, but make S14 testable as a single user: an authorized same-user hello gets the matching ID, the runtime directory and socket are user-only (mode 0700/0600 on Unix, user-only ACL on Windows), and the Windows fail-closed diagnostic. State under Open questions that rejecting a different user's connection is verified by candidate review until the harness gains a second test user.",
+  "decided_at": "2026-10-26T03:01:53.920655+00:00"
+}

@@ -1,0 +1,20 @@
+[package]
+name = "trimmed-current"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+semver = "1"
+
+[[bin]]
+name = "climon2"
+path = "src/main.rs"
+[[bin]]
+name = "climon2-cli"
+path = "src/main.rs"
+[[bin]]
+name = "climon2-daemon"
+path = "src/main.rs"
+[[bin]]
+name = "climon2-client"
+path = "src/main.rs"

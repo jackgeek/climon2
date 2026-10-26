@@ -1,0 +1,11 @@
+{
+  "name": "session-exec-discovery/contract-findings",
+  "hash": "sha256:2f1deb6e9b25b62f2d8c18a8eb72241379a5c9e4c44d8eb66ee31cc7e1f22f34",
+  "paths": [
+    "features/session-exec-discovery/findings/contract-1.json"
+  ],
+  "inputs": {
+    "artifact:session-exec-discovery/contract": "sha256:ad390c9ac38fd11c8fb6fce465ec973a8bcf1fd67f9bb554fe9057737376bd14"
+  },
+  "recorded_at": "2026-10-26T03:12:12.106968+00:00"
+}

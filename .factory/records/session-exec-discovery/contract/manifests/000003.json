@@ -1,0 +1,12 @@
+{
+  "name": "session-exec-discovery/contract",
+  "hash": "sha256:0acf3fd383e76e973602877a0e5e4b958f9752031b793ad61597fa4c8747ad18",
+  "paths": [
+    "features/session-exec-discovery/contract.md"
+  ],
+  "inputs": {
+    "path:features/session-exec-discovery/brief.md": "sha256:957c37a27dde6043be36f3fd8e928efc704ba6594054ef72465751375c682c73",
+    "path:CONTEXT.md": "sha256:9b48baf58543bc4a323d58a9fb24e7ea35251be82fecdcd20d6823bf9de7bf53"
+  },
+  "recorded_at": "2026-10-26T03:07:11.139816+00:00"
+}
