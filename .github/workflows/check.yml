@@ -56,3 +56,28 @@ jobs:
       - name: Test Unix launcher
         if: runner.os == 'Linux'
         run: cargo test --locked -p climon2-launcher
+  quality:
+    name: Coverage and isolated mutation checks
+    runs-on: macos-15
+    env:
+      CLIMON2_TEST_BASH: /bin/bash
+      CLIMON2_MUTATION_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: actions/cache@v4
+        with:
+          path: .metrics
+          key: quality-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('xtask/src/quality.rs', 'tools/quality-requirements.txt') }}
+      - name: Set up pinned quality tools
+        run: cargo xtask setup-quality
+      - name: Prove real-binary worker isolation
+        run: cargo xtask mutation-probe
+      - name: Check coverage, CRAP and changed shipped source
+        run: cargo xtask mutate

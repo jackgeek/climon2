@@ -4,11 +4,16 @@ use std::{
     process::{Command, ExitCode},
 };
 
+mod quality;
+
 const HELP: &str = "\
-Usage: cargo xtask check
+Usage: cargo xtask <check|setup-quality|mutation-probe|mutate [--mutate-all]>
 
 check runs the bootstrap gates: fmt, clippy and workspace tests.
-PTY/packaged tests, coverage, crapper and mutator are not implemented yet (#31-#39).
+setup-quality installs the pinned Python quality tools and cargo-llvm-cov.
+mutation-probe checks real-binary worker isolation.
+mutate runs coverage, crapper and mutation checks on shipped source.
+PTY/packaged acceptance and installer-built coverage remain in #31-#39.
 This command is not yet a full release gate.";
 
 fn main() -> ExitCode {
@@ -17,11 +22,21 @@ fn main() -> ExitCode {
         println!("{HELP}");
         return ExitCode::SUCCESS;
     }
-    if args != ["check"] {
+    let result = if args == ["check"] {
+        check()
+    } else if args == ["setup-quality"] {
+        quality::setup(workspace_root())
+    } else if args == ["mutation-probe"] {
+        quality::probe(workspace_root())
+    } else if args == ["mutate"] {
+        quality::check(workspace_root(), false)
+    } else if args == ["mutate", "--mutate-all"] {
+        quality::check(workspace_root(), true)
+    } else {
         eprintln!("xtask: error: unknown arguments\n\n{HELP}");
         return ExitCode::from(2);
-    }
-    match check() {
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("xtask: error: {error}");
@@ -30,15 +45,19 @@ fn main() -> ExitCode {
     }
 }
 
+fn workspace_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask is inside the workspace")
+}
+
 fn check() -> io::Result<()> {
     eprintln!(
-        "Bootstrap checks only; PTY/packaged tests and coverage/CRAP/mutation gates \
-         remain in #31-#39."
+        "Bootstrap checks only; PTY/packaged acceptance remains in #31-#39. \
+         Run cargo xtask mutate for coverage/CRAP/mutation checks."
     );
     check_bash_profiles()?;
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("xtask is inside the workspace");
+    let root = workspace_root();
     for args in [
         &["fmt", "--all", "--", "--check"][..],
         &[
