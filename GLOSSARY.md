@@ -52,6 +52,14 @@ _Avoid_: Session file, PTY file
 The private, per-user directory holding the sockets that clients use to reach session daemons, one per climon2 home.
 _Avoid_: Socket dir, run dir, temp dir
 
+**Session log**:
+The diagnostic records climon2 keeps about its own processes in one session; never about the session's content.
+_Avoid_: Transcript, history, session output
+
+**General log**:
+Diagnostic records from a climon2 process that are not tied to any session, such as `list` or `exec` before its session exists.
+_Avoid_: Global log, main log
+
 ## Installation
 
 **Launcher**:
