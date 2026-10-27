@@ -1,0 +1,58 @@
+name: Bootstrap checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: ${{ matrix.runner }} / bash ${{ matrix.bash }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+        bash: ["3.2", "5"]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Select required bash
+        env:
+          BASH_PROFILE: ${{ matrix.bash }}
+        run: |
+          if [[ "$BASH_PROFILE" == "3.2" ]]; then
+            bash_path=/bin/bash
+          else
+            brew list bash >/dev/null 2>&1 || brew install bash
+            bash_path="$(brew --prefix bash)/bin/bash"
+          fi
+          test -x "$bash_path"
+          actual="$("$bash_path" -c 'printf "%s" "$BASH_VERSION"')"
+          case "$actual" in
+            "$BASH_PROFILE".*) ;;
+            *) echo "::error::Expected bash $BASH_PROFILE, found $actual"; exit 1 ;;
+          esac
+          echo "CLIMON2_TEST_BASH=$bash_path" >> "$GITHUB_ENV"
+      - name: Run initial gates (not the final release gates)
+        run: cargo xtask check
+  neutral:
+    name: Platform-neutral / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Test neutral contracts
+        run: cargo test --locked -p climon2-core
+      - name: Test Unix launcher
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p climon2-launcher

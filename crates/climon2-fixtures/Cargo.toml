@@ -1,0 +1,17 @@
+[package]
+name = "climon2-fixtures"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "climon2-fixture"
+path = "src/bin/terminal.rs"
+
+[[bin]]
+name = "climon2-tui-fixture"
+path = "src/bin/tui.rs"
+
+[lints]
+workspace = true

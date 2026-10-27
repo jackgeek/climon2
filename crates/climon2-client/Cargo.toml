@@ -1,0 +1,13 @@
+[package]
+name = "climon2-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+climon2-core = { path = "../climon2-core" }
+climon2-platform = { path = "../climon2-platform" }
+
+[lints]
+workspace = true
