@@ -2,7 +2,7 @@ use alacritty_terminal::{
     Term,
     event::{Event, EventListener},
     grid::Dimensions,
-    index::Line,
+    index::{Column, Line},
     term::Config,
     vte::ansi::Processor,
 };
@@ -17,7 +17,10 @@ use nix::{
 use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use std::{
     io::{self, Read, Write},
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Arc, Condvar, Mutex,
+        mpsc::{self, Sender},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -46,28 +49,83 @@ impl EventListener for Events {
     }
 }
 
-pub struct Terminal {
-    master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
-    reader: Option<JoinHandle<()>>,
-    output: Receiver<io::Result<Vec<u8>>>,
-    events: Receiver<Event>,
+struct Screen {
     term: Term<Events>,
-    parser: Processor,
     recent: Vec<u8>,
     eof: bool,
+    error: Option<io::Error>,
+}
+
+impl Screen {
+    fn text(&self) -> String {
+        let grid = self.term.grid();
+        (0..grid.screen_lines())
+            .map(|row| {
+                (0..grid.columns())
+                    .map(|col| grid[Line(row as i32)][Column(col)].c)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn failure(&self, error: io::Error) -> io::Error {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "{error}\nSCREEN:\n{}\nRECENT BYTES:\n{:?}",
+                self.text(),
+                String::from_utf8_lossy(&self.recent)
+            ),
+        )
+    }
+
+    fn check(&self) -> io::Result<()> {
+        match &self.error {
+            Some(error) => Err(self.failure(io::Error::new(error.kind(), error.to_string()))),
+            None => Ok(()),
+        }
+    }
+}
+
+type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
+type SharedScreen = Arc<(Mutex<Screen>, Condvar)>;
+
+pub struct Terminal {
+    master: Box<dyn MasterPty + Send>,
+    writer: Writer,
+    reader: Option<JoinHandle<()>>,
+    screen: SharedScreen,
     pid: Pid,
     exit: Option<i32>,
 }
 
 impl Terminal {
     pub fn spawn(command: CommandBuilder, rows: u16, cols: u16) -> io::Result<Self> {
-        let size = pty_size(rows, cols)?;
         let pair = portable_pty::native_pty_system()
-            .openpty(size)
+            .openpty(pty_size(rows, cols)?)
             .map_err(io::Error::other)?;
         let mut input = pair.master.try_clone_reader().map_err(io::Error::other)?;
-        let writer = pair.master.take_writer().map_err(io::Error::other)?;
+        let writer = Arc::new(Mutex::new(
+            pair.master.take_writer().map_err(io::Error::other)?,
+        ));
+        let (sender, events) = mpsc::channel();
+        let screen = Arc::new((
+            Mutex::new(Screen {
+                term: Term::new(
+                    Config::default(),
+                    &Size {
+                        rows: rows.into(),
+                        cols: cols.into(),
+                    },
+                    Events(sender),
+                ),
+                recent: Vec::new(),
+                eof: false,
+                error: None,
+            }),
+            Condvar::new(),
+        ));
         let child = pair
             .slave
             .spawn_command(command)
@@ -76,171 +134,152 @@ impl Terminal {
             i32::try_from(child.process_id().expect("Unix child pid")).expect("pid fits i32"),
         );
         drop(pair.slave);
-        let (sender, output) = mpsc::channel();
+        let reader_screen = screen.clone();
+        let reader_writer = writer.clone();
         let reader = thread::spawn(move || {
+            let (screen, changed) = &*reader_screen;
+            let mut parser: Processor = Processor::new();
             let mut buffer = [0; 4096];
             loop {
                 let result = input.read(&mut buffer);
-                let done = !matches!(result, Ok(count) if count > 0)
-                    && !matches!(&result, Err(error) if error.kind() == io::ErrorKind::Interrupted);
-                let message = match result {
-                    Ok(count) => Ok(buffer[..count].to_vec()),
+                let mut state = screen.lock().expect("screen lock");
+                match result {
+                    Ok(0) => state.eof = true,
+                    Ok(count) => {
+                        parser.advance(&mut state.term, &buffer[..count]);
+                        state.recent.extend_from_slice(&buffer[..count]);
+                        let excess = state.recent.len().saturating_sub(65536);
+                        state.recent.drain(..excess);
+                        while let Ok(event) = events.try_recv() {
+                            if let Event::PtyWrite(reply) = event
+                                && let Err(error) = write(&reader_writer, reply.as_bytes())
+                            {
+                                state.error = Some(error);
+                                break;
+                            }
+                        }
+                    }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error) if error.raw_os_error() == Some(nix::libc::EIO) => Ok(Vec::new()),
-                    Err(error) => Err(error),
-                };
-                if sender.send(message).is_err() || done {
+                    Err(error) if error.raw_os_error() == Some(nix::libc::EIO) => state.eof = true,
+                    Err(error) => state.error = Some(error),
+                }
+                changed.notify_all();
+                if state.eof || state.error.is_some() {
                     break;
                 }
             }
         });
-        let (sender, events) = mpsc::channel();
         Ok(Self {
             master: pair.master,
             writer,
             reader: Some(reader),
-            output,
-            events,
-            term: Term::new(
-                Config::default(),
-                &Size {
-                    rows: rows.into(),
-                    cols: cols.into(),
-                },
-                Events(sender),
-            ),
-            parser: Processor::new(),
-            recent: Vec::new(),
-            eof: false,
+            screen,
             pid,
             exit: None,
         })
     }
 
     pub fn send(&mut self, bytes: impl AsRef<[u8]>) -> io::Result<()> {
-        self.writer
-            .write_all(bytes.as_ref())
-            .and_then(|()| self.writer.flush())
-            .map_err(|error| self.failure(error))
+        write(&self.writer, bytes.as_ref())
+            .map_err(|error| self.screen.0.lock().expect("screen lock").failure(error))
     }
 
     pub fn screen(&self) -> String {
-        let grid = self.term.grid();
-        (0..grid.screen_lines())
-            .map(|row| {
-                (0..grid.columns())
-                    .map(|col| grid[Line(row as i32)][alacritty_terminal::index::Column(col)].c)
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        self.screen.0.lock().expect("screen lock").text()
     }
 
     pub fn wait_for_text(&mut self, text: &str, timeout: Duration) -> io::Result<()> {
-        self.wait(timeout, |terminal| terminal.screen().contains(text))
+        self.wait(timeout, |screen| screen.text().contains(text))
     }
 
     pub fn wait_for_bytes(&mut self, bytes: &[u8], timeout: Duration) -> io::Result<()> {
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        self.wait(timeout, |terminal| {
-            terminal
-                .recent
-                .windows(bytes.len())
-                .any(|window| window == bytes)
+        self.wait(timeout, |screen| {
+            bytes.is_empty()
+                || screen
+                    .recent
+                    .windows(bytes.len())
+                    .any(|window| window == bytes)
         })
     }
 
-    fn wait(&mut self, timeout: Duration, condition: impl Fn(&Self) -> bool) -> io::Result<()> {
+    fn wait(&self, timeout: Duration, condition: impl Fn(&Screen) -> bool) -> io::Result<()> {
         let deadline = Instant::now() + timeout;
+        let (screen, changed) = &*self.screen;
+        let mut state = screen.lock().expect("screen lock");
         loop {
-            if condition(self) {
+            state.check()?;
+            if condition(&state) {
                 return Ok(());
             }
-            if Instant::now() >= deadline || self.eof {
-                return Err(self.failure(io::Error::new(
+            if Instant::now() >= deadline || state.eof {
+                return Err(state.failure(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "terminal expectation not met",
                 )));
             }
-            self.pump(
-                deadline
-                    .saturating_duration_since(Instant::now())
-                    .min(Duration::from_millis(5)),
-            )?;
+            (state, _) = changed
+                .wait_timeout(state, deadline.saturating_duration_since(Instant::now()))
+                .expect("screen wait");
         }
-    }
-
-    fn pump(&mut self, timeout: Duration) -> io::Result<()> {
-        match self.output.recv_timeout(timeout) {
-            Ok(result) => {
-                let bytes = result.map_err(|error| self.failure(error))?;
-                self.eof = bytes.is_empty();
-                self.parser.advance(&mut self.term, &bytes);
-                self.recent.extend(bytes);
-                if self.recent.len() > 65536 {
-                    self.recent.drain(..self.recent.len() - 65536);
-                }
-                while let Ok(event) = self.events.try_recv() {
-                    if let Event::PtyWrite(reply) = event {
-                        self.send(reply)?;
-                    }
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => self.eof = true,
-            Err(mpsc::RecvTimeoutError::Timeout) => (),
-        }
-        Ok(())
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()> {
         let size = pty_size(rows, cols)?;
-        self.term.resize(Size {
+        let mut screen = self.screen.0.lock().expect("screen lock");
+        self.master
+            .resize(size)
+            .map_err(|error| screen.failure(io::Error::other(error)))?;
+        screen.term.resize(Size {
             rows: rows.into(),
             cols: cols.into(),
         });
-        self.master
-            .resize(size)
-            .map_err(|error| self.failure(io::Error::other(error)))
+        Ok(())
+    }
+
+    fn poll_exit(&mut self) -> io::Result<()> {
+        if self.exit.is_none() {
+            self.exit = match waitpid(self.pid, Some(WaitPidFlag::WNOHANG)) {
+                Ok(WaitStatus::Exited(_, code)) => Some(code),
+                Ok(WaitStatus::Signaled(_, signal, _)) => Some(128 + signal as i32),
+                Ok(_) | Err(Errno::EINTR) => None,
+                Err(error) => return Err(io::Error::from_raw_os_error(error as i32)),
+            };
+        }
+        Ok(())
     }
 
     pub fn wait_exit(&mut self, timeout: Duration) -> io::Result<i32> {
         let deadline = Instant::now() + timeout;
         loop {
-            if self.exit.is_none() {
-                self.exit = match waitpid(self.pid, Some(WaitPidFlag::WNOHANG)) {
-                    Ok(WaitStatus::Exited(_, code)) => Some(code),
-                    Ok(WaitStatus::Signaled(_, signal, _)) => Some(128 + signal as i32),
-                    Ok(_) | Err(Errno::EINTR) => None,
-                    Err(error) => {
-                        return Err(self.failure(io::Error::from_raw_os_error(error as i32)));
-                    }
-                };
-            }
-            if let Some(code) = self.exit.filter(|_| self.eof) {
+            self.poll_exit()
+                .map_err(|error| self.screen.0.lock().expect("screen lock").failure(error))?;
+            let (screen, changed) = &*self.screen;
+            let state = screen.lock().expect("screen lock");
+            state.check()?;
+            if let Some(code) = self.exit.filter(|_| state.eof) {
                 return Ok(code);
             }
             if Instant::now() >= deadline {
-                return Err(self.failure(io::Error::new(
+                return Err(state.failure(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "child did not exit and close its PTY",
                 )));
             }
-            self.pump(Duration::from_millis(5))?;
+            let _guard = changed
+                .wait_timeout(
+                    state,
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(Duration::from_millis(5)),
+                )
+                .expect("screen wait");
         }
     }
+}
 
-    fn failure(&self, error: io::Error) -> io::Error {
-        io::Error::new(
-            error.kind(),
-            format!(
-                "{error}\nSCREEN:\n{}\nRECENT BYTES:\n{:?}",
-                self.screen(),
-                String::from_utf8_lossy(&self.recent)
-            ),
-        )
-    }
+fn write(writer: &Writer, bytes: &[u8]) -> io::Result<()> {
+    let mut writer = writer.lock().expect("PTY writer lock");
+    writer.write_all(bytes).and_then(|()| writer.flush())
 }
 
 fn pty_size(rows: u16, cols: u16) -> io::Result<PtySize> {
@@ -260,16 +299,8 @@ fn pty_size(rows: u16, cols: u16) -> io::Result<PtySize> {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        if self.exit.is_none() {
-            self.exit = match waitpid(self.pid, Some(WaitPidFlag::WNOHANG)) {
-                Ok(WaitStatus::Exited(_, code)) => Some(code),
-                Ok(WaitStatus::Signaled(_, signal, _)) => Some(128 + signal as i32),
-                Ok(_) | Err(Errno::EINTR) => None,
-                Err(error) => {
-                    eprintln!("PTY child {} status failed: {error}", self.pid);
-                    None
-                }
-            };
+        if let Err(error) = self.poll_exit() {
+            eprintln!("PTY child {} status failed: {error}", self.pid);
         }
         match killpg(self.pid, Signal::SIGKILL) {
             Ok(()) | Err(Errno::ESRCH) => (),
