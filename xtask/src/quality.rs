@@ -199,26 +199,8 @@ pub fn check(root: &Path, all: bool) -> io::Result<()> {
     if report.try_exists()? {
         fs::remove_file(&report)?;
     }
-    run(Command::new(env!("CARGO"))
-        .current_dir(root)
-        .env_remove("CARGO_TARGET_DIR")
-        .env_remove("CARGO_BUILD_TARGET_DIR")
-        .env_remove("CARGO_BUILD_BUILD_DIR")
-        .env(
-            "CARGO_LLVM_COV_TARGET_DIR",
-            root.join("target/coverage-build"),
-        )
-        .env(
-            "CARGO_LLVM_COV_BUILD_DIR",
-            root.join("target/coverage-build"),
-        )
-        .args([
-            "llvm-cov",
-            "--workspace",
-            "--locked",
-            "--lcov",
-            "--output-path",
-        ])
+    run(coverage_command(root, &root.join("target/coverage-build"))
+        .args(["--workspace", "--locked", "--lcov", "--output-path"])
         .arg(&report))?;
     if fs::metadata(&report)?.len() == 0 {
         return Err(io::Error::other("coverage report is empty"));
@@ -243,6 +225,30 @@ pub fn check(root: &Path, all: bool) -> io::Result<()> {
 }
 
 pub fn probe(root: &Path) -> io::Result<()> {
+    let scratch = probe_workspace(root)?;
+    let observations = scratch.path().join("observations");
+    let forbidden = scratch.path().join("shared-target-must-not-be-used");
+    let mut command = mutation_command(root)?;
+    command
+        .current_dir(scratch.path())
+        .env("CLIMON2_MUTATION_OBSERVATIONS", &observations)
+        .env("CARGO_TARGET_DIR", &forbidden)
+        .env("CARGO_BUILD_TARGET_DIR", &forbidden)
+        .args([
+            "--no-coverage",
+            "--mutate-all",
+            "--max-workers",
+            "2",
+            "core/src/lib.rs",
+        ]);
+    run(&mut command)?;
+    if forbidden.try_exists()? {
+        return Err(io::Error::other("inherited target directory was used"));
+    }
+    audit_observations(&observations)
+}
+
+fn probe_workspace(root: &Path) -> io::Result<tempfile::TempDir> {
     fs::create_dir_all(root.join("target"))?;
     let scratch = tempfile::Builder::new()
         .prefix("mutation-isolation-")
@@ -266,24 +272,10 @@ pub fn probe(root: &Path) -> io::Result<()> {
     }
     let observations = scratch.path().join("observations");
     fs::create_dir(&observations)?;
-    let forbidden = scratch.path().join("shared-target-must-not-be-used");
-    let mut command = mutation_command(root)?;
-    command
-        .current_dir(scratch.path())
-        .env("CLIMON2_MUTATION_OBSERVATIONS", &observations)
-        .env("CARGO_TARGET_DIR", &forbidden)
-        .env("CARGO_BUILD_TARGET_DIR", &forbidden)
-        .args([
-            "--no-coverage",
-            "--mutate-all",
-            "--max-workers",
-            "2",
-            "core/src/lib.rs",
-        ]);
-    run(&mut command)?;
-    if forbidden.try_exists()? {
-        return Err(io::Error::other("inherited target directory was used"));
-    }
+    Ok(scratch)
+}
+
+fn audit_observations(observations: &Path) -> io::Result<()> {
     let mut variants = BTreeSet::new();
     for entry in fs::read_dir(observations)? {
         let text = fs::read_to_string(entry?.path())?;
@@ -298,6 +290,193 @@ pub fn probe(root: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn coverage_command(root: &Path, build: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO"));
+    command
+        .current_dir(root)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env_remove("CARGO_BUILD_BUILD_DIR")
+        .env("CARGO_LLVM_COV_TARGET_DIR", build)
+        .env("CARGO_LLVM_COV_BUILD_DIR", build)
+        .arg("llvm-cov");
+    command
+}
+
+fn staged_count(report: &Path) -> io::Result<u64> {
+    let text = fs::read_to_string(report)?;
+    let rows: Vec<_> = text
+        .lines()
+        .filter(|line| line.starts_with("FNDA:") && line.contains("staged_probe"))
+        .collect();
+    if rows.is_empty() {
+        return Err(io::Error::other(
+            "staged probe function missing from coverage",
+        ));
+    }
+    rows.into_iter()
+        .map(|row| {
+            row.trim_start_matches("FNDA:")
+                .split(',')
+                .next()
+                .unwrap()
+                .parse::<u64>()
+                .map_err(io::Error::other)
+        })
+        .sum()
+}
+
+/// #31: prove external staged binaries contribute coverage and the pinned gates reject defects.
+pub fn tooling_probe(root: &Path) -> io::Result<()> {
+    verify_llvm_cov()?;
+    let scratch = probe_workspace(root)?;
+    let workspace = scratch.path();
+    let build = workspace.join("target/instrumented");
+    let observations = workspace.join("observations");
+    run(coverage_command(workspace, &build)
+        .env("CLIMON2_MUTATION_OBSERVATIONS", &observations)
+        .args(["--workspace", "--locked", "--no-report"]))?;
+    let report = workspace.join("target/coverage/rust/lcov.info");
+    fs::create_dir_all(report.parent().unwrap())?;
+    let export = || {
+        run(coverage_command(workspace, &build)
+            .args(["report", "--lcov", "--output-path"])
+            .arg(&report))
+    };
+    export()?;
+    if staged_count(&report)? != 0 {
+        return Err(io::Error::other(
+            "staged-only function unexpectedly covered before staged execution",
+        ));
+    }
+    let staged = workspace.join("staged/version");
+    fs::create_dir_all(&staged)?;
+    fs::copy(
+        build.join("debug/isolation-cli"),
+        staged.join("isolation-cli"),
+    )?;
+    let environment = output(coverage_command(workspace, &build).arg("show-env"))?;
+    let environment = String::from_utf8(environment.stdout).map_err(io::Error::other)?;
+    let profile = environment
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("LLVM_PROFILE_FILE='")
+                .and_then(|value| value.strip_suffix('\''))
+        })
+        .ok_or_else(|| io::Error::other("llvm-cov did not supply its profile filename"))?;
+    let result = output(
+        Command::new(staged.join("isolation-cli"))
+            .arg("--staged-probe")
+            .env("LLVM_PROFILE_FILE", profile),
+    )?;
+    if result.stdout != b"42\n" {
+        return Err(io::Error::other(
+            "staged binary returned the wrong observation",
+        ));
+    }
+    export()?;
+    let count = staged_count(&report)?;
+    if count != 1 {
+        return Err(io::Error::other(format!(
+            "staged execution must contribute exactly one coverage hit, got {count}"
+        )));
+    }
+    prove_crapper(root, workspace)?;
+    prove_covered_mutations(root, workspace, &observations)?;
+    eprintln!(
+        "Verified staged coverage, ? complexity, threshold 7 rejection, and changed/full covered mutations."
+    );
+    Ok(())
+}
+
+fn prove_crapper(root: &Path, workspace: &Path) -> io::Result<()> {
+    run(tool(root, "crapper")?.current_dir(workspace).args([
+        "--use-existing-coverage",
+        "--threshold",
+        "7",
+        "core/src/lib.rs",
+    ]))?;
+    let metrics = fs::read_to_string(workspace.join(".metrics/crap.edn"))?;
+    let question = metrics
+        .lines()
+        .find(|line| line.contains(":name \"question_probe\""))
+        .ok_or_else(|| io::Error::other("question probe absent from CRAP metrics"))?;
+    if !question.contains(":complexity 2, :coverage 100.0, :crap 2.0") {
+        return Err(io::Error::other(format!(
+            "? must count as a covered branch: {question}"
+        )));
+    }
+    let excessive = workspace.join("over-limit.rs");
+    fs::copy(root.join("xtask/tests/fixtures/over-limit.rs"), &excessive)?;
+    let rejected = tool(root, "crapper")?
+        .current_dir(workspace)
+        .args(["--use-existing-coverage", "--threshold", "7"])
+        .arg(&excessive)
+        .output()?;
+    if rejected.status.code() != Some(2) {
+        return Err(io::Error::other(format!(
+            "threshold 7 accepted uncovered complexity 3: {rejected:?}"
+        )));
+    }
+    let metrics = fs::read_to_string(workspace.join(".metrics/crap.edn"))?;
+    if !metrics.lines().any(|line| {
+        line.contains(":name \"over_limit\"")
+            && line.contains(":complexity 3, :coverage 0.0, :crap 12.0")
+    }) {
+        return Err(io::Error::other(format!(
+            "threshold failure did not score the expected uncovered function: {metrics}"
+        )));
+    }
+    fs::remove_file(excessive)?;
+    Ok(())
+}
+
+fn prove_covered_mutations(root: &Path, workspace: &Path, observations: &Path) -> io::Result<()> {
+    run(Command::new("git")
+        .current_dir(workspace)
+        .args(["init", "--quiet"]))?;
+    run(Command::new("git").current_dir(workspace).args([
+        "add",
+        "Cargo.toml",
+        "Cargo.lock",
+        "core",
+        "cli",
+    ]))?;
+    run(Command::new("git").current_dir(workspace).args([
+        "-c",
+        "user.name=Quality fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "--no-verify",
+        "-m",
+        "quality baseline",
+    ]))?;
+    let source = workspace.join("core/src/lib.rs");
+    let mut text = fs::read_to_string(&source)?;
+    text.push('\n');
+    fs::write(source, text)?;
+    for mode in ["--changed", "--mutate-all"] {
+        run(mutation_command(root)?
+            .current_dir(workspace)
+            .env("CLIMON2_MUTATION_OBSERVATIONS", observations)
+            .args([
+                "--use-existing-coverage",
+                mode,
+                "--max-workers",
+                "2",
+                "core/src/lib.rs",
+            ]))?;
+        audit_observations(observations)?;
+        for entry in fs::read_dir(observations)? {
+            fs::remove_file(entry?.path())?;
+        }
+    }
+    Ok(())
+}
 fn verify_observation(text: &str) -> io::Result<&'static str> {
     let parts: Vec<_> = text.split("\n---\n").collect();
     if parts.len() != 3 {

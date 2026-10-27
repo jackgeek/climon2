@@ -38,8 +38,8 @@ jobs:
             *) echo "::error::Expected bash $BASH_PROFILE, found $actual"; exit 1 ;;
           esac
           echo "CLIMON2_TEST_BASH=$bash_path" >> "$GITHUB_ENV"
-      - name: Run initial gates (not the final release gates)
-        run: cargo xtask check
+      - name: Run formatting, lint and real-terminal tests
+        run: cargo xtask test
   neutral:
     name: Platform-neutral / ${{ matrix.os }}
     strategy:
@@ -79,5 +79,7 @@ jobs:
         run: cargo xtask setup-quality
       - name: Prove real-binary worker isolation
         run: cargo xtask mutation-probe
+      - name: Prove staged coverage and pinned quality gates
+        run: cargo xtask tooling-probe
       - name: Check coverage, CRAP and changed shipped source
         run: cargo xtask mutate
