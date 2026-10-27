@@ -24,6 +24,10 @@ _Avoid_: Primary client, owner
 A program that shows one session at a time in the user's terminal and switches between sessions, keeping every session's screen current through its own clients.
 _Avoid_: Dashboard, multiplexer, switcher
 
+**Virtual terminal**:
+A model of a session's screen, kept current from the session's output; the session daemon's is the source of truth, and a monitor's is a copy.
+_Avoid_: Screen buffer, emulator, scrollback
+
 **Leave policy**:
 What a session daemon does with its session when the last client leaves.
 _Avoid_: Disconnect handler, kill policy
