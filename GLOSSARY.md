@@ -17,8 +17,12 @@ The process that connects the user's terminal to a session daemon.
 _Avoid_: Viewer, frontend, terminal
 
 **Controlling client**:
-The attached client whose input and terminal size drive the session; when it leaves, control passes to another attached client, and the session ends only if none remains.
+The attached client whose input and terminal size drive the session; when it leaves, control returns to the attached client that held control most recently, and the leave policy applies only if none remains.
 _Avoid_: Primary client, owner
+
+**Monitor**:
+A program that shows one session at a time in the user's terminal and switches between sessions, keeping every session's screen current through its own clients.
+_Avoid_: Dashboard, multiplexer, switcher
 
 **Leave policy**:
 What a session daemon does with its session when the last client leaves.

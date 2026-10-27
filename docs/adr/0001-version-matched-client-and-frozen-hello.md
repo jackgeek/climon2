@@ -8,6 +8,7 @@ A session daemon is only ever reached by the client from its own version. Sessio
 - **Hello:** type `0x01` in both directions with JSON bodies, where unknown fields are ignored. The client speaks first with `{"protocol":1}`, and the daemon replies `{"session_id":"<guid>","climon2_version":"<v>","protocol":<n>}`.
 - **Deadline:** 2 s. The daemon closes a connection that hasn't sent a valid hello within 2 s of accept. A prober treats no full reply within 2 s of starting to connect as not live.
 - **Growth:** the frame layout and existing hello fields never change, but a daemon may add optional fields to its hello reply, which every reader ignores if unknown. This is how any version's `list` can learn dynamic session state, because session metadata is write-once (ADR 0005).
+- **Client command line:** `<climon2 executable home>/<version>/climon2-client attach --metadata <absolute path>`, and nothing else. Every other input (`CLIMON2_HOME`, `CLIMON2_LOG`) reaches the client through the environment, where unknown variables are ignored. Any version's CLI or monitor can therefore start any version's client.
 
 ## Considered options
 
@@ -19,3 +20,4 @@ A session daemon is only ever reached by the client from its own version. Sessio
 - Uninstalling a version that still has live sessions makes them unreachable. The CLI exits with the climon2 error code and names the missing version.
 - The executable home is derived from the CLI's own canonicalised path, so version folders must stay siblings in the install layout.
 - `climon2 exec` resolves its client through the metadata version from the first release, so this path is tested before attach exists.
+- A future monitor handles sessions from every version by running each session's own client on a PTY. It never speaks the post-hello protocol of another version. A native fast path is possible later: the `protocol` field in hello lets a monitor speak the versions it knows and fall back to the PTY route for the rest. No post-hello message has to be frozen for this.

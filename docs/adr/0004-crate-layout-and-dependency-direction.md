@@ -19,7 +19,7 @@ Shipped crates may use test-only crates only as dev-dependencies. A workspace te
 
 ## Considered options
 
-- **One `climon2` package with three bins:** rejected. A future monitor will reuse the client library, and that library mustn't grow code that only the monitor or the daemon needs.
+- **One `climon2` package with three bins:** rejected. Each binary keeps its own dependencies, and the client library mustn't grow code that only the daemon needs. A future monitor reaches clients by path, never by linking them: it runs each session's version-matched `climon2-client` on a PTY of its own, through the frozen client command line (ADR 0001).
 - **One shared library containing both the core and platform modules:** rejected. `compile_error!` would stop the neutral code building on Linux and Windows.
 - **Building the CLI as `climon2` and renaming the launcher:** rejected. The CLI is `climon2-cli` everywhere, so the launcher alone is `climon2`, and Cargo binary names don't collide.
 
