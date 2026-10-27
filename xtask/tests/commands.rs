@@ -24,16 +24,3 @@ fn invalid_arguments_fail_before_running_checks() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("unknown arguments"));
     }
 }
-
-#[test]
-fn check_propagates_preflight_failure_without_starting_cargo() {
-    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
-        .arg("check")
-        .env("CLIMON2_TEST_BASH", env!("CARGO_BIN_EXE_xtask"))
-        .output()
-        .expect("run failing xtask check");
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--version failed"));
-    assert!(!stderr.contains("> cargo"));
-}

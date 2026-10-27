@@ -15,3 +15,10 @@ path = "src/bin/tui.rs"
 
 [lints]
 workspace = true
+
+[dependencies]
+nix = { version = "0.31", features = ["signal", "process", "term", "fs"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+climon2-test-term = { path = "../climon2-test-term" }

@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+test-hooks = []
+
 [dependencies]
 climon2-core = { path = "../climon2-core" }
 

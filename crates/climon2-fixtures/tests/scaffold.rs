@@ -1,6 +1,6 @@
-/// #30 only: these are not yet the terminal-contract fixtures from #21.
+/// #31: malformed fixture scripts fail explicitly, without reporting to the screen.
 #[test]
-fn unfinished_fixtures_fail_explicitly() {
+fn fixtures_reject_missing_scripts() {
     for binary in [
         env!("CARGO_BIN_EXE_climon2-fixture"),
         env!("CARGO_BIN_EXE_climon2-tui-fixture"),
@@ -11,7 +11,7 @@ fn unfinished_fixtures_fail_explicitly() {
         assert_eq!(output.status.code(), Some(1));
         assert!(output.stdout.is_empty());
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("fixture is not implemented"),
+            String::from_utf8_lossy(&output.stderr).contains("expected"),
             "{output:?}"
         );
     }

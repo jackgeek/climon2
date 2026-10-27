@@ -7,3 +7,14 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+climon2-cli = { path = "../climon2-cli", features = ["test-hooks"] }
+climon2-client = { path = "../climon2-client", features = ["test-hooks"] }
+climon2-daemon = { path = "../climon2-daemon", features = ["test-hooks"] }
+climon2-install = { path = "../climon2-install", features = ["test-hooks"] }
+alacritty_terminal = { version = "0.26.0", default-features = false }
+nix = { version = "0.31", features = ["signal", "process", "term", "fs", "user"] }
+portable-pty = { version = "0.9.0", default-features = false }
+sha2 = "0.10"
+tempfile = "3"
