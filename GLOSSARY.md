@@ -20,6 +20,10 @@ _Avoid_: Viewer, frontend, terminal
 The attached client whose input and terminal size drive the session; when it leaves, control passes to another attached client, and the session ends only if none remains.
 _Avoid_: Primary client, owner
 
+**Leave policy**:
+What a session daemon does with its session when the last client leaves.
+_Avoid_: Disconnect handler, kill policy
+
 **Hello handshake**:
 The first exchange on every connection to a session daemon, in which the daemon identifies its session; frozen across all climon2 versions.
 _Avoid_: Ping, version check

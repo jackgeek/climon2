@@ -7,6 +7,7 @@ A session daemon is only ever reached by the client from its own version. Sessio
 - **Frame:** a big-endian `u32` length, then a 1-byte message type, then the body. The length covers type and body and must be between 1 and 1 MiB (1,048,576); any other length makes the reader close the connection.
 - **Hello:** type `0x01` in both directions with JSON bodies, where unknown fields are ignored. The client speaks first with `{"protocol":1}`, and the daemon replies `{"session_id":"<guid>","climon2_version":"<v>","protocol":<n>}`.
 - **Deadline:** 2 s. The daemon closes a connection that hasn't sent a valid hello within 2 s of accept. A prober treats no full reply within 2 s of starting to connect as not live.
+- **Growth:** the frame layout and existing hello fields never change, but a daemon may add optional fields to its hello reply, which every reader ignores if unknown. This is how any version's `list` can learn dynamic session state, because session metadata is write-once (ADR 0005).
 
 ## Considered options
 
