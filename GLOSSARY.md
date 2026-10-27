@@ -76,7 +76,15 @@ _Avoid_: Data dir, state dir, config dir
 
 **Installer**:
 The program shipped in a release archive that places that release's version into a climon2 executable home and makes it the current version.
-_Avoid_: Setup, install script, `climon2 install`
+_Avoid_: Setup, `climon2 install`
+
+**Release archive**:
+The single downloadable file for one climon2 version, holding the installer, the launcher and that version's folder.
+_Avoid_: Bundle, package, tarball
+
+**Install script**:
+The script published with each release that downloads, verifies and unpacks that release's archive and runs its installer.
+_Avoid_: Installer, bootstrap, setup script
 
 **Climon2 error code**:
 The single exit code climon2 uses for its own failures, chosen by convention to be unlikely to be confused with the command's exit codes.
