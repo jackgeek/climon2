@@ -13,6 +13,7 @@ The first release targets macOS only, but Windows ConPTY and Ubuntu 24.04 must b
 7. Client raw mode and resize notification
 8. Installer default directory and same-version clobber
 9. Exit-status mapping
+10. Process start time (for the stale-metadata PID-reuse check, ADR 0005)
 
 More seams may emerge after the first release. Everything else counts as platform-neutral.
 
