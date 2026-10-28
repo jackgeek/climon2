@@ -78,19 +78,20 @@ impl ExecutableLayout {
     pub fn from_cli_path(canonical_cli: &Path) -> Result<Self, ContractError> {
         canonical_absolute(canonical_cli)?;
         let suffix = Self::cli_suffix(canonical_cli)?;
-        let folder = canonical_cli
-            .parent()
-            .ok_or_else(|| ContractError("missing version folder".into()))?;
-        let version = Self::version_folder(folder)?;
-        let root = folder
-            .parent()
-            .ok_or_else(|| ContractError("missing executable home".into()))?
-            .to_owned();
+        let (root, folder) = Self::home_and_version_folder(canonical_cli)
+            .ok_or_else(|| ContractError("invalid version folder".into()))?;
         Ok(Self {
-            root,
-            version,
+            root: root.to_owned(),
+            version: folder.parse()?,
             suffix,
         })
+    }
+
+    /// The CLI lives at `<home>/<version>/climon2-cli`.
+    fn home_and_version_folder(cli: &Path) -> Option<(&Path, &str)> {
+        let folder = cli.parent()?;
+        let name = folder.file_name()?.to_str()?;
+        Some((folder.parent()?, name))
     }
 
     fn cli_suffix(path: &Path) -> Result<&'static str, ContractError> {
@@ -99,13 +100,6 @@ impl ExecutableLayout {
             Some("climon2-cli.exe") => Ok(".exe"),
             _ => Err(ContractError("expected canonical climon2-cli path".into())),
         }
-    }
-
-    fn version_folder(path: &Path) -> Result<VersionName, ContractError> {
-        path.file_name()
-            .and_then(OsStr::to_str)
-            .ok_or_else(|| ContractError("invalid version folder".into()))?
-            .parse()
     }
 
     pub fn root(&self) -> &Path {

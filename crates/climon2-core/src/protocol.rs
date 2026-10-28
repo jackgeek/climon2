@@ -63,19 +63,31 @@ fn validate_body(code: u8, length: usize) -> io::Result<()> {
 /// Read exactly one bounded frame. Callers must close on any error and enforce
 /// the absolute hello deadline on their transport, not restart it per read.
 pub fn read_frame(reader: &mut impl Read) -> io::Result<Frame> {
+    let body_length = read_length(reader)? - 1;
+    let code = read_type(reader, body_length)?;
+    let mut body = vec![u8::default(); body_length];
+    reader.read_exact(&mut body)?;
+    Frame::new(code, body)
+}
+
+/// The length prefix counts the type byte, so it is never zero.
+fn read_length(reader: &mut impl Read) -> io::Result<usize> {
     let mut prefix = <[u8; 4]>::default();
     reader.read_exact(&mut prefix)?;
     let length = u32::from_be_bytes(prefix) as usize;
     if !(1..=MAX_FRAME_LENGTH).contains(&length) {
         return Err(invalid("invalid frame length"));
     }
+    Ok(length)
+}
+
+/// Rejects unknown types and oversized bodies before reading the body.
+fn read_type(reader: &mut impl Read, body_length: usize) -> io::Result<u8> {
     let mut code = [u8::default()];
     reader.read_exact(&mut code)?;
     validate_type(code[0])?;
-    validate_body(code[0], length - 1)?;
-    let mut body = vec![u8::default(); length - 1];
-    reader.read_exact(&mut body)?;
-    Frame::new(code[0], body)
+    validate_body(code[0], body_length)?;
+    Ok(code[0])
 }
 
 /// Write all bytes, including when a transport performs partial writes.
@@ -135,19 +147,37 @@ impl ConnectionState {
     fn next(self, message: &ClientMessage) -> io::Result<Self> {
         match message {
             ClientMessage::Error { .. } => Ok(Self::Closed),
-            ClientMessage::Hello {
-                protocol: PROTOCOL_VERSION,
-            } if self == Self::AwaitingHello => Ok(Self::Probing),
-            ClientMessage::Attach(_) if self == Self::Probing => Ok(Self::Attached),
-            ClientMessage::Attach(_) if self == Self::Attached => {
-                Err(invalid("session already has a controlling client"))
-            }
-            ClientMessage::Input(_) | ClientMessage::Resize(_) if self == Self::Attached => {
-                Ok(self)
-            }
-            _ => Err(invalid("message not allowed in connection state")),
+            ClientMessage::Hello { protocol } => self.after_hello(*protocol),
+            ClientMessage::Attach(_) => self.after_attach(),
+            ClientMessage::Input(_) | ClientMessage::Resize(_) => self.after_stream(),
         }
     }
+
+    fn after_hello(self, protocol: u32) -> io::Result<Self> {
+        match (self, protocol) {
+            (Self::AwaitingHello, PROTOCOL_VERSION) => Ok(Self::Probing),
+            _ => Err(not_allowed()),
+        }
+    }
+
+    fn after_attach(self) -> io::Result<Self> {
+        match self {
+            Self::Probing => Ok(Self::Attached),
+            Self::Attached => Err(invalid("session already has a controlling client")),
+            _ => Err(not_allowed()),
+        }
+    }
+
+    fn after_stream(self) -> io::Result<Self> {
+        match self {
+            Self::Attached => Ok(self),
+            _ => Err(not_allowed()),
+        }
+    }
+}
+
+fn not_allowed() -> io::Error {
+    invalid("message not allowed in connection state")
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -219,6 +249,19 @@ fn json<T: DeserializeOwned>(frame: &Frame) -> io::Result<T> {
     crate::json::from_object(frame.body()).map_err(|_| invalid("malformed control JSON"))
 }
 
+fn error_frame(message: &str) -> io::Result<Frame> {
+    control(
+        0x7f,
+        &ErrorBody {
+            message: message.to_owned(),
+        },
+    )
+}
+
+fn error_message(frame: &Frame) -> io::Result<String> {
+    json::<ErrorBody>(frame).map(|error| error.message)
+}
+
 impl ClientMessage {
     pub fn to_frame(&self) -> io::Result<Frame> {
         match self {
@@ -228,15 +271,17 @@ impl ClientMessage {
                     protocol: *protocol,
                 },
             ),
-            Self::Attach(size) => control(0x10, size),
+            Self::Attach(size) | Self::Resize(size) => control(self.size_type_code(), size),
             Self::Input(bytes) => Frame::new(0x11, bytes.clone()),
-            Self::Resize(size) => control(0x12, size),
-            Self::Error { message } => control(
-                0x7f,
-                &ErrorBody {
-                    message: message.clone(),
-                },
-            ),
+            Self::Error { message } => error_frame(message),
+        }
+    }
+
+    /// Attach and Resize share a body and differ only in type code.
+    fn size_type_code(&self) -> u8 {
+        match self {
+            Self::Attach(_) => 0x10,
+            _ => 0x12,
         }
     }
 
@@ -245,12 +290,16 @@ impl ClientMessage {
             0x01 => json::<HelloRequest>(&frame).map(|hello| Self::Hello {
                 protocol: hello.protocol,
             }),
-            0x10 => json(&frame).map(Self::Attach),
             0x11 => Ok(Self::Input(frame.body)),
-            0x12 => json(&frame).map(Self::Resize),
-            0x7f => json::<ErrorBody>(&frame).map(|error| Self::Error {
-                message: error.message,
-            }),
+            0x7f => error_message(&frame).map(|message| Self::Error { message }),
+            _ => Self::from_size_frame(&frame),
+        }
+    }
+
+    fn from_size_frame(frame: &Frame) -> io::Result<Self> {
+        match frame.type_code {
+            0x10 => json(frame).map(Self::Attach),
+            0x12 => json(frame).map(Self::Resize),
             _ => Err(invalid("unexpected client message type")),
         }
     }
@@ -260,27 +309,33 @@ impl ServerMessage {
     pub fn to_frame(&self) -> io::Result<Frame> {
         match self {
             Self::Hello(reply) => control(0x01, reply),
-            Self::Attached => control(0x20, &Empty {}),
             Self::Output(bytes) => Frame::new(0x21, bytes.clone()),
+            Self::Error { message } => error_frame(message),
+            Self::Attached | Self::Exit { .. } => self.lifecycle_frame(),
+        }
+    }
+
+    /// Attached and Exit bracket the attached lifetime of a session.
+    fn lifecycle_frame(&self) -> io::Result<Frame> {
+        match self {
             Self::Exit { code } => control(0x22, &Exit { code: *code }),
-            Self::Error { message } => control(
-                0x7f,
-                &ErrorBody {
-                    message: message.clone(),
-                },
-            ),
+            _ => control(0x20, &Empty {}),
         }
     }
 
     pub fn from_frame(frame: Frame) -> io::Result<Self> {
         match frame.type_code {
             0x01 => json(&frame).map(Self::Hello),
-            0x20 => json::<Empty>(&frame).map(|_| Self::Attached),
             0x21 => Ok(Self::Output(frame.body)),
-            0x22 => json::<Exit>(&frame).map(|exit| Self::Exit { code: exit.code }),
-            0x7f => json::<ErrorBody>(&frame).map(|error| Self::Error {
-                message: error.message,
-            }),
+            0x7f => error_message(&frame).map(|message| Self::Error { message }),
+            _ => Self::from_lifecycle_frame(&frame),
+        }
+    }
+
+    fn from_lifecycle_frame(frame: &Frame) -> io::Result<Self> {
+        match frame.type_code {
+            0x20 => json::<Empty>(frame).map(|_| Self::Attached),
+            0x22 => json::<Exit>(frame).map(|exit| Self::Exit { code: exit.code }),
             _ => Err(invalid("unexpected server message type")),
         }
     }

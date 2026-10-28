@@ -42,10 +42,17 @@ impl CliArgs {
         match subcommand.to_str() {
             Some("exec") => parse_exec(remaining),
             Some("list") => parse_list(remaining),
-            Some("--help" | "-h") if remaining.is_empty() => Ok(Self::Help),
-            Some("--version" | "-V") if remaining.is_empty() => Ok(Self::Version),
-            _ => Err(UsageError),
+            name => parse_flag(name, &remaining),
         }
+    }
+}
+
+/// Help and version flags accept no further arguments.
+fn parse_flag(name: Option<&str>, remaining: &[OsString]) -> Result<CliArgs, UsageError> {
+    match (name, remaining.is_empty()) {
+        (Some("--help" | "-h"), true) => Ok(CliArgs::Help),
+        (Some("--version" | "-V"), true) => Ok(CliArgs::Version),
+        _ => Err(UsageError),
     }
 }
 

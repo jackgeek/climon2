@@ -61,6 +61,11 @@ fn adr0001_version_matched_client_has_exact_frozen_invocation() {
             "{bad}"
         );
     }
+    let filesystem_root = root.ancestors().last().unwrap();
+    assert!(
+        ExecutableLayout::from_cli_path(&filesystem_root.join("climon2-cli")).is_err(),
+        "#18: a CLI directly under the filesystem root has no version folder"
+    );
     for content in ["1.2.3", "1.2.3\n", "1.2.3\r\n"] {
         assert_eq!(parse_current(content).unwrap().as_str(), "1.2.3");
     }

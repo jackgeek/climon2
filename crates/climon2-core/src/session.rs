@@ -33,12 +33,9 @@ impl SessionEnvironment {
         inherited: &[(OsString, OsString)],
     ) -> Result<Self, DepthOverflow> {
         let enclosing = enclosing_depth(inherited);
-        let depth = match enclosing {
-            Some(value) => {
-                NonZeroU32::new(value.checked_add(1).ok_or(DepthOverflow)?).ok_or(DepthOverflow)?
-            }
-            None => NonZeroU32::MIN,
-        };
+        let depth = NonZeroU32::MIN
+            .checked_add(enclosing.unwrap_or(0))
+            .ok_or(DepthOverflow)?;
         let nested_warning = enclosing.map(|value| {
             format!(
                 "Starting climon2 session nested for the {} time",
@@ -95,15 +92,13 @@ fn parse_depth(value: &OsStr) -> Option<u32> {
     text.parse::<NonZeroU32>().ok().map(NonZeroU32::get)
 }
 
+const ORDINAL_SUFFIXES: [&str; 10] = ["th", "st", "nd", "rd", "th", "th", "th", "th", "th", "th"];
+
 pub fn ordinal(value: u32) -> String {
-    let suffix = match value % 100 {
-        11..=13 => "th",
-        _ => match value % 10 {
-            1 => "st",
-            2 => "nd",
-            3 => "rd",
-            _ => "th",
-        },
+    let suffix = if (11..=13).contains(&(value % 100)) {
+        "th"
+    } else {
+        ORDINAL_SUFFIXES[(value % 10) as usize]
     };
     format!("{value}{suffix}")
 }

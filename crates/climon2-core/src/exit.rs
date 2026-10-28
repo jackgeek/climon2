@@ -43,9 +43,16 @@ impl ExitStatus {
                 .checked_add(128)
                 .ok_or_else(|| ContractError("signal exit status exceeds u32".into())),
             Self::Launch(failure) => Ok(failure.code()),
-            Self::OwnFailure => Ok(CLIMON2_ERROR),
-            Self::Usage => Ok(USAGE_ERROR),
-            Self::TerminalGone => Ok(TERMINAL_GONE),
+            reserved => Ok(reserved.reserved_code()),
+        }
+    }
+
+    /// Codes climon2 reserves for its own outcomes; any other is its own failure.
+    fn reserved_code(self) -> u32 {
+        match self {
+            Self::Usage => USAGE_ERROR,
+            Self::TerminalGone => TERMINAL_GONE,
+            _ => CLIMON2_ERROR,
         }
     }
 }

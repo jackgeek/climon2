@@ -43,6 +43,8 @@ fn issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors() {
         vec![],
         vec!["exec"],
         vec!["exec", "--"],
+        vec!["exec", ""],
+        vec!["exec", "--", ""],
         vec!["unknown"],
         vec!["list", "extra"],
         vec!["list", "--json", "--json"],
@@ -53,6 +55,20 @@ fn issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors() {
                 .exit_code(),
             2
         );
+    }
+}
+
+/// #29: help and version flags, long or short, parse only when given alone.
+#[test]
+fn issue29_help_and_version_flags_take_no_arguments() {
+    for (flag, expected) in [
+        ("--help", CliArgs::Help),
+        ("-h", CliArgs::Help),
+        ("--version", CliArgs::Version),
+        ("-V", CliArgs::Version),
+    ] {
+        assert_eq!(CliArgs::parse([OsString::from(flag)]).unwrap(), expected);
+        assert!(CliArgs::parse([flag, "extra"].map(OsString::from)).is_err());
     }
 }
 

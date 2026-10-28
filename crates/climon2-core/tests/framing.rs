@@ -48,6 +48,13 @@ fn issue20_frame_bounds_include_type_and_reject_truncation_before_allocation() {
         let error = read_frame(&mut length.to_be_bytes().as_slice()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
+    // #20: an oversized data header is rejected before any body byte is read.
+    for code in [0x11_u8, 0x21] {
+        let mut header = 65_537_u32.to_be_bytes().to_vec();
+        header.push(code);
+        let error = read_frame(&mut header.as_slice()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
     for code in [0, 2, 0x13, 0x23, 0x7e, 0x80, 0xff] {
         assert!(Frame::new(code, vec![]).is_err());
         assert_eq!(
