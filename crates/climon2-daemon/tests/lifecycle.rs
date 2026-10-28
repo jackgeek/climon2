@@ -288,6 +288,8 @@ fn command_tail(command: &mut Command, fd: u32, home: &Path, mode: &str, missing
         command.arg(home.join("missing-command"));
     } else if mode == "cannot-run" {
         command.arg(home.join("not-executable"));
+    } else if mode == "job-control" {
+        command.args(["bash", "--norc", "--noprofile", "-i"]);
     } else if mode == "literal" {
         command.arg(daemon_fixture());
         command.args(["", "space argument", "--looks-like-option"]);
@@ -691,22 +693,138 @@ fn every_controlling_leave_hangs_up_then_kills_after_real_grace() {
     }
 }
 
-/// #20: a stalled client bounds output buffering and the command itself stalls.
+fn job_pid(home: &Path, job: &str) -> u32 {
+    let ready = home.join(format!("job-{job}-ready"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready.exists() {
+        assert!(Instant::now() < deadline, "job {job} never started");
+        thread::sleep(Duration::from_millis(5));
+    }
+    fs::read_to_string(home.join(format!("job-{job}-pid")))
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+fn wait_gone(pid: u32) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while process::start_time(pid).unwrap().is_some() {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    true
+}
+
+fn job_control_session() -> Session {
+    Session::configured("job-control", |command, _| {
+        command
+            .env("BASH_SILENCE_DEPRECATION_WARNING", "1")
+            .env("JOB_FIXTURE", std::env::current_exe().unwrap());
+    })
+}
+
+/// A shell line starting the HUP-ignoring `job-{name}` fixture, `&` for the background.
+fn job(name: &str, background: &str) -> String {
+    format!(
+        "DAEMON_FIXTURE_MODE=job-{name} \"$JOB_FIXTURE\" --exact fixture_child --ignored --nocapture {background}\n"
+    )
+}
+
+/// #19/#27: on natural exit the shell's HUP-ignoring background job, orphaned in the session
+/// after the shell (and so the terminal) is gone, is killed once the final status is sent.
+#[test]
+fn natural_exit_kills_jobs_left_in_the_command_session() {
+    let mut session = job_control_session();
+    let mut controlling = session.attach();
+    send(
+        &mut controlling,
+        ClientMessage::Input(job("background", "&").into_bytes()),
+    );
+    let background = job_pid(session.directory.path(), "background");
+    // The daemon records job groups every 100 ms while the shell lives; allow several looks.
+    thread::sleep(Duration::from_millis(500));
+    send(&mut controlling, ClientMessage::Input(b"exit\n".to_vec()));
+    while !matches!(receive(&mut controlling), ServerMessage::Exit { code: 0 }) {}
+    session.finish();
+    let gone = wait_gone(background);
+    if !gone {
+        unsafe { libc::kill(background as i32, libc::SIGKILL) };
+    }
+    assert!(gone, "background job survived natural exit");
+}
+
+/// #19/#27 (owner decision): leaving hangs up, waits the real grace, then kills every process
+/// still in the command's terminal session, across job-control process groups. A process that
+/// started its own session is not part of it and survives.
+#[test]
+fn leave_kills_every_job_of_the_command_session_but_not_new_sessions() {
+    let mut session = job_control_session();
+    let mut controlling = session.attach();
+    let script = job("background", "&") + &job("daemonize", "&") + &job("foreground", "");
+    send(&mut controlling, ClientMessage::Input(script.into_bytes()));
+    let home = session.directory.path().to_path_buf();
+    let foreground = job_pid(&home, "foreground");
+    let background = job_pid(&home, "background");
+    let outsider = job_pid(&home, "outsider");
+    let shell = unsafe { libc::getsid(foreground as i32) };
+    for pid in [foreground, background] {
+        assert_eq!(
+            unsafe { libc::getsid(pid as i32) },
+            shell,
+            "{pid} left the session"
+        );
+        assert_eq!(
+            unsafe { libc::getpgid(pid as i32) },
+            pid as i32,
+            "{pid} is not its own job"
+        );
+    }
+    assert_eq!(unsafe { libc::getsid(outsider as i32) }, outsider as i32);
+    let started = Instant::now();
+    drop(controlling);
+    thread::sleep(Duration::from_millis(200));
+    assert!(
+        process::start_time(foreground).unwrap().is_some(),
+        "grace skipped"
+    );
+    session.finish();
+    assert!(started.elapsed() >= Duration::from_secs(5), "grace skipped");
+    assert!(started.elapsed() < Duration::from_secs(7), "grace exceeded");
+    let survivors = [("foreground", foreground), ("background", background)]
+        .into_iter()
+        .filter(|(_, pid)| !wait_gone(*pid))
+        .collect::<Vec<_>>();
+    let outsider_alive = process::start_time(outsider).unwrap().is_some();
+    for (_, pid) in &survivors {
+        unsafe { libc::kill(*pid as i32, libc::SIGKILL) };
+    }
+    unsafe { libc::kill(outsider as i32, libc::SIGKILL) };
+    assert!(survivors.is_empty(), "session jobs survived: {survivors:?}");
+    assert!(outsider_alive, "a process in its own session was killed");
+}
+
+/// #20: a stalled client bounds output buffering and the command itself stalls; afterwards the
+/// exact bytes arrive at PTY speed. A macOS PTY buffers ~1 KiB, so one read per 2 ms tick needs
+/// at least 8192 x 2 ms = 16.4 s for 8 MiB on any host; the bound rejects that design. The whole
+/// stream is compared, so terminal noise (e.g. libtest's 60-second notice) cannot pass as data.
 #[test]
 fn saturation_backpressures_pty_without_blocking_probes_or_losing_bytes() {
     let mut session = Session::start("flood");
     let mut controlling = session.attach();
     session.wait_marker(&mut controlling);
     send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
+    let started = Instant::now();
     thread::sleep(Duration::from_millis(300));
     assert!(!session.directory.path().join("flood-finished").exists());
     drop(session.connect());
-    let mut count = 0;
+    let mut output = Vec::new();
     loop {
         match receive(&mut controlling) {
             ServerMessage::Output(bytes) => {
                 assert!(bytes.len() <= 65535);
-                count += bytes.iter().filter(|byte| **byte == b'x').count();
+                output.extend(bytes);
             }
             ServerMessage::Exit { code } => {
                 assert_eq!(code, 17);
@@ -715,7 +833,15 @@ fn saturation_backpressures_pty_without_blocking_probes_or_losing_bytes() {
             other => panic!("unexpected {other:?}"),
         }
     }
-    assert_eq!(count, 8 * 1024 * 1024);
+    let elapsed = started.elapsed();
+    let mut expected = b"go\r\n".to_vec();
+    expected.resize(expected.len() + 8 * 1024 * 1024, b'x');
+    assert!(
+        output == expected,
+        "flood output differs ({} bytes)",
+        output.len()
+    );
+    assert!(elapsed < Duration::from_secs(15), "flood took {elapsed:?}");
     session.finish();
 }
 
@@ -1198,10 +1324,45 @@ fn runtime_argv_cwd_and_inherited_environment_are_exact_not_display_metadata() {
     }
 }
 
+/// A HUP-ignoring job of the job-control shell. `daemonize` instead starts an `outsider` in a
+/// new session (as setsid/daemonizing tools do) and exits.
+fn job_fixture(job: &str) -> ! {
+    if job == "daemonize" {
+        use std::os::unix::process::CommandExt;
+        let mut outsider = Command::new(std::env::current_exe().unwrap());
+        outsider
+            .args(["--exact", "fixture_child", "--ignored", "--nocapture"])
+            .env("DAEMON_FIXTURE_MODE", "job-outsider")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        unsafe {
+            outsider.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        outsider.spawn().unwrap();
+        std::process::exit(0);
+    }
+    unsafe {
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+    }
+    fs::write(format!("job-{job}-pid"), std::process::id().to_string()).unwrap();
+    fs::write(format!("job-{job}-ready"), b"").unwrap();
+    thread::sleep(Duration::from_secs(45));
+    std::process::exit(0);
+}
+
 #[test]
 #[ignore = "owned generic terminal fixture subprocess"]
 fn fixture_child() {
     let mode = std::env::var("DAEMON_FIXTURE_MODE").unwrap();
+    if let Some(job) = mode.strip_prefix("job-") {
+        job_fixture(job);
+    }
     if mode.starts_with("holder-") {
         fs::write("descendant-pid", std::process::id().to_string()).unwrap();
         unsafe {

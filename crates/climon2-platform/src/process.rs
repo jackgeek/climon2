@@ -1,4 +1,4 @@
-//! PID identity, exact wait status and process-group leave policy.
+//! PID identity, exact wait status and terminal-session leave policy.
 #[cfg(not(target_os = "macos"))]
 compile_error!("process identity, hangup and exit seams require macOS");
 
@@ -8,7 +8,24 @@ pub use macos::*;
 #[cfg(target_os = "macos")]
 mod macos {
     use climon2_core::{exit::ExitStatus, protocol::HANGUP_GRACE};
-    use std::{io, mem::MaybeUninit, num::NonZeroU32, path::Path};
+    use std::{
+        io,
+        mem::MaybeUninit,
+        num::NonZeroU32,
+        os::unix::fs::{FileTypeExt, MetadataExt},
+        path::Path,
+        time::Duration,
+    };
+
+    /// `libproc.h` listing kinds: processes of one process group, or of one controlling
+    /// terminal. Session kills never enumerate all processes.
+    const PROC_PGRP_ONLY: u32 = 2;
+    const PROC_TTY_ONLY: u32 = 3;
+    /// Room for processes started between sizing and filling the PID list.
+    const PID_SLACK: usize = 64;
+    /// SIGKILL rounds (each followed by `KILL_SETTLE`) before members count as survivors.
+    const KILL_ROUNDS: u32 = 100;
+    const KILL_SETTLE: Duration = Duration::from_millis(10);
 
     fn pid(value: u32) -> io::Result<i32> {
         let value = i32::try_from(value).map_err(io::Error::other)?;
@@ -138,9 +155,23 @@ mod macos {
         }
     }
 
+    /// Group 1 is launchd's and 0 means the caller's own group; refusing both also keeps
+    /// `kill(-1)` (every permitted process) unreachable from here.
     pub fn signal_group(group: u32, signal: Signal) -> io::Result<()> {
-        let group = pid(group)?;
-        if unsafe { libc::kill(-group, signal.raw()) } == -1 {
+        let group = i32::try_from(group).map_err(io::Error::other)?;
+        if group <= 1 {
+            return Err(io::Error::other("invalid process group"));
+        }
+        deliver(-group, signal)
+    }
+
+    fn deliver(target: i32, signal: Signal) -> io::Result<()> {
+        vanished_is_ok(unsafe { libc::kill(target, signal.raw()) })
+    }
+
+    /// A `kill(2)` result; a vanished target is not an error.
+    fn vanished_is_ok(result: i32) -> io::Result<()> {
+        if result == -1 {
             let error = io::Error::last_os_error();
             if error.raw_os_error() != Some(libc::ESRCH) {
                 return Err(error);
@@ -149,21 +180,156 @@ mod macos {
         Ok(())
     }
 
-    /// Caller closes every PTY-master handle here. Even if the leader exits,
-    /// descendants in its group get the full grace period, then SIGKILL.
-    pub fn hangup(group: u32, close_master: impl FnOnce()) -> io::Result<ExitStatus> {
-        pid(group)?;
-        close_master();
-        std::thread::sleep(HANGUP_GRACE);
-        let exited = try_wait(group)?;
-        signal_group(group, Signal::Kill)?;
-        leader_status(group, exited)
+    /// A terminal device (e.g. a PTY slave), identified by its device number.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct Terminal(u32);
+
+    impl Terminal {
+        /// Only a character device names a terminal; anything else is refused.
+        pub fn from_path(path: &Path) -> io::Result<Self> {
+            let metadata = std::fs::metadata(path)?;
+            if !metadata.file_type().is_char_device() {
+                return Err(io::Error::other("not a terminal device"));
+            }
+            u32::try_from(metadata.rdev())
+                .map(Self)
+                .map_err(io::Error::other)
+        }
     }
 
-    fn leader_status(group: u32, exited: Option<ExitStatus>) -> io::Result<ExitStatus> {
+    /// The terminal session a command leads (its session ID is the leader's PID) on its PTY,
+    /// and the job-control process groups seen in it. macOS detaches the terminal from the
+    /// session when the leader exits, so `observe` must record job groups while it lives.
+    #[derive(Debug)]
+    pub struct TerminalSession {
+        id: i32,
+        terminal: Terminal,
+        groups: Vec<NonZeroU32>,
+    }
+
+    impl TerminalSession {
+        pub fn leader(&self) -> u32 {
+            self.id.unsigned_abs()
+        }
+
+        pub fn new(leader: u32, terminal: Terminal) -> io::Result<Self> {
+            Ok(Self {
+                id: pid(leader)?,
+                terminal,
+                groups: Vec::new(),
+            })
+        }
+
+        /// Records the process groups of members currently on the terminal.
+        pub fn observe(&mut self) -> io::Result<()> {
+            for member in self.members(listed_pids(PROC_TTY_ONLY, self.terminal.0)?) {
+                if let Some(group) = group_of(member)
+                    && !self.groups.contains(&group)
+                {
+                    self.groups.push(group);
+                }
+            }
+            Ok(())
+        }
+
+        /// SIGKILLs, in rounds until none remain, every process of this session that is on its
+        /// terminal or in a recorded job group. Candidates come only from those kernel lists and
+        /// must also be in this session, so processes that started their own session, other
+        /// terminals and the calling process are never signalled. Works after the leader was
+        /// reaped; only the caller's own children (e.g. the leader) are left to reap.
+        pub fn kill(&mut self) -> io::Result<()> {
+            self.observe()?;
+            self.kill_rounds()
+        }
+
+        fn kill_rounds(&self) -> io::Result<()> {
+            for _ in 0..KILL_ROUNDS {
+                if !self.kill_members()? {
+                    return Ok(());
+                }
+                std::thread::sleep(KILL_SETTLE);
+            }
+            Err(io::Error::other("session processes survived SIGKILL"))
+        }
+
+        /// Returns whether any member was found (and signalled).
+        fn kill_members(&self) -> io::Result<bool> {
+            let members = self.members(self.candidates()?);
+            for member in &members {
+                kill_process(*member)?;
+            }
+            Ok(!members.is_empty())
+        }
+
+        fn candidates(&self) -> io::Result<Vec<i32>> {
+            let mut candidates = listed_pids(PROC_TTY_ONLY, self.terminal.0)?;
+            for group in &self.groups {
+                candidates.extend(listed_pids(PROC_PGRP_ONLY, group.get())?);
+            }
+            Ok(candidates)
+        }
+
+        fn members(&self, candidates: Vec<i32>) -> Vec<NonZeroU32> {
+            let caller = std::process::id();
+            candidates
+                .into_iter()
+                .filter_map(|pid| u32::try_from(pid).ok().and_then(NonZeroU32::new))
+                .filter(|pid| pid.get() != caller && in_session(*pid, self.id))
+                .collect()
+        }
+    }
+
+    /// `getsid` fails for zombies, which are already dead and only await their parent's reap.
+    fn in_session(pid: NonZeroU32, session: i32) -> bool {
+        unsafe { libc::getsid(pid.get() as i32) == session }
+    }
+
+    fn group_of(member: NonZeroU32) -> Option<NonZeroU32> {
+        let group = unsafe { libc::getpgid(member.get() as i32) };
+        u32::try_from(group).ok().and_then(NonZeroU32::new)
+    }
+
+    /// Takes a non-zero PID, so neither `kill(0)` (the caller's group) nor a negative target
+    /// (a group, or `-1`: every permitted process) is expressible here.
+    fn kill_process(member: NonZeroU32) -> io::Result<()> {
+        let member = i32::try_from(member.get()).map_err(io::Error::other)?;
+        vanished_is_ok(unsafe { libc::kill(member, libc::SIGKILL) })
+    }
+
+    /// The kernel's list of processes of one terminal or one process group.
+    fn listed_pids(kind: u32, which: u32) -> io::Result<Vec<i32>> {
+        let needed = listed(unsafe { libc::proc_listpids(kind, which, std::ptr::null_mut(), 0) })?;
+        let mut pids = vec![0; needed / size_of::<i32>() + PID_SLACK];
+        let size = i32::try_from(size_of_val(pids.as_slice())).map_err(io::Error::other)?;
+        let bytes =
+            listed(unsafe { libc::proc_listpids(kind, which, pids.as_mut_ptr().cast(), size) })?;
+        pids.truncate(bytes / size_of::<i32>());
+        Ok(pids)
+    }
+
+    fn listed(bytes: i32) -> io::Result<usize> {
+        usize::try_from(bytes).map_err(|_| io::Error::last_os_error())
+    }
+
+    /// Caller closes every PTY-master handle here. Even if the leader exits, every
+    /// process still in its terminal session gets the full grace period, then SIGKILL.
+    pub fn hangup(
+        session: &mut TerminalSession,
+        close_master: impl FnOnce(),
+    ) -> io::Result<ExitStatus> {
+        session.observe()?;
+        close_master();
+        std::thread::sleep(HANGUP_GRACE);
+        let leader = session.leader();
+        let exited = try_wait(leader)?;
+        session.kill()?;
+        leader_status(leader, exited)
+    }
+
+    fn leader_status(leader: u32, exited: Option<ExitStatus>) -> io::Result<ExitStatus> {
         match exited {
             Some(status) => Ok(status),
-            None => wait(group),
+            None => wait(leader),
         }
     }
 }

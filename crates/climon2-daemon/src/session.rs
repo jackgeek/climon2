@@ -12,6 +12,7 @@ use std::{
 
 const OUTPUT_CHUNK: usize = 32 * 1024;
 const MAX_CONNECTIONS: usize = 64;
+const TICK: Duration = Duration::from_millis(2);
 
 struct Session<'a> {
     options: &'a Options,
@@ -24,6 +25,7 @@ struct Session<'a> {
     size: TerminalSize,
     exit: Option<u32>,
     drain: Option<Drain>,
+    streaming: bool,
 }
 
 struct Drain {
@@ -49,6 +51,7 @@ pub(crate) fn serve(
         size: options.size,
         exit: None,
         drain: None,
+        streaming: false,
     };
     match session.run(listener, pty, signals) {
         Ok(()) => pty.finish(),
@@ -70,8 +73,17 @@ impl Session<'_> {
             if self.tick(listener, pty, signals)? {
                 return Ok(());
             }
-            std::thread::sleep(Duration::from_millis(2));
+            self.wait(pty);
         }
+    }
+
+    /// While output flows to a ready controller, wake as soon as the PTY has more: a macOS PTY
+    /// buffers about 1 KiB, so a blind sleep per read would cap throughput near 0.5 MB/s.
+    fn wait(&self, pty: &Pty) {
+        if self.streaming {
+            return pty.wait_readable(TICK);
+        }
+        std::thread::sleep(TICK);
     }
 
     fn tick(
@@ -268,7 +280,9 @@ impl Session<'_> {
     }
 
     fn observe_exit(&mut self, pty: &mut Pty) -> io::Result<()> {
+        // Job groups are only discoverable before the command (the session leader) exits.
         if self.exit.is_none() {
+            pty.observe_jobs()?;
             self.exit = pty.try_wait()?;
         }
         self.start_drain();
@@ -288,6 +302,7 @@ impl Session<'_> {
 
     /// The sole PTY reader. Per-connection pending output is at most one 32 KiB frame.
     fn pump_output(&mut self, pty: &Pty) -> io::Result<()> {
+        self.streaming = false;
         let Some(id) = self.controller else {
             return Ok(());
         };
@@ -322,7 +337,15 @@ impl Session<'_> {
         if let Some(drain) = &mut self.drain {
             drain.idle_since = None;
         }
+        self.send_now(id);
         Ok(())
+    }
+
+    /// A write failure here recurs on the next tick's flush, which applies the leave policy.
+    fn send_now(&mut self, id: u64) {
+        let connection = self.connections.get_mut(&id).expect("controller");
+        let _ = connection.flush();
+        self.streaming = connection.available();
     }
 
     fn idle(&mut self) {

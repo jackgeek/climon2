@@ -31,10 +31,26 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
   without portable-pty's lossy signal mapping. Do not also wait through
   portable-pty or `std::process::Child`.
 - `process::signal_group(group, Signal)` supports Hangup, Interrupt, Terminate,
-  Kill, rejects zero/out-of-range IDs and tolerates a nonexistent group.
-- `process::hangup(group, close_master)` closes every PTY-master handle through
-  the caller's closure, waits the real five seconds, reaps an exited leader,
-  kills the group (including surviving descendants), then returns exact status.
+  Kill, rejects 0, 1 (launchd) and out-of-range IDs, so `kill(0)`/`kill(-1)`
+  are unreachable, and tolerates a nonexistent group.
+- `process::Terminal::from_path(path)` identifies a terminal (a PTY slave) by
+  its character device number; anything else is refused.
+- `process::TerminalSession::new(leader, terminal)` is the session a command
+  leads on its PTY. Candidates for a session kill come **only** from kernel
+  lists: `proc_listpids(PROC_TTY_ONLY, terminal)` and, per recorded job group,
+  `proc_listpids(PROC_PGRP_ONLY, group)`; every candidate must also satisfy
+  `getsid == leader` and not be the caller, and is signalled through a
+  non-zero-PID-only kill. Nothing ever enumerates all processes, so no single
+  predicate change can reach processes off that PTY and its job groups.
+  macOS detaches the terminal from the session when the leader exits, so
+  `observe()` records the members' job groups while the leader lives.
+  `kill()` observes once more, then SIGKILLs members in bounded rounds until
+  none remain; it works after the leader was reaped. Processes that started
+  their own session (setsid/daemonize) left the terminal and are never
+  candidates. Callers reap only their own children.
+- `process::hangup(&mut session, close_master)` observes job groups, closes
+  every PTY-master handle through the caller's closure, waits the real five
+  seconds, reaps an exited leader, kills the session, then returns exact status.
 - `process::validate_cwd(&Path)` must run immediately before portable-pty spawn,
   which otherwise silently falls back to HOME. As with ordinary `chdir`, a
   concurrent directory removal can still race validation.
@@ -76,6 +92,12 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
 `issue19_waitpid_preserves_exit_and_real_signal_status`,
 `issue19_hangup_escalates_group_after_real_five_seconds`,
 `issue19_closing_real_controlling_pty_delivers_hangup`,
+`issue19_signal_group_signals_the_group_and_tolerates_a_nonexistent_one`,
+`issue19_kill_session_kills_every_job_but_not_new_sessions`,
+`issue19_kill_session_spares_the_calling_process`,
+`issue19_kill_session_only_signals_session_members_on_the_given_terminal`,
+`issue19_kill_session_never_enumerates_beyond_terminal_and_observed_groups`,
+`issue19_terminal_must_be_a_character_device`,
 `issue15_bad_cwd_is_rejected_before_pty_can_fall_back`.
 
 `tests/daemon.rs`: `issue19_daemon_exec_is_detached_and_readiness_preserves_launch_failure`,

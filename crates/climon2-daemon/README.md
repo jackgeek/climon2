@@ -69,6 +69,9 @@ deadline and bounded frames. Up to 64 concurrent connections are admitted;
 each has one bounded incoming frame and one pending 32 KiB Output frame
 (plus a final small Exit). PTY input has one pending <=65,535-byte payload.
 When output is blocked, the pump stops reading the PTY. Probes remain serviceable.
+A macOS PTY buffers only about 1 KiB, so after the pump queues output it
+flushes it at once and, while the controller can take more, waits for PTY
+readability (poll, no read) instead of a blind 2 ms sleep.
 
 Early exits and PTY output remain available for the first Attach. Exactly one
 connection controls the PTY, and Attached precedes its output. Final status
@@ -78,9 +81,17 @@ Exit is queued last and final socket flushing is bounded to one further second.
 A receiver that never reads cannot be guaranteed delivery after this bound.
 
 All controlling-client leave paths and daemon TERM use one leave policy:
-close every master handle, real five-second grace, group KILL and reap.
-HUP/INT/PIPE are ignored by the daemon. Natural exit also removes surviving
-process-group members after drain. Cleanup always attempts metadata before
+close every master handle, real five-second grace, then SIGKILL every process
+still in the command's terminal session (all job-control process groups, per
+the #19/#27 owner decision) and reap the command. Processes that started their
+own session are left alone. The PTY slave's device is captured at spawn;
+candidates come only from that terminal's and the session's recorded job
+groups' kernel process lists (see platform `TerminalSession`). Because macOS
+detaches the terminal when the command exits, the loop records job groups at
+most every 100 ms while the command runs, and hangup records them once more
+before closing the master. A job started and orphaned within that interval
+before a natural exit can be missed. HUP/INT/PIPE are ignored by the daemon. Natural
+exit also removes surviving session members after drain. Cleanup always attempts metadata before
 the session socket; runtime directories and logs remain.
 
 ## Behavioral evidence
@@ -111,10 +122,18 @@ clients and owned generic terminal fixtures:
 - `initial_fallback_and_resize_use_the_real_pty`,
   `raw_input_output_are_byte_transparent`: real dimensions and binary framing.
 - `saturation_backpressures_pty_without_blocking_probes_or_losing_bytes`:
-  an 8 MiB producer actually stalls, then delivers every byte.
+  an 8 MiB producer actually stalls, then delivers exactly its bytes (the whole
+  stream is compared) within 15 s, which a one-read-per-tick pump cannot meet.
 - `every_controlling_leave_hangs_up_then_kills_after_real_grace`:
   EOF, Error, repeated hello/Attach, unknown message, TERM and stalled input all use
   the real five seconds and leave no command process.
+- `leave_kills_every_job_of_the_command_session_but_not_new_sessions`: under
+  job-control `bash -i`, HUP-ignoring foreground and background jobs (their own
+  process groups) are gone after the real grace; a daemonized new-session
+  process survives and is killed by the test.
+- `natural_exit_kills_jobs_left_in_the_command_session`: the shell's
+  HUP-ignoring background job, orphaned off the terminal when the shell exits,
+  is killed after the final status.
 - Startup failure/invalid invocation and daemon-ignore-signal tests cover
   safe launch diagnostics, refused permissions and ignored HUP/INT/PIPE.
 - `startup_failure_reports_cleans_up_and_exits_with_the_reported_code`,

@@ -10,28 +10,40 @@ use std::{
     time::{Duration, Instant},
 };
 
+const OBSERVE_JOBS: Duration = Duration::from_millis(100);
+
 pub(crate) struct Pty {
     master: Option<Box<dyn MasterPty + Send>>,
     writer: Option<Box<dyn Write + Send>>,
     pid: u32,
+    session: process::TerminalSession,
+    observed: Instant,
     reaped: bool,
 }
 
 impl Pty {
     pub fn spawn(options: &Options, startup: ExecListener) -> Result<Self, Failure> {
-        let pair = open_pair(options.size)?;
+        let (pair, terminal) = open_pair(options.size)?;
         let pid = start_command(pair.slave.as_ref(), options, &startup.path)?;
         drop(pair.slave);
-        let pty = Self::from_master(pair.master, pid)?;
+        let pty = Self::from_master(pair.master, pid, terminal)?;
         tracing::debug!(command_pid = pid, "command terminal created");
         startup.confirm().map(|()| pty)
     }
 
-    fn from_master(master: Box<dyn MasterPty + Send>, pid: u32) -> Result<Self, Failure> {
+    fn from_master(
+        master: Box<dyn MasterPty + Send>,
+        pid: u32,
+        terminal: process::Terminal,
+    ) -> Result<Self, Failure> {
+        let session = process::TerminalSession::new(pid, terminal)
+            .map_err(|_| Failure::own("cannot identify command session"))?;
         let mut pty = Self {
             master: Some(master),
             writer: None,
             pid,
+            session,
+            observed: Instant::now(),
             reaped: false,
         };
         pty.writer = Some(
@@ -60,6 +72,17 @@ impl Pty {
     pub fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.writer.as_mut().expect("live PTY writer").write(bytes)
     }
+    /// Waits at most `timeout` for output (or hangup) without reading it.
+    pub fn wait_readable(&self, timeout: std::time::Duration) {
+        let mut descriptor = libc::pollfd {
+            fd: self.fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let milliseconds = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+        // An interrupted or failed poll only ends this wait early; the next read reports errors.
+        unsafe { libc::poll(&mut descriptor, 1, milliseconds) };
+    }
     /// Only the session output pump calls this. No cloned PTY readers exist.
     pub fn read_output(&self, bytes: &mut [u8]) -> io::Result<usize> {
         let count = unsafe { libc::read(self.fd(), bytes.as_mut_ptr().cast(), bytes.len()) };
@@ -77,37 +100,66 @@ impl Pty {
         Ok(None)
     }
     fn close_master(&mut self) {
-        self.writer.take();
-        self.master.take();
+        close(&mut self.master, &mut self.writer);
     }
     pub fn leave(&mut self) -> io::Result<()> {
         if self.reaped {
             self.close_master();
             std::thread::sleep(climon2_core::protocol::HANGUP_GRACE);
-            return process::signal_group(self.pid, process::Signal::Kill);
+            return self.session.kill();
         }
-        let pid = self.pid;
-        let result = process::hangup(pid, || self.close_master());
+        let (master, writer) = (&mut self.master, &mut self.writer);
+        let result = process::hangup(&mut self.session, || close(master, writer));
         self.reaped = result.is_ok();
         result.map(|_| ())
     }
 
     pub fn finish(&mut self) -> io::Result<()> {
         self.close_master();
-        process::signal_group(self.pid, process::Signal::Kill)
+        self.session.kill()
+    }
+
+    /// Records the command session's job groups while its leader may still hold the terminal;
+    /// at most every `OBSERVE_JOBS`, as each look lists the terminal's processes.
+    pub fn observe_jobs(&mut self) -> io::Result<()> {
+        if self.observed.elapsed() < OBSERVE_JOBS {
+            return Ok(());
+        }
+        self.observed = Instant::now();
+        self.session.observe()
     }
 }
 
-/// The allocation lock is held only while the pair is opened.
+/// Drops every master handle: portable-pty's writer, then the master itself.
+fn close(
+    master: &mut Option<Box<dyn MasterPty + Send>>,
+    writer: &mut Option<Box<dyn Write + Send>>,
+) {
+    writer.take();
+    master.take();
+}
+
+/// The allocation lock is held only while the pair is opened. The slave's device is
+/// captured now, while it exists, to scope every later session kill to this terminal.
 fn open_pair(
     terminal: climon2_core::protocol::TerminalSize,
-) -> Result<portable_pty::PtyPair, Failure> {
+) -> Result<(portable_pty::PtyPair, process::Terminal), Failure> {
     let pair = {
         let _allocation = climon2_platform::pty::allocation()
             .map_err(|_| Failure::own("cannot lock terminal allocation"))?;
         native_pty_system().openpty(size(terminal))
-    };
-    pair.map_err(|_| Failure::own("cannot allocate command terminal"))
+    }
+    .map_err(|_| Failure::own("cannot allocate command terminal"))?;
+    let device = slave_terminal(pair.master.as_ref())?;
+    Ok((pair, device))
+}
+
+fn slave_terminal(master: &dyn MasterPty) -> Result<process::Terminal, Failure> {
+    let path = master
+        .tty_name()
+        .ok_or_else(|| Failure::own("cannot identify command terminal"))?;
+    process::Terminal::from_path(&path)
+        .map_err(|_| Failure::own("cannot identify command terminal"))
 }
 
 fn start_command(
@@ -175,7 +227,7 @@ impl Drop for Pty {
     fn drop(&mut self) {
         self.close_master();
         if !self.reaped {
-            let _ = process::signal_group(self.pid, process::Signal::Kill);
+            let _ = self.session.kill();
             let _ = process::wait(self.pid);
         }
     }
