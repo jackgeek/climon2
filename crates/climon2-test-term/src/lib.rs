@@ -1,6 +1,7 @@
 //! Real-terminal testing at the process boundary (#21/#31).
 
 mod isolation;
+mod ownership;
 mod shell;
 mod terminal;
 

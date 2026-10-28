@@ -237,21 +237,7 @@ impl Package {
     }
 
     fn pids(&self) -> Vec<i32> {
-        let output = Command::new("/bin/ps")
-            .args(["-axEww", "-o", "pid=,stat=,command="])
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        let marker = format!("CLIMON2_TEST_ID={}", self.isolation.id());
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| {
-                let mut fields = line.split_whitespace();
-                let pid = fields.next()?.parse().ok()?;
-                let zombie = fields.next()?.starts_with('Z');
-                (!zombie && fields.any(|field| field == marker)).then_some(pid)
-            })
-            .collect()
+        self.isolation.owned_pids()
     }
 }
 

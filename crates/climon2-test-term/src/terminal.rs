@@ -14,7 +14,7 @@ use nix::{
     },
     unistd::Pid,
 };
-use portable_pty::{CommandBuilder, MasterPty, PtySize};
+use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty};
 use std::{
     io::{self, Read, Write},
     sync::{
@@ -93,6 +93,9 @@ type SharedScreen = Arc<(Mutex<Screen>, Condvar)>;
 
 pub struct Terminal {
     master: Box<dyn MasterPty + Send>,
+    /// Held until the child is reaped and its output read: macOS discards unread output
+    /// once the last slave descriptor closes.
+    slave: Option<Box<dyn SlavePty + Send>>,
     writer: Writer,
     reader: Option<JoinHandle<()>>,
     screen: SharedScreen,
@@ -128,6 +131,10 @@ impl Terminal {
             }),
             Condvar::new(),
         ));
+        let marker = command
+            .get_env(crate::ownership::MARKER)
+            .and_then(|marker| marker.to_str())
+            .map(str::to_owned);
         let child = pair
             .slave
             .spawn_command(command)
@@ -135,7 +142,9 @@ impl Terminal {
         let pid = Pid::from_raw(
             i32::try_from(child.process_id().expect("Unix child pid")).expect("pid fits i32"),
         );
-        drop(pair.slave);
+        if let Some(marker) = marker {
+            crate::ownership::adopt(&marker, pid.as_raw());
+        }
         let reader_screen = screen.clone();
         let reader_writer = writer.clone();
         let reader = thread::spawn(move || {
@@ -173,6 +182,7 @@ impl Terminal {
         });
         Ok(Self {
             master: pair.master,
+            slave: Some(pair.slave),
             writer,
             reader: Some(reader),
             screen,
@@ -250,6 +260,17 @@ impl Terminal {
         Ok(())
     }
 
+    fn output_pending(&self) -> bool {
+        let mut master = nix::libc::pollfd {
+            fd: self.master.as_raw_fd().expect("Unix PTY master"),
+            events: nix::libc::POLLIN,
+            revents: 0,
+        };
+        // poll reads one pollfd and returns at once with a zero timeout.
+        let ready = unsafe { nix::libc::poll(&mut master, 1, 0) };
+        ready != 0 && (ready < 0 || master.revents & nix::libc::POLLIN != 0)
+    }
+
     pub fn wait_exit(&mut self, timeout: Duration) -> io::Result<i32> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -258,6 +279,9 @@ impl Terminal {
             let (screen, changed) = &*self.screen;
             let state = screen.lock().expect("screen lock");
             state.check()?;
+            if self.exit.is_some() && !self.output_pending() {
+                self.slave = None;
+            }
             if let Some(code) = self.exit.filter(|_| state.eof) {
                 return Ok(code);
             }
@@ -314,6 +338,7 @@ impl Drop for Terminal {
                 Err(error) => eprintln!("PTY child {} reap failed: {error}", self.pid),
             }
         }
+        self.slave = None;
         if let Some(reader) = self.reader.take() {
             let deadline = Instant::now() + Duration::from_secs(1);
             while !reader.is_finished() && Instant::now() < deadline {

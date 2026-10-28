@@ -1,9 +1,9 @@
+use crate::ownership;
 use portable_pty::CommandBuilder;
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
 use tempfile::TempDir;
@@ -46,6 +46,7 @@ impl Isolation {
             std::process::id(),
             NEXT_ID.fetch_add(1, Ordering::Relaxed)
         );
+        ownership::register(&id);
         Self { directory, id }
     }
 
@@ -67,7 +68,7 @@ impl Isolation {
         command.cwd(self.home());
         command.env("HOME", self.home());
         command.env("CLIMON2_HOME", self.climon2_home());
-        command.env("CLIMON2_TEST_ID", self.id());
+        command.env(ownership::MARKER, self.id());
         command.env(
             "PATH",
             format!(
@@ -83,23 +84,16 @@ impl Isolation {
         command
     }
 
+    /// Pids of the live processes this test owns, whatever their environment.
+    pub fn owned_pids(&self) -> Vec<i32> {
+        ownership::live(&self.id)
+            .into_iter()
+            .map(|(pid, _)| pid)
+            .collect()
+    }
+
     pub fn assert_clean(&self) {
-        let output = Command::new("/bin/ps")
-            .args(["-axEww", "-o", "pid=,stat=,command="])
-            .output()
-            .expect("scan process environment");
-        assert!(output.status.success(), "ps failed: {:?}", output);
-        let marker = format!("CLIMON2_TEST_ID={}", self.id);
-        let processes = String::from_utf8_lossy(&output.stdout);
-        let leaks: Vec<_> = processes
-            .lines()
-            .filter(|line| {
-                let mut fields = line.split_whitespace();
-                fields.next();
-                let zombie = fields.next().is_some_and(|state| state.starts_with('Z'));
-                !zombie && line.split_whitespace().any(|field| field == marker)
-            })
-            .collect();
+        let leaks = ownership::live(&self.id);
         assert!(leaks.is_empty(), "live test processes: {leaks:?}");
         let sessions = self.climon2_home().join("sessions");
         if sessions.exists() {
@@ -133,5 +127,11 @@ impl Isolation {
                 );
             }
         }
+    }
+}
+
+impl Drop for Isolation {
+    fn drop(&mut self) {
+        ownership::forget(&self.id);
     }
 }

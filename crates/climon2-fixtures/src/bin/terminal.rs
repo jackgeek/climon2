@@ -54,6 +54,15 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
                 io::stdout().flush()?;
             }
             "exit" => return Ok(value.parse()?),
+            "write-pid" => fs::write(value, std::process::id().to_string())?,
+            "detach" => {
+                let count: usize = value.parse()?;
+                let detached: Vec<_> = script.by_ref().take(count).collect();
+                if detached.len() != count {
+                    return Err("detach exceeds the script".into());
+                }
+                detach(&detached)?;
+            }
             "kill-self" => {
                 let name = format!("SIG{}", value.trim_start_matches("SIG"));
                 let signal: nix::sys::signal::Signal = name.parse()?;
@@ -75,5 +84,46 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
 fn report(path: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let value = climon2_fixtures::report(args)?;
     fs::write(path, serde_json::to_vec_pretty(&value)?)?;
+    Ok(())
+}
+
+/// Starts a copy of this fixture running `script` like a daemon would: in its own session,
+/// detached from the terminal, and with an empty environment.
+fn detach(script: &[&String]) -> Result<(), Box<dyn std::error::Error>> {
+    use nix::unistd::{
+        ForkResult, dup2_stderr, dup2_stdin, dup2_stdout, execve, fork, getsid, setsid,
+    };
+    use std::{ffi::CString, os::unix::ffi::OsStringExt};
+    let program = CString::new(env::current_exe()?.into_os_string().into_vec())?;
+    let mut argv = vec![program.clone()];
+    for argument in script {
+        argv.push(CString::new(argument.as_str())?);
+    }
+    let null = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/null")?;
+    // The fixture is single-threaded, so the child may run arbitrary code before exec.
+    let child = match unsafe { fork() }? {
+        ForkResult::Parent { child } => child,
+        ForkResult::Child => {
+            let error = setsid()
+                .and_then(|_| dup2_stdin(&null))
+                .and_then(|()| dup2_stdout(&null))
+                .and_then(|()| dup2_stderr(&null))
+                .and_then(|()| execve::<CString, CString>(&program, &argv, &[]))
+                .unwrap_err();
+            eprintln!("climon2-fixture: error: detach: {error}");
+            std::process::exit(127);
+        }
+    };
+    // Until the child leads its own session, this fixture exiting would hang it up.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while getsid(Some(child)) != Ok(child) {
+        if Instant::now() >= deadline {
+            return Err("detached child never started its session".into());
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
     Ok(())
 }
