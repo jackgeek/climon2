@@ -16,6 +16,18 @@ _Avoid_: Server, host, backend
 The process that connects the user's terminal to a session daemon.
 _Avoid_: Viewer, frontend, terminal
 
+**Attachment**:
+One client's connection to a session for interactive use, whether or not that client currently controls it.
+_Avoid_: Session, control
+
+**Detach**:
+End one client's attachment without ending the session or its command.
+_Avoid_: Exit the session, kill, stop
+
+**Client escape prefix**:
+The key that begins a client-side action instead of being sent directly to the session's command.
+_Avoid_: Hotkey, command prefix
+
 **Controlling client**:
 The attached client whose input and terminal size drive the session; when it leaves, control returns to the attached client that held control most recently, and the leave policy applies only if none remains.
 _Avoid_: Primary client, owner
