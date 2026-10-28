@@ -1,9 +1,14 @@
-name: Bootstrap checks
+name: Checks
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
+    inputs:
+      mutate_all:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -19,8 +24,19 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require the advertised architecture
+        env:
+          RUNNER_LABEL: ${{ matrix.runner }}
+        run: |
+          expected=arm64
+          if [[ "$RUNNER_LABEL" == macos-15-intel ]]; then expected=x86_64; fi
+          test "$(uname -m)" = "$expected"
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
+      - name: Install ShellCheck
+        run: brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
       - name: Select required bash
         env:
           BASH_PROFILE: ${{ matrix.bash }}
@@ -32,9 +48,9 @@ jobs:
             bash_path="$(brew --prefix bash)/bin/bash"
           fi
           test -x "$bash_path"
-          actual="$("$bash_path" -c 'printf "%s" "$BASH_VERSION"')"
+          actual="$("$bash_path" --version)"
           case "$actual" in
-            "$BASH_PROFILE".*) ;;
+            "GNU bash, version $BASH_PROFILE".*) ;;
             *) echo "::error::Expected bash $BASH_PROFILE, found $actual"; exit 1 ;;
           esac
           echo "CLIMON2_TEST_BASH=$bash_path" >> "$GITHUB_ENV"
@@ -61,7 +77,7 @@ jobs:
     runs-on: macos-15
     env:
       CLIMON2_TEST_BASH: /bin/bash
-      CLIMON2_MUTATION_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+      CARGO_TARGET_DIR: target/quality-run
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,15 +87,116 @@ jobs:
           python-version: "3.13"
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
+      - name: Require arm64 and install ShellCheck
+        run: |
+          test "$(uname -m)" = arm64
+          brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
+      - name: Select the append-only and mutation base
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          base="$BASE"
+          if [[ -z "$base" || "$base" == 0000000000000000000000000000000000000000 ]]; then
+            base=HEAD
+          fi
+          echo "CLIMON2_MUTATION_BASE=$base" >> "$GITHUB_ENV"
       - uses: actions/cache@v4
         with:
           path: .metrics
           key: quality-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('xtask/src/quality.rs', 'tools/quality-requirements.txt') }}
       - name: Set up pinned quality tools
         run: cargo xtask setup-quality
-      - name: Prove real-binary worker isolation
-        run: cargo xtask mutation-probe
-      - name: Prove staged coverage and pinned quality gates
-        run: cargo xtask tooling-probe
-      - name: Check coverage, CRAP and changed shipped source
-        run: cargo xtask mutate
+      - name: Run local-equivalent full quality gates
+        env:
+          MUTATE_ALL: ${{ inputs.mutate_all || false }}
+        run: |
+          if [[ "$MUTATE_ALL" == true ]]; then
+            cargo xtask check --mutate-all
+          else
+            cargo xtask check
+          fi
+  dist:
+    name: Universal release artifact
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require arm64 and install target slices
+        run: |
+          test "$(uname -m)" = arm64
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build and verify the universal artifact
+        run: cargo xtask dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: target/dist/*
+          if-no-files-found: error
+  archive:
+    name: Final archive / ${{ matrix.runner }} / bash ${{ matrix.bash }}
+    needs: dist
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+        bash: ["3.2", "5"]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: target/dist
+      - name: Require the advertised architecture and shell
+        env:
+          RUNNER_LABEL: ${{ matrix.runner }}
+          BASH_PROFILE: ${{ matrix.bash }}
+        run: |
+          expected=arm64
+          if [[ "$RUNNER_LABEL" == macos-15-intel ]]; then expected=x86_64; fi
+          test "$(uname -m)" = "$expected"
+          if [[ "$BASH_PROFILE" == 3.2 ]]; then
+            bash_path=/bin/bash
+          else
+            brew list bash >/dev/null 2>&1 || brew install bash
+            bash_path="$(brew --prefix bash)/bin/bash"
+          fi
+          actual="$("$bash_path" --version)"
+          case "$actual" in "GNU bash, version $BASH_PROFILE".*) ;; *) exit 1 ;; esac
+          echo "CLIMON2_TEST_BASH=$bash_path" >> "$GITHUB_ENV"
+      - name: Verify the exact downloaded artifact
+        run: |
+          cd target/dist
+          shasum -a 256 -c SHA256SUMS
+          version="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
+            version="$(sed -n 's/^VERSION='"'"'\([^'"'"']*\)'"'"'$/\1/p' install.sh)"
+          fi
+          archive="$PWD/climon2-$version-macos-universal.tar.gz"
+          test -f "$archive"
+          echo "CLIMON2_E2E_ARCHIVE=$archive" >> "$GITHUB_ENV"
+      - name: Obtain the actual previous release when one exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tags="$(gh release list --exclude-drafts --limit 100 --json tagName --jq '.[].tagName')"
+          previous=
+          while IFS= read -r tag; do
+            if [[ -n "$tag" && "$tag" != "$GITHUB_REF_NAME" ]]; then previous="$tag"; break; fi
+          done <<< "$tags"
+          if [[ -n "$previous" ]]; then
+            destination="$RUNNER_TEMP/climon2-previous"
+            mkdir -p "$destination"
+            gh release download "$previous" --pattern 'climon2-*-macos-universal.tar.gz' --dir "$destination"
+            archives=("$destination"/climon2-*-macos-universal.tar.gz)
+            test "${#archives[@]}" = 1
+            test -f "${archives[0]}"
+            echo "CLIMON2_E2E_PREVIOUS_ARCHIVE=${archives[0]}" >> "$GITHUB_ENV"
+          else
+            echo "First release: no previous release exists; no synthetic compatibility fixture."
+          fi
+      - name: Build test harnesses and debug siblings without substituting archive binaries
+        run: cargo test --workspace --locked --no-run
+      - name: Test this exact archive including smoke, vim and less
+        run: cargo test -p climon2-e2e --locked

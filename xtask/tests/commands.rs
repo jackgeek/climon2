@@ -1,7 +1,7 @@
 use std::process::Command;
 
 #[test]
-fn help_reports_the_incremental_gate_scope() {
+fn help_reports_local_and_distribution_gate_scope() {
     let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
         .arg("--help")
         .output()
@@ -9,12 +9,13 @@ fn help_reports_the_incremental_gate_scope() {
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout).expect("UTF-8 help");
     assert!(help.contains("fmt, clippy and workspace tests"));
-    assert!(help.contains("not yet a full release gate"));
+    assert!(help.contains("including packaged acceptance"));
+    assert!(help.contains("dist builds verified universal macOS release artifacts"));
 }
 
 #[test]
 fn invalid_arguments_fail_before_running_checks() {
-    for args in [vec!["dist"], vec!["check", "unexpected"]] {
+    for args in [vec!["dist", "unexpected"], vec!["check", "unexpected"]] {
         let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
             .args(args)
             .output()

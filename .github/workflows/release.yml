@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    uses: ./.github/workflows/check.yml
+    with:
+      mutate_all: true
+  publish:
+    needs: verify
+    runs-on: macos-15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: target/dist
+      - name: Verify artifact checksums
+        run: cd target/dist && shasum -a 256 -c SHA256SUMS
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: target/dist/*
+      - name: Publish only after every release gate passes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          args=(--verify-tag --generate-notes)
+          if [[ "$GITHUB_REF_NAME" =~ -rc\.[0-9]+$ ]]; then args+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" \
+            "target/dist/climon2-$version-macos-universal.tar.gz" \
+            target/dist/install.sh target/dist/SHA256SUMS "${args[@]}"
