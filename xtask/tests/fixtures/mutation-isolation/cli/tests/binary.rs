@@ -15,13 +15,24 @@ fn observe_the_real_binary() {
     .expect("read this worker's actual source variant");
     let observations =
         env::var_os("CLIMON2_MUTATION_OBSERVATIONS").expect("probe observation directory");
-    fs::write(
-        Path::new(&observations).join(format!("{}.txt", std::process::id())),
+    // PIDs wrap during long mutation runs; never silently overwrite an earlier variant.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let mut record = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(Path::new(&observations).join(format!("{}-{nanos}.txt", std::process::id())))
+        .expect("create a unique observation record");
+    std::io::Write::write_all(
+        &mut record,
         format!(
             "{source}\n---\n{}\n---\n{}",
             String::from_utf8_lossy(&output.stdout),
             output.status.code().expect("CLI status"),
-        ),
+        )
+        .as_bytes(),
     )
     .expect("record the source and actual binary observation");
     assert_eq!(output.status.code(), Some(125));

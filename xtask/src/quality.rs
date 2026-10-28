@@ -10,6 +10,8 @@ use std::{
 const CRAPPER: &str = "6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d";
 const MUTATOR: &str = "a5a0cb803b66e0cdb8bf471b3b08af701d424a41";
 const LLVM_COV: &str = "0.9.1";
+/// Owner-set maximum CRAP score for every shipped function (#21, amended to 5).
+pub(crate) const CRAP_THRESHOLD: &str = "5";
 const SHIPPED: &[&str] = &[
     "crates/climon2-launcher/src",
     "crates/climon2-core/src",
@@ -21,7 +23,7 @@ const SHIPPED: &[&str] = &[
 ];
 const TEST_COMMAND: &str = "cargo test --workspace --locked --target-dir target/mutation-tests";
 
-fn run(command: &mut Command) -> io::Result<()> {
+pub(crate) fn run(command: &mut Command) -> io::Result<()> {
     eprintln!("> {command:?}");
     let status = command.status()?;
     if status.success() {
@@ -33,7 +35,7 @@ fn run(command: &mut Command) -> io::Result<()> {
     }
 }
 
-fn output(command: &mut Command) -> io::Result<Output> {
+pub(crate) fn output(command: &mut Command) -> io::Result<Output> {
     let output = command.output()?;
     if output.status.success() {
         Ok(output)
@@ -206,7 +208,7 @@ pub fn check(root: &Path, all: bool) -> io::Result<()> {
         return Err(io::Error::other("coverage report is empty"));
     }
     run(tool(root, "crapper")?
-        .args(["--use-existing-coverage", "--threshold", "7"])
+        .args(["--use-existing-coverage", "--threshold", CRAP_THRESHOLD])
         .args(SHIPPED))?;
     mutation.args(["--use-existing-coverage", "--mutate-all"]);
     if all {
@@ -379,7 +381,7 @@ pub fn tooling_probe(root: &Path) -> io::Result<()> {
     prove_crapper(root, workspace)?;
     prove_covered_mutations(root, workspace, &observations)?;
     eprintln!(
-        "Verified installer-built coverage, ? complexity, threshold 7 rejection, and changed/full covered mutations."
+        "Verified installer-built coverage, ? complexity, threshold {CRAP_THRESHOLD} rejection, and changed/full covered mutations."
     );
     Ok(())
 }
@@ -400,7 +402,7 @@ fn prove_crapper(root: &Path, workspace: &Path) -> io::Result<()> {
     run(tool(root, "crapper")?.current_dir(workspace).args([
         "--use-existing-coverage",
         "--threshold",
-        "7",
+        CRAP_THRESHOLD,
         "core/src/lib.rs",
     ]))?;
     let metrics = fs::read_to_string(workspace.join(".metrics/crap.edn"))?;
@@ -413,29 +415,52 @@ fn prove_crapper(root: &Path, workspace: &Path) -> io::Result<()> {
             "? must count as a covered branch: {question}"
         )));
     }
-    let excessive = workspace.join("over-limit.rs");
-    fs::copy(root.join("xtask/tests/fixtures/over-limit.rs"), &excessive)?;
+    for (fixture, name, score) in [
+        (
+            "over-limit.rs",
+            "over_limit",
+            ":complexity 3, :coverage 0.0, :crap 12.0",
+        ),
+        (
+            "between-limits.rs",
+            "between_limits",
+            ":complexity 2, :coverage 0.0, :crap 6.0",
+        ),
+    ] {
+        prove_rejection(root, workspace, fixture, name, score)?;
+    }
+    Ok(())
+}
+
+fn prove_rejection(
+    root: &Path,
+    workspace: &Path,
+    fixture: &str,
+    name: &str,
+    score: &str,
+) -> io::Result<()> {
+    let excessive = workspace.join(fixture);
+    fs::copy(root.join("xtask/tests/fixtures").join(fixture), &excessive)?;
     let rejected = tool(root, "crapper")?
         .current_dir(workspace)
-        .args(["--use-existing-coverage", "--threshold", "7"])
+        .args(["--use-existing-coverage", "--threshold", CRAP_THRESHOLD])
         .arg(&excessive)
         .output()?;
     if rejected.status.code() != Some(2) {
         return Err(io::Error::other(format!(
-            "threshold 7 accepted uncovered complexity 3: {rejected:?}"
+            "threshold {CRAP_THRESHOLD} accepted {name} ({score}): {rejected:?}"
         )));
     }
     let metrics = fs::read_to_string(workspace.join(".metrics/crap.edn"))?;
-    if !metrics.lines().any(|line| {
-        line.contains(":name \"over_limit\"")
-            && line.contains(":complexity 3, :coverage 0.0, :crap 12.0")
-    }) {
+    if !metrics
+        .lines()
+        .any(|line| line.contains(&format!(":name \"{name}\"")) && line.contains(score))
+    {
         return Err(io::Error::other(format!(
-            "threshold failure did not score the expected uncovered function: {metrics}"
+            "threshold failure did not score {name} as {score}: {metrics}"
         )));
     }
-    fs::remove_file(excessive)?;
-    Ok(())
+    fs::remove_file(excessive)
 }
 
 fn prove_covered_mutations(root: &Path, workspace: &Path, observations: &Path) -> io::Result<()> {
