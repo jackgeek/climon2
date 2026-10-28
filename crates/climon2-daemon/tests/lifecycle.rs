@@ -2,7 +2,7 @@ use climon2_core::{
     metadata::SessionMetadata,
     protocol::{ClientMessage, ServerMessage, TerminalSize, read_frame, write_frame},
 };
-use climon2_platform::{daemon, process};
+use climon2_platform::{daemon, process, runtime::RuntimeDirectory};
 use std::{
     fs,
     io::{self, Read, Write},
@@ -38,6 +38,7 @@ struct Session {
     directory: tempfile::TempDir,
     socket: PathBuf,
     metadata: PathBuf,
+    startup_socket: PathBuf,
     pid: u32,
 }
 
@@ -69,13 +70,27 @@ impl Session {
         bad_cwd: bool,
         missing: bool,
     ) -> (Self, io::Result<daemon::Readiness>) {
+        let prefix = if mode == "long-paths" {
+            format!("daemon-{}", "long".repeat(30))
+        } else {
+            "daemon-".into()
+        };
         let directory = tempfile::Builder::new()
-            .prefix("daemon-")
+            .prefix(&prefix)
             .tempdir_in(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"))
             .unwrap();
         let home = fs::canonicalize(directory.path()).unwrap();
         fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
-        let socket = home.join("s");
+        let runtime = RuntimeDirectory::prepare(&home).unwrap();
+        let standard_socket = runtime.socket_path(&ID.parse().unwrap()).unwrap();
+        let startup_socket = standard_socket.with_extension("exec");
+        let socket = if mode == "long-paths" {
+            runtime
+                .path()
+                .join("s".repeat(103 - runtime.path().as_os_str().as_encoded_bytes().len() - 1))
+        } else {
+            standard_socket
+        };
         let metadata = home.join("sessions").join(format!("{ID}.pty"));
         let cwd = if mode == "literal" {
             let cwd = home.join("cwd space --literal é");
@@ -84,7 +99,14 @@ impl Session {
         } else {
             home.clone()
         };
-        let mut command = Command::new(env!("CARGO_BIN_EXE_climon2-daemon"));
+        let executable = if mode == "long-paths" {
+            let executable = home.join("climon2-daemon");
+            fs::copy(env!("CARGO_BIN_EXE_climon2-daemon"), &executable).unwrap();
+            executable
+        } else {
+            PathBuf::from(env!("CARGO_BIN_EXE_climon2-daemon"))
+        };
+        let mut command = Command::new(executable);
         command.args(["--session-id", ID, "--version", "0.1.0", "--cli-pid", "1"]);
         command
             .arg("--home")
@@ -149,6 +171,7 @@ impl Session {
                 directory,
                 socket,
                 metadata,
+                startup_socket,
                 pid,
             },
             readiness,
@@ -207,7 +230,7 @@ impl Session {
                 "descendant survived"
             );
         }
-        assert!(!self.socket.with_extension("exec").exists());
+        assert!(!self.startup_socket.exists());
     }
 
     fn wait_marker(&self, stream: &mut UnixStream) {
@@ -283,6 +306,31 @@ fn ready_publishes_private_metadata_and_exit_is_last() {
     }
     assert!(output.windows(11).any(|bytes| bytes == b"final-bytes"));
     assert!(read_frame(&mut stream).is_err());
+    session.finish();
+}
+
+/// #18/#35: long runtime-independent paths and a 103-byte socket do not enlarge the helper socket.
+#[test]
+fn long_home_and_executable_with_maximum_session_socket_start_and_clean_up() {
+    let mut session = Session::start("long-paths");
+    assert!(
+        session
+            .directory
+            .path()
+            .as_os_str()
+            .as_encoded_bytes()
+            .len()
+            > 103
+    );
+    assert_eq!(session.socket.as_os_str().as_encoded_bytes().len(), 103);
+    assert!(
+        !session.startup_socket.exists(),
+        "startup socket outlived readiness"
+    );
+    let mut controlling = session.attach();
+    session.wait_marker(&mut controlling);
+    send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
+    while !matches!(receive(&mut controlling), ServerMessage::Exit { code: 42 }) {}
     session.finish();
 }
 
@@ -640,7 +688,7 @@ fn invalid_cwd_missing_command_and_unsafe_sessions_are_startup_failures() {
         assert!(!message.contains(session.directory.path().to_str().unwrap()));
         assert!(!session.metadata.exists());
         assert!(!session.socket.exists());
-        assert!(!session.socket.with_extension("exec").exists());
+        assert!(!session.startup_socket.exists());
     }
     let (session, readiness) = Session::attempt(
         "exit",
@@ -677,7 +725,7 @@ fn invalid_cwd_missing_command_and_unsafe_sessions_are_startup_failures() {
         daemon::Readiness::Failed { code: 126, .. }
     ));
     assert!(!session.socket.exists());
-    assert!(!session.socket.with_extension("exec").exists());
+    assert!(!session.startup_socket.exists());
 }
 
 /// #25/#19: faults are named, hook-only, bounded by the production readiness deadline.
@@ -711,7 +759,7 @@ fn controlled_panic_is_captured_and_never_ready_uses_real_startup_deadline() {
         }
         assert!(!session.metadata.exists());
         assert!(!session.socket.exists());
-        assert!(!session.socket.with_extension("exec").exists());
+        assert!(!session.startup_socket.exists());
         assert!(!session.directory.path().join("fixture-pid").exists());
     }
 }
@@ -930,7 +978,7 @@ fn fixture_child() {
         print!("early-final");
         std::process::exit(43);
     }
-    if mode == "exit" || mode == "signal" {
+    if mode == "exit" || mode == "signal" || mode == "long-paths" {
         let mut line = String::new();
         io::stdin().read_line(&mut line).unwrap();
         if mode == "signal" {

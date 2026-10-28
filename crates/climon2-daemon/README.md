@@ -44,9 +44,12 @@ passing the original OS strings, explicit cwd, and an exact copied environment.
 That entry point removes `SHELL` **only when originally absent** and directly
 execs the command. Empty and non-UTF8 inherited values remain unchanged.
 
-A short-lived authenticated `<socket stem>.exec` socket confirms the exec:
+A short-lived authenticated `<private runtime>/<guid>.exec` socket confirms the exec:
 the helper sends an attempt marker, and successful exec closes its CLOEXEC
-connection; failed exec sends 126/127. The helper adds no environment variables.
+connection; failed exec sends 126/127. Its path comes from the shared bounded
+runtime layout, not from home, executable, checkout or the supplied session
+socket path. A valid 103-byte session socket must not grow when naming the
+helper socket. The helper adds no environment variables.
 Both sockets are bound under the shared private-directory/umask seam before
 starting stderr's capture thread. The startup socket is removed on every
 controlled startup path. The outer CLI readiness deadline remains five seconds.
@@ -93,6 +96,9 @@ clients and owned generic terminal fixtures:
 
 - `ready_publishes_private_metadata_and_exit_is_last`: PID/start/version,
   initial size, permissions, final bytes, exact status, cleanup.
+- `long_home_and_executable_with_maximum_session_socket_start_and_clean_up`:
+  home/executable paths longer than 103 bytes, a maximum-length session socket,
+  readiness, exact command exit and owned startup/socket/process cleanup.
 - `runtime_argv_cwd_and_inherited_environment_are_exact_not_display_metadata`:
   literal/empty/option-looking/non-UTF8 argv, cwd, whole environment,
   absent/empty/non-UTF8 SHELL, explicit logging filter and diagnostic privacy.

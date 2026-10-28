@@ -185,17 +185,24 @@ pub(crate) struct ExecListener {
 
 impl ExecListener {
     pub fn bind(options: &Options) -> Result<Self, Failure> {
-        let path = options.socket.with_extension("exec");
+        let runtime = runtime::RuntimeDirectory::prepare(&options.home)
+            .map_err(|_| Failure::own("cannot prepare command startup runtime"))?;
+        let path = runtime
+            .socket_path(&options.id)
+            .map_err(|_| Failure::own("cannot locate command startup socket"))?
+            .with_extension("exec");
         let listener =
             runtime::bind(&path).map_err(|_| Failure::own("cannot bind command startup socket"))?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|_| Failure::own("cannot configure command startup socket"))?;
-        Ok(Self {
+        let startup = Self {
             listener,
             path,
             deadline: Instant::now() + Duration::from_secs(4),
-        })
+        };
+        startup
+            .listener
+            .set_nonblocking(true)
+            .map_err(|_| Failure::own("cannot configure command startup socket"))?;
+        Ok(startup)
     }
 
     fn confirm(&self) -> Result<(), Failure> {
