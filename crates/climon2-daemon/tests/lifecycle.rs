@@ -985,10 +985,8 @@ fn startup_confirmation_decides_the_reported_launch_failure() {
 /// cwd) or 126 (not executable, or unusable cwd) and exits with that code.
 #[test]
 fn exec_helper_confirms_launch_failure_codes_and_exits_with_them() {
-    let directory = tempfile::Builder::new()
-        .prefix("exec-")
-        .tempdir_in(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"))
-        .unwrap();
+    // The socket path must fit SUN_LEN regardless of where the checkout lives.
+    let directory = tempfile::Builder::new().prefix("exec-").tempdir().unwrap();
     let home = fs::canonicalize(directory.path()).unwrap();
     fs::write(home.join("not-executable"), b"secret not executable\n").unwrap();
     for (cwd, command, code) in [
@@ -1228,7 +1226,13 @@ fn fixture_child() {
     );
     let size = unsafe { size.assume_init() };
     if mode == "zero-size" {
-        fs::write("initial-size", format!("{}x{}", size.ws_col, size.ws_row)).unwrap();
+        // Publish atomically: the test polls for the name, then reads the contents.
+        fs::write(
+            "initial-size.tmp",
+            format!("{}x{}", size.ws_col, size.ws_row),
+        )
+        .unwrap();
+        fs::rename("initial-size.tmp", "initial-size").unwrap();
     } else {
         assert_eq!((size.ws_col, size.ws_row), (91, 37));
     }
