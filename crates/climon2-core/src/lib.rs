@@ -1,4 +1,15 @@
-//! Platform-neutral session contracts. Implementation follows in #32.
+//! Platform-neutral session contracts: parsing and policy, never platform I/O.
+
+pub mod cli;
+pub mod diagnostics;
+pub mod exit;
+mod identity;
+mod json;
+pub mod layout;
+pub mod metadata;
+pub mod protocol;
+pub mod session;
+pub use identity::{ContractError, SessionId, Timestamp, VersionName};
 
 /// Keep hook instrumentation local to each binary's own feature selection (ADR 0004).
 #[macro_export]
