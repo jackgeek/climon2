@@ -64,6 +64,10 @@ _Avoid_: Child session, sub-session
 A session whose daemon answers the hello handshake with the matching session ID.
 _Avoid_: Running session, active session
 
+**Detached session**:
+A live session with no attached clients that continues after deliberate detach.
+_Avoid_: Disconnected session, completed session
+
 **Stale metadata**:
 Session metadata whose session is no longer live.
 _Avoid_: Dead session, orphan
