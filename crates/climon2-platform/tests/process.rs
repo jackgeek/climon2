@@ -32,6 +32,13 @@ fn terminal_of(fd: i32) -> process::Terminal {
 /// Also returns the fixture's PTY slave device and every line it printed before
 /// `fixture-ready`. The fixture leads a new session controlled by that PTY.
 fn reporting_fixture(mode: &str) -> (Child, File, String, process::Terminal) {
+    // `openpty` descriptors are inheritable until marked close-on-exec, so no test thread may
+    // fork in that window: a fixture inheriting another test's master would hold it open,
+    // delaying that test's hangup until the inheriting fixture dies.
+    static FORKS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let forks = FORKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (mut master, mut slave) = (-1, -1);
     let allocation = climon2_platform::pty::allocation().unwrap();
     assert_eq!(
@@ -78,6 +85,7 @@ fn reporting_fixture(mode: &str) -> (Child, File, String, process::Terminal) {
         });
     }
     let mut child = command.spawn().unwrap();
+    drop(forks);
     let mut reader = BufReader::new(child.stdout.take().unwrap());
     let mut line = String::new();
     while !line.contains("fixture-ready") {
