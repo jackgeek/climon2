@@ -98,14 +98,19 @@ impl DeadlineStream {
     ) -> io::Result<usize> {
         loop {
             self.remaining()?;
-            match operation(&mut self.stream) {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    self.wait_for(interest)?;
-                }
-                result => return result,
+            let result = operation(&mut self.stream);
+            if !would_block(&result) {
+                return result;
             }
+            self.wait_for(interest)?;
         }
     }
+}
+
+fn would_block(result: &io::Result<usize>) -> bool {
+    result
+        .as_ref()
+        .is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock)
 }
 
 impl Read for DeadlineStream {
@@ -124,13 +129,18 @@ impl Write for DeadlineStream {
 }
 
 fn hello(stream: SocketStream, deadline: Instant, metadata: &SessionMetadata) -> io::Result<bool> {
-    stream.set_nonblocking(true)?;
-    let mut stream = DeadlineStream { stream, deadline };
-    send_hello(&mut stream)?;
-    match receive_hello(&mut stream)? {
+    match exchange_hello(stream, deadline)? {
         ServerMessage::Hello(reply) => Ok(reply.is_live_session(&metadata.session_id)),
         _ => Ok(false),
     }
+}
+
+/// Nonblocking I/O under one absolute deadline; never socket timeouts (Darwin EINVAL after FIN).
+fn exchange_hello(stream: SocketStream, deadline: Instant) -> io::Result<ServerMessage> {
+    stream.set_nonblocking(true)?;
+    let mut stream = DeadlineStream { stream, deadline };
+    send_hello(&mut stream)?;
+    receive_hello(&mut stream)
 }
 
 fn send_hello(stream: &mut DeadlineStream) -> io::Result<()> {
@@ -163,15 +173,20 @@ fn inspect_failure(home: &Path, metadata: &SessionMetadata, error: &io::Error) {
         error.raw_os_error(),
         Some(libc::ENOENT | libc::ECONNREFUSED)
     ) {
-        match process::is_same_process(metadata.daemon_pid, metadata.daemon_start_time) {
-            Ok(false) => cleanup_stale(home, metadata),
-            Ok(true) => tracing::debug!("refused connection belongs to a live daemon"),
-            Err(error) => {
-                tracing::warn!(errno = error.raw_os_error(), "daemon identity is uncertain")
-            }
-        }
+        cleanup_if_dead(home, metadata);
     } else {
         tracing::debug!(errno = error.raw_os_error(), "session connection failed");
+    }
+}
+
+/// Only a proven dead daemon identity makes a refused session stale.
+fn cleanup_if_dead(home: &Path, metadata: &SessionMetadata) {
+    match process::is_same_process(metadata.daemon_pid, metadata.daemon_start_time) {
+        Ok(false) => cleanup_stale(home, metadata),
+        Ok(true) => tracing::debug!("refused connection belongs to a live daemon"),
+        Err(error) => {
+            tracing::warn!(errno = error.raw_os_error(), "daemon identity is uncertain")
+        }
     }
 }
 
@@ -227,7 +242,12 @@ fn truncate(value: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
-    let mut remaining = width - 1;
+    let mut result = leading_cells(value, width - 1);
+    result.push('…');
+    result
+}
+
+fn leading_cells(value: &str, mut remaining: usize) -> String {
     let mut result = String::new();
     for character in value.chars() {
         let cells = character.width().unwrap_or(0);
@@ -237,7 +257,6 @@ fn truncate(value: &str, width: usize) -> String {
         result.push(character);
         remaining -= cells;
     }
-    result.push('…');
     result
 }
 

@@ -31,7 +31,8 @@ fn save(home: &std::path::Path, metadata: &SessionMetadata) -> std::path::PathBu
     path
 }
 
-/// #37: empty presentation is exact, table escapes/quotes/fits terminal cells; JSON stays lossless.
+/// #37: empty presentation is exact, table escapes/quotes/fits terminal cells (a full prefix leaves
+/// ARGS empty, one spare cell holds only the ellipsis); JSON stays lossless.
 #[test]
 fn list_presentation_quotes_controls_and_fits_terminal_width() {
     assert_eq!(table(&[], 80).unwrap(), "No climon2 sessions running.\n");
@@ -46,6 +47,12 @@ fn list_presentation_quotes_controls_and_fits_terminal_width() {
             .lines()
             .all(|line| unicode_width::UnicodeWidthStr::width(line) <= 80)
     );
+    let prefix = rendered.lines().last().unwrap().split('\'').next().unwrap();
+    let prefix_width = unicode_width::UnicodeWidthStr::width(prefix);
+    let filled = table(std::slice::from_ref(&first), prefix_width).unwrap();
+    assert_eq!(filled.lines().last().unwrap(), prefix);
+    let one_cell = table(std::slice::from_ref(&first), prefix_width + 1).unwrap();
+    assert_eq!(one_cell.lines().last().unwrap(), format!("{prefix}…"));
     let full = table(std::slice::from_ref(&first), 200).unwrap();
     assert!(full.contains("'space arg'"));
     assert!(full.contains("'quote'\\''arg'"));
@@ -112,9 +119,10 @@ fn gone_pid_is_stale_but_wrong_or_malformed_hello_never_is() {
     let gone_path = save(home.path(), &gone);
     assert!(discover(home.path()).unwrap().is_empty());
     assert!(!gone_path.exists());
-    for (suffix, body) in [
-        (12, b"{".to_vec()),
-        (13, b"{\"session_id\":\"12345678-1234-4234-8234-123456789aff\",\"climon2_version\":\"0.1.0\",\"protocol\":1}".to_vec()),
+    for (suffix, type_code, body) in [
+        (12, 0x01, b"{".to_vec()),
+        (13, 0x01, b"{\"session_id\":\"12345678-1234-4234-8234-123456789aff\",\"climon2_version\":\"0.1.0\",\"protocol\":1}".to_vec()),
+        (14, 0x21, b"not a hello".to_vec()),
     ] {
         let mut metadata = metadata(home.path(), suffix, "2026-10-28T07:21:02.930Z");
         metadata.daemon_pid = pid;
@@ -123,7 +131,7 @@ fn gone_pid_is_stale_but_wrong_or_malformed_hello_never_is() {
         let worker = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             read_frame(&mut socket).unwrap();
-            write_frame(&mut socket, &Frame::new(1, body).unwrap()).unwrap();
+            write_frame(&mut socket, &Frame::new(type_code, body).unwrap()).unwrap();
         });
         assert!(discover(home.path()).unwrap().is_empty());
         worker.join().unwrap();

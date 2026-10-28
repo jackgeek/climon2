@@ -30,18 +30,27 @@ pub fn run(
     general: &LogFile,
     filter: Option<&str>,
 ) -> Result<u32, Error> {
-    terminal::require_ttys()?;
-    let layout = executable_layout()?;
-    let id: SessionId = uuid::Uuid::new_v4()
-        .to_string()
-        .parse()
-        .map_err(io::Error::other)?;
+    let layout = preflight()?;
+    let id = new_session_id()?;
     let session = session_log(home, &id, general)?;
     let dispatch = session.dispatch(filter)?;
     tracing::dispatcher::with_default(&dispatch, || {
         launch(home, command, &layout, &id, filter)
             .map_err(|error| error.logged(session.path().parent().expect("session log directory")))
     })
+}
+
+/// TTY checks happen before anything is created or spawned.
+fn preflight() -> io::Result<ExecutableLayout> {
+    terminal::require_ttys()?;
+    executable_layout()
+}
+
+fn new_session_id() -> io::Result<SessionId> {
+    uuid::Uuid::new_v4()
+        .to_string()
+        .parse()
+        .map_err(io::Error::other)
 }
 
 fn executable_layout() -> io::Result<ExecutableLayout> {
@@ -80,11 +89,15 @@ fn launch(
     let inherited = std::env::vars_os().collect::<Vec<_>>();
     let environment =
         SessionEnvironment::for_session(id, &inherited).map_err(|error| Error::new(125, error))?;
+    warn_if_nested(&environment);
+    let _daemon = startup.ready(command, environment, filter)?;
+    startup.handoff(filter)
+}
+
+fn warn_if_nested(environment: &SessionEnvironment) {
     if let Some(warning) = &environment.nested_warning {
         eprintln!("{warning}");
     }
-    let _daemon = startup.ready(command, environment, filter)?;
-    startup.handoff(filter)
 }
 
 impl Startup<'_> {
@@ -93,10 +106,9 @@ impl Startup<'_> {
         layout: &'a ExecutableLayout,
         id: &'a SessionId,
     ) -> Result<Startup<'a>, Error> {
-        let runtime = RuntimeDirectory::prepare(home)?;
-        let socket = runtime.socket_path(id)?;
+        let socket = RuntimeDirectory::prepare(home)?.socket_path(id)?;
         let metadata = home.join("sessions").join(format!("{id}.pty"));
-        let size = terminal::size(&terminal::input()?)?;
+        let size = terminal_size()?;
         let cwd = std::env::current_dir().map_err(|error| Error::new(126, error))?;
         Ok(Startup {
             home,
@@ -174,8 +186,20 @@ impl Startup<'_> {
     }
 
     fn handoff(&self, filter: Option<&str>) -> Result<u32, Error> {
-        let metadata = SessionMetadata::from_json(&self.metadata, &fs::read(&self.metadata)?)
-            .map_err(io::Error::other)?;
+        let mut client = self.client(&self.written_metadata()?)?;
+        if let Some(filter) = filter {
+            client.env("CLIMON2_LOG", filter);
+        }
+        tracing::debug!(session_id = %self.id, "handing off to version-matched client");
+        Err(Error::from(client.exec()))
+    }
+
+    fn written_metadata(&self) -> io::Result<SessionMetadata> {
+        SessionMetadata::from_json(&self.metadata, &fs::read(&self.metadata)?)
+            .map_err(io::Error::other)
+    }
+
+    fn client(&self, metadata: &SessionMetadata) -> Result<Command, Error> {
         let invocation = self
             .layout
             .client_invocation(&metadata.climon2_version, &self.metadata)
@@ -191,12 +215,12 @@ impl Startup<'_> {
         })?;
         let mut client = Command::new(client);
         client.args(invocation.args).env("CLIMON2_HOME", self.home);
-        if let Some(filter) = filter {
-            client.env("CLIMON2_LOG", filter);
-        }
-        tracing::debug!(session_id = %self.id, "handing off to version-matched client");
-        Err(Error::from(client.exec()))
+        Ok(client)
     }
+}
+
+fn terminal_size() -> io::Result<TerminalSize> {
+    terminal::size(&terminal::input()?)
 }
 
 struct Started<'a> {
