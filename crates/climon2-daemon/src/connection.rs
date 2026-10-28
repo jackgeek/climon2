@@ -57,11 +57,12 @@ impl Connection {
     }
 
     pub fn finish(&mut self, code: u32) -> io::Result<()> {
-        write_frame(
-            &mut self.outgoing,
-            &ServerMessage::Exit { code }.to_frame()?,
-        )?;
-        let deadline = Instant::now() + climon2_core::protocol::PTY_DRAIN_CAP;
+        let frame = ServerMessage::Exit { code }.to_frame()?;
+        write_frame(&mut self.outgoing, &frame)?;
+        self.flush_until(Instant::now() + climon2_core::protocol::PTY_DRAIN_CAP)
+    }
+
+    fn flush_until(&mut self, deadline: Instant) -> io::Result<()> {
         while !self.available() && Instant::now() < deadline {
             self.flush()?;
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -87,15 +88,13 @@ impl Connection {
         if self.available() {
             return Ok(());
         }
-        match self.stream.write(&self.outgoing[self.written..]) {
-            Ok(0) => Err(super::io_error("connection closed")),
-            Ok(count) => {
-                self.advance_written(count);
-                Ok(())
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
-            Err(error) => Err(error),
+        // A stream write of a non-empty buffer never returns 0; it makes progress or fails.
+        if let Some(count) =
+            super::unless_would_block(self.stream.write(&self.outgoing[self.written..]))?
+        {
+            self.advance_written(count);
         }
+        Ok(())
     }
 
     fn advance_written(&mut self, count: usize) {
@@ -123,48 +122,77 @@ impl Connection {
     }
 
     fn read_message(&mut self) -> io::Result<Option<ClientMessage>> {
-        let target = self.target()?;
-        let mut bytes = vec![0; (target - self.incoming.len()).min(8192)];
-        match self.stream.read(&mut bytes) {
-            Ok(0) => return Err(super::io_error("connection closed")),
-            Ok(count) => self.incoming.extend_from_slice(&bytes[..count]),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
-            Err(error) => return Err(error),
+        let mut bytes = self.read_buffer()?;
+        match super::unless_would_block(self.stream.read(&mut bytes))? {
+            Some(count) => self.received(&bytes[..count]),
+            None => Ok(None),
         }
+    }
+
+    /// Never reads past the current frame, so each read holds at most one frame.
+    fn read_buffer(&self) -> io::Result<Vec<u8>> {
+        Ok(vec![0; (self.target()? - self.incoming.len()).min(8192)])
+    }
+
+    fn received(&mut self, bytes: &[u8]) -> io::Result<Option<ClientMessage>> {
+        if bytes.is_empty() {
+            return Err(super::io_error("connection closed"));
+        }
+        self.incoming.extend_from_slice(bytes);
         self.complete()
     }
 
+    /// Bytes needed for the frame being decoded: prefix, then type, then the whole frame.
     fn target(&self) -> io::Result<usize> {
-        if self.incoming.len() < 4 {
-            return Ok(4);
+        match self.incoming.len() {
+            0..4 => Ok(4),
+            4 => self.frame_length().map(|_| 5),
+            _ => self.frame_target(),
         }
+    }
+
+    fn frame_length(&self) -> io::Result<usize> {
         let length =
             u32::from_be_bytes(self.incoming[..4].try_into().expect("frame prefix")) as usize;
         if !(1..=MAX_FRAME_LENGTH).contains(&length) {
             return Err(super::io_error("invalid frame length"));
         }
-        if self.incoming.len() == 4 {
-            return Ok(5);
-        }
-        climon2_core::protocol::Frame::new(self.incoming[4], Vec::new())?;
-        validate_data_length(self.incoming[4], length)?;
+        Ok(length)
+    }
+
+    fn frame_target(&self) -> io::Result<usize> {
+        let length = self.frame_length()?;
+        validate_frame_type(self.incoming[4], length)?;
         Ok(4 + length)
     }
 
     fn complete(&mut self) -> io::Result<Option<ClientMessage>> {
-        if self.incoming.len() < 5 || self.incoming.len() != self.target()? {
+        if !self.frame_complete()? {
             return Ok(None);
         }
         let bytes = std::mem::take(&mut self.incoming);
-        let message = parsed_message(&bytes)?;
+        self.message(&bytes).map(Some)
+    }
+
+    fn frame_complete(&self) -> io::Result<bool> {
+        Ok(self.incoming.len() >= 5 && self.incoming.len() == self.target()?)
+    }
+
+    fn message(&mut self, bytes: &[u8]) -> io::Result<ClientMessage> {
+        let message = parsed_message(bytes)?;
         self.state.receive(&message)?;
-        Ok(Some(message))
+        Ok(message)
     }
 }
 
 fn parsed_message(bytes: &[u8]) -> io::Result<ClientMessage> {
     let mut reader = bytes;
     ClientMessage::from_frame(read_frame(&mut reader)?)
+}
+
+fn validate_frame_type(code: u8, length: usize) -> io::Result<()> {
+    climon2_core::protocol::Frame::new(code, Vec::new())?;
+    validate_data_length(code, length)
 }
 
 fn validate_data_length(code: u8, length: usize) -> io::Result<()> {

@@ -164,22 +164,21 @@ impl Session<'_> {
     fn receive(&mut self, id: u64, pty: &Pty) -> io::Result<()> {
         let incoming = self.connections.get_mut(&id).expect("connection").receive();
         match incoming {
-            Ok(Some(message)) => self.message(id, message, pty)?,
-            Ok(None) => {}
+            Ok(Some(message)) => self.message(id, message, pty),
+            Ok(None) => Ok(()),
             Err(error) => {
-                let message = if error.kind() == io::ErrorKind::InvalidData {
-                    error.to_string()
-                } else {
-                    "invalid session protocol".into()
-                };
-                self.connections
-                    .get_mut(&id)
-                    .expect("connection")
-                    .error(&message);
-                self.disconnected(id);
+                self.rejected(id, &error);
+                Ok(())
             }
         }
-        Ok(())
+    }
+
+    fn rejected(&mut self, id: u64, error: &io::Error) {
+        self.connections
+            .get_mut(&id)
+            .expect("connection")
+            .error(&protocol_error(error));
+        self.disconnected(id);
     }
 
     fn disconnected(&mut self, id: u64) {
@@ -191,25 +190,34 @@ impl Session<'_> {
 
     fn message(&mut self, id: u64, message: ClientMessage, pty: &Pty) -> io::Result<()> {
         match message {
-            ClientMessage::Hello { .. } => self.reply(
-                id,
-                ServerMessage::Hello(HelloReply {
-                    session_id: self.options.id.clone(),
-                    climon2_version: self.options.version.clone(),
-                    protocol: PROTOCOL_VERSION,
-                }),
-            ),
+            ClientMessage::Hello { .. } => self.hello(id),
             ClientMessage::Attach(size) => self.attach(id, size, pty),
             ClientMessage::Input(bytes) => {
                 self.input = bytes;
                 Ok(())
             }
-            ClientMessage::Resize(size) => self.resize(size, pty),
-            ClientMessage::Error { .. } => {
-                self.disconnected(id);
-                Ok(())
-            }
+            control => self.control(id, control, pty),
         }
+    }
+
+    fn hello(&mut self, id: u64) -> io::Result<()> {
+        self.reply(
+            id,
+            ServerMessage::Hello(HelloReply {
+                session_id: self.options.id.clone(),
+                climon2_version: self.options.version.clone(),
+                protocol: PROTOCOL_VERSION,
+            }),
+        )
+    }
+
+    /// Resize applies to the PTY; the only other client message, Error, disconnects.
+    fn control(&mut self, id: u64, message: ClientMessage, pty: &Pty) -> io::Result<()> {
+        if let ClientMessage::Resize(size) = message {
+            return self.resize(size, pty);
+        }
+        self.disconnected(id);
+        Ok(())
     }
 
     fn reply(&mut self, id: u64, message: ServerMessage) -> io::Result<()> {
@@ -244,31 +252,38 @@ impl Session<'_> {
         if self.input.is_empty() {
             return Ok(());
         }
-        match pty.write(&self.input[self.input_offset..]) {
-            Ok(count) => self.input_offset += count,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-            Err(error) => return Err(error),
+        if let Some(count) = super::unless_would_block(pty.write(&self.input[self.input_offset..]))?
+        {
+            self.wrote_input(count);
         }
+        Ok(())
+    }
+
+    fn wrote_input(&mut self, count: usize) {
+        self.input_offset += count;
         if self.input_offset == self.input.len() {
             self.input.clear();
             self.input_offset = 0;
         }
-        Ok(())
     }
 
     fn observe_exit(&mut self, pty: &mut Pty) -> io::Result<()> {
         if self.exit.is_none() {
             self.exit = pty.try_wait()?;
         }
+        self.start_drain();
+        Ok(())
+    }
+
+    /// Drain starts once, when a reaped command has a controlling client.
+    fn start_drain(&mut self) {
         if self.exit.is_some() && self.controller.is_some() && self.drain.is_none() {
-            let now = Instant::now();
             self.drain = Some(Drain {
-                started: now,
+                started: Instant::now(),
                 idle_since: None,
                 eof: false,
             });
         }
-        Ok(())
     }
 
     /// The sole PTY reader. Per-connection pending output is at most one 32 KiB frame.
@@ -293,12 +308,10 @@ impl Session<'_> {
         bytes: Vec<u8>,
         result: io::Result<usize>,
     ) -> io::Result<()> {
-        match result {
-            Ok(0) => self.eof(),
-            Ok(count) => return self.output(id, bytes, count),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => self.idle(),
-            Err(error) if error.raw_os_error() == Some(libc::EIO) => self.eof(),
-            Err(error) => return Err(error),
+        match super::unless_would_block(eio_as_eof(result))? {
+            None => self.idle(),
+            Some(0) => self.eof(),
+            Some(count) => return self.output(id, bytes, count),
         }
         Ok(())
     }
@@ -353,6 +366,21 @@ impl Session<'_> {
         connection.finish(self.exit.expect("reaped drain"))?;
         Ok(true)
     }
+}
+
+/// A hung-up macOS PTY master reports EIO, which is end of output like a 0-byte read.
+fn eio_as_eof(result: io::Result<usize>) -> io::Result<usize> {
+    match result {
+        Err(error) if error.raw_os_error() == Some(libc::EIO) => Ok(0),
+        result => result,
+    }
+}
+
+fn protocol_error(error: &io::Error) -> String {
+    if error.kind() == io::ErrorKind::InvalidData {
+        return error.to_string();
+    }
+    "invalid session protocol".into()
 }
 
 impl Drain {

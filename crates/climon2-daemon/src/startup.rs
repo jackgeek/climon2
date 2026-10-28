@@ -39,19 +39,8 @@ pub(crate) struct Resources {
 
 impl Resources {
     pub fn prepare(options: &Options) -> Result<Self, Failure> {
-        runtime::private_directory(&options.home.join("sessions"))
-            .map_err(|_| Failure::own("sessions directory is not private or usable"))?;
-        let parent = options
-            .socket
-            .parent()
-            .ok_or_else(|| Failure::own("invalid socket path"))?;
-        runtime::private_directory(parent)
-            .map_err(|_| Failure::own("socket directory is not private or usable"))?;
-        let listener = runtime::bind(&options.socket)
-            .map_err(|_| Failure::own("cannot bind session socket"))?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|_| Failure::own("cannot configure session socket"))?;
+        private_directories(options)?;
+        let listener = listen(&options.socket)?;
         let metadata = options
             .home
             .join("sessions")
@@ -76,10 +65,14 @@ impl Resources {
 
     fn write_metadata(&mut self, options: &Options) -> io::Result<()> {
         let bytes = metadata(options)?.to_json().map_err(io::Error::other)?;
-        let mut file = self.create_metadata_file()?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
+        self.write_temporary(&bytes)?;
         self.rename()
+    }
+
+    fn write_temporary(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let mut file = self.create_metadata_file()?;
+        file.write_all(bytes)?;
+        file.sync_all()
     }
 
     fn rename(&mut self) -> io::Result<()> {
@@ -91,15 +84,10 @@ impl Resources {
         Ok(())
     }
 
+    /// Metadata first, then any owned temporary, then the session socket.
     pub fn cleanup(&mut self) -> io::Result<()> {
-        if self.published {
-            remove(&self.metadata)?;
-            self.published = false;
-        }
-        if self.temporary_owned {
-            remove(&self.temporary)?;
-            self.temporary_owned = false;
-        }
+        remove_owned(&self.metadata, &mut self.published)?;
+        remove_owned(&self.temporary, &mut self.temporary_owned)?;
         remove(&self.socket)
     }
     fn create_metadata_file(&mut self) -> io::Result<std::fs::File> {
@@ -121,6 +109,33 @@ impl Drop for Resources {
     }
 }
 
+fn private_directories(options: &Options) -> Result<(), Failure> {
+    runtime::private_directory(&options.home.join("sessions"))
+        .map_err(|_| Failure::own("sessions directory is not private or usable"))?;
+    let parent = options
+        .socket
+        .parent()
+        .ok_or_else(|| Failure::own("invalid socket path"))?;
+    runtime::private_directory(parent)
+        .map_err(|_| Failure::own("socket directory is not private or usable"))
+}
+
+fn listen(socket: &std::path::Path) -> Result<runtime::SocketListener, Failure> {
+    let listener = runtime::bind(socket).map_err(|_| Failure::own("cannot bind session socket"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|_| Failure::own("cannot configure session socket"))?;
+    Ok(listener)
+}
+
+fn remove_owned(path: &std::path::Path, owned: &mut bool) -> io::Result<()> {
+    if *owned {
+        remove(path)?;
+        *owned = false;
+    }
+    Ok(())
+}
+
 fn remove(path: &std::path::Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -131,33 +146,43 @@ fn remove(path: &std::path::Path) -> io::Result<()> {
 fn metadata(options: &Options) -> io::Result<SessionMetadata> {
     let display = DisplayCommand::from_runtime(&options.command, &options.arguments, &options.cwd)
         .map_err(io::Error::other)?;
+    let socket_path = options
+        .socket
+        .to_string_lossy()
+        .parse()
+        .map_err(io::Error::other)?;
     Ok(SessionMetadata {
         format_version: NonZeroU32::MIN,
         session_id: options.id.clone(),
-        socket_path: options
-            .socket
-            .to_string_lossy()
-            .parse()
-            .map_err(io::Error::other)?,
+        socket_path,
         daemon_pid: std::process::id(),
-        daemon_start_time: process::start_time(std::process::id())?
-            .ok_or_else(|| super::io_error("daemon process identity unavailable"))?,
+        daemon_start_time: daemon_start_time()?,
         command: display.command,
         args: display.args,
         cwd: display.cwd,
-        depth: std::env::var("CLIMON2_SESSION_DEPTH")
-            .ok()
-            .and_then(|depth| depth.parse().ok())
-            .unwrap_or(NonZeroU32::MIN),
+        depth: inherited_depth(),
         created_at: logging::timestamp()?,
         climon2_version: options.version.clone(),
     })
 }
 
+fn daemon_start_time() -> io::Result<u64> {
+    process::start_time(std::process::id())?
+        .ok_or_else(|| super::io_error("daemon process identity unavailable"))
+}
+
+fn inherited_depth() -> NonZeroU32 {
+    std::env::var("CLIMON2_SESSION_DEPTH")
+        .ok()
+        .and_then(|depth| depth.parse().ok())
+        .unwrap_or(NonZeroU32::MIN)
+}
+
 pub fn fault(_log: &logging::LogFile) -> Result<(), Failure> {
     #[cfg(feature = "test-hooks")]
     if selected_fault("panic") {
-        panic_fault(_log)?;
+        let _capture = capture_diagnostics(_log)?;
+        panic!("controlled daemon fault");
     }
     #[cfg(feature = "test-hooks")]
     if selected_fault("never-ready") {
@@ -166,22 +191,17 @@ pub fn fault(_log: &logging::LogFile) -> Result<(), Failure> {
     Ok(())
 }
 
+pub fn capture_diagnostics(log: &logging::LogFile) -> Result<logging::StderrCapture, Failure> {
+    log.capture_stderr()
+        .map_err(|_| Failure::own("cannot capture daemon diagnostics"))
+}
+
 #[cfg(feature = "test-hooks")]
 fn selected_fault(name: &str) -> bool {
     std::env::var("CLIMON2_DAEMON_FAULT").is_ok_and(|value| value == name)
 }
 
 #[cfg(feature = "test-hooks")]
-fn panic_fault(log: &logging::LogFile) -> Result<(), Failure> {
-    let _capture = log
-        .capture_stderr()
-        .map_err(|_| Failure::own("cannot capture daemon diagnostics"))?;
-    panic!("controlled daemon fault");
-}
-
-#[cfg(feature = "test-hooks")]
 fn never_ready() {
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(60));
-    }
+    std::thread::sleep(std::time::Duration::MAX);
 }

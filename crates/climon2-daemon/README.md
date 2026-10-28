@@ -117,6 +117,17 @@ clients and owned generic terminal fixtures:
   the real five seconds and leave no command process.
 - Startup failure/invalid invocation and daemon-ignore-signal tests cover
   safe launch diagnostics, refused permissions and ignored HUP/INT/PIPE.
+- `startup_failure_reports_cleans_up_and_exits_with_the_reported_code`,
+  `startup_confirmation_decides_the_reported_launch_failure`,
+  `repeated_unknown_zero_pid_and_relative_options_are_invalid_invocations` and
+  `unsupervised_controlled_panic_ends_the_daemon_without_readiness` own the
+  readiness pipe instead of using `wait_ready` (which kills a failed daemon),
+  so they observe the daemon's own exit status and cleanup. The confirmation
+  test holds the shared PTY allocation lock briefly so its connection is the
+  first on the startup socket.
+- `exec_helper_confirms_launch_failure_codes_and_exits_with_them` drives the
+  private `--exec-command` helper directly: 127 for a missing command in a
+  usable cwd, otherwise 126.
 
 On macOS, session-leader exit may revoke the PTY immediately, so the final
 drain fixture permits EOF/EIO before the idle/cap clocks expire; it does not

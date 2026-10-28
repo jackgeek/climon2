@@ -86,96 +86,22 @@ impl Session {
         bad_cwd: bool,
         missing: bool,
     ) -> (Self, io::Result<daemon::Readiness>) {
-        let prefix = if mode == "long-paths" {
-            format!("daemon-{}", "long".repeat(30))
-        } else {
-            "daemon-".into()
-        };
-        let directory = tempfile::Builder::new()
-            .prefix(&prefix)
-            .tempdir_in(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"))
-            .unwrap();
-        let home = fs::canonicalize(directory.path()).unwrap();
-        fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
-        let runtime = RuntimeDirectory::prepare(&home).unwrap();
-        let standard_socket = runtime.socket_path(&ID.parse().unwrap()).unwrap();
-        let startup_socket = standard_socket.with_extension("exec");
-        let socket = if mode == "long-paths" {
-            runtime
-                .path()
-                .join("s".repeat(103 - runtime.path().as_os_str().as_encoded_bytes().len() - 1))
-        } else {
-            standard_socket
-        };
-        let metadata = home.join("sessions").join(format!("{ID}.pty"));
-        let cwd = if mode == "literal" {
-            let cwd = home.join("cwd space --literal é");
-            fs::create_dir(&cwd).unwrap();
-            cwd
-        } else {
-            home.clone()
-        };
-        let executable = if mode == "long-paths" {
-            let executable = home.join("climon2-daemon");
-            fs::copy(env!("CARGO_BIN_EXE_climon2-daemon"), &executable).unwrap();
-            executable
-        } else {
-            PathBuf::from(env!("CARGO_BIN_EXE_climon2-daemon"))
-        };
-        let mut command = Command::new(executable);
-        command.args(["--session-id", ID, "--version", "0.1.0", "--cli-pid", "1"]);
-        command
-            .arg("--home")
-            .arg(&home)
-            .arg("--socket")
-            .arg(&socket);
-        command
-            .arg("--cwd")
-            .arg(if bad_cwd {
-                home.join("missing-cwd")
-            } else {
-                cwd
-            })
-            .args(if mode == "zero-size" {
-                ["--cols", "0", "--rows", "0"]
-            } else {
-                ["--cols", "91", "--rows", "37"]
-            });
-        command.env("DAEMON_FIXTURE_MODE", mode).env_remove("SHELL");
-        command.env("DAEMON_REPORT", home.join("report"));
-        configure(&mut command, &home);
+        let (prepared, command) = Prepared::new(mode, configure, bad_cwd);
+        let Prepared {
+            directory,
+            home,
+            socket,
+            metadata,
+            startup_socket,
+        } = prepared;
         let pending = daemon::spawn(command, |command, fd| {
-            command.args(["--readiness-fd", &fd.to_string(), "--"]);
-            if missing {
-                command.arg(home.join("missing-command"));
-            } else if mode == "cannot-run" {
-                command.arg(home.join("not-executable"));
-            } else if mode == "literal" {
-                command.arg(daemon_fixture());
-                command.args(["", "space argument", "--looks-like-option"]);
-                use std::os::unix::ffi::OsStringExt;
-                command.arg(std::ffi::OsString::from_vec(b"invalid-\xff".to_vec()));
-            } else {
-                command.arg(std::env::current_exe().unwrap());
-                command.args(["--exact", "fixture_child", "--ignored", "--nocapture"]);
-            }
+            command_tail(command, fd, &home, mode, missing);
         })
         .unwrap();
         let pid = pending.id();
         let readiness = pending.wait_ready(&[&metadata, &socket]);
-        if !matches!(readiness, Ok(daemon::Readiness::Ready))
-            && let Ok(log) = fs::read_to_string(home.join(format!("logs/{ID}/daemon.log")))
-        {
-            for pid in log
-                .split_whitespace()
-                .filter_map(|field| field.strip_prefix("command_pid="))
-                .filter_map(|pid| pid.parse::<u32>().ok())
-            {
-                assert!(
-                    process::start_time(pid).unwrap().is_none(),
-                    "startup command survived"
-                );
-            }
+        if !matches!(readiness, Ok(daemon::Readiness::Ready)) {
+            assert_startup_command_gone(&home);
         }
         let pid = if matches!(readiness, Ok(daemon::Readiness::Ready)) {
             pid
@@ -268,6 +194,108 @@ impl Drop for Session {
             }
             let _ = process::wait(self.pid);
         }
+    }
+}
+
+struct Prepared {
+    directory: tempfile::TempDir,
+    home: PathBuf,
+    socket: PathBuf,
+    metadata: PathBuf,
+    startup_socket: PathBuf,
+}
+
+impl Prepared {
+    fn new(
+        mode: &str,
+        configure: impl FnOnce(&mut Command, &Path),
+        bad_cwd: bool,
+    ) -> (Self, Command) {
+        let prefix = if mode == "long-paths" {
+            format!("daemon-{}", "long".repeat(30))
+        } else {
+            "daemon-".into()
+        };
+        let directory = tempfile::Builder::new()
+            .prefix(&prefix)
+            .tempdir_in(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"))
+            .unwrap();
+        let home = fs::canonicalize(directory.path()).unwrap();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = RuntimeDirectory::prepare(&home).unwrap();
+        let standard_socket = runtime.socket_path(&ID.parse().unwrap()).unwrap();
+        let startup_socket = standard_socket.with_extension("exec");
+        let socket = if mode == "long-paths" {
+            runtime
+                .path()
+                .join("s".repeat(103 - runtime.path().as_os_str().as_encoded_bytes().len() - 1))
+        } else {
+            standard_socket
+        };
+        let metadata = home.join("sessions").join(format!("{ID}.pty"));
+        let cwd = if mode == "literal" {
+            let cwd = home.join("cwd space --literal é");
+            fs::create_dir(&cwd).unwrap();
+            cwd
+        } else {
+            home.clone()
+        };
+        let executable = if mode == "long-paths" {
+            let executable = home.join("climon2-daemon");
+            fs::copy(env!("CARGO_BIN_EXE_climon2-daemon"), &executable).unwrap();
+            executable
+        } else {
+            PathBuf::from(env!("CARGO_BIN_EXE_climon2-daemon"))
+        };
+        let mut command = Command::new(executable);
+        command.args(["--session-id", ID, "--version", "0.1.0", "--cli-pid", "1"]);
+        command
+            .arg("--home")
+            .arg(&home)
+            .arg("--socket")
+            .arg(&socket);
+        command
+            .arg("--cwd")
+            .arg(if bad_cwd {
+                home.join("missing-cwd")
+            } else {
+                cwd
+            })
+            .args(if mode == "zero-size" {
+                ["--cols", "0", "--rows", "0"]
+            } else {
+                ["--cols", "91", "--rows", "37"]
+            });
+        command.env("DAEMON_FIXTURE_MODE", mode).env_remove("SHELL");
+        command.env("DAEMON_REPORT", home.join("report"));
+        configure(&mut command, &home);
+        (
+            Self {
+                directory,
+                home,
+                socket,
+                metadata,
+                startup_socket,
+            },
+            command,
+        )
+    }
+}
+
+fn command_tail(command: &mut Command, fd: u32, home: &Path, mode: &str, missing: bool) {
+    command.args(["--readiness-fd", &fd.to_string(), "--"]);
+    if missing {
+        command.arg(home.join("missing-command"));
+    } else if mode == "cannot-run" {
+        command.arg(home.join("not-executable"));
+    } else if mode == "literal" {
+        command.arg(daemon_fixture());
+        command.args(["", "space argument", "--looks-like-option"]);
+        use std::os::unix::ffi::OsStringExt;
+        command.arg(std::ffi::OsString::from_vec(b"invalid-\xff".to_vec()));
+    } else {
+        command.arg(std::env::current_exe().unwrap());
+        command.args(["--exact", "fixture_child", "--ignored", "--nocapture"]);
     }
 }
 
@@ -742,6 +770,281 @@ fn invalid_cwd_missing_command_and_unsafe_sessions_are_startup_failures() {
     ));
     assert!(!session.socket.exists());
     assert!(!session.startup_socket.exists());
+}
+
+/// Runs the daemon on a readiness pipe owned by this test and never kills it. The CLI's
+/// `wait_ready` kills a failed daemon, so only this observes the daemon's own exit.
+fn unsupervised(
+    mode: &str,
+    configure: impl FnOnce(&mut Command, &Path),
+    bad_cwd: bool,
+) -> (Prepared, Vec<u8>, std::process::ExitStatus) {
+    let (prepared, mut command) = Prepared::new(mode, configure, bad_cwd);
+    let (readiness, status) = run_unsupervised(&mut command, &prepared, mode);
+    (prepared, readiness, status)
+}
+
+/// Kills the daemon only if it unexpectedly reports Ready, which never closes the pipe.
+fn run_unsupervised(
+    command: &mut Command,
+    prepared: &Prepared,
+    mode: &str,
+) -> (Vec<u8>, std::process::ExitStatus) {
+    use std::os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::process::CommandExt,
+    };
+    let mut fds = [-1; 2];
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    let (mut reader, writer) =
+        unsafe { (fs::File::from_raw_fd(fds[0]), fs::File::from_raw_fd(fds[1])) };
+    for fd in fds {
+        assert_ne!(
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+            -1
+        );
+    }
+    let descriptor = writer.as_raw_fd();
+    command_tail(command, descriptor as u32, &prepared.home, mode, false);
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(descriptor, libc::F_SETFD, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    drop(writer);
+    let mut readiness = Vec::new();
+    let mut chunk = [0; 512];
+    loop {
+        let count = reader.read(&mut chunk).unwrap();
+        readiness.extend_from_slice(&chunk[..count]);
+        if readiness == b"R" {
+            child.kill().unwrap();
+        }
+        if count == 0 || readiness == b"R" {
+            break;
+        }
+    }
+    (readiness, child.wait().unwrap())
+}
+
+fn failed_readiness(code: u32, message: &str) -> Vec<u8> {
+    let mut bytes = vec![b'F'];
+    bytes.extend(code.to_be_bytes());
+    bytes.extend((message.len() as u32).to_be_bytes());
+    bytes.extend(message.as_bytes());
+    bytes
+}
+
+fn assert_startup_command_gone(home: &Path) {
+    if let Ok(log) = fs::read_to_string(home.join(format!("logs/{ID}/daemon.log"))) {
+        for pid in log
+            .split_whitespace()
+            .filter_map(|field| field.strip_prefix("command_pid="))
+            .filter_map(|pid| pid.parse::<u32>().ok())
+        {
+            assert!(
+                process::start_time(pid).unwrap().is_none(),
+                "startup command survived"
+            );
+        }
+    }
+}
+
+fn assert_startup_files_removed(prepared: &Prepared) {
+    assert!(!prepared.metadata.exists());
+    assert!(!prepared.socket.exists());
+    assert!(!prepared.startup_socket.exists());
+}
+
+/// #15/#17: unsupervised, a failed startup reports its static diagnostic once, removes its own
+/// files and the daemon itself exits with the reported code. Real exec failures are covered by
+/// the supervised test above; here the helper never runs, so nothing is killed mid-exit.
+#[test]
+fn startup_failure_reports_cleans_up_and_exits_with_the_reported_code() {
+    type Configure = fn(&mut Command, &Path);
+    let nothing: Configure = |_, _| {};
+    let shared_sessions: Configure = |_, home| {
+        fs::create_dir(home.join("sessions")).unwrap();
+        fs::set_permissions(home.join("sessions"), fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    for (mode, configure, bad_cwd, code, message) in [
+        (
+            "exit",
+            nothing,
+            true,
+            126,
+            "command working directory is not accessible",
+        ),
+        (
+            "exit",
+            shared_sessions,
+            false,
+            125,
+            "sessions directory is not private or usable",
+        ),
+    ] {
+        let (prepared, readiness, status) = unsupervised(mode, configure, bad_cwd);
+        assert_eq!(readiness, failed_readiness(code, message), "{message}");
+        assert_eq!(status.code(), Some(code as i32), "{message}");
+        assert_startup_files_removed(&prepared);
+        assert_startup_command_gone(&prepared.home);
+    }
+}
+
+/// The same daemon command with one option's value replaced (Command args are append-only).
+fn replace_option(command: &Command, key: &str, value: &str) -> Command {
+    let mut arguments: Vec<_> = command.get_args().map(ToOwned::to_owned).collect();
+    let index = arguments
+        .iter()
+        .position(|argument| argument == key)
+        .unwrap();
+    arguments[index + 1] = value.into();
+    let mut replaced = Command::new(command.get_program());
+    replaced.args(arguments);
+    for (name, value) in command.get_envs() {
+        match value {
+            Some(value) => replaced.env(name, value),
+            None => replaced.env_remove(name),
+        };
+    }
+    replaced
+}
+
+/// #17: otherwise valid invocations with a repeated, unknown, zero-PID or relative option are
+/// invalid daemon invocations: no readiness reply, no session files, exit 125.
+#[test]
+fn repeated_unknown_zero_pid_and_relative_options_are_invalid_invocations() {
+    type Configure = fn(&mut Command, &Path);
+    let cases: [Configure; 4] = [
+        |command, _| {
+            command.args(["--version", "0.1.0"]);
+        },
+        |command, _| {
+            command.args(["--unknown", "value"]);
+        },
+        |command, _| *command = replace_option(command, "--cli-pid", "0"),
+        |command, _| *command = replace_option(command, "--cwd", "."),
+    ];
+    for configure in cases {
+        let (prepared, readiness, status) = unsupervised("early", configure, false);
+        assert_eq!(readiness, b"");
+        assert_eq!(status.code(), Some(125));
+        assert_startup_files_removed(&prepared);
+    }
+}
+
+/// #15/#29: the first startup-socket connection decides the launch: a confirmed 126/127 is
+/// reported with its static diagnostic, anything outside the marker protocol is a daemon
+/// failure, and the daemon exits with that code leaving no command running.
+#[test]
+fn startup_confirmation_decides_the_reported_launch_failure() {
+    for (reply, code, message) in [
+        (&[0, 127][..], 127, "command not found"),
+        (&[0, 126][..], 126, "command cannot be executed"),
+        (&b""[..], 125, "command startup confirmation failed"),
+        (&[0, 9][..], 125, "command startup confirmation failed"),
+        (&[7][..], 125, "command startup confirmation failed"),
+    ] {
+        // Holding the per-user allocation lock keeps the daemon from spawning its helper until
+        // this connection is first in the startup socket's backlog.
+        let allocation = climon2_platform::pty::allocation().unwrap();
+        let (prepared, mut command) = Prepared::new("exit", |_, _| {}, false);
+        let started = Instant::now();
+        let startup_socket = prepared.startup_socket.clone();
+        let impostor = thread::spawn(move || {
+            // The socket path appears at bind, before it listens.
+            let mut stream = loop {
+                if let Ok(stream) = UnixStream::connect(&startup_socket) {
+                    break stream;
+                }
+                assert!(started.elapsed() < Duration::from_secs(5));
+                thread::sleep(Duration::from_millis(2));
+            };
+            stream.write_all(reply).unwrap();
+            drop(stream);
+            drop(allocation);
+        });
+        let (readiness, status) = run_unsupervised(&mut command, &prepared, "exit");
+        impostor.join().unwrap();
+        assert_eq!(readiness, failed_readiness(code, message), "{reply:?}");
+        assert_eq!(status.code(), Some(code as i32));
+        assert_startup_files_removed(&prepared);
+        assert_startup_command_gone(&prepared.home);
+    }
+}
+
+/// #15/#29: the private exec helper confirms a failed exec as 127 (missing command in a usable
+/// cwd) or 126 (not executable, or unusable cwd) and exits with that code.
+#[test]
+fn exec_helper_confirms_launch_failure_codes_and_exits_with_them() {
+    let directory = tempfile::Builder::new()
+        .prefix("exec-")
+        .tempdir_in(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"))
+        .unwrap();
+    let home = fs::canonicalize(directory.path()).unwrap();
+    fs::write(home.join("not-executable"), b"secret not executable\n").unwrap();
+    for (cwd, command, code) in [
+        (home.clone(), home.join("missing-command"), 127),
+        (home.clone(), home.join("not-executable"), 126),
+        (home.join("missing-cwd"), home.join("missing-command"), 126),
+    ] {
+        let path = home.join("exec.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_climon2-daemon"))
+            .arg("--exec-command")
+            .arg(&path)
+            .arg("keep-shell")
+            .arg(&cwd)
+            .arg(&command)
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "helper never connected");
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        let mut reply = Vec::new();
+        stream.read_to_end(&mut reply).unwrap();
+        assert_eq!(reply, [0, code]);
+        assert_eq!(child.wait().unwrap().code(), Some(i32::from(code)));
+        fs::remove_file(&path).unwrap();
+    }
+}
+
+/// #25: unsupervised, a controlled pre-readiness panic sends no readiness reply, creates no
+/// session files and ends the daemon by itself with the sanitized diagnostic logged.
+#[cfg(feature = "test-hooks")]
+#[test]
+fn unsupervised_controlled_panic_ends_the_daemon_without_readiness() {
+    let (prepared, readiness, status) = unsupervised(
+        "exit",
+        |command, _| {
+            command.env("CLIMON2_DAEMON_FAULT", "panic");
+        },
+        false,
+    );
+    assert!(readiness.is_empty());
+    assert_eq!(status.code(), Some(101));
+    let log = fs::read_to_string(prepared.home.join(format!("logs/{ID}/daemon.log"))).unwrap();
+    assert!(log.contains("climon2: daemon panic"));
+    assert!(!log.contains("controlled daemon fault"));
+    assert_startup_files_removed(&prepared);
 }
 
 /// #25/#19: faults are named, hook-only, bounded by the production readiness deadline.

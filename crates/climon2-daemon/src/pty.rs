@@ -19,19 +19,12 @@ pub(crate) struct Pty {
 
 impl Pty {
     pub fn spawn(options: &Options, startup: ExecListener) -> Result<Self, Failure> {
-        let pair = {
-            let _allocation = climon2_platform::pty::allocation()
-                .map_err(|_| Failure::own("cannot lock terminal allocation"))?;
-            native_pty_system().openpty(size(options.size))
-        }
-        .map_err(|_| Failure::own("cannot allocate command terminal"))?;
-        let command = command_builder(options, &startup.path)?;
-        let pid = spawn_child(pair.slave.as_ref(), command, options)?;
+        let pair = open_pair(options.size)?;
+        let pid = start_command(pair.slave.as_ref(), options, &startup.path)?;
         drop(pair.slave);
         let pty = Self::from_master(pair.master, pid)?;
         tracing::debug!(command_pid = pid, "command terminal created");
-        startup.confirm()?;
-        Ok(pty)
+        startup.confirm().map(|()| pty)
     }
 
     fn from_master(master: Box<dyn MasterPty + Send>, pid: u32) -> Result<Self, Failure> {
@@ -105,6 +98,27 @@ impl Pty {
     }
 }
 
+/// The allocation lock is held only while the pair is opened.
+fn open_pair(
+    terminal: climon2_core::protocol::TerminalSize,
+) -> Result<portable_pty::PtyPair, Failure> {
+    let pair = {
+        let _allocation = climon2_platform::pty::allocation()
+            .map_err(|_| Failure::own("cannot lock terminal allocation"))?;
+        native_pty_system().openpty(size(terminal))
+    };
+    pair.map_err(|_| Failure::own("cannot allocate command terminal"))
+}
+
+fn start_command(
+    slave: &dyn portable_pty::SlavePty,
+    options: &Options,
+    startup_path: &std::path::Path,
+) -> Result<u32, Failure> {
+    let command = command_builder(options, startup_path)?;
+    spawn_child(slave, command, options)
+}
+
 fn command_builder(
     options: &Options,
     startup_path: &std::path::Path,
@@ -117,11 +131,7 @@ fn command_builder(
         startup_path
             .to_str()
             .ok_or_else(|| Failure::own("invalid startup path"))?,
-        if std::env::var_os("SHELL").is_none() {
-            "unset-shell"
-        } else {
-            "keep-shell"
-        },
+        shell_policy(),
     ]);
     command.arg(&options.cwd);
     command.arg(&options.command);
@@ -132,6 +142,14 @@ fn command_builder(
         command.env(key, value);
     }
     Ok(command)
+}
+
+/// portable-pty always supplies SHELL, so the helper must know whether it was really set.
+fn shell_policy() -> &'static str {
+    if std::env::var_os("SHELL").is_none() {
+        return "unset-shell";
+    }
+    "keep-shell"
 }
 
 fn spawn_child(
@@ -218,13 +236,12 @@ impl ExecListener {
 
     fn accept(&self) -> Result<UnixStream, Failure> {
         while Instant::now() < self.deadline {
-            match peer::accept(&self.listener) {
-                Ok(stream) => return Ok(stream),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(2))
-                }
-                Err(_) => return Err(Failure::own("command startup connection failed")),
+            if let Some(stream) = super::unless_would_block(peer::accept(&self.listener))
+                .map_err(|_| Failure::own("command startup connection failed"))?
+            {
+                return Ok(stream);
             }
+            std::thread::sleep(Duration::from_millis(2));
         }
         Err(Failure::own("command startup deadline exceeded"))
     }
@@ -250,23 +267,30 @@ fn exec(arguments: &[OsString]) -> io::Result<u8> {
     execute(arguments, &mut stream)
 }
 
+/// Returns only when exec failed; success replaces this process.
 fn execute(arguments: &[OsString], stream: &mut UnixStream) -> io::Result<u8> {
+    let error = command(arguments).exec();
+    let code = launch_code(&error, std::path::Path::new(&arguments[2]));
+    stream.write_all(&[code])?;
+    Ok(code)
+}
+
+fn command(arguments: &[OsString]) -> Command {
     let mut command = Command::new(&arguments[3]);
     command.args(&arguments[4..]);
     command.current_dir(&arguments[2]);
     if arguments[1] == "unset-shell" {
         command.env_remove("SHELL");
     }
-    let error = command.exec();
-    let code = if error.kind() == io::ErrorKind::NotFound
-        && std::path::Path::new(&arguments[2]).is_dir()
-    {
-        127
-    } else {
-        126
-    };
-    stream.write_all(&[code])?;
-    Ok(code)
+    command
+}
+
+/// 127 only for a missing command in a usable cwd; any other exec failure is 126.
+fn launch_code(error: &io::Error, cwd: &std::path::Path) -> u8 {
+    if error.kind() == io::ErrorKind::NotFound && cwd.is_dir() {
+        return 127;
+    }
+    126
 }
 
 fn confirm_exec(stream: &mut UnixStream, deadline: Instant) -> Result<(), Failure> {
@@ -276,30 +300,32 @@ fn confirm_exec(stream: &mut UnixStream, deadline: Instant) -> Result<(), Failur
         let code = confirmation_read(stream, &mut bytes, &mut length)
             .map_err(|_| Failure::own("command startup confirmation failed"))?;
         if let Some(code) = code {
-            return if code == 0 {
-                Ok(())
-            } else {
-                Err(Failure::launch(u32::from(code)))
-            };
+            return launched(code);
         }
         std::thread::sleep(Duration::from_millis(2));
     }
     Err(Failure::own("command startup deadline exceeded"))
 }
 
+fn launched(code: u8) -> Result<(), Failure> {
+    if code == 0 {
+        return Ok(());
+    }
+    Err(Failure::launch(u32::from(code)))
+}
+
+/// A 0-byte read is EOF: the helper's CLOEXEC connection closed.
 fn confirmation_read(
     stream: &mut UnixStream,
     bytes: &mut [u8; 2],
     length: &mut usize,
 ) -> io::Result<Option<u8>> {
-    match stream.read(&mut bytes[*length..]) {
-        Ok(0) => confirmation(&bytes[..*length], true),
-        Ok(count) => {
+    match super::unless_would_block(stream.read(&mut bytes[*length..]))? {
+        Some(count) => {
             *length += count;
-            confirmation(&bytes[..*length], false)
+            confirmation(&bytes[..*length], count == 0)
         }
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
-        Err(error) => Err(error),
+        None => Ok(None),
     }
 }
 

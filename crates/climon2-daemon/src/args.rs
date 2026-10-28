@@ -29,13 +29,7 @@ impl Options {
         let (id, version, cli_pid) = identity(&mut fields)?;
         let (home, socket, cwd) = locations(&mut fields)?;
         let (readiness_fd, size) = transport(&mut fields)?;
-        let log = fields
-            .remove(std::ffi::OsStr::new("--log"))
-            .map(|value| value.into_string().map_err(|_| invalid()))
-            .transpose()?;
-        if !fields.is_empty() {
-            return Err(invalid());
-        }
+        let log = only_log(fields)?;
         Ok(Self {
             id,
             version,
@@ -68,17 +62,44 @@ fn option_fields(
     arguments: &mut std::vec::IntoIter<OsString>,
 ) -> io::Result<BTreeMap<OsString, OsString>> {
     let mut fields = BTreeMap::new();
-    loop {
-        let key = arguments.next().ok_or_else(invalid)?;
-        if key == "--" {
-            break;
-        }
-        let value = arguments.next().ok_or_else(invalid)?;
-        if fields.insert(key, value).is_some() {
-            return Err(invalid());
-        }
+    while let Some((key, value)) = option_field(arguments)? {
+        insert_unique(&mut fields, key, value)?;
     }
     Ok(fields)
+}
+
+/// The next `KEY VALUE` pair, or `None` at the `--` that ends the options.
+fn option_field(
+    arguments: &mut std::vec::IntoIter<OsString>,
+) -> io::Result<Option<(OsString, OsString)>> {
+    let key = arguments.next().ok_or_else(invalid)?;
+    if key == "--" {
+        return Ok(None);
+    }
+    Ok(Some((key, arguments.next().ok_or_else(invalid)?)))
+}
+
+fn insert_unique(
+    fields: &mut BTreeMap<OsString, OsString>,
+    key: OsString,
+    value: OsString,
+) -> io::Result<()> {
+    if fields.insert(key, value).is_some() {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+/// `--log` is the only optional field; anything else left over is invalid.
+fn only_log(mut fields: BTreeMap<OsString, OsString>) -> io::Result<Option<String>> {
+    let log = fields
+        .remove(std::ffi::OsStr::new("--log"))
+        .map(|value| value.into_string().map_err(|_| invalid()))
+        .transpose()?;
+    if !fields.is_empty() {
+        return Err(invalid());
+    }
+    Ok(log)
 }
 
 fn identity(

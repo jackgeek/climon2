@@ -84,9 +84,7 @@ fn prepared(
     startup::fault(log)?;
     let resources = startup::Resources::prepare(options)?;
     let exec_listener = pty::ExecListener::bind(options)?;
-    let _stderr = log
-        .capture_stderr()
-        .map_err(|_| startup::Failure::own("cannot capture daemon diagnostics"))?;
+    let _stderr = startup::capture_diagnostics(log)?;
     start(options, readiness, resources, exec_listener)
 }
 
@@ -100,10 +98,30 @@ fn start(
     let signals = climon2_platform::terminal::Signals::daemon()
         .map_err(|_| startup::Failure::own("cannot register daemon signals"))?;
     let mut pty = pty::Pty::spawn(options, exec_listener)?;
+    announce(options, readiness, &mut resources, &pty)?;
+    serve(options, &mut resources, &mut pty, &signals)
+}
+
+fn announce(
+    options: &args::Options,
+    readiness: &mut ReadinessWriter,
+    resources: &mut startup::Resources,
+    pty: &pty::Pty,
+) -> Result<(), startup::Failure> {
     resources.publish(options)?;
     ready(readiness)?;
     tracing::info!(session_id = %options.id, command_pid = pty.pid(), "session ready");
-    session::serve(options, &resources.listener, &mut pty, &signals)
+    Ok(())
+}
+
+/// Borrows `resources` so a failed session still drops the PTY before removing session files.
+fn serve(
+    options: &args::Options,
+    resources: &mut startup::Resources,
+    pty: &mut pty::Pty,
+    signals: &climon2_platform::terminal::Signals,
+) -> Result<(), startup::Failure> {
+    session::serve(options, &resources.listener, pty, signals)
         .map_err(|_| startup::Failure::own("session I/O failed"))?;
     tracing::info!("session ended");
     resources
@@ -119,4 +137,13 @@ fn ready(readiness: &mut ReadinessWriter) -> Result<(), startup::Failure> {
 
 fn io_error(message: &'static str) -> io::Error {
     io::Error::other(message)
+}
+
+/// Nonblocking I/O: `WouldBlock` is no progress yet (`None`), never a failure.
+fn unless_would_block<T>(result: io::Result<T>) -> io::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+        Err(error) => Err(error),
+    }
 }
