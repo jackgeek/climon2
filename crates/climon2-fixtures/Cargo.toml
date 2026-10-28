@@ -13,10 +13,19 @@ path = "src/bin/terminal.rs"
 name = "climon2-tui-fixture"
 path = "src/bin/tui.rs"
 
+[[bin]]
+name = "climon2-cli-fixture"
+path = "src/bin/cli.rs"
+
+[[bin]]
+name = "climon2-daemon-fixture"
+path = "src/bin/daemon.rs"
+
 [lints]
 workspace = true
 
 [dependencies]
+libc = "0.2.191"
 nix = { version = "0.31", features = ["signal", "process", "term", "fs"] }
 serde_json.workspace = true
 

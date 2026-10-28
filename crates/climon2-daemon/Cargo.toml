@@ -5,11 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-[[bin]]
-name = "climon2-daemon-fixture"
-path = "tests/fixtures/terminal.rs"
-required-features = ["test-hooks"]
-
 [features]
 test-hooks = []
 

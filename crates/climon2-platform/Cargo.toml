@@ -9,6 +9,7 @@ publish.workspace = true
 climon2-core = { path = "../climon2-core" }
 libc = "0.2.191"
 signal-hook = "0.3.18"
+socket2 = "0.6.5"
 time = { workspace = true, features = ["formatting", "macros"] }
 tracing = "0.1.44"
 

@@ -19,9 +19,12 @@ pub(crate) struct Pty {
 
 impl Pty {
     pub fn spawn(options: &Options, startup: ExecListener) -> Result<Self, Failure> {
-        let pair = native_pty_system()
-            .openpty(size(options.size))
-            .map_err(|_| Failure::own("cannot allocate command terminal"))?;
+        let pair = {
+            let _allocation = climon2_platform::pty::allocation()
+                .map_err(|_| Failure::own("cannot lock terminal allocation"))?;
+            native_pty_system().openpty(size(options.size))
+        }
+        .map_err(|_| Failure::own("cannot allocate command terminal"))?;
         let command = command_builder(options, &startup.path)?;
         let pid = spawn_child(pair.slave.as_ref(), command, options)?;
         drop(pair.slave);

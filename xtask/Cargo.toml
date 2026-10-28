@@ -7,11 +7,11 @@ publish.workspace = true
 
 [dependencies]
 climon2-install = { version = "0.1.0", path = "../crates/climon2-install" }
+serde_json.workspace = true
 tempfile = "3"
 
 [dev-dependencies]
 serde.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true

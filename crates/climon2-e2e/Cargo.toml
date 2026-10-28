@@ -7,3 +7,12 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+climon2-core = { path = "../climon2-core" }
+climon2-install = { path = "../climon2-install" }
+climon2-test-term = { path = "../climon2-test-term" }
+nix = { version = "0.31", features = ["signal", "process", "user"] }
+portable-pty = { version = "0.9.0", default-features = false }
+serde_json.workspace = true
+tempfile = "3"

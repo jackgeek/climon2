@@ -14,6 +14,7 @@ use std::{
 
 fn fixture(mode: &str) -> (Child, File) {
     let (mut master, mut slave) = (-1, -1);
+    let allocation = climon2_platform::pty::allocation().unwrap();
     assert_eq!(
         unsafe {
             libc::openpty(
@@ -26,6 +27,7 @@ fn fixture(mode: &str) -> (Child, File) {
         },
         0
     );
+    drop(allocation);
     let (master, slave) = unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) };
     for file in [&master, &slave] {
         assert_ne!(

@@ -13,6 +13,7 @@ static RAW_TEST: Mutex<()> = Mutex::new(());
 
 fn pty() -> (File, File) {
     let (mut master, mut slave) = (-1, -1);
+    let _allocation = climon2_platform::pty::allocation().unwrap();
     assert_eq!(
         unsafe {
             libc::openpty(

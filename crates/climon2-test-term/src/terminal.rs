@@ -102,9 +102,11 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn spawn(command: CommandBuilder, rows: u16, cols: u16) -> io::Result<Self> {
-        let pair = portable_pty::native_pty_system()
-            .openpty(pty_size(rows, cols)?)
-            .map_err(io::Error::other)?;
+        let pair = {
+            let _allocation = climon2_platform::pty::allocation()?;
+            portable_pty::native_pty_system().openpty(pty_size(rows, cols)?)
+        }
+        .map_err(io::Error::other)?;
         let mut input = pair.master.try_clone_reader().map_err(io::Error::other)?;
         let writer = Arc::new(Mutex::new(
             pair.master.take_writer().map_err(io::Error::other)?,

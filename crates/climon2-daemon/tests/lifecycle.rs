@@ -15,6 +15,22 @@ use std::{
 
 const ID: &str = "01234567-89ab-4cde-8fab-0123456789ab";
 
+/// Test-only fixtures live in climon2-fixtures and are built beside this test binary (ADR 0004).
+fn daemon_fixture() -> PathBuf {
+    let path = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .join("climon2-daemon-fixture");
+    assert!(
+        path.is_file(),
+        "missing {}; run cargo test --workspace",
+        path.display()
+    );
+    path
+}
+
 /// #17: malformed private invocation is a sanitized wrapper failure.
 #[test]
 fn malformed_daemon_invocation_is_own_failure_with_no_stdout() {
@@ -135,7 +151,7 @@ impl Session {
             } else if mode == "cannot-run" {
                 command.arg(home.join("not-executable"));
             } else if mode == "literal" {
-                command.arg(env!("CARGO_BIN_EXE_climon2-daemon-fixture"));
+                command.arg(daemon_fixture());
                 command.args(["", "space argument", "--looks-like-option"]);
                 use std::os::unix::ffi::OsStringExt;
                 command.arg(std::ffi::OsString::from_vec(b"invalid-\xff".to_vec()));
@@ -810,10 +826,7 @@ fn runtime_argv_cwd_and_inherited_environment_are_exact_not_display_metadata() {
             .unwrap()
             .join("cwd space --literal é");
         assert_eq!(fields[0], cwd.as_os_str().as_bytes());
-        assert_eq!(
-            fields[1],
-            env!("CARGO_BIN_EXE_climon2-daemon-fixture").as_bytes()
-        );
+        assert_eq!(fields[1], daemon_fixture().as_os_str().as_bytes());
         assert_eq!(
             &fields[2..6],
             &[

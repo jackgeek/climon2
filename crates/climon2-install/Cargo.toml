@@ -13,3 +13,6 @@ climon2-core = { path = "../climon2-core" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+libc = "0.2.191"

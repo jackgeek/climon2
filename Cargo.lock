@@ -110,6 +110,16 @@ version = "0.1.0"
 dependencies = [
  "climon2-core",
  "climon2-platform",
+ "climon2-test-term",
+ "filetime",
+ "libc",
+ "portable-pty",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tracing",
+ "unicode-width",
+ "uuid",
 ]
 
 [[package]]
@@ -118,6 +128,11 @@ version = "0.1.0"
 dependencies = [
  "climon2-core",
  "climon2-platform",
+ "climon2-test-term",
+ "libc",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -150,12 +165,22 @@ dependencies = [
 [[package]]
 name = "climon2-e2e"
 version = "0.1.0"
+dependencies = [
+ "climon2-core",
+ "climon2-install",
+ "climon2-test-term",
+ "nix 0.31.3",
+ "portable-pty",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "climon2-fixtures"
 version = "0.1.0"
 dependencies = [
  "climon2-test-term",
+ "libc",
  "nix 0.31.3",
  "serde_json",
 ]
@@ -165,6 +190,7 @@ name = "climon2-install"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "libc",
 ]
 
 [[package]]
@@ -179,6 +205,7 @@ dependencies = [
  "filetime",
  "libc",
  "signal-hook 0.3.18",
+ "socket2",
  "tempfile",
  "time",
  "tracing",
@@ -193,6 +220,7 @@ dependencies = [
  "climon2-client",
  "climon2-daemon",
  "climon2-install",
+ "climon2-platform",
  "nix 0.31.3",
  "portable-pty",
  "sha2",
@@ -476,6 +504,15 @@ name = "num-conv"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
+
+[[package]]
+name = "num_threads"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cabcc654086861f9e1bc5115258de62ef92c79b20f4615a1b0cc57c4e82027d4"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "once_cell"
@@ -789,6 +826,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 
 [[package]]
+name = "socket2"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -859,7 +906,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
 dependencies = [
  "deranged",
+ "libc",
  "num-conv",
+ "num_threads",
  "powerfmt",
  "serde_core",
  "time-core",
@@ -958,9 +1007,9 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
 name = "unicode-width"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
 
 [[package]]
 name = "uuid"
@@ -968,6 +1017,7 @@ version = "1.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
 dependencies = [
+ "getrandom",
  "js-sys",
  "wasm-bindgen",
 ]
