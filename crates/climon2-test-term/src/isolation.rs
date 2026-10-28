@@ -77,6 +77,9 @@ impl Isolation {
         );
         command.env("TERM", "xterm-256color");
         command.env("LANG", "en_US.UTF-8");
+        if let Some(profile) = env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile);
+        }
         command
     }
 
