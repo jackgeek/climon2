@@ -150,6 +150,30 @@ fn reinstall_swaps_same_version_whose_file_mode_differs() {
     assert_eq!(fs::read(destination.join("current")).unwrap(), b"1.2.3\n");
 }
 
+/// #21.17 / #33: a same-version folder missing a companion, or whose companion is not a
+/// regular file (even a symlink to identical bytes), is not identical; reinstalling
+/// repairs it to real files rather than only repointing `current`.
+#[test]
+fn reinstall_repairs_same_version_with_missing_or_irregular_companions() {
+    let workspace = Workspace::new();
+    let source = workspace.payload("payload", "1.2.3", 23);
+    let payload = climon2_install::Payload::from_directory(&source, "1.2.3").unwrap();
+    let destination = workspace.0.join("installed");
+    climon2_install::install(&payload, &destination).unwrap();
+    let daemon = destination.join("1.2.3/climon2-daemon");
+    fs::remove_file(&daemon).unwrap();
+    climon2_install::install(&payload, &destination).unwrap();
+    assert_eq!(Command::new(&daemon).status().unwrap().code(), Some(23));
+    let elsewhere = workspace.0.join("identical-daemon");
+    fs::copy(&daemon, &elsewhere).unwrap();
+    fs::remove_file(&daemon).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &daemon).unwrap();
+    climon2_install::install(&payload, &destination).unwrap();
+    assert!(fs::symlink_metadata(&daemon).unwrap().is_file());
+    assert_eq!(Command::new(&daemon).status().unwrap().code(), Some(23));
+    assert_eq!(fs::read(destination.join("current")).unwrap(), b"1.2.3\n");
+}
+
 /// #21.15-16 / #24.5 / #33: installer finds its sibling payload and never edits rc files.
 #[test]
 fn installer_defaults_to_home_and_prints_safe_path_hint_only_when_needed() {

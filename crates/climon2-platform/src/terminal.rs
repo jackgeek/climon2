@@ -102,10 +102,6 @@ mod macos {
             *active = Some(saved.clone());
             Ok(Self(saved))
         }
-
-        pub fn restore(&self) -> io::Result<()> {
-            self.0.restore()
-        }
     }
 
     fn enter_raw(terminal: &File) -> io::Result<SavedTerminal> {

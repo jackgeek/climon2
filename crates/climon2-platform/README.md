@@ -59,7 +59,7 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
 - `terminal::require_ttys()` checks stdin/stdout; `input()` duplicates stdin
   into an owned `File`; `size(&File)` uses TIOCGWINSZ and core's 80x24 fallback.
 - `RawModeGuard::new(&File)` enters raw mode only after Attached.
-  `restore()`, Drop and a chained panic hook restore termios only. One raw-mode
+  Drop and a chained panic hook restore termios only. One raw-mode
   owner is permitted in a process. No screen reset sequences are emitted.
 - `Signals::client()` defers HUP/INT/TERM and coalesces WINCH.
   `termination_signal()` and `take_resize()` are polled by the event loop,

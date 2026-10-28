@@ -158,3 +158,33 @@ fn issue19_readiness_uses_real_five_second_absolute_deadline() {
             .is_none()
     );
 }
+
+extern "C" fn ignore_signal(_: libc::c_int) {}
+
+/// #19: a signal interrupting the readiness wait (EINTR) neither ends it early nor
+/// leaves it blocked past the real five-second absolute deadline.
+#[test]
+fn issue19_interrupted_readiness_wait_keeps_its_deadline() {
+    // No SA_RESTART: the delivery interrupts the waiting thread's poll.
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = ignore_signal as *const () as libc::sighandler_t;
+    assert_eq!(
+        unsafe { libc::sigaction(libc::SIGUSR1, &action, std::ptr::null_mut()) },
+        0
+    );
+    let waiter = unsafe { libc::pthread_self() } as usize;
+    let start = Instant::now();
+    let error = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            // One interruption, well after the fixture's first byte, while poll waits.
+            std::thread::sleep(Duration::from_secs(1));
+            // The waiting thread outlives this scope, so its handle stays valid.
+            unsafe { libc::pthread_kill(waiter as libc::pthread_t, libc::SIGUSR1) };
+        });
+        launch("partial").wait_ready(&[])
+    })
+    .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    assert!(start.elapsed() >= Duration::from_secs(5));
+    assert!(start.elapsed() < Duration::from_secs(8));
+}

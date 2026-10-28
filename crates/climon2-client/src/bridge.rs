@@ -234,11 +234,11 @@ fn hangup_as_eof(error: io::Error) -> io::Result<usize> {
     Err(error)
 }
 
-/// An inactive descriptor is -1, which poll ignores.
+/// An inactive descriptor is -1, which poll ignores. `revents` is output-only.
 fn descriptor(fd: i32, events: i16, active: bool) -> libc::pollfd {
     libc::pollfd {
         fd: if active { fd } else { -1 },
         events,
-        revents: 0,
+        revents: Default::default(),
     }
 }
