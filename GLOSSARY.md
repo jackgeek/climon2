@@ -28,9 +28,18 @@ _Avoid_: Exit the session, kill, stop
 The key that begins a client-side action instead of being sent directly to the session's command.
 _Avoid_: Hotkey, command prefix
 
+**Take-control key**:
+The configurable key a non-controlling client uses to request control of a session.
+_Avoid_: Space-to-control, hotkey
+
 **Controlling client**:
-The attached client whose input and terminal size drive the session; when it leaves, control returns to the attached client that held control most recently, and the leave policy applies only if none remains.
+The attached client whose input and terminal size drive the session; only one client controls a session at a time.
+When it leaves, control returns to the attached client that held control most recently, and the leave policy applies only if none remains.
 _Avoid_: Primary client, owner
+
+**Control period**:
+One uninterrupted period in which a particular client controls a session; regaining control begins a new period.
+_Avoid_: Attachment, client identity
 
 **Monitor**:
 A program that shows one session at a time in the user's terminal and switches between sessions, keeping every session's screen current through its own clients.
