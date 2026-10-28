@@ -3,7 +3,10 @@
 use climon2_platform::{peer, runtime};
 use std::{
     fs,
-    os::unix::{fs::PermissionsExt, net::UnixStream},
+    os::unix::{
+        fs::{MetadataExt, PermissionsExt},
+        net::UnixStream,
+    },
 };
 
 fn directory() -> tempfile::TempDir {
@@ -55,4 +58,35 @@ fn issue18_home_is_created_then_canonicalized_and_socket_is_private_and_authenti
     assert!(peer::authenticate_uid(&server, peer::effective_uid() + 1).is_err());
     drop(client);
     assert!(runtime::bind(&root.path().join("x".repeat(104))).is_err());
+}
+
+#[test]
+fn issue18_private_directory_refuses_existing_root_owned_directory_without_repair() {
+    let path = std::path::Path::new("/private");
+    let before = fs::symlink_metadata(path).unwrap();
+    assert!(before.is_dir());
+    assert_eq!(before.uid(), 0);
+    assert_ne!(before.uid(), peer::effective_uid());
+
+    let error = runtime::private_directory(path).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(error.to_string().contains("wrong owner"));
+
+    let after = fs::symlink_metadata(path).unwrap();
+    assert_eq!(
+        (
+            after.dev(),
+            after.ino(),
+            after.uid(),
+            after.gid(),
+            after.mode()
+        ),
+        (
+            before.dev(),
+            before.ino(),
+            before.uid(),
+            before.gid(),
+            before.mode()
+        )
+    );
 }

@@ -201,21 +201,29 @@ fn old(path: &Path, now: SystemTime) -> io::Result<bool> {
 }
 
 fn old_session(directory: &Path, now: SystemTime) -> io::Result<bool> {
-    let mut empty = true;
-    for entry in fs::read_dir(directory)? {
-        empty = false;
-        let entry = entry?;
-        if !entry.file_type()?.is_file() || !old(&entry.path(), now)? {
+    let entries = directory_entries(directory)?;
+    if entries.is_empty() {
+        return old(directory, now);
+    }
+    for entry in entries {
+        if !old_file(&entry, now)? {
             return Ok(false);
         }
     }
-    if empty { old(directory, now) } else { Ok(true) }
+    Ok(true)
+}
+
+fn directory_entries(directory: &Path) -> io::Result<Vec<fs::DirEntry>> {
+    fs::read_dir(directory)?.collect()
+}
+
+fn old_file(entry: &fs::DirEntry, now: SystemTime) -> io::Result<bool> {
+    Ok(entry.file_type()?.is_file() && old(&entry.path(), now)?)
 }
 
 fn prune_general(directory: &Path, now: SystemTime) -> io::Result<()> {
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() && old(&entry.path(), now)? {
+    for entry in directory_entries(directory)? {
+        if old_file(&entry, now)? {
             fs::remove_file(entry.path())?;
         }
     }
@@ -224,11 +232,26 @@ fn prune_general(directory: &Path, now: SystemTime) -> io::Result<()> {
 
 fn prune_session(home: &Path, path: &Path, id: &SessionId, now: SystemTime) -> io::Result<()> {
     let metadata = home.join("sessions").join(format!("{id}.pty"));
-    if metadata.try_exists()? || !old_session(path, now)? {
+    if metadata_present(&metadata)? {
         return Ok(());
     }
-    for entry in fs::read_dir(path)? {
-        fs::remove_file(entry?.path())?;
+    if !old_session(path, now)? {
+        return Ok(());
+    }
+    remove_session_logs(path)
+}
+
+fn metadata_present(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn remove_session_logs(path: &Path) -> io::Result<()> {
+    for entry in directory_entries(path)? {
+        fs::remove_file(entry.path())?;
     }
     fs::remove_dir(path)
 }
@@ -246,21 +269,29 @@ fn prune_directory(home: &Path, path: &Path, now: SystemTime) -> io::Result<()> 
     Ok(())
 }
 
-fn prune_logs(home: &Path, now: SystemTime) -> io::Result<()> {
+fn log_root(home: &Path) -> io::Result<Option<PathBuf>> {
     let root = home.join("logs");
     match fs::symlink_metadata(&root) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        result => {
-            if !result?.file_type().is_dir() {
-                return Err(io::Error::other("logs is not a real directory"));
-            }
-        }
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(Some(root)),
+        Ok(_) => Err(io::Error::other("logs is not a real directory")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            prune_directory(home, &entry.path(), now)?;
-        }
+}
+
+fn prune_entry(home: &Path, entry: &fs::DirEntry, now: SystemTime) -> io::Result<()> {
+    if entry.file_type()?.is_dir() {
+        prune_directory(home, &entry.path(), now)?;
+    }
+    Ok(())
+}
+
+fn prune_logs(home: &Path, now: SystemTime) -> io::Result<()> {
+    let Some(root) = log_root(home)? else {
+        return Ok(());
+    };
+    for entry in directory_entries(&root)? {
+        prune_entry(home, &entry, now)?;
     }
     Ok(())
 }

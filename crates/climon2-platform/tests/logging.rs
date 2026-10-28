@@ -81,6 +81,19 @@ fn pruning_retains_live_recent_and_unknown_artifacts() {
     assert!(!old.path().parent().unwrap().exists());
 }
 
+/// #25/#26: invalid metadata entries still protect their logs from pruning.
+#[test]
+fn dangling_metadata_entry_is_not_absence_of_metadata() {
+    let home = tempfile::tempdir().unwrap();
+    let log = LogFile::session(home.path(), &id(), Role::Cli, None, None).unwrap();
+    filetime::set_file_mtime(log.path(), filetime::FileTime::from_unix_time(1, 0)).unwrap();
+    fs::create_dir(home.path().join("sessions")).unwrap();
+    let metadata = home.path().join("sessions").join(format!("{}.pty", id()));
+    std::os::unix::fs::symlink(home.path().join("missing-metadata"), metadata).unwrap();
+    prune(home.path(), SystemTime::now());
+    assert!(log.path().exists());
+}
+
 /// #25: symlinks must not redirect log writes or pruning outside climon2 home.
 #[test]
 fn logging_refuses_symlinked_directories_and_files() {
