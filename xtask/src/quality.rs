@@ -1,3 +1,4 @@
+use crate::coverage::Coverage;
 use std::{
     collections::BTreeSet,
     env,
@@ -201,9 +202,9 @@ pub fn check(root: &Path, all: bool) -> io::Result<()> {
     if report.try_exists()? {
         fs::remove_file(&report)?;
     }
-    run(coverage_command(root, &root.join("target/coverage-build"))
-        .args(["--workspace", "--locked", "--lcov", "--output-path"])
-        .arg(&report))?;
+    let coverage = Coverage::prepare(root, &root.join("target/coverage-build"))?;
+    run(coverage.cargo().args(["test", "--workspace", "--locked"]))?;
+    coverage.report(&report)?;
     if fs::metadata(&report)?.len() == 0 {
         return Err(io::Error::other("coverage report is empty"));
     }
@@ -292,7 +293,7 @@ fn audit_observations(observations: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn coverage_command(root: &Path, build: &Path) -> Command {
+pub(crate) fn coverage_command(root: &Path, build: &Path) -> Command {
     let mut command = Command::new(env!("CARGO"));
     command
         .current_dir(root)
@@ -335,16 +336,14 @@ pub fn tooling_probe(root: &Path) -> io::Result<()> {
     let workspace = scratch.path();
     let build = workspace.join("target/instrumented");
     let observations = workspace.join("observations");
-    run(coverage_command(workspace, &build)
+    let coverage = Coverage::prepare(workspace, &build)?;
+    run(coverage
+        .cargo()
         .env("CLIMON2_MUTATION_OBSERVATIONS", &observations)
-        .args(["--workspace", "--locked", "--no-report"]))?;
+        .args(["test", "--workspace", "--locked"]))?;
     let report = workspace.join("target/coverage/rust/lcov.info");
     fs::create_dir_all(report.parent().unwrap())?;
-    let export = || {
-        run(coverage_command(workspace, &build)
-            .args(["report", "--lcov", "--output-path"])
-            .arg(&report))
-    };
+    let export = || coverage.report(&report);
     export()?;
     if staged_count(&report)? != 0 {
         return Err(io::Error::other(
@@ -352,15 +351,7 @@ pub fn tooling_probe(root: &Path) -> io::Result<()> {
         ));
     }
     let staged = install_instrumented_probe(workspace, &build)?;
-    let environment = output(coverage_command(workspace, &build).arg("show-env"))?;
-    let environment = String::from_utf8(environment.stdout).map_err(io::Error::other)?;
-    let profile = environment
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("LLVM_PROFILE_FILE='")
-                .and_then(|value| value.strip_suffix('\''))
-        })
-        .ok_or_else(|| io::Error::other("llvm-cov did not supply its profile filename"))?;
+    let profile = coverage.profile();
     let result = output(
         Command::new(staged.join(env!("CARGO_PKG_VERSION")).join("climon2-cli"))
             .arg("--staged-probe")
@@ -371,11 +362,21 @@ pub fn tooling_probe(root: &Path) -> io::Result<()> {
             "staged binary returned the wrong observation",
         ));
     }
+    let exec = output(
+        Command::new(staged.join(env!("CARGO_PKG_VERSION")).join("climon2-cli"))
+            .arg("--staged-exec")
+            .env("LLVM_PROFILE_FILE", profile),
+    )?;
+    if exec.stdout != b"42\n" {
+        return Err(io::Error::other(
+            "exec-replaced staged binary returned the wrong observation",
+        ));
+    }
     export()?;
     let count = staged_count(&report)?;
-    if count != 1 {
+    if count != 2 {
         return Err(io::Error::other(format!(
-            "staged execution must contribute exactly one coverage hit, got {count}"
+            "normal and exec-replaced staged runs must contribute two coverage hits, got {count}"
         )));
     }
     prove_crapper(root, workspace)?;

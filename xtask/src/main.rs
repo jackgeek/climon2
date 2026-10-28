@@ -4,6 +4,7 @@ use std::{
     process::{Command, ExitCode},
 };
 
+mod coverage;
 mod dist;
 mod fixtures;
 mod quality;
