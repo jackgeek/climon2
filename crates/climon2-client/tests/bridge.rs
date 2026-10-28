@@ -180,7 +180,7 @@ impl Pty {
                 "client did not exit; {} output bytes",
                 bytes.len()
             );
-            thread::sleep(Duration::from_millis(5));
+            wait_ready(&self.master, libc::POLLIN, 5);
         };
         assert_eq!(status.code(), Some(expected));
         self.assert_restored();
@@ -229,6 +229,19 @@ impl Pty {
 
 /// Darwin's kernel-private FWASWRITTEN: set by any write, not settable by F_SETFL.
 const WAS_WRITTEN: i32 = 0x0001_0000;
+
+/// Waits until `file` is ready for `events`, or `milliseconds` pass so the caller can
+/// recheck its own exit conditions. A blind sleep would move only the PTY's ~1 KiB queue
+/// per sleep (or notice a connection late), making the test, not the client, the
+/// bottleneck or the clock on slow machines.
+fn wait_ready(file: &impl AsRawFd, events: i16, milliseconds: i32) {
+    let mut descriptor = libc::pollfd {
+        fd: file.as_raw_fd(),
+        events,
+        revents: 0,
+    };
+    unsafe { libc::poll(&mut descriptor, 1, milliseconds) };
+}
 
 fn status_flags(file: &File) -> i32 {
     let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
@@ -316,7 +329,7 @@ fn accept(listener: &UnixListener) -> std::os::unix::net::UnixStream {
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(Instant::now() < deadline, "client did not connect");
-                thread::sleep(Duration::from_millis(5));
+                wait_ready(listener, libc::POLLIN, 5);
             }
             Err(error) => panic!("{error}"),
         }
@@ -862,7 +875,7 @@ fn input_backpressure_is_bounded_and_lossless() {
             match writer.write(&payload[position..]) {
                 Ok(count) => position += count,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(2))
+                    wait_ready(&writer, libc::POLLOUT, 2)
                 }
                 Err(error) => panic!("{error}"),
             }
