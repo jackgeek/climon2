@@ -1,13 +1,15 @@
 use crate::Payload;
 use crate::payload::COMPANIONS;
-use std::fs::{self, File};
+use crate::platform::Lock;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 /// The reserved staging directory is the only recovery/cleanup scope.
+/// Field order matters: `Drop` removes staging before the lock is released.
 pub(crate) struct Stage {
     root: PathBuf,
-    _lock: File,
+    _lock: Lock,
 }
 
 impl Stage {

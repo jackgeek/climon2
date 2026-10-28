@@ -45,11 +45,22 @@ pub(crate) fn swap(source: &Path, destination: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn lock(home: &Path) -> io::Result<File> {
+/// Exclusive installer ownership of one executable home.
+pub(crate) struct Lock(File);
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        // flock belongs to the open file description, which a concurrently forked
+        // child may still share before exec; closing alone would leave it held.
+        unsafe { flock(self.0.as_raw_fd(), 8) }; // LOCK_UN
+    }
+}
+
+pub(crate) fn lock(home: &Path) -> io::Result<Lock> {
     let file = File::open(home)?;
     // LOCK_EX | LOCK_NB: one writer owns both publication and crash recovery.
     if unsafe { flock(file.as_raw_fd(), 2 | 4) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(file)
+    Ok(Lock(file))
 }
