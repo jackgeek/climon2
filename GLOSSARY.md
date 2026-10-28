@@ -49,6 +49,19 @@ _Avoid_: Dashboard, multiplexer, switcher
 A model of a session's screen, kept current from the session's output; the session daemon's is the source of truth, and a monitor's is a copy.
 _Avoid_: Screen buffer, emulator, scrollback
 
+**Session scrollback**:
+The normal-screen history retained by a session for restoration to attached terminals, not a recording of every output byte or alternate-screen change.
+_Avoid_: Transcript, session log
+
+**Native scrollback**:
+The outer terminal's own history, browsed with its normal scrolling, selection and copy features.
+It can contain unrelated output and copies of session scrollback.
+_Avoid_: Session scrollback, daemon history
+
+**History gap**:
+A portion of session scrollback no longer retained when a client needs it for catch-up.
+_Avoid_: Native eviction, missing logs
+
 **Leave policy**:
 What a session daemon does with its session when the last client leaves.
 _Avoid_: Disconnect handler, kill policy
