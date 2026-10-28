@@ -3,7 +3,7 @@ compile_error!("climon2 launcher currently supports Unix only");
 
 use std::io;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn run() -> std::process::ExitCode {
@@ -20,15 +20,23 @@ fn handoff() -> io::Error {
 }
 
 fn companion() -> io::Result<PathBuf> {
-    let executable = std::env::current_exe()?.canonicalize()?;
-    let home = executable
-        .parent()
-        .ok_or_else(|| invalid("launcher path"))?;
-    let current = home.join("current");
-    let contents = std::fs::read_to_string(&current)
-        .map_err(|error| io::Error::new(error.kind(), format!("cannot read current: {error}")))?;
+    let home = launcher_home()?;
+    let contents = read_current(&home)?;
     let version = parse_current(&contents).ok_or_else(|| invalid("invalid current version"))?;
     Ok(home.join(version).join("climon2-cli"))
+}
+
+fn launcher_home() -> io::Result<PathBuf> {
+    let executable = std::env::current_exe()?.canonicalize()?;
+    executable
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| invalid("launcher path"))
+}
+
+fn read_current(home: &Path) -> io::Result<String> {
+    std::fs::read_to_string(home.join("current"))
+        .map_err(|error| io::Error::new(error.kind(), format!("cannot read current: {error}")))
 }
 
 fn exec(path: PathBuf) -> io::Error {
@@ -84,7 +92,7 @@ fn valid_core(core: &str) -> bool {
 }
 
 fn valid_number(number: &str) -> bool {
-    if number.len() > 1 && number.starts_with('0') {
+    if leading_zero(number) {
         return false;
     }
     number.parse::<u64>().is_ok() && number.bytes().all(|byte| byte.is_ascii_digit())
@@ -100,8 +108,15 @@ fn valid_identifier(part: &str, prerelease: bool) -> bool {
     if part.is_empty() || !part.bytes().all(identifier_byte) {
         return false;
     }
-    let numeric = part.bytes().all(|byte| byte.is_ascii_digit());
-    !(prerelease && numeric && part.len() > 1 && part.starts_with('0'))
+    !(prerelease && numeric_with_leading_zero(part))
+}
+
+fn numeric_with_leading_zero(part: &str) -> bool {
+    part.bytes().all(|byte| byte.is_ascii_digit()) && leading_zero(part)
+}
+
+fn leading_zero(number: &str) -> bool {
+    number.len() > 1 && number.starts_with('0')
 }
 
 fn identifier_byte(byte: u8) -> bool {

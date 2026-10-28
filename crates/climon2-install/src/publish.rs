@@ -42,6 +42,10 @@ fn identical(source: &Path, destination: &Path) -> io::Result<bool> {
     if fs::read_dir(destination)?.count() != COMPANIONS.len() {
         return Ok(false);
     }
+    identical_companions(source, destination)
+}
+
+fn identical_companions(source: &Path, destination: &Path) -> io::Result<bool> {
     for name in COMPANIONS {
         if !identical_file(&source.join(name), &destination.join(name))? {
             return Ok(false);
@@ -66,9 +70,12 @@ fn regular_file(path: &Path) -> io::Result<Option<fs::Metadata>> {
 }
 
 fn matching_file(source: &Path, destination: &Path, metadata: &fs::Metadata) -> io::Result<bool> {
-    let source_metadata = fs::metadata(source)?;
-    if source_metadata.permissions().mode() != metadata.permissions().mode() {
+    if fs::metadata(source)?.permissions().mode() != metadata.permissions().mode() {
         return Ok(false);
     }
+    same_contents(source, destination)
+}
+
+fn same_contents(source: &Path, destination: &Path) -> io::Result<bool> {
     Ok(fs::read(source)? == fs::read(destination)?)
 }

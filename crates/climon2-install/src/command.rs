@@ -8,10 +8,14 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> io::Result<()> {
     let destination = destination(args)?;
     let payload = Payload::beside_installer()?;
     let report = install(&payload, &destination)?;
-    if !on_path(&report.executable_home) {
-        std::io::stdout().write_all(&path_hint(&report.executable_home))?;
+    hint_unless_on_path(&report.executable_home)
+}
+
+fn hint_unless_on_path(home: &Path) -> io::Result<()> {
+    if on_path(home) {
+        return Ok(());
     }
-    Ok(())
+    std::io::stdout().write_all(&path_hint(home))
 }
 
 fn destination(args: impl IntoIterator<Item = OsString>) -> io::Result<PathBuf> {

@@ -132,6 +132,24 @@ fn reinstall_clobbers_only_different_same_version_and_retains_other_versions() {
     assert_eq!(fs::read_dir(destination).unwrap().count(), 4);
 }
 
+/// #21.17-18 / #33: a same-version file differing only in mode is not identical, so it swaps.
+#[test]
+fn reinstall_swaps_same_version_whose_file_mode_differs() {
+    let workspace = Workspace::new();
+    let source = workspace.payload("payload", "1.2.3", 17);
+    let payload = climon2_install::Payload::from_directory(&source, "1.2.3").unwrap();
+    let destination = workspace.0.join("installed");
+    climon2_install::install(&payload, &destination).unwrap();
+    let daemon = destination.join("1.2.3/climon2-daemon");
+    fs::set_permissions(&daemon, fs::Permissions::from_mode(0o700)).unwrap();
+    climon2_install::install(&payload, &destination).unwrap();
+    assert_eq!(
+        fs::metadata(&daemon).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    assert_eq!(fs::read(destination.join("current")).unwrap(), b"1.2.3\n");
+}
+
 /// #21.15-16 / #24.5 / #33: installer finds its sibling payload and never edits rc files.
 #[test]
 fn installer_defaults_to_home_and_prints_safe_path_hint_only_when_needed() {

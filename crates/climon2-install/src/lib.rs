@@ -29,11 +29,20 @@ pub fn install(payload: &Payload, destination: &Path) -> io::Result<InstallRepor
 
 fn prepare(payload: &Payload, destination: &Path) -> io::Result<(transaction::Stage, PathBuf)> {
     payload.validate()?;
+    let executable_home = executable_home(destination)?;
+    let stage = stage(payload, &executable_home)?;
+    Ok((stage, executable_home))
+}
+
+fn executable_home(destination: &Path) -> io::Result<PathBuf> {
     std::fs::create_dir_all(destination)?;
-    let executable_home = destination.canonicalize()?;
-    let stage = transaction::Stage::new(&executable_home)?;
+    destination.canonicalize()
+}
+
+fn stage(payload: &Payload, executable_home: &Path) -> io::Result<transaction::Stage> {
+    let stage = transaction::Stage::new(executable_home)?;
     stage.copy_payload(payload)?;
     #[cfg(feature = "test-hooks")]
     hooks::checkpoint("version-staged")?;
-    Ok((stage, executable_home))
+    Ok(stage)
 }
