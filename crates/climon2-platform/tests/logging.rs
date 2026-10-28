@@ -49,6 +49,19 @@ fn diagnostic_roles_have_private_files_and_required_headers() {
     assert_eq!(now.as_str().len(), 24);
 }
 
+/// #25: a role log is created once per session and never reopened or overwritten.
+#[test]
+fn session_role_log_is_never_reopened() {
+    let home = tempfile::tempdir().unwrap();
+    let first = LogFile::session(home.path(), &id(), Role::Daemon, Some(7), None).unwrap();
+    let before = fs::read_to_string(first.path()).unwrap();
+    let error = LogFile::session(home.path(), &id(), Role::Daemon, Some(8), None)
+        .err()
+        .expect("second daemon log");
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(fs::read_to_string(first.path()).unwrap(), before);
+}
+
 /// #25: prune only old non-live session logs and old general logs, never metadata.
 #[test]
 fn pruning_retains_live_recent_and_unknown_artifacts() {

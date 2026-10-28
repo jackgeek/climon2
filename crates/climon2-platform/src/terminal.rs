@@ -98,13 +98,7 @@ mod macos {
             if active.is_some() {
                 return Err(io::Error::other("raw terminal already owned"));
             }
-            let saved = save(terminal)?;
-            let mut raw = saved.saved;
-            unsafe { libc::cfmakeraw(&mut raw) };
-            if unsafe { libc::tcsetattr(saved.terminal.as_raw_fd(), libc::TCSANOW, &raw) } == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            let saved = Arc::new(saved);
+            let saved = Arc::new(enter_raw(terminal)?);
             *active = Some(saved.clone());
             Ok(Self(saved))
         }
@@ -112,6 +106,16 @@ mod macos {
         pub fn restore(&self) -> io::Result<()> {
             self.0.restore()
         }
+    }
+
+    fn enter_raw(terminal: &File) -> io::Result<SavedTerminal> {
+        let saved = save(terminal)?;
+        let mut raw = saved.saved;
+        unsafe { libc::cfmakeraw(&mut raw) };
+        if unsafe { libc::tcsetattr(saved.terminal.as_raw_fd(), libc::TCSANOW, &raw) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(saved)
     }
 
     fn save(terminal: &File) -> io::Result<SavedTerminal> {

@@ -33,16 +33,11 @@ mod macos {
     }
 
     fn lock(file: &File) -> io::Result<()> {
-        loop {
-            // flock only reads the descriptor owned by `file`.
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
-                return Ok(());
-            }
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
-            }
+        // flock only reads the descriptor owned by `file`.
+        while unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            crate::syscall::retry_if_interrupted(io::Error::last_os_error())?;
         }
+        Ok(())
     }
 
     pub fn allocation() -> io::Result<Allocation> {

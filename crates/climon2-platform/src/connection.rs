@@ -20,20 +20,31 @@ pub enum Interest {
 }
 
 #[cfg(target_os = "macos")]
+impl Interest {
+    fn events(self) -> libc::c_short {
+        match self {
+            Self::Read => libc::POLLIN,
+            Self::Write => libc::POLLOUT,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub fn wait(stream: &SocketStream, interest: Interest, timeout: Duration) -> io::Result<()> {
     use std::os::fd::AsRawFd;
-    let events = match interest {
-        Interest::Read => libc::POLLIN,
-        Interest::Write => libc::POLLOUT,
-    };
     let mut descriptor = libc::pollfd {
         fd: stream.as_raw_fd(),
-        events,
+        events: interest.events(),
         revents: 0,
     };
     let millis = i32::try_from(timeout.as_millis().saturating_add(1)).unwrap_or(i32::MAX);
     // The single pollfd remains valid for the duration of this call.
-    match unsafe { libc::poll(&mut descriptor, 1, millis) } {
+    poll_outcome(unsafe { libc::poll(&mut descriptor, 1, millis) })
+}
+
+#[cfg(target_os = "macos")]
+fn poll_outcome(ready: libc::c_int) -> io::Result<()> {
+    match ready {
         -1 => Err(io::Error::last_os_error()),
         0 => Err(io::Error::new(
             io::ErrorKind::TimedOut,

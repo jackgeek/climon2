@@ -88,14 +88,7 @@ mod macos {
             u32::try_from(descriptor).map_err(io::Error::other)?,
         );
         command.stdin(Stdio::null()).stdout(Stdio::null());
-        unsafe {
-            command.pre_exec(move || {
-                if libc::setsid() == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-                close_on_exec(descriptor, false)
-            });
-        }
+        detach_on_exec(&mut command, descriptor);
         let started = Instant::now();
         let child = command.spawn()?;
         drop(writer);
@@ -107,7 +100,19 @@ mod macos {
         })
     }
 
-    fn pipe() -> io::Result<(File, File)> {
+    /// Runs in the forked child: a new session, and the readiness pipe survives exec.
+    fn detach_on_exec(command: &mut Command, descriptor: i32) {
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setsid() == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                close_on_exec(descriptor, false)
+            });
+        }
+    }
+
+    pub(crate) fn pipe() -> io::Result<(File, File)> {
         let mut fds = [-1; 2];
         if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
             return Err(io::Error::last_os_error());
@@ -181,12 +186,11 @@ mod macos {
     fn read_failure(reader: &mut File, deadline: Instant) -> io::Result<Readiness> {
         let mut header = [0; 8];
         read_deadline(reader, &mut header, deadline)?;
-        let code = u32::from_be_bytes(header[..4].try_into().map_err(io::Error::other)?);
+        let [c0, c1, c2, c3, l0, l1, l2, l3] = header;
+        let code = u32::from_be_bytes([c0, c1, c2, c3]);
         valid_code(code)?;
-        let length = usize::try_from(u32::from_be_bytes(
-            header[4..].try_into().map_err(io::Error::other)?,
-        ))
-        .map_err(io::Error::other)?;
+        let length =
+            usize::try_from(u32::from_be_bytes([l0, l1, l2, l3])).map_err(io::Error::other)?;
         read_message(reader, code, length, deadline)
     }
 
@@ -227,33 +231,27 @@ mod macos {
     }
 
     fn readable(reader: &File, deadline: Instant) -> io::Result<()> {
-        loop {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::TimedOut, "daemon readiness timed out")
-                })?;
-            let milliseconds =
-                i32::try_from(remaining.as_millis().max(1)).map_err(io::Error::other)?;
-            let mut fd = libc::pollfd {
-                fd: reader.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            if poll_once(&mut fd, milliseconds)? {
-                return Ok(());
-            }
-        }
+        let mut fd = libc::pollfd {
+            fd: reader.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        while !poll_once(&mut fd, remaining_millis(deadline)?)? {}
+        Ok(())
+    }
+
+    fn remaining_millis(deadline: Instant) -> io::Result<i32> {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "daemon readiness timed out"))?;
+        i32::try_from(remaining.as_millis().max(1)).map_err(io::Error::other)
     }
 
     fn poll_once(fd: &mut libc::pollfd, milliseconds: i32) -> io::Result<bool> {
         if unsafe { libc::poll(fd, 1, milliseconds) } >= 0 {
             return Ok(fd.revents != 0);
         }
-        let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::Interrupted {
-            return Ok(false);
-        }
-        Err(error)
+        crate::syscall::retry_if_interrupted(io::Error::last_os_error())?;
+        Ok(false)
     }
 }

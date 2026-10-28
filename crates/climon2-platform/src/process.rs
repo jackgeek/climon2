@@ -19,7 +19,13 @@ mod macos {
     }
 
     pub fn start_time(value: u32) -> io::Result<Option<u64>> {
-        let pid = pid(value)?;
+        let Some(info) = bsd_info(pid(value)?)? else {
+            return Ok(None);
+        };
+        started_micros(&info).map(Some)
+    }
+
+    fn bsd_info(pid: i32) -> io::Result<Option<libc::proc_bsdinfo>> {
         let mut info = MaybeUninit::<libc::proc_bsdinfo>::uninit();
         let size = i32::try_from(size_of::<libc::proc_bsdinfo>()).map_err(io::Error::other)?;
         let result = unsafe {
@@ -37,16 +43,17 @@ mod macos {
         if result != size {
             return Err(io::Error::other("incomplete process identity"));
         }
-        let info = unsafe { info.assume_init() };
-        let started = info
-            .pbi_start_tvsec
-            .checked_mul(1_000_000)
-            .and_then(|seconds| seconds.checked_add(info.pbi_start_tvusec))
-            .ok_or_else(|| io::Error::other("process start time overflow"))?;
-        Ok(Some(started))
+        Ok(Some(unsafe { info.assume_init() }))
     }
 
-    fn missing_process(error: io::Error) -> io::Result<Option<u64>> {
+    fn started_micros(info: &libc::proc_bsdinfo) -> io::Result<u64> {
+        info.pbi_start_tvsec
+            .checked_mul(1_000_000)
+            .and_then(|seconds| seconds.checked_add(info.pbi_start_tvusec))
+            .ok_or_else(|| io::Error::other("process start time overflow"))
+    }
+
+    fn missing_process<T>(error: io::Error) -> io::Result<Option<T>> {
         match error.raw_os_error() {
             Some(libc::ESRCH | libc::ENOENT) => Ok(None),
             _ => Err(error),
@@ -65,6 +72,10 @@ mod macos {
                 "command cwd is not a directory",
             ));
         }
+        searchable(path)
+    }
+
+    fn searchable(path: &Path) -> io::Result<()> {
         let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
             .map_err(|_| io::Error::other("invalid command cwd"))?;
         if unsafe { libc::access(path.as_ptr(), libc::X_OK) } == -1 {
@@ -92,15 +103,11 @@ mod macos {
 
     fn wait_raw(pid: i32, status: &mut i32, options: i32) -> io::Result<i32> {
         loop {
-            match unsafe { libc::waitpid(pid, status, options) } {
-                -1 => {
-                    let error = io::Error::last_os_error();
-                    if error.kind() != io::ErrorKind::Interrupted {
-                        return Err(error);
-                    }
-                }
-                result => return Ok(result),
+            let result = unsafe { libc::waitpid(pid, status, options) };
+            if result != -1 {
+                return Ok(result);
             }
+            crate::syscall::retry_if_interrupted(io::Error::last_os_error())?;
         }
     }
 
@@ -117,21 +124,17 @@ mod macos {
     }
 
     #[derive(Clone, Copy, Debug)]
+    #[repr(i32)]
     pub enum Signal {
-        Hangup,
-        Interrupt,
-        Terminate,
-        Kill,
+        Hangup = libc::SIGHUP,
+        Interrupt = libc::SIGINT,
+        Terminate = libc::SIGTERM,
+        Kill = libc::SIGKILL,
     }
 
     impl Signal {
         fn raw(self) -> i32 {
-            match self {
-                Self::Hangup => libc::SIGHUP,
-                Self::Interrupt => libc::SIGINT,
-                Self::Terminate => libc::SIGTERM,
-                Self::Kill => libc::SIGKILL,
-            }
+            self as i32
         }
     }
 
@@ -154,6 +157,10 @@ mod macos {
         std::thread::sleep(HANGUP_GRACE);
         let exited = try_wait(group)?;
         signal_group(group, Signal::Kill)?;
+        leader_status(group, exited)
+    }
+
+    fn leader_status(group: u32, exited: Option<ExitStatus>) -> io::Result<ExitStatus> {
         match exited {
             Some(status) => Ok(status),
             None => wait(group),

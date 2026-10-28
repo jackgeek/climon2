@@ -59,6 +59,21 @@ fn issue20_real_pty_raw_mode_restores_on_drop_and_panic_without_screen_sequences
     drop(raw);
 }
 
+/// #20: one client process owns raw mode once; a second owner is refused without touching termios.
+#[test]
+fn issue20_second_raw_mode_owner_is_refused() {
+    let _lock = RAW_TEST.lock().unwrap();
+    let (_master, slave) = pty();
+    let (_other_master, other) = pty();
+    let original = flags(&other);
+    let _raw = terminal::RawModeGuard::new(&slave).unwrap();
+    let error = terminal::RawModeGuard::new(&other)
+        .err()
+        .expect("second raw owner");
+    assert_eq!(error.to_string(), "raw terminal already owned");
+    assert_eq!(flags(&other), original);
+}
+
 #[test]
 fn issue20_real_pty_size_and_zero_fallback() {
     let (_master, slave) = pty();

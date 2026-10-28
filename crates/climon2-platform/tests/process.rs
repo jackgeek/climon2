@@ -143,3 +143,20 @@ fn issue15_bad_cwd_is_rejected_before_pty_can_fall_back() {
     let cwd = std::env::current_dir().unwrap();
     process::validate_cwd(&cwd).unwrap();
 }
+
+/// #15: a cwd that is a file, or a directory the user cannot search, is rejected up front.
+#[test]
+fn issue15_file_and_unsearchable_cwd_are_rejected() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("file");
+    std::fs::write(&file, b"").unwrap();
+    let error = process::validate_cwd(&file).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotADirectory);
+    let locked = directory.path().join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let error = process::validate_cwd(&locked).unwrap_err();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(error.raw_os_error(), Some(libc::EACCES));
+}

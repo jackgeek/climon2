@@ -77,6 +77,13 @@ fn owned_daemon_fixture() {
             );
             std::mem::forget(writer);
         }
+        "invalid" => {
+            assert_eq!(
+                unsafe { libc::write(i32::try_from(fd).unwrap(), b"X".as_ptr().cast(), 1) },
+                1
+            );
+            std::mem::forget(writer);
+        }
         _ => unreachable!(),
     }
     if std::env::var("CLIMON2_DAEMON_FIXTURE").unwrap() == "ready" {
@@ -113,6 +120,27 @@ fn issue19_empty_readiness_kills_daemon_and_cleans_metadata_before_socket() {
     assert!(launch("empty").wait_ready(&[&metadata, &socket]).is_err());
     assert!(!metadata.exists());
     assert!(!socket.exists());
+}
+
+/// #19: an unknown readiness reply is a startup failure: the daemon is killed and its files removed.
+#[test]
+fn issue19_invalid_readiness_reply_kills_daemon_and_cleans_files() {
+    let root = tempfile::Builder::new()
+        .prefix(".dr")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    let metadata = root.path().join("metadata");
+    std::fs::write(&metadata, b"").unwrap();
+    let daemon = launch("invalid");
+    let pid = daemon.id();
+    let error = daemon.wait_ready(&[&metadata]).unwrap_err();
+    assert_eq!(error.to_string(), "invalid daemon readiness reply");
+    assert!(!metadata.exists());
+    assert!(
+        climon2_platform::process::start_time(pid)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
