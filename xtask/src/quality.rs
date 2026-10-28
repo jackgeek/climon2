@@ -326,7 +326,7 @@ fn staged_count(report: &Path) -> io::Result<u64> {
         .sum()
 }
 
-/// #31: prove external staged binaries contribute coverage and the pinned gates reject defects.
+/// #31/#33: installer-built binaries contribute coverage and the pinned gates reject defects.
 pub fn tooling_probe(root: &Path) -> io::Result<()> {
     verify_llvm_cov()?;
     let scratch = probe_workspace(root)?;
@@ -349,12 +349,7 @@ pub fn tooling_probe(root: &Path) -> io::Result<()> {
             "staged-only function unexpectedly covered before staged execution",
         ));
     }
-    let staged = workspace.join("staged/version");
-    fs::create_dir_all(&staged)?;
-    fs::copy(
-        build.join("debug/isolation-cli"),
-        staged.join("isolation-cli"),
-    )?;
+    let staged = install_instrumented_probe(workspace, &build)?;
     let environment = output(coverage_command(workspace, &build).arg("show-env"))?;
     let environment = String::from_utf8(environment.stdout).map_err(io::Error::other)?;
     let profile = environment
@@ -365,7 +360,7 @@ pub fn tooling_probe(root: &Path) -> io::Result<()> {
         })
         .ok_or_else(|| io::Error::other("llvm-cov did not supply its profile filename"))?;
     let result = output(
-        Command::new(staged.join("isolation-cli"))
+        Command::new(staged.join(env!("CARGO_PKG_VERSION")).join("climon2-cli"))
             .arg("--staged-probe")
             .env("LLVM_PROFILE_FILE", profile),
     )?;
@@ -384,9 +379,21 @@ pub fn tooling_probe(root: &Path) -> io::Result<()> {
     prove_crapper(root, workspace)?;
     prove_covered_mutations(root, workspace, &observations)?;
     eprintln!(
-        "Verified staged coverage, ? complexity, threshold 7 rejection, and changed/full covered mutations."
+        "Verified installer-built coverage, ? complexity, threshold 7 rejection, and changed/full covered mutations."
     );
     Ok(())
+}
+
+fn install_instrumented_probe(workspace: &Path, build: &Path) -> io::Result<PathBuf> {
+    let payload = workspace.join("payload");
+    fs::create_dir(&payload)?;
+    for binary in ["climon2", "climon2-cli", "climon2-daemon", "climon2-client"] {
+        fs::copy(build.join("debug/isolation-cli"), payload.join(binary))?;
+    }
+    let payload = climon2_install::Payload::from_siblings(&payload, env!("CARGO_PKG_VERSION"))?;
+    let destination = workspace.join("installed");
+    climon2_install::install(&payload, &destination)?;
+    Ok(destination)
 }
 
 fn prove_crapper(root: &Path, workspace: &Path) -> io::Result<()> {

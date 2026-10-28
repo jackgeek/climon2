@@ -5,12 +5,24 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "climon2-daemon-fixture"
+path = "tests/fixtures/terminal.rs"
+required-features = ["test-hooks"]
+
 [features]
 test-hooks = []
 
 [dependencies]
 climon2-core = { path = "../climon2-core" }
 climon2-platform = { path = "../climon2-platform" }
+portable-pty = { version = "0.9.0", default-features = false }
+libc = "0.2.191"
+tracing = "0.1.44"
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3.27.0"
 
 [lints]
 workspace = true

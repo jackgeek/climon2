@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+climon2-install = { version = "0.1.0", path = "../crates/climon2-install" }
 tempfile = "3"
 
 [dev-dependencies]
