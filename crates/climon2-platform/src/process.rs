@@ -212,12 +212,17 @@ mod macos {
             self.id.unsigned_abs()
         }
 
+        /// Looks at the terminal at once, so the leader's own group is recorded while the
+        /// leader is still on it: members left in that group are killed even if the leader
+        /// exits before any later look.
         pub fn new(leader: u32, terminal: Terminal) -> io::Result<Self> {
-            Ok(Self {
+            let mut session = Self {
                 id: pid(leader)?,
                 terminal,
                 groups: Vec::new(),
-            })
+            };
+            session.observe()?;
+            Ok(session)
         }
 
         /// Records the process groups of members currently on the terminal.

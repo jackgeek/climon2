@@ -94,8 +94,16 @@ fn reporting_fixture(mode: &str) -> (Child, File, String, process::Terminal) {
     (child, master, line, terminal)
 }
 
-/// A HUP-ignoring child of the fixture in its own process group (a job) or its own session.
-fn spawn_member(new_session: bool) -> Child {
+#[derive(Clone, Copy)]
+enum Membership {
+    LeaderGroup,
+    Job,
+    NewSession,
+}
+
+/// A HUP-ignoring child of the fixture: in the fixture's own process group, in its own
+/// process group (a job), or in its own session.
+fn spawn_member(membership: Membership) -> Child {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args([
@@ -109,10 +117,10 @@ fn spawn_member(new_session: bool) -> Child {
         .stdout(Stdio::piped());
     unsafe {
         command.pre_exec(move || {
-            let result = if new_session {
-                libc::setsid()
-            } else {
-                libc::setpgid(0, 0)
+            let result = match membership {
+                Membership::LeaderGroup => 0,
+                Membership::Job => libc::setpgid(0, 0),
+                Membership::NewSession => libc::setsid(),
             };
             if result == -1 {
                 return Err(std::io::Error::last_os_error());
@@ -154,7 +162,10 @@ fn gone(pid: u32) -> bool {
 fn owned_process_fixture() {
     let mode = std::env::var("CLIMON2_PLATFORM_FIXTURE").unwrap();
     if mode == "session" {
-        let mut members = [spawn_member(false), spawn_member(true)];
+        let mut members = [
+            spawn_member(Membership::Job),
+            spawn_member(Membership::NewSession),
+        ];
         println!("job={} outsider={}", members[0].id(), members[1].id());
         println!("fixture-ready");
         std::io::stdout().flush().unwrap();
@@ -164,8 +175,16 @@ fn owned_process_fixture() {
         }
         std::process::exit(0);
     }
+    if mode == "group" {
+        let mut member = spawn_member(Membership::LeaderGroup);
+        println!("member={}", member.id());
+        println!("fixture-ready");
+        std::io::stdout().flush().unwrap();
+        let _ = member.wait();
+        std::process::exit(0);
+    }
     if mode == "self-kill" {
-        let mut job = spawn_member(false);
+        let mut job = spawn_member(Membership::Job);
         process::TerminalSession::new(std::process::id(), terminal_of(0))
             .unwrap()
             .kill()
@@ -324,6 +343,26 @@ fn issue19_kill_session_never_enumerates_beyond_terminal_and_observed_groups() {
     }
     assert!(member, "the job must still be a session member");
     assert!(job_alive, "an unlisted, unobserved member was signalled");
+}
+
+/// #19: a session captured while its leader is on the terminal (as the daemon does at spawn)
+/// kills a member left in the leader's own group, even when the leader exits before any later
+/// look (the detached terminal then no longer lists the member).
+#[test]
+fn issue19_kill_session_reaches_the_leaders_group_without_later_observation() {
+    let (mut child, _master, lines, terminal) = reporting_fixture("group");
+    let member = reported(&lines, "member=");
+    let mut session = process::TerminalSession::new(child.id(), terminal).unwrap();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let grouped = unsafe { libc::getpgid(member as i32) } == child.id() as i32;
+    session.kill().unwrap();
+    let member_gone = gone(member);
+    unsafe {
+        libc::kill(member as i32, libc::SIGKILL);
+    }
+    assert!(grouped, "the member must still be in the leader's group");
+    assert!(member_gone, "a member of the leader's group survived");
 }
 
 /// #19: only a character device can name the terminal that scopes a session kill.
