@@ -1,6 +1,6 @@
-/// #30 only: an unfinished binary must not report successful product behavior.
+/// ADR 0001: reject any invocation outside the frozen three-argument contract.
 #[test]
-fn scaffold_fails_explicitly() {
+fn missing_metadata_is_a_one_line_failure_without_stdout() {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_climon2-client"))
         .output()
         .expect("run client");
@@ -8,6 +8,6 @@ fn scaffold_fails_explicitly() {
     assert!(output.stdout.is_empty());
     assert_eq!(
         output.stderr,
-        b"climon2: error: client is not implemented\n"
+        b"climon2: error: usage: climon2-client attach --metadata <absolute path>\n"
     );
 }
