@@ -4,7 +4,9 @@ use climon2_platform::terminal;
 use std::{
     fs::File,
     os::fd::{AsRawFd, FromRawFd},
+    process::{Child, Command, Stdio},
     sync::Mutex,
+    time::{Duration, Instant},
 };
 
 static RAW_TEST: Mutex<()> = Mutex::new(());
@@ -88,4 +90,97 @@ fn issue20_signals_coalesce_resize_and_report_exit_signal() {
         libc::raise(libc::SIGTERM);
     }
     assert_eq!(signals.termination_signal(), Some(15));
+}
+
+fn terminal_fixture(mode: &str) -> Command {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "owned_terminal_fixture",
+            "--nocapture",
+        ])
+        .env("CLIMON2_TERMINAL_FIXTURE", mode);
+    command
+}
+
+fn wait_fixture(mut child: Child) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success(), "terminal fixture status: {status}");
+            return;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("terminal fixture exceeded deadline");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+#[ignore = "owned subprocess fixture"]
+fn owned_terminal_fixture() {
+    match std::env::var("CLIMON2_TERMINAL_FIXTURE").unwrap().as_str() {
+        "daemon-signals" => {
+            for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGPIPE] {
+                unsafe {
+                    libc::signal(signal, libc::SIG_DFL);
+                }
+            }
+            let signals = terminal::Signals::daemon().unwrap();
+            for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGPIPE] {
+                assert_eq!(unsafe { libc::raise(signal) }, 0);
+                assert_eq!(signals.termination_signal(), None);
+            }
+            assert_eq!(unsafe { libc::raise(libc::SIGTERM) }, 0);
+            assert_eq!(signals.termination_signal(), Some(15));
+        }
+        "tty" => {
+            let accepted = std::env::var("CLIMON2_EXPECT_TTY").unwrap() == "yes";
+            let result = terminal::require_ttys();
+            if accepted {
+                result.unwrap();
+            } else {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "climon2 exec needs a terminal"
+                );
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn issue19_daemon_ignores_hup_int_pipe_and_defers_term_in_owned_process() {
+    wait_fixture(terminal_fixture("daemon-signals").spawn().unwrap());
+}
+
+#[test]
+fn issue20_tty_requires_both_stdin_and_stdout_but_not_stderr() {
+    for (input_tty, output_tty) in [(true, true), (false, true), (true, false)] {
+        let (_master, slave) = pty();
+        let mut command = terminal_fixture("tty");
+        command
+            .env(
+                "CLIMON2_EXPECT_TTY",
+                if input_tty && output_tty { "yes" } else { "no" },
+            )
+            .stdin(if input_tty {
+                Stdio::from(slave.try_clone().unwrap())
+            } else {
+                Stdio::null()
+            })
+            .stdout(if output_tty {
+                Stdio::from(slave)
+            } else {
+                Stdio::null()
+            })
+            .stderr(Stdio::null());
+        wait_fixture(command.spawn().unwrap());
+    }
 }

@@ -2,9 +2,37 @@
 
 use climon2_platform::daemon::{self, Readiness, ReadinessWriter};
 use std::{
+    fs::File,
+    io::Read,
+    os::fd::FromRawFd,
     process::Command,
     time::{Duration, Instant},
 };
+
+#[test]
+fn issue19_readiness_failure_writer_preserves_all_launch_codes_over_real_pipe() {
+    for (code, encoded_code) in [(125, 0x7d), (126, 0x7e), (127, 0x7f)] {
+        let mut descriptors = [-1; 2];
+        assert_eq!(unsafe { libc::pipe(descriptors.as_mut_ptr()) }, 0);
+        let mut reader = unsafe { File::from_raw_fd(descriptors[0]) };
+        let mut writer =
+            unsafe { ReadinessWriter::from_inherited(u32::try_from(descriptors[1]).unwrap()) }
+                .unwrap();
+        writer
+            .send(&Readiness::Failed {
+                code,
+                message: "cannot start".into(),
+            })
+            .unwrap();
+        drop(writer);
+
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).unwrap();
+        let mut expected = vec![b'F', 0, 0, 0, encoded_code, 0, 0, 0, 12];
+        expected.extend_from_slice(b"cannot start");
+        assert_eq!(bytes, expected);
+    }
+}
 
 fn launch(mode: &str) -> daemon::PendingDaemon {
     let mut command = Command::new(std::env::current_exe().unwrap());

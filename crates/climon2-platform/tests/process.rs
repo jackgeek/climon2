@@ -111,6 +111,12 @@ fn issue19_waitpid_preserves_exit_and_real_signal_status() {
 }
 
 #[test]
+fn issue19_waitpid_refuses_non_child_instead_of_fabricating_exit_status() {
+    let error = process::wait(std::process::id()).unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
+}
+
+#[test]
 fn issue19_hangup_escalates_group_after_real_five_seconds() {
     let (mut child, master) = fixture("ignore");
     let started = Instant::now();
