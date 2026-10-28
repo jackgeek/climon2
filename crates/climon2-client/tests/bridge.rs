@@ -9,7 +9,7 @@ use std::{
     io::{Read, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::{net::UnixListener, process::CommandExt},
+        unix::{fs::OpenOptionsExt, net::UnixListener, process::CommandExt},
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -24,6 +24,10 @@ struct Pty {
     slave: File,
     child: Child,
     saved: libc::termios,
+    /// The open-file description the client gets as stdout: the stdin one unless separate.
+    output: File,
+    /// F_GETFL of stdin's then stdout's description before the client started.
+    status_flags: [i32; 2],
 }
 
 impl Pty {
@@ -32,7 +36,13 @@ impl Pty {
     }
 
     fn configured(home: &Path, metadata: &Path, fault: Option<&str>, filter: Option<&str>) -> Self {
-        Self::launch(home, metadata, fault, filter, false)
+        Self::launch(home, metadata, fault, filter, false, false)
+    }
+
+    /// Gives the client a stdout that is a separate open-file description of the
+    /// same terminal, so stdin's and stdout's file-status flags are independent.
+    fn separate_output(home: &Path, metadata: &Path) -> Self {
+        Self::launch(home, metadata, None, None, false, true)
     }
 
     /// Runs the client as a background job of a shell that owns the PTY as its
@@ -40,7 +50,7 @@ impl Pty {
     /// The shell records the client's status and stderr under `home`, then stays alive:
     /// a session leader's exit would revoke the PTY before termios could be checked.
     fn background(home: &Path, metadata: &Path) -> Self {
-        Self::launch(home, metadata, None, None, true)
+        Self::launch(home, metadata, None, None, true, false)
     }
 
     fn launch(
@@ -49,6 +59,7 @@ impl Pty {
         fault: Option<&str>,
         filter: Option<&str>,
         background: bool,
+        separate_output: bool,
     ) -> Self {
         let mut master = -1;
         let mut slave = -1;
@@ -88,6 +99,12 @@ impl Pty {
                 0
             );
         }
+        let output = if separate_output {
+            reopen(&slave)
+        } else {
+            slave.try_clone().unwrap()
+        };
+        let status_flags = [status_flags(&slave), status_flags(&output)];
         let mut command = if background {
             background_job()
         } else {
@@ -100,7 +117,7 @@ impl Pty {
             .env("HOME", home)
             .env("CLIMON2_HOME", home)
             .stdin(slave.try_clone().unwrap())
-            .stdout(slave.try_clone().unwrap())
+            .stdout(output.try_clone().unwrap())
             .stderr(Stdio::piped());
         if let Some(fault) = fault {
             command.env("CLIMON2_CLIENT_FAULT", fault);
@@ -122,6 +139,8 @@ impl Pty {
             slave,
             child,
             saved,
+            output,
+            status_flags,
         }
     }
 
@@ -182,6 +201,11 @@ impl Pty {
     }
 
     fn assert_restored(&self) {
+        assert_eq!(
+            [status_flags(&self.slave), status_flags(&self.output)],
+            self.status_flags,
+            "terminal file-status flags (e.g. O_NONBLOCK) not restored"
+        );
         assert_ne!(
             self.termios().c_lflag & libc::ICANON,
             0,
@@ -201,6 +225,31 @@ impl Pty {
         assert_eq!(restored.c_ispeed, self.saved.c_ispeed);
         assert_eq!(restored.c_ospeed, self.saved.c_ospeed);
     }
+}
+
+/// Darwin's kernel-private FWASWRITTEN: set by any write, not settable by F_SETFL.
+const WAS_WRITTEN: i32 = 0x0001_0000;
+
+fn status_flags(file: &File) -> i32 {
+    let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    assert!(flags >= 0, "{}", std::io::Error::last_os_error());
+    flags & !WAS_WRITTEN
+}
+
+/// A new open-file description of the same terminal device.
+fn reopen(terminal: &File) -> File {
+    let mut name = [0 as libc::c_char; 128];
+    assert_eq!(
+        unsafe { libc::ttyname_r(terminal.as_raw_fd(), name.as_mut_ptr(), name.len()) },
+        0
+    );
+    let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOCTTY)
+        .open(name.to_str().unwrap())
+        .unwrap()
 }
 
 fn background_job() -> Command {
@@ -539,6 +588,45 @@ fn fragmented_frames_and_coalesced_resize_preserve_the_stream() {
     let (bytes, error) = pty.finish(0);
     assert_eq!(bytes, output);
     assert!(error.is_empty());
+}
+
+/// #20: the caller's terminal file-status flags (O_NONBLOCK) are restored on normal,
+/// error and signal exits when stdin and stdout are separate open-file descriptions;
+/// the shared-description case is checked by every other `Pty::finish`.
+#[test]
+fn separate_stdin_and_stdout_descriptions_both_get_their_flags_back() {
+    for ending in ["exit", "error", "signal"] {
+        let (home, metadata, listener) = setup();
+        let mut pty = Pty::separate_output(home.path(), &metadata);
+        let mut stream = accept(&listener);
+        hello(&mut stream);
+        send(&mut stream, ServerMessage::Attached);
+        pty.wait_raw();
+        let expected = match ending {
+            "exit" => {
+                send(&mut stream, ServerMessage::Exit { code: 7 });
+                7
+            }
+            "error" => {
+                send(
+                    &mut stream,
+                    ServerMessage::Error {
+                        message: "peer failed".into(),
+                    },
+                );
+                125
+            }
+            _ => {
+                assert_eq!(
+                    unsafe { libc::kill(pty.child.id() as i32, libc::SIGTERM) },
+                    0
+                );
+                128 + libc::SIGTERM
+            }
+        };
+        let (bytes, _) = pty.finish(expected);
+        assert!(bytes.is_empty(), "{ending}: {bytes:?}");
+    }
 }
 
 /// #20: blocked stdout backpressures sockets and Exit cannot overtake output.

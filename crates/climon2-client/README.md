@@ -37,6 +37,7 @@ sequences are emitted. Leave policy belongs exclusively to the daemon.
 - `hello_rejects_mismatched_session_protocol_version_and_unexpected_frames`
 - `hello_deadline_is_absolute_across_partial_reply`
 - `fragmented_frames_and_coalesced_resize_preserve_the_stream`
+- `separate_stdin_and_stdout_descriptions_both_get_their_flags_back`
 - `bounded_output_backpressure_drains_every_byte_before_exit`
 - `terminal_eof_or_eio_is_silent_status_129_and_closes_connection`
 - `terminal_eio_is_silent_status_129_and_restores_termios` (background job of a
@@ -55,3 +56,6 @@ The panic hook logs a static event, never payloads, argv or environment values.
 Tests create isolated files under the project and never run nested Cargo builds.
 Restoration assertions compare all configuration flags, control characters and
 speeds; Darwin's kernel-managed transient `PENDIN` flag is not configuration.
+They also compare the terminal's file-status flags (`F_GETFL`, e.g. `O_NONBLOCK`)
+for stdin's and stdout's open-file descriptions; Darwin's kernel-private
+`FWASWRITTEN` bit (set by any write, not settable) is not configuration.

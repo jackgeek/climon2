@@ -7,28 +7,55 @@ use climon2_platform::terminal::{self, Signals};
 use std::{
     fs::File,
     io::{self, Read},
-    os::fd::AsRawFd,
+    os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd},
 };
 
+/// The single owner of the terminal's file-status flags while bridging. Both originals
+/// are captured before either changes, because stdin and stdout may share one open-file
+/// description, and are restored through owned duplicates, so closing the bridge's
+/// descriptors can never skip or misdirect restoration.
 struct Nonblocking {
-    fd: i32,
-    flags: i32,
+    saved: [(OwnedFd, i32); 2],
 }
 
 impl Nonblocking {
-    fn new(fd: i32) -> io::Result<Self> {
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-            return Err(io::Error::last_os_error());
+    fn new(input: BorrowedFd<'_>, output: BorrowedFd<'_>) -> io::Result<Self> {
+        let guard = Self {
+            saved: [save(input)?, save(output)?],
+        };
+        guard.apply()?;
+        Ok(guard)
+    }
+
+    fn apply(&self) -> io::Result<()> {
+        for (fd, flags) in &self.saved {
+            set_flags(fd, flags | libc::O_NONBLOCK)?;
         }
-        Ok(Self { fd, flags })
+        Ok(())
     }
 }
 
 impl Drop for Nonblocking {
     fn drop(&mut self) {
-        unsafe { libc::fcntl(self.fd, libc::F_SETFL, self.flags) };
+        for (fd, flags) in self.saved.iter().rev() {
+            let _ = set_flags(fd, *flags);
+        }
     }
+}
+
+fn save(fd: BorrowedFd<'_>) -> io::Result<(OwnedFd, i32)> {
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((fd.try_clone_to_owned()?, flags))
+}
+
+fn set_flags(fd: &OwnedFd, flags: i32) -> io::Result<()> {
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 struct Output;
@@ -66,8 +93,7 @@ pub fn run(
     size: TerminalSize,
     id: &SessionId,
 ) -> io::Result<u32> {
-    let _input_flags = Nonblocking::new(terminal.as_raw_fd())?;
-    let _output_flags = Nonblocking::new(1)?;
+    let _flags = Nonblocking::new(terminal.as_fd(), io::stdout().as_fd())?;
     let mut bridge = Bridge {
         transport,
         terminal,
