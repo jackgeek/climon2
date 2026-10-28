@@ -4,10 +4,31 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+/// Linux refuses to exec a file that any process still has open for writing
+/// (ETXTBSY). A child forked by another test thread inherits such a descriptor
+/// until it execs, so executables are written exclusively and processes spawned
+/// shared: no fork can overlap an executable write.
+static EXECUTABLES: RwLock<()> = RwLock::new(());
+
+fn write_executable(write: impl FnOnce()) {
+    let _exclusive = EXECUTABLES.write().unwrap();
+    write();
+}
+
+fn run(command: &mut Command) -> Output {
+    let _shared = EXECUTABLES.read().unwrap();
+    command.output().unwrap()
+}
+
+fn start(command: &mut Command) -> Child {
+    let _shared = EXECUTABLES.read().unwrap();
+    command.spawn().unwrap()
+}
 
 struct Layout(std::path::PathBuf);
 
@@ -19,7 +40,9 @@ impl Layout {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&root).unwrap();
-        fs::copy(env!("CARGO_BIN_EXE_climon2"), root.join("climon2")).unwrap();
+        write_executable(|| {
+            fs::copy(env!("CARGO_BIN_EXE_climon2"), root.join("climon2")).unwrap();
+        });
         Self(root)
     }
 
@@ -27,8 +50,10 @@ impl Layout {
         let directory = self.0.join(version);
         fs::create_dir_all(&directory).unwrap();
         let path = directory.join("climon2-cli");
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(|| {
+            fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        });
     }
 
     fn launch(&self) -> Command {
@@ -51,24 +76,24 @@ fn frozen_handoff_preserves_bytes_stdio_cwd_and_status() {
     let layout = Layout::new();
     fs::write(layout.0.join("current"), "1.2.3-rc.2+雪").unwrap();
     // The launcher must reject non-ASCII SemVer before handing off.
-    assert_eq!(layout.launch().output().unwrap().status.code(), Some(125));
+    assert_eq!(run(&mut layout.launch()).status.code(), Some(125));
     fs::write(layout.0.join("current"), "1.2.3-rc.2+build.7\r\n").unwrap();
     layout.companion(
         "1.2.3-rc.2+build.7",
         "printf '%s\\000' \"$@\"; printf '%s\\000' \"$RAW\"; /bin/pwd; /bin/cat; printf err >&2; exit 37",
     );
     let raw = std::ffi::OsString::from_vec(vec![b'x', 0xff]);
-    let mut child = layout
-        .launch()
-        .args(["", "--flag", "space 雪"])
-        .arg(&raw)
-        .env("RAW", &raw)
-        .current_dir(&layout.0)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = start(
+        layout
+            .launch()
+            .args(["", "--flag", "space 雪"])
+            .arg(&raw)
+            .env("RAW", &raw)
+            .current_dir(&layout.0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    );
     child
         .stdin
         .take()
@@ -139,7 +164,7 @@ fn malformed_or_missing_current_and_unrunnable_companions_are_own_failures() {
 }
 
 fn assert_failure(layout: &Layout, context: &str) {
-    let output = layout.launch().output().unwrap();
+    let output = run(&mut layout.launch());
     assert_eq!(output.status.code(), Some(125));
     assert!(output.stdout.is_empty());
     let diagnostic = String::from_utf8(output.stderr).unwrap();
@@ -161,13 +186,11 @@ fn symlinked_launcher_uses_own_canonical_home_and_exec_preserves_signal() {
     let mut command = Command::new(elsewhere.join("linked"));
     command.env_clear();
     preserve_instrumentation(&mut command);
-    let output = command
+    let output = run(command
         .env("HOME", &elsewhere)
         .env("CLIMON2_EXE", &elsewhere)
         .env("PATH", &elsewhere)
-        .current_dir(&elsewhere)
-        .output()
-        .unwrap();
+        .current_dir(&elsewhere));
     assert_eq!(output.status.signal(), Some(15));
     assert!(output.stderr.is_empty());
     assert!(output.stdout.is_empty());
