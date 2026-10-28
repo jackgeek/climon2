@@ -11,6 +11,27 @@ have **not** accepted a qualified-profile limitation or an engine switch. This r
 feeds the next grilling round on [#43](https://github.com/jackgeek/climon2/issues/43); it
 does not choose policy, switch the engine, or downgrade host support.
 
+> **Correction (same research date, same branch):** the first published version of
+> this report contained internal contradictions, corrected below in place rather than
+> by re-running the research. Specifically: it falsely implied xterm defines no
+> MOK query/reply (it does; [#54](https://github.com/jackgeek/climon2/issues/54)
+> already verified `CSI ?4m` → `CSI >4;L m`) and used the wrong kind of absence
+> (Ghostty's unrelated DECRQSS reply enum) as evidence; it wrongly treated Kitty's own
+> deliberate MOK no-op as disqualifying Kitty-as-host under the user's **already
+> accepted** daemon-side translation architecture, which does not require the outer
+> host to speak the same protocol as the virtual VT; it overstated WezTerm's
+> `StableRowIndex` as lineage "lost only on eviction" without checking reflow
+> specifically; it stated an unconditional Zig toolchain requirement without
+> distinguishing prebuilt-artifact consumption from source build/patching, and invented
+> an ADR conflict no ADR text supports; and it cited Ghostty's native key encoder at an
+> unpinned HEAD commit when the same file and lines already resolve cleanly at the
+> `v1.4.0` tag. Each correction is made at its exact location below, with new
+> primary-source citations; nothing else in the report was touched, and the 8192/256-byte
+> OSC 8 limit was already stated as the model requirement but is now made explicit as a
+> concrete *native-host* gap too. No new candidate sweep, no product code, and no GUI
+> action was performed to make these corrections — only source re-reading at the already
+> identified pins.
+
 ## Two different questions this report keeps separate
 
 1. **Embedded daemon engine** — the in-process Rust library climon2's daemon would use
@@ -62,7 +83,7 @@ this pin were spot-checked for HTTP 200 and matching content (LICENSE, `vt.h`,
 | Width reflow of screen and scrollback, with row lineage | **V** | `PageList.resize` dispatch and `ReflowCursor` ([L1261-1321](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/PageList.zig#L1261-L1321), [L1465-1654](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/PageList.zig#L1465-L1654)); lineage is pointer-pin remapping (`Pin`/`tracked_pins`), not a stable queryable row ID ([L7209-7219](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/PageList.zig#L7209-L7219)) — a different, **not obviously superior**, lineage model than a sequence number; still needs its own proof for climon2's delivery-position contract. |
 | OSC 8, bounded | **V** | Per-cell `Hyperlink`/`Id` map ([hyperlink.zig#L15-L37](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/hyperlink.zig#L15-L37)); `MAX_BUF = 2048`, `MAX_ALLOCATING_BUF = 8MiB` ([osc.zig#L359-365](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/osc.zig#L359-L365)) — the engine itself enforces a bound, unlike Alacritty's unbounded `std`-mode OSC `Vec<u8>`. 2048 bytes is still below climon2's agreed 8192-byte URI ceiling and would need adapter-level handling either way. |
 | Kitty keyboard: set/push/pop/query consistency | **V — no Alacritty-class mismatch found** | Set/push/pop dispatch and the query path operate on the **same** field, `screens.active.kitty_keyboard` ([stream_terminal.zig#L715-719,1959-1970](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/stream_terminal.zig#L715-L719)). This is a materially different, more trustworthy contract than Alacritty's split stack/mode state — content-verified in this report's own pass is limited to the surrounding file resolving at the pin; the specific line semantics are the delegated pass's finding, not independently re-derived here. |
-| modifyOtherKeys | **V: real state, no query-reply** | `modify_other_keys_2` field set from CSI and consumed by the encoder ([stream_terminal.zig#L720-726](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/stream_terminal.zig#L720-L726)); the `DECRQSS` reply enum exhaustively lists `sgr/decscusr/decstbm/decslrm` only — no MOK entry ([dcs.zig#L250-267](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/dcs.zig#L250-L267)). Strictly better than Alacritty (real state vs. no-op), still incomplete against a literal xterm-style query reply — though xterm's own spec defines no portable MOK query either (see host section). |
+| modifyOtherKeys | **V: real state; query (`CSI ?4m`) confirmed unimplemented** | `modify_other_keys_2` field set from the real `CSI >4;Lm` set/reset sequence and consumed by the encoder ([stream.zig#L2206-2271](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/stream.zig#L2206-L2271), [stream_terminal.zig#L720-726](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/stream_terminal.zig#L720-L726)). **Correction:** the query form xterm itself defines, `CSI ?4m`, reaches Ghostty's own `'m'`-dispatch fallback branch with its own source comment admitting uncertainty — *"`vim --clean` uses `CSI ? 4 m` and I don't know what that means"* — and is explicitly logged as `"ignoring unimplemented CSI m with intermediates"` ([stream.zig#L2280-2291](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/stream.zig#L2280-L2291)). This is the correct evidence for "no MOK query reply," not the unrelated `DECRQSS` reply enum cited in the first version of this report (`DECRQSS` answers a *different* DEC request-status protocol entirely; its not listing MOK proves nothing about `CSI ?4m`). Real state is still strictly better than Alacritty's no-op; the query gap is confirmed absent by direct dispatch-table inspection, not inferred from an unrelated code path. |
 | Parser/history admission | **V, materially tighter than Alacritty** | OSC 2048B/8MiB, DCS `max_bytes = 1MiB` ([dcs.zig#L17-19,137](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/dcs.zig#L17-L19)); history `max_size`/`max_lines`, nullable = unlimited ([PageList.zig#L602-612](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/PageList.zig#L602-L612)) — an explicit cap exists, but "unlimited" is a legal configuration, so climon2 would still need to enforce its own ceiling, not merely trust defaults. |
 | Combining-mark handling | **V** | `grapheme_max_len = 64` codepoints via a bitmap-chunk allocator ([page.zig#L84-95](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/page.zig#L84-L95)) — a materially higher cap than Alacritty's fixed inline 9, and a different allocation shape (chunked, not per-cell `ArrayVec`) that needs its own memory-accounting proof, not an assumption of being "better" by default. |
 | Licence / build portability | **V — single hard new cost** | MIT ([LICENSE](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/LICENSE#L1-L4), content-verified above). **Zig toolchain is required unconditionally**, even through the CMake wrapper (`find_program(ZIG_EXECUTABLE zig REQUIRED)`, [CMakeLists.txt#L1-5,94-95](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/CMakeLists.txt#L1-L5)). This is a cross-language FFI/build-chain dependency climon2 does not have today (ADR 0004's crate layout assumes a Rust-only build). Only one rolling GitHub Release (`tip`) ships prebuilt artifacts, and only as WASM + Apple xcframework — **no Linux/Windows prebuilt library**, so other platforms need a from-source Zig build, cutting against ADR 0003's stated intent to add Windows/Ubuntu without a redesign. |
@@ -83,10 +104,10 @@ GPL-3.0 as this ticket's brief assumed — a correction, not a new finding.
 | Headless, GUI-free construction | **V** | `Terminal::new(size, config, term_program, term_version, writer: Box<dyn Write+Send>)` ([terminal.rs#L143-171](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/terminal.rs#L143-L171)); `term/Cargo.toml` has no GUI dependency (no winit/wgpu/cocoa), unlike `wezterm-gui` ([term/Cargo.toml#L12-39](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/Cargo.toml#L12-L39), content-verified above). |
 | Normal+alternate screen, inactive-screen read access | **V** model; **U, absent** public getter | `ScreenOrAlt{screen, alt_screen, alt_screen_is_active}` ([terminalstate/mod.rs#L150-178](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/terminalstate/mod.rs#L150-L178)); exhaustive `pub fn` search of `terminalstate/mod.rs` finds only `screen()`/`screen_mut()`/`is_alt_screen_active()` — no `alt_screen()`/`inactive_screen()` ([L711-720,772-775](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/terminalstate/mod.rs#L711-L720)). **Same class of gap as Alacritty** — this is not a free win; it would need the same kind of narrow upstream extension/patch either way. |
 | Reflow of screen and scrollback | **V — real reflow, the headline strength** | `Screen::rewrap_lines` ([screen.rs#L104-186](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/screen.rs#L104-L186)) reflows width changes for retained history, not just truncate/pad — this is the concrete capability vt100 (the prior engine-research alternative) was shown to lack by design, and the one Alacritty's `master` currently has but 0.26.0 released state needed separate verification for. |
-| History structure / lineage | **V** | `VecDeque<Line>`, capacity `physical_rows + scrollback_size()`, pop-on-overflow ([screen.rs#L16-46,174-221](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/screen.rs#L16-L46)); `StableRowIndex` with a monotonic offset gives a genuine sequence-number-style lineage across reflow, lost only once a row is evicted past retained capacity ([L523-531](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/screen.rs#L523-L531)) — a materially more direct lineage primitive than Alacritty (none) or Ghostty's pointer-pin remap, though no public row-count/capacity accessor was found alongside it. |
+| History structure / lineage | **V** | `VecDeque<Line>`, capacity `physical_rows + scrollback_size()`, pop-on-overflow ([screen.rs#L16-46,174-221](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/screen.rs#L16-L46)); `StableRowIndex` is a monotonic `phys_index + eviction_count` offset that is correctly maintained across plain top-of-screen scroll-eviction and `erase_scrollback` ([L734,769](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/screen.rs#L734)). **Correction:** the offset is mutated *only* at those two sites; `rewrap_lines`, the width-reflow path, rebuilds `self.lines` into a fresh `VecDeque` without touching the offset at all ([L104-182](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/screen.rs#L104-L182)) — so lineage across reflow/width-change is **not demonstrated to be preserved**, contrary to the first version of this report's "lost only on eviction" claim. `StableRowIndex` is a real, verified eviction-lineage primitive, strictly better than Alacritty's (none), but it is **unproven, not proven,** for the reflow-lineage case climon2 actually needs; no public row-count/capacity accessor was found alongside it either. |
 | OSC 8, bounded | **V** model; **U, no length cap found at this layer** | Arc-shared `Hyperlink{params,uri,implicit}` per cell ([hyperlink.rs#L9-17,76-99](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/wezterm-escape-parser/src/hyperlink.rs#L9-L17), [wezterm-cell/src/lib.rs#L92-97](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/wezterm-cell/src/lib.rs#L92-L97)); no explicit URI/ID byte-length check in `Hyperlink::parse` — the only indirect bound is the general OSC admission below, which is itself effectively unbounded in the `std` build WezTerm uses. **Materially weaker than Ghostty's explicit 2048-byte OSC cap on this specific axis.** |
 | Kitty keyboard: set/push/pop/query consistency | **V — no mismatch found** | Per-screen `keyboard_stack: Vec<KeyboardEncoding>`, push capped at 128 frames ([screen.rs#L35-36](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/screen.rs#L35-L36), [performer.rs#L523-571](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/terminalstate/performer.rs#L523-L571)); the encoder's `effective_keyboard_encoding` reads the identical `keyboard_stack.last()` the query reports ([keyboard.rs#L6-15](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/terminalstate/keyboard.rs#L6-L15)) — same single-source-of-truth property as Ghostty, materially better than Alacritty. |
-| modifyOtherKeys | **V: real state, no query-reply** | `modify_other_keys: Option<i64>` set via `CSI>4;Pv m`, consumed by the encoder ([terminalstate/mod.rs#L2069-2077](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/terminalstate/mod.rs#L2069-L2077), [keyboard.rs#L26-38](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/terminalstate/keyboard.rs#L26-L38)); no report path found. Same shape of improvement over Alacritty as Ghostty (real state replacing a no-op), same remaining gap (no query reply). |
+| modifyOtherKeys | **V: real state; query (`CSI ?4m`) confirmed unimplemented** | `modify_other_keys: Option<i64>` set via `CSI>4;Pv m`, consumed by the encoder ([terminalstate/mod.rs#L2069-2077](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/terminalstate/mod.rs#L2069-L2077), [keyboard.rs#L26-38](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/terminalstate/keyboard.rs#L26-L38)). **Correction:** the CSI parser's `xterm_key_modifier` match arm only accepts the `'>'`-intermediate set/reset forms (`CSI > Pr ; Pv m` and `CSI > Pr m`); there is no `'?'`-intermediate arm anywhere in the `'m'` dispatch table, so `CSI ?4m` (xterm's real MOK query) is not recognized as this command at all and falls through to the generic unhandled-CSI path ([csi.rs#L1873](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/wezterm-escape-parser/src/csi.rs#L1873), [csi.rs#L2134-2168](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/wezterm-escape-parser/src/csi.rs#L2134-L2168)). This parser-level absence is stronger, more direct evidence than the original report's inference from "no report path found in `performer.rs`" and supersedes it. |
 | Parser/history admission | **V — mixed** | `MAX_PARAMS=256` hard CSI cap with a `parameters_truncated` flag, `MAX_OSC=64` field cap with a `full` flag ([vtparse/src/lib.rs#L313-360,508-520,576-580,608](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/vtparse/src/lib.rs#L313-L360)) — these are **field/count** bounds, not byte-length bounds; the OSC payload itself is an unbounded `Vec<u8>` under the `std`/`alloc` feature WezTerm actually builds with (a fixed `heapless::Vec<u8,1024>` exists only in its `no_std` configuration) — **the same class of unbounded-OSC-buffer gap Alacritty has**, not resolved by switching engines. |
 | Combining-mark/grapheme handling | **V — no fixed cap found** | `TeenyString` inlines ≤7 bytes, else spills to a heap `TeenyStringHeap{bytes:Vec<u8>}` with no fixed per-cell combining-character count ([wezterm-cell/src/lib.rs#L561-624](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/wezterm-cell/src/lib.rs#L561-L624)) — this trades Alacritty's hard-but-finite 9-mark cap (a known, bounded fidelity loss) for an apparently **unbounded** per-cell growth path, which is a regression on the admission axis this research cares about, not a free improvement. |
 | Licence / build portability | **V — pure Rust, no publication** | MIT, confirmed both at repo root and the `term` subcrate's own `LICENSE.md` ([LICENSE.md](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/LICENSE.md#L1-L22), content-verified above; [term/LICENSE.md](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/LICENSE.md#L1-L23)) — same licence family as Alacritty, no FFI cost, fits ADR 0004 cleanly. **But `wezterm-term` is not published to crates.io** (confirmed 404 via the crates.io API) and has never been independently versioned or release-tagged; pinning it means pinning an upstream monorepo commit with no semver/API-stability contract at all, a materially different and weaker supply-chain posture than Alacritty's or Ghostty's own tagged releases. |
@@ -113,34 +134,47 @@ one, and none closes every required gap.**
 | Axis | Alacritty (baseline) | Ghostty `libghostty-vt` | `wezterm-term` |
 |---|---|---|---|
 | Inactive-screen read access | None (destructive `swap_alt()` only) | Internal yes, public C ABI unestablished | None found (same gap class) |
-| Reflow (screen + history) | Yes (screen); history reflow exists, needs qualification | Yes, with pointer-pin lineage | Yes, with `StableRowIndex` lineage — strongest evidence here |
+| Reflow (screen + history) | Yes (screen); history reflow exists, needs qualification | Yes, with pointer-pin lineage | Yes, reflow itself works; `StableRowIndex` lineage **not proven across it** (see correction below) |
 | Kitty set/query consistency | **Mismatch found** | Consistent | Consistent |
 | MOK | Parsed, not implemented | Real state, no query-reply | Real state, no query-reply |
 | OSC8 length admission | Unbounded `std` OSC buffer | Explicit 2048B/8MiB cap | Unbounded, same gap as Alacritty |
 | Combining-mark cap | Fixed, bounded (9) | Higher, bounded (64) | **None found — unbounded** |
-| Build/licence | Rust, Apache-2.0, fits ADR 0004 | **Zig toolchain required unconditionally**, MIT, no non-Apple prebuilt libs | Rust, MIT, fits ADR 0004, **not published/versioned anywhere** |
+| Build/licence | Rust, Apache-2.0, fits ADR 0004 | **Zig toolchain required to build from source or patch** (confirmed unconditional for that path via `CMakeLists.txt`'s `find_program(ZIG_EXECUTABLE zig REQUIRED)`); not required merely to link the one published prebuilt (Apple-only xcframework); MIT | Rust, MIT, fits ADR 0004, **not published/versioned anywhere** |
 | Release/supply-chain posture | Tagged releases exist | Tagged releases exist | No `term`-specific tag ever; pin is a bare monorepo commit |
 
 **Worth a later throwaway prototype: `wezterm-term`, narrowly, on the reflow/lineage
-question only.** Its `StableRowIndex` and real width-reflow of retained history are the
-single most concrete, already-shipped (if unversioned) answer to the row-lineage seam
-the Alacritty embedding research flagged as missing — worth a small isolated
-read/reflow/lineage probe before accepting that gap as unsolved-by-any-engine. It is
-**not** worth prototyping for Kitty/MOK/OSC8 alone, since it trades Alacritty's bounded
+question only — but to *test*, not confirm, lineage.** Its `rewrap_lines` width-reflow
+of retained history is real and shipped, but source inspection shows `StableRowIndex`'s
+offset is untouched by that path (see correction above), so the question a prototype
+would need to answer is whether reflowed rows' identity is recoverable *at all* through
+some other means, not whether `StableRowIndex` already solves it — **it does not appear
+to, on current evidence.** A small isolated read/reflow/lineage probe is still the
+cheapest way to settle this for climon2's specific requirement, rather than accepting
+either "solved" or "unsolved" on documentation/naming alone. It is **not** worth
+prototyping for Kitty/MOK/OSC8 alone, since it trades Alacritty's bounded
 combining-mark and (nominal) OSC cap for unbounded versions of both, and has no public
 inactive-screen getter either — i.e. it does not close the keyboard-fidelity gap that
 motivated this question at all.
 
-**Ghostty's `libghostty-vt` is not yet worth a product prototype, but is worth
-re-checking at its next tagged release.** Its Kitty consistency and real (if
-incomplete) MOK state are genuine improvements, and its explicit OSC/DCS byte caps are
-the only engine here that already enforces *any* control-string admission bound. But the
-unconditional Zig toolchain dependency, explicitly unstable C header, and missing
-Linux/Windows prebuilt artifacts are each, independently, enough to defer it: embedding
-it today would mean taking an explicitly-marked-unstable public API as a dependency and
-adding a second build toolchain against ADR 0003/0004's stated single-Rust-toolchain,
-redesign-free platform story. A six-months-later recheck of `include/ghostty/vt/*.h`
-stability is a reasonable future action, not a decision made here.
+**Ghostty's `libghostty-vt` is not recommended as a prototype candidate yet, pending
+the tradeoffs below — this is a recommendation, not settled evidence that it is
+disqualified.** Its Kitty consistency and real (if incomplete) MOK state are genuine
+improvements, and its explicit OSC/DCS byte caps are the only engine here that already
+enforces *any* control-string admission bound. The costs to weigh explicitly in #43:
+building from source (needed for any of the narrow API-surface patches this and the
+embedding research identified, e.g. inactive-screen access) unconditionally requires a
+second, non-Rust toolchain (confirmed via `CMakeLists.txt`'s
+`find_program(ZIG_EXECUTABLE zig REQUIRED)` — consuming only the published prebuilt
+avoids this but is Apple-only and offers no patch path); its public C header is
+explicitly marked unstable by its own authors; and no Linux/Windows prebuilt exists.
+**Correction:** the first version of this report claimed these costs conflicted with
+ADR 0003/0004 and called the Zig dependency unconditional outright — neither is
+accurate. No exact ADR text forbids a second build toolchain, and the Zig requirement
+applies to source-build/patching, not to prebuilt consumption. The user has also
+already approved source-level pinning/patching elsewhere (the Alacritty embedding
+research), so an unstable upstream API is a cost to weigh, not an automatic
+disqualifier on its own. A six-months-later recheck of `include/ghostty/vt/*.h`
+stability remains a reasonable future action.
 
 **None of this closes or narrows the still-open daemon-side questions.** Inactive-grid
 access, history-lineage/eviction notification, and byte-accounted memory admission
@@ -159,8 +193,8 @@ three prior hosts' status changes.
 
 | Host (pin) | OSC 8 | Kitty keyboard native encoder | modifyOtherKeys |
 |---|---|---|---|
-| **Kitty `v0.49.2`** (`b2cb871254fbdac19a085188813c8dfb258b95cd`) | **V** — `MAX_KEY_LEN=2048`, `MAX_ID_LEN=256`, id+url grouping ([hyperlink.c#L12-13,136-160](https://github.com/kovidgoyal/kitty/blob/b2cb871254fbdac19a085188813c8dfb258b95cd/kitty/hyperlink.c#L12-L13), content-verified above) | **V — reference implementation.** Full press/repeat/release enum, set/push/pop/query share one backing array ([key_encoding.c#L12-88](https://github.com/kovidgoyal/kitty/blob/b2cb871254fbdac19a085188813c8dfb258b95cd/kitty/key_encoding.c#L12-L88), [screen.c#L2092-2152](https://github.com/kovidgoyal/kitty/blob/b2cb871254fbdac19a085188813c8dfb258b95cd/kitty/screen.c#L2092-L2152)); macOS repeat is computed OS-independently in its own GLFW-derived input layer, not read from `NSEvent.isARepeat` ([glfw/input.c#L266-299](https://github.com/kovidgoyal/kitty/blob/b2cb871254fbdac19a085188813c8dfb258b95cd/glfw/input.c#L266-L299)) | **V — deliberately a no-op stub, by design.** `screen_modify_other_keys` only logs a warning telling the application to use Kitty's own protocol instead ([screen.c#L2082-2090](https://github.com/kovidgoyal/kitty/blob/b2cb871254fbdac19a085188813c8dfb258b95cd/kitty/screen.c#L2082-L2090), content-verified above). A session that needs MOK specifically (not Kitty-protocol-equivalent behavior) cannot rely on Kitty-as-host for it. |
-| **Ghostty `v1.4.0`** (`83fb95624b0439ee660c2679b43b38c8b63769cd`) | **V** — `.fixed` capture, 2048-byte cap ([osc/parsers/hyperlink.zig#L1-52](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/osc/parsers/hyperlink.zig#L1-L52)) | **V** — standalone native encoder `src/input/key_encode.zig` with distinct press/repeat/release ([key_encode.zig#L250-252,294-310,336-337](https://github.com/ghostty-org/ghostty/blob/0b8b9984ee560456194262d190aa850224edb1f4/src/input/key_encode.zig#L250-L252), cited at current HEAD, **not a tagged release** — flagged non-pinned); macOS `keyDown`/`keyUp` map `event.isARepeat` to a distinct repeat action at the tagged pin ([SurfaceView_AppKit.swift#L1120-1172,1291-1292](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/macos/Sources/Ghostty/Surface%20View/SurfaceView_AppKit.swift#L1120-L1172)) | **V — state only, no query-reply** (same absence confirmed in the embedded-engine table above, since Ghostty's native host and embedded library share the same `terminal/` core) |
+| **Kitty `v0.49.2`** (`b2cb871254fbdac19a085188813c8dfb258b95cd`) | **V** — `MAX_KEY_LEN=2048`, `MAX_ID_LEN=256`, id+url grouping ([hyperlink.c#L12-13,136-160](https://github.com/kovidgoyal/kitty/blob/b2cb871254fbdac19a085188813c8dfb258b95cd/kitty/hyperlink.c#L12-L13), content-verified above) | **V — reference implementation.** Full press/repeat/release enum, set/push/pop/query share one backing array ([key_encoding.c#L12-88](https://github.com/kovidgoyal/kitty/blob/b2cb871254fbdac19a085188813c8dfb258b95cd/kitty/key_encoding.c#L12-L88), [screen.c#L2092-2152](https://github.com/kovidgoyal/kitty/blob/b2cb871254fbdac19a085188813c8dfb258b95cd/kitty/screen.c#L2092-L2152)); macOS repeat is computed OS-independently in its own GLFW-derived input layer, not read from `NSEvent.isARepeat` ([glfw/input.c#L266-299](https://github.com/kovidgoyal/kitty/blob/b2cb871254fbdac19a085188813c8dfb258b95cd/glfw/input.c#L266-L299)) | **V — deliberately a no-op stub, by design.** `screen_modify_other_keys` only logs a warning telling the application to use Kitty's own protocol instead ([screen.c#L2082-2090](https://github.com/kovidgoyal/kitty/blob/b2cb871254fbdac19a085188813c8dfb258b95cd/kitty/screen.c#L2082-L2090), content-verified above). **Correction:** this is *not* disqualifying for a session that needs virtual MOK under the accepted daemon-translation architecture — see "what this changes" below. It only means Kitty-as-host cannot answer a literal MOK set/query on its own wire; it still supplies a fully-implemented, genuine Kitty-protocol key-event stream the daemon can decode and re-encode as MOK. |
+| **Ghostty `v1.4.0`** (`83fb95624b0439ee660c2679b43b38c8b63769cd`) | **V** — `.fixed` capture, **2048-byte total cap on the whole `8;id=...;URI` payload** ([osc.zig#L360-365,1060-1066](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/osc.zig#L1060-L1066), [osc/parsers/hyperlink.zig#L1-52](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/osc/parsers/hyperlink.zig#L1-L52)). **This is below climon2's required 8192-byte URI / 256-byte ID model ceiling — a concrete native-host capture gap, not just a model/parser detail: switching the embedded engine cannot raise an outer host's own native OSC8 capture limit**, since the limit is enforced in the terminal application that receives the escape sequence from the real program, independent of which VT library climon2's daemon embeds. | **V** — standalone native encoder `src/input/key_encode.zig` with distinct press/repeat/release, confirmed present with identical content and line numbers at the `v1.4.0` tag itself ([key_encode.zig#L250-252,294-310,336-337](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/input/key_encode.zig#L250-L252)). **Correction:** the first version of this report cited this file only at an unpinned HEAD commit and flagged it "non-pinned"; the same file and line numbers resolve cleanly at the already-pinned `v1.4.0` tag, so no HEAD caveat is needed. macOS `keyDown`/`keyUp` map `event.isARepeat` to a distinct repeat action at the same tagged pin ([SurfaceView_AppKit.swift#L1120-1172,1291-1292](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/macos/Sources/Ghostty/Surface%20View/SurfaceView_AppKit.swift#L1120-L1172)) | **V — state only, no query-reply** (same absence confirmed in the embedded-engine table above, since Ghostty's native host and embedded library share the same `terminal/` core) |
 | **WezTerm `main`** (`e68a8ec27727fbbda15e07f0a0737cd5e16481f6` — **no recent dated release tag**; last application tag `20240203-110809-5046fc22`, ~2.7 years stale as of this research date) | **V** model; **U** no explicit length cap found ([hyperlink.rs#L1-17](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/wezterm-escape-parser/src/hyperlink.rs#L1-L17)) | **V, with a confirmed gap.** `encode_kitty()` encodes release (`:3`) but **never emits repeat (`:2`)**, despite a `repeat_count` field existing on the input event and going unused by the encoder ([wezterm-input-types/src/lib.rs#L1325,1492,1711-2020,1767-1773](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/wezterm-input-types/src/lib.rs#L1711-L2020)). The macOS layer does read `nsevent.isARepeat()`, but only to drive an unrelated IME workaround — it never reaches the Kitty encoder, and `repeat_count` is hard-coded to 1 ([window/src/os/macos/window.rs#L2548-2550,2612,2655,2771-2784](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/window/src/os/macos/window.rs#L2548-L2550)). **This is a concrete, source-verified repeat-identity loss for WezTerm-as-outer-host, directly analogous to the VS Code associated-text repeat-identity defect already found in prior research**, not a hypothetical. | **V — state only, no query-reply** (same shape as the embedded-engine finding, same source) |
 
 **Unexecuted for all three:** no live keyboard probing, GUI automation, or app launch was
@@ -171,10 +205,17 @@ parser or query echo.
 
 ### What this changes and does not change about host qualification
 
-- **Kitty is disqualified as a MOK host by design**, not merely unqualified — its own
-  maintainer deliberately stubs MOK in favor of its own protocol. Any required-profile
-  design that needs MOK specifically on Kitty-as-host should not expect it to appear with
-  more probing; this is a documented intentional choice, source-confirmed.
+- **Kitty's deliberate MOK no-op does not disqualify Kitty-as-host under the accepted
+  daemon-translation architecture.** The first version of this report wrongly concluded
+  that a session needing MOK "cannot rely on Kitty-as-host for it." Kitty's own
+  maintainer does deliberately stub MOK set/query in favor of Kitty's own protocol, and
+  that stub is source-confirmed and will not change with more probing — but the user has
+  already approved **observed-input decoding plus daemon-side encoding**, not protocol
+  passthrough: the daemon can take Kitty's fully-implemented, reference-quality
+  Kitty-protocol key events (real press/repeat/release, modifiers, associated text) and
+  re-encode them into MOK-style sequences for a command that expects MOK. Kitty-as-host
+  is disqualified only for a design that required the outer host to answer a literal
+  `CSI ?4m` on its own wire, which is not this architecture.
 - **Ghostty is the strongest additional native-host candidate found**: genuine
   OS-level `NSEvent.isARepeat` plumbing to a distinct repeat action, a standalone
   key-encoder module, and the same real-but-incomplete MOK state as its embedded library.
@@ -210,23 +251,51 @@ These persist across **every** engine examined, including both alternatives:
    across candidates (Alacritty: hard 9; Ghostty: higher bounded 64; WezTerm: apparently
    unbounded) — this is a real admission-policy difference an engine switch would
    introduce, not a wash.
-4. **No candidate's MOK implementation includes a query-reply**, consistent with xterm's
-   own specification defining no standard MOK query/reply sequence at all (see
-   [#54](https://github.com/jackgeek/climon2/issues/54)'s prior finding) — this is not
-   fixable by switching engines, because the gap is in the protocol's own design, not an
-   implementation shortfall.
-5. **History-lineage models differ in shape, not just maturity**: Alacritty has none;
-   Ghostty uses pointer-pin remapping; WezTerm uses a monotonic `StableRowIndex`. None has
-   been proven against climon2's specific requirement (stable identity across reflow,
-   reset, *and* viewport transitions together) by any party, including this research.
+4. **Correction: xterm itself does define a real MOK query/reply (`CSI ?4m` →
+   `CSI >4;L m`), already verified from xterm's own patch-411 source in
+   [#54](https://github.com/jackgeek/climon2/issues/54); the first version of this
+   report wrongly claimed the opposite.** What holds is narrower: neither Ghostty nor
+   WezTerm *implements* that query, each confirmed here by direct inspection of their
+   respective `CSI m` dispatch tables (Ghostty: an explicit "ignoring unimplemented"
+   fallback with a source comment showing the authors don't know what the sequence
+   means; WezTerm: no `'?'`-intermediate match arm exists for `'m'` at all). This is an
+   implementation gap in both candidates, not a protocol-design limitation — a future
+   engine or a source patch to either could add it, unlike a genuinely protocol-absent
+   feature.
+5. **History-lineage models differ in shape and are weaker than first claimed.**
+   Alacritty has none; Ghostty uses pointer-pin remapping; WezTerm's `StableRowIndex` is
+   a monotonic `phys_index + eviction_count` offset, correctly maintained across plain
+   top-of-screen scrolling and `erase_scrollback` ([screen.rs#L734,769](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/screen.rs#L734)), but **`rewrap_lines` (the width-reflow path) rebuilds the entire physical row sequence from scratch into a new `VecDeque` without recomputing, compensating, or otherwise touching `stable_row_index_offset`** ([screen.rs#L104-182](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/screen.rs#L104-L182)) — the offset is modified only at the two scroll/erase sites above, never during resize. **Correction: the original claim that lineage is "lost only on eviction" was wrong; it is not demonstrated to survive reflow at all**, which is exactly the regime climon2 most needs. No candidate has been proven against climon2's requirement (stable identity across reflow, reset, *and* viewport transitions together), and WezTerm is weaker on this specific axis than first reported, not stronger.
 6. **Supply-chain/versioning risk differs sharply**: Alacritty and Ghostty have real
    tagged releases; `wezterm-term` has never been independently tagged or published,
    meaning a pin is a bare monorepo commit with no semver contract at all — a genuinely
    new risk class relative to the current baseline, not a neutral alternative.
-7. **A Zig/C toolchain dependency (Ghostty) is a first-class portability cost**, not a
-   detail: it would require climon2 to add and maintain a second build toolchain, which
-   cuts against the existing crate-layout and platform-seam ADRs' stated single-toolchain,
-   redesign-free expansion story.
+7. **A Zig/C toolchain dependency is real but narrower than first stated.** It is
+   required for building Ghostty's library from source or applying any patch to its
+   explicitly-unstable C header (both would be needed for the narrow seams this report
+   and the prior Alacritty embedding research identified, e.g. inactive-screen access);
+   it is **not** required merely to link the one published prebuilt artifact (an Apple
+   xcframework — macOS-only, no Linux/Windows prebuilt). **Correction: the first version
+   of this report invented a conflict with ADR 0003/0004 that neither ADR's text
+   actually states** — those ADRs describe platform-`cfg` seams and crate/dependency
+   direction, not a single-toolchain constraint. The real, narrower cost is: a second
+   build toolchain for anyone building climon2 from source on non-macOS platforms, plus
+   patching against an interface its own authors say will change. That is a tradeoff to
+   weigh explicitly in #43, not an automatic disqualifier, and not newly forbidden by any
+   existing ADR.
+8. **Kitty-as-host's deliberate MOK no-op does not disqualify it under the user's
+   accepted daemon-translation architecture.** The first version of this report
+   wrongly treated "Kitty doesn't implement MOK" as blocking a command that needs
+   virtual MOK. Under the approved design, the daemon does not require the outer host to
+   speak the same wire protocol the command sees: if Kitty-as-host supplies genuine,
+   qualified Kitty-protocol key events (press/repeat/release, modifiers, associated
+   text — which Kitty's own reference encoder does provide, see the host table above),
+   the daemon can decode those real key/modifier facts and re-encode them as MOK-style
+   sequences for a command that asked for MOK. This is **translated acquisition**, not
+   protocol passthrough, and is categorically different from requiring Kitty itself to
+   answer a MOK query. Kitty's MOK stub remains relevant only if the architecture ever
+   needed Kitty to answer a literal `CSI ?4m` on the outer wire, which it does not under
+   the accepted design.
 
 ## Primary-source references
 
@@ -256,19 +325,22 @@ synthesizes):
 - [Ghostty `PageList.zig` — reflow and `Pin`/`tracked_pins` lineage](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/PageList.zig#L1261-L1321)
 - [Ghostty `hyperlink.zig` / `osc.zig` — OSC8 model and 2048B/8MiB caps](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/osc.zig#L359-L365)
 - [Ghostty `stream_terminal.zig` — Kitty set/push/pop/query on one field, MOK state](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/stream_terminal.zig#L715-L726)
-- [Ghostty `dcs.zig` — DECRQSS enum has no MOK entry, DCS 1MiB cap](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/dcs.zig#L17-L267)
+- [Ghostty `dcs.zig` — DECRQSS enum has no MOK entry (a different protocol; not evidence about `CSI ?4m`), DCS 1MiB cap](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/dcs.zig#L17-L267)
+- [Ghostty `stream.zig` — `CSI ?4m` MOK query reaches an explicit "ignoring unimplemented CSI m with intermediates" fallback](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/stream.zig#L2280-L2291)
 - [Ghostty `page.zig` — 64-codepoint grapheme cap](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/terminal/page.zig#L84-L95)
 - [Ghostty `LICENSE` — MIT](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/LICENSE#L1-L4)
-- [Ghostty `CMakeLists.txt` — unconditional Zig requirement](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/CMakeLists.txt#L1-L5)
+- [Ghostty `CMakeLists.txt` — Zig required for source build, not for prebuilt consumption](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/CMakeLists.txt#L1-L5)
 - [Ghostty macOS `SurfaceView_AppKit.swift` — `isARepeat` → repeat action](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/macos/Sources/Ghostty/Surface%20View/SurfaceView_AppKit.swift#L1120-L1172)
-- [Ghostty `key_encode.zig` — native encoder press/repeat/release](https://github.com/ghostty-org/ghostty/blob/0b8b9984ee560456194262d190aa850224edb1f4/src/input/key_encode.zig#L250-L337) (HEAD, non-pinned, flagged)
+- [Ghostty `key_encode.zig` — native encoder press/repeat/release, confirmed at the `v1.4.0` tag itself (corrects prior non-pinned HEAD citation)](https://github.com/ghostty-org/ghostty/blob/83fb95624b0439ee660c2679b43b38c8b63769cd/src/input/key_encode.zig#L250-L337)
 - [WezTerm `term/Cargo.toml` — crate identity, no release publication](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/Cargo.toml#L1-L39)
 - [WezTerm `term/src/terminal.rs` — headless constructor](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/terminal.rs#L143-L171)
 - [WezTerm `term/src/terminalstate/mod.rs` — screen/alt model, no public inactive-screen getter](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/terminalstate/mod.rs#L150-L178)
-- [WezTerm `term/src/screen.rs` — `rewrap_lines` reflow, `StableRowIndex` lineage](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/screen.rs#L104-L531)
+- [WezTerm `term/src/screen.rs` — `rewrap_lines` reflow rebuilds `self.lines` without touching `StableRowIndex`'s offset; offset mutated only at scroll-eviction/`erase_scrollback`](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/screen.rs#L104-L182)
+- [WezTerm `term/src/screen.rs` — the two `stable_row_index_offset` mutation sites (scroll-eviction, `erase_scrollback`)](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/screen.rs#L734)
 - [WezTerm `wezterm-escape-parser/src/hyperlink.rs` — OSC8 model, no length cap](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/wezterm-escape-parser/src/hyperlink.rs#L9-L99)
 - [WezTerm `wezterm-cell/src/lib.rs` — `TeenyString`, no combining-mark cap](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/wezterm-cell/src/lib.rs#L561-L624)
-- [WezTerm `term/src/terminalstate/performer.rs` / `keyboard.rs` — Kitty stack and MOK consistency](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/terminalstate/keyboard.rs#L6-L38)
+- [WezTerm `term/src/terminalstate/performer.rs` / `keyboard.rs` — Kitty stack and MOK real-state consistency](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/term/src/terminalstate/keyboard.rs#L6-L38)
+- [WezTerm `wezterm-escape-parser/src/csi.rs` — `'m'` dispatch table and `xterm_key_modifier` only match `'>'`-intermediate forms; `CSI ?4m` is not recognized as this command](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/wezterm-escape-parser/src/csi.rs#L2134-L2168)
 - [WezTerm `vtparse/src/lib.rs` — param/OSC-field caps, unbounded `std` OSC byte buffer](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/vtparse/src/lib.rs#L313-L360)
 - [WezTerm `LICENSE.md` — MIT, corrects this ticket's GPL-3.0 premise](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/LICENSE.md#L1-L22)
 - [WezTerm `wezterm-input-types/src/lib.rs` — `encode_kitty()` never emits repeat](https://github.com/wezterm/wezterm/blob/e68a8ec27727fbbda15e07f0a0737cd5e16481f6/wezterm-input-types/src/lib.rs#L1711-L2020)
