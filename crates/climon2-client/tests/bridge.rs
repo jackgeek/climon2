@@ -657,6 +657,64 @@ fn attach_refusal_or_unexpected_reply_fails_without_raw_mode() {
     }
 }
 
+/// #19/#20: while terminal output is blocked, a session that hung up must not spin
+/// the client: it sleeps in poll, then delivers every received byte once stdout
+/// drains, and finally honours a buffered Exit or reports the lost connection (125).
+#[test]
+fn hung_up_session_during_blocked_output_sleeps_then_delivers_everything() {
+    for exit in [None, Some(51)] {
+        let (home, metadata, listener) = setup();
+        let mut pty = Pty::spawn(home.path(), &metadata, None);
+        let mut stream = accept(&listener);
+        hello(&mut stream);
+        send(&mut stream, ServerMessage::Attached);
+        pty.wait_raw();
+        send(&mut stream, ServerMessage::Output(vec![b'X'; 60_000]));
+        if let Some(code) = exit {
+            send(&mut stream, ServerMessage::Exit { code });
+        }
+        drop(stream);
+        thread::sleep(Duration::from_millis(200));
+        pty.master.write_all(b"x").unwrap();
+        thread::sleep(Duration::from_millis(100));
+        let before = cpu_time(pty.child.id());
+        thread::sleep(Duration::from_secs(1));
+        let used = cpu_time(pty.child.id()) - before;
+        assert!(
+            used < Duration::from_millis(200),
+            "client used {used:?} CPU in 1 s while output was blocked"
+        );
+        let (bytes, error) = pty.finish(exit.map_or(125, |code| code as i32));
+        assert_eq!(bytes.len(), 60_000);
+        assert!(bytes.iter().all(|byte| *byte == b'X'));
+        if exit.is_some() {
+            assert_eq!(error, "");
+        } else {
+            assert_eq!(error.lines().count(), 1, "{error}");
+            assert!(
+                error.contains(&format!("lost connection to session {ID}")),
+                "{error}"
+            );
+            assert!(
+                error.contains(&format!("(logs: {}/logs/{ID})", home.path().display())),
+                "{error}"
+            );
+        }
+    }
+}
+
+/// CPU time (user + system) as reported by ps, e.g. `0:01.25`.
+fn cpu_time(pid: u32) -> Duration {
+    let output = Command::new("/bin/ps")
+        .args(["-o", "time=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    let (minutes, seconds) = text.trim().rsplit_once(':').unwrap();
+    let minutes: u64 = minutes.rsplit(':').next().unwrap().parse().unwrap();
+    Duration::from_secs(minutes * 60) + Duration::from_secs_f64(seconds.parse().unwrap())
+}
+
 /// #19: disconnects during Attach identify the session, before entering raw.
 #[test]
 fn disconnect_before_attached_names_the_session() {

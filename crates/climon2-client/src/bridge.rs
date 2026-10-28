@@ -54,6 +54,9 @@ struct Bridge {
     size: TerminalSize,
     resize: Option<TerminalSize>,
     output: Pending,
+    /// The session closed its end: it accepts no more writes, but what it already
+    /// sent (output, Exit, then EOF) is still read once stdout drains.
+    hung_up: bool,
 }
 
 pub fn run(
@@ -72,6 +75,7 @@ pub fn run(
         size,
         resize: None,
         output: Pending::default(),
+        hung_up: false,
     };
     bridge.run().map_err(|error| {
         if error.kind() == io::ErrorKind::UnexpectedEof {
@@ -97,6 +101,7 @@ impl Bridge {
     fn tick(&mut self) -> io::Result<Option<u32>> {
         self.resize()?;
         let descriptors = self.poll()?;
+        self.hung_up |= descriptors[0].revents & libc::POLLHUP != 0;
         self.flush_ready(&descriptors)?;
         self.dispatch(&descriptors)
     }
@@ -157,7 +162,9 @@ impl Bridge {
         if self.output.empty() {
             events |= libc::POLLIN;
         }
-        if !self.transport.outgoing.empty() {
+        // macOS reports POLLHUP for any requested event, so waiting to write to a
+        // hung-up session would spin while stdout is blocked.
+        if !self.hung_up && !self.transport.outgoing.empty() {
             events |= libc::POLLOUT;
         }
         events

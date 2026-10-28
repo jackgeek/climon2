@@ -42,6 +42,8 @@ sequences are emitted. Leave policy belongs exclusively to the daemon.
 - `terminal_eio_is_silent_status_129_and_restores_termios` (background job of a
   `/bin/sh` session leader with SIGTTIN/SIGTTOU ignored, so reads fail with EIO)
 - `attach_refusal_or_unexpected_reply_fails_without_raw_mode`
+- `hung_up_session_during_blocked_output_sleeps_then_delivers_everything` (bounds
+  the client's CPU time, via `ps`, while stdout is blocked and the session is gone)
 - `disconnect_before_attached_names_the_session`
 - `invalid_length_prefix_closes_immediately_without_a_type_byte`
 - `input_backpressure_is_bounded_and_lossless`
