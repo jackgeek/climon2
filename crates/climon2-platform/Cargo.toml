@@ -7,6 +7,14 @@ publish.workspace = true
 
 [dependencies]
 climon2-core = { path = "../climon2-core" }
+libc = "0.2.191"
+signal-hook = "0.3.18"
+time = { workspace = true, features = ["formatting", "macros"] }
+tracing = "0.1.44"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+filetime = "0.2.29"
+tempfile = "3.27.0"
