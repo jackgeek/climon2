@@ -39,6 +39,9 @@ sequences are emitted. Leave policy belongs exclusively to the daemon.
 - `fragmented_frames_and_coalesced_resize_preserve_the_stream`
 - `bounded_output_backpressure_drains_every_byte_before_exit`
 - `terminal_eof_or_eio_is_silent_status_129_and_closes_connection`
+- `terminal_eio_is_silent_status_129_and_restores_termios` (background job of a
+  `/bin/sh` session leader with SIGTTIN/SIGTTOU ignored, so reads fail with EIO)
+- `attach_refusal_or_unexpected_reply_fails_without_raw_mode`
 - `disconnect_before_attached_names_the_session`
 - `invalid_length_prefix_closes_immediately_without_a_type_byte`
 - `input_backpressure_is_bounded_and_lossless`

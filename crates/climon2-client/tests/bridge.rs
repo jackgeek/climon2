@@ -9,7 +9,7 @@ use std::{
     io::{Read, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::net::UnixListener,
+        unix::{net::UnixListener, process::CommandExt},
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -32,6 +32,24 @@ impl Pty {
     }
 
     fn configured(home: &Path, metadata: &Path, fault: Option<&str>, filter: Option<&str>) -> Self {
+        Self::launch(home, metadata, fault, filter, false)
+    }
+
+    /// Runs the client as a background job of a shell that owns the PTY as its
+    /// controlling terminal, with SIGTTIN/SIGTTOU ignored, so terminal reads fail with EIO.
+    /// The shell records the client's status and stderr under `home`, then stays alive:
+    /// a session leader's exit would revoke the PTY before termios could be checked.
+    fn background(home: &Path, metadata: &Path) -> Self {
+        Self::launch(home, metadata, None, None, true)
+    }
+
+    fn launch(
+        home: &Path,
+        metadata: &Path,
+        fault: Option<&str>,
+        filter: Option<&str>,
+        background: bool,
+    ) -> Self {
         let mut master = -1;
         let mut slave = -1;
         let mut size = libc::winsize {
@@ -70,7 +88,11 @@ impl Pty {
                 0
             );
         }
-        let mut command = Command::new(env!("CARGO_BIN_EXE_climon2-client"));
+        let mut command = if background {
+            background_job()
+        } else {
+            Command::new(env!("CARGO_BIN_EXE_climon2-client"))
+        };
         command
             .args(["attach", "--metadata"])
             .arg(metadata)
@@ -142,6 +164,24 @@ impl Pty {
             thread::sleep(Duration::from_millis(5));
         };
         assert_eq!(status.code(), Some(expected));
+        self.assert_restored();
+        while let Ok(count) = self.master.read(&mut buffer) {
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+        }
+        let mut error = String::new();
+        self.child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut error)
+            .unwrap();
+        (bytes, error)
+    }
+
+    fn assert_restored(&self) {
         assert_ne!(
             self.termios().c_lflag & libc::ICANON,
             0,
@@ -160,21 +200,26 @@ impl Pty {
         assert_eq!(restored.c_cc, self.saved.c_cc);
         assert_eq!(restored.c_ispeed, self.saved.c_ispeed);
         assert_eq!(restored.c_ospeed, self.saved.c_ospeed);
-        while let Ok(count) = self.master.read(&mut buffer) {
-            if count == 0 {
-                break;
-            }
-            bytes.extend_from_slice(&buffer[..count]);
-        }
-        let mut error = String::new();
-        self.child
-            .stderr
-            .take()
-            .unwrap()
-            .read_to_string(&mut error)
-            .unwrap();
-        (bytes, error)
     }
+}
+
+fn background_job() -> Command {
+    let mut command = Command::new("/bin/sh");
+    command.args([
+        "-c",
+        "trap '' TTIN TTOU; set -m; \"$0\" \"$@\" 2>\"$HOME/stderr\" & wait $!; \
+         echo $? >\"$HOME/status\"; exec /bin/sleep 60",
+        env!("CARGO_BIN_EXE_climon2-client"),
+    ]);
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY.into(), 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command
 }
 
 impl Drop for Pty {
@@ -557,6 +602,59 @@ fn terminal_eof_or_eio_is_silent_status_129_and_closes_connection() {
         .unwrap();
     assert!(error.is_empty());
     assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+}
+
+/// #20: a terminal read failing with EIO (lost terminal) is the same silent HUP as EOF.
+#[test]
+fn terminal_eio_is_silent_status_129_and_restores_termios() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::background(home.path(), &metadata);
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    send(&mut stream, ServerMessage::Attached);
+    pty.wait_raw();
+    pty.master.write_all(b"x").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let status = loop {
+        let status = fs::read_to_string(home.path().join("status")).unwrap_or_default();
+        if status.ends_with('\n') {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "client did not exit");
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(status, "129\n");
+    pty.assert_restored();
+    assert_eq!(fs::read_to_string(home.path().join("stderr")).unwrap(), "");
+    assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+}
+
+/// ADR 0001/#19: a refused or unexpected reply to Attach fails before raw mode.
+#[test]
+fn attach_refusal_or_unexpected_reply_fails_without_raw_mode() {
+    for (reply, diagnosis) in [
+        (
+            ServerMessage::Error {
+                message: "session refused attach".into(),
+            },
+            "session refused attach",
+        ),
+        (ServerMessage::Exit { code: 0 }, "expected Attached"),
+    ] {
+        let (home, metadata, listener) = setup();
+        let mut pty = Pty::spawn(home.path(), &metadata, None);
+        let mut stream = accept(&listener);
+        hello(&mut stream);
+        send(&mut stream, reply);
+        let (bytes, error) = pty.finish(125);
+        assert!(bytes.is_empty());
+        assert_eq!(error.lines().count(), 1, "{error}");
+        assert!(error.contains(diagnosis), "{error}");
+        assert!(
+            error.contains(&format!("(logs: {}/logs/{ID})", home.path().display())),
+            "{error}"
+        );
+    }
 }
 
 /// #19: disconnects during Attach identify the session, before entering raw.

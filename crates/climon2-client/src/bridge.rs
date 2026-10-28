@@ -1,4 +1,4 @@
-use crate::transport::{Pending, Transport, invalid, poll};
+use crate::transport::{Pending, Transport, invalid, poll, ready};
 use climon2_core::{
     SessionId,
     protocol::{ClientMessage, ServerMessage, TerminalSize},
@@ -96,9 +96,18 @@ impl Bridge {
 
     fn tick(&mut self) -> io::Result<Option<u32>> {
         self.resize()?;
+        let descriptors = self.poll()?;
+        self.flush_ready(&descriptors)?;
+        self.dispatch(&descriptors)
+    }
+
+    fn poll(&self) -> io::Result<[libc::pollfd; 3]> {
         let mut descriptors = self.descriptors();
         poll(&mut descriptors, 20)?;
-        self.flush_ready(&descriptors)?;
+        Ok(descriptors)
+    }
+
+    fn dispatch(&mut self, descriptors: &[libc::pollfd; 3]) -> io::Result<Option<u32>> {
         if let Some(code) = self.receive_ready(descriptors[0].revents)? {
             return Ok(Some(code));
         }
@@ -129,39 +138,29 @@ impl Bridge {
         Ok(None)
     }
 
+    /// Socket, terminal input, stdout; each side waits while the other is backpressured.
     fn descriptors(&self) -> [libc::pollfd; 3] {
-        let mut socket = 0;
+        let socket = self.socket_events();
+        [
+            descriptor(self.transport.stream.as_raw_fd(), socket, socket != 0),
+            descriptor(
+                self.terminal.as_raw_fd(),
+                libc::POLLIN,
+                self.transport.outgoing.empty(),
+            ),
+            descriptor(1, libc::POLLOUT, !self.output.empty()),
+        ]
+    }
+
+    fn socket_events(&self) -> i16 {
+        let mut events = 0;
         if self.output.empty() {
-            socket |= libc::POLLIN;
+            events |= libc::POLLIN;
         }
         if !self.transport.outgoing.empty() {
-            socket |= libc::POLLOUT;
+            events |= libc::POLLOUT;
         }
-        [
-            libc::pollfd {
-                fd: if socket == 0 {
-                    -1
-                } else {
-                    self.transport.stream.as_raw_fd()
-                },
-                events: socket,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: if self.transport.outgoing.empty() {
-                    self.terminal.as_raw_fd()
-                } else {
-                    -1
-                },
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: if self.output.empty() { -1 } else { 1 },
-                events: libc::POLLOUT,
-                revents: 0,
-            },
-        ]
+        events
     }
 
     fn resize(&mut self) -> io::Result<()> {
@@ -199,23 +198,40 @@ impl Bridge {
 
     fn input(&mut self) -> io::Result<bool> {
         let mut bytes = [0; 32768];
-        match self.terminal.read(&mut bytes) {
-            Ok(0) => Ok(false),
-            Ok(count) => self
-                .transport
-                .send(&ClientMessage::Input(bytes[..count].to_vec()))
-                .map(|()| true),
-            Err(error) => terminal_read_error(error),
+        match self.read_terminal(&mut bytes)? {
+            Some(count) => self.forward(&bytes[..count]),
+            // Another reader consumed what poll reported.
+            None => Ok(true),
         }
+    }
+
+    /// An empty read is the terminal hanging up (EOF, or EIO via `hangup_as_eof`).
+    fn forward(&mut self, read: &[u8]) -> io::Result<bool> {
+        if read.is_empty() {
+            return Ok(false);
+        }
+        self.transport.send(&ClientMessage::Input(read.to_vec()))?;
+        Ok(true)
+    }
+
+    fn read_terminal(&mut self, bytes: &mut [u8]) -> io::Result<Option<usize>> {
+        ready(self.terminal.read(bytes).or_else(hangup_as_eof))
     }
 }
 
-fn terminal_read_error(error: io::Error) -> io::Result<bool> {
+/// A lost terminal reads as EIO; like EOF it is a silent HUP.
+fn hangup_as_eof(error: io::Error) -> io::Result<usize> {
     if error.raw_os_error() == Some(libc::EIO) {
-        return Ok(false);
+        return Ok(0);
     }
-    match error.kind() {
-        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => Ok(true),
-        _ => Err(error),
+    Err(error)
+}
+
+/// An inactive descriptor is -1, which poll ignores.
+fn descriptor(fd: i32, events: i16, active: bool) -> libc::pollfd {
+    libc::pollfd {
+        fd: if active { fd } else { -1 },
+        events,
+        revents: 0,
     }
 }

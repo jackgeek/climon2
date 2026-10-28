@@ -17,6 +17,22 @@ pub fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+/// `None` when a nonblocking read or write must simply be retried after the next poll.
+pub fn ready(result: io::Result<usize>) -> io::Result<Option<usize>> {
+    match result {
+        Ok(count) => Ok(Some(count)),
+        Err(error) if retryable(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn retryable(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+    )
+}
+
 pub fn poll(descriptors: &mut [libc::pollfd], milliseconds: i32) -> io::Result<()> {
     let result = unsafe {
         libc::poll(
@@ -102,8 +118,7 @@ impl Transport {
         self.flush_until(signals, None)?;
         match self.receive_until(signals, None)? {
             ServerMessage::Attached => Ok(()),
-            ServerMessage::Error { message } => Err(invalid(message)),
-            _ => Err(invalid("expected Attached")),
+            message => Err(rejection(message, "expected Attached")),
         }
     }
 
@@ -161,24 +176,16 @@ impl Decoder {
     }
 
     fn fill(&mut self, stream: &mut UnixStream) -> io::Result<bool> {
-        match stream.read(&mut self.bytes[self.position..]) {
-            Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "lost connection to session",
-                ));
-            }
-            Ok(count) => self.position += count,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                ) =>
-            {
-                return Ok(false);
-            }
-            Err(error) => return Err(error),
+        let Some(count) = ready(stream.read(&mut self.bytes[self.position..]))? else {
+            return Ok(false);
+        };
+        if count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "lost connection to session",
+            ));
         }
+        self.position += count;
         Ok(self.position == self.bytes.len())
     }
 
@@ -190,16 +197,23 @@ impl Decoder {
                 Ok(Some(frame))
             }
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
-                let length =
-                    u32::from_be_bytes(self.bytes[..4].try_into().map_err(io::Error::other)?)
-                        as usize;
-                // Validate the prefix first, then the type, before allocating a body.
-                let target = if self.bytes.len() == 4 { 5 } else { length + 4 };
-                self.bytes.resize(target, 0);
+                self.grow();
                 Ok(None)
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// Validate the prefix first, then the type, before allocating a body.
+    fn grow(&mut self) {
+        let mut prefix = [0; 4];
+        prefix.copy_from_slice(&self.bytes[..4]);
+        let target = if self.bytes.len() == 4 {
+            5
+        } else {
+            u32::from_be_bytes(prefix) as usize + 4
+        };
+        self.bytes.resize(target, 0);
     }
 }
 
@@ -208,8 +222,15 @@ fn validate_hello(message: ServerMessage, metadata: &SessionMetadata) -> io::Res
         ServerMessage::Hello(reply) => {
             reply.validate_client(&metadata.session_id, &metadata.climon2_version)
         }
-        ServerMessage::Error { message } => Err(invalid(message)),
-        _ => Err(invalid("expected session hello")),
+        message => Err(rejection(message, "expected session hello")),
+    }
+}
+
+/// The session's own diagnosis when it sent one, otherwise what was expected.
+fn rejection(message: ServerMessage, expected: &str) -> io::Error {
+    match message {
+        ServerMessage::Error { message } => invalid(message),
+        _ => invalid(expected),
     }
 }
 
@@ -236,25 +257,12 @@ impl Pending {
     pub fn empty(&self) -> bool {
         self.position == self.bytes.len()
     }
+    /// Only called while bytes remain, after poll reported the writer ready; a socket or
+    /// terminal write of a nonempty buffer then never returns 0.
     pub fn flush(&mut self, writer: &mut impl Write) -> io::Result<()> {
-        match writer.write(&self.bytes[self.position..]) {
-            Ok(0) if !self.empty() => Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "connection write stopped",
-            )),
-            Ok(count) => {
-                self.position += count;
-                Ok(())
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                ) =>
-            {
-                Ok(())
-            }
-            Err(error) => Err(error),
+        if let Some(count) = ready(writer.write(&self.bytes[self.position..]))? {
+            self.position += count;
         }
+        Ok(())
     }
 }

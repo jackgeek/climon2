@@ -81,24 +81,37 @@ fn home() -> io::Result<PathBuf> {
 /// Arguments exclude argv[0]; all other configuration comes from environment.
 /// Errors are returned only after raw mode and file status flags are restored.
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> {
-    let path = metadata_path(arguments).map_err(|error| failure(error, None))?;
-    let metadata = fs::read(&path)
-        .and_then(|bytes| SessionMetadata::from_json(&path, &bytes).map_err(io::Error::other))
-        .map_err(|error| failure(error, None))?;
-    let home = home().map_err(|error| failure(error, None))?;
-    let log = LogFile::session(&home, &metadata.session_id, Role::Client, None, None)
-        .map_err(|error| failure(error, None))?;
+    let (metadata, log) = session_log(arguments).map_err(|error| failure(error, None))?;
     let logs = log.path().parent();
     let filter = std::env::var("CLIMON2_LOG").ok();
     let dispatch = log
         .dispatch(filter.as_deref())
         .map_err(|error| failure(error, logs))?;
     tracing::dispatcher::with_default(&dispatch, || {
-        std::panic::set_hook(Box::new(|_| tracing::error!("client panic")));
-        let result = std::panic::catch_unwind(|| attach(&metadata));
-        let result = result.unwrap_or_else(|_| Err(io::Error::other("client panicked")));
-        result.map_err(|error| session_failure(error, &metadata, logs))
+        supervised_attach(&metadata).map_err(|error| session_failure(error, &metadata, logs))
     })
+}
+
+/// Before the log exists, failures carry no logs suffix.
+fn session_log(
+    arguments: impl IntoIterator<Item = OsString>,
+) -> io::Result<(SessionMetadata, LogFile)> {
+    let metadata = read_metadata(arguments)?;
+    let log = LogFile::session(&home()?, &metadata.session_id, Role::Client, None, None)?;
+    Ok((metadata, log))
+}
+
+fn read_metadata(arguments: impl IntoIterator<Item = OsString>) -> io::Result<SessionMetadata> {
+    let path = metadata_path(arguments)?;
+    let bytes = fs::read(&path)?;
+    SessionMetadata::from_json(&path, &bytes).map_err(io::Error::other)
+}
+
+/// Panics are logged without their payload and reported as one generic failure.
+fn supervised_attach(metadata: &SessionMetadata) -> io::Result<u32> {
+    std::panic::set_hook(Box::new(|_| tracing::error!("client panic")));
+    std::panic::catch_unwind(|| attach(metadata))
+        .unwrap_or_else(|_| Err(io::Error::other("client panicked")))
 }
 
 fn session_failure(error: io::Error, metadata: &SessionMetadata, logs: Option<&Path>) -> Error {
