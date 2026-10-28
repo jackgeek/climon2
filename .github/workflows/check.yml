@@ -91,7 +91,7 @@ jobs:
         run: |
           test "$(uname -m)" = arm64
           brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
-      - name: Select the append-only and mutation base
+      - name: Select the changed-source mutation base (fixture history is checked independently)
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |

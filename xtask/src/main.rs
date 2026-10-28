@@ -11,7 +11,7 @@ mod quality;
 mod release;
 
 const HELP: &str = "\
-Usage: cargo xtask <check [--mutate-all]|test|dist|fixtures-check [--base COMMIT]|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--mutate-all]>
+Usage: cargo xtask <check [--mutate-all]|test|dist|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--mutate-all]>
 
 check runs test, append-only fixtures, tooling proofs, coverage, crapper and mutation.
 test runs fmt, clippy and workspace tests, including packaged acceptance, plus ShellCheck.
@@ -20,7 +20,7 @@ mutation-probe checks real-binary worker isolation.
 tooling-probe proves staged coverage, complexity counting and covered mutation gates.
 release-check proves per-package releases exclude hooks and preserve test binaries.
 dist builds verified universal macOS release artifacts in target/dist (arm64 host).
-fixtures-check refuses edits/deletions of existing metadata goldens.
+fixtures-check refuses any historical or uncommitted edit/deletion of an existing metadata golden.
 mutate runs coverage, crapper and mutation checks on shipped source.
 Cross-architecture execution of the same final archive is enforced in CI.";
 
@@ -47,9 +47,7 @@ fn main() -> ExitCode {
     } else if args == ["dist"] {
         dist::run(workspace_root())
     } else if args == ["fixtures-check"] {
-        fixtures::check(workspace_root(), &mutation_base())
-    } else if args.len() == 3 && args[0] == "fixtures-check" && args[1] == "--base" {
-        fixtures::check(workspace_root(), &args[2])
+        fixtures::check(workspace_root())
     } else if args == ["mutate"] {
         quality::check(workspace_root(), false)
     } else if args == ["mutate", "--mutate-all"] {
@@ -73,12 +71,8 @@ fn workspace_root() -> &'static Path {
         .expect("xtask is inside the workspace")
 }
 
-fn mutation_base() -> std::ffi::OsString {
-    env::var_os("CLIMON2_MUTATION_BASE").unwrap_or_else(|| "HEAD".into())
-}
-
 fn check(all: bool) -> io::Result<()> {
-    fixtures::check(workspace_root(), &mutation_base())?;
+    fixtures::check(workspace_root())?;
     test()?;
     quality::probe(workspace_root())?;
     quality::tooling_probe(workspace_root())?;
