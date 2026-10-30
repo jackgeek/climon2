@@ -90,6 +90,7 @@ mod macos {
         command.stdin(Stdio::null()).stdout(Stdio::null());
         detach_on_exec(&mut command, descriptor);
         let started = Instant::now();
+        crate::process::before_fork();
         let child = command.spawn()?;
         drop(writer);
         Ok(PendingDaemon {

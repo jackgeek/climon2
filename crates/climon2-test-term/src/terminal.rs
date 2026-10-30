@@ -135,6 +135,7 @@ impl Terminal {
             .get_env(crate::ownership::MARKER)
             .and_then(|marker| marker.to_str())
             .map(str::to_owned);
+        climon2_platform::process::before_fork();
         let child = pair
             .slave
             .spawn_command(command)

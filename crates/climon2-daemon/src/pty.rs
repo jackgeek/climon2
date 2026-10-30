@@ -213,6 +213,7 @@ fn spawn_child(
         code: 126,
         message: "command working directory is not accessible",
     })?;
+    process::before_fork();
     let child = slave
         .spawn_command(command)
         .map_err(|_| Failure::own("cannot start command terminal"))?;

@@ -188,3 +188,64 @@ fn issue19_interrupted_readiness_wait_keeps_its_deadline() {
     assert!(start.elapsed() >= Duration::from_secs(5));
     assert!(start.elapsed() < Duration::from_secs(8));
 }
+
+unsafe extern "C" {
+    /// libSystem's libnotify; the first call in a process initialises its globals.
+    fn notify_register_check(name: *const libc::c_char, token: *mut libc::c_int) -> u32;
+}
+
+/// A fresh process whose other thread makes its first libnotify call while this thread
+/// launches a burst of daemons. Exits 0 only if every daemon reported ready.
+#[test]
+#[ignore = "owned subprocess fixture"]
+fn owned_fork_race_fixture() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    let initialiser = std::thread::spawn(|| {
+        STARTED.store(true, Ordering::SeqCst);
+        // Lands the initialisation inside the burst of launches below.
+        std::thread::sleep(Duration::from_millis(3));
+        let mut token = 0;
+        unsafe { notify_register_check(c"com.climon2.test.fork-race".as_ptr(), &mut token) };
+    });
+    while !STARTED.load(Ordering::SeqCst) {
+        std::hint::spin_loop();
+    }
+    let pending: Vec<_> = (0..20)
+        .map(|_| {
+            daemon::spawn(Command::new("/bin/sh"), |command, fd| {
+                command.arg("-c").arg(format!("printf R >&{fd}"));
+            })
+            .unwrap()
+        })
+        .collect();
+    let ready = pending
+        .into_iter()
+        .all(|daemon| matches!(daemon.wait_ready(&[]), Ok(Readiness::Ready)));
+    initialiser.join().unwrap();
+    std::process::exit(if ready { 0 } else { 1 });
+}
+
+/// #19: forking while another thread initialises libnotify must not kill the daemon before
+/// exec (macOS runs libnotify's fork handler in the child, which traps on a half-initialised
+/// once-gate). Each attempt is a fresh process, as the initialisation happens once.
+#[test]
+fn issue19_daemon_spawn_survives_concurrent_libnotify_initialisation() {
+    let failed = (0..60)
+        .filter(|_| {
+            !Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "owned_fork_race_fixture",
+                    "--nocapture",
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        })
+        .count();
+    assert_eq!(failed, 0, "daemon launches lost to the fork race");
+}

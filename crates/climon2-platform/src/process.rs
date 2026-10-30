@@ -101,6 +101,18 @@ mod macos {
         Ok(())
     }
 
+    unsafe extern "C" {
+        /// libSystem's libnotify; any call first waits for its globals to be initialised.
+        fn notify_is_valid_token(token: libc::c_int) -> bool;
+    }
+
+    /// Call on the forking thread just before every fork. macOS runs libnotify's fork handler
+    /// in the child, which traps (SIGILL) or hangs if another thread was initialising libnotify
+    /// at the fork; touching libnotify here first waits any such initialisation out.
+    pub fn before_fork() {
+        unsafe { notify_is_valid_token(0) };
+    }
+
     pub fn wait(pid: u32) -> io::Result<ExitStatus> {
         reap(pid, 0)?.ok_or_else(|| io::Error::other("missing child exit status"))
     }

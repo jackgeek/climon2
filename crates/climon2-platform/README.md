@@ -54,6 +54,11 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
 - `process::validate_cwd(&Path)` must run immediately before portable-pty spawn,
   which otherwise silently falls back to HOME. As with ordinary `chdir`, a
   concurrent directory removal can still race validation.
+- `process::before_fork()` must run on the forking thread immediately before
+  every fork (pre_exec spawns, portable-pty spawn). macOS runs libnotify's fork
+  handler in the child, which traps (SIGILL) or hangs if another thread was
+  initialising libnotify at the fork; this call waits that initialisation out.
+  `daemon::spawn` calls it itself.
 - `daemon::spawn(Command, configure)` calls `configure(&mut Command, fd: u32)`
   so the caller can append its readiness descriptor argument. It uses exec via
   `Command::pre_exec(setsid)`, inherited pipe, null stdin/stdout, and the caller's
