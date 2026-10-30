@@ -95,15 +95,34 @@ fn stale_cleanup_requires_connection_refusal_and_proven_dead_identity() {
     reused.daemon_start_time = 0;
     let live_path = save(home.path(), &live);
     let stale_path = save(home.path(), &reused);
-    drop(runtime::bind(std::path::Path::new(live.socket_path.as_str())).unwrap());
-    let stale_socket = runtime::bind(std::path::Path::new(reused.socket_path.as_str())).unwrap();
-    drop(stale_socket);
+    refusing_socket(live.socket_path.as_str());
+    refusing_socket(reused.socket_path.as_str());
     assert!(discover(home.path()).unwrap().is_empty());
     assert!(live_path.exists());
     assert!(!stale_path.exists());
     assert!(!std::path::Path::new(reused.socket_path.as_str()).exists());
     assert!(std::path::Path::new(live.socket_path.as_str()).exists());
     fs::remove_file(live.socket_path.as_str()).unwrap();
+}
+
+/// A socket file left by a dead daemon: bound but never listening, so it refuses connections
+/// even while a concurrently forked, not yet exec'd child holds a copy of the descriptor (a
+/// closed listener would keep accepting through such a copy).
+fn refusing_socket(path: &str) {
+    let socket = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    assert!(socket >= 0);
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    assert!(path.len() < address.sun_path.len());
+    for (slot, byte) in address.sun_path.iter_mut().zip(path.as_bytes()) {
+        *slot = *byte as libc::c_char;
+    }
+    let length = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    assert_eq!(
+        unsafe { libc::bind(socket, (&raw const address).cast(), length) },
+        0
+    );
+    assert_eq!(unsafe { libc::close(socket) }, 0);
 }
 
 /// #37: missing sockets with a gone PID are stale, unlike failed hello exchanges.
