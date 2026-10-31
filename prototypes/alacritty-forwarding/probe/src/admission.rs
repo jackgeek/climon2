@@ -108,7 +108,7 @@ impl OscAdmission {
             BEL => out.push(CAN),
             CAN | SUB => out.push(byte),
             ESC => {
-                out.extend([CAN, ESC]);
+                out.push(ESC);
                 return State::Escape;
             }
             _ => return State::Refusing,

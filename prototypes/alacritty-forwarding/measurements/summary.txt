@@ -1,0 +1,523 @@
+
+== storage (engine heap after fill; primary grid clone; materialized restore)
+fill link_bytes cols rows history outcome engine_filled_bytes_m bytes_per_retained_cell grid_clone_bytes_m grid_clone_ms restore_bytes_m restore_ms restore_heap_peak_bytes_m max_rss_bytes_m
+log - 80 24 0 ok 0.1MiB 49.15 0.0MiB 0.022 0.0MiB 0.033 0.0MiB 1.1MiB
+log - 80 24 10000 ok 18.9MiB 24.71 18.7MiB 10.345 0.8MiB 9.773 1.0MiB 41.0MiB
+log - 80 24 100000 ok 187.2MiB 24.53 186.2MiB 97.769 7.6MiB 99.759 8.0MiB 399.5MiB
+log - 200 50 0 ok 0.5MiB 48.46 0.2MiB 0.139 0.0MiB 0.076 0.0MiB 1.7MiB
+log - 200 50 10000 ok 46.7MiB 24.39 46.3MiB 24.396 0.8MiB 13.319 1.0MiB 100.4MiB
+log - 200 50 100000 ok 462.3MiB 24.23 461.0MiB 221.247 7.6MiB 126.956 8.0MiB 988.4MiB
+log - 500 200 0 ok 4.6MiB 48.18 2.3MiB 1.09 0.0MiB 0.33 0.0MiB 8.0MiB
+log - 500 200 10000 ok 119.6MiB 24.59 117.0MiB 55.507 0.8MiB 19.613 1.0MiB 244.1MiB
+log - 500 200 100000 skipped - - - - - - - -
+log - 1000 300 0 ok 13.8MiB 48.09 6.9MiB 3.821 0.0MiB 0.971 0.0MiB 21.8MiB
+log - 1000 300 10000 ok 242.9MiB 24.73 236.1MiB 112.193 0.8MiB 34.849 1.0MiB 483.3MiB
+log - 1000 300 100000 skipped - - - - - - - -
+sgr_cells - 80 24 0 ok 0.1MiB 49.15 0.0MiB 0.021 0.0MiB 0.265 0.1MiB 1.2MiB
+sgr_cells - 80 24 10000 ok 18.9MiB 24.71 18.7MiB 10.335 16.9MiB 106.488 32.0MiB 50.0MiB
+sgr_cells - 80 24 100000 ok 187.2MiB 24.53 186.2MiB 92.827 169.0MiB 997.48 256.0MiB 399.6MiB
+sgr_cells - 200 50 0 ok 0.5MiB 48.46 0.2MiB 0.103 0.2MiB 1.244 0.2MiB 2.0MiB
+sgr_cells - 200 50 10000 ok 46.7MiB 24.39 46.3MiB 21.824 42.4MiB 242.215 64.0MiB 102.9MiB
+sgr_cells - 200 50 100000 ok 462.3MiB 24.23 461.0MiB 231.458 422.5MiB 2426.826 512.0MiB 988.5MiB
+sgr_cells - 500 200 0 ok 4.6MiB 48.18 2.3MiB 0.975 2.1MiB 11.709 4.0MiB 10.2MiB
+sgr_cells - 500 200 10000 ok 119.6MiB 24.59 117.0MiB 56.894 107.7MiB 608.874 128.0MiB 244.1MiB
+sgr_cells - 500 200 100000 skipped - - - - - - - -
+sgr_cells - 1000 300 0 ok 13.8MiB 48.09 6.9MiB 3.264 6.3MiB 39.43 8.0MiB 28.2MiB
+sgr_cells - 1000 300 10000 ok 242.9MiB 24.73 236.1MiB 111.866 217.5MiB 1311.866 256.0MiB 483.3MiB
+sgr_cells - 1000 300 100000 skipped - - - - - - - -
+combining 0 80 24 0 ok 0.2MiB 121.15 0.0MiB 0.038 0.0MiB 0.145 0.1MiB 1.3MiB
+combining 0 80 24 10000 ok 74.0MiB 96.71 18.7MiB 16.006 14.5MiB 49.236 16.0MiB 109.3MiB
+combining 0 200 50 0 ok 1.1MiB 120.46 0.2MiB 0.172 0.2MiB 0.645 0.2MiB 2.7MiB
+combining 0 200 50 10000 ok 184.8MiB 96.39 46.3MiB 38.408 36.4MiB 121.319 64.0MiB 259.4MiB
+osc8_cell 16 80 24 0 ok 0.4MiB 216.59 0.0MiB 0.038 0.1MiB 0.185 0.1MiB 1.5MiB
+osc8_cell 16 80 24 10000 ok 148.8MiB 194.57 18.7MiB 16.238 34.3MiB 68.901 64.0MiB 214.7MiB
+osc8_cell 16 200 50 0 ok 2.1MiB 216.35 0.2MiB 0.183 0.4MiB 0.884 0.5MiB 4.0MiB
+osc8_cell 16 200 50 10000 ok 373.5MiB 194.84 46.3MiB 39.448 87.1MiB 167.301 128.0MiB 540.2MiB
+osc8_cell 256 80 24 0 ok 0.8MiB 456.84 0.0MiB 0.037 0.5MiB 0.409 0.6MiB 2.5MiB
+osc8_cell 256 80 24 10000 ok 332.4MiB 434.58 18.7MiB 16.551 217.9MiB 150.098 284.0MiB 510.2MiB
+osc8_cell 256 200 50 0 ok 4.4MiB 456.4 0.2MiB 0.187 2.7MiB 1.909 4.4MiB 8.7MiB
+osc8_cell 256 200 50 10000 ok 833.5MiB 434.84 46.3MiB 39.494 547.2MiB 362.094 568.0MiB 1329.8MiB
+osc8_cell 4096 80 24 0 ok 7.9MiB 4300.84 0.0MiB 0.019 7.6MiB 4.394 8.1MiB 17.9MiB
+osc8_cell 4096 80 24 10000 skipped - - - - - - - -
+osc8_cell 4096 200 50 0 ok 41.0MiB 4297.17 0.2MiB 0.171 39.3MiB 18.977 64.4MiB 82.0MiB
+osc8_cell 4096 200 50 10000 skipped - - - - - - - -
+osc8_cell 65536 80 24 0 ok 120.5MiB 65804.84 0.0MiB 0.053 120.1MiB 61.54 128.1MiB 239.9MiB
+osc8_cell 65536 80 24 10000 skipped - - - - - - - -
+osc8_cell 65536 200 50 0 ok 627.0MiB 65749.46 0.2MiB 0.173 625.3MiB 333.869 1024.4MiB 1301.6MiB
+osc8_cell 65536 200 50 10000 skipped - - - - - - - -
+
+== resize (width -1 then back, worst reflow)
+fill cols rows history outcome worst_resize_ms
+log 80 24 0 ok 0.013
+log 80 24 10000 ok 1.569
+log 80 24 100000 ok 17.058
+log 200 50 0 ok 0.019
+log 200 50 10000 ok 1.942
+log 200 50 100000 ok 20.178
+log 500 200 0 ok 0.048
+log 500 200 10000 ok 1.697
+log 500 200 100000 skipped -
+log 1000 300 0 ok 0.092
+log 1000 300 10000 ok 1.737
+log 1000 300 100000 skipped -
+sgr_cells 80 24 0 ok 0.036
+sgr_cells 80 24 10000 ok 14.897
+sgr_cells 80 24 100000 ok 141.198
+sgr_cells 200 50 0 ok 0.091
+sgr_cells 200 50 10000 ok 25.909
+sgr_cells 200 50 100000 ok 257.25
+sgr_cells 500 200 0 ok 0.795
+sgr_cells 500 200 10000 ok 64.531
+sgr_cells 500 200 100000 skipped -
+sgr_cells 1000 300 0 ok 4.011
+sgr_cells 1000 300 10000 ok 173.487
+sgr_cells 1000 300 100000 skipped -
+
+== sync flush (one stop_sync of N buffered bytes)
+stream cols rows buffered_bytes outcome flush_ms
+log 80 24 4048 ok 0.075
+log 80 24 16354 ok 0.255
+log 80 24 65480 ok 0.952
+log 80 24 262068 ok 4.08
+log 80 24 2097060 ok 26.573
+log 200 50 4048 ok 0.076
+log 200 50 16354 ok 0.267
+log 200 50 65480 ok 1.028
+log 200 50 262068 ok 2.996
+log 200 50 2097060 ok 23.309
+log 1000 300 4048 ok 0.062
+log 1000 300 16354 ok 0.224
+log 1000 300 65480 ok 0.857
+log 1000 300 262068 ok 3.337
+log 1000 300 2097060 ok 24.49
+sgr_cells 80 24 4070 ok 0.048
+sgr_cells 80 24 16375 ok 0.145
+sgr_cells 80 24 65520 ok 0.534
+sgr_cells 80 24 262130 ok 1.869
+sgr_cells 80 24 2097075 ok 12.52
+sgr_cells 200 50 4070 ok 0.049
+sgr_cells 200 50 16375 ok 0.145
+sgr_cells 200 50 65520 ok 0.531
+sgr_cells 200 50 262130 ok 1.83
+sgr_cells 200 50 2097075 ok 13.34
+sgr_cells 1000 300 4070 ok 0.041
+sgr_cells 1000 300 16375 ok 0.127
+sgr_cells 1000 300 65520 ok 0.463
+sgr_cells 1000 300 262130 ok 1.764
+sgr_cells 1000 300 2097075 ok 12.779
+decaln 80 24 4086 ok 9.237
+decaln 80 24 16374 ok 37.409
+decaln 80 24 65526 ok 129.249
+decaln 80 24 262134 ok 509.697
+decaln 80 24 2097078 ok 4091.036
+decaln 200 50 4086 ok 41.627
+decaln 200 50 16374 ok 170.807
+decaln 200 50 65526 ok 644.071
+decaln 200 50 262134 ok 2659.701
+decaln 1000 300 4086 ok 1227.701
+decaln 1000 300 16374 ok 4964.916
+rep 80 24 4086 ok 280.47
+rep 80 24 16371 ok 1108.36
+rep 80 24 65520 ok 4464.839
+rep 200 50 4086 ok 277.051
+rep 200 50 16371 ok 1089.949
+rep 200 50 65520 ok 4354.785
+rep 1000 300 4086 ok 279.094
+rep 1000 300 16371 ok 1102.286
+rep 1000 300 65520 ok 4387.379
+rep_insert 80 24 4082 ok 2104.303
+rep_insert 200 50 4082 ok 4796.386
+rep_insert 1000 300 4082 ok 22892.019
+
+== control strings and retained OSC state
+stream link_bytes osc_cap history fed_bytes outcome heap_growth_bytes_m heap_peak_growth_bytes_m breaches mib_per_s max_rss_bytes_m
+osc_body - - - 65541 ok 0.2MiB 0.2MiB 0 182.154 1.2MiB
+osc_body - 4096 - 65541 ok 0.1MiB 0.1MiB 1 454.762 1.1MiB
+osc_body - - - 1048581 ok 2.1MiB 2.1MiB 0 206.21 2.1MiB
+osc_body - 4096 - 1048581 ok 0.1MiB 0.1MiB 1 537.463 1.1MiB
+osc_body - - - 16777221 ok 32.1MiB 32.1MiB 0 249.579 17.2MiB
+osc_body - 4096 - 16777221 ok 0.1MiB 0.1MiB 1 820.531 1.1MiB
+osc_body - - - 67108869 ok 128.1MiB 128.1MiB 0 281.639 65.2MiB
+osc_body - 4096 - 67108869 ok 0.1MiB 0.1MiB 1 937.799 1.1MiB
+osc_body - - - 268435461 ok 512.1MiB 512.1MiB 0 287.451 257.2MiB
+osc_body - 4096 - 268435461 ok 0.1MiB 0.1MiB 1 940.071 1.2MiB
+dcs_body - - - 65539 ok 0.1MiB 0.1MiB 0 196.837 1.1MiB
+dcs_body - - - 1048579 ok 0.1MiB 0.1MiB 0 242.483 1.1MiB
+dcs_body - - - 16777219 ok 0.1MiB 0.1MiB 0 275.525 1.1MiB
+dcs_body - - - 67108867 ok 0.1MiB 0.1MiB 0 289.968 1.1MiB
+dcs_body - - - 268435459 ok 0.1MiB 0.1MiB 0 285.632 1.2MiB
+apc_body - - - 65539 ok 0.1MiB 0.1MiB 0 297.711 1.1MiB
+apc_body - - - 1048579 ok 0.1MiB 0.1MiB 0 368.418 1.1MiB
+apc_body - - - 16777219 ok 0.1MiB 0.1MiB 0 460.624 1.1MiB
+apc_body - - - 67108867 ok 0.1MiB 0.1MiB 0 482.032 1.1MiB
+apc_body - - - 268435459 ok 0.1MiB 0.1MiB 0 486.568 1.2MiB
+osc8_cell 256 0 10000 231008232 ok 332.4MiB 332.4MiB 0 132.713 380.2MiB
+osc8_cell 256 4096 10000 231008232 ok 332.5MiB 332.5MiB 0 107.901 380.2MiB
+osc8_cell 4096 0 10000 268499552 ok 266.9MiB 266.9MiB 0 255.44 316.7MiB
+osc8_cell 4096 4096 10000 268499552 ok 1.9MiB 1.9MiB 65392 518.0 3.2MiB
+osc8_cell 65536 0 10000 268476416 ok 258.6MiB 258.7MiB 0 268.818 375.0MiB
+osc8_cell 65536 4096 10000 268476416 ok 1.9MiB 2.0MiB 4096 862.762 3.4MiB
+title_stack 1024 0 - 4442368 ok 4.2MiB 4.2MiB 0 204.308 5.2MiB
+title_stack 1024 4096 - 4442368 ok 4.3MiB 4.3MiB 0 141.116 5.3MiB
+title_stack 16384 0 - 68928784 ok 64.2MiB 64.2MiB 0 261.219 68.2MiB
+title_stack 16384 4096 - 68928784 ok 0.2MiB 0.2MiB 4204 729.076 1.3MiB
+title_stack 65536 0 - 275367148 ok 256.3MiB 256.5MiB 0 269.881 264.8MiB
+title_stack 65536 4096 - 275367148 ok 0.2MiB 0.3MiB 4201 910.992 1.7MiB
+title_stack 262144 - - - skipped - - - - -
+title_stack 262144 4096 - 1101317356 ok 0.3MiB 0.8MiB 4201 916.967 5.1MiB
+
+== realistic throughput by engine feed slice
+stream cols rows history chunk fed_bytes outcome mib_per_s ns_per_byte max_chunk_ms max_rss_bytes_m
+log 80 24 0 65536 33569690 ok 56.32 16.9 1.803 1.1MiB
+log 80 24 10000 65536 33569690 ok 46.17 20.7 2.437 21.1MiB
+log 80 24 100000 65536 33569690 ok 41.564 22.9 3.691 200.4MiB
+log 200 50 0 65536 33569690 ok 55.623 17.1 1.774 1.6MiB
+log 200 50 10000 65536 33569690 ok 46.138 20.7 4.032 50.9MiB
+log 200 50 100000 65536 33569690 ok 34.085 28.0 5.799 494.9MiB
+log 1000 300 0 65536 33569690 ok 55.338 17.2 1.837 14.9MiB
+log 1000 300 10000 65536 33569690 ok 38.377 24.8 15.497 245.7MiB
+log 1000 300 100000 - - skipped - - - -
+tui 80 24 0 65536 33583026 ok 63.585 15.0 1.435 1.2MiB
+tui 80 24 10000 65536 33583026 ok 64.715 14.7 1.204 1.2MiB
+tui 80 24 100000 65536 33583026 ok 63.601 15.0 1.187 1.2MiB
+tui 200 50 0 65536 33580785 ok 67.108 14.2 1.548 1.8MiB
+tui 200 50 10000 65536 33580785 ok 66.401 14.4 1.369 1.7MiB
+tui 200 50 100000 65536 33580785 ok 65.513 14.6 3.346 1.7MiB
+tui 1000 300 0 65536 33572229 ok 75.086 12.7 1.674 15.1MiB
+tui 1000 300 10000 65536 33572229 ok 76.616 12.4 1.572 15.1MiB
+tui 1000 300 100000 - - skipped - - - -
+unicode 80 24 0 65536 33560576 ok 37.455 25.5 2.29 1.2MiB
+unicode 80 24 10000 65536 33560576 ok 25.28 37.7 9.041 22.9MiB
+unicode 80 24 100000 65536 33560576 ok 22.089 43.2 10.807 220.4MiB
+unicode 200 50 0 65536 33560576 ok 37.143 25.7 2.378 1.7MiB
+unicode 200 50 10000 65536 33560576 ok 23.982 39.8 16.508 52.7MiB
+unicode 200 50 100000 65536 33560576 ok 19.454 49.0 20.021 515.0MiB
+unicode 1000 300 0 65536 33560576 ok 34.3 27.8 4.036 15.2MiB
+unicode 1000 300 10000 65536 33560576 ok 21.994 43.4 68.809 247.5MiB
+unicode 1000 300 100000 - - skipped - - - -
+sgr_cells 80 24 0 65536 33559633 ok 63.793 14.9 0.965 1.1MiB
+sgr_cells 80 24 10000 65536 33559633 ok 63.543 15.0 1.756 21.1MiB
+sgr_cells 80 24 100000 65536 33559633 ok 62.056 15.4 2.488 43.0MiB
+sgr_cells 200 50 0 65536 33559633 ok 66.487 14.3 0.92 1.5MiB
+sgr_cells 200 50 10000 65536 33559633 ok 63.283 15.1 4.362 45.9MiB
+sgr_cells 200 50 100000 65536 33559633 ok 62.234 15.3 5.111 46.0MiB
+sgr_cells 1000 300 0 65536 33559633 ok 67.348 14.2 0.911 14.9MiB
+sgr_cells 1000 300 10000 65536 33559633 ok 62.801 15.2 12.347 61.1MiB
+sgr_cells 1000 300 100000 - - skipped - - - -
+log 200 50 10000 16 16777286 ok 40.142 23.8 3.419 50.8MiB
+log 200 50 10000 64 16777286 ok 41.424 23.0 3.588 50.8MiB
+log 200 50 10000 256 16777286 ok 43.654 21.8 3.304 50.9MiB
+log 200 50 10000 4096 16778793 ok 45.137 21.1 3.248 50.8MiB
+log 200 50 10000 65536 16786880 ok 44.889 21.2 4.784 50.9MiB
+tui 200 50 10000 16 16777321 ok 59.261 16.1 0.081 1.7MiB
+tui 200 50 10000 64 16777321 ok 65.008 14.7 0.076 1.6MiB
+tui 200 50 10000 256 16777321 ok 64.031 14.9 0.082 1.6MiB
+tui 200 50 10000 4096 16777764 ok 65.944 14.5 0.155 1.6MiB
+tui 200 50 10000 65536 16823257 ok 65.105 14.6 1.397 1.7MiB
+unicode 200 50 10000 16 16777236 ok 21.158 45.1 4.236 52.6MiB
+unicode 200 50 10000 64 16777250 ok 23.421 40.7 3.598 52.6MiB
+unicode 200 50 10000 256 16777418 ok 23.936 39.8 3.517 52.6MiB
+unicode 200 50 10000 4096 16781282 ok 23.563 40.5 3.345 52.6MiB
+unicode 200 50 10000 65536 16780288 ok 24.82 38.4 16.652 52.7MiB
+sgr_cells 200 50 10000 16 16777223 ok 40.776 23.4 3.329 26.2MiB
+sgr_cells 200 50 10000 64 16777244 ok 52.953 18.0 3.112 26.1MiB
+sgr_cells 200 50 10000 256 16777349 ok 58.53 16.3 2.893 26.2MiB
+sgr_cells 200 50 10000 4096 16778210 ok 59.914 15.9 3.307 26.1MiB
+sgr_cells 200 50 10000 65536 16779764 ok 60.218 15.8 3.374 26.2MiB
+
+== adversarial work per engine feed slice (history 10k)
+stream cols rows chunk fed_bytes outcome ns_per_byte max_chunk_ms
+rep 80 24 16 4104 ok 108782.9 3.139
+rep 80 24 64 4104 ok 111596.4 10.116
+rep 80 24 256 4176 ok 113949.7 33.229
+rep 80 24 1024 8208 ok 112584.6 120.868
+rep 80 24 4096 24624 ok 125533.5 787.843
+rep 80 24 65536 65538 ok 112082.1 7345.064
+rep 200 50 16 4104 ok 93926.4 3.05
+rep 200 50 64 4104 ok 94066.9 9.051
+rep 200 50 256 4176 ok 94200.1 26.927
+rep 200 50 1024 8208 ok 93788.4 99.566
+rep 200 50 4096 32832 ok 94683.7 397.801
+rep 200 50 65536 65538 ok 94127.7 6168.096
+rep 500 200 16 4104 ok 87555.2 2.751
+rep 500 200 64 4104 ok 86493.3 8.336
+rep 500 200 256 4176 ok 89403.4 27.19
+rep 500 200 1024 8208 ok 87403.1 95.127
+rep 500 200 4096 32832 ok 87353.8 366.144
+rep 500 200 65536 65538 ok 87940.2 5762.791
+rep 1000 300 16 4104 ok 82900.0 3.359
+rep 1000 300 64 4104 ok 84609.8 8.629
+rep 1000 300 256 4176 ok 82986.5 24.189
+rep 1000 300 1024 8208 ok 85406.7 91.405
+rep 1000 300 4096 32832 ok 87957.2 366.219
+rep 1000 300 65536 65538 ok 87552.2 5737.429
+rep_insert 80 24 16 4108 ok 622879.9 19.633
+rep_insert 80 24 64 4160 ok 606544.2 44.527
+rep_insert 80 24 256 4160 ok 605932.1 164.175
+rep_insert 80 24 1024 5135 ok 609563.2 635.409
+rep_insert 80 24 4096 8216 ok 619648.3 2563.03
+rep_insert 200 50 16 2210 ok 1370756.6 42.454
+rep_insert 200 50 64 2145 ok 1399420.5 96.811
+rep_insert 200 50 256 2340 ok 1374431.0 367.944
+rep_insert 200 50 1024 3081 ok 1374628.6 1415.895
+rep_insert 500 200 16 910 ok 3319501.7 94.311
+rep_insert 500 200 64 975 ok 3277224.8 220.844
+rep_insert 500 200 256 1040 ok 3276671.4 855.827
+rep_insert 500 200 1024 1027 ok 3301104.7 3390.204
+rep_insert 1000 300 16 468 ok 6472096.0 175.614
+rep_insert 1000 300 64 455 ok 6760830.3 465.428
+rep_insert 1000 300 256 520 ok 6647159.3 1744.96
+decaln 80 24 16 4104 ok 2731.7 0.087
+decaln 80 24 64 4158 ok 2438.9 0.303
+decaln 80 24 256 4128 ok 2357.9 0.761
+decaln 80 24 1024 8208 ok 2383.1 2.676
+decaln 80 24 4096 32784 ok 2335.2 10.19
+decaln 80 24 65536 524304 ok 2264.0 151.454
+decaln 200 50 16 4104 ok 12540.7 0.643
+decaln 200 50 64 4158 ok 13210.4 1.655
+decaln 200 50 256 4128 ok 11920.5 3.683
+decaln 200 50 1024 8208 ok 12001.6 14.717
+decaln 200 50 4096 32784 ok 12340.9 53.282
+decaln 200 50 65536 262152 ok 12145.7 828.154
+decaln 500 200 16 4104 ok 130224.1 5.757
+decaln 500 200 64 4158 ok 155380.7 32.691
+decaln 500 200 256 4128 ok 137965.6 38.166
+decaln 500 200 1024 8208 ok 134077.7 145.455
+decaln 500 200 4096 24588 ok 129174.0 555.463
+decaln 500 200 65536 65538 ok 133182.4 8726.928
+decaln 1000 300 16 4104 ok 438883.8 15.358
+decaln 1000 300 64 4158 ok 439364.1 39.695
+decaln 1000 300 256 4128 ok 431920.8 118.092
+decaln 1000 300 1024 7182 ok 441829.2 461.766
+decaln 1000 300 4096 8196 ok 443431.9 1818.796
+ich 80 24 16 4096 ok 39.7 0.003
+ich 80 24 64 4096 ok 39.9 0.004
+ich 80 24 256 4096 ok 33.1 0.008
+ich 80 24 1024 8192 ok 34.3 0.027
+ich 80 24 4096 32768 ok 29.2 0.085
+ich 80 24 65536 524288 ok 29.2 1.861
+ich 200 50 16 4096 ok 60.9 0.004
+ich 200 50 64 4096 ok 56.1 0.006
+ich 200 50 256 4096 ok 54.7 0.013
+ich 200 50 1024 8192 ok 53.0 0.046
+ich 200 50 4096 32768 ok 50.1 0.17
+ich 200 50 65536 524288 ok 58.6 3.438
+ich 500 200 16 4096 ok 113.9 0.004
+ich 500 200 64 4096 ok 110.7 0.009
+ich 500 200 256 4096 ok 104.6 0.026
+ich 500 200 1024 8192 ok 119.7 0.203
+ich 500 200 4096 32768 ok 100.4 0.378
+ich 500 200 65536 524288 ok 104.5 6.925
+ich 1000 300 16 4096 ok 233.4 0.041
+ich 1000 300 64 4096 ok 214.9 0.055
+ich 1000 300 256 4096 ok 195.3 0.05
+ich 1000 300 1024 8192 ok 241.2 0.37
+ich 1000 300 4096 32768 ok 202.9 1.004
+ich 1000 300 65536 524288 ok 201.3 13.39
+il_dl 80 24 16 4096 ok 24.6 0.005
+il_dl 80 24 64 4096 ok 22.3 0.006
+il_dl 80 24 256 4096 ok 24.1 0.008
+il_dl 80 24 1024 8192 ok 16.9 0.015
+il_dl 80 24 4096 32768 ok 16.6 0.051
+il_dl 80 24 65536 524288 ok 14.0 0.712
+il_dl 200 50 16 4096 ok 24.4 0.005
+il_dl 200 50 64 4096 ok 18.4 0.005
+il_dl 200 50 256 4096 ok 16.2 0.007
+il_dl 200 50 1024 8192 ok 17.0 0.014
+il_dl 200 50 4096 32768 ok 16.5 0.043
+il_dl 200 50 65536 524288 ok 13.7 0.615
+il_dl 500 200 16 4096 ok 28.4 0.023
+il_dl 500 200 64 4096 ok 17.1 0.005
+il_dl 500 200 256 4096 ok 18.7 0.007
+il_dl 500 200 1024 8192 ok 14.9 0.014
+il_dl 500 200 4096 32768 ok 14.1 0.041
+il_dl 500 200 65536 524288 ok 13.3 0.622
+il_dl 1000 300 16 4096 ok 46.0 0.03
+il_dl 1000 300 64 4096 ok 17.5 0.005
+il_dl 1000 300 256 4096 ok 17.1 0.007
+il_dl 1000 300 1024 8192 ok 15.8 0.014
+il_dl 1000 300 4096 32768 ok 16.7 0.075
+il_dl 1000 300 65536 524288 ok 13.6 0.654
+scroll 80 24 16 4096 ok 1229.8 0.124
+scroll 80 24 64 4096 ok 1010.4 0.171
+scroll 80 24 256 4096 ok 1128.4 0.582
+scroll 80 24 1024 8192 ok 568.4 1.256
+scroll 80 24 4096 32768 ok 159.5 3.135
+scroll 80 24 65536 524288 ok 82.5 10.638
+scroll 200 50 16 4096 ok 1016.8 0.059
+scroll 200 50 64 4096 ok 920.7 0.142
+scroll 200 50 256 4096 ok 1146.3 0.743
+scroll 200 50 1024 8192 ok 483.6 2.042
+scroll 200 50 4096 32768 ok 192.5 3.816
+scroll 200 50 65536 524288 ok 104.3 11.188
+scroll 500 200 16 4096 ok 2331.9 0.439
+scroll 500 200 64 4096 ok 1194.3 0.484
+scroll 500 200 256 4096 ok 1386.7 1.985
+scroll 500 200 1024 8192 ok 1221.8 3.582
+scroll 500 200 4096 32768 ok 900.5 7.776
+scroll 500 200 65536 524288 ok 739.3 52.167
+scroll 1000 300 16 4096 ok 1560.3 0.273
+scroll 1000 300 64 4096 ok 1220.0 0.809
+scroll 1000 300 256 4096 ok 1667.4 4.527
+scroll 1000 300 1024 8192 ok 810.6 4.036
+scroll 1000 300 4096 32768 ok 546.0 6.341
+scroll 1000 300 65536 524288 ok 430.6 35.49
+clear 80 24 16 4096 ok 1982.4 0.05
+clear 80 24 64 4096 ok 2122.5 0.158
+clear 80 24 256 4096 ok 2045.0 0.679
+clear 80 24 1024 8192 ok 1972.0 2.547
+clear 80 24 4096 32768 ok 1765.5 8.245
+clear 80 24 65536 524288 ok 1847.7 124.001
+clear 200 50 16 4096 ok 9940.2 0.385
+clear 200 50 64 4096 ok 10673.2 1.232
+clear 200 50 256 4096 ok 10132.4 4.141
+clear 200 50 1024 8192 ok 9494.3 10.784
+clear 200 50 4096 32768 ok 9825.2 43.764
+clear 200 50 65536 327680 ok 10011.7 659.798
+clear 500 200 16 4096 ok 101750.7 4.133
+clear 500 200 64 4096 ok 108735.2 11.489
+clear 500 200 256 4096 ok 109796.7 33.349
+clear 500 200 1024 8192 ok 109077.5 129.859
+clear 500 200 4096 28672 ok 107925.5 461.581
+clear 500 200 65536 65536 ok 108466.3 7107.251
+clear 1000 300 16 4096 ok 358640.6 10.068
+clear 1000 300 64 4096 ok 365371.8 31.205
+clear 1000 300 256 4096 ok 355347.4 97.041
+clear 1000 300 1024 8192 ok 360186.6 397.969
+clear 1000 300 4096 8192 ok 406935.4 1821.218
+combining 80 24 16 4116 ok 62.3 0.019
+combining 80 24 64 4116 ok 65.6 0.04
+combining 80 24 256 4368 ok 49.1 0.016
+combining 80 24 1024 8232 ok 50.0 0.051
+combining 80 24 4096 32928 ok 49.6 0.234
+combining 80 24 65536 524328 ok 48.0 3.203
+combining 200 50 16 4116 ok 59.1 0.012
+combining 200 50 64 4116 ok 51.2 0.009
+combining 200 50 256 4368 ok 53.2 0.017
+combining 200 50 1024 8232 ok 58.8 0.076
+combining 200 50 4096 32928 ok 48.8 0.194
+combining 200 50 65536 524328 ok 47.6 3.113
+combining 500 200 16 4116 ok 54.5 0.009
+combining 500 200 64 4116 ok 50.3 0.009
+combining 500 200 256 4368 ok 48.8 0.016
+combining 500 200 1024 8232 ok 50.2 0.05
+combining 500 200 4096 32928 ok 60.0 0.348
+combining 500 200 65536 524328 ok 50.2 3.464
+combining 1000 300 16 4116 ok 54.2 0.007
+combining 1000 300 64 4116 ok 65.2 0.047
+combining 1000 300 256 4368 ok 52.0 0.019
+combining 1000 300 1024 8232 ok 54.9 0.058
+combining 1000 300 4096 32928 ok 46.1 0.176
+combining 1000 300 65536 524328 ok 48.4 3.677
+dcs_body 80 24 16 4099 ok 5.6 0.017
+dcs_body 80 24 64 4099 ok 5.6 0.017
+dcs_body 80 24 256 4099 ok 5.1 0.016
+dcs_body 80 24 1024 8195 ok 4.4 0.016
+dcs_body 80 24 4096 32771 ok 3.9 0.016
+dcs_body 80 24 65536 524291 ok 4.5 0.406
+dcs_body 200 50 16 4099 ok 5.9 0.016
+dcs_body 200 50 64 4099 ok 5.0 0.015
+dcs_body 200 50 256 4099 ok 5.3 0.015
+dcs_body 200 50 1024 8195 ok 4.6 0.017
+dcs_body 200 50 4096 32771 ok 4.0 0.016
+dcs_body 200 50 65536 524291 ok 5.4 0.49
+dcs_body 500 200 16 4099 ok 5.0 0.015
+dcs_body 500 200 64 4099 ok 6.5 0.019
+dcs_body 500 200 256 4099 ok 5.6 0.017
+dcs_body 500 200 1024 8195 ok 4.8 0.017
+dcs_body 500 200 4096 32771 ok 3.8 0.016
+dcs_body 500 200 65536 524291 ok 4.0 0.312
+dcs_body 1000 300 16 4099 ok 6.1 0.017
+dcs_body 1000 300 64 4099 ok 5.7 0.016
+dcs_body 1000 300 256 4099 ok 5.5 0.016
+dcs_body 1000 300 1024 8195 ok 4.7 0.016
+dcs_body 1000 300 4096 32771 ok 3.9 0.016
+dcs_body 1000 300 65536 524291 ok 4.7 0.429
+apc_body 80 24 16 4099 ok 4.1 0.011
+apc_body 80 24 64 4099 ok 3.3 0.009
+apc_body 80 24 256 4099 ok 3.5 0.009
+apc_body 80 24 1024 8195 ok 3.9 0.009
+apc_body 80 24 4096 32771 ok 2.4 0.009
+apc_body 80 24 65536 524291 ok 2.9 0.262
+apc_body 200 50 16 4099 ok 6.9 0.01
+apc_body 200 50 64 4099 ok 3.9 0.01
+apc_body 200 50 256 4099 ok 3.5 0.009
+apc_body 200 50 1024 8195 ok 3.4 0.01
+apc_body 200 50 4096 32771 ok 2.5 0.009
+apc_body 200 50 65536 524291 ok 2.4 0.149
+apc_body 500 200 16 4099 ok 4.0 0.009
+apc_body 500 200 64 4099 ok 4.5 0.011
+apc_body 500 200 256 4099 ok 3.6 0.009
+apc_body 500 200 1024 8195 ok 4.0 0.009
+apc_body 500 200 4096 32771 ok 2.4 0.009
+apc_body 500 200 65536 524291 ok 2.4 0.146
+apc_body 1000 300 16 4099 ok 4.1 0.009
+apc_body 1000 300 64 4099 ok 4.1 0.009
+apc_body 1000 300 256 4099 ok 4.1 0.009
+apc_body 1000 300 1024 8195 ok 3.4 0.009
+apc_body 1000 300 4096 32771 ok 2.5 0.009
+apc_body 1000 300 65536 524291 ok 2.3 0.142
+
+== restoration delivery over a Unix socket (200x50)
+fill history reader rate chunk outcome restore_bytes_m complete serialise_ms deliver_seconds mib_per_s worst_progress_gap_ms reader_mib_per_s max_rss_bytes_m reader_rss_m
+log 0 drain - 4096 ok 0.0MiB True 0.072 8e-06 482.281 0.007 66.118 1.5MiB 0.8MiB
+log 0 drain - 16384 ok 0.0MiB True 0.072 7e-06 538.766 0.006 68.289 1.5MiB 0.8MiB
+log 0 drain - 65536 ok 0.0MiB True 0.073 8e-06 482.851 0.006 43.352 1.5MiB 0.8MiB
+log 0 drain - 262144 ok 0.0MiB True 0.072 7e-06 510.977 0.006 86.825 1.5MiB 0.8MiB
+log 0 host - 65536 ok 0.0MiB True 0.072 7e-06 520.751 0.006 34.179 1.5MiB 1.4MiB
+log 0 rate 1048576 65536 ok 0.0MiB True 0.072 8e-06 461.046 0.006 0.809 1.5MiB 0.8MiB
+log 0 rate 262144 65536 ok 0.0MiB True 0.071 7e-06 505.913 0.006 0.222 1.5MiB 0.8MiB
+log 10000 drain - 4096 ok 0.8MiB True 14.445 0.013128 57.798 0.437 57.705 51.8MiB 0.8MiB
+log 10000 drain - 16384 ok 0.8MiB True 15.982 0.029594 25.639 0.404 25.623 51.8MiB 0.8MiB
+log 10000 drain - 65536 ok 0.8MiB True 13.394 0.031348 24.205 0.399 24.19 51.8MiB 0.8MiB
+log 10000 drain - 262144 ok 0.8MiB True 13.96 0.030269 25.067 0.375 25.001 51.8MiB 0.8MiB
+log 10000 host - 65536 ok 0.8MiB True 12.451 0.029885 25.39 0.362 25.543 51.8MiB 1.4MiB
+log 10000 rate 1048576 65536 ok 0.8MiB True 11.969 0.751671 1.009 11.506 0.997 51.8MiB 0.8MiB
+log 10000 rate 262144 65536 ok 0.8MiB True 12.476 3.009247 0.252 40.876 0.249 51.8MiB 0.8MiB
+log 100000 drain - 4096 ok 7.6MiB True 132.155 0.024993 306.028 0.419 305.744 502.7MiB 0.8MiB
+log 100000 drain - 16384 ok 7.6MiB True 124.013 0.303571 25.195 0.409 25.194 502.7MiB 0.8MiB
+log 100000 drain - 65536 ok 7.6MiB True 128.449 0.303318 25.216 0.368 25.214 502.7MiB 0.8MiB
+log 100000 drain - 262144 ok 7.6MiB True 135.865 0.304131 25.149 0.373 25.147 502.7MiB 0.8MiB
+log 100000 host - 65536 ok 7.6MiB True 124.945 0.304329 25.133 0.377 25.151 502.6MiB 1.4MiB
+log 100000 rate 1048576 65536 ok 7.6MiB True 135.147 7.644074 1.001 11.91 1.0 502.7MiB 0.8MiB
+log 100000 rate 262144 65536 ok 7.6MiB True 124.907 30.567826 0.25 41.171 0.25 502.7MiB 0.8MiB
+sgr_cells 0 drain - 4096 ok 0.2MiB True 1.315 0.008441 24.092 0.374 23.912 1.8MiB 0.8MiB
+sgr_cells 0 drain - 16384 ok 0.2MiB True 1.322 0.008127 25.022 0.322 24.826 1.8MiB 0.8MiB
+sgr_cells 0 drain - 65536 ok 0.2MiB True 1.307 0.008239 24.682 0.358 24.488 1.8MiB 0.8MiB
+sgr_cells 0 drain - 262144 ok 0.2MiB True 1.256 0.008244 24.668 0.377 24.512 1.8MiB 0.8MiB
+sgr_cells 0 host - 65536 ok 0.2MiB True 1.265 0.008112 25.069 0.377 25.627 1.8MiB 1.4MiB
+sgr_cells 0 rate 1048576 65536 ok 0.2MiB True 1.253 0.195717 1.039 10.223 0.985 1.8MiB 0.8MiB
+sgr_cells 0 rate 262144 65536 ok 0.2MiB True 1.305 0.786244 0.259 37.613 0.248 1.8MiB 0.8MiB
+sgr_cells 10000 drain - 4096 ok 42.4MiB True 257.094 0.178609 237.57 0.4 237.545 125.4MiB 0.8MiB
+sgr_cells 10000 drain - 16384 ok 42.4MiB True 247.004 1.696066 25.018 0.411 25.018 109.4MiB 0.8MiB
+sgr_cells 10000 drain - 65536 ok 42.4MiB True 248.266 1.699991 24.96 0.423 24.96 109.5MiB 0.8MiB
+sgr_cells 10000 drain - 262144 ok 42.4MiB True 247.263 1.69815 24.987 0.427 24.987 109.5MiB 0.8MiB
+sgr_cells 10000 host - 65536 ok 42.4MiB True 244.998 1.695207 25.031 0.41 25.034 125.4MiB 1.4MiB
+sgr_cells 10000 rate 1048576 65536 ok 42.4MiB True 237.816 42.427679 1.0 11.922 1.0 109.5MiB 0.8MiB
+sgr_cells 10000 rate 262144 65536 ok 42.4MiB False 259.854 60.000136 0.25 40.958 0.25 108.5MiB 0.8MiB
+sgr_cells 100000 drain - 4096 ok 422.5MiB True 2494.956 0.765998 551.563 0.457 551.53 1173.5MiB 0.8MiB
+sgr_cells 100000 drain - 16384 ok 422.5MiB True 2535.141 16.921256 24.968 0.467 24.968 1173.5MiB 0.8MiB
+sgr_cells 100000 drain - 65536 ok 422.5MiB True 2519.673 16.926419 24.961 2.238 24.961 1173.6MiB 0.8MiB
+sgr_cells 100000 drain - 262144 ok 422.5MiB True 2429.648 16.850439 25.073 1.582 25.073 1173.6MiB 0.8MiB
+sgr_cells 100000 host - 65536 ok 422.5MiB True 2429.693 16.929279 24.957 1.521 24.957 1045.6MiB 1.4MiB
+sgr_cells 100000 rate 1048576 65536 ok 422.5MiB False 2545.903 60.000191 1.0 27.559 1.0 753.6MiB 0.8MiB
+sgr_cells 100000 rate 262144 65536 ok 422.5MiB False 2899.608 60.000133 0.25 47.514 0.25 932.6MiB 0.8MiB
+
+== skipped / failed
+storage {'fill': 'log', 'cols': 500, 'rows': 200, 'history': 100000, 'outcome': 'skipped', 'reason': 'estimate 4298580000 > ceiling'}
+storage {'fill': 'log', 'cols': 1000, 'rows': 300, 'history': 100000, 'outcome': 'skipped', 'reason': 'estimate 8605740000 > ceiling'}
+storage {'fill': 'sgr_cells', 'cols': 500, 'rows': 200, 'history': 100000, 'outcome': 'skipped', 'reason': 'estimate 4298580000 > ceiling'}
+storage {'fill': 'sgr_cells', 'cols': 1000, 'rows': 300, 'history': 100000, 'outcome': 'skipped', 'reason': 'estimate 8605740000 > ceiling'}
+storage {'fill': 'osc8_cell', 'link_bytes': 4096, 'cols': 80, 'rows': 24, 'history': 10000, 'outcome': 'skipped', 'reason': 'estimate 8098750464 > ceiling'}
+storage {'fill': 'osc8_cell', 'link_bytes': 4096, 'cols': 200, 'rows': 50, 'history': 10000, 'outcome': 'skipped', 'reason': 'estimate 20299392000 > ceiling'}
+storage {'fill': 'osc8_cell', 'link_bytes': 65536, 'cols': 80, 'rows': 24, 'history': 10000, 'outcome': 'skipped', 'reason': 'estimate 126346665984 > ceiling'}
+storage {'fill': 'osc8_cell', 'link_bytes': 65536, 'cols': 200, 'rows': 50, 'history': 10000, 'outcome': 'skipped', 'reason': 'estimate 316685952000 > ceiling'}
+parse {'stream': 'title_stack', 'link_bytes': 262144, 'outcome': 'skipped', 'reason': 'title stack estimate > ceiling'}
+resize {'fill': 'log', 'cols': 500, 'rows': 200, 'history': 100000, 'outcome': 'skipped', 'reason': 'estimate > ceiling'}
+resize {'fill': 'log', 'cols': 1000, 'rows': 300, 'history': 100000, 'outcome': 'skipped', 'reason': 'estimate > ceiling'}
+resize {'fill': 'sgr_cells', 'cols': 500, 'rows': 200, 'history': 100000, 'outcome': 'skipped', 'reason': 'estimate > ceiling'}
+resize {'fill': 'sgr_cells', 'cols': 1000, 'rows': 300, 'history': 100000, 'outcome': 'skipped', 'reason': 'estimate > ceiling'}
+parse {'stream': 'log', 'cols': 1000, 'rows': 300, 'history': 100000, 'outcome': 'skipped', 'reason': 'history estimate > ceiling'}
+parse {'stream': 'tui', 'cols': 1000, 'rows': 300, 'history': 100000, 'outcome': 'skipped', 'reason': 'history estimate > ceiling'}
+parse {'stream': 'unicode', 'cols': 1000, 'rows': 300, 'history': 100000, 'outcome': 'skipped', 'reason': 'history estimate > ceiling'}
+parse {'stream': 'sgr_cells', 'cols': 1000, 'rows': 300, 'history': 100000, 'outcome': 'skipped', 'reason': 'history estimate > ceiling'}

@@ -45,3 +45,11 @@ Runtime timeouts are reported
 separately from assertion kills and compiler-invalid mutations; no compiler
 timeout counts as behavioral evidence. This avoids letting a fresh-worker
 compilation budget also authorize a long-running, allocating infinite mutant.
+
+#48 resource-budgets stage (branch prototype/resource-budgets-48): admission.rs,
+geometry.rs, delivery.rs and feed.rs are new adapter seams; restore.rs is copied
+from the engine lane (prototype/alacritty-restore-osc8-43 @ f113bb6, #43) only
+to measure restoration cost. src/bin/budgets.rs, measure.py, summarize.py,
+slice_overhead.py and hand_mutants.py are measurement/verification tools. See
+BUDGETS.txt for proposals, raw data (measurements/) and limitations. The
+upstream engine is still unchanged; no budget value here is approved.

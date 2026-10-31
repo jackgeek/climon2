@@ -140,6 +140,21 @@ fn oversized_titles_are_dropped_whatever_terminates_them() {
 }
 
 #[test]
+fn a_body_of_exactly_the_cap_is_admitted_and_one_more_byte_is_not() {
+    for (body, admitted_link) in [
+        ("https://ok/123456", Some("https://ok/123456")),
+        ("https://ok/1234567", None),
+    ] {
+        let mut admission = OscAdmission::new(20);
+        let mut admitted = term();
+        let input = format!("\x1b]8;;{body}\x07Z");
+        feed(&mut admitted, &mut admission, &[input.as_bytes()]);
+        assert_eq!(link_uri(&admitted, 0).as_deref(), admitted_link, "{body}");
+        assert_eq!(view(&admitted).text()[0], "Z           ");
+    }
+}
+
+#[test]
 fn unterminated_oversized_string_retains_at_most_the_cap() {
     let cap = 4096;
     let mut admission = OscAdmission::new(cap);

@@ -2,8 +2,10 @@
 
 pub mod admission;
 pub mod delivery;
+pub mod feed;
 pub mod geometry;
 pub mod input;
+pub mod restore;
 pub mod timing;
 
 use alacritty_terminal::event::EventListener;

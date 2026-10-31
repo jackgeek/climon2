@@ -1,0 +1,389 @@
+THROWAWAY #48 (cross-ref #43): measured resource/timing budget PROPOSALS.
+Nothing here is approved. Every value is a proposal for the user to decide.
+
+Baseline: Alacritty bbb2cbf9470a6707b1205fbddbdb25109b14e2fd (unchanged),
+vte 0.15.0, branched from prototype/alacritty-forwarding-56 @ 63256f6.
+
+Machine: MacBook Pro, Intel Core i9-9980HK (8 cores / 16 threads), 64 GB RAM,
+macOS 26.7.1 (25G241), rustc/cargo 1.96.0, Python 3.9.6. Release build.
+One process at a time; one Cargo job; one test thread.
+
+Commands (from prototypes/alacritty-forwarding):
+  bash run.sh                                   # fmt, clippy -D warnings, 46 tests
+  CARGO_TARGET_DIR=$PWD/.cache/target cargo build -j1 --release --locked \
+      --manifest-path probe/Cargo.toml --bin budgets
+  python3 measure.py measurements/raw.jsonl storage control resize sync deliver parse
+  python3 slice_overhead.py measurements/raw.jsonl
+  python3 summarize.py measurements/raw.jsonl > measurements/summary.txt
+  python3 hand_mutants.py > measurements/hand-mutants.txt
+
+Safety bounds on every measurement process (macOS rejects `ulimit -v`):
+- the budgets binary uses a counting global allocator. An allocation that
+  takes live heap past BUDGET_CEILING_BYTES = 2 GiB returns null and aborts
+  that process.
+- measure.py polls the RSS of the whole process group every 50 ms. It kills
+  the group above 3 GiB or past a wall limit (60–180 s).
+- inputs grow stepwise. Runs whose estimated memory exceeds the ceiling are
+  recorded as `skipped`, not run (see summary.txt).
+
+No run was killed. 17 runs were skipped by estimate. Results are in
+measurements/raw.jsonl (raw, 483 runs) and measurements/summary.txt (tables).
+
+-------------------------------------------------------------------------------
+KEY MEASUREMENTS (summary.txt has the full tables)
+
+Engine storage
+- 24.2–24.7 B per retained history cell for plain and SGR content.
+- 48 B per screen cell with no history (two grids).
+- About 97–121 B per cell with 9 combining marks (inline ArrayVec, bounded).
+- An OSC 8 link per cell costs about link bytes + 200 B per cell: 217, 457,
+  4,301 and 65,805 B/cell for 16 B, 256 B, 4 KiB and 64 KiB links.
+- Amplification is 1x and there is no engine cap.
+- Example: 200x50 with 100k history and plain content is 485 MB.
+
+Parser retention
+- An unterminated OSC grows the heap by 2x its bytes: 512 MiB for 256 MiB of
+  input, linear.
+- With OscAdmission(4096) the heap stays flat at 0.1 MiB for every size up to
+  256 MiB, and throughput rises from 290 to 940 MiB/s.
+- DCS and APC bodies stay flat at 0.1 MiB up to 256 MiB, costing 2.3–6 ns/B.
+- Title stack: 64 KiB titles add 256 MiB uncapped; with a 4096 cap the
+  increase is 0.2 MiB.
+- OSC 8 per cell, 64 KiB links, 10k history: 259 MiB uncapped versus 1.9 MiB
+  capped.
+- The vte parser preallocates a 2 MiB sync buffer per Processor.
+
+Engine CPU per byte (worst adversarial; history 10k)
+
+| stream | 80x24 | 200x50 | 500x200 | 1000x300 |
+|---|---|---|---|---|
+| REP+IRM (`CSI 4h X CSI 65535 b`) | 0.62 ms/B | 1.37 ms/B | 3.3 ms/B | 6.6 ms/B |
+| REP (`X CSI 65535 b`) | ≈0.09–0.11 ms/B | ≈0.09–0.11 ms/B | ≈0.09–0.11 ms/B | ≈0.09–0.11 ms/B |
+| DECALN | 2.3 µs/B | 12 µs/B | 0.13 ms/B | 0.44 ms/B |
+| ED 2 (clear) | 2 µs/B | 10 µs/B | 0.11 ms/B | 0.36 ms/B |
+
+- ICH, IL/DL, SU (scroll) and combining marks cost at most about 2 µs/B.
+- One REP+IRM dispatch (13 B) cannot be interrupted: 8, 18, 43 and 86 ms
+  respectively.
+- Realistic streams (log, tui, unicode, sgr) run at 19–75 MiB/s.
+
+Sync flush (one stop_sync)
+- 2 MiB of realistic output takes 13–27 ms.
+- Adversarial 4 KiB:
+  - DECALN at 1000x300: 1.2 s.
+  - REP+IRM: 2.1 s at 80x24, 4.8 s at 200x50, 22.9 s at 1000x300.
+- A single probe run of 2 MiB of REP at 80x24 took 159 s.
+
+Feed-slice overhead on realistic output (200x50, against 64 KiB feeds)
+- 256 B slices: ≤3%.
+- 64 B slices: ≤12%.
+- 16 B slices: up to 32%.
+
+Resize reflow (width -1 and back, worst of the two)
+- 100k history: 17 ms (log) and 141 ms (sgr) at 80 columns; 20 ms (log) and
+  257 ms (sgr) at 200 columns.
+- 10k history: 65 ms at 500 columns and 173 ms at 1000 columns.
+
+Restoration
+- Serialized size: log is about 80 B/row (7.6 MiB at 100k rows); adversarial
+  per-cell SGR is about 22 B/cell (422 MiB at 200x100k).
+- Serialization: 2.4 s and a 512 MiB heap peak for 422 MiB. This runs on the
+  thread that owns the Term.
+- Full primary-grid clone: 24 B/cell, 231 ms at 20M cells.
+- Each restore also clones the alternate grid (engine lane): rows×cols×24 B.
+
+Socket delivery (200x50, Unix socket to a child reader)
+- 4 KiB chunks: 240–551 MiB/s.
+- Chunks of 16 KiB and above plateaued at about 25 MiB/s. This is caused by
+  the probe's 200 µs WouldBlock retry, because macOS AF_UNIX send buffers are
+  small. It is a measurement limit, not a socket limit.
+- Worst gap between successful writes:
+  - drain reader: ≤2.3 ms
+  - host-parse proxy (Alacritty Term in the reader): ≤1.6 ms
+  - 1 MiB/s reader: 12–28 ms
+  - 256 KiB/s reader: 38–48 ms
+- At 256 KiB/s the 42 MiB restore did not finish within the 60 s run limit.
+  At 1 MiB/s neither did the 422 MiB restore.
+
+-------------------------------------------------------------------------------
+PROPOSALS (budget | proposed value | evidence | enforcement point with unchanged
+bbb2cbf | breach outcome | test showing breach handling | residual risk)
+
+1. OSC body admission cap
+   - Value: 4096 bytes for any OSC body (`ESC ]` or C1 0x9D is not an
+     OSC opener in vte ground; only the ESC form is).
+   - Evidence:
+     - Uncapped retention is 2x the input bytes. Capped retention is flat
+       at ≤ cap.
+     - VTE's own limits (URI 2083, id 250) fit within the cap.
+     - The title stack is bounded at 4096 × 4096 = 16 MiB.
+   - Enforcement: adapter pre-parse filter `admission::OscAdmission`. It
+     holds back `]` and the body, so the engine never sees an oversized
+     OSC. vte dispatches a partial OSC on CAN/SUB (lib.rs:407-433), so a
+     post-hoc abort is impossible.
+   - Breach outcome: the OSC is dropped and the breach is counted. The
+     engine stays in Escape and is returned to ground with CAN, SUB or ESC
+     as appropriate. Later output is unaffected.
+   - Tests: tests/admission.rs, 5 tests:
+     - random differential showing byte transparency within the cap at
+       every chunk boundary
+     - oversized hyperlink
+     - oversized title under every terminator
+     - exact-cap boundary
+     - unterminated 4 MiB body retaining ≤ cap
+   - Residual risk:
+     - OSC 52 clipboard payloads over 4 KiB are dropped. This affects any
+       future clipboard feature, which is excluded today; per-kind caps are
+       a decision.
+     - Retained hyperlinks: see item 6.
+
+2. DCS / APC / SOS / PM length
+   - Value: no length budget needed at this baseline.
+   - Evidence: flat 0.1 MiB heap at 256 MiB; 2.3–6 ns/B. Alacritty only
+     logs these at debug level (vte ansi.rs:1311-1326).
+   - Enforcement: none required.
+   - Breach outcome: none.
+   - Tests: measurement only.
+   - Residual risk: an engine bump that retains them (for example sixel
+     or kitty graphics) needs re-measuring.
+
+3. Engine feed slice (parser work per pump step)
+   - Value: 64 bytes per `Processor::advance`. The pump services attachments
+     and deadlines between slices.
+   - Evidence: the worst uninterruptible step (REP+IRM) is 45, 97, 221 and
+     465 ms at 80x24, 200x50, 500x200 and 1000x300. Realistic throughput
+     costs ≤12%.
+   - Enforcement: adapter `feed::EngineFeed`. The pump pushes the next PTY
+     read only once the feed is empty, so engine cost back-pressures the
+     program through the PTY.
+   - Breach outcome: not a breach (scheduling).
+   - Tests: tests/feed.rs. Work per step is ≤ (slice + hold) bytes, with
+     all input eventually delivered.
+   - Residual risk:
+     - One REP dispatch still costs up to 86 ms at 1000 columns. Its
+       65,535 count is a vte constant: `CSI Ps b` loops handler.input
+       (vte ansi.rs:1562-1566).
+     - A program can keep its session's pump CPU-bound at 0.6–6.6 ms per
+       byte. Clamping REP counts is a semantic change (a decision, not
+       prototyped).
+
+4. Synchronized-output deadline and engine sync hold
+   - Value: 150 ms from the FIRST BSU, not extendable (existing
+     FirstBeginTimeout). Proposed engine sync hold is 0 bytes: the engine
+     never buffers.
+   - Evidence: one stop_sync is not interruptible. 4 KiB of adversarial
+     input takes 1.2–22.9 s, and the vte buffer is 2 MiB (159 s measured).
+     A hold of H bytes costs up to (64 + H) × 3.3 ms at 500 columns, which
+     is 13.7 s for H = 4 KiB.
+   - Enforcement:
+     - `EngineFeed` ends the update with the public `stop_sync` once
+       `sync_bytes_count() > hold`.
+     - `timing::flush_if_due` services the deadline.
+     - Both are public vte API, with no patch.
+   - Breach outcome: early flush. Content is preserved but that update is
+     not atomic in the engine model.
+   - Tests: tests/feed.rs:
+     - hold breach flushes early and keeps content
+     - zero hold never leaves bytes buffered
+     - an update under the hold waits for the deadline
+     - tests/timing.rs (existing)
+   - Residual risk:
+     - With hold 0, a restoration snapshot taken mid-update can be torn.
+       Hosts still receive raw BSU/ESU and render atomically themselves.
+     - Deferring snapshots up to 150 ms until ESU is an unprototyped
+       adapter option (decision).
+
+5. Geometry accepted from clients
+   - Value: maximum 500 columns × 200 rows; zero is rejected.
+   - Evidence:
+     - Stall per dispatch and per slice grows linearly with columns (item 3).
+     - Screen storage without hyperlinks is 4.8 MB plain, ≈12 MB with
+       combining marks.
+     - Reflow at 10k history is 65 ms.
+     - 1000x300 costs 2.1x the stall and 3x the storage.
+   - Enforcement: wire layer `geometry::Geometry::admit`, applied before
+     Term::new or resize. The engine accepts any size (mod.rs:410, 655).
+   - Breach outcome: reject that attachment or control transfer
+     (recoverable). The session is untouched.
+   - Tests: tests/geometry.rs, 2 tests (above cap, zero, exact cap).
+   - Residual risk: larger physical terminals are refused. Clamping instead
+     is a decision.
+
+6. Non-history storage (grid, tab stops, extras)
+   - Value (derived from items 1 and 5): 2 grids × cells × (24 to 121 B),
+     plus title stack ≤16 MiB, plus a 2 MiB vte sync buffer, plus an OSC of
+     at most the cap, plus `cols` bytes of tab stops. That is about 30 MB at
+     500x200 without hyperlinks.
+   - Evidence: storage, control and parse measurements above.
+   - Enforcement: geometry cap plus OSC cap. There is no separate seam.
+   - Breach outcome: none (bounded by construction), except for hyperlinks.
+   - Tests: as items 1 and 5.
+   - BLOCKED (retained hyperlink bytes):
+     - Every OSC 8 creates a new Arc that each cell retains:
+       CellExtra.hyperlink (term/cell.rs:133-135, set at cell.rs:209-221),
+       Term::set_hyperlink (term/mod.rs:1874-1877).
+     - Unchanged Alacritty exposes no hook to observe when a link is
+       released, so the adapter cannot enforce a retained-bytes budget.
+     - The bound is only cells × (cap + ~200 B):
+       - 500x200 screen: about 860 MB at cap 4096.
+       - In history: rows × cols × cap, about 215 GB theoretical at
+         500 × 100k.
+     - Engine lane (#43 comment 6545123700): 1 MiB retained with no cap.
+       This is confirmed here at 1x.
+
+7. Output chunk size
+   - Value: 4 KiB per write.
+   - Evidence: 240–551 MiB/s locally with progress gaps <0.5 ms. Throughput
+     does not depend on chunk size once writes fill the socket send buffer.
+   - Enforcement: `delivery::Outbound::next_chunk`, with non-blocking
+     partial writes.
+   - Breach outcome: none.
+   - Tests: tests/delivery_socket.rs.
+   - Residual risk: measured with a sleep-retry pump. Re-measure under a
+     readiness-driven (kqueue/epoll) loop.
+
+8. Per-attachment live queue
+   - Value: 16 MiB of live bytes. The ordered restoration prefix is held
+     separately and never dropped.
+   - Evidence:
+     - Producers reach 34–75 MiB/s, bounded by the engine.
+     - A 10k-history adversarial restoration (42 MiB) takes about 0.18 s at
+       socket speed, so about 11 MiB of live output can arrive meanwhile.
+   - Enforcement: `Outbound::publish` returns QueueOverflow. `Attachments`
+     disconnects only that attachment, then emits FinalAttachmentLost if it
+     was the last one.
+   - Breach outcome: the attachment is disconnected. If it was the final
+     attachment, the session terminates (#42).
+   - Tests: tests/delivery.rs (6) and tests/delivery_socket.rs (2): a real
+     stalled peer is disconnected, the slowest pump iteration is under
+     50 ms, and a slow progressing reader gets the restore then live output
+     intact.
+   - Residual risk:
+     - Any sustained producer faster than a reader (for example `cat` of a
+       large file to a slow or remote host) overflows ANY finite queue and
+       disconnects. This is design pressure on #48.
+     - Memory per attachment is the queue plus the materialized
+       restoration.
+
+9. Restoration no-progress timeout
+   - Value: 5 s with no successful write while data is pending.
+   - Evidence: healthy readers show worst gaps of ≤2.3 ms locally and
+     ≤48 ms at 256 KiB/s. The margin is about 100x, for remote and GC
+     pauses.
+   - Enforcement: `Outbound::poll` returns NoProgress, which is armed only
+     while bytes are pending.
+   - Breach outcome: the attachment is disconnected, with #42 applying to
+     the final one.
+   - Tests: tests/delivery.rs and tests/delivery_socket.rs (stalled peer).
+   - Residual risk: suspended or slow-network hosts are disconnected.
+
+10. Overall restoration deadline
+    - Value: size-scaled, 30 s + restoration_bytes / (4 MiB/s). That is
+      ≈32 s for a 7.6 MiB log, ≈136 s for 422 MiB and ≈300 s for an
+      extrapolated 1.05 GiB at 500 × 100k.
+    - Evidence:
+      - Restore size ranges from 7.6 MiB to 422 MiB.
+      - The Alacritty host-parse rate is about 20–75 MiB/s, and the socket
+        reaches ≥240 MiB/s.
+      - A fixed 120 s instead requires a reader of ≥3.5 MiB/s at 422 MiB.
+    - Enforcement: `Outbound::restoring` sets a deadline that returns
+      RestorationDeadline.
+    - Breach outcome: the attachment is disconnected. Restoration content
+      is never silently dropped.
+    - Tests: tests/delivery.rs (deadline independent of progress).
+    - Residual risk: xterm.js and native host parse rates are unmeasured.
+      Restore memory: see open risk A.
+
+-------------------------------------------------------------------------------
+OPEN RISKS FOUND (not listed budgets, but they affect the fixed rules)
+A. Restoration is materialized on the Term owner.
+   - 422 MiB took 2.4 s, with a 512 MiB heap peak, for each attaching
+     client.
+   - This blocks the pump while it runs.
+   - restore.rs needs `&mut Term` (swap_alt to reach the inactive normal
+     grid, which has no accessor; engine lane).
+   - Off-pump or incremental serialization from a 24 B/cell grid clone
+     (231 ms) is plausible but not prototyped.
+B. Resize reflow runs on the pump: 257 ms at 200 × 100k and about 1.7 s
+   extrapolated at 1000 × 100k. Resize storms need coalescing or a rate
+   limit.
+C. Total memory implied by history:
+   - At 500 × 100k: 1.2 GB plain, 4.9 GB with combining marks, unbounded
+     in practice with links (item 6).
+   - A history-row cap is not a memory bound, as the fixed requirement
+     already says.
+
+-------------------------------------------------------------------------------
+LIMITATIONS
+- One macOS Intel machine. Not measured: Linux, Windows ConPTY, a native
+  host, xterm.js or remote/SSH links.
+- Throughput is affected by the release build and the counting allocator.
+  The counting allocator's overhead is included in every number.
+- The delivery pump sleeps 200 µs on WouldBlock rather than using readiness
+  events (see item 7).
+- Rows were skipped where the estimate exceeded the 2 GiB ceiling
+  (500/1000 cols × 100k; large-link history fills). Those values above are
+  linear extrapolations from 10k/0-history runs: storage is measured to be
+  linear per cell.
+- `max_rss_bytes` comes from getrusage. The heap figures come from the
+  counting allocator (exact live bytes).
+- Synthetic streams only. Realistic streams are approximations of logs,
+  TUIs and Unicode text.
+- Hand mutants: 11 of 11 killed (measurements/hand-mutants.txt). This
+  includes the cap boundary, terminator substitution, queue overflow,
+  no-progress, deadline, slice and hold.
+
+-------------------------------------------------------------------------------
+DECISIONS FOR THE USER (none taken here)
+1. OSC cap value (4096 proposed). Single cap or per-kind (OSC 8 / OSC 52)?
+   On breach, drop-and-log (prototyped) or terminate the session?
+2. Retained hyperlinks: BLOCKED for a byte budget with unchanged Alacritty.
+   Options:
+   - accept the cells × cap bound
+   - a lower OSC 8 cap
+   - strip OSC 8
+   - a session-lifetime OSC 8 allowance in the adapter
+   - patch the engine (#43)
+3. Geometry cap (500 × 200 proposed, or 1000 × 300). Reject (prototyped)
+   or clamp?
+4. Engine feed slice of 64 B, and whether REP counts may be clamped (a
+   semantic change).
+5. Sync: engine hold 0 plus a 150 ms first-BSU deadline. Adapter-side
+   snapshot deferral, or allow engine buffering with a hold H?
+6. Chunk of 4 KiB and a 16 MiB queue. Accept that bulk output to a slower
+   host disconnects, or redesign #48 (for example coalesce or repaint
+   instead of a raw queue)?
+7. No-progress timeout of 5 s. Overall deadline fixed, or size-scaled
+   (30 s + bytes / 4 MiB/s proposed)?
+8. Restoration snapshot: per-attachment materialized (prototyped, pump
+   blocking), or grid clone plus off-pump or incremental serialization?
+   Resize coalescing?
+
+-------------------------------------------------------------------------------
+ACTION LOG
+1. Read the handoff, AGENTS.md, the issue-tracker and domain docs,
+   GLOSSARY.md and ADR 0004, plus:
+   - #43 comments 6531012875, 6544545973 and 6545123700
+   - #48 comment 6544545850
+   - #56 comment 6541687949
+   - the #53 resolution and the sibling wayfinder handoff
+2. Created the worktree and branch prototype/resource-budgets-48 from
+   63256f6. Changed run.sh to use -j1 and --test-threads=1.
+3. Studied the vte 0.15.0 and Alacritty bbb2cbf seams (OSC dispatch on
+   CAN/SUB, REP loop, sync buffer, hyperlink Arc, title stack, geometry).
+4. Tests first for admission, geometry and delivery, including the real
+   socket test. Confirmed red, implemented, green. Committed 0fafb35.
+5. Copied restore.rs from f113bb6 and wrote the budgets measurement binary
+   (counting allocator ceiling) and measure.py (RSS and wall watchdog,
+   stepwise growth, skip by estimate).
+6. The first matrix showed REP+IRM and sync-flush amplification. Wrote
+   tests first for feed::EngineFeed (slice plus sync hold), confirmed red,
+   implemented, green.
+7. Ran the full matrix (463 runs) and the slice-overhead runs (20). Removed
+   one duplicated row from an aborted invocation.
+8. Hand mutants found 2 survivors in admission:
+   - the cap boundary was untested; added a test
+   - CAN before ESC was redundant with vte (ESC re-enters Escape);
+     simplified
+   Result: 11 of 11 killed.
+9. Full run.sh passed (fmt, clippy -D warnings, 46 tests). Wrote this file.
