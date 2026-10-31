@@ -67,7 +67,8 @@ if queued-input flushing fails. That failure-only cleanup change followed the
 native run; successful PTY cases still pass, without another native run.
 Complexity-only maximum CC 9; mutation-site scan only, not mutation acceptance.
 
-Still outstanding: paste with multiline/Unicode data, full application
+Subsequent multiline/Unicode evidence is in NATIVE-MULTILINE-PASTE.txt.
+Still outstanding: broader paste policies/variants, full application
 mode/cursor alignment, native rendition/physical Unicode and resize fidelity, Basic memory
 retention behavior, iTerm2/VS Code, supported-profile coverage and #45 harness
 integration. Client/daemon protocol boundaries remain outside this fixture.

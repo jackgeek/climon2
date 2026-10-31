@@ -11,6 +11,7 @@ import time
 from terminal_app import script, validate_target
 
 
+TITLE_MARKER = "CLIMON2-52-NATIVE-TEST"
 COPY_TARGETS = {
     "soft": "SOFT01234567890123456789tail",
     "hard": "HARD-A\n",
@@ -26,7 +27,7 @@ def quote(value):
 
 def gui(window, tty, action):
     name = script(window, tty, f"name of window id {window}")
-    if "CLIMON2-52-NATIVE-TEST" not in name:
+    if TITLE_MARKER not in name:
         raise RuntimeError("dedicated GUI target title no longer matches")
     source = f"""
 tell application "Terminal"
@@ -38,7 +39,8 @@ tell application "Terminal"
 end tell
 tell application "System Events"
     tell process "Terminal"
-        set targetWindow to window {quote(name)}
+        if (count of (every window whose name contains {quote(TITLE_MARKER)})) is not 1 then error "Dedicated GUI marker is ambiguous"
+        set targetWindow to a reference to (first window whose name contains {quote(TITLE_MARKER)})
         repeat 20 times
             if frontmost is true and value of attribute "AXMain" of targetWindow is true then exit repeat
             delay 0.05

@@ -1,0 +1,15 @@
+{
+  "status": "passed",
+  "sample": "multiline-unicode",
+  "payload_utf8_preserved": true,
+  "bracketed_on_exact": true,
+  "bracketed_on_newline": "CR",
+  "bracketed_off_exact": true,
+  "bracketed_off_newline": "CR",
+  "attempt": "67ecd61f8ea94ae3",
+  "restoration_target_bracketed_mode": false,
+  "state_source": "permissioned-off-baseline",
+  "input_modes_restored": true,
+  "host_mode_restore_emitted": true,
+  "boundary": "exact synthetic paste bytes; no client/daemon or mode capture implementation"
+}

@@ -14,6 +14,14 @@ import tty
 
 
 PAYLOAD = b"PASTE-52-SYNTHETIC"
+SAMPLES = {
+    "ascii": PAYLOAD,
+    "multiline-unicode": "# PASTE-52-\u754ce\u0301\n# SECOND-52".encode("utf-8"),
+}
+
+
+def payload_for(sample):
+    return SAMPLES[sample]
 
 
 class ModeUnavailable(RuntimeError):
@@ -36,7 +44,7 @@ def set_mode(enabled):
     emit(b"\x1b[?2004h" if enabled else b"\x1b[?2004l")
 
 
-def read_bytes(fd, length, timeout, expected=None):
+def read_bytes(fd, length, timeout):
     data = bytearray()
     deadline = time.monotonic() + timeout
     while len(data) < length:
@@ -47,8 +55,6 @@ def read_bytes(fd, length, timeout, expected=None):
         if not chunk:
             raise EOFError("synthetic receiver reached EOF")
         data.extend(chunk)
-        if expected is not None and not expected.startswith(data):
-            raise RuntimeError("paste bytes do not match the synthetic stage; contents not recorded")
     return bytes(data)
 
 
@@ -61,17 +67,44 @@ def query_mode(fd):
     return reported_mode(reply)
 
 
-def receive_pastes(fd, attempt):
+def paste_frames(payload, bracketed):
+    variants = {"none": payload}
+    if b"\n" in payload:
+        variants = {
+            "LF": payload, "CR": payload.replace(b"\n", b"\r"),
+            "CRLF": payload.replace(b"\n", b"\r\n"),
+        }
+    prefix, suffix = (b"\x1b[200~", b"\x1b[201~") if bracketed else (b"", b"")
+    return {prefix + data + suffix: newline for newline, data in variants.items()}
+
+
+def observe_paste(fd, payload, bracketed):
+    frames = paste_frames(payload, bracketed)
+    data = b""
+    deadline = time.monotonic() + 10
+    while True:
+        data += read_bytes(fd, 1, deadline - time.monotonic())
+        if data in frames:
+            return frames[data]
+        if not any(frame.startswith(data) for frame in frames):
+            raise RuntimeError("paste bytes are not a known synthetic variant; contents not recorded")
+
+
+def receive_pastes(fd, attempt, sample="ascii"):
+    payload = payload_for(sample)
     for index in range(32):
         emit(f"PASTE-52-ROW-{index:03}\r\n".encode())
     set_mode(True)
     emit(f"ON-52-{attempt}\r\n".encode())
-    bracketed = b"\x1b[200~" + PAYLOAD + b"\x1b[201~"
-    read_bytes(fd, len(bracketed), 10, bracketed)
+    on_newline = observe_paste(fd, payload, True)
     set_mode(False)
     emit(f"OFF-52-{attempt}\r\n".encode())
-    read_bytes(fd, len(PAYLOAD), 10, PAYLOAD)
-    return {"status": "passed", "bracketed_on_exact": True, "bracketed_off_exact": True}
+    off_newline = observe_paste(fd, payload, False)
+    return {
+        "status": "passed", "sample": sample, "payload_utf8_preserved": True,
+        "bracketed_on_exact": True, "bracketed_on_newline": on_newline,
+        "bracketed_off_exact": True, "bracketed_off_newline": off_newline,
+    }
 
 
 def interrupted(_signal, _frame):
@@ -85,7 +118,7 @@ def configured_attributes(fd):
     return attributes
 
 
-def run_session(fd, attempt, off_baseline):
+def run_session(fd, attempt, off_baseline, sample="ascii"):
     attributes = termios.tcgetattr(fd)
     configured = configured_attributes(fd)
     restoration_target = None
@@ -99,7 +132,7 @@ def run_session(fd, attempt, off_baseline):
             set_mode(False)
         else:
             restoration_target = query_mode(fd)
-        result = receive_pastes(fd, attempt)
+        result = receive_pastes(fd, attempt, sample)
     except ModeUnavailable as error:
         result = {"status": "blocked", "reason": str(error)}
     finally:
@@ -133,6 +166,7 @@ def main():
     parser.add_argument("--expected-tty", required=True)
     parser.add_argument("--attempt", required=True)
     parser.add_argument("--report-file", type=Path, required=True)
+    parser.add_argument("--sample", choices=SAMPLES, default="ascii")
     args = parser.parse_args()
     if re.fullmatch(r"[0-9a-f]{16}", args.attempt) is None:
         parser.error("attempt must contain exactly 16 lowercase hexadecimal characters")
@@ -141,7 +175,9 @@ def main():
             raise RuntimeError("paste fixture requires the authorized input/output TTY")
     if args.report_file.exists():
         raise RuntimeError("refusing to overwrite an existing paste report")
-    result = run_session(sys.stdin.fileno(), args.attempt, args.off_baseline_permission_confirmed)
+    result = run_session(
+        sys.stdin.fileno(), args.attempt, args.off_baseline_permission_confirmed, args.sample,
+    )
     with args.report_file.open("x") as output:
         json.dump(result, output, indent=2)
         output.write("\n")

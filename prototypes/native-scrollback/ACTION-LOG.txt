@@ -145,3 +145,37 @@ Permissioned native paste / initial-state query:
     scan establish neither CRAP nor zero-survivor acceptance. No new dependency
     or production implementation. Both native outcomes and the action log are
     persisted on the isolated branch and linked from #52.
+
+Permissioned multiline / Unicode native paste:
+41. Obtained fresh permission for known two-line wide/combining clipboard text,
+    raw receiver ON/OFF with the explicit OFF baseline, no query/profile/new
+    window changes, and stopping rather than approving a paste-warning dialog.
+42. Observed the missing Unicode data-shape regression, then added a finite
+    sample consisting of two shell-comment lines. These remain non-executable
+    if a delayed paste reaches the owned shell after receiver exit.
+43. Replaced the single-frame matcher with byte-exact known LF/CR/CRLF variants.
+    Wide/combining bytes are not normalized. Scratch-PTY tests cover all three
+    newline forms; a composed-Unicode substitute fails. Removed the redundant
+    seed/accessor test once the real CLI/PTY cases pinned the behavior.
+44. Added owned-dialog/focus guards around Cmd+V and a no-second-write regression.
+    Mismatched report samples fail explicitly. The offline runner remained
+    headless and used bounded build/test concurrency.
+45. First native receiver recorded Unicode preserved and CR newlines ON/OFF,
+    then the observer failed after receiver exit because its cached full window
+    title changed. Preserved receiver evidence, but did not count that attempt
+    as a passing controller oracle. Verified Basic/24x6/busy false.
+46. Verified live AppleScript owned-marker reference syntax without UI mutation.
+    Replaced the cached full-title selector with a live unique-marker reference,
+    keeping original ID/TTY/title/single-tab/main-focus guards and rejecting
+    ambiguous markers. No warning approval or success-shaped fallback was added.
+47. Re-ran the same full native command: controller and receiver passed through
+    the natural exit/title-change boundary. Both modes preserve U+754C and
+    e + U+0301 UTF-8 bytes; clipboard LF arrives as CR. Two native attempts used
+    four synthetic clipboard writes/Cmd+V total; no reads, new queries or profile
+    changes. OFF cleanup emitted, input attributes restored, tab Basic/24x6/
+    busy false. No paste warning was observed or approved.
+48. Final runner passed 10 Rust + 30 Python runtime tests, formatting/Clippy and
+    whitespace checks. New receiver/driver complexity-only maximum CC 8; mutation
+    site scan only, not CRAP/zero-survivor acceptance. Native result, prior
+    receiver diagnostic and action log persist on the isolated branch, linked
+    from #52. Production is unchanged; host/release/HITL gaps remain explicit.

@@ -1,0 +1,70 @@
+THROWAWAY #52 - native multiline/Unicode paste, 2026-10-31.
+NOT complete host/profile qualification or product implementation.
+
+Environment: Terminal 2.15 (470.2), macOS 26.7.1 (25G241), dedicated 24x6
+Basic tab, MesloLGS-NF-Regular 11; Python 3.9.6 standard library.
+Permission: two-line synthetic clipboard replacement, raw receiver ON/OFF,
+explicit OFF baseline/cleanup, no mode query or profile/new-window changes.
+Stop rather than approve any paste-warning dialog.
+
+Input sample (UTF-8):
+  "# PASTE-52-" + U+754C + "e" + U+0301 + LF + "# SECOND-52"
+Both lines are shell comments, with no trailing newline. No arbitrary clipboard
+or previous clipboard data is read, saved or restored.
+
+Expected: native Cmd+V supplies exact bracketed framing when ON and no framing
+when OFF. The matcher admits only the known sample with LF, CR or CRLF between
+lines, reports which arrived, and preserves all other bytes exactly. It neither
+normalizes Unicode nor accepts unrelated text. Reads remain bounded by the
+longest known frame and the existing deadline; errors do not record input.
+
+Actual passing result: terminal-app-multiline-paste-results.txt.
+  sample: multiline-unicode
+  status: passed
+  payload_utf8_preserved: true
+  bracketed_on_newline: CR
+  bracketed_off_newline: CR
+Native Terminal converted the clipboard's LF to CR in BOTH modes. U+754C and
+the decomposed e + U+0301 bytes remained exact. The *_exact flags mean exact
+known variants including the reported newline transformation, not unchanged LF.
+ON adds ESC[200~ / ESC[201~; OFF delivers plain sample bytes.
+This measures input bytes, not rendered glyph width/appearance or general
+Unicode/newline policy across terminals, profiles and clipboard flavors.
+
+First attempt: receiver passed, controller failed after the receiver exited
+and Terminal changed its derived full window title. The receiver-only diagnostic
+is terminal-app-multiline-first-receiver.json. It is NOT a passing full oracle.
+The GUI adapter now uses a live reference selected by the unchanged unique
+owned marker, instead of a cached derived title. Original Terminal ID/TTY,
+marker, single-tab and focused/main guards remain; ambiguous markers stop.
+The same native command then passed through that actual exit/title-change
+boundary. No error was suppressed merely because a receiver report existed.
+
+Two attempts: four known synthetic clipboard writes and four Cmd+V operations
+total; passing rerun contains two. No clipboard reads. No warning was observed
+or approved; sheet/focus loss stops the controller before further paste, while
+the bounded receiver cleans up. Fixture emitted the agreed OFF cleanup and
+restored configured termios (excluding only transient PENDIN readback state).
+Dedicated tab verified Basic/24x6/busy false. No other window/profile changed.
+Unknown original host bracketed mode is intentionally replaced by the OFF
+baseline, NOT restored or read back; the resumed shell controls its own modes.
+
+Reproduce only with new explicit permissions on an identified dedicated tab:
+  python3 prototypes/native-scrollback/terminal_paste.py \
+    --permission-confirmed --clipboard-permission-confirmed \
+    --off-baseline-permission-confirmed --sample multiline-unicode \
+    --window-id WINDOW_ID --tty /dev/ttysNNN
+Do not approve a warning automatically. Native IDs and report paths are scoped
+and nonce-specific; the offline runner performs no native GUI/clipboard actions.
+
+Validation: 10 Rust + 30 Python runtime tests, formatting and Clippy. PTYs cover
+LF/CR/CRLF framing and real input-mode cleanup; composed-Unicode substitution,
+wrong-sample reports and dialog errors fail. New receiver/driver maximum CC 8
+is complexity-only; mutation-site scan is NOT CRAP or zero-survivor acceptance.
+No dependencies installed, production changes or release-support claim.
+
+Remaining #52: broader paste/profile policies and warning-path acceptance,
+full application modes/cursor/protocol alignment, native rendition/physical
+Unicode/resize fidelity, Basic memory-retention behavior, iTerm2/VS Code and
+supported-profile/#45 release-harness qualification. No human reaction to this
+stage has been recorded; permission is not acceptance. #52 remains open.

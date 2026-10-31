@@ -8,8 +8,8 @@ import termios
 import unittest
 from unittest.mock import Mock, patch
 
-from paste_input import ModeUnavailable, query_mode, reported_mode, run_session
-from terminal_paste import paste_stages
+from paste_input import ModeUnavailable, observe_paste, payload_for, query_mode, reported_mode, run_session
+from terminal_paste import paste_stages, validate_report
 from test_interactive_input import wait_for
 
 
@@ -25,7 +25,7 @@ class PasteTests(unittest.TestCase):
             with self.subTest(reply=reply), self.assertRaises(ModeUnavailable):
                 reported_mode(reply)
 
-    def run_fixture(self, mode, valid=True, off_baseline=False):
+    def run_fixture(self, mode, valid=True, off_baseline=False, sample="ascii", newline=b"\n"):
         with tempfile.TemporaryDirectory(prefix="climon2-paste-52-") as directory:
             report_file = Path(directory) / "report.json"
             master, slave = os.openpty()
@@ -34,6 +34,7 @@ class PasteTests(unittest.TestCase):
                 sys.executable, str(FIXTURE), "--permission-confirmed",
                 "--expected-tty", os.ttyname(slave), "--attempt", ATTEMPT,
                 "--report-file", str(report_file),
+                "--sample", sample,
             ]
             if off_baseline:
                 command.append("--off-baseline-permission-confirmed")
@@ -51,11 +52,14 @@ class PasteTests(unittest.TestCase):
                     ready = wait_for(master, f"ON-52-{ATTEMPT}".encode())
                     if off_baseline:
                         self.assertNotIn(b"\x1b[?2004$p", ready)
-                    data = b"PASTE-52-SYNTHETIC" if valid else b"UNEXPECTED"
+                    data = b"PASTE-52-SYNTHETIC"
+                    if sample == "multiline-unicode":
+                        data = "# PASTE-52-\u754ce\u0301\n# SECOND-52".encode("utf-8")
+                    data = data.replace(b"\n", newline) if valid else b"UNEXPECTED"
                     os.write(master, b"\x1b[200~" + data + b"\x1b[201~")
                     if valid:
                         wait_for(master, f"OFF-52-{ATTEMPT}".encode())
-                        os.write(master, b"PASTE-52-SYNTHETIC")
+                        os.write(master, data)
                         output = wait_for(master, f"OK-52-{ATTEMPT}".encode())
                     else:
                         output = b""
@@ -136,6 +140,39 @@ class PasteTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "flush failed"):
                 run_session(0, ATTEMPT, False)
             restore.assert_called_once_with(0, termios.TCSANOW, attributes)
+
+    def test_multiline_pty_preserves_utf8_and_reports_each_known_newline_variant(self):
+        for label, newline in [("LF", b"\n"), ("CR", b"\r"), ("CRLF", b"\r\n")]:
+            with self.subTest(newline=label):
+                code, report, _ = self.run_fixture(
+                    None, off_baseline=True, sample="multiline-unicode", newline=newline,
+                )
+                self.assertEqual(code, 0)
+                self.assertTrue(report["payload_utf8_preserved"])
+                self.assertEqual(report["bracketed_on_newline"], label)
+                self.assertEqual(report["bracketed_off_newline"], label)
+
+    def test_composed_unicode_is_not_silently_accepted_as_preserved_combining_bytes(self):
+        composed = "# PASTE-52-\u754c\u00e9\n# SECOND-52".encode("utf-8")
+        chunks = [bytes([byte]) for byte in composed]
+        with patch("paste_input.read_bytes", side_effect=chunks):
+            with self.assertRaisesRegex(RuntimeError, "not a known synthetic variant"):
+                observe_paste(0, payload_for("multiline-unicode"), False)
+
+    def test_paste_dialog_error_stops_before_any_second_clipboard_write(self):
+        with patch("terminal_paste.wait_stage", return_value=None), \
+                patch("terminal_paste.subprocess.run") as process, \
+                patch("terminal_paste.gui", side_effect=RuntimeError("Owned paste dialog appeared")):
+            with self.assertRaisesRegex(RuntimeError, "paste dialog"):
+                paste_stages(258, "/dev/ttys008", ATTEMPT, Mock(), "multiline-unicode")
+            process.assert_called_once()
+
+    def test_report_for_another_sample_is_not_native_paste_success(self):
+        report = {
+            "attempt": ATTEMPT, "status": "passed", "input_modes_restored": True, "sample": "ascii",
+        }
+        with self.assertRaisesRegex(RuntimeError, "sample does not match"):
+            validate_report(report, ATTEMPT, "multiline-unicode")
 
 
 if __name__ == "__main__":
