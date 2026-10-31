@@ -38,9 +38,14 @@ Environment and observations
   No fallback input injection or weakened focus guard was used.
   vscode-manual-splash-results.json: developer requested a retry with manual
   splash dismissal. A fresh isolated instance paused before terminal creation;
-  developer confirmed readiness. The same missing focused-element failure
-  occurred afterward, before input or clipboard use. Splash dismissal did
-  not resolve this observer blocker.
+  developer confirmed readiness. The receiver had already emitted ready-0,
+  then its fixed eight-second input wait elapsed while the controller was
+  waiting for manual focus. Its result has matched=false and received_length
+  zero; it exited 1, which VS Code surfaced as a terminal-process launch error.
+  This reproduces the reported symptom; it was not a PTY/profile launch defect.
+  The earlier missing-focused-element failure is downstream of the same
+  premature receiver exit, so it did not establish that VS Code lacks the AX
+  focus interface.
 
   Latest log verified shared application storage under /tmp/c56-*/shared,
   not the default shared path. This is observed storage isolation, not a
@@ -48,6 +53,28 @@ Environment and observations
   Latest owned root process absent after cleanup (exact PID 4271). Temporary
   profiles/workspaces were removed. Root termination alone is not proof that
   every helper process has exited; no broad process kill was used.
+
+Latest continuation: Bash and focus
+  The developer suggested opening Bash instead of Python. An isolated VS Code
+  1.144.0 window displayed a normal /bin/bash prompt, which the developer
+  confirmed. The offline PTY regression also launches the full receiver from
+  Bash, passes the six key and four known paste cases, and returns to a live
+  Bash prompt. This verifies Bash/Python PTY startup, not native VS Code input.
+
+  An earlier AX-only controller run closed its owned VS Code window during
+  normal cleanup; its launch log records the PTY host and helpers being
+  terminated with signal 15. This is consistent with the controller teardown,
+  not evidence that Python failed to start. The user could not inspect that
+  window, so a later run held at the manual gate until the Bash prompt was
+  inspected.
+
+  Two full Bash-backed attempts then stopped before any native key, paste or
+  clipboard action. The first hit a missing AXFocusedUIElement while obtaining
+  its description. After guarded actions were changed not to raise/refocus the
+  window, the second still failed the terminal-focus guard. A further AX-only
+  run classified AXFocusedUIElement as missing even after the developer
+  manually clicked the Bash prompt. No guard was bypassed; native VS Code
+  cursor/keypad/paste behavior remains unqualified.
 
 Test seam
   Receiver includes independent expected key bytes and exact known paste
@@ -62,14 +89,16 @@ Reproduction
   Offline from prototypes/native-input:
     python3 -m unittest -v
     python3 -m py_compile receiver.py vscode.py
-  Three PTY tests pass; syntax and diff whitespace checks pass.
+  Nine PTY/profile/automation-script tests pass; syntax and diff whitespace
+  checks pass.
   No new mutation, CRAP, duplication, release or full-workspace pass claimed.
 
   Native command ONLY with fresh explicit isolated-window and clipboard
   permission and available macOS automation:
     python3 vscode.py --permission-confirmed --clipboard-permission-confirmed
-  Currently expected to stop at the native focus-observer seam if unchanged.
-  Do not treat a generated report/checkpoint as permission to bypass the guard.
+  The latest full attempt stops at the native focus-observer seam. Do not treat
+  a generated report/checkpoint or manual click as permission to bypass the
+  guard.
   Raw diagnostic logs are retained locally under ignored artifacts, not
   published. Sanitized findings and failure reports contain no user text.
 
@@ -83,9 +112,26 @@ Action log
   unintended shared-storage access and redirected supported paths; retried
   after restart; stopped at missing focused-element evidence rather than
   weakening the safety guard; checked owned-root cleanup and offline tests.
+  On continuation, changed the isolated profile to Bash, let the developer
+  inspect a live Bash prompt, and validated the Bash-backed receiver on PTY.
+  Added a manual focus gate and stopped two native attempts before input when
+  AX focus remained unavailable. Ran one AX-only classification, which
+  confirmed the focused element was missing; no clipboard or key data was read.
+
+Fix and verification
+  Inspection-only mode now opens a plain Bash prompt so the developer can
+  inspect a live shell before the AX check. Native qualification launches the
+  receiver as a Bash child and leaves Bash open afterward. Explicit manual
+  focus confirmation uses a 600-second receiver deadline; default runs retain
+  eight seconds. Terminal-focused automation no longer raises/refocuses the
+  app before checking AX focus, and missing AX focus fails closed. Nine offline
+  tests pass, including PTY execution through Bash, focus-deadline behavior,
+  prompt persistence and focus-guard script generation. These changes do not
+  establish native VS Code support.
 
 Remaining
-  Establish a reliable owned-terminal focus oracle (or obtain a separately
-  approved human-driven test), then execute actual native input assertions.
-  Existing native host/engine/protocol acceptance remains open. Permission
-  to attempt tests is not human acceptance of a qualification result.
+  AXFocusedUIElement remains unavailable after manual focus in VS Code 1.144.0.
+  No native key or paste assertion may proceed until a reliable, non-invasive
+  terminal-focus observation is available; do not substitute a manual click for
+  the guard. Existing native host/engine/protocol acceptance remains open.
+  Permission to attempt tests is not human acceptance of a qualification result.

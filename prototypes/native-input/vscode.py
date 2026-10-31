@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -18,8 +19,17 @@ EXECUTABLE = "/Applications/Visual Studio Code.app/Contents/MacOS/Code"
 
 
 def gui(pid, marker, action, require_terminal=False):
+    activation = "" if require_terminal else """
+        set frontmost of ownedProcess to true
+        perform action "AXRaise" of ownedWindow
+        repeat 20 times
+            if frontmost of ownedProcess is true and value of attribute "AXMain" of ownedWindow is true then exit repeat
+            delay 0.05
+        end repeat
+    """
     focus_guard = """
         set focusedElement to value of attribute "AXFocusedUIElement" of ownedProcess
+        if focusedElement is missing value then error "Owned terminal input is not focused"
         set focusedDescription to description of focusedElement
         if focusedDescription does not contain "Terminal" then error "Owned terminal input is not focused"
     """ if require_terminal else ""
@@ -30,12 +40,7 @@ def gui(pid, marker, action, require_terminal=False):
         if (count of ownedWindows) is not 1 then error "Owned VS Code window is ambiguous"
         set ownedWindow to item 1 of ownedWindows
         if exists sheet 1 of ownedWindow then error "Owned dialog pending; no approval sent"
-        set frontmost of ownedProcess to true
-        perform action "AXRaise" of ownedWindow
-        repeat 20 times
-            if frontmost of ownedProcess is true and value of attribute "AXMain" of ownedWindow is true then exit repeat
-            delay 0.05
-        end repeat
+        {activation}
         if frontmost of ownedProcess is not true then error "Owned VS Code is not focused"
         if value of attribute "AXMain" of ownedWindow is not true then error "Owned window is not main"
         {focus_guard}
@@ -66,13 +71,95 @@ def wait_window(process, marker):
     raise TimeoutError("Owned VS Code window did not appear")
 
 
-def configure(root, marker):
+def inspect_ax_tree(pid, marker):
+    return script(f"""
+    on safeText(itemValue)
+        if itemValue is missing value then return ""
+        try
+            return itemValue as text
+        on error
+            return "unavailable"
+        end try
+    end safeText
+    tell application "System Events"
+        set ownedProcesses to every application process whose unix id is {pid}
+        if (count of ownedProcesses) is not 1 then error "Owned process missing or ambiguous"
+        set ownedProcess to item 1 of ownedProcesses
+        set ownedWindows to every window of ownedProcess whose name contains {quote(marker)}
+        if (count of ownedWindows) is not 1 then error "Owned window missing or ambiguous"
+        set ownedWindow to item 1 of ownedWindows
+        set resultLines to {{"process|" & ((name of attributes of ownedProcess) as text)}}
+        set focusedClassification to "missing"
+        try
+            set focusedElement to value of attribute "AXFocusedUIElement" of ownedProcess
+            if focusedElement is not missing value then
+                set focusedClassification to "other"
+                try
+                    if (safeText(role of focusedElement)) contains "Terminal" then
+                        set focusedClassification to "terminal"
+                    end if
+                end try
+                try
+                    if (safeText(description of focusedElement)) contains "Terminal" then
+                        set focusedClassification to "terminal"
+                    end if
+                end try
+            end if
+        end try
+        set end of resultLines to "focused|" & focusedClassification
+        set elements to entire contents of ownedWindow
+        set total to count of elements
+        if total > 500 then set total to 500
+        repeat with index from 1 to total
+            set elementRef to item index of elements
+            set elementRole to ""
+            set elementSubrole to ""
+            set elementFocused to ""
+            set elementAttributes to ""
+            try
+                set elementRole to safeText(role of elementRef)
+            end try
+            try
+                set elementSubrole to safeText(subrole of elementRef)
+            end try
+            try
+                set elementAttributes to (name of attributes of elementRef) as text
+            end try
+            try
+                set elementFocused to safeText(value of attribute "AXFocused" of elementRef)
+            end try
+            set end of resultLines to (elementRole & "|" & elementSubrole & "|" & elementFocused & "|" & elementAttributes)
+        end repeat
+        return "window|" & ((name of attributes of ownedWindow) as text) & linefeed & (resultLines as text)
+    end tell
+    """)
+
+
+def configure(root, marker, inspect_only=False, manual_focus=False):
     profile = root / "profile" / "User"
     profile.mkdir(parents=True)
     workspace = root / marker
     workspace.mkdir()
     reports = root / "reports"
     reports.mkdir()
+    if inspect_only:
+        terminal_profile = {"path": "/bin/bash", "args": ["--noprofile", "--norc"]}
+    else:
+        receiver_command = shlex.join([
+            sys.executable, str(Path(__file__).with_name("receiver.py")),
+            "--expected-tty", "self", "--report-dir", str(reports),
+            "--suite", "vscode", "--input-timeout-seconds",
+            "600" if manual_focus else "8",
+        ])
+        shell_command = (
+            f"{receiver_command}; receiver_status=$?; "
+            'printf "\\nNativeInputFixture exited with status %s\\n" "$receiver_status"; '
+            "exec /bin/bash --noprofile --norc"
+        )
+        terminal_profile = {
+            "path": "/bin/bash",
+            "args": ["--noprofile", "--norc", "-c", shell_command],
+        }
     settings = {
         "workbench.startupEditor": "none",
         "window.restoreWindows": "none",
@@ -86,21 +173,28 @@ def configure(root, marker):
         "terminal.integrated.shellIntegration.enabled": False,
         "terminal.integrated.defaultProfile.osx": "NativeInputFixture",
         "terminal.integrated.profiles.osx": {
-            "NativeInputFixture": {
-                "path": sys.executable,
-                "args": [str(Path(__file__).with_name("receiver.py")),
-                         "--expected-tty", "self", "--report-dir", str(reports),
-                         "--suite", "vscode"],
-            },
+            "NativeInputFixture": terminal_profile,
         },
     }
     (profile / "settings.json").write_text(json.dumps(settings, indent=2))
     return workspace, reports
 
 
-def run(root, human_ready_file=None):
+def wait_for_human_file(path, process, timeout, message):
+    deadline = time.monotonic() + timeout
+    while not path.exists():
+        if process.poll() is not None:
+            raise RuntimeError(message)
+        if time.monotonic() >= deadline:
+            raise TimeoutError(message)
+        time.sleep(0.2)
+
+
+def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=False):
     marker = "CLIMON2-56-VSCODE-" + root.name
-    workspace, reports = configure(root, marker)
+    workspace, reports = configure(
+        root, marker, inspect_only, manual_focus=terminal_focus_file is not None,
+    )
     with Path("/Applications/Visual Studio Code.app/Contents/Info.plist").open("rb") as source:
         version = plistlib.load(source)["CFBundleShortVersionString"]
     environment = os.environ.copy()
@@ -121,15 +215,11 @@ def run(root, human_ready_file=None):
         }))
         try:
             wait_window(process, marker)
-            if human_ready_file is not None:
+            if window_ready_file is not None:
                 print(f"Owned VS Code window opened: {marker}. Waiting for manual readiness.", flush=True)
-                deadline = time.monotonic() + 600
-                while not human_ready_file.exists():
-                    if process.poll() is not None:
-                        raise RuntimeError("Owned VS Code exited during manual readiness pause")
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError("Manual readiness pause expired")
-                    time.sleep(0.2)
+                wait_for_human_file(
+                    window_ready_file, process, 600, "Manual window-readiness pause expired",
+                )
             deadline = time.monotonic() + 20
             while gui(process.pid, marker, """
                 tell ownedProcess
@@ -144,7 +234,27 @@ def run(root, human_ready_file=None):
                     click menu item "New Terminal" of menu 1 of menu bar item "Terminal" of menu bar 1
                 end tell
             """)
+            if inspect_only:
+                if terminal_focus_file is None:
+                    raise RuntimeError("AX inspection requires manual focus confirmation")
+                print("Inspect the Bash prompt, then focus the terminal pane and confirm readiness.", flush=True)
+                wait_for_human_file(
+                    terminal_focus_file, process, 600, "Manual focus confirmation expired",
+                )
+                return {"status": "INSPECTED", "host": version,
+                        "profile": "isolated NativeInputFixture; accessibility on, extensions disabled",
+                        "ax": inspect_ax_tree(process.pid, marker),
+                        "boundary": "Accessibility metadata only; no native key, paste or clipboard action"}
             result_path = reports / "result.json"
+            if terminal_focus_file is not None:
+                wait_file(reports / "ready-0.json", result_path)
+                if process.poll() is not None or result_path.exists():
+                    raise RuntimeError("Owned test process ended before manual focus")
+                print("Inspect the Bash-backed fixture, focus its terminal pane, then confirm readiness.",
+                      flush=True)
+                wait_for_human_file(
+                    terminal_focus_file, process, 600, "Manual focus confirmation expired",
+                )
             for index in range(10):
                 stage = wait_file(reports / f"ready-{index}.json", result_path)
                 if process.poll() is not None or result_path.exists():
@@ -185,16 +295,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--permission-confirmed", action="store_true", required=True)
     parser.add_argument("--clipboard-permission-confirmed", action="store_true", required=True)
-    parser.add_argument("--human-ready-file", type=Path)
+    parser.add_argument("--window-ready-file", type=Path)
+    parser.add_argument("--terminal-focus-file", type=Path)
+    parser.add_argument("--inspect-only", action="store_true")
     args = parser.parse_args()
-    if args.human_ready_file is not None and args.human_ready_file.exists():
-        parser.error("manual readiness path must be new")
+    for path in (args.window_ready_file, args.terminal_focus_file):
+        if path is not None and path.exists():
+            parser.error("manual readiness paths must be new")
     parent = Path(__file__).parent / "artifacts"
     parent.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="c56-", dir="/tmp") as directory:
         root = Path(directory)
         try:
-            report = run(root, args.human_ready_file)
+            report = run(root, args.window_ready_file, args.terminal_focus_file, args.inspect_only)
         except (RuntimeError, TimeoutError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
             report = {"status": "FAIL", "error": str(error)}
             result = root / "reports" / "result.json"

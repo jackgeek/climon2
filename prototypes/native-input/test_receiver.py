@@ -10,6 +10,9 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
+
+from vscode import configure, gui, inspect_ax_tree
 
 
 class ReceiverTests(unittest.TestCase):
@@ -70,6 +73,150 @@ class ReceiverTests(unittest.TestCase):
             finally:
                 os.close(master)
                 os.close(slave)
+
+    def test_receiver_can_wait_for_manual_focus_longer_than_key_deadline(self):
+        expected = [b"\x1b[A", b"\x1bOA", b"\x1b[A", b"1", b"\x1bOq", b"1"]
+        with tempfile.TemporaryDirectory() as directory:
+            master, slave = pty.openpty()
+            try:
+                with subprocess.Popen(
+                    [sys.executable, str(Path(__file__).with_name("receiver.py")),
+                     "--expected-tty", os.ttyname(slave), "--report-dir", directory,
+                     "--suite", "keys", "--input-timeout-seconds", "12"],
+                    stdin=slave, stdout=slave, stderr=subprocess.PIPE,
+                ) as process:
+                    checkpoint = Path(directory) / "ready-0.json"
+                    deadline = time.monotonic() + 5
+                    while not checkpoint.exists() and process.poll() is None:
+                        if time.monotonic() >= deadline:
+                            self.fail("receiver did not announce first key stage")
+                        if select.select([master], [], [], 0.05)[0]:
+                            os.read(master, 4096)
+                    self.assertTrue(
+                        checkpoint.exists(),
+                        process.stderr.read() if process.poll() is not None else "",
+                    )
+                    time.sleep(8.5)
+                    self.assertIsNone(process.poll(), "receiver exited during manual focus wait")
+                    for index, payload in enumerate(expected):
+                        if index:
+                            ready = Path(directory) / f"ready-{index}.json"
+                            deadline = time.monotonic() + 5
+                            while not ready.exists() and process.poll() is None:
+                                if time.monotonic() >= deadline:
+                                    self.fail("receiver did not announce the next key stage")
+                                if select.select([master], [], [], 0.05)[0]:
+                                    os.read(master, 4096)
+                        os.write(master, payload)
+                    _, errors = process.communicate(timeout=5)
+                    self.assertEqual(process.returncode, 0, errors.decode())
+                    report = json.loads((Path(directory) / "result.json").read_text())
+                    self.assertEqual(report["status"], "PASS")
+                    self.assertEqual(len(report["stages"]), len(expected))
+            finally:
+                os.close(master)
+                os.close(slave)
+
+    def test_inspection_profile_opens_a_persistent_bash_prompt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configure(root, "CLIMON2-56-TEST", inspect_only=True)
+            settings = json.loads((root / "profile" / "User" / "settings.json").read_text())
+            profile = settings["terminal.integrated.profiles.osx"]["NativeInputFixture"]
+            self.assertEqual(profile["path"], "/bin/bash")
+            self.assertEqual(profile["args"], ["--noprofile", "--norc"])
+            master, slave = pty.openpty()
+            try:
+                with subprocess.Popen(
+                    [profile["path"], *profile["args"]],
+                    stdin=slave, stdout=slave, stderr=slave,
+                ) as process:
+                    time.sleep(0.2)
+                    self.assertIsNone(process.poll(), "Bash prompt exited without input")
+                    os.write(master, b"exit\n")
+                    self.assertEqual(process.wait(timeout=5), 0)
+            finally:
+                os.close(master)
+                os.close(slave)
+
+    def test_native_input_profile_runs_receiver_from_bash_and_keeps_shell_open(self):
+        expected = [
+            b"\x1b[A", b"\x1bOA", b"\x1b[A", b"1", b"\x1bOq", b"1",
+            b"\x1b[200~# PASTE-56-ASCII\x1b[201~",
+            b"# PASTE-56-ASCII",
+            "\x1b[200~# PASTE-56-\u754ce\u0301\n# SECOND-56\x1b[201~".encode(),
+            "# PASTE-56-\u754ce\u0301\r\n# SECOND-56".encode(),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configure(root, "CLIMON2-56-TEST")
+            settings = json.loads((root / "profile" / "User" / "settings.json").read_text())
+            profile = settings["terminal.integrated.profiles.osx"]["NativeInputFixture"]
+            self.assertEqual(profile["path"], "/bin/bash")
+            master, slave = pty.openpty()
+            output = bytearray()
+            process = None
+
+            def wait_until(predicate, message):
+                deadline = time.monotonic() + 5
+                while not predicate():
+                    if select.select([master], [], [], 0.05)[0]:
+                        output.extend(os.read(master, 4096))
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        self.fail(message)
+
+            try:
+                process = subprocess.Popen(
+                    [profile["path"], *profile["args"]],
+                    stdin=slave, stdout=slave, stderr=slave,
+                )
+                for index, payload in enumerate(expected):
+                    ready = root / "reports" / f"ready-{index}.json"
+                    wait_until(ready.exists, "Bash did not start the receiver on the PTY")
+                    os.write(master, payload)
+
+                result = root / "reports" / "result.json"
+                wait_until(result.exists, "Bash-launched receiver did not finish")
+                report = json.loads(result.read_text())
+                self.assertEqual(report["status"], "PASS")
+                self.assertIsNone(process.poll(), "Bash exited with the receiver")
+                wait_until(
+                    lambda: b"NativeInputFixture exited with status 0" in output,
+                    "Bash did not report the receiver exit status",
+                )
+                os.write(master, b"exit\n")
+                self.assertEqual(process.wait(timeout=5), 0)
+            finally:
+                if process is not None and process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+                os.close(master)
+                os.close(slave)
+
+    def test_manual_focus_profile_allows_time_to_focus_before_native_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configure(root, "CLIMON2-56-TEST", manual_focus=True)
+            settings = json.loads((root / "profile" / "User" / "settings.json").read_text())
+            profile = settings["terminal.integrated.profiles.osx"]["NativeInputFixture"]
+            self.assertIn("--input-timeout-seconds 600", profile["args"][3])
+
+    def test_terminal_input_guard_does_not_raise_window_before_checking_focus(self):
+        with patch("vscode.script", side_effect=lambda value: value):
+            source = gui(1234, "CLIMON2-56-TEST", "key code 126", require_terminal=True)
+        self.assertNotIn("set frontmost of ownedProcess to true", source)
+        self.assertNotIn('perform action "AXRaise" of ownedWindow', source)
+        self.assertIn(
+            'if focusedElement is missing value then error "Owned terminal input is not focused"',
+            source,
+        )
+
+    def test_ax_inspection_reports_only_focused_element_classification(self):
+        with patch("vscode.script", side_effect=lambda value: value):
+            source = inspect_ax_tree(1234, "CLIMON2-56-TEST")
+        self.assertIn('set focusedClassification to "missing"', source)
+        self.assertIn('"focused|" & focusedClassification', source)
+        self.assertNotIn("value of focusedElement", source)
 
 
 if __name__ == "__main__":

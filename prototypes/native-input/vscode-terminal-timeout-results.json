@@ -1,0 +1,13 @@
+{
+  "status": "REPRODUCED",
+  "visible_symptom": "VS Code reports its configured terminal process failed to launch with exit code 1",
+  "receiver": {
+    "ready_checkpoint": "cursor-normal",
+    "expected_key_hex": "1b5b41",
+    "matched": false,
+    "received_length": 0,
+    "exit_code": 1
+  },
+  "cause": "The standalone receiver's eight-second input deadline expired while the controller waited for manual focus/readiness.",
+  "fix": "Inspection profile explicitly allows up to 600 seconds; normal input tests retain the eight-second default."
+}

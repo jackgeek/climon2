@@ -44,9 +44,9 @@ def publish(path, value):
     temporary.rename(path)
 
 
-def receive(fd, expected):
+def receive(fd, expected, timeout_seconds):
     received = bytearray()
-    deadline = time.monotonic() + 8
+    deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         wait = deadline - time.monotonic()
         if len(received) >= len(expected):
@@ -62,7 +62,7 @@ def receive(fd, expected):
     return bytes(received)
 
 
-def run(expected_tty, directory, stages=STAGES):
+def run(expected_tty, directory, stages=STAGES, input_timeout_seconds=8):
     fd = sys.stdin.fileno()
     if not os.isatty(fd) or os.ttyname(fd) != expected_tty:
         raise RuntimeError("receiver is not on its expected test TTY")
@@ -80,7 +80,7 @@ def run(expected_tty, directory, stages=STAGES):
                 "stage": name, "tty": expected_tty,
                 **({"key_code": action} if isinstance(action, int) else {"paste_text": action}),
             })
-            received = receive(fd, variants[0])
+            received = receive(fd, variants[0], input_timeout_seconds)
             matched = received in variants
             report["stages"].append({
                 "stage": name, "expected_hex": variants[0].hex(),
@@ -104,10 +104,13 @@ def main():
     parser.add_argument("--expected-tty", required=True)
     parser.add_argument("--report-dir", type=Path, required=True)
     parser.add_argument("--suite", choices=["keys", "paste", "vscode"], default="keys")
+    parser.add_argument("--input-timeout-seconds", type=int, default=8)
     args = parser.parse_args()
+    if not 1 <= args.input_timeout_seconds <= 600:
+        parser.error("--input-timeout-seconds must be between 1 and 600")
     expected_tty = os.ttyname(sys.stdin.fileno()) if args.expected_tty == "self" else args.expected_tty
     stages = {"keys": STAGES, "paste": PASTE_STAGES, "vscode": STAGES + PASTE_STAGES}
-    run(expected_tty, args.report_dir, stages[args.suite])
+    run(expected_tty, args.report_dir, stages[args.suite], args.input_timeout_seconds)
 
 
 if __name__ == "__main__":
