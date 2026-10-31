@@ -9,8 +9,10 @@ The parent directory must exist; an existing target is rejected, not overwritten
 The serializer depends only on unicode-width, not a terminal engine.
 Alacritty is a dev-dependency used only by the offline oracle.
 
-Do not print the .ansi files into existing terminals. No permission to open or
-control native test terminals has been granted in this stage.
+Do not print the .ansi files into existing terminals. Offline preparation grants
+no permission to open/control terminals. A subsequent, explicitly permissioned
+Terminal.app run is recorded separately in NATIVE-FINDINGS.txt; its limited
+permission does not authorize new windows or runs on another machine.
 
 Native test preconditions, to agree before execution:
 - A new, dedicated normal-buffer terminal with 24 columns and 6 rows.
@@ -52,7 +54,8 @@ Resize/reflow checkpoints:
   Resize the isolated host only after permission; files do not perform resizing.
 
 Model oracle: alacritty_terminal 0.26.0, test-only, not a shipped-engine selection.
-Native Terminal.app / iTerm2 / VS Code versions/settings/results: NOT MEASURED.
+Native Terminal.app partial evidence: NATIVE-FINDINGS.txt.
+iTerm2 / VS Code versions/settings/results: NOT MEASURED.
 Underlying-normal capture, full modes/cursor, unknown initial host state,
 daemon/wire ordering, non-controller privacy, coarse truncation notices, and
 native-history read/copy automation are outside this offline fixture.

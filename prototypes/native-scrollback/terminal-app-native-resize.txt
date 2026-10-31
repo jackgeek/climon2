@@ -1,0 +1,117 @@
+{
+  "requested_columns": 12,
+  "actual_geometry": "20,6",
+  "verdict": "REQUESTED SIZE NOT REACHED; observed clamp to 20 columns",
+  "observation": {
+    "visible_normal": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ],
+    "visible_alternate": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "saved_sentinel": true,
+    "saved_sentinel_copies": 1,
+    "prior_visible": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "hard_a_copies": 4,
+    "hard_z_copies": 4,
+    "soft_text_present": true,
+    "wide_combining_present": true,
+    "alternate_in_history": false,
+    "application_output_present": true,
+    "application_output_copies": 1,
+    "soft_text_unbroken_copies": 4,
+    "synthetic_history_fragments": [
+      "HARD-A",
+      "SOFT01234567890123456789tail",
+      "\u754ce\u0301",
+      "HARD-Z",
+      "HARD-A",
+      "SOFT01234567890123456789tail",
+      "\u754ce\u0301",
+      "HARD-Z",
+      "HARD-A",
+      "SOFT01234567890123456789tail",
+      "\u754ce\u0301",
+      "HARD-Z",
+      "HARD-A",
+      "SOFT01234567890123456789tail",
+      "\u754ce\u0301",
+      "HARD-Z"
+    ]
+  }
+}
+{
+  "restored_geometry": "24,6",
+  "observation": {
+    "visible_normal": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ],
+    "visible_alternate": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "saved_sentinel": true,
+    "saved_sentinel_copies": 1,
+    "prior_visible": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "hard_a_copies": 4,
+    "hard_z_copies": 4,
+    "soft_text_present": true,
+    "wide_combining_present": true,
+    "alternate_in_history": false,
+    "application_output_present": true,
+    "application_output_copies": 1,
+    "soft_text_unbroken_copies": 4,
+    "synthetic_history_fragments": [
+      "HARD-A",
+      "SOFT01234567890123456789tail",
+      "\u754ce\u0301",
+      "HARD-Z",
+      "HARD-A",
+      "SOFT01234567890123456789tail",
+      "\u754ce\u0301",
+      "HARD-Z",
+      "HARD-A",
+      "SOFT01234567890123456789tail",
+      "\u754ce\u0301",
+      "HARD-Z",
+      "HARD-A",
+      "SOFT01234567890123456789tail",
+      "\u754ce\u0301",
+      "HARD-Z"
+    ]
+  },
+  "boundary": "20-column history text observation is not a passing 12-column native reflow test"
+}

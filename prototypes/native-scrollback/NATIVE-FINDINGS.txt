@@ -1,0 +1,95 @@
+THROWAWAY #52 - PARTIAL native Terminal.app evidence, 2026-10-31.
+This is NOT complete native-host qualification or release acceptance.
+
+Permission and isolation:
+  The developer first authorized one new dedicated Terminal.app window, then
+  explicitly allowed that tab's 24-column x 6-row resize and fixture stages.
+  After reacting "Looks reasonable", they allowed narrowing to 12 columns and
+  returning to 24. Existing windows and profile settings were untouched.
+  No System Events/Accessibility automation, clipboard reads or preference
+  changes occurred. Only the newly created tab was identified/read/written.
+  That dedicated tab remains open at 24 columns x 6 rows for later HITL work.
+
+Measured host:
+  macOS 26.7.1, build 25G241.
+  Terminal.app 2.15, build 470.2.
+  Current profile name: Basic. Font: MesloLGS-NF-Regular, size 11.
+  The profile name is not a claim that its settings are pristine defaults.
+  Native retention cap, Unicode-width overrides and custom text reactions were
+  NOT measured or modified. No new supported-host profile is approved.
+
+Automated native text/history observations:
+  - SAVED-SENTINEL and VISIBLE-0 through VISIBLE-5 survive restoration.
+  - NORMAL-0 through NORMAL-5 are present in the native visible-screen text.
+  - Full resend produces one additional HARD-A/HARD-Z copy per restore.
+  - Soft text is returned as SOFT01234567890123456789tail on one logical line;
+    HARD-A and HARD-Z remain separate lines. U+754C followed by e + U+0301 is
+    present in native history text. This does not measure glyph cell widths,
+    rendition or native selection/copy.
+  - ALT-0 through ALT-5 are visible after alternate restoration; normal rows
+    return on exit with retained saved/history sentinels.
+  - Terminal's history API includes current alternate text while alternate is
+    active. After return, ALT rows are absent from the queried normal history.
+    Do not treat the active-buffer observation as session-history import.
+  - APPLICATION-ECHO is observed after simulated application output. This is
+    output-only evidence, NOT an actual input/PTY/scrolling round trip.
+
+Native resize finding, not a silent pass:
+  The 12-column request returned 20 columns x 6 rows in this host/configuration.
+  The observer failed the requested-size checkpoint and recorded the mismatch.
+  All history sentinels and complete logical soft text were present at the
+  observed 20-column width and after restoration to 24 columns.
+  This is a 24 -> actual 20 -> 24 text observation, NOT the requested
+  24 -> 12 -> 24 native test. The minimum-width observation is profile/run
+  evidence, not a universal claim about all Terminal.app configurations.
+  A future native wrap test needs supported widths and physical/copy oracles.
+
+Observer correction:
+  AppleScript "contents of testTab" dereferences its variable and returned the
+  22-character tab reference, not the screen text. The initial native normal
+  checkpoint therefore failed even though normal rows were in history.
+  "contents of tab 1 of window id <the dedicated ID>" addresses the property
+  directly and observed all six rows. The original native path was rerun after
+  the correction; it is not an engine/restoration failure.
+  A second regression exposed accepting an old normal screen before new
+  history delivery. Per-stage sentinel-count advancement now gates repeated
+  output stages. Unit regression and final native replay both pass.
+  Native raw shell/history text is not captured in artifacts: summaries contain
+  only known synthetic markers, their fragments and the requested host metadata.
+
+Evidence chronology:
+  The first successful stage set produced four history copies after observer
+  debugging/replays. terminal-app-native-resize.txt records that resize attempt.
+  The final strengthened replay increments counts from four to five/six/seven;
+  terminal-app-results.txt records those stage observations. Repeated native
+  copies are expected under the approved #49 full-resend amendment.
+  results.txt is OFFLINE validation: 10 Rust runtime tests, 6 Python observer
+  tests, formatting and Clippy. Its runner emits no Apple events or native bytes.
+  History fragments are restricted to exact known fixture lines; a regression
+  rejects unrelated numeric shell lines from the export.
+
+Reproduction boundaries:
+  Generate artifacts as documented in MANIFEST.txt. Create and explicitly
+  authorize a NEW dedicated normal-buffer tab; record its own ID/TTY and size.
+  The observer refuses unknown geometry and never targets a front window.
+  Example after replacing the placeholders with the authorized tab identity:
+    python3 prototypes/native-scrollback/terminal_app.py --permission-confirmed \
+      --window-id NEW_WINDOW_ID --tty /dev/ttysNNN --stage prime
+  Run normal, regain, alternate, return and application-output in order.
+  Native resizing requires separate permission. --stage resize --columns 12
+  fails if the actual size differs; the tab remains at that actual size.
+  With permission, --stage resize --columns 24 restores the fixture width.
+  Existing artifact directories are not overwritten by the generator.
+
+Still outstanding:
+  - Actual native scrolling, selection/copy, visual rendition and physical
+    hard/soft-wrap/Unicode fidelity, including native resize/copy.
+  - Real application input while scrolled, and actual paste/mode alignment.
+  - Known unchanged native retention settings and a bounded native eviction
+    oracle. This small run did not reach native capacity.
+  - Full supported profiles and automated native acceptance, not manual-only
+    observations. "Looks reasonable" is a reaction, not a release-gate pass.
+  - iTerm2 and VS Code native runs, each requiring isolation/permission.
+  - Product engine state capture, full cursor/mode restore, control/wire ordering
+    and non-controller isolation. This remains an engine-independent fixture.
+  #52 stays open; #48/#45 must consume these findings and remaining gaps.

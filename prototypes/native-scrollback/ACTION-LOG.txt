@@ -26,3 +26,26 @@ THROWAWAY #52 offline preparation - 2026-10-31.
 9. Prepared immutable publication on the prototype branch only, with native,
    engine-capture, full-mode/cursor and protocol gaps explicit. #52 remains
    open pending HITL reactions/permission and actual host qualification.
+
+Permissioned native stage:
+10. Opened exactly one developer-authorized Terminal.app window and captured its
+    own tab/TTY identity. Read only that tab's geometry/profile/font. Obtained
+    separate permission before resizing it or sending synthetic fixture bytes.
+11. Ran prime/normal stages. The contents checkpoint went red while history
+    contained the normal rows. Probed only that tab and isolated an AppleScript
+    variable-dereference mistake; direct tab-property addressing fixed the
+    actual native feedback loop.
+12. Observed preservation, duplicate full resend, alternate/normal return and
+    simulated application output. Obtained the developer's "Looks reasonable"
+    reaction and separate permission for narrowing and returning to 24 columns.
+13. Requested 12 columns; Terminal reported 20. Recorded the failed size
+    checkpoint and safe, permissioned return to 24; did not count it as a
+    passing 12-column native reflow test.
+14. Pinned a failing stale-screen observer regression, required delivered-marker
+    count advancement, and reran all native output stages with that stronger
+    oracle. Recorded synthetic-only summaries, never unrelated shell text.
+15. Restricted exported history fragments to exact known fixture lines, with a
+    failing/passing numeric-shell-text regression. Ran the offline runner:
+    10 Rust + 6 Python runtime tests, formatting/Clippy.
+    Recorded exact OS/Terminal build, partial findings, chronology and remaining
+    native/automated release gates. The dedicated tab is left open for HITL.

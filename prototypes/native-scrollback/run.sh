@@ -10,4 +10,6 @@ printf 'Tests: locked dependencies, one build job and one test thread\n'
 cargo test --locked --quiet -j 1 -- --test-threads=1
 printf 'Clippy\n'
 cargo clippy --locked --quiet -j 1 --all-targets -- -D warnings
-printf 'PASS: fixture/model checks only; Terminal.app/iTerm2/VS Code remain UNTESTED\n'
+printf 'Offline native-observer unit tests (no Apple events or TTY access)\n'
+python3 -m unittest -q test_terminal_app
+printf 'PASS: offline checks only; these do not execute or qualify native hosts\n'
