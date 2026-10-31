@@ -1,6 +1,10 @@
 THROWAWAY #43 (cross-link #56): normal-screen restoration under alternate
 screen, and safe OSC 8 reconstruction, on UNCHANGED Alacritty.
 
+HISTORICAL baseline f113bb6. E1 was subsequently accepted and E2 encoding
+approved in #43 comment 6546458475. See STATE-OSC8.txt for the follow-up;
+the verdicts below describe the baseline, not the current encoding.
+
 Pin: alacritty_terminal bbb2cbf9470a6707b1205fbddbdb25109b14e2fd, vte 0.15.0.
 Base: prototype/alacritty-forwarding-56 @ 63256f62958d7a40b63a698087d33bea4cb3fc40.
 Fixed requirements honoured: no engine patch, no parallel parser/model, no

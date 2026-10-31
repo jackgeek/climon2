@@ -111,8 +111,15 @@ fn engine_strips_c0_and_terminates_on_st_bel_can_and_rejects_non_utf8() {
             Vec::<String>::new(),
             "{label}"
         );
+        let mut host = vt100::Parser::new(
+            core::num::NonZeroU16::new(2).unwrap(),
+            core::num::NonZeroU16::new(20).unwrap(),
+            10,
+        );
+        host.process(&output);
+        assert_eq!(host.screen().contents(), marker.to_string(), "{label}");
         if let Some(link) = retained {
-            let wire = format!("\x1b]8;id={};{}\x1b\\", link.id(), link.uri());
+            let wire = format!(";{}\x1b\\", link.uri());
             assert!(
                 find(&output, wire.as_bytes()).is_some(),
                 "{label}: link not derived"
@@ -127,7 +134,9 @@ fn derived_links_round_trip_with_grouping_and_close() {
     let mut fresh = engine(&restore(&mut term));
     for marker in ['A', 'B'] {
         let link = link_on(&fresh, marker).expect("link restored");
-        assert_eq!((link.id(), link.uri()), ("g", "http://a"));
+        assert!(link.id().is_ascii());
+        assert_ne!(link.id(), "g");
+        assert_eq!(link.uri(), "http://a");
     }
     assert_eq!(link_on(&fresh, '-'), None);
     let mut parser: Processor = Processor::new();
@@ -149,36 +158,119 @@ fn oversize_uri_is_retained_unbounded() {
     );
 }
 
-/// FINDING (blocker evidence): vte keeps DEL and UTF-8-encoded C1 code points
-/// in OSC 8 parameters, Alacritty stores them, so derived output carries them.
 #[test]
-fn engine_retained_c1_and_del_reach_derived_osc8_payloads() {
+fn engine_retained_c1_and_del_are_encoded_without_dropping_links() {
     let cases: [(&[u8], &str, &str); 3] = [
         (
             "\x1b]8;;http://a/\u{9c}\u{9b}2J\x1b\\L".as_bytes(),
             "http://a/\u{9c}\u{9b}2J",
-            "\\u{9c}\\u{9b}2J",
+            "http://a/%C2%9C%C2%9B2J",
         ),
         (
             "\x1b]8;id=\u{9d}x;http://a\x1b\\L".as_bytes(),
             "http://a",
-            "id=\\u{9d}x;",
+            "http://a",
         ),
         (
             b"\x1b]8;;http://a/\x7f\x1b\\L",
             "http://a/\x7f",
-            "http://a/\\u{7f}",
+            "http://a/%7F",
         ),
     ];
-    for (input, uri, hostile) in cases {
+    for (input, uri, encoded) in cases {
         let mut term = engine(input);
         assert_eq!(link_on(&term, 'L').unwrap().uri(), uri);
-        let found = unsafe_osc8_payloads(&derived(&mut term));
-        assert!(!found.is_empty(), "{uri:?}");
-        assert!(
-            found.iter().all(|payload| payload.contains(hostile)),
-            "{found:?}"
+        let output = derived(&mut term);
+        assert_eq!(
+            unsafe_osc8_payloads(&output),
+            Vec::<String>::new(),
+            "{uri:?}"
         );
+        assert!(find(&output, format!(";{encoded}\x1b\\").as_bytes()).is_some());
+    }
+}
+
+#[test]
+fn every_c1_is_encoded_but_benign_utf8_and_existing_escapes_are_byte_identical() {
+    let controls: String = ('\u{80}'..='\u{9f}').chain(['\u{7f}']).collect();
+    let mut term = engine(format!("\x1b]8;id={controls};http://a/{controls}\x1b\\L").as_bytes());
+    let output = derived(&mut term);
+    assert!(unsafe_osc8_payloads(&output).is_empty());
+    let expected: String = (0x80..=0x9f)
+        .map(|byte| format!("%C2%{byte:02X}"))
+        .collect();
+    assert!(find(&output, format!(";http://a/{expected}%7F\x1b\\").as_bytes()).is_some());
+    for uri in [
+        "https://x/a;b?q=%7F&u=%C2%9C#z",
+        "https://x/\u{e9}/\u{3042}",
+    ] {
+        let mut term = engine(format!("\x1b]8;id=benign;{uri}\x1b\\L").as_bytes());
+        let output = derived(&mut term);
+        assert!(find(&output, format!(";{uri}\x1b\\").as_bytes()).is_some());
+    }
+}
+
+#[test]
+fn remapped_ids_distinguish_groups_and_reuse_nonadjacent_group_tokens() {
+    let mut term = engine(
+        "\x1b]8;id=\u{9d}x;http://a\x1b\\A\x1b]8;id=other;http://a\x1b\\C\
+         \x1b]8;id=\u{9d}x;http://a\x1b\\B\x1b]8;;\x1b\\-"
+            .as_bytes(),
+    );
+    let fresh = engine(&restore(&mut term));
+    let a = link_on(&fresh, 'A').unwrap();
+    let b = link_on(&fresh, 'B').unwrap();
+    let c = link_on(&fresh, 'C').unwrap();
+    assert_eq!(a, b);
+    assert_ne!(a.id(), c.id());
+    assert_eq!(a.uri(), c.uri());
+    assert!(a.id().is_ascii() && c.id().is_ascii());
+    assert_eq!(link_on(&fresh, '-'), None);
+}
+
+#[test]
+fn tokens_keep_groups_distinct_across_separate_derived_outputs() {
+    let mut a = engine(b"\x1b]8;id=first;http://a\x1b\\L");
+    let mut b = engine(b"\x1b]8;id=second;http://a\x1b\\L");
+    let a = engine(&restore(&mut a));
+    let b = engine(&restore(&mut b));
+    assert_ne!(
+        link_on(&a, 'L').unwrap().id(),
+        link_on(&b, 'L').unwrap().id()
+    );
+}
+
+#[test]
+fn encoded_uri_aliases_do_not_merge_original_link_groups() {
+    let mut term = engine(
+        "\x1b]8;id=same;http://a/\u{9c}\x1b\\A\
+         \x1b]8;id=same;http://a/%C2%9C\x1b\\B"
+            .as_bytes(),
+    );
+    let restored = engine(&restore(&mut term));
+    let a = link_on(&restored, 'A').unwrap();
+    let b = link_on(&restored, 'B').unwrap();
+    assert_eq!(a.uri(), b.uri());
+    assert_ne!(
+        a.id(),
+        b.id(),
+        "encoding must not merge previously distinct groups"
+    );
+}
+
+#[test]
+fn independent_vt100_host_is_not_erased_by_encoded_links() {
+    use core::num::NonZeroU16;
+    let mut term =
+        engine("SAFE\r\n\x1b]8;id=\u{9d}x;http://a/\u{9c}\u{9b}2J\x1b\\L\x1b]8;;\x1b\\".as_bytes());
+    for output in [repaint(&mut term), restore(&mut term)] {
+        let mut host = vt100::Parser::new(
+            NonZeroU16::new(2).unwrap(),
+            NonZeroU16::new(20).unwrap(),
+            10,
+        );
+        host.process(&output);
+        assert_eq!(host.screen().contents(), "SAFE\nL");
     }
 }
 

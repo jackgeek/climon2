@@ -1,0 +1,15 @@
+One Cargo job, one test thread. Exact source patterns; no upstream edits.
+KILLED raw URI: AssertionError [ERR_ASSERTION]: restore erase: host erased
+KILLED raw id: AssertionError [ERR_ASSERTION]: restore erase: raw controls
+KILLED merged ids: AssertionError [ERR_ASSERTION]: restore erase: merged groups
+KILLED URI alias merges: encoded_uri_aliases_do_not_merge_original_link_groups --- FAILED
+KILLED lost pending wrap: FAIL pending wrap normal: Expected values to be strictly equal:
+KILLED lost designation: FAIL charset designation normal: Expected values to be strictly equal:
+KILLED lost underline colour: FAIL underline colour normal: Expected values to be strictly equal:
+KILLED lost cursor style: FAIL cursor style normal 1: Expected values to be strictly equal:
+KILLED lost selected charset: AssertionError [ERR_ASSERTION]: charset shift normal
+KILLED lost scroll region: AssertionError [ERR_ASSERTION]: outside-region origin state must not silently misrestore
+KILLED lost tabs: FAIL last-column tab after resize normal true: Expected values to be strictly equal:
+KILLED tab cell emitted as control: FAIL tab-cell visible spacing normal: Expected values to be strictly equal:
+KILLED lost origin: AssertionError [ERR_ASSERTION]: outside-region origin state must not silently misrestore
+KILLED lost normal saved pen: FAIL E5 xterm per-screen saved attributes on alternate and after normal return: Expected values to be strictly equal:

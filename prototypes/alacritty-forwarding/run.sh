@@ -33,13 +33,13 @@ python3 check_surface.py
 cargo fmt --manifest-path probe/Cargo.toml -- --check
 cargo clippy -j1 --quiet --locked --manifest-path probe/Cargo.toml --all-targets -- -D warnings
 cargo test -j1 --quiet --locked --manifest-path probe/Cargo.toml -- --test-threads=1
-if command -v node >/dev/null && [[ -d host-probe/node_modules ]]; then
-    cargo build -j1 --quiet --locked --manifest-path probe/Cargo.toml --example derive_osc8
-    for uri in 'http://a/ok' $'http://a/\xc2\x9c\xc2\x9b2J'; do
-        printf 'xterm.js replay of %q: ' "$uri"
-        "$CARGO_TARGET_DIR/debug/examples/derive_osc8" "$uri" | node host-probe/replay.mjs | tail -1
-    done
-else
-    echo "SKIP: xterm.js host replay (run: npm ci --prefix host-probe)"
-fi
-echo "PASS: exercised engine/codec seams; production input/delivery and native hosts remain UNPROVEN"
+command -v node >/dev/null && [[ -d host-probe/node_modules ]] || {
+    echo "FAIL: xterm.js oracle required (run: npm ci --prefix host-probe)" >&2
+    exit 1
+}
+cargo build -j1 --quiet --locked --manifest-path probe/Cargo.toml --example derive_state
+for oracle in encoding state blockers title; do
+    node "host-probe/$oracle.mjs" "$CARGO_TARGET_DIR/debug/examples/derive_state"
+done
+echo "PASS: qualification assertions; E4 remains BLOCKED (see STATE-OSC8.txt)"
+echo "UNPROVEN: production input/delivery, native hosts and resource budgets"

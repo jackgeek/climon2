@@ -52,3 +52,13 @@ unchanged pin. Described in RESTORE-OSC8.txt. vt100 0.18.1 is a dev-dependency
 used only as an independent replay oracle; @xterm/headless 6.0.0 (host-probe/,
 npm, not vendored) is used only to replay derived bytes. hand_mutants.py is
 verification infrastructure. No engine patch, validator or parallel model.
+
+THROWAWAY #43 state/encoding follow-up: see STATE-OSC8.txt and state-results.txt.
+Approved mechanical OSC 8 encoding replaces raw hyperlink emission. Reversible
+in-memory public Handler/Grid/resize probes observe state without a persistent
+parallel model; exact tabs temporarily clone full normal history and alternate
+grid. The resulting cost needs a user decision. state_ablations.py is bounded
+verification infrastructure, not a shipped mutator gate.
+Version-pinned xterm internals/source maps are consulted ONLY as an independent
+oracle (hyperlink service and effective cursor modes), never an engine seam.
+title-probe is explicitly unsafe evidence; it is not restore/live output.

@@ -1,0 +1,288 @@
+THROWAWAY #43 follow-up: state restoration and approved OSC 8 encoding
+===================================================================
+Branch: prototype/alacritty-state-osc8-43
+Base: f113bb644bac3a1ddd5eeb416c919dba55474db8
+Decisions: #43 comment 6546458475; baseline comment 6545123700.
+Alacritty unchanged: bbb2cbf9470a6707b1205fbddbdb25109b14e2fd.
+vte 0.15.0; vt100 0.18.1; @xterm/headless 6.0.0, locked dependencies.
+
+No engine patches, parallel parser/model, hyperlink validator, host queries,
+or persistent probe state. kitty_keyboard remains false. Normal restoration
+and full retained-history resend remain mandatory. E1 remains the accepted
+hidden-normal saved-cursor exception. OSC 8 size/retention budgets were NOT
+decided here. Nothing is integrated into a shipped crate.
+
+VERDICTS
+========
+E2: PASS at restore and live-repaint seams, including the prior hostile corpus.
+E4: BLOCKED overall. All listed state has a public-seam observation route, but
+    faithful general host reproduction has gaps below. Exact tabs also add a
+    full-history clone cost. These are not accepted exceptions.
+E5: PASS for exercised xterm per-screen saved position/fg/bg/SGR flags, using
+    xterm.js instead of vt100 as the oracle for these cases. Extended saved
+    state and native Terminal.app remain unqualified, not silently accepted.
+
+PER-ITEM TABLE
+==============
+All "both" assertions below run on normal and alternate screens.
+Source citations A/ denote alacritty_terminal/src at the fixed Alacritty pin;
+V/ denote vte-0.15.0/src. X/ denote sourcesContent in the locked xterm 6.0.0
+lib-headless/xterm-headless.js.map; the exact source names/lines are given.
+
+Item                 Public observation / restore output / expectation / verdict
+-------------------  ----------------------------------------------------------
+OSC 8 (E2)           Cell::hyperlink, Hyperlink::{id,uri}, A/term/cell.rs:55-79,
+                     232-235. OSC 8 generated ASCII token + encoded URI + ST.
+                     SAFE and A-CB unchanged; A/B one group, C another, '-' no
+                     link; benign URI bytes unchanged. PASS both render paths.
+Scroll region        probe_region: Handler Origin + goto, grid().cursor;
+                     A/term/mod.rs:1161-1176,1982-1985; grid access 645-652.
+                     Snapshot/restore cursor and original origin bit. No
+                     private-field access. DECSTBM top+1;bottom.
+                     LF at row 2 of region rows 1..2 leaves X at row 2, not 3.
+                     PASS both. Region probe changes only renderer damage.
+Tab stops            probe_tabs: public resize, grid Clone, swap_alt,
+                     move_backward_tabs; A/term/mod.rs:656-706,714-735,
+                     1567-1588; private storage 302,2319-2321.
+                     Temporarily widen by one; from column n+1 a backward tab
+                     reveals whether n is a stop, including column 0 and the
+                     old final column. Restore both grids, geometry, region,
+                     selection and vi cursor; truncate temporary tab extension.
+                     CSI 3 g, CUP + ESC H for each stop.
+                     TAB -> column 4; old last stop remains 19 after width 21,
+                     or fallback is 20 if absent. PASS both at attachment,
+                     including tab cells rendered as spaces, not literal HT.
+                     BLOCKED for general later host resize: xterm synthesizes
+                     stops again (empty set -> default column 8), unlike
+                     Alacritty. X/src/common/buffer/Buffer.ts:561-592.
+                     COST: one full normal-history clone plus alternate clone.
+Charset designation  grid().cursor/saved_cursor.charsets[index],
+                     A/grid/mod.rs:33-71; A/term/mod.rs:2192-2196.
+                     ESC (/)/*/+ B or 0; save/current designations separately.
+                     Explicit G0/G1/G2/G3 shifts then q -> four U+2500 glyphs.
+                     PASS both. xterm DECSC saves the effective mapping, not
+                     the entire set of designations; saved effective mapping
+                     is checked separately and matches xterm semantics.
+Charset shift        probe_charset: scratch cursor + scratch cell at last
+                     column, four Handler input('q') probes with one designated
+                     graphics set each. A/term/mod.rs:984-1020,1061-1156.
+                     No wrap or insert can occur; the blank scratch cell avoids
+                     neighbouring wide-cell cleanup. Restore cell and cursor.
+                     SI/SO (ESC n/o for public-API G2/G3 states).
+                     Retained G1 shift + q -> U+2500 without an extra shift.
+                     PASS both. vte input reaches G0/G1 via SI/SO, V/ansi.rs:
+                     1304-1305; designation reaches all four, 1783-1795.
+                     G2/G3 active-index probe tests use the public Handler API.
+Origin mode          Term::mode (A/term/mod.rs:709-711), ORIGIN flag (66),
+                     and probed region. DECOM then region-relative CUP.
+                     CUP 1;1 in region 2;3 -> X on row 1. PASS both.
+                     BLOCKED generally: Alacritty DECRC can leave the current
+                     cursor outside the region, A/term/mod.rs:1626-1631.
+                     X/InputHandler.ts:861-882,2916-2928 clamps that cursor.
+                     Source ESC 7; DECSTBM 2;3; DECOM; ESC 8; X writes row 0,
+                     xterm writes row 1. Restore explicitly rejects this state.
+                     Hidden normal cursor is saved with absolute coordinates
+                     before alternate entry; it need not be inside the active
+                     alternate screen's region.
+Pending wrap         grid().cursor.input_needs_wrap, A/grid/mod.rs:44-55.
+                     CUP to last cell (previous cell for a wide spacer),
+                     reprint unchanged cell, then restore the current pen.
+                     20 characters + X leaves the original row intact and X
+                     on the next; wide+combining and bottom-row scrolling pass;
+                     explicit CUP to final column must NOT create pending wrap.
+                     PASS current state both.
+                     BLOCKED saved/hidden-normal wrap: xterm saves x=20 but
+                     DECRC restricts it to 19; the next X overwrites the final
+                     character. X/InputHandler.ts:861-868,2898-2928.
+Underline colour     Cell::underline_color, A/term/cell.rs:215-219; also cursor
+                     and saved-cursor templates. SGR 58:5:n or 58:2::r:g:b,
+                     reset through SGR 0. RGB 1,2,3; indexed 123; default reset,
+                     current pen and cell colours. PASS both.
+                     BLOCKED saved-extra fidelity: xterm saveCursor copies fg/bg
+                     but NOT extended attrs, X/InputHandler.ts:2898-2905.
+                     DECRC leaves current RGB underline colour instead of the
+                     engine's saved indexed colour. No workaround accepted.
+Title                Term::set_options with caller-owned UNCHANGED Config
+                     re-emits Event::Title/ResetTitle; A/term/mod.rs:498-525;
+                     event types A/event.rs:19-24. No parallel title model.
+                     Ordinary retained "session;a;U+00E9" -> exact OSC 2 event;
+                     existing title stack still pops to its previous value.
+                     PASS observation and ordinary isolated output both.
+                     BLOCKED general faithful/safe output: retained title
+                     a U+009C U+009B 2J terminates OSC 2 and erases xterm.
+                     V/ansi.rs:1349-1359 retains it; A/term/mod.rs:2221-2234
+                     stores and publishes it. E2 approved encoding of LINKS,
+                     not a change to title text. ResetTitle also needs an
+                     attachment-owned default title policy.
+                     UNSAFE title-probe mode is evidence ONLY, never called by
+                     restore/repaint. They do not emit arbitrary title metadata.
+Cursor style         Term::cursor_style, A/term/mod.rs:937-950.
+                     DECSCUSR 1..6: block/underline/beam, blinking/steady.
+                     All six app-selected styles PASS both using xterm's
+                     effective decPrivateModes, not unchanged startup options.
+                     X/InputHandler.ts:2761-2787.
+                     Config/API-only HollowBlock/Hidden styles are BLOCKED:
+                     no corresponding DECSCUSR shape; explicit prototype error.
+                     V/ansi.rs:828-843 lists those additional engine shapes.
+Saved attrs (E5)      grid saved/current cursor templates and normal cursor
+                     before 1049h. Alternate saved blue/nonbold at (2,4);
+                     return to normal restores red/bold at (1,3), including a
+                     later DECRC. Normal-only save is separately asserted.
+                     PASS basic per-screen xterm semantics. vt100 restores
+                     alternate blue/nonbold on NORMAL return instead:
+                     vt100-0.18.1/src/screen.rs:83-87,802-809 has one saved_attrs.
+                     xterm per-buffer storage: X/InputHandler.ts:2898-2928.
+
+ENCODING AND GROUPING
+====================
+Only U+007F and U+0080..U+009F URI code points are transformed: each of their
+UTF-8 bytes becomes uppercase %HH (U+009C -> %C2%9C, DEL -> %7F).
+Non-control UTF-8, semicolons and existing percent escapes remain byte-identical.
+This is mechanical encoding, not validation, filtering or omission.
+
+ASCII tokens are deterministic and collision-free:
+  climon2_<hex original id>_<hex original URI>
+The separator is outside the hex alphabet. Including the ORIGINAL URI keeps
+groups distinct when URI encoding aliases a literal "%C2%9C" URI. Tokens are
+stable across independent derived outputs, not per-writer counters. An initial
+counter implementation failed the cross-output grouping test and was removed.
+There is no persistent map, hash collision risk, or raw metadata in the token.
+This expands id wire length; size/retention policy remains with #48.
+
+Corpus: prior C0, ST, BEL, CAN, invalid UTF-8 URI/id/segment, nested and
+unterminated strings; hostile DEL/all 32 C1 code points; the screen-erasing
+case; benign percent-escaped and non-ASCII URIs; prior 1 MiB retained URI.
+xterm.js checks cells and actual link-service data, not just generated bytes.
+vt100 independently checks visible cells after the malformed/hostile cases;
+it shares vte with Alacritty, so xterm is the independent parser oracle.
+Rust also checks token stability across outputs and encoded-URI alias groups.
+
+RESOURCE AND SOURCE-STATE LIMITS
+===============================
+Region/charset probes snapshot one cursor and (charset) one cell, and restore
+them before return. Tab observation has no getter: widening temporarily is
+needed for an exact final-column stop. It snapshots one normal grid INCLUDING
+retained history plus one alternate grid, temporarily resizes both through
+the engine, and reinstates snapshots. Peak clone descriptors are roughly
+24 * columns * (history + 2*screen_lines) bytes, plus row/storage overhead;
+Arc-held zero-width/link payloads are shared. Temporary resize/reflow allocations
+and the full output also cost memory/time; this is NOT a measured budget pass.
+Snapshots are discarded, never updated as a second terminal model.
+
+This differs materially from f113bb6's alternate-only clone cost. Acceptance
+of the full-history snapshot is a NEW resource/design decision, not assumed.
+An upstream tab-stop accessor avoids this probe and its history copy.
+Normal/history output restoration is still mandatory, not application redraw.
+The baseline accepted E1 source perturbation still passes its exact regression.
+Live repaint does NOT use the resizing/tab probe and does not expand E1 to
+live rendering; a failing regression caught and prevented that expansion.
+
+No native Terminal.app, production daemon/client, transport, native latency or
+release resource qualification was performed. Whole-engine semantic parity
+is not claimed. No unsafe title output is authorised by this experiment.
+
+COMMANDS AND ACTUAL RESULTS
+==========================
+  cd prototypes/alacritty-forwarding
+  npm ci --prefix host-probe               # restored missing locked dependency
+  bash run.sh                             # mandatory xterm oracle, no SKIP
+  python3 state_ablations.py               # 14 targeted ablations, one at a time
+  bash run.sh                             # restored-source baseline after ablation
+
+run.sh checks unchanged pin/source, pinned Rust, all 71 Handler signatures,
+cargo fmt --check, clippy --all-targets -D warnings, all Cargo tests (-j1,
+--test-threads=1), then four assertion-bearing xterm programs. Results are
+state-results.txt. BLOCKED lines are expected gap evidence, NOT passing features.
+14/14 targeted ablations killed, no compiler failures counted as kills:
+state-ablation-results.txt. Source is restored in finally and binary rebuilt;
+compilation timeout 120s, each assertion command 30s. These are hand-selected
+ablations, not a claim that a full mutator run has zero surviving mutants.
+Shipped-crate gates are not invoked by this throwaway lane.
+
+RED EVIDENCE (before implementing the corresponding changes)
+===========================================================
+  cargo test -j1 --quiet --locked --manifest-path probe/Cargo.toml --test osc8 \
+    -- --test-threads=1
+  -> four failures: raw retained controls, original id "g", non-ASCII id,
+     and unencoded C1/DEL.
+  node host-probe/encoding.mjs "$CARGO_TARGET_DIR/debug/examples/derive_state"
+  -> AssertionError: restore erase: host erased (actual "", expected "SAFE").
+  node host-probe/state.mjs "$CARGO_TARGET_DIR/debug/examples/derive_state"
+  -> 24 failures: current/saved wrap, charset, underline and cursor styles.
+  cargo test ... --test osc8 tokens_keep -- --test-threads=1
+  -> first/second separate groups both received "climon2_0".
+  cargo test ... --test state reversible_public -- --test-threads=1
+  -> unresolved imports probe_region/probe_charset.
+  node host-probe/blockers.mjs ... -> X on row 3, expected row 2.
+  cargo test ... --test state reversible_resize -- --test-threads=1
+  -> unresolved import probe_tabs.
+  node host-probe/state.mjs ... -> tab-cell spacing failed on both screens.
+  cargo test ... --test state live_repaint_must -- --test-threads=1
+  -> hidden-normal DECRC wrote Z at the reflowed cursor, not the saved cursor.
+  node host-probe/title.mjs ... -> title-probe mode missing.
+
+Oracle mistakes corrected against pinned xterm source/direct original input:
+buffer lines need baseY; public startup cursor options are not DECSCUSR's
+effective modes; saved wrap/extended underline genuinely are not reproduced
+by xterm; DECSC saves effective charset mapping, not all designations; native
+resize synthesizes tab stops. Original requirements stay intact as BLOCKED.
+
+ACTION LOG
+==========
+1. Read handoff, AGENTS, domain/issue tracker docs, glossary and ADR 0004;
+   loaded prototype, ub-mode and diagnosing-bugs for the red oracle.
+2. Read both specified #43 comments and historical RESTORE-OSC8 evidence.
+   Left main's unrelated CLAUDE.md edit and all other worktrees untouched.
+3. Created own worktree/branch from the exact requested base; locally cloned
+   unchanged upstream source and checked Rust/Node availability.
+4. Restored missing locked @xterm/headless with npm ci after its import failed.
+5. Added OSC encoding/grouping assertions first; observed Rust and real xterm
+   screen-erasure failures before adding mechanical encoding.
+6. Added state assertions first; observed 24 state failures. Implemented current
+   wrap, designation, underline colour and cursor-style output.
+7. Inspected pinned independent oracle to distinguish wrong oracle reads from
+   genuine saved-state gaps; preserved the latter as explicit blocked cases.
+8. Qualified xterm per-screen basic saved attrs without changing that already
+   correct output; added vt100's exact divergent normal pen as evidence.
+9. Added cross-output grouping test; counter ids collided. Replaced map/counter
+   with collision-free deterministic tokens and added URI-alias coverage.
+10. Replayed full hostile corpus in xterm and visible outcomes in vt100,
+    including the prior 1 MiB link without deciding a size/retention budget.
+11. Investigated missing getters beyond a read-only search. Wrote failing
+    reversible region/shift probe tests, then implemented the public probes;
+    verified source state and identical later continuations on both screens.
+12. Qualified ordinary titles through re-emitted public events with unchanged
+    owned Config; the isolated raw title experiment proves the new C1 gap.
+13. Added explicit Alacritty/xterm outside-region origin divergence; no
+    success-shaped fallback is emitted for that unsupported state.
+14. Initially demonstrated the opaque final-column tab-stop bit after resize.
+    Added failing exact tab/spacing tests; implemented reversible widening,
+    full-grid snapshots and tab output. Recorded the changed clone cost.
+15. Detected E1 expansion into live repaint in a failing test; removed the
+    resizing probe from live repaint. E1 remains restoration-only.
+16. Checked exact last-column tabs on both hosts/screens after growth. The
+    independent empty-tab resize expectation exposed xterm's default-tab
+    synthesis; retained that behaviour as an explicit host-fidelity blocker.
+17. Ran bounded full runner, fixed no unrelated code, killed 14 exact source
+    ablations, rebuilt restored source, and ran the full runner again.
+18. Recorded this per-item table, limitations, commands, results and action log.
+    Commit/push/remote verification and immutable issue pointer are reported in
+    the #43 publication; the issue is kept open.
+
+NEW DECISIONS / BLOCKERS FOR THE DECISION SESSION
+===============================================
+1. Accept the full-history clone cost for exact public-seam tab observation,
+   or require an upstream accessor/another engine. No resource budget passed.
+2. Choose faithful/safe title behaviour: a host-owned title API, an approved
+   text encoding/display change, upstream control handling, or another engine/
+   host policy. A default-title policy is also needed for ResetTitle.
+3. Resolve host semantics gaps WITHOUT assuming exceptions: outside-region
+   origin cursors; saved pending wrap (also hidden normal on 1049l); saved
+   underline extras; resize-synthesized tabs. Options include a derived state
+   refresh at the affected transition, a host/upstream fix, or another host/
+   engine. Relaxing fidelity is a user decision, not made here.
+4. Confirm configured cursor shapes are limited to the six standard app styles,
+   or choose representation for HollowBlock/Hidden. No silent substitution.
+5. Native Terminal.app verification remains outstanding. Headless xterm is
+   evidence for its own implementation, not a native macOS terminal pass.
+E1 is not reopened. E3/OSC 8 budgets remain with the separate #48 decision.
