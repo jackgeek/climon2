@@ -111,11 +111,46 @@ Inspector handler dispatch
   No native key or clipboard action occurred. This fixes an inspector defect
   but does not establish terminal focus or native input support.
 
+Native accessibility opt-in: focus resolved, cursor input blocked
+  The confirmation form was ruled out: the same owned VS Code window reported
+  frontmost=true both before and after activation while focus stayed missing.
+  A native macOS AX query independently returned -25212 (no value) for
+  AXFocusedUIElement while AXFocusedWindow was available.
+
+  With explicit developer permission, requested AXManualAccessibility on only
+  the disposable process. The System Events setter did not establish focus.
+  The native AX setter returned success; although the flag read back false,
+  AXFocusedUIElement then became available. System Events reported AXTextField
+  and the unchanged terminal-description guard returned terminal-ready without
+  sending input. The editor accessibility setting alone had been insufficient
+  in this run. This is an opt-in testing dependency, not a product requirement
+  or a guarantee for arbitrary VS Code profiles.
+
+  Enabling accessibility made the full tree walk exceed its 15-second deadline.
+  The inspector now reads only the focused element and foreground state, without
+  terminal text or a whole-tree traversal. Its outer query-error handler was
+  also corrected so an attribute-query error is not mislabeled as missing.
+  Native enablement checks the AX setter result and releases its references.
+  It is gated by --native-accessibility-permission-confirmed; the terminal-focus
+  guard remains unchanged.
+
+  Two full native attempts failed with a receiver-checkpoint timeout. The first
+  did not retain its stage. In the separately approved instrumented retry,
+  cursor-normal announced readiness and the guarded native Up action returned,
+  but ready-1 never appeared within 12 seconds. No receiver result was available.
+  Thus no cursor/keypad/paste assertion passed; the retry never reached paste
+  and made no clipboard write. The receiver's 600-second manual-focus deadline
+  prevents this failure alone from distinguishing absent versus partial input.
+  Exact failures are retained in vscode-native-accessibility-first-results.json
+  and vscode-native-accessibility-retry-results.json. Temporary diagnostic
+  breadcrumbs were removed. Owned process cleanup was checked after each run.
+
 Test seam
   Receiver includes independent expected key bytes and exact known paste
   samples, permitting only LF/CR/CRLF variants with exact UTF-8 otherwise.
   Successful match reports retain known expected bytes; unexpected contents
-  are not logged. No actual native VS Code input reached these assertions.
+  are not logged. No native VS Code assertion has passed. A guarded native Up
+  action was sent in the latest retry, but the receiver did not advance.
   Receiver may have enabled modes in the owned terminal before the focus
   failure. Closing the disposable instance does not prove original-mode
   restoration or production cleanup. No user terminal was targeted.
@@ -129,11 +164,13 @@ Reproduction
   No new mutation, CRAP, duplication, release or full-workspace pass claimed.
 
   Native command ONLY with fresh explicit isolated-window and clipboard
-  permission and available macOS automation:
-    python3 vscode.py --permission-confirmed --clipboard-permission-confirmed
-  The latest full attempt stops at the native focus-observer seam. Do not treat
-  a generated report/checkpoint or manual click as permission to bypass the
-  guard.
+  and transient accessibility permission and available macOS automation:
+    python3 vscode.py --permission-confirmed --clipboard-permission-confirmed \
+      --native-accessibility-permission-confirmed \
+      --window-ready-file NEW_WINDOW_MARKER --terminal-focus-file NEW_FOCUS_MARKER
+  The latest full attempt passes the focus guard but fails to advance beyond
+  cursor-normal. Without the explicit native accessibility opt-in, the earlier
+  focus blocker remains possible. Do not bypass the guard.
   Raw diagnostic logs are retained locally under ignored artifacts, not
   published. Sanitized findings and failure reports contain no user text.
 
@@ -158,6 +195,11 @@ Action log
   Reproduced the inspector's AppleScript handler-dispatch error with synthetic
   text, qualified local calls, and verified nonblank metadata in the isolated
   native retry. Focus remained missing; retained the fail-closed input guard.
+  Ruled out foreground loss, compared native AX results, and obtained explicit
+  permission for the isolated-process accessibility flag. Native API enablement
+  established focus and passed the existing guard. Added an opt-in adapter and
+  bounded inspector; retained two native input failures and used one approved
+  instrumented retry to isolate the first cursor stage. Removed breadcrumbs.
 
 Fix and verification
   Inspection-only mode now opens a plain Bash prompt so the developer can
@@ -171,8 +213,9 @@ Fix and verification
   establish native VS Code support.
 
 Remaining
-  AXFocusedUIElement remains unavailable after manual focus in VS Code 1.144.0.
-  No native key or paste assertion may proceed until a reliable, non-invasive
-  terminal-focus observation is available; do not substitute a manual click for
-  the guard. Existing native host/engine/protocol acceptance remains open.
+  Focus is observable in the tested isolated VS Code 1.144.0 process after
+  explicit native accessibility enablement, but the first native Up action
+  does not advance the receiver. Diagnose that input boundary separately;
+  retain the strict focus guard and do not treat action dispatch as a passing
+  byte assertion. Existing native host/engine/protocol acceptance remains open.
   Permission to attempt tests is not human acceptance of a qualification result.

@@ -1,0 +1,12 @@
+{
+  "status": "FAIL",
+  "error": "native receiver checkpoint timed out",
+  "announced_stages": [
+    "cursor-normal"
+  ],
+  "ownership": {
+    "pid": 24680,
+    "marker": "CLIMON2-56-VSCODE-c56-uq8dc94x"
+  },
+  "launch_log_retained": "c56-uq8dc94x-launch.log"
+}

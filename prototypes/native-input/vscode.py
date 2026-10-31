@@ -1,6 +1,8 @@
 """Opt-in #56 input probe in an owned VS Code instance and scratch profile."""
 
 import argparse
+import ctypes
+import ctypes.util
 import json
 import os
 from pathlib import Path
@@ -16,6 +18,36 @@ from terminal_app import quote, script, wait_file
 
 
 EXECUTABLE = "/Applications/Visual Studio Code.app/Contents/MacOS/Code"
+
+
+def enable_native_accessibility(pid):
+    ax = ctypes.CDLL(ctypes.util.find_library("ApplicationServices"))
+    cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+    pointer = ctypes.c_void_p
+    cf.CFStringCreateWithCString.argtypes = [pointer, ctypes.c_char_p, ctypes.c_uint32]
+    cf.CFStringCreateWithCString.restype = pointer
+    cf.CFRelease.argtypes = [pointer]
+    ax.AXUIElementCreateApplication.argtypes = [ctypes.c_int]
+    ax.AXUIElementCreateApplication.restype = pointer
+    ax.AXUIElementSetAttributeValue.argtypes = [pointer, pointer, pointer]
+    ax.AXUIElementSetAttributeValue.restype = ctypes.c_int
+    application = ax.AXUIElementCreateApplication(pid)
+    attribute = cf.CFStringCreateWithCString(None, b"AXManualAccessibility", 0x08000100)
+    if not application or not attribute:
+        if application:
+            cf.CFRelease(application)
+        if attribute:
+            cf.CFRelease(attribute)
+        raise RuntimeError("Could not create native accessibility references")
+    try:
+        error = ax.AXUIElementSetAttributeValue(
+            application, attribute, pointer.in_dll(cf, "kCFBooleanTrue"),
+        )
+        if error != 0:
+            raise RuntimeError(f"Owned native accessibility enablement failed: AX error {error}")
+    finally:
+        cf.CFRelease(attribute)
+        cf.CFRelease(application)
 
 
 def gui(pid, marker, action, require_terminal=False):
@@ -88,53 +120,27 @@ def inspect_ax_tree(pid, marker):
         set ownedWindows to every window of ownedProcess whose name contains {quote(marker)}
         if (count of ownedWindows) is not 1 then error "Owned window missing or ambiguous"
         set ownedWindow to item 1 of ownedWindows
-        set resultLines to {{"process|" & ((name of attributes of ownedProcess) as text)}}
+        set resultLines to {{"frontmost|" & (frontmost of ownedProcess as text)}}
         set focusedClassification to "missing"
         try
             set focusedElement to value of attribute "AXFocusedUIElement" of ownedProcess
             if focusedElement is not missing value then
                 set focusedClassification to "other"
-                try
-                    if (my safeText(role of focusedElement)) contains "Terminal" then
-                        set focusedClassification to "terminal"
-                    end if
-                end try
-                try
-                    if (my safeText(description of focusedElement)) contains "Terminal" then
-                        set focusedClassification to "terminal"
-                    end if
-                on error errorText number errorNumber
-                    set focusedClassification to "query-error:" & errorNumber
-                end try
+                set elementRef to focusedElement
+                set elementRole to my safeText(role of elementRef)
+                set elementSubrole to my safeText(subrole of elementRef)
+                set elementFocused to my safeText(value of attribute "AXFocused" of elementRef)
+                if (my safeText(description of focusedElement)) contains "Terminal" then
+                    set focusedClassification to "terminal"
+                end if
+                set end of resultLines to elementRole & "|" & elementSubrole & "|" & elementFocused
             end if
+        on error errorText number errorNumber
+            set focusedClassification to "query-error:" & errorNumber
         end try
         set end of resultLines to "focused|" & focusedClassification
-        set elements to entire contents of ownedWindow
-        set total to count of elements
-        if total > 500 then set total to 500
-        repeat with index from 1 to total
-            set elementRef to item index of elements
-            set elementRole to "unavailable"
-            set elementSubrole to "unavailable"
-            set elementFocused to "unavailable"
-            set elementAttributes to ""
-            try
-                set elementRole to my safeText(role of elementRef)
-            end try
-            try
-                set elementSubrole to my safeText(subrole of elementRef)
-            end try
-            try
-                set elementAttributes to (name of attributes of elementRef) as text
-            end try
-            try
-                set elementFocused to my safeText(value of attribute "AXFocused" of elementRef)
-            end try
-            set end of resultLines to (elementRole & "|" & elementSubrole & "|" & elementFocused & "|" & elementAttributes)
-        end repeat
-        set windowAttributes to (name of attributes of ownedWindow) as text
         set AppleScript's text item delimiters to linefeed
-        return "window|" & windowAttributes & linefeed & (resultLines as text)
+        return resultLines as text
     end tell
     """)
 
@@ -195,7 +201,7 @@ def wait_for_human_file(path, process, timeout, message):
 
 
 def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=False,
-        inspection_complete_file=None):
+        inspection_complete_file=None, native_accessibility=False):
     marker = "CLIMON2-56-VSCODE-" + root.name
     workspace, reports = configure(
         root, marker, inspect_only, manual_focus=terminal_focus_file is not None,
@@ -239,6 +245,9 @@ def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=Fal
                     click menu item "New Terminal" of menu 1 of menu bar item "Terminal" of menu bar 1
                 end tell
             """)
+            if native_accessibility:
+                enable_native_accessibility(process.pid)
+                print("Owned process accessibility requested through native AX API.", flush=True)
             if inspect_only:
                 if terminal_focus_file is None:
                     raise RuntimeError("AX inspection requires manual focus confirmation")
@@ -252,6 +261,7 @@ def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=Fal
                           f"{process.poll() is None}", flush=True)
                     return {"status": "INSPECTED", "host": version,
                             "profile": "isolated NativeInputFixture; accessibility on, extensions disabled",
+                            "native_accessibility_requested": native_accessibility,
                             "ax": ax,
                             "boundary": "Accessibility metadata only; no native key, paste or clipboard action"}
                 finally:
@@ -296,6 +306,7 @@ def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=Fal
                 raise RuntimeError("Native input receiver failed")
             report["host"] = version
             report["profile"] = "isolated NativeInputFixture; accessibility on, extensions disabled"
+            report["native_accessibility_requested"] = native_accessibility
             return report
         finally:
             if process.poll() is None:
@@ -316,6 +327,7 @@ def main():
     parser.add_argument("--terminal-focus-file", type=Path)
     parser.add_argument("--inspection-complete-file", type=Path)
     parser.add_argument("--inspect-only", action="store_true")
+    parser.add_argument("--native-accessibility-permission-confirmed", action="store_true")
     args = parser.parse_args()
     if args.inspection_complete_file is not None and not args.inspect_only:
         parser.error("--inspection-complete-file requires --inspect-only")
@@ -328,9 +340,14 @@ def main():
         root = Path(directory)
         try:
             report = run(root, args.window_ready_file, args.terminal_focus_file, args.inspect_only,
-                         args.inspection_complete_file)
+                         args.inspection_complete_file, args.native_accessibility_permission_confirmed)
         except (RuntimeError, TimeoutError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
-            report = {"status": "FAIL", "error": str(error)}
+            report = {"status": "FAIL", "error": str(error),
+                      "native_accessibility_requested": args.native_accessibility_permission_confirmed}
+            report["announced_stages"] = [
+                json.loads(path.read_text())["stage"]
+                for path in sorted((root / "reports").glob("ready-*.json"))
+            ]
             result = root / "reports" / "result.json"
             if result.exists():
                 report["receiver"] = json.loads(result.read_text())

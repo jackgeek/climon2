@@ -19,8 +19,11 @@ from vscode import configure, gui, inspect_ax_tree, run
 
 class ReceiverTests(unittest.TestCase):
     def test_ax_query_keeps_owned_process_alive_until_post_query_confirmation(self):
-        for query_error in (None, RuntimeError("AX query failed")):
-            with self.subTest(query_error=query_error), tempfile.TemporaryDirectory() as directory:
+        for query_error, native_accessibility in (
+            (None, False), (None, True), (RuntimeError("AX query failed"), True),
+        ):
+            with self.subTest(query_error=query_error, native_accessibility=native_accessibility), \
+                    tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 focused = root / "focused"
                 focused.touch()
@@ -38,10 +41,12 @@ class ReceiverTests(unittest.TestCase):
                             patch("vscode.wait_window"), \
                             patch("vscode.gui", return_value="1"), \
                             patch("vscode.inspect_ax_tree", side_effect=query), \
+                            patch("vscode.enable_native_accessibility", create=True) as enable, \
                             ThreadPoolExecutor(max_workers=1) as executor:
                         future = executor.submit(
                             run, root, terminal_focus_file=focused, inspect_only=True,
                             inspection_complete_file=inspected,
+                            native_accessibility=native_accessibility,
                         )
                         try:
                             if not queried.wait(timeout=2):
@@ -60,6 +65,10 @@ class ReceiverTests(unittest.TestCase):
                             with self.assertRaisesRegex(RuntimeError, "AX query failed"):
                                 future.result(timeout=3)
                         self.assertIsNotNone(process.poll(), "Owned process was not cleaned up")
+                        if native_accessibility:
+                            enable.assert_called_once_with(process.pid)
+                        else:
+                            enable.assert_not_called()
 
     def test_wrong_key_fails_without_recording_unexpected_contents(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -262,6 +271,7 @@ class ReceiverTests(unittest.TestCase):
         self.assertIn('set focusedClassification to "missing"', source)
         self.assertIn('"focused|" & focusedClassification', source)
         self.assertNotIn("value of focusedElement", source)
+        self.assertNotIn("entire contents", source)
 
     def test_ax_role_conversion_runs_in_system_events_context(self):
         with patch("vscode.script", side_effect=lambda value: value):
