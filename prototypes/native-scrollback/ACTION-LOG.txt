@@ -226,3 +226,59 @@ Permissioned rendition / native resize experiment (session 618f2314):
     boundaries on the prototype branch. Prepared immutable commit/push and #52
     publication; keep #52 open and return rendition/raster observer decisions
     to the driving session instead of approving a product-policy relaxation.
+
+Permissioned pixel sampling (session 8bca69fd, 2026-10-31):
+62. Read the pixel handoff, repository/domain/issue guidance and #52/#40
+    amendments. Clean prototype local/remote tip matched c57f2f6; preserved
+    unrelated root CLAUDE.md. Loaded prototype/ub-mode/TDD; confirmed capture
+    privacy scope and the pure-pixel / guarded-capture test seams with the user.
+63. Reverified original dedicated 258 / /dev/ttys008 at 24x6/Basic/idle.
+    First failing test pinned owned-window identity/permission refusal; then
+    implemented it. Mapping test went red before measured-scale/clipping logic.
+    Ink/colour tests went red before their pure oracle implementation.
+64. Built native bridges with one Swift job. Corrected compile-time API/type
+    errors. Palette lookup reproducibly failed; loaded diagnosing-bugs, then
+    checked only relevant key-presence flags. Persisted and bundled Basic lack
+    explicit ANSI blue/text/background archives. No invented palette fallback.
+65. Recording preflight denied; the user manually granted permission, but the
+    recheck still denied. Loaded wizard and offered manual steps; the user
+    authorized the standard macOS request, which returned false. Identified
+    Terminal.app host from process executable names only. User paused to restart.
+66. On resume, original marker matches were zero. User authorized one replacement
+    dedicated window. Setup incorrectly paired returned /dev/ttys007 tab with
+    front window 756; guards rejected it before replay/capture. Informed the
+    user of possible front-window 24x6 side effect, with prior dimensions unknown;
+    did not attempt unauthorized speculative restoration or read its content.
+67. User authorized exact-TTY metadata recovery. Uniquely bound actual window
+    813 / /dev/ttys007 before marking/resizing. Verified single-tab/idle/Basic
+    and recording access. All subsequent native actions used that guarded target.
+68. Read live black text/white background through AppleScript. Kept missing
+    exact ANSI-blue palette explicit; implemented weaker independently declared
+    blue-channel dominance relative to same-image default/blank controls.
+69. Native entry first rejected a transient ambiguous AX marker; metadata-only
+    diagnostic then found one AX/AppleScript marker. Unchanged retry continued,
+    without weakening guards. This remains a reliability finding.
+70. Native attempt 2 rejected selection collapse at a different index. Tight
+    native diagnostic found requested 77 vs actual 177, both length zero.
+    Corrected the oracle to zero length plus empty selected text; retained
+    native bridge selection verification and per-unit viewport/visible checks.
+71. Attempts 3/4 exposed antialiasing: strong default-text median (33,33,33)
+    passed strict near-black equality only 62/106. A grayscale regression went
+    red before accepting the independent foreground/background colour segment,
+    retaining tint rejection, strong-ink threshold and blue margin.
+72. Attempt 5 passed six-ASCII variant. Full-range test went red (6 != 40)
+    before sampling all forty printable ASCII boxes. Added missing-image/private
+    temp cleanup boundary test and retained selection-highlight refusal.
+73. Two all-box native runs passed 24 -> 32 -> 24, with matching numeric samples:
+    scale 2 derived from image/bounds, blue 152 strong (97/55 halves), combining
+    91 strong, ASCII minimum 24 strong, blank background distance maximum 1.
+    Images/RGB/private directories deleted after every capture, also on failure.
+74. Final bounded runner passed 10 Rust + 45 Python tests, fmt/Clippy; both Swift
+    bridges built with one job. Quality executables unavailable, no install or
+    shipped-crate acceptance claim. Final native source/report run passed all
+    three widths and restored owned 24x6/Basic/idle/bottom; no persistent helper.
+75. Persisted generated numeric-only final/repeat/failure reports and detailed
+    findings, commands, weaker contract and setup incident on prototype branch.
+    No images/full titles/clipboard/profile/mode changes or product-policy
+    decisions. Exact palette, accent shape, VS Code and full #45 gate remain
+    unqualified. Prepare immutable commit/push/#52 evidence; keep #52 open.

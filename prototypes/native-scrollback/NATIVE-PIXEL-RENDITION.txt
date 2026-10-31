@@ -1,0 +1,184 @@
+THROWAWAY #52 - Terminal.app window-only pixel qualification, 2026-10-31.
+Executing session: 8bca69fd-921a-401e-b6cf-70a17558b5f7.
+Decision-session destination: 6c394e7d-c01f-4f83-b76a-db911649345d.
+
+VERDICT:
+  PASS for relative blue-channel rendition and rendered ink presence at the
+  exercised black-on-white Basic / MesloLGS-NF-Regular 11 configuration.
+  NOT a pass for exact ANSI-palette fidelity, correct glyph outlines, a drawn
+  combining-accent shape, arbitrary themes/fonts, VS Code, or the #45 gate.
+  No product implementation or acceptance-policy decision was made.
+
+Permission, restart and the setup incident:
+  The user confirmed owned-window-only actions/capture, transient private images,
+  manual Screen Recording authorization, no clipboard/profile/font/palette/mode
+  changes, and no other-window control. Test seams were explicitly confirmed.
+  Screen Recording preflight initially denied access. After a manual grant it
+  still denied access; the user authorized the standard CGRequestScreenCaptureAccess
+  prompt, which also returned false. The permission host was identified from
+  ancestor executable names as Terminal.app. No privacy database/reset was used.
+  The user paused to restart Terminal, then resumed. Recording preflight now
+  succeeds, but the original marker window was gone.
+
+  The user explicitly authorized one replacement dedicated window. Setup used
+  Terminal's returned new tab but incorrectly associated it with front window
+  756 before checking their relationship. The returned tab was /dev/ttys007.
+  Subsequent guards rejected that association before fixture replay or capture.
+  A marker-only diagnostic returned zero matches, and window 756's tab had a
+  different TTY. The user was informed immediately: front-window dimensions
+  MAY have changed to 24x6; prior dimensions were unknown and were not restored
+  speculatively. This is an unresolved setup side-effect risk, not claimed clean.
+  No content was read/exported from that window.
+
+  The user then explicitly authorized metadata-only recovery by /dev/ttys007.
+  A unique exact-TTY/single-tab/idle/Basic match located actual window 813.
+  Only that recovered window was marked and set to 24x6. All experiment actions
+  thereafter used window 813 / /dev/ttys007 and the existing identity guards.
+  That replacement stayed open at completion. No additional window was created.
+  No generic new-window setup automation is included; do not repeat the
+  front-window assumption. Future setup must bind a returned tab to its actual
+  uniquely identified window before mutation.
+
+Observed host:
+  macOS 26.7.1 (25G241), Terminal.app 2.15, Basic.
+  MesloLGS-NF-Regular 11. Profile identity is observed, not pristine defaults.
+  Live AppleScript returns text RGB16=(0,0,0), background=(65535,65535,65535).
+  Swift captures are decoded to sRGB8, top-to-bottom.
+  Window-only screencapture excludes shadows; bounds and captured dimensions
+  independently give scale 2 here, not a hard-coded Retina assumption.
+
+Independent expectation and its weaker boundary:
+  Terminal.sdef advertises normal-text/background colour, not ANSI blue.
+  CFPreferences Window Settings / Basic exists, but ANSIBlueColor, TextColor,
+  BackgroundColor archives are absent. The bundled Basic.terminal also omits
+  them. The bounded --palette probe fails explicitly; it does not invent a
+  palette or infer expected blue from the judged wide-glyph pixels.
+  Read-only live text/background controls are independently black and white.
+  Actual blank cells and default ASCII in each same-window image validate
+  those controls. Expected "blue" is the predeclared weaker chromatic condition:
+  blue exceeds BOTH red and green by at least 40 in strong sRGB8 ink.
+  No exact Terminal ANSI blue is claimed. That palette seam remains blocked.
+
+Oracle and antialiasing:
+  Reuses per-UTF-16 AX bounds plus clipping viewport containment AND
+  AXVisibleCharacterRange agreement. No offscreen or partially clipped sample
+  passes. AX native layout is checked independently of emitted rendition bytes.
+  CGWindow selection requires Screen Recording access, one running active
+  Terminal PID, one on-screen layer-zero marker window, and exact live title.
+  Zero/ambiguous matches refuse capture; title is used in memory only.
+  Bounds/title/CG ID are rechecked after capture to reject movement/replacement.
+  Only the matched CGWindowID is captured; never full-screen or other windows.
+
+  The typed AX helper selects the known synthetic range to verify its text,
+  then clears selection and verifies zero length AND empty selected text before
+  sampling. Terminal collapses selection at its live cursor, not the requested
+  scrollback index; checking the latter was an incorrect oracle constraint.
+  Points map to fully contained pixels by measured uniform scale and inward
+  rounding. Invalid dimensions, nonuniform scale and malformed data refuse.
+
+  Background distance >24 defines candidate ink; distance >=96 defines strong
+  ink. Require max(3, ceil(box area*0.01)) strong pixels and >=90% colour match.
+  Default text is accepted on the independently known foreground/background
+  colour segment, with residual <=16, rather than near-black pixel equality.
+  The first text attempt's strong median was (33,33,33); only 62/106 pixels
+  were within an overly strict 48 of black. A failing grayscale-antialias test
+  preceded the colour-segment correction; a tinted negative control fails.
+  Blue keeps its >=40 channel margin; antialiasing is not treated as exact RGB.
+
+  Controls justify separation, not universal calibration: blank maximum
+  background distance is 1; all ASCII strong-ink matches are 1.0; the minimum
+  ASCII strong count is 24, well above the minimum 5 in a 14x30 box. The blue
+  median is (103.5,92,224), with all 152 strong pixels satisfying the independent
+  chromatic condition. Thresholds are prototype choices, not product budgets.
+  Black/white only is enforced. Theme/font/general-gamma portability is untested.
+
+Native results:
+  Two full all-box runs and a final source/report run exercised 24 -> 32 -> 24,
+  each at six rows. All checkpoints pass the same relative oracle.
+  The two repeat reports contain matching sample statistics at every width.
+  Final report additionally retains native numeric range/viewport/unit boxes.
+
+    Columns  Image px  AX cell pts  Wide strong / halves  Combining strong
+    24       376x276   7x15         152 / 97,55          91
+    32       488x276   7x15         152 / 97,55          91
+    24       376x276   7x15         152 / 97,55          91
+
+  Soft rows reflow 2 / 1 / 2. Forty printable ASCII boxes are each sampled
+  as default text. U+754C's 14x15-point box has blue ink in both separate
+  7x15-point halves. The e+U+0301 shared 7x15-point box contains neutral ink,
+  and two adjacent cells have no ink. This does NOT prove that the accent
+  itself is painted correctly or identify the glyph outline from pixels.
+  Combining strong median is (15,15,15); every default/blue match fraction 1.0.
+
+Failure history, retained rather than rewritten as passes:
+  - Initial palette lookup failed; targeted key-presence probes distinguished
+    inherited/missing palette properties from archive decoding.
+  - Recording preflight and authorized standard request denied before restart.
+  - Replacement front-window association failed identity guard; see incident.
+  - First native driver entry rejected an ambiguous AX marker. A subsequent
+    metadata-only check found one AppleScript/AX marker. No guard was relaxed;
+    unchanged retry was permitted to proceed. This transient is a reliability
+    finding, not proof of unattended stable-window setup.
+  - Attempt 2 failed selection clearing's unnecessary exact-index constraint;
+    final_state verified 24x6/Basic/idle/bottom. Selection-failure JSON retained.
+  - Attempt 3 failed colour classification; attempt 4 retained the numeric
+    text mismatch above. Antialias-failure JSON retained. All images deleted.
+  - Attempt 5 passed the initial six-ASCII variant. Full-range test then went
+    red (6 != 40) before adding all forty printable ASCII observations.
+  - Both all-box repeat runs and final native run passed without changes to
+    palette, font, theme, clipboard or terminal-emulator modes.
+
+Privacy and cleanup:
+  Images and decoded RGB buffers were placed only in per-capture private
+  TemporaryDirectory paths (0700), then deleted on success/failure.
+  A boundary test verifies missing screenshots refuse and the private directory
+  is deleted. Each successful native checkpoint verifies PNG/RGB/directory
+  deletion and persists that numeric/boolean fact. Images were not inspected
+  through a GUI, committed, published or retained. Full identifying titles
+  are absent from reports. Only synthetic boxes/samples and approved metadata
+  persist. Final owned state: 24x6, Basic, busy=false, viewport at bottom.
+  No long-lived helper exists. Root CLAUDE.md changes remain untouched.
+  The possible initial front-window size side effect remains explicitly unknown.
+
+Automated checks and reproduction:
+  Existing runner: 10 Rust and 45 Python tests, fmt and Clippy.
+  One Cargo job/test thread; Swift builds with -j 1. No packages installed.
+  crapper/dryer/mutator are unavailable; no CRAP/zero-survivor acceptance claim.
+  Pure seams cover missing/ambiguous/wrong owner and denied capture, measured
+  scale and mapping, clipping/nonfinite boxes, blank/text/blue classification,
+  unavailable/truncated images, tint/low contrast, antialiasing, both wide halves,
+  blank neighbour, selection-highlighting refusal and all forty ASCII boxes.
+  The OS capture boundary is tested without Apple events or TTY access.
+  Real owned runs exercise bridge selection-clearing/capture/resize, not mocks.
+
+  From the isolated worktree:
+    bash prototypes/native-scrollback/run.sh
+  From prototypes/native-scrollback:
+    swiftc -j 1 capture_pixels.swift -o artifacts/capture-pixels
+    swiftc -j 1 select_range.swift -o artifacts/select-range
+  After fresh permission and exact owned-window identity verification:
+    python3 pixel_rendition.py --permission-confirmed --window-id AUTHORIZED_ID \
+      --tty /dev/ttysNNN --report-file artifacts/NEW-REPORT.json
+  Actual final command used 813 / /dev/ttys007 and
+  artifacts/native-pixels-final.json. Reports cannot be overwritten.
+  Capture/decode calls have 15-second limits and at most 2 million decoded
+  pixels; existing viewport search has 20 attempts. These are experiment bounds.
+
+#45 implications / proposals for the decision session, not decisions:
+  Pixel sampling can observe relative colour and glyph ink here, beyond AX
+  text/geometry. It needs manual host Screen Recording and AX/Apple-events
+  access, unique stable target identity, an independently known palette or
+  explicitly weaker control contract, colour-space mapping and font/theme-
+  qualified thresholds. Three successful all-box runs are short-run repeatability,
+  not long-term determinism or an unattended release-gate qualification.
+  Permission restarts destroyed the original target; setup must be separately
+  qualified with returned-tab-to-window binding. The transient marker rejection
+  and possible front-window side effect must not be hidden.
+  Exact palette and combining-accent shape remain unresolved if required by
+  acceptance. The user must decide whether the demonstrated relative boundary
+  is sufficient; this session makes no amendment.
+  VS Code might use comparable guarded window capture and pixel decisions,
+  but needs its own independently validated rendered-cell coordinate observer,
+  palette/settings source, font/theme/scale matrix and permission scope.
+  Terminal's AX text bridge cannot be assumed portable to VS Code. No VS Code
+  native actions or evidence were gathered. #52 remains open.
