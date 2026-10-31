@@ -76,6 +76,21 @@ Latest continuation: Bash and focus
   manually clicked the Bash prompt. No guard was bypassed; native VS Code
   cursor/keypad/paste behavior remains unqualified.
 
+Post-query window disappearance
+  The developer observed that the window disappeared immediately after a query.
+  The runner's unconditional finally block terminated its owned VS Code process
+  after query completion or failure. A lifecycle regression using a real child
+  process reproduced termination with status -15 on both query outcomes in
+  under one second; it now verifies the process stays alive until post-query
+  confirmation, then is cleaned up, preserving query failures.
+
+  AX-only runs can now use --inspection-complete-file with a fresh marker path.
+  The runner pauses after the query, including failure, for up to 600 seconds
+  before cleanup. The native retry returned from the query with its owned
+  process alive; the developer confirmed the window and Bash prompt remained
+  visible and explicitly approved closure. AX focus still classified as missing.
+  This resolves premature runner teardown, not the native-input focus blocker.
+
 Test seam
   Receiver includes independent expected key bytes and exact known paste
   samples, permitting only LF/CR/CRLF variants with exact UTF-8 otherwise.
@@ -89,7 +104,7 @@ Reproduction
   Offline from prototypes/native-input:
     python3 -m unittest -v
     python3 -m py_compile receiver.py vscode.py
-  Nine PTY/profile/automation-script tests pass; syntax and diff whitespace
+  Ten PTY/profile/automation-script tests pass; syntax and diff whitespace
   checks pass.
   No new mutation, CRAP, duplication, release or full-workspace pass claimed.
 
@@ -117,6 +132,9 @@ Action log
   Added a manual focus gate and stopped two native attempts before input when
   AX focus remained unavailable. Ran one AX-only classification, which
   confirmed the focused element was missing; no clipboard or key data was read.
+  Reproduced immediate post-query teardown, added a tested post-query inspection
+  gate, and verified the actual VS Code window remained visible after querying.
+  Closed the disposable window only after the developer approved cleanup.
 
 Fix and verification
   Inspection-only mode now opens a plain Bash prompt so the developer can
@@ -124,7 +142,7 @@ Fix and verification
   receiver as a Bash child and leaves Bash open afterward. Explicit manual
   focus confirmation uses a 600-second receiver deadline; default runs retain
   eight seconds. Terminal-focused automation no longer raises/refocuses the
-  app before checking AX focus, and missing AX focus fails closed. Nine offline
+  app before checking AX focus, and missing AX focus fails closed. Ten offline
   tests pass, including PTY execution through Bash, focus-deadline behavior,
   prompt persistence and focus-guard script generation. These changes do not
   establish native VS Code support.

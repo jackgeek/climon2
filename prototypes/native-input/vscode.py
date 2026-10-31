@@ -190,7 +190,8 @@ def wait_for_human_file(path, process, timeout, message):
         time.sleep(0.2)
 
 
-def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=False):
+def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=False,
+        inspection_complete_file=None):
     marker = "CLIMON2-56-VSCODE-" + root.name
     workspace, reports = configure(
         root, marker, inspect_only, manual_focus=terminal_focus_file is not None,
@@ -241,10 +242,22 @@ def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=Fal
                 wait_for_human_file(
                     terminal_focus_file, process, 600, "Manual focus confirmation expired",
                 )
-                return {"status": "INSPECTED", "host": version,
-                        "profile": "isolated NativeInputFixture; accessibility on, extensions disabled",
-                        "ax": inspect_ax_tree(process.pid, marker),
-                        "boundary": "Accessibility metadata only; no native key, paste or clipboard action"}
+                try:
+                    ax = inspect_ax_tree(process.pid, marker)
+                    print("AX query returned; owned VS Code process alive: "
+                          f"{process.poll() is None}", flush=True)
+                    return {"status": "INSPECTED", "host": version,
+                            "profile": "isolated NativeInputFixture; accessibility on, extensions disabled",
+                            "ax": ax,
+                            "boundary": "Accessibility metadata only; no native key, paste or clipboard action"}
+                finally:
+                    if inspection_complete_file is not None:
+                        print("AX query finished. Inspect the window before confirming cleanup.",
+                              flush=True)
+                        wait_for_human_file(
+                            inspection_complete_file, process, 600,
+                            "Post-query inspection expired or owned VS Code exited",
+                        )
             result_path = reports / "result.json"
             if terminal_focus_file is not None:
                 wait_file(reports / "ready-0.json", result_path)
@@ -297,9 +310,12 @@ def main():
     parser.add_argument("--clipboard-permission-confirmed", action="store_true", required=True)
     parser.add_argument("--window-ready-file", type=Path)
     parser.add_argument("--terminal-focus-file", type=Path)
+    parser.add_argument("--inspection-complete-file", type=Path)
     parser.add_argument("--inspect-only", action="store_true")
     args = parser.parse_args()
-    for path in (args.window_ready_file, args.terminal_focus_file):
+    if args.inspection_complete_file is not None and not args.inspect_only:
+        parser.error("--inspection-complete-file requires --inspect-only")
+    for path in (args.window_ready_file, args.terminal_focus_file, args.inspection_complete_file):
         if path is not None and path.exists():
             parser.error("manual readiness paths must be new")
     parent = Path(__file__).parent / "artifacts"
@@ -307,7 +323,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="c56-", dir="/tmp") as directory:
         root = Path(directory)
         try:
-            report = run(root, args.window_ready_file, args.terminal_focus_file, args.inspect_only)
+            report = run(root, args.window_ready_file, args.terminal_focus_file, args.inspect_only,
+                         args.inspection_complete_file)
         except (RuntimeError, TimeoutError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
             report = {"status": "FAIL", "error": str(error)}
             result = root / "reports" / "result.json"

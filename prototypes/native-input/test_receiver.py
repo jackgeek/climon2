@@ -1,6 +1,7 @@
 """Offline PTY checks of the throwaway native-input receiver."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import pty
@@ -8,14 +9,58 @@ import select
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
 
-from vscode import configure, gui, inspect_ax_tree
+from vscode import configure, gui, inspect_ax_tree, run
 
 
 class ReceiverTests(unittest.TestCase):
+    def test_ax_query_keeps_owned_process_alive_until_post_query_confirmation(self):
+        for query_error in (None, RuntimeError("AX query failed")):
+            with self.subTest(query_error=query_error), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                focused = root / "focused"
+                focused.touch()
+                inspected = root / "inspected"
+                queried = threading.Event()
+
+                def query(*args):
+                    queried.set()
+                    if query_error is not None:
+                        raise query_error
+                    return "focused|missing"
+
+                with subprocess.Popen(["/bin/sleep", "30"]) as process:
+                    with patch("vscode.subprocess.Popen", return_value=process), \
+                            patch("vscode.wait_window"), \
+                            patch("vscode.gui", return_value="1"), \
+                            patch("vscode.inspect_ax_tree", side_effect=query), \
+                            ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(
+                            run, root, terminal_focus_file=focused, inspect_only=True,
+                            inspection_complete_file=inspected,
+                        )
+                        try:
+                            if not queried.wait(timeout=2):
+                                future.result(timeout=1)
+                                self.fail("AX query was not reached")
+                            time.sleep(0.3)
+                            self.assertIsNone(process.poll(), "Runner closed the window after the query")
+                            self.assertFalse(future.done(), "Runner skipped post-query confirmation")
+                        finally:
+                            inspected.touch()
+                            if not queried.is_set() and process.poll() is None:
+                                process.terminate()
+                        if query_error is None:
+                            self.assertEqual(future.result(timeout=3)["status"], "INSPECTED")
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, "AX query failed"):
+                                future.result(timeout=3)
+                        self.assertIsNotNone(process.poll(), "Owned process was not cleaned up")
+
     def test_wrong_key_fails_without_recording_unexpected_contents(self):
         with tempfile.TemporaryDirectory() as directory:
             master, slave = pty.openpty()
