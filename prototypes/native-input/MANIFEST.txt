@@ -1,0 +1,102 @@
+THROWAWAY #56: one native legacy-input seam, not product implementation.
+
+Question
+  Does Terminal.app translate native key-code events according to explicit
+  cursor/keypad modes, including resetting modes for the next controller
+  profile in a standalone fixture?
+
+Result
+  PASS for the six cases in terminal-app-results.json:
+    Normal Up:                 ESC [ A
+    Application-cursor Up:     ESC O A
+    Handoff back to normal Up: ESC [ A
+    Normal keypad 1:           1
+    Application keypad 1:      ESC O q
+    Handoff to normal keypad:  1
+
+  Independent expected literals are declared in the raw-PTY receiver. System
+  Events key codes 126 and 83 enter Terminal.app's native translation path;
+  the controller does not inject the desired escape sequences as input.
+  Output mode sequences are explicit fixture actions, not an engine adapter.
+  No host queries, raw application-output replay or custom key encoder.
+
+Provenance and limits
+  Terminal.app 2.15, Basic profile; macOS 26.7.1 (25G241).
+  Python 3 standard library, system osascript/System Events; no dependencies
+  installed and no host preferences changed.
+  One successful native run, not repeatability or arbitrary-profile approval.
+  Key-code automation is not physical keyboard/hardware qualification.
+  Only Up and keypad 1 are exercised; not all keys, modifiers or input modes.
+  Standalone mode handoff is not daemon readiness/control-period integration.
+  No Alacritty model is linked here; this qualifies a native host seam only.
+  Bracketed paste remains pending in this #56 stage: no clipboard permission
+  was granted. Other native-host findings retain their own distinct scope.
+  Mouse/focus modes, other terminals, actual production delivery and latency,
+  source/dependency release review and release acceptance remain unproven.
+  No new engine selection, restoration or hyperlink policy is decided here.
+
+Permission and cleanup
+  The developer confirmed the two test seams and separately authorized every
+  new dedicated test window. No existing terminal contents were read, no
+  existing windows controlled, and no clipboard/screenshots/preferences used.
+  Keyboard events require the owned window ID, TTY, single tab, unique test
+  marker and focused/main accessibility window. Metadata contains only test
+  identities, known expected bytes, match flags and lengths; unexpected input
+  contents are never retained.
+  Cleanup uses the recorded newly created window ID/TTY and single-tab check,
+  as explicitly authorized separately from the stricter keyboard guard.
+  The successful test's TTY had zero remaining tabs in a post-run check.
+
+Retained failures
+  terminal-app-first-results.json: marker guard stopped before any key;
+  cleanup also refused the changed marker. That attempt did not retain its
+  ownership record. The developer manually closed only the new test window.
+  terminal-app-retry-results.json: receiver checkpoint timeout, no keys sent.
+  A PTY regression with controller ownership metadata reproduced the receiver's
+  overbroad empty-directory check. Receiver output paths, not unrelated
+  controller metadata, must be unused. The fix passed the same test.
+  Terminal retained an empty window object after cleanup, with zero tabs;
+  existence of its object alone was not mistaken for a live terminal.
+  Both failures are setup/observer findings, not native-key failures or passes.
+  They remain in this branch; no guard was bypassed to obtain a pass.
+
+Reproduction
+  Offline, from this directory:
+    python3 -m unittest -v
+    python3 -m py_compile receiver.py terminal_app.py test_receiver.py
+
+  Only after obtaining fresh permission to create/focus/send guarded keys to
+  one dedicated Terminal.app window (Accessibility/Automation must already
+  be available; failures are not bypassed):
+    python3 terminal_app.py --permission-confirmed
+
+  The native command is opt-in; offline tests never open native windows.
+  It restores cursor/keypad defaults and the receiver's termios flags, then
+  closes only its newly owned test tab. Each stage has an eight-second input
+  budget; observer checkpoints have a twelve-second budget. No timing/fidelity
+  claim follows from those test-infrastructure deadlines.
+  Temporary receiver data is removed; retain the command's JSON output as
+  evidence if needed. A nonzero result is a failure, never a support approval.
+
+Action log
+  1. Obtained and published acceptance of the earlier bounded legacy-input
+     stage, then confirmed native scope, seams and window permissions.
+  2. Read the existing #52 targeting/receiver approach and frozen ADRs.
+  3. Created a separate prototype/native-input-56 worktree from the immutable
+     earlier #56 stage; made no production/main edits.
+  4. Saw the initial PTY test fail for the absent receiver, then implemented
+     only the bounded fixture. Added wrong-input/privacy assertions.
+  5. Attempted guarded native qualification; retained both setup failures,
+     reported them promptly and obtained separate retry permissions.
+  6. Reproduced the ownership-metadata startup failure offline before fixing
+     it; moved marker assignment after readiness and retained ownership on
+     failures. Kept the strict keyboard guard.
+  7. Observed all six actual native key checks pass, verified the test TTY
+     cleanup and reran both PTY tests, syntax checks and diff whitespace check.
+  8. Captured code and all findings on a throwaway branch, not a production
+     merge. Human reaction to this native stage remains a separate decision.
+
+Validation boundary
+  Two Python PTY tests and six native assertions. Syntax and git diff checks.
+  No new Rust changes, full workspace run, mutation run, CRAP measurement,
+  duplication-tool pass, dependency audit or packaged acceptance is claimed.

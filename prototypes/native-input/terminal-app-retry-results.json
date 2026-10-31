@@ -1,0 +1,9 @@
+{
+  "status": "FAIL",
+  "error": "native receiver checkpoint timed out",
+  "ownership": {
+    "window_id": 1205,
+    "tty": "/dev/ttys007",
+    "marker": "CLIMON2-56-INPUT-native-uoqlj4_f"
+  }
+}

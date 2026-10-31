@@ -1,0 +1,44 @@
+{
+  "status": "PASS",
+  "stages": [
+    {
+      "stage": "cursor-normal",
+      "expected_hex": "1b5b41",
+      "matched": true,
+      "received_length": 3
+    },
+    {
+      "stage": "cursor-application",
+      "expected_hex": "1b4f41",
+      "matched": true,
+      "received_length": 3
+    },
+    {
+      "stage": "cursor-handoff-normal",
+      "expected_hex": "1b5b41",
+      "matched": true,
+      "received_length": 3
+    },
+    {
+      "stage": "keypad-normal",
+      "expected_hex": "31",
+      "matched": true,
+      "received_length": 1
+    },
+    {
+      "stage": "keypad-application",
+      "expected_hex": "1b4f71",
+      "matched": true,
+      "received_length": 3
+    },
+    {
+      "stage": "keypad-handoff-normal",
+      "expected_hex": "31",
+      "matched": true,
+      "received_length": 1
+    }
+  ],
+  "tty": "/dev/ttys007",
+  "host": "2.15|Basic",
+  "boundary": "System Events key codes on one dedicated Terminal.app PTY; standalone mode handoff, not physical keyboard or daemon integration"
+}
