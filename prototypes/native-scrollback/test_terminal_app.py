@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import patch
 
-from terminal_app import facts, ready
+from terminal_app import facts, ready, script
 
 
 class ObserverTests(unittest.TestCase):
@@ -37,6 +38,13 @@ class ObserverTests(unittest.TestCase):
     def test_numeric_shell_text_is_not_exported_as_fixture_fragments(self):
         result = facts("", "123456\n890123456789\n")
         self.assertEqual(result["synthetic_history_fragments"], [])
+
+    def test_invalid_native_target_never_dispatches_an_apple_event(self):
+        for window, tty in [(0, "/dev/ttys008"), (258, "008"), (258, "/dev/ttys١٢٣")]:
+            with self.subTest(window=window, tty=tty), patch("terminal_app.subprocess.run") as run:
+                with self.assertRaises(ValueError):
+                    script(window, tty, "tty of testTab")
+                run.assert_not_called()
 
 
 if __name__ == "__main__":

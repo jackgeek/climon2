@@ -21,7 +21,9 @@ Native test preconditions, to agree before execution:
 - The fixture uses unicode-width 0.2.3 non-CJK widths (not a native capability
   claim). Wide/combining glyph width, font and reflow remain host qualification.
 - Output ordering is staged below. No terminal resize escape is emitted.
-- Native retention settings remain unchanged. No promise against ordinary
+- Existing native retention settings remain unchanged. The separately authorized
+  capacity phase used an owned temporary profile, restored Basic and removed
+  the temporary profile; see NATIVE-CAPACITY.txt. No promise against ordinary
   capacity eviction. Small retention should expose eviction, not be called
   destructive clearing.
 
@@ -56,6 +58,7 @@ Resize/reflow checkpoints:
 Model oracle: alacritty_terminal 0.26.0, test-only, not a shipped-engine selection.
 Native Terminal.app partial evidence: NATIVE-FINDINGS.txt.
 Subsequent native copy/ordinary-input evidence: NATIVE-GESTURES.txt.
+Subsequent bounded native row-capacity evidence: NATIVE-CAPACITY.txt.
 iTerm2 / VS Code versions/settings/results: NOT MEASURED.
 Underlying-normal capture, full modes/cursor, unknown initial host state,
 daemon/wire ordering, non-controller privacy, coarse truncation notices, and

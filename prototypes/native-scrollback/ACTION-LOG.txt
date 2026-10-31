@@ -72,3 +72,40 @@ Permissioned native copy/input stage:
 22. Recorded native copy/input reports and tools, and retained the remaining
     capacity/style/resize/other-host/release-harness boundaries. All evidence
     remains on the throwaway prototype branch, not production.
+
+Permissioned bounded native capacity stage:
+23. Obtained permission to inspect only Basic's retention policy and emit at
+    most 20,000 short synthetic rows. Basic selected available-memory retention;
+    stopped instead of attempting memory stress against an unknown row limit.
+24. Obtained separate permission to duplicate Basic, set the owned temporary
+    profile to 256 rows, apply only to the dedicated tab, then restore/delete.
+    Created CLIMON2-52-CAPACITY-PROTOTYPE, settings-set ID 1000.
+25. Added failing/passing capacity budget and contiguous-tail tests. Reused
+    scoped target validation and the bounded TTY writer; invalid targets are
+    rejected before Apple events. No native GUI actions occur in offline tests.
+26. Initial setup displayed 256 but failed native eviction: all CAP rows and
+    prior content remained. Guarded against keyboard edits without real numeric
+    field focus. Explicit AXFocused, focused editing and profile reapplication
+    preceded the passing run; these changes do not isolate an internal cause.
+27. Used fresh per-attempt pre/end markers to prevent stale replay checkpoints.
+    The passing run emitted 278 CAP rows / 281 newline operations, retained
+    indexes 18..277 and evicted fresh prior content using CR/LF append only.
+28. Read synthetic-only derived API counts: 260 retained CAP rows, four displayed,
+    256 outside display. Added no redundant telemetry feature to the CLI.
+29. A cleanup identity guard stopped because tab current-settings ID 1013 differs
+    from the named settings-set ID 1000. Verified the owned named set and tab
+    name/TTY, restored Basic, reopened the Profiles panel for owned-only removal.
+    Verified temporary profile absent, Basic 24x6/busy false, and Basic's unchanged
+    available-memory/finite-row radio values 1,0.
+30. Added capacity tests to the bounded offline runner and recorded findings,
+    reproduction and remaining gates. Publication stays on the prototype branch.
+31. Pinned the driver through a mocked bounded host before consolidating its
+    two checkpoint loops; covered delayed freshness and timeout. Native evidence
+    predates that behavior-preserving extraction; no additional native output
+    was sent after restoring Basic. Final runner passed 10 Rust + 18 Python
+    runtime tests, formatting/Clippy and diff whitespace checks.
+32. The default crapper wrapper failed its editable install; used the existing
+    repository tool environment instead. Crapper complexity-only reported a
+    maximum CC of 6 for capacity.py; mutator scanned sites without executing
+    mutants. Coverage.py and dryer were unavailable; no new dependency was
+    installed. These diagnostics establish neither CRAP nor mutation acceptance.

@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-from terminal_app import script
+from terminal_app import script, validate_target
 
 
 COPY_TARGETS = {
@@ -155,9 +155,10 @@ def main():
     parser.add_argument("--tty", required=True)
     parser.add_argument("--check", choices=[*COPY_TARGETS, "input"], required=True)
     args = parser.parse_args()
-    suffix = args.tty.removeprefix("/dev/ttys")
-    if args.window_id <= 0 or not args.tty.startswith("/dev/ttys") or len(suffix) != 3 or not suffix.isascii() or not suffix.isdecimal():
-        parser.error("require a dedicated numeric window ID and /dev/ttysNNN")
+    try:
+        validate_target(args.window_id, args.tty)
+    except ValueError as error:
+        parser.error(str(error))
     if args.check == "input":
         result = input_check(args.window_id, args.tty)
     else:

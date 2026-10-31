@@ -17,7 +17,17 @@ STAGES = {
 }
 
 
+def validate_target(window, tty):
+    suffix = tty.removeprefix("/dev/ttys")
+    if (
+        window <= 0 or not tty.startswith("/dev/ttys")
+        or not suffix.isascii() or not suffix.isdecimal() or len(suffix) != 3
+    ):
+        raise ValueError("require a positive dedicated window ID and /dev/ttysNNN")
+
+
 def script(window, tty, expression):
+    validate_target(window, tty)
     # Only numeric window IDs and a validated /dev/ttysNNN path enter this script.
     source = f"""
 tell application "Terminal"
@@ -30,6 +40,19 @@ end tell
         ["osascript", "-"], input=source, text=True, capture_output=True,
         check=True, timeout=10,
     ).stdout.rstrip("\n")
+
+
+def write_tty(window, tty, payload):
+    if len(payload) > 65536:
+        raise ValueError("native fixture payload exceeds its per-write budget")
+    script(window, tty, "tty of testTab")
+    with open(tty, "wb", buffering=0) as terminal:
+        remaining = memoryview(payload)
+        while remaining:
+            written = terminal.write(remaining)
+            if written is None or written <= 0:
+                raise OSError("dedicated TTY write made no progress")
+            remaining = remaining[written:]
 
 
 def facts(contents, history):
@@ -91,12 +114,10 @@ def main():
     parser.add_argument("--stage", choices=[*STAGES, "resize"], required=True)
     parser.add_argument("--columns", type=int, choices=[12, 24])
     args = parser.parse_args()
-    suffix = args.tty.removeprefix("/dev/ttys")
-    if (
-        args.window_id <= 0 or not args.tty.startswith("/dev/ttys")
-        or not suffix.isascii() or not suffix.isdecimal() or len(suffix) != 3
-    ):
-        parser.error("require a positive dedicated window ID and /dev/ttysNNN")
+    try:
+        validate_target(args.window_id, args.tty)
+    except ValueError as error:
+        parser.error(str(error))
     geometry = script(
         args.window_id, args.tty,
         '(number of columns of testTab as text) & "," & (number of rows of testTab as text)',
@@ -143,17 +164,7 @@ end tell
         }, ensure_ascii=True, indent=2))
         return
     payload = (Path(__file__).parent / "artifacts" / STAGES[args.stage]).read_bytes()
-    if len(payload) > 65536:
-        raise RuntimeError("native fixture file exceeds its per-stage budget")
-    # Recheck identity immediately before writing; no front-window targeting.
-    script(args.window_id, args.tty, "tty of testTab")
-    with open(args.tty, "wb", buffering=0) as terminal:
-        remaining = memoryview(payload)
-        while remaining:
-            written = terminal.write(remaining)
-            if written is None or written <= 0:
-                raise OSError("dedicated TTY write made no progress")
-            remaining = remaining[written:]
+    write_tty(args.window_id, args.tty, payload)
     deadline = time.monotonic() + 5
     while True:
         observation = observe(args.window_id, args.tty)

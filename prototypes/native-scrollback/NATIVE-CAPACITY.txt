@@ -1,0 +1,59 @@
+THROWAWAY #52 - bounded Terminal.app row-capacity evidence, 2026-10-31.
+NOT product implementation or complete host/profile qualification.
+
+Question: does ordinary append evict the oldest native content at a configured
+finite row limit while retaining a contiguous newest tail?
+
+Environment: macOS 26.7.1 (25G241), Terminal 2.15 (470.2), 24x6,
+Basic-derived MesloLGS-NF-Regular 11. Python 3.9.6, standard library only.
+Dedicated tab only; permission covered synthetic output and owned profile
+creation/editing/removal. No clipboard access occurred in this phase.
+
+Basic's existing policy selected "Limit to available memory", not a finite row
+cap. No memory-stress attempt was made and no fixed-cap guarantee is claimed
+for Basic. With separate permission, created CLIMON2-52-CAPACITY-PROTOTYPE
+by duplicating Basic, set a 256-row limit and applied only to the dedicated tab.
+
+Initial setup showed 256 in the UI but failed the real eviction oracle.
+After explicitly focusing the numeric field, editing/committing 256 and
+reapplying the profile, a fresh attempt passed. Several setup steps changed;
+this does not establish the underlying cause of the initial failure.
+
+Automated native result: terminal-app-capacity-results.txt.
+278 CAP data rows, 281 newline operations, well below the authorized 20,000.
+Fresh pre-append marker and row zero were evicted; retained CAP indexes were
+exactly 18..277 (260 rows), with no gaps, duplicates or ordering errors.
+A subsequent read-only synthetic projection counted four displayed CAP rows
+and 256 outside the API display. This is one observed relationship, not a
+universal API quota interpretation or an RSS/memory guarantee.
+Only printable ASCII and CR/LF were emitted: no clear, reset, query or OSC.
+
+Cleanup verified: dedicated tab restored to Basic, 24x6, busy false; owned
+temporary settings set removed; Basic still selects available-memory retention
+(radio values 1,0). No default/startup profile or other terminal was changed.
+The tab remains open; settings deletion does not restore naturally evicted data.
+
+Reproduce only after new explicit permission and provisioning a dedicated 24x6
+tab with a verified finite-limit temporary profile. Do not reuse IDs blindly:
+  python3 prototypes/native-scrollback/capacity.py --permission-confirmed \
+    --window-id WINDOW_ID --tty /dev/ttysNNN \
+    --profile OWNED_TEMP_PROFILE --limit 256 --output-budget 20000
+The CLI does not create/edit/remove profiles. Configure and verify the numeric
+limit, retain the original profile, and restore/remove the owned profile even
+if an oracle fails. The output budget includes leading/pre/end newline overhead;
+oversized or unknown limits must stop, not silently clamp or stress memory.
+Marker nonces make repeated-run readiness specific to the latest attempt.
+Native UI profile provisioning/cleanup is not yet a release-harness component.
+The final driver consolidates the two identical checkpoint waits after the
+native run; mocked orchestration, freshness and timeout regressions preserve
+that behavior without another native output run. Final offline runner:
+10 Rust + 18 Python runtime tests, formatting and Clippy. Complexity-only
+crapper maximum CC 6; mutator site scan only. No coverage-aware CRAP or
+zero-survivor mutation qualification is claimed for this throwaway fixture.
+
+Remaining: Basic's memory-policy behavior, native visual rendition and physical
+Unicode/resize fidelity (12-column request previously clamped to 20), actual
+paste/mode alignment, permissioned iTerm2 and VS Code qualification, supported
+profile coverage and #45 release-harness integration. Real client/daemon capture,
+modes/cursor/protocol ordering and noncontroller privacy are outside this fixture.
+Human reaction to this capacity stage is not yet recorded. #52 remains open.

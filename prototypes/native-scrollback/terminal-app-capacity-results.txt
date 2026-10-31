@@ -1,0 +1,19 @@
+{
+  "profile": "CLIMON2-52-CAPACITY-PROTOTYPE",
+  "geometry": "24,6",
+  "emitted_capacity_rows": 278,
+  "emitted_newline_operations": 281,
+  "output_budget": 20000,
+  "fresh_prior_content_evicted": true,
+  "fresh_end_checkpoint": true,
+  "result": {
+    "oldest_evicted": true,
+    "first_retained": 18,
+    "last_retained": 277,
+    "retained_rows": 260,
+    "configured_limit": 256,
+    "screen_rows": 6,
+    "boundary": "native history API includes viewport; final checkpoint and newline use two rows"
+  },
+  "emitted_controls": "CR/LF only; no clear, reset, query or OSC"
+}
