@@ -59,6 +59,7 @@ Model oracle: alacritty_terminal 0.26.0, test-only, not a shipped-engine selecti
 Native Terminal.app partial evidence: NATIVE-FINDINGS.txt.
 Subsequent native copy/ordinary-input evidence: NATIVE-GESTURES.txt.
 Subsequent bounded native row-capacity evidence: NATIVE-CAPACITY.txt.
+Subsequent native paste/mode-query evidence: NATIVE-PASTE.txt.
 iTerm2 / VS Code versions/settings/results: NOT MEASURED.
 Underlying-normal capture, full modes/cursor, unknown initial host state,
 daemon/wire ordering, non-controller privacy, coarse truncation notices, and

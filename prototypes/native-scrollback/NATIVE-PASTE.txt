@@ -1,0 +1,49 @@
+THROWAWAY #52 - Terminal.app paste/mode evidence, 2026-10-31.
+NOT product implementation or complete host/profile qualification.
+
+Environment: Terminal 2.15 (470.2), macOS 26.7.1 (25G241), dedicated 24x6
+Basic tab, MesloLGS-NF-Regular 11. Python 3.9.6 standard library.
+
+First experiment: one explicitly permissioned DECRQM query for mode 2004.
+The receiver temporarily used raw input, queried the starting bracketed-paste
+state and would exercise native Cmd+V ON/OFF only for a known mutable reply.
+Unknown/absent replies must stop before host-mode changes or clipboard writes.
+
+Actual result: terminal-app-paste-results.txt, status blocked, exit 2.
+No mode-2004 reply arrived within the three-second bounded read.
+Configured termios attributes were restored. No host-mode restoration was
+needed because it was never changed; no clipboard write or Cmd+V occurred.
+Dedicated tab verified Basic/24x6/busy false afterward. This establishes the
+observed no-reply boundary only, not universal lack of DECRQM support.
+The prior clipboard was not read, saved or restored.
+
+Offline tests: scratch PTYs exercise exact ON framing / OFF plain bytes for
+both reported initial states, unknown-state refusal and malformed-input cleanup.
+The first restoration oracle exposed macOS's transient PENDIN bit on canonical
+return. Comparison excludes only that kernel-managed state, checking all other
+attributes/control characters. Test stderr uses a separate pipe so a traceback
+cannot block PTY teardown. Query-timeout and no-clipboard-on-block guards pass.
+Runner: 10 Rust + 24 Python runtime tests, formatting and Clippy.
+No coverage-aware CRAP or zero-survivor mutation acceptance is claimed.
+
+Permissioned native launch (only substitute a newly authorized tab):
+  python3 prototypes/native-scrollback/terminal_paste.py \
+    --permission-confirmed --clipboard-permission-confirmed \
+    --mode-query-permission-confirmed --window-id WINDOW_ID --tty /dev/ttysNNN
+Receiver report paths and attempt markers are unique. The standalone receiver
+has a 60-second alarm, bounded reads, SIGTERM cleanup, queued-input discard and
+termios restoration; it never logs unexpected bytes. Ordinary failures surface.
+No history clear, reset, profile change or product integration is introduced.
+Mode queries are explicitly permissioned live fixture operations, not historical
+serializer replay; they are not proposed as a product dependency.
+
+Next experiment separately authorized: establish bracketed paste OFF as a known
+test baseline, exercise ON/OFF using Cmd+V, leave OFF afterward, no new query.
+This intentionally replaces the unknown starting host mode in this dedicated
+tab; it must not be described as restoring the original host mode.
+
+Still outstanding: actual native paste evidence, full application mode/cursor
+alignment, native rendition/physical Unicode and resize fidelity, Basic memory
+retention behavior, iTerm2/VS Code, supported-profile coverage and #45 harness
+integration. Client/daemon protocol boundaries remain outside this fixture.
+#52 remains open. Permission is not a human acceptance reaction.

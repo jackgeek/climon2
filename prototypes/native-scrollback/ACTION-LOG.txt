@@ -109,3 +109,24 @@ Permissioned bounded native capacity stage:
     maximum CC of 6 for capacity.py; mutator scanned sites without executing
     mutants. Coverage.py and dryer were unavailable; no new dependency was
     installed. These diagnostics establish neither CRAP nor mutation acceptance.
+
+Permissioned native paste / initial-state query:
+33. Obtained permission for synthetic Cmd+V, temporary raw/bracketed input and
+    known-state restoration, then separate permission for exactly one bounded
+    mode-2004 query. An unknown reply must stop before host-mode changes.
+34. Observed a failing known-state parser test, then built a bounded receiver.
+    Scratch-PTY restoration tests exposed macOS adding transient PENDIN on
+    canonical return. A minimized openpty/setraw/restore probe showed only that
+    kernel-managed bit changed; configured attributes are compared excluding it.
+    Moved test stderr off the PTY to avoid error-output teardown blocking.
+35. Scratch PTYs passed exact bracketed/unbracketed payloads for both starting
+    modes, unknown-mode refusal and unexpected-input cleanup. Added query-timeout
+    and no-clipboard-on-block guards. Runner passed 10 Rust + 24 Python tests,
+    formatting/Clippy; no native actions occur in those tests.
+36. Actual Terminal.app query received no reply within three seconds. Receiver
+    exited with status blocked and configured input attributes restored; no
+    bracketed-mode write, clipboard write or Cmd+V occurred. Verified dedicated
+    tab Basic/24x6/busy false. This is not a universal unsupported-query claim.
+37. Recorded the blocked native report before changing the experiment. Obtained
+    fresh permission to establish an explicit OFF baseline in this dedicated
+    tab, exercise ON/OFF and leave OFF afterward, without any further query.

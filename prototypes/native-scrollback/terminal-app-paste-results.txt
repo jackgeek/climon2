@@ -1,0 +1,11 @@
+{
+  "status": "blocked",
+  "reason": "no bounded mode 2004 reply; stopped before changing it",
+  "attempt": "78c8d01dc25e4ebe",
+  "initial_bracketed_mode": null,
+  "input_modes_restored": true,
+  "host_mode_restore_emitted": false,
+  "boundary": "exact synthetic paste bytes; no client/daemon or mode capture implementation",
+  "native_cmd_v": false,
+  "clipboard_writes": 0
+}
