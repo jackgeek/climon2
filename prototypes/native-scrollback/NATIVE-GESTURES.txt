@@ -88,9 +88,10 @@ Reproduce only with fresh, explicit native permissions:
   These commands are opt-in native tests. The offline runner calls none of them.
 
 Still outstanding for #52:
-  Native capacity/eviction with known unchanged retention settings; visual
+  Subsequent bounded-capacity evidence is in NATIVE-CAPACITY.txt and basic
+  ASCII native paste ON/OFF evidence is in NATIVE-PASTE.txt. Remaining: visual
   rendition, physical wide-character/resize fidelity and native mouse/gesture
-  variants; paste/mode alignment; iTerm2 and VS Code isolated native runs;
+  variants; broader paste/full-mode alignment; iTerm2 and VS Code isolated native runs;
   full profile qualification and automated release-harness integration (#45).
   The earlier 12-column request still clamped to 20; it is not a passing
   12-column reflow test. No new host or release support approval is inferred.

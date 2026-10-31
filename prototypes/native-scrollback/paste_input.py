@@ -85,9 +85,51 @@ def configured_attributes(fd):
     return attributes
 
 
+def run_session(fd, attempt, off_baseline):
+    attributes = termios.tcgetattr(fd)
+    configured = configured_attributes(fd)
+    restoration_target = None
+    signal.signal(signal.SIGALRM, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.alarm(60)
+    try:
+        tty.setraw(fd, termios.TCSANOW)
+        if off_baseline:
+            restoration_target = False
+            set_mode(False)
+        else:
+            restoration_target = query_mode(fd)
+        result = receive_pastes(fd, attempt)
+    except ModeUnavailable as error:
+        result = {"status": "blocked", "reason": str(error)}
+    finally:
+        signal.alarm(0)
+        try:
+            if restoration_target is not None:
+                set_mode(restoration_target)
+        finally:
+            try:
+                termios.tcflush(fd, termios.TCIFLUSH)
+            finally:
+                termios.tcsetattr(fd, termios.TCSANOW, attributes)
+    if configured_attributes(fd) != configured:
+        raise RuntimeError("original terminal input attributes were not restored")
+    result.update({
+        "attempt": attempt, "restoration_target_bracketed_mode": restoration_target,
+        "state_source": "permissioned-off-baseline" if off_baseline else "query",
+        "input_modes_restored": True,
+        "host_mode_restore_emitted": restoration_target is not None,
+        "boundary": "exact synthetic paste bytes; no client/daemon or mode capture implementation",
+    })
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--permission-confirmed", action="store_true", required=True)
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument("--mode-query-permission-confirmed", action="store_true")
+    modes.add_argument("--off-baseline-permission-confirmed", action="store_true")
     parser.add_argument("--expected-tty", required=True)
     parser.add_argument("--attempt", required=True)
     parser.add_argument("--report-file", type=Path, required=True)
@@ -99,35 +141,7 @@ def main():
             raise RuntimeError("paste fixture requires the authorized input/output TTY")
     if args.report_file.exists():
         raise RuntimeError("refusing to overwrite an existing paste report")
-    fd = sys.stdin.fileno()
-    attributes = termios.tcgetattr(fd)
-    configured = configured_attributes(fd)
-    original_mode = None
-    signal.signal(signal.SIGALRM, interrupted)
-    signal.signal(signal.SIGTERM, interrupted)
-    signal.alarm(60)
-    try:
-        tty.setraw(fd, termios.TCSANOW)
-        original_mode = query_mode(fd)
-        result = receive_pastes(fd, args.attempt)
-    except ModeUnavailable as error:
-        result = {"status": "blocked", "reason": str(error)}
-    finally:
-        signal.alarm(0)
-        try:
-            if original_mode is not None:
-                set_mode(original_mode)
-        finally:
-            termios.tcflush(fd, termios.TCIFLUSH)
-            termios.tcsetattr(fd, termios.TCSANOW, attributes)
-    if configured_attributes(fd) != configured:
-        raise RuntimeError("original terminal input attributes were not restored")
-    result.update({
-        "attempt": args.attempt, "initial_bracketed_mode": original_mode,
-        "input_modes_restored": True,
-        "host_mode_restore_emitted": original_mode is not None,
-        "boundary": "exact synthetic paste bytes; no client/daemon or mode capture implementation",
-    })
+    result = run_session(sys.stdin.fileno(), args.attempt, args.off_baseline_permission_confirmed)
     with args.report_file.open("x") as output:
         json.dump(result, output, indent=2)
         output.write("\n")

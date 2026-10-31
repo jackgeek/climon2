@@ -130,3 +130,18 @@ Permissioned native paste / initial-state query:
 37. Recorded the blocked native report before changing the experiment. Obtained
     fresh permission to establish an explicit OFF baseline in this dedicated
     tab, exercise ON/OFF and leave OFF afterward, without any further query.
+38. Pinned a failing explicit-baseline PTY test, separated permission flags and
+    extracted mode-session cleanup from CLI validation. The baseline path
+    establishes OFF without querying and restores that target, not original
+    unknown host state. Both query and baseline paths pass scratch-PTY tests.
+39. Native Cmd+V delivered exact bracketed and plain ASCII bytes to the real
+    receiver. Two synthetic clipboard writes, no reads. Receiver emitted agreed
+    OFF cleanup, restored configured termios and exited; verified Basic/24x6/
+    busy false. Resumed shell modes are not read back; no second query was sent.
+40. Added a red/green flush-error restoration-attempt regression after the native
+    run; nested cleanup now attempts tcsetattr even if tcflush fails. Successful
+    PTY behavior is unchanged. Final runner passed 10 Rust + 26 Python runtime
+    tests, formatting/Clippy. Complexity-only maximum CC 9 and mutation-site
+    scan establish neither CRAP nor zero-survivor acceptance. No new dependency
+    or production implementation. Both native outcomes and the action log are
+    persisted on the isolated branch and linked from #52.

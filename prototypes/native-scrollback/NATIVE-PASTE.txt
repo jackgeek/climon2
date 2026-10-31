@@ -37,13 +37,38 @@ No history clear, reset, profile change or product integration is introduced.
 Mode queries are explicitly permissioned live fixture operations, not historical
 serializer replay; they are not proposed as a product dependency.
 
-Next experiment separately authorized: establish bracketed paste OFF as a known
-test baseline, exercise ON/OFF using Cmd+V, leave OFF afterward, no new query.
-This intentionally replaces the unknown starting host mode in this dedicated
-tab; it must not be described as restoring the original host mode.
+Second experiment separately authorized: establish bracketed paste OFF as a
+known test baseline, exercise ON/OFF using Cmd+V and emit OFF for cleanup.
+No further query was sent. This intentionally replaces the unknown starting
+host mode in this dedicated tab; it is NOT original-host-state restoration.
 
-Still outstanding: actual native paste evidence, full application mode/cursor
-alignment, native rendition/physical Unicode and resize fidelity, Basic memory
+Actual result: terminal-app-paste-baseline-results.txt, status passed, exit 0.
+Native Cmd+V delivered exactly ESC[200~ + PASTE-52-SYNTHETIC + ESC[201~
+with bracketed mode enabled, and exactly PASTE-52-SYNTHETIC when disabled.
+Both came through the real PTY from two scoped native Cmd+V operations, not
+direct fixture input injection. Clipboard was replaced twice with that known
+ASCII payload; its prior contents were never read/saved/restored.
+The fixture emitted the agreed OFF cleanup sequence, verified configured
+termios restoration and exited. Tab verified Basic/24x6/busy false. No profile
+or other terminal changed. No post-run query was permitted or performed; the
+resumed shell controls its own modes, so do not claim a readback of host state.
+
+Reproduce baseline mode only with new explicit permission for this intentional
+host-state replacement, on a newly identified dedicated tab:
+  python3 prototypes/native-scrollback/terminal_paste.py \
+    --permission-confirmed --clipboard-permission-confirmed \
+    --off-baseline-permission-confirmed --window-id WINDOW_ID --tty /dev/ttysNNN
+The query and baseline flags are mutually exclusive; baseline never queries.
+The receiver also requires the corresponding explicit mode permission flag.
+
+Final automated validation: 10 Rust + 26 Python runtime tests, formatting and
+Clippy. A focused fault-injection regression pins the restoration attempt even
+if queued-input flushing fails. That failure-only cleanup change followed the
+native run; successful PTY cases still pass, without another native run.
+Complexity-only maximum CC 9; mutation-site scan only, not mutation acceptance.
+
+Still outstanding: paste with multiline/Unicode data, full application
+mode/cursor alignment, native rendition/physical Unicode and resize fidelity, Basic memory
 retention behavior, iTerm2/VS Code, supported-profile coverage and #45 harness
 integration. Client/daemon protocol boundaries remain outside this fixture.
 #52 remains open. Permission is not a human acceptance reaction.

@@ -1,0 +1,13 @@
+{
+  "status": "passed",
+  "bracketed_on_exact": true,
+  "bracketed_off_exact": true,
+  "attempt": "ea7d2281de404934",
+  "restoration_target_bracketed_mode": false,
+  "state_source": "permissioned-off-baseline",
+  "input_modes_restored": true,
+  "host_mode_restore_emitted": true,
+  "boundary": "exact synthetic paste bytes; no client/daemon or mode capture implementation",
+  "native_cmd_v": true,
+  "clipboard_writes": 2
+}

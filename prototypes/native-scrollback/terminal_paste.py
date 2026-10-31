@@ -51,26 +51,32 @@ keystroke "v" using command down
     return blocked if blocked is not None else json.loads(report.read_text())
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--permission-confirmed", action="store_true", required=True)
-    parser.add_argument("--clipboard-permission-confirmed", action="store_true", required=True)
-    parser.add_argument("--mode-query-permission-confirmed", action="store_true", required=True)
-    parser.add_argument("--window-id", type=int, required=True)
-    parser.add_argument("--tty", required=True)
-    args = parser.parse_args()
-    validate_target(args.window_id, args.tty)
-    if script(args.window_id, args.tty, "busy of testTab") != "false":
+def prepare_target(window, tty):
+    validate_target(window, tty)
+    if script(window, tty, "busy of testTab") != "false":
         raise RuntimeError("dedicated tab is already running a program")
     geometry = script(
-        args.window_id, args.tty,
+        window, tty,
         '(number of columns of testTab as text) & "," & (number of rows of testTab as text)',
     )
     if geometry != "24,6":
         raise RuntimeError("paste fixture requires the authorized 24x6 tab")
-    if script(args.window_id, args.tty, "name of current settings of testTab") != "Basic":
+    if script(window, tty, "name of current settings of testTab") != "Basic":
         raise RuntimeError("dedicated tab no longer uses restored Basic")
-    gui(args.window_id, args.tty, 'return "scoped"')
+    gui(window, tty, 'return "scoped"')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--permission-confirmed", action="store_true", required=True)
+    parser.add_argument("--clipboard-permission-confirmed", action="store_true", required=True)
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument("--mode-query-permission-confirmed", action="store_true")
+    modes.add_argument("--off-baseline-permission-confirmed", action="store_true")
+    parser.add_argument("--window-id", type=int, required=True)
+    parser.add_argument("--tty", required=True)
+    args = parser.parse_args()
+    prepare_target(args.window_id, args.tty)
     attempt = uuid.uuid4().hex[:16]
     directory = Path(__file__).parent
     report = directory / "artifacts" / f"native-paste-{attempt}.json"
@@ -78,6 +84,8 @@ def main():
         raise RuntimeError("attempt already exists; refusing an ambiguous replay")
     command = shlex.join([
         sys.executable, str(directory / "paste_input.py"), "--permission-confirmed",
+        "--off-baseline-permission-confirmed" if args.off_baseline_permission_confirmed
+        else "--mode-query-permission-confirmed",
         "--expected-tty", args.tty, "--attempt", attempt, "--report-file", str(report),
     ])
     source = f"""
@@ -98,6 +106,8 @@ end tell
         wait_idle(args.window_id, args.tty)
     if result.get("attempt") != attempt or result.get("input_modes_restored") is not True:
         raise RuntimeError("native receiver report identity or cleanup does not match")
+    if result.get("status") not in {"passed", "blocked"}:
+        raise RuntimeError("native receiver report has an invalid outcome")
     result["native_cmd_v"] = result["status"] == "passed"
     result["clipboard_writes"] = 2 if result["status"] == "passed" else 0
     print(json.dumps(result, indent=2))

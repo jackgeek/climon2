@@ -8,7 +8,7 @@ import termios
 import unittest
 from unittest.mock import Mock, patch
 
-from paste_input import ModeUnavailable, query_mode, reported_mode
+from paste_input import ModeUnavailable, query_mode, reported_mode, run_session
 from terminal_paste import paste_stages
 from test_interactive_input import wait_for
 
@@ -25,22 +25,32 @@ class PasteTests(unittest.TestCase):
             with self.subTest(reply=reply), self.assertRaises(ModeUnavailable):
                 reported_mode(reply)
 
-    def run_fixture(self, mode, valid=True):
+    def run_fixture(self, mode, valid=True, off_baseline=False):
         with tempfile.TemporaryDirectory(prefix="climon2-paste-52-") as directory:
             report_file = Path(directory) / "report.json"
             master, slave = os.openpty()
             original = termios.tcgetattr(slave)
+            command = [
+                sys.executable, str(FIXTURE), "--permission-confirmed",
+                "--expected-tty", os.ttyname(slave), "--attempt", ATTEMPT,
+                "--report-file", str(report_file),
+            ]
+            if off_baseline:
+                command.append("--off-baseline-permission-confirmed")
+            else:
+                command.append("--mode-query-permission-confirmed")
             child = subprocess.Popen(
-                [sys.executable, str(FIXTURE), "--permission-confirmed",
-                 "--expected-tty", os.ttyname(slave), "--attempt", ATTEMPT,
-                 "--report-file", str(report_file)],
+                command,
                 stdin=slave, stdout=slave, stderr=subprocess.PIPE, start_new_session=True,
             )
             try:
-                wait_for(master, b"\x1b[?2004$p")
-                os.write(master, f"\x1b[?2004;{mode}$y".encode())
-                if mode in [1, 2]:
-                    wait_for(master, f"ON-52-{ATTEMPT}".encode())
+                if not off_baseline:
+                    wait_for(master, b"\x1b[?2004$p")
+                    os.write(master, f"\x1b[?2004;{mode}$y".encode())
+                if mode in [1, 2] or off_baseline:
+                    ready = wait_for(master, f"ON-52-{ATTEMPT}".encode())
+                    if off_baseline:
+                        self.assertNotIn(b"\x1b[?2004$p", ready)
                     data = b"PASTE-52-SYNTHETIC" if valid else b"UNEXPECTED"
                     os.write(master, b"\x1b[200~" + data + b"\x1b[201~")
                     if valid:
@@ -106,6 +116,26 @@ class PasteTests(unittest.TestCase):
             self.assertEqual(paste_stages(258, "/dev/ttys008", ATTEMPT, Mock()), blocked)
             process.assert_not_called()
             gui.assert_not_called()
+
+    def test_permissioned_off_baseline_never_queries_and_restores_off(self):
+        code, report, output = self.run_fixture(None, off_baseline=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(report["state_source"], "permissioned-off-baseline")
+        self.assertIs(report["restoration_target_bracketed_mode"], False)
+        self.assertIn(b"\x1b[?2004l", output)
+
+    def test_input_attributes_are_restored_even_when_queued_input_flush_fails(self):
+        attributes = [0] * 7
+        with patch("paste_input.termios.tcgetattr", return_value=attributes), \
+                patch("paste_input.configured_attributes", return_value=attributes), \
+                patch("paste_input.tty.setraw"), patch("paste_input.signal.signal"), \
+                patch("paste_input.signal.alarm"), \
+                patch("paste_input.query_mode", side_effect=ModeUnavailable("unknown")), \
+                patch("paste_input.termios.tcflush", side_effect=OSError("flush failed")), \
+                patch("paste_input.termios.tcsetattr") as restore:
+            with self.assertRaisesRegex(OSError, "flush failed"):
+                run_session(0, ATTEMPT, False)
+            restore.assert_called_once_with(0, termios.TCSANOW, attributes)
 
 
 if __name__ == "__main__":
