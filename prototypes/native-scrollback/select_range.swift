@@ -84,7 +84,7 @@ func select(_ text: AXUIElement, _ range: CFRange, _ expected: String) throws {
     }
 }
 
-func inspect(_ text: AXUIElement, _ target: String, _ expected: String) throws {
+func inspect(_ text: AXUIElement, _ target: String, _ expected: String, _ clearSelection: Bool = false) throws {
     guard !expected.isEmpty, let native = try attribute(text, kAXValueAttribute) as? String else {
         throw ProbeError.wrongElement
     }
@@ -135,6 +135,20 @@ func inspect(_ text: AXUIElement, _ target: String, _ expected: String) throws {
         }
         style["attribute_names"] = keys.sorted()
     }
+    if clearSelection {
+        var collapsed = CFRange(location: range.location, length: 0)
+        guard let value = AXValueCreate(.cfRange, &collapsed) else { throw ProbeError.wrongElement }
+        let status = AXUIElementSetAttributeValue(text, kAXSelectedTextRangeAttribute as CFString, value)
+        guard status == .success else { throw ProbeError.accessibility(status) }
+        let current = try attribute(text, kAXSelectedTextRangeAttribute)
+        guard CFGetTypeID(current) == AXValueGetTypeID() else { throw ProbeError.wrongElement }
+        var actual = CFRange()
+        guard AXValueGetValue(current as! AXValue, .cfRange, &actual) else { throw ProbeError.wrongElement }
+        guard actual.length == 0,
+              try attribute(text, kAXSelectedTextAttribute) as? String == "" else {
+            throw ProbeError.wrongSelection
+        }
+    }
     let result: [String: Any] = [
         "target": target, "range_verified": true,
         "utf16_length": range.length, "parameterized_attributes": names,
@@ -142,6 +156,7 @@ func inspect(_ text: AXUIElement, _ target: String, _ expected: String) throws {
             && range.location + range.length <= visible.location + visible.length,
         "viewport_rect": [position.x, position.y, size.width, size.height],
         "bounds": rangeBounds, "unit_bounds": units, "style": style,
+        "selection_cleared": clearSelection,
     ]
     let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
     FileHandle.standardOutput.write(data)
@@ -151,8 +166,8 @@ func inspect(_ text: AXUIElement, _ target: String, _ expected: String) throws {
 func run() throws {
     let args = CommandLine.arguments
     guard args.count == 5 else { throw ProbeError.invalidArguments }
-    if args[1] == "--observe" {
-        try inspect(textArea(args[2]), args[3], args[4])
+    if args[1] == "--observe" || args[1] == "--observe-pixels" {
+        try inspect(textArea(args[2]), args[3], args[4], args[1] == "--observe-pixels")
         return
     }
     guard let offset = Int(args[1]), let length = Int(args[2]), offset >= 0, length > 0 else {
