@@ -1,0 +1,98 @@
+THROWAWAY #48/#43, session 52a00940-3bb1-4dc8-acad-869f11e1ef91.
+
+1. Read handoff, AGENTS, domain/glossary/ADR0004, issue-tracker, specified
+   issue comments and base BUDGETS. Loaded prototype and ub-mode.
+2. Created isolated target/budgets-followup-48 worktree at exact 7b3e5d5 base;
+   left main's dirty CLAUDE.md and other sessions' worktrees untouched.
+3. Fetched unchanged Alacritty bbb2cbf into this prototype's ignored cache.
+4. Read Cell/Hyperlink, public grid/template setters, restore/delivery code.
+   Found prior per-cell-copy claim false for a single OSC: inner Arc sharing.
+   Unique OSC per cell explains prior slope. Exact retained lifetime has no
+   Weak accessor to private HyperlinkInner. Public Cell setter can reuse Arc.
+5. Wrote followup tests before implementation: sharing, public interning seam,
+   clone/worker + sliced snapshot consistency with live arrivals and vt100
+   hand-written oracle, bounded PTY buffer, and merged resizes.
+6. Added bounded.py descendant-RSS/wall watchdog. Serial Cargo/test environment.
+   The measurement binary will also retain the existing allocator ceiling.
+   Added existing engine-lane independent oracle vt100 0.18.1 dependency.
+7. Fixed test compilation (explicit StdSyncHandler and vt100 rows API), then
+   observed the expected five behavioural failures in red.txt. Existing Arc
+   sharing passed without any implementation: this is a premise check, not a
+   newly introduced behaviour needing a fabricated red.
+8. Implemented public-template link reuse, all-or-nothing bounded PTY admission,
+   last-resize-wins batching, owned grid snapshot, and row-sliced serialization.
+   Reused the existing writer. Both paths retain #43's documented swap-alt
+   saved-cursor perturbation; no engine patches or parallel parser/model.
+9. Wrote readiness-delivery tests first; event-red.txt records two expected
+   behavioural failures (no bytes sent, stalled peer reported success).
+   Implemented poll(POLLOUT) with the fixed no-progress/overall deadlines.
+   Retained explicit socket-error failure and exact prefix/suffix byte checks.
+10. Added synthetic measurement modes to the existing counting-allocator
+    binary. Every fixture feed uses 64 B. OSC fixtures fit the 4096 B cap.
+    Rolling vt100 oracle hashes every evicted row plus final screen cells
+    (text/style/wide metadata) against the independently fed source. It then
+    checks blocking/clone bytes against that oracle-validated sliced stream.
+11. Tests passed under descendant-RSS/wall watchdog (tests.txt). All 46 base
+    tests remain unchanged; eight followup tests were added.
+12. Estimated maximum normal/Sgr memory before running: 1.2 GB engine, 1.2 GB
+    clone, <=2.15 GB materialized restore. Use a 6 GiB allocator ceiling and
+    8 GiB descendant-RSS ceiling only for 500x200/100k; smaller runs keep
+    2 GiB/3 GiB. Every run has a 600 s wall watchdog, serial execution.
+    This is a lab safety ceiling, not a change to any decided product budget.
+13. Release/clippy passed. Smoke oracle exposed vt100's pending-wrap cursor
+    representation (column=width versus Alacritty's width-1). Pending-wrap
+    restore is an existing #43 limitation, not part of this scheduling change.
+    End both source fixtures with explicit CUP home, defining a supported
+    cursor state rather than hiding the mismatch in the oracle assertion.
+    Kept the failed smoke record in raw.jsonl. Normal log smoke already passed.
+14. Completed successful smoke including log/SGR all-row oracle, all three
+    schedulers, 4 KiB event socket, and four hyperlink scenarios. Started the
+    full matrix as one serial process; no other heavy work ran concurrently.
+15. Wrote followup_summarize.py to reject every timed restore hash that differs
+    from its independently oracle-qualified source fixture. Kept both callback
+    medians and per-restore worst-stall medians so clone stalls stay visible.
+16. Wrote FOLLOWUP.txt with primary-source citations, conservative cached-row
+    costs, precise test/measurement contracts, and unresolved engine/host scope.
+    Newly identified materialized-prefix expansion: two long interned links
+    alternating per cell can still emit >190 GiB at maximum logical slots.
+17. Added existing-seam premise probe for Weak<CellExtra> disassociation, which
+    is not a Weak<HyperlinkInner> lifetime notification. Strengthened independent
+    replay of buffered arrivals and clone CellExtra COW with wide/combining
+    content and a safe OSC 8. No timing implementation changed during the matrix.
+18. Fixed a compilation-only nested placement of Outbound::next_deadline before
+    the earlier suite pass. All event-loop deadline semantics are tested by
+    expected red failures then green tests, not inferred from benchmarks.
+19. Matrix completed: 36 link + 18 all-row oracle + 168 scheduling + 51 event
+    measurements, all successful. Three repeats per timing case, including
+    max 32 MiB/s PTY stress. Source/restore byte hashes matched in every timing
+    run. All 100k history rows were oracle checked at every geometry.
+20. Final run.sh surface/fmt/clippy/56 tests passed under watchdog. Both issues
+    were read and remain OPEN. Remote is the intended jackgeek/climon2 origin.
+21. Read vte's exact OSC 8 reconstruction to validate worst-case cost assumptions.
+    Semicolon rebuilding uses String::push/push_str and doubles URI CAPACITY.
+    Corrected unpublished option costs from length-only to capacity bounds.
+    Added only a semicolon/no-explicit-id fixture variation, not engine changes.
+22. Three extra bounded capacity runs passed (2k/10k/100k cells). At 100k,
+    requested growth was 837,410,100 B; the former length-only upper bound
+    431,591,456 B failed as expected (capacity-red.txt). One fixture seed remains
+    after Term drop; this is explicitly separate from engine retention.
+23. Rebuilt release binary for capacity fixture, saved separate SHA256
+    provenance for original matrix and capacity binary. Re-ran all final checks:
+    unchanged upstream, surface, fmt, clippy -D warnings, 56 tests PASS.
+    No original snapshot/oracle/event timing implementation changed.
+24. Results: sliced max stall 15.438 ms versus clone 1102.503 ms at max SGR;
+    16 MiB PTY trial backpressures (unthrottled demand 27.52/179.06 MiB).
+    Clone exceeds B6 even at 4 MiB/s. Event-driven 4 KiB median max-SGR
+    throughput 677.7 MiB/s versus 693.1 for 16 KiB; retain decided chunk.
+25. Total raw runs after capacity addendum: 294 (293 successful, one preserved
+    pre-matrix pending-wrap smoke failure). No measurement killed by ceilings.
+    Peak measured RSS 4,004,831,232 B; peak counted restore heap 4,699,137,774 B.
+26. Preparing ordered qualification commit/push and one immutable-link #48
+    comment cross-linked #43. Publication outcome will be appended separately.
+27. Audited post-snapshot catch-up so a bulk cleanup feed is not mistaken for a
+    pump callback. Added a separate maximum-size 16 MiB/64 B callback replay
+    measurement with independent text/cursor assertions. Fixed function
+    placement compilation error before any replay run.
+28. Three catch-up runs passed: p50 0.001 ms, max 0.107 ms, worst total
+    0.235730 s. Main serializer callback results are unchanged. Raw totals
+    now 297 (296 successful, one preserved pre-matrix smoke failure).

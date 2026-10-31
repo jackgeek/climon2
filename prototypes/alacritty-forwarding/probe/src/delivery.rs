@@ -109,6 +109,16 @@ impl Outbound {
             None
         }
     }
+
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.restoration_until
+            .into_iter()
+            .chain(
+                self.waiting_since
+                    .map(|since| since + self.budget.no_progress),
+            )
+            .min()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -1,0 +1,58 @@
+   Compiling alacritty-embedding-probe v0.0.0 (/Users/jackallan/dev/climon2/target/budgets-followup-48/prototypes/alacritty-forwarding/probe)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.57s
+     Running tests/followup.rs (.cache/target/debug/deps/followup-8743a78288383645)
+
+running 6 tests
+test a_single_osc_shares_uri_storage_across_cells_even_after_copy_on_write ... ok
+test back_to_back_resizes_apply_only_the_final_geometry_and_reflow_once ... FAILED
+test clone_worker_snapshot_is_consistent_while_new_output_changes_the_engine ... FAILED
+test pty_buffer_refuses_overflow_without_losing_or_reordering_accepted_bytes ... FAILED
+test public_template_setter_reuses_an_interned_link_across_separate_oscs ... FAILED
+test sliced_restore_freezes_one_snapshot_and_replays_buffered_output_afterward ... FAILED
+
+failures:
+
+---- back_to_back_resizes_apply_only_the_final_geometry_and_reflow_once stdout ----
+
+thread 'back_to_back_resizes_apply_only_the_final_geometry_and_reflow_once' (689768) panicked at tests/followup.rs:127:5:
+assertion failed: resizes.apply(&mut term)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- clone_worker_snapshot_is_consistent_while_new_output_changes_the_engine stdout ----
+
+thread 'clone_worker_snapshot_is_consistent_while_new_output_changes_the_engine' (689769) panicked at tests/followup.rs:77:9:
+assertion `left == right` failed: snapshot changed with live output
+  left: []
+ right: [27, 91, 72, 27, 91, 50, 74, 104, 48, 13, 10, 104, 49, 13, 10, 104, 50, 13, 10, 27, 91, 48, 59, 49, 109, 66, 27, 91, 48, 109, 110, 49, 13, 10, 110, 50, 27, 91, 49, 59, 49, 72, 27, 55, 27, 91, 51, 59, 51, 72, 27, 91, 63, 50, 53, 104, 27, 91, 63, 49, 108, 27, 62, 27, 91, 63, 49, 48, 48, 52, 108, 27, 91, 63, 49, 48, 48, 55, 104, 27, 91, 63, 49, 48, 52, 50, 104, 27, 91, 63, 50, 48, 48, 52, 108, 27, 91, 52, 108, 27, 91, 50, 48, 108, 27, 91, 63, 55, 104]
+
+---- pty_buffer_refuses_overflow_without_losing_or_reordering_accepted_bytes stdout ----
+
+thread 'pty_buffer_refuses_overflow_without_losing_or_reordering_accepted_bytes' (689771) panicked at tests/followup.rs:113:5:
+assertion `left == right` failed
+  left: Ok(())
+ right: Err("PTY buffer full")
+
+---- public_template_setter_reuses_an_interned_link_across_separate_oscs stdout ----
+
+thread 'public_template_setter_reuses_an_interned_link_across_separate_oscs' (689772) panicked at tests/followup.rs:43:9:
+assertion `left == right` failed: interning seam absent
+  left: 0x600003c80040
+ right: 0x600003c80010
+
+---- sliced_restore_freezes_one_snapshot_and_replays_buffered_output_afterward stdout ----
+
+thread 'sliced_restore_freezes_one_snapshot_and_replays_buffered_output_afterward' (689773) panicked at tests/followup.rs:96:9:
+assertion failed: !sliced.step(1)
+
+
+failures:
+    back_to_back_resizes_apply_only_the_final_geometry_and_reflow_once
+    clone_worker_snapshot_is_consistent_while_new_output_changes_the_engine
+    pty_buffer_refuses_overflow_without_losing_or_reordering_accepted_bytes
+    public_template_setter_reuses_an_interned_link_across_separate_oscs
+    sliced_restore_freezes_one_snapshot_and_replays_buffered_output_afterward
+
+test result: FAILED. 1 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test followup`
+{"outcome": "exit_101", "watchdog_peak_rss": 157573120, "wall_seconds": 2.1427164399999996, "returncode": 101}

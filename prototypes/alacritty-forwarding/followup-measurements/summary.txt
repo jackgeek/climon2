@@ -1,0 +1,129 @@
+THROWAWAY #48/#43; full raw records retained, including initial smoke failure.
+Processes: 297 successful: 296 failed: 1
+Matrix failures: 0
+RSS = process ru_maxrss, includes setup/measurement/cleanup; watchdog sampled independently.
+MiB = 2^20 B. Callback p50 is median of per-run medians (three repeats).
+Critical p50 is median of the worst callback per restore, not a percentile over idle loops.
+All repeated snapshot byte hashes must match their all-row independent oracle.
+
+HYPERLINKS: requested live growth, MiB (includes grid allocation)
+URI bytes | cells | single OSC | repeated OSC | unique OSC | public intern seam
+16 | 2000 | 1.862 | 2.161 | 2.167 | 1.999
+16 | 10000 | 1.862 | 3.359 | 3.388 | 2.548
+16 | 100000 | 3.724 | 18.697 | 18.983 | 10.59
+256 | 2000 | 1.863 | 2.62 | 2.625 | 2.0
+256 | 10000 | 1.863 | 5.648 | 5.677 | 2.549
+256 | 100000 | 3.725 | 41.586 | 41.872 | 10.591
+4080 | 2000 | 1.873 | 9.92 | 9.926 | 2.007
+4080 | 10000 | 1.873 | 42.124 | 42.153 | 2.556
+4080 | 100000 | 3.736 | 406.278 | 406.564 | 10.598
+
+URI CAPACITY ADVERSARY (4093 B URI in two semicolon-separated segments)
+cells | requested growth MiB | peak RSS MiB | released B | remaining fixture seed B
+2000 | 17.772 | 17.711 | 20818423 | 8440
+10000 | 81.355 | 82.734 | 87490423 | 8440
+100000 | 798.617 | 804.465 | 839593190 | 8442
+
+POST-SNAPSHOT PTY CATCH-UP: max geometry/history, 16 MiB in 64 B callbacks
+repeat 0 p50 ms 0.001 max ms 0.107 total s 0.23126 MiB/s 69.186 catchup_text_cursor_pass
+repeat 1 p50 ms 0.001 max ms 0.086 total s 0.225214 MiB/s 71.043 catchup_text_cursor_pass
+repeat 2 p50 ms 0.001 max ms 0.047 total s 0.23573 MiB/s 67.874 catchup_text_cursor_pass
+
+Independent all-row oracle coverage:
+80x24 history=0 log: 24 rows, 1806 B, text/style/cursor PASS, one reflow
+80x24 history=0 sgr_cells: 24 rows, 39544 B, text/style/cursor PASS, one reflow
+80x24 history=10000 log: 10024 rows, 721806 B, text/style/cursor PASS, one reflow
+80x24 history=10000 sgr_cells: 10024 rows, 17743667 B, text/style/cursor PASS, one reflow
+80x24 history=100000 log: 100024 rows, 7201806 B, text/style/cursor PASS, one reflow
+80x24 history=100000 sgr_cells: 100024 rows, 177161277 B, text/style/cursor PASS, one reflow
+200x50 history=0 log: 50 rows, 3678 B, text/style/cursor PASS, one reflow
+200x50 history=0 sgr_cells: 50 rows, 213228 B, text/style/cursor PASS, one reflow
+200x50 history=10000 log: 10050 rows, 723678 B, text/style/cursor PASS, one reflow
+200x50 history=10000 sgr_cells: 10050 rows, 44493426 B, text/style/cursor PASS, one reflow
+200x50 history=100000 log: 100050 rows, 7203678 B, text/style/cursor PASS, one reflow
+200x50 history=100000 sgr_cells: 100050 rows, 443019158 B, text/style/cursor PASS, one reflow
+500x200 history=0 log: 200 rows, 14478 B, text/style/cursor PASS, one reflow
+500x200 history=0 sgr_cells: 200 rows, 2200776 B, text/style/cursor PASS, one reflow
+500x200 history=10000 log: 10200 rows, 734478 B, text/style/cursor PASS, one reflow
+500x200 history=10000 sgr_cells: 10200 rows, 112912206 B, text/style/cursor PASS, one reflow
+500x200 history=100000 log: 100200 rows, 7214478 B, text/style/cursor PASS, one reflow
+500x200 history=100000 sgr_cells: 100200 rows, 1109230333 B, text/style/cursor PASS, one reflow
+
+SCHEDULING (4 MiB/s PTY unless specified)
+geometry | history | fill | strategy | PTY MiB/s | n | callback p50 ms | critical p50 ms | max stall ms | peak RSS MiB | median serialize MiB/s | max buffered PTY B | parsed during B | backpressure | B6 overflow
+80x24 | 0 | log | blocking | 4 | 3 | 0.046 | 0.046 | 0.053 | 1.1 | 35.0 | 0 | 0 | False | False
+80x24 | 0 | log | clone | 4 | 3 | 0.030 | 0.081 | 0.135 | 1.3 | 6.6 | 0 | 4096 | False | False
+80x24 | 0 | log | sliced | 4 | 3 | 0.016 | 0.049 | 0.057 | 1.2 | 22.5 | 0 | 0 | False | False
+80x24 | 0 | sgr_cells | blocking | 4 | 3 | 0.320 | 0.320 | 0.330 | 1.2 | 117.0 | 0 | 0 | False | False
+80x24 | 0 | sgr_cells | clone | 4 | 3 | 0.001 | 0.076 | 0.151 | 1.4 | 74.4 | 0 | 4096 | False | False
+80x24 | 0 | sgr_cells | sliced | 4 | 3 | 0.151 | 0.272 | 0.343 | 1.3 | 87.3 | 4096 | 0 | False | False
+80x24 | 10000 | log | blocking | 4 | 3 | 12.771 | 12.771 | 13.006 | 22.0 | 53.9 | 0 | 0 | False | False
+80x24 | 10000 | log | clone | 4 | 3 | 0.001 | 10.922 | 13.359 | 42.2 | 23.7 | 0 | 126976 | False | False
+80x24 | 10000 | log | sliced | 4 | 3 | 0.018 | 0.124 | 0.158 | 22.1 | 51.4 | 65536 | 0 | False | False
+80x24 | 10000 | sgr_cells | blocking | 4 | 3 | 115.087 | 115.087 | 117.378 | 54.7 | 147.0 | 0 | 0 | False | False
+80x24 | 10000 | sgr_cells | clone | 4 | 3 | 0.001 | 11.231 | 12.463 | 76.0 | 121.0 | 0 | 598016 | False | False
+80x24 | 10000 | sgr_cells | sliced | 4 | 3 | 0.172 | 2.483 | 2.600 | 57.2 | 138.1 | 528384 | 0 | False | False
+80x24 | 100000 | log | blocking | 4 | 3 | 114.486 | 114.486 | 126.641 | 207.6 | 60.0 | 0 | 0 | False | False
+80x24 | 100000 | log | clone | 4 | 3 | 0.001 | 135.538 | 139.932 | 408.0 | 22.3 | 0 | 1310720 | False | False
+80x24 | 100000 | log | sliced | 4 | 3 | 0.019 | 0.321 | 0.578 | 209.2 | 55.2 | 565248 | 0 | False | False
+80x24 | 100000 | sgr_cells | blocking | 4 | 3 | 1130.681 | 1130.681 | 1450.206 | 498.1 | 149.4 | 0 | 0 | False | False
+80x24 | 100000 | sgr_cells | clone | 4 | 3 | 0.001 | 120.411 | 124.058 | 579.5 | 129.0 | 0 | 5533696 | False | False
+80x24 | 100000 | sgr_cells | sliced | 4 | 3 | 0.167 | 3.972 | 4.102 | 504.8 | 150.2 | 4718592 | 0 | False | False
+200x50 | 0 | log | blocking | 4 | 3 | 0.105 | 0.105 | 0.236 | 1.6 | 32.4 | 0 | 0 | False | False
+200x50 | 0 | log | clone | 4 | 3 | 0.001 | 0.176 | 0.182 | 1.9 | 8.6 | 0 | 4096 | False | False
+200x50 | 0 | log | sliced | 4 | 3 | 0.025 | 0.045 | 0.066 | 1.6 | 27.6 | 4096 | 0 | False | False
+200x50 | 0 | sgr_cells | blocking | 4 | 3 | 1.528 | 1.528 | 1.679 | 1.9 | 132.8 | 0 | 0 | False | False
+200x50 | 0 | sgr_cells | clone | 4 | 3 | 0.001 | 0.142 | 0.155 | 2.2 | 109.6 | 0 | 8192 | False | False
+200x50 | 0 | sgr_cells | sliced | 4 | 3 | 0.469 | 0.520 | 0.638 | 2.0 | 131.4 | 8192 | 0 | False | False
+200x50 | 10000 | log | blocking | 4 | 3 | 16.893 | 16.893 | 17.439 | 51.8 | 40.8 | 0 | 0 | False | False
+200x50 | 10000 | log | clone | 4 | 3 | 0.001 | 28.646 | 28.718 | 101.6 | 12.4 | 0 | 274432 | False | False
+200x50 | 10000 | log | sliced | 4 | 3 | 0.024 | 0.187 | 0.295 | 52.4 | 38.5 | 90112 | 0 | False | False
+200x50 | 10000 | sgr_cells | blocking | 4 | 3 | 260.703 | 260.703 | 267.344 | 126.2 | 162.8 | 0 | 0 | False | False
+200x50 | 10000 | sgr_cells | clone | 4 | 3 | 0.001 | 29.169 | 32.307 | 146.6 | 133.2 | 0 | 1355776 | False | False
+200x50 | 10000 | sgr_cells | sliced | 4 | 3 | 0.398 | 2.387 | 4.652 | 113.2 | 159.5 | 1392640 | 0 | False | False
+200x50 | 100000 | log | blocking | 4 | 3 | 171.340 | 171.340 | 174.287 | 502.1 | 40.1 | 0 | 0 | False | False
+200x50 | 100000 | log | clone | 4 | 3 | 0.001 | 308.101 | 312.240 | 998.3 | 11.4 | 0 | 2568192 | False | False
+200x50 | 100000 | log | sliced | 4 | 3 | 0.025 | 0.137 | 0.181 | 503.1 | 39.1 | 770048 | 0 | False | False
+200x50 | 100000 | sgr_cells | blocking | 4 | 3 | 2599.405 | 2599.405 | 2606.733 | 1174.6 | 162.5 | 0 | 0 | False | False
+200x50 | 100000 | sgr_cells | clone | 4 | 3 | 0.001 | 327.241 | 327.914 | 1431.3 | 133.4 | 0 | 14471168 | False | False
+200x50 | 100000 | sgr_cells | sliced | 4 | 3 | 0.409 | 3.987 | 4.951 | 1190.7 | 154.3 | 11911168 | 0 | False | False
+500x200 | 0 | log | blocking | 4 | 3 | 1.577 | 1.577 | 1.955 | 5.8 | 8.7 | 0 | 0 | False | False
+500x200 | 0 | log | clone | 4 | 3 | 0.001 | 1.415 | 2.496 | 8.3 | 6.2 | 0 | 20480 | False | False
+500x200 | 0 | log | sliced | 4 | 3 | 0.051 | 0.086 | 0.095 | 5.8 | 19.2 | 4096 | 0 | False | False
+500x200 | 0 | sgr_cells | blocking | 4 | 3 | 13.141 | 13.141 | 13.706 | 8.4 | 159.7 | 0 | 0 | False | False
+500x200 | 0 | sgr_cells | clone | 4 | 3 | 0.001 | 1.309 | 1.563 | 11.8 | 142.2 | 0 | 65536 | False | False
+500x200 | 0 | sgr_cells | sliced | 4 | 3 | 1.043 | 1.265 | 2.380 | 10.5 | 152.6 | 49152 | 0 | False | False
+500x200 | 10000 | log | blocking | 4 | 3 | 29.839 | 29.839 | 31.072 | 124.7 | 23.5 | 0 | 0 | False | False
+500x200 | 10000 | log | clone | 4 | 3 | 0.001 | 74.533 | 78.304 | 245.7 | 5.2 | 0 | 606208 | False | False
+500x200 | 10000 | log | sliced | 4 | 3 | 0.045 | 0.178 | 0.400 | 125.8 | 22.4 | 147456 | 0 | False | False
+500x200 | 10000 | sgr_cells | blocking | 4 | 3 | 666.967 | 666.967 | 984.052 | 296.5 | 161.4 | 0 | 0 | False | False
+500x200 | 10000 | sgr_cells | clone | 4 | 3 | 0.001 | 76.905 | 80.597 | 360.0 | 135.7 | 0 | 3477504 | False | False
+500x200 | 10000 | sgr_cells | sliced | 4 | 3 | 1.005 | 3.143 | 3.947 | 301.1 | 157.1 | 2609152 | 0 | False | False
+500x200 | 100000 | log | blocking | 4 | 3 | 316.659 | 316.659 | 322.153 | 1193.1 | 21.7 | 0 | 0 | False | False
+500x200 | 100000 | log | clone | 4 | 3 | 0.001 | 747.530 | 750.739 | 2379.7 | 5.2 | 0 | 5664768 | False | False
+500x200 | 100000 | log | sliced | 4 | 3 | 0.046 | 0.241 | 0.297 | 1194.6 | 21.8 | 1355776 | 0 | False | False
+500x200 | 100000 | sgr_cells | blocking | 4 | 3 | 6530.808 | 6530.808 | 6776.949 | 2758.5 | 162.0 | 0 | 0 | False | False
+500x200 | 100000 | sgr_cells | clone | 4 | 3 | 0.001 | 768.193 | 1102.503 | 3459.0 | 130.2 | 0 | 35708928 | False | True
+500x200 | 100000 | sgr_cells | clone | 32 | 3 | 0.001 | 752.552 | 768.773 | 3427.9 | 134.0 | 0 | 267075584 | False | True
+500x200 | 100000 | sgr_cells | sliced | 4 | 3 | 1.014 | 13.717 | 15.438 | 2288.5 | 155.6 | 16777216 | 0 | True | False
+500x200 | 100000 | sgr_cells | sliced | 32 | 3 | 0.848 | 9.054 | 9.085 | 2382.4 | 190.4 | 16777216 | 0 | True | False
+
+EVENT-DRIVEN UNIX SOCKET DELIVERY
+geometry | history | fill | chunk B | reader B/s (0=drain) | n | median MiB/s | max progress gap ms | peak RSS MiB | readiness waits range
+200x50 | 0 | log | 4096 | 0 | 3 | 319.1 | 0.008 | 1.6 | 0..0
+200x50 | 0 | log | 16384 | 0 | 3 | 317.9 | 0.008 | 1.6 | 0..0
+200x50 | 0 | sgr_cells | 4096 | 0 | 3 | 404.2 | 0.076 | 1.9 | 21..24
+200x50 | 0 | sgr_cells | 16384 | 0 | 3 | 381.0 | 0.072 | 1.8 | 26..26
+200x50 | 10000 | log | 4096 | 0 | 3 | 477.6 | 0.088 | 51.7 | 77..78
+200x50 | 10000 | log | 16384 | 0 | 3 | 470.3 | 0.076 | 51.7 | 85..87
+200x50 | 10000 | sgr_cells | 4096 | 0 | 3 | 668.4 | 0.094 | 125.9 | 5288..5333
+200x50 | 10000 | sgr_cells | 4096 | 4194304 | 3 | 4.0 | 3.036 | 125.7 | 5431..5431
+200x50 | 10000 | sgr_cells | 16384 | 0 | 3 | 649.6 | 0.111 | 109.9 | 5399..5413
+200x50 | 100000 | log | 4096 | 0 | 3 | 603.9 | 0.153 | 502.0 | 819..855
+200x50 | 100000 | log | 16384 | 0 | 3 | 596.2 | 0.197 | 502.0 | 869..873
+200x50 | 100000 | sgr_cells | 4096 | 0 | 3 | 671.9 | 0.210 | 1174.3 | 52931..53280
+200x50 | 100000 | sgr_cells | 16384 | 0 | 3 | 697.3 | 0.184 | 1174.4 | 53835..53949
+500x200 | 100000 | log | 4096 | 0 | 3 | 607.7 | 0.094 | 1193.0 | 829..867
+500x200 | 100000 | log | 16384 | 0 | 3 | 530.9 | 0.113 | 1193.0 | 858..871
+500x200 | 100000 | sgr_cells | 4096 | 0 | 3 | 677.7 | 0.194 | 2757.6 | 133046..133241
+500x200 | 100000 | sgr_cells | 16384 | 0 | 3 | 693.1 | 0.947 | 2757.5 | 133886..135109

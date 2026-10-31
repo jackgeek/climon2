@@ -2,7 +2,9 @@
 
 pub mod admission;
 pub mod delivery;
+pub mod event_delivery;
 pub mod feed;
+pub mod followup;
 pub mod geometry;
 pub mod input;
 pub mod restore;

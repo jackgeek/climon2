@@ -1,0 +1,284 @@
+THROWAWAY #48/#43: hyperlink retention and restoration scheduling follow-up.
+Base: prototype/resource-budgets-48 @ 7b3e5d5cf53753e9935289f8dba025799b8aa954.
+Engine: unchanged bbb2cbf9470a6707b1205fbddbdb25109b14e2fd.
+Decisions: #48 comment 6546525973; no product budgets changed.
+
+This is lab qualification, not shipped code or general terminal qualification.
+Results tables: followup-measurements/summary.txt; full raw.jsonl retains failures.
+Action log: FOLLOWUP-LOG.txt. Original BUDGETS.txt stays unchanged for provenance.
+
+REPRODUCE (from prototypes/alacritty-forwarding)
+
+  # Fetch exactly the engine pin, with run.sh's unchanged-source verification.
+  # run.sh also runs the existing suite; use the bounded wrapper for safety.
+  python3 bounded.py --wall 600 bash run.sh
+  CARGO_TARGET_DIR=$PWD/.cache/target python3 bounded.py --wall 600 \
+    cargo build -j1 --release --locked --manifest-path probe/Cargo.toml --bin budgets
+  python3 followup_measure.py smoke
+  python3 followup_measure.py links oracle snapshot event capacity replay
+  python3 followup_summarize.py > followup-measurements/summary.txt
+
+All execution is serial. Cargo jobs=1, test threads=1. Measurement processes
+get allocator ceilings and descendant-RSS/wall watchdogs. Smaller runs:
+2 GiB requested live heap, 3 GiB RSS. 500x200/100k only: 6 GiB requested heap,
+8 GiB RSS. Wall limit 600 s. Estimated max baseline/clone/output capacity is
+about 4.55 GB before that larger run is admitted. The host has 64 GiB RAM.
+These lab ceilings do not approve any product/session memory allowance.
+The watchdog kills only explicitly enumerated descendant PIDs, never by name.
+
+B2: SHARING EXISTS; EXACT RETAINED-BYTE ADMISSION REMAINS BLOCKED
+
+The handoff/prior wording "each cell keeps its own copy of hyperlink data"
+was incorrect for one OSC run. The prior osc8_cell fixture opened a new OSC
+before EVERY cell, explaining the approximately URI-bytes-per-cell slope.
+
+Pinned primary sources (all alacritty_terminal/src, immutable upstream pin):
+- term/cell.rs:49-68: Hyperlink derives Clone, wraps Arc<HyperlinkInner>,
+  and exposes borrowed id()/uri(). Cloning it does not copy either string.
+- term/cell.rs:71-74: converting each new vte Hyperlink constructs a new Arc.
+  Equal OSC id/URI strings are NOT automatically interned across separate OSCs.
+- term/cell.rs:83-101: HyperlinkInner and its two String fields are private.
+- term/cell.rs:131-148: CellExtra contains Hyperlink; Cell exposes Arc<CellExtra>.
+- term/cell.rs:175-177,209-227: CellExtra copy-on-write preserves the cloned
+  Hyperlink Arc. Public Cell::set_hyperlink can install a shared Hyperlink.
+- term/mod.rs:984-990,1012-1018: write_at_cursor clones the template extra Arc.
+- term/mod.rs:1874-1876: the normal Handler setter converts every OSC link anew.
+- term/mod.rs:645-651: public grid/grid_mut expose the active grid/template.
+  inactive_grid is private (287); swap_alt has the #43 side effect (714-731).
+- grid/storage.rs:12-13,99-120: raw grid caches up to 1000 extra rows.
+- vte 0.15.0 src/ansi.rs:1399-1403: URI semicolon reconstruction pushes into
+  String and can nearly DOUBLE its capacity. Invalid UTF-8 segments become
+  empty, not replacement-expanded text. Costs must charge capacity, not len.
+
+Demonstration: create a shared Alacritty Hyperlink, and install a clone in
+term.grid_mut().cursor.template using Cell::set_hyperlink after OSC dispatch.
+The public-template test compares URI addresses across independent OSCs;
+it failed before this seam was installed (red.txt). One-OSC/COW sharing is
+also independently asserted and already passed on unchanged upstream.
+The helper is just the seam, not an adapter interning policy or parallel model.
+
+Why this is not a retained-bytes PASS:
+- A stream may use a DIFFERENT link in every retained cell. Interning cannot
+  reduce distinct strings; a 4096 B OSC cap does not imply a practical aggregate
+  retained-byte cap.
+- Hyperlink exposes neither a Weak to its private inner Arc nor a release hook.
+- Weak<CellExtra> is not a substitute. Arc::make_mut disassociates its Weak
+  while the copied/moved extra still retains the SAME Hyperlink inner Arc.
+  The automated weak-lifetime probe demonstrates that false-release case.
+- Keeping a strong interning pool makes lifetimes visible to the pool itself,
+  but never-refunded admission is a lifetime allowance, not exact retained
+  admission. Evicting/refunding a pool entry while cells keep its Arc is unsafe.
+- The counting allocator measures actual process allocation/deallocation and
+  successfully bounds the lab process. It does not attribute hyperlink storage,
+  distinguish engines/snapshots/queues, or recover gracefully from allocation
+  failure. Its hard abort is not approval of a product OSC 8 admission policy.
+
+Measured single/repeated/unique/interned slopes are in summary.txt. Term drop
+releases the measured heap; this establishes reclamation, not a per-link public
+notification. No full maximum-geometry unique-link run is attempted: its
+predicted memory exceeds both lab ceilings and the host's physical memory.
+
+At 100k cells / 4080 B URI, a single OSC grows requested live allocation by
+3.736 MiB, a distinct OSC per cell by 406.564 MiB, and the public intern seam
+by 10.598 MiB (all include grid allocation). Repeated SAME id/URI OSC opens
+without the seam still use 406.278 MiB: the engine does not intern equal opens.
+The semicolon-capacity adversary is worse: a 4093 B URI respecting the exact
+4096 B body cap grows requested allocation by 798.617 MiB at 100k cells.
+capacity-red.txt falsifies the earlier length-only upper bound (837,410,100 B
+observed versus 431,591,456 B including 6 MiB grid slack). The capacity runs'
+~8 KiB after-drop residue is their one retained fixture seed String, not
+engine retention; ~839 MB was released when Term/parser/shared link dropped.
+
+COSTED USER OPTIONS (not decisions; requested allocation, not an RSS guarantee)
+
+Conservative cell slots at maximum:
+  N = 500 * [(100000 + 200 + 1000) + (200 + 1000)] = 51,200,000.
+This includes normal history, both screens, and up to 1000 cached rows per grid.
+Cursors/row vectors/allocator overhead add small or platform-dependent terms.
+Cell=24 B; worst separate extra Arc=72 B; hyperlink inner Arc=64 B at this pin.
+For OSC body cap C and no explicit id, URI length<=C-3, but URI capacity can
+approach 2*(C-3); generated id allocation<=20 B.
+Thus distinct-link requested storage <= N*(24+72+64+2*(C-3)+20), plus row/cursor
+metadata. Retained logical slots without caches total 50,200,000; using those
+alone understates possible cached storage.
+
+Option                         Worst requested allocation (GiB, rounded up)
+Keep cap 4096, unique per cell  399.0 GiB, before allocator/RSS overhead
+Lower OSC 8 cap to 1024         106.0 GiB (requires changing the decided common cap)
+Lower OSC 8 cap to 256          32.8 GiB
+Lower OSC 8 cap to 64           14.5 GiB
+Lifetime allowance A           4.58 GiB + A + row/cursor/pool metadata
+Engine Weak/release seam + A   Same structural worst bound; can refund dead links
+
+The allowance formula is N*(24+72)+A: reserve A for ALL distinct-link inner/string
+allocations and any pool keys/entry bookkeeping, never refund without a proven
+release notification. For an illustrative, NOT approved, A=16 MiB it is about
+4.60 GiB plus row/cursor metadata. Counting just URI bytes is insufficient.
+72 B/cell still matters: a cell-local combining/underline mutation can split
+CellExtra even if every URI shares one Arc. A weak accessor alone does not
+remove this cell-extra worst case; a stronger engine budget contract might.
+
+Choosing an allowance requires an amount and a breach policy. Strong-pool
+interning can make repeat opens free when the entry remains resident; new
+distinct links consume the non-refundable allowance. An engine change could
+expose Hyperlink::downgrade/release accounting so admission follows live links
+instead of session lifetime. No such engine patch is made or approved here.
+
+These are ENGINE RETENTION costs, not whole-session RSS/restore guarantees.
+Both timed scheduling paths below still materialize the restore prefix.
+Even TWO interned ~4 KiB links alternating per cell can emit an OSC 8 before
+every glyph: roughly 50.2 million * 4 KiB, over 190 GiB of serialized prefix
+before Vec capacity overhead. An allowance on distinct retained links does
+not bound this expansion. A streamed-prefix path would avoid that materialized
+buffer but is not the measured scheduling variant. This is a newly surfaced
+qualification/implementation choice, not permission to change B6/B7 or omit
+links. Do not treat the timing PASS on log/SGR as an OSC 8 maximum-memory PASS.
+
+B8: MEASUREMENT CONTRACT
+
+Geometries: 80x24, 200x50, 500x200; histories 0, 10k, 100k.
+Fixtures: coloured short log rows and per-cell indexed foreground/background.
+Each fixture ends with explicit CUP home. This deliberately defines a supported
+cursor state; pending-wrap restoration remains an existing #43 limitation.
+Three separate runs per strategy/case. Source fixtures are generated rowwise;
+there is no retained input transcript or production parallel model.
+
+Maximum-case measured results, 500x200 + 100k history, 4 MiB/s PTY:
+
+Fixture Strategy Callback p50 / critical p50 / max ms  Peak RSS MiB  MiB/s
+log     blocking 316.659 / 316.659 / 322.153             1193.1        21.7
+log     clone      0.001 / 747.530 / 750.739             2379.7         5.2
+log     sliced     0.046 /   0.241 /   0.297             1194.6        21.8
+SGR     blocking 6530.808 / 6530.808 / 6776.949           2758.5       162.0
+SGR     clone      0.001 / 768.193 / 1102.503            3459.0       130.2
+SGR     sliced     1.014 /  13.717 /   15.438            2288.5       155.6
+
+Recommendation: prefer (c), sliced serialization, if delayed PTY interpretation
+and backpressure are acceptable. It avoids cloning the full 1.2 GB grid/history.
+For logs the clone pause is worse than blocking restore; for per-cell SGR the
+largest measured slice pause is 15.438 ms versus clone's 1102.503 ms. The worker
+does NOT make grid cloning cheap or interruptible. Neither is a hard latency
+guarantee; Vec growth/page faults and OS scheduling still contribute to slices.
+
+At maximum SGR, the test's 16 MiB PTY buffer filled at BOTH 4 and 32 MiB/s.
+Observed continuous-input buffer demand WITHOUT backpressure, using rate times
+the worst measured serialization plus the initial 4 KiB burst, is 27.52 MiB at
+4 MiB/s (6.878065 s) and 179.06 MiB at 32 MiB/s (5.595303 s). These are rate-
+conditioned estimates, not universal caps. The bounded alternative actually
+retains 16 MiB and pauses reads; there is finite extra buffering in the socket.
+Maximum log serialization buffered only 1,355,776 B at 4 MiB/s.
+
+Post-snapshot catch-up was also measured separately at maximum geometry/history:
+16 MiB of buffered ASCII, replayed as 64 B callbacks, took at most 0.235730 s,
+callback p50 0.001 ms and max 0.107 ms (three runs, independent text/cursor
+oracle PASS). It did not exceed the serializer's largest callback pause.
+The timing harness's cleanup feed is not an OS pump implementation: production
+must schedule those 64 B callbacks between other work, not feed the entire
+16 MiB buffer as one pump callback. Catch-up numbers are NOT a bound for
+adversarial control sequences; B4's accepted uninterruptible REP cost still applies.
+
+Clone parsed up to 35,708,928 live suffix B during maximum SGR serialization at
+4 MiB/s, and 267,075,584 B at 32 MiB/s. Both exceed B6's decided 16 MiB queue.
+The decided behavior is disconnection, NOT automatic queue enlargement.
+Using (c) keeps the engine snapshot consistent by delaying interpretation; it
+does not keep engine query-response latency below the slice pause. Queries
+embedded in buffered PTY output can wait for the WHOLE ~7 s serialization.
+Choosing (b) instead trades a ~0.75-1.10 s pump capture stall and extra RAM for
+continued PTY interpretation once capture ends, subject to B6 overflow.
+
+Baseline: existing blocking restore produces the entire Vec on the pump.
+(b): clone engine Grid (including history/cache), move owned Snapshot to a
+worker, serialize there. Live engine advances on 64 B input slices on the pump.
+(c): SlicedRestore borrows the sole mutable Term; serializer runs in 16-row
+slices. Incoming synthetic PTY bytes are buffered, never fed into the frozen
+Term. A 16 MiB TEST buffer leaves further bytes in the socket when full, giving
+backpressure rather than dropping bytes. This PTY-buffer amount is NOT B6's
+attachment queue and is NOT an approved new budget.
+
+Each callback is timed, including capture and slice startup. Raw records give
+callback p50/max, elapsed serialization, MiB/s, requested heap peak, process
+peak RSS, PTY bytes admitted or parsed during serialization and backpressure.
+Summary also gives "critical p50": median worst callback across three restores,
+so clone's rare long capture is not hidden by many almost-empty pump callbacks.
+OS scheduling/page faults are included; these are observed stalls, not hard
+real-time guarantees. Serialization throughput is restore bytes / elapsed
+creation time; socket delivery throughput is reported separately.
+
+PTY source is a real UnixStream pair with a paced writer thread (4 MiB/s, plus
+32 MiB/s maximum stress). Its sleep paces source OUTPUT, not socket delivery.
+Finite kernel/socket capacity is additional to the reported userspace buffer.
+4 KiB per slice read admission is intentionally bounded. Reaching the buffer
+cap pauses PTY reads while other pump callbacks can still run. It delays engine
+query responses and command output until the snapshot ends, unlike (b).
+Unbounded source demand cannot be preserved without backpressure or termination.
+The clone simulation counts live suffix bytes and flags if B6's 16 MiB queue
+would overflow; it does not silently enlarge the decided attachment budget.
+
+Correctness:
+- Independent vt100 receives source fixture rows and, separately, sliced
+  derived bytes. Hash each evicted row before the next row scrolls it out,
+  then all final cells and compare final cursor. Every retained history row
+  is checked with screen-sized oracle storage, even at 500x200/100k.
+- Hashes include each vt100 Cell's text/style/wide metadata. FNV-1a is a
+  non-cryptographic regression fingerprint for these deterministic fixtures,
+  not a security integrity claim.
+- Blocking/worker output must match the independently validated stream hash.
+  Every repeated timing run is matched to its fixture oracle by summarize.py.
+- Normal/alternate hand-written oracle tests exercise arrivals after clone
+  capture and between slices; restore prefix is consistent, live suffix then
+  updates the engine and fresh host. Mutable borrowing prevents mid-snapshot
+  feeding in (c). Alternate saved-cursor perturbation remains exactly #43's
+  previously identified limitation; no claim that it has been fixed.
+- Back-to-back resize requests are last-wins; one engine resize/reflow is
+  applied after draining the batch, compared to directly applying that final
+  geometry. Each all-row oracle run also asserts one reflow with full history.
+
+EVENT-DRIVEN 4 KiB RE-MEASUREMENT
+
+event_delivery.rs writes nonblocking 4096 B chunks; on WouldBlock it waits on
+poll(POLLOUT) until readiness or the nearest no-progress/overall deadline.
+There is NO 200 us retry timer. EINTR retries preserve the absolute deadline.
+Three repetitions at 4 KiB and 16 KiB, with draining and separately 4 MiB/s
+paced readers. Every run verifies the exact byte count and content hash.
+The automated delivery tests also check prefix-before-live-suffix ordering and
+the stalled-reader no-progress timeout. These are Unix socket results, not
+native host-render throughput. The draining reader hashes bytes, which can
+limit throughput and is included equally in both chunk sizes.
+
+Result: retain the decided 4 KiB chunk. At maximum SGR it delivered a median
+677.7 MiB/s versus 693.1 MiB/s for 16 KiB (about 2.2% lower). Maximum observed
+4 KiB progress gap across draining cases was 0.210 ms. The paced reader
+delivered 4.0 MiB/s with a maximum 3.036 ms progress gap. Every one of the 51
+event delivery runs completed with exact bytes; there were no deadline failures.
+This does not equate local socket speed to native terminal rendering speed.
+
+LIMITATIONS / SCOPE
+
+- One Intel i9-9980HK Mac, 64 GiB RAM, macOS 26.7.1, Rust 1.96.0, release code.
+  No Linux, Windows, native terminal, SSH, or xterm.js host measurements.
+- No engine patches; upstream checkout must remain clean at the exact pin.
+- No product code changes, quality-gate exemptions or new user configuration.
+  ADR0004 limits shipped quality gates to shipped crates, not this throwaway.
+- Max-geometry timing fixtures do not include OSC 8/combining memory adversaries;
+  those are costed separately above. Normal/alternate visual coverage is limited
+  to the existing serializer's support, not all engine state or control strings.
+- Queuing later resize requests while (c) holds Term is required by its borrowing
+  contract; this prototype demonstrates batching, not a shipped OS PTY ioctl
+  scheduler or a time/rate policy across separate event-loop turns.
+- This experiment does not settle safe OSC 8 reconstruction/control-character
+  handling or #43's other restore fidelity decisions. Those remain open.
+
+USER DECISIONS STILL REQUIRED (fixed B1/B3-B7 remain untouched)
+
+1. B2 admission: lower OSC 8 cap, a non-refundable lifetime allowance/strong
+   interning pool, or an engine Weak/release seam. Choose amount and breach
+   policy if choosing a cap/allowance. Sharing alone does not settle this.
+2. B8 schedule: prefer (c) with bounded PTY backpressure, or choose (b) and accept
+   the measured capture stall/RAM and the existing B6 overflow behavior. If (c),
+   choose a PTY-buffer allowance (16 MiB was a trial, not an approved budget)
+   and explicitly accept delayed query responses; unthrottled demand is larger.
+3. Newly surfaced prefix-memory choice: qualify streaming the restoration
+   prefix before claiming maximum-geometry OSC 8 restoration is memory-safe.
+   Interning/retained-byte admission does not bound serialized expansion.
+
+No choice is auto-answered here. #48/#43 must stay open.

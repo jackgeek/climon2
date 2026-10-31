@@ -1,0 +1,32 @@
+   Compiling alacritty-embedding-probe v0.0.0 (/Users/jackallan/dev/climon2/target/budgets-followup-48/prototypes/alacritty-forwarding/probe)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
+     Running tests/event_delivery.rs (.cache/target/debug/deps/event_delivery-bcb124a6d7044e52)
+
+running 2 tests
+test readiness_delivery_sends_the_exact_restore_prefix_then_live_suffix ... FAILED
+test readiness_wait_observes_no_progress_deadline_for_a_stalled_reader ... FAILED
+
+failures:
+
+---- readiness_delivery_sends_the_exact_restore_prefix_then_live_suffix stdout ----
+
+thread 'readiness_delivery_sends_the_exact_restore_prefix_then_live_suffix' (694540) panicked at tests/event_delivery.rs:30:5:
+assertion `left == right` failed: restore was not delivered
+  left: 0
+ right: 4194309
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- readiness_wait_observes_no_progress_deadline_for_a_stalled_reader stdout ----
+
+thread 'readiness_wait_observes_no_progress_deadline_for_a_stalled_reader' (694551) panicked at tests/event_delivery.rs:42:52:
+called `Result::unwrap_err()` on an `Ok` value: DeliveryReport { bytes: 0, writes: 0, waits: 0, worst_gap: 0ns }
+
+
+failures:
+    readiness_delivery_sends_the_exact_restore_prefix_then_live_suffix
+    readiness_wait_observes_no_progress_deadline_for_a_stalled_reader
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+error: test failed, to rerun pass `--test event_delivery`
+{"outcome": "exit_101", "watchdog_peak_rss": 180326400, "wall_seconds": 0.965264359, "returncode": 101}

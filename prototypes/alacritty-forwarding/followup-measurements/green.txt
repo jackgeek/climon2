@@ -1,0 +1,15 @@
+   Compiling alacritty-embedding-probe v0.0.0 (/Users/jackallan/dev/climon2/target/budgets-followup-48/prototypes/alacritty-forwarding/probe)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.18s
+     Running tests/followup.rs (.cache/target/debug/deps/followup-8743a78288383645)
+
+running 6 tests
+test a_single_osc_shares_uri_storage_across_cells_even_after_copy_on_write ... ok
+test back_to_back_resizes_apply_only_the_final_geometry_and_reflow_once ... ok
+test clone_worker_snapshot_is_consistent_while_new_output_changes_the_engine ... ok
+test pty_buffer_refuses_overflow_without_losing_or_reordering_accepted_bytes ... ok
+test public_template_setter_reuses_an_interned_link_across_separate_oscs ... ok
+test sliced_restore_freezes_one_snapshot_and_replays_buffered_output_afterward ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+{"outcome": "exit_0", "watchdog_peak_rss": 208474112, "wall_seconds": 2.702487669, "returncode": 0}

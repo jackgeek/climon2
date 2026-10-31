@@ -22,6 +22,9 @@ use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term};
 use vte::ansi::{Processor, StdSyncHandler};
 
+#[path = "../followup_bench.rs"]
+mod followup_bench;
+
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 static CEILING: AtomicUsize = AtomicUsize::new(1 << 30);
@@ -555,6 +558,11 @@ fn main() {
         "sync" => sync(&args),
         "deliver" => deliver(&args),
         "reader" => reader(&args),
+        "links" => followup_bench::links(&args),
+        "snapshot" => followup_bench::snapshot(&args),
+        "oracle" => followup_bench::oracle(&args),
+        "event" => followup_bench::event(&args),
+        "replay" => followup_bench::replay(&args),
         _ => panic!("unknown command {command}"),
     }
     std::io::stdout().flush().unwrap();

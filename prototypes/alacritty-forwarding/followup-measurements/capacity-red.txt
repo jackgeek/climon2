@@ -1,0 +1,5 @@
+Premise test: the former length-only per-cell bound includes 6 MiB grid slack.
+observed 837410100 claimed_upper 431591456
+Traceback (most recent call last):
+  File "<stdin>", line 7, in <module>
+AssertionError: URI String capacity exceeds the former length-only bound

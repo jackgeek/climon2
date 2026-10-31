@@ -16,6 +16,140 @@ use alacritty_terminal::term::{Term, TermMode};
 use std::io::Write;
 use vte::ansi::Color;
 
+/// Owned engine grids, not a second model. The worker cannot access the live Term.
+pub struct Snapshot {
+    normal: Grid<Cell>,
+    alternate: Option<Grid<Cell>>,
+    mode: TermMode,
+}
+impl Snapshot {
+    pub fn capture<T>(term: &mut Term<T>) -> Self {
+        let mode = *term.mode();
+        let alternate = mode
+            .contains(TermMode::ALT_SCREEN)
+            .then(|| term.grid().clone());
+        if alternate.is_some() {
+            term.swap_alt();
+        }
+        let normal = term.grid().clone();
+        if let Some(grid) = &alternate {
+            term.swap_alt();
+            *term.grid_mut() = grid.clone();
+        }
+        Self {
+            normal,
+            alternate,
+            mode,
+        }
+    }
+
+    pub fn serialize(self) -> Vec<u8> {
+        let mut writer = Writer::default();
+        writer.out.extend(b"\x1b[H\x1b[2J");
+        writer.history_and_screen(&self.normal);
+        if let Some(grid) = &self.alternate {
+            writer.cursor(&self.normal.cursor);
+            writer.out.extend(b"\x1b[?1049h");
+            writer.screen(grid);
+            writer.cursors(grid);
+        } else {
+            writer.cursors(&self.normal);
+        }
+        writer.modes(self.mode);
+        writer.out
+    }
+}
+
+/// Borrows the sole engine writer until serialization ends. PTY input must wait.
+pub struct SlicedRestore<'a, T> {
+    term: &'a mut Term<T>,
+    alternate: Option<Grid<Cell>>,
+    writer: Writer,
+    line: i32,
+    continued: bool,
+    screen_phase: bool,
+    done: bool,
+    mode: TermMode,
+}
+impl<'a, T> SlicedRestore<'a, T> {
+    pub fn new(term: &'a mut Term<T>) -> Self {
+        let mode = *term.mode();
+        let alternate = mode
+            .contains(TermMode::ALT_SCREEN)
+            .then(|| term.grid().clone());
+        if alternate.is_some() {
+            term.swap_alt();
+        }
+        let line = -(term.grid().history_size() as i32);
+        let mut writer = Writer::default();
+        writer.out.extend(b"\x1b[H\x1b[2J");
+        Self {
+            term,
+            alternate,
+            writer,
+            line,
+            continued: true,
+            screen_phase: false,
+            done: false,
+            mode,
+        }
+    }
+
+    pub fn step(&mut self, rows: usize) -> bool {
+        assert!(rows > 0);
+        for _ in 0..rows {
+            if self.done {
+                break;
+            }
+            if self.screen_phase {
+                self.writer.pen(Style::default(), None);
+                write!(self.writer.out, "\x1b[{}H\x1b[2K", self.line + 1).unwrap();
+            } else if !self.continued {
+                self.writer.pen(Style::default(), None);
+                self.writer.out.extend(b"\r\n");
+            }
+            self.continued = self.writer.row(self.term.grid(), self.line);
+            self.line += 1;
+            if self.line == self.term.screen_lines() as i32 {
+                if self.alternate.is_some() {
+                    self.writer.cursor(&self.term.grid().cursor);
+                    self.restore_alternate();
+                    self.writer.out.extend(b"\x1b[?1049h");
+                    self.line = 0;
+                    self.screen_phase = true;
+                } else {
+                    self.writer.cursors(self.term.grid());
+                    self.writer.modes(self.mode);
+                    self.done = true;
+                }
+            }
+        }
+        self.done
+    }
+
+    fn restore_alternate(&mut self) {
+        if let Some(grid) = self.alternate.take() {
+            self.term.swap_alt();
+            *self.term.grid_mut() = grid;
+        }
+    }
+
+    pub fn finish(mut self) -> Vec<u8> {
+        assert!(self.done, "unfinished restore");
+        std::mem::take(&mut self.writer.out)
+    }
+
+    pub fn take_output(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.writer.out)
+    }
+}
+
+impl<T> Drop for SlicedRestore<'_, T> {
+    fn drop(&mut self) {
+        self.restore_alternate();
+    }
+}
+
 pub fn restore<T>(term: &mut Term<T>) -> Vec<u8> {
     let mut writer = Writer::default();
     writer.out.extend(b"\x1b[H\x1b[2J");

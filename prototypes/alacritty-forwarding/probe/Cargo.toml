@@ -10,3 +10,5 @@ publish = false
 alacritty_terminal = { path = "../.cache/alacritty/alacritty_terminal", default-features = false }
 cursor-icon = "=1.2.0"
 vte = { version = "=0.15.0", default-features = false, features = ["std", "ansi"] }
+vt100 = "=0.18.1"
+libc = "=0.2.191"
