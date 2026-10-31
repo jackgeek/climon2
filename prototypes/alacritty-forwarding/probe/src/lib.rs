@@ -1,5 +1,8 @@
 //! THROWAWAY: public-API forwarding/transition qualification, not a renderer.
 
+pub mod admission;
+pub mod delivery;
+pub mod geometry;
 pub mod input;
 pub mod timing;
 

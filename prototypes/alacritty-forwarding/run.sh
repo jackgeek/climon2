@@ -31,6 +31,6 @@ echo "Alacritty: $revision (unchanged)"
 rustc --version
 python3 check_surface.py
 cargo fmt --manifest-path probe/Cargo.toml -- --check
-cargo clippy --quiet --locked --manifest-path probe/Cargo.toml --all-targets -- -D warnings
-cargo test --quiet --locked --manifest-path probe/Cargo.toml
+cargo clippy -j1 --quiet --locked --manifest-path probe/Cargo.toml --all-targets -- -D warnings
+cargo test -j1 --quiet --locked --manifest-path probe/Cargo.toml -- --test-threads=1
 echo "PASS: exercised engine/codec seams; production input/delivery and native hosts remain UNPROVEN"
