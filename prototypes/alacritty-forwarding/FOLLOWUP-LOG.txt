@@ -96,3 +96,18 @@ THROWAWAY #48/#43, session 52a00940-3bb1-4dc8-acad-869f11e1ef91.
 28. Three catch-up runs passed: p50 0.001 ms, max 0.107 ms, worst total
     0.235730 s. Main serializer callback results are unchanged. Raw totals
     now 297 (296 successful, one preserved pre-matrix smoke failure).
+29. Final surface/fmt/clippy/56 tests passed again after the catch-up addendum.
+    Removed only named temporary last.stdout/last.stderr files; kept raw,
+    concise red/green logs, matrix/addendum logs, tables and binary hashes.
+30. Committed qualification as 78ca0756208f7e7de41df3b673974d582842fb74 with
+    this session's trailers, pushed prototype/budgets-followup-48, and verified
+    ls-remote exactly matched that commit. No main-line or engine edits.
+31. Published ONE immutable-link comment on #48 cross-linked #43:
+    https://github.com/jackgeek/climon2/issues/48#issuecomment-6547171245
+    It points to qualification commit 78ca075, lists the three user decisions,
+    and explicitly retains both issues open. This publication-only log commit
+    does not change the qualification source or results.
+32. Retained this isolated worktree and ignored cache for reproducibility;
+    did not remove other sessions' worktrees or main's pre-existing CLAUDE edit.
+    Return artifact to the specified decision-session files after final push/
+    remote verification. No decisions were auto-answered.
