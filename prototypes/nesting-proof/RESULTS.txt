@@ -1,0 +1,122 @@
+# 2026-10-31T15:01:20Z 26.7.1 x86_64 rustc 1.96.0 (ac68faa20 2026-05-25)
+$ cargo test -j1 -- --test-threads=1   (x3)
+## run 1
+     Running unittests src/lib.rs (target/debug/deps/nesting_proof_prototype-da61703dbf8a13b7)
+test graph::tests::acyclic_nesting_is_admitted ... ok
+test graph::tests::ended_source_is_pruned_only_when_every_daemon_answered ... ok
+test graph::tests::indirect_cycle_is_rejected ... ok
+test graph::tests::legacy_ancestor_on_path_fails_closed ... ok
+test graph::tests::legacy_encloser_fails_closed ... ok
+test graph::tests::legacy_target_is_unsupported ... ok
+test graph::tests::self_attachment_is_rejected ... ok
+test graph::tests::top_level_attachment_is_admitted ... ok
+test graph::tests::unrelated_legacy_session_does_not_block ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/bin/nest-client.rs (target/debug/deps/nest_client-3092a4f2ca81454d)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/bin/nest-daemon.rs (target/debug/deps/nest_daemon-ec527ca2014fcdb1)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/nesting.rs (target/debug/deps/nesting-bf9fec6e65800e30)
+test acyclic_nesting_is_admitted_and_reverse_attachment_is_rejected ... ok
+test control_change_keeps_the_edge_and_rejection_disturbs_nothing ... ok
+test cross_home_cycle_is_rejected_and_cross_home_nesting_works ... ok
+test disconnect_removes_the_edge ... ok
+test enclosing_daemon_outside_the_visible_runtime_directories_fails_closed ... ok
+test forged_environment_does_not_block_safe_attachment ... ok
+test hidden_legacy_edge_cannot_close_a_cycle ... ok
+test home_aliases_resolve_to_the_same_graph ... ok
+test indirect_cycle_across_three_sessions_is_rejected ... ok
+test legacy_daemon_cannot_take_part_post_hello ... ok
+test legacy_target_fails_closed_and_top_level_still_works_beside_legacy ... ok
+test local_relay_inside_a_session_is_caught_by_process_ancestry ... ok
+test nesting_inside_a_legacy_session_fails_closed ... ok
+test new_list_shows_unknown_state_for_legacy_and_state_for_new ... ok
+test orphaned_client_on_the_session_terminal_is_caught_by_the_tty_proof ... ok
+test proof_ignores_tampered_environment ... ok
+test screen_relay_cycle_is_not_detected ... No screen session found.
+test self_attachment_is_rejected_with_125 ... ok
+test shipped_first_release_list_shows_new_daemons_with_optional_fields ... ok
+test simultaneous_cross_attachments_never_both_succeed ... ok
+test without_the_lock_simultaneous_cross_attachments_both_succeed ... ok
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.21s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+## run 2
+     Running unittests src/lib.rs (target/debug/deps/nesting_proof_prototype-da61703dbf8a13b7)
+test graph::tests::acyclic_nesting_is_admitted ... ok
+test graph::tests::ended_source_is_pruned_only_when_every_daemon_answered ... ok
+test graph::tests::indirect_cycle_is_rejected ... ok
+test graph::tests::legacy_ancestor_on_path_fails_closed ... ok
+test graph::tests::legacy_encloser_fails_closed ... ok
+test graph::tests::legacy_target_is_unsupported ... ok
+test graph::tests::self_attachment_is_rejected ... ok
+test graph::tests::top_level_attachment_is_admitted ... ok
+test graph::tests::unrelated_legacy_session_does_not_block ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/bin/nest-client.rs (target/debug/deps/nest_client-3092a4f2ca81454d)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/bin/nest-daemon.rs (target/debug/deps/nest_daemon-ec527ca2014fcdb1)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/nesting.rs (target/debug/deps/nesting-bf9fec6e65800e30)
+test acyclic_nesting_is_admitted_and_reverse_attachment_is_rejected ... ok
+test control_change_keeps_the_edge_and_rejection_disturbs_nothing ... ok
+test cross_home_cycle_is_rejected_and_cross_home_nesting_works ... ok
+test disconnect_removes_the_edge ... ok
+test enclosing_daemon_outside_the_visible_runtime_directories_fails_closed ... ok
+test forged_environment_does_not_block_safe_attachment ... ok
+test hidden_legacy_edge_cannot_close_a_cycle ... ok
+test home_aliases_resolve_to_the_same_graph ... ok
+test indirect_cycle_across_three_sessions_is_rejected ... ok
+test legacy_daemon_cannot_take_part_post_hello ... ok
+test legacy_target_fails_closed_and_top_level_still_works_beside_legacy ... ok
+test local_relay_inside_a_session_is_caught_by_process_ancestry ... ok
+test nesting_inside_a_legacy_session_fails_closed ... ok
+test new_list_shows_unknown_state_for_legacy_and_state_for_new ... ok
+test orphaned_client_on_the_session_terminal_is_caught_by_the_tty_proof ... ok
+test proof_ignores_tampered_environment ... ok
+test screen_relay_cycle_is_not_detected ... No screen session found.
+test self_attachment_is_rejected_with_125 ... ok
+test shipped_first_release_list_shows_new_daemons_with_optional_fields ... ok
+test simultaneous_cross_attachments_never_both_succeed ... ok
+test without_the_lock_simultaneous_cross_attachments_both_succeed ... ok
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.88s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+## run 3
+     Running unittests src/lib.rs (target/debug/deps/nesting_proof_prototype-da61703dbf8a13b7)
+test graph::tests::acyclic_nesting_is_admitted ... ok
+test graph::tests::ended_source_is_pruned_only_when_every_daemon_answered ... ok
+test graph::tests::indirect_cycle_is_rejected ... ok
+test graph::tests::legacy_ancestor_on_path_fails_closed ... ok
+test graph::tests::legacy_encloser_fails_closed ... ok
+test graph::tests::legacy_target_is_unsupported ... ok
+test graph::tests::self_attachment_is_rejected ... ok
+test graph::tests::top_level_attachment_is_admitted ... ok
+test graph::tests::unrelated_legacy_session_does_not_block ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/bin/nest-client.rs (target/debug/deps/nest_client-3092a4f2ca81454d)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/bin/nest-daemon.rs (target/debug/deps/nest_daemon-ec527ca2014fcdb1)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/nesting.rs (target/debug/deps/nesting-bf9fec6e65800e30)
+test acyclic_nesting_is_admitted_and_reverse_attachment_is_rejected ... ok
+test control_change_keeps_the_edge_and_rejection_disturbs_nothing ... ok
+test cross_home_cycle_is_rejected_and_cross_home_nesting_works ... ok
+test disconnect_removes_the_edge ... ok
+test enclosing_daemon_outside_the_visible_runtime_directories_fails_closed ... ok
+test forged_environment_does_not_block_safe_attachment ... ok
+test hidden_legacy_edge_cannot_close_a_cycle ... ok
+test home_aliases_resolve_to_the_same_graph ... ok
+test indirect_cycle_across_three_sessions_is_rejected ... ok
+test legacy_daemon_cannot_take_part_post_hello ... ok
+test legacy_target_fails_closed_and_top_level_still_works_beside_legacy ... ok
+test local_relay_inside_a_session_is_caught_by_process_ancestry ... ok
+test nesting_inside_a_legacy_session_fails_closed ... ok
+test new_list_shows_unknown_state_for_legacy_and_state_for_new ... ok
+test orphaned_client_on_the_session_terminal_is_caught_by_the_tty_proof ... ok
+test proof_ignores_tampered_environment ... ok
+test screen_relay_cycle_is_not_detected ... No screen session found.
+test self_attachment_is_rejected_with_125 ... ok
+test shipped_first_release_list_shows_new_daemons_with_optional_fields ... ok
+test simultaneous_cross_attachments_never_both_succeed ... ok
+test without_the_lock_simultaneous_cross_attachments_both_succeed ... ok
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.29s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
