@@ -1,0 +1,48 @@
+THROWAWAY #56: bounded legacy input seam; not a production client.
+
+Actual-engine probes establish:
+- Config.kitty_keyboard = false suppresses Kitty state changes/replies without
+  patches, including screen changes/reset. Enabling it produces replies/state.
+- A daemon cursor-position reply can equal ESC[1;5R, the local xterm-256color
+  terminfo encoding for Ctrl+F3. This is a byte-ambiguity finding, not proof of
+  any native host's keyboard behaviour. legacy-terminfo.txt records provenance.
+- Legacy cursor/keypad/paste/mouse/focus modes are publicly observable.
+  Correct host application of those modes remains unqualified.
+
+The driving developer confirmed:
+- Explicitly use the upstream legacy configuration, without a key encoder.
+- Do not emit in-band host queries this release. Use sizing APIs and already
+  established qualified-profile facts; unknown facts stay unsupported.
+  Application queries terminate at the daemon; reply-shaped keys are preserved.
+- Exercise feed(chunks) plus explicit admission transitions, producing ordered
+  application bytes, detach/take-control actions, or a FinishPaste cleanup effect.
+- A daemon must close an already-started paste envelope before later application
+  input, discarding the old payload. The cleanup effect here is not a wire design
+  or proof of daemon behaviour, especially after abrupt client loss.
+
+This snapshot demonstrates the unresolved Escape takeover ambiguity:
+while viewing, a single Escape might be the start of a fragmented paste marker.
+Waiting preserves paste safety but does not activate a standalone Escape key.
+The observation test documents that limitation rather than passing it as support.
+
+Codec rules:
+- Prefix/doubling/unknown suffix and configurable takeover follow #41/#47.
+- Recognised paste markers and contents are forwarded unchanged only when
+  admitted, with client actions disabled within the recognised region.
+- Transitions discard pending old actions, retain enough marker provenance to
+  discard a stale paste even across a split header, and request cleanup once.
+  Each transition starts a new admission interval, even if its State repeats.
+- feed accepts at most 65536 bytes, emits application chunks at most 65536 bytes,
+  and retains at most six payload bytes (partial marker plus pending prefix).
+  Long pastes stream. feed rejects excess input before consuming it.
+- The caller services every returned effect in order. FinishPaste is a required
+  daemon cleanup effect, not application input from an earlier control period.
+
+Limitations:
+This is not a key encoder, client emulator, config parser, renderer or daemon.
+It does not detect host capabilities, confirm control, assign wire control-period
+IDs, enforce daemon queue ordering, or prove native host/mode compatibility.
+Unmarked paste cannot be distinguished from typing. Legacy paste delimiters have
+no payload escaping; bytes after a recognised end marker are outside the region.
+No guarantee about arbitrary physical clipboard payloads or native sanitisation
+is established by the synthetic marker fixtures.

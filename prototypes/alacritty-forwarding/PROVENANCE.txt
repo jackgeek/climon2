@@ -26,8 +26,10 @@ keyboard actions does not authorize emitting them to a host. Events stay local.
 Views are cloned observations, not a second terminal model. Their full-history
 cloning/retention costs are deliberately not production-qualified.
 This prototype exposes upstream types for inspection; the eventual product
-boundary must hide them. There is no renderer, PTY, client input codec, daemon
-event loop, transport, native terminal interaction or monitor here.
+boundary must hide them. The later legacy-input stage adds an isolated streaming
+codec and actual-engine input probes, described in LEGACY-INPUT.txt. There is no
+production client, renderer, PTY, daemon event loop, transport, native terminal
+interaction or monitor here.
 
 No source/dependency vulnerability audit, release pin approval, production
 resource/failure qualification, or native visible-latency claim is made.
