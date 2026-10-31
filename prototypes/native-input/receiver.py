@@ -20,6 +20,20 @@ STAGES = [
     ("keypad-handoff-normal", b"\x1b>", 83, b"1"),
 ]
 RESET = b"\x1b[?1l\x1b>"
+ASCII_PASTE = "# PASTE-56-ASCII"
+UNICODE_PASTE = "# PASTE-56-\u754ce\u0301\n# SECOND-56"
+UNICODE_VARIANTS = tuple(
+    UNICODE_PASTE.replace("\n", newline).encode("utf-8")
+    for newline in ("\n", "\r", "\r\n")
+)
+PASTE_STAGES = [
+    ("paste-ascii-on", b"\x1b[?2004l\x1b[?2004h", ASCII_PASTE,
+     b"\x1b[200~# PASTE-56-ASCII\x1b[201~"),
+    ("paste-ascii-off", b"\x1b[?2004l", ASCII_PASTE, b"# PASTE-56-ASCII"),
+    ("paste-unicode-on", b"\x1b[?2004h", UNICODE_PASTE,
+     tuple(b"\x1b[200~" + value + b"\x1b[201~" for value in UNICODE_VARIANTS)),
+    ("paste-unicode-off", b"\x1b[?2004l", UNICODE_PASTE, UNICODE_VARIANTS),
+]
 
 
 def publish(path, value):
@@ -48,7 +62,7 @@ def receive(fd, expected):
     return bytes(received)
 
 
-def run(expected_tty, directory):
+def run(expected_tty, directory, stages=STAGES):
     fd = sys.stdin.fileno()
     if not os.isatty(fd) or os.ttyname(fd) != expected_tty:
         raise RuntimeError("receiver is not on its expected test TTY")
@@ -58,23 +72,28 @@ def run(expected_tty, directory):
     report = {"status": "FAIL", "stages": [], "tty": expected_tty}
     try:
         tty.setraw(fd)
-        for index, (name, modes, key_code, expected) in enumerate(STAGES):
+        for index, (name, modes, action, expected) in enumerate(stages):
+            variants = (expected,) if isinstance(expected, bytes) else expected
             sys.stdout.buffer.write(modes)
             sys.stdout.buffer.flush()
             publish(directory / f"ready-{index}.json", {
-                "stage": name, "key_code": key_code, "tty": expected_tty,
+                "stage": name, "tty": expected_tty,
+                **({"key_code": action} if isinstance(action, int) else {"paste_text": action}),
             })
-            received = receive(fd, expected)
-            matched = received == expected
+            received = receive(fd, variants[0])
+            matched = received in variants
             report["stages"].append({
-                "stage": name, "expected_hex": expected.hex(),
+                "stage": name, "expected_hex": variants[0].hex(),
                 "matched": matched, "received_length": len(received),
+                "matched_expected_hex": received.hex() if matched else None,
             })
             if not matched:
-                raise RuntimeError(f"{name}: native key did not match the expected bytes; unexpected contents not recorded")
+                raise RuntimeError(f"{name}: native input did not match the expected bytes; unexpected contents not recorded")
         report["status"] = "PASS"
     finally:
         sys.stdout.buffer.write(RESET)
+        if any(isinstance(stage[2], str) for stage in stages):
+            sys.stdout.buffer.write(b"\x1b[?2004l")
         sys.stdout.buffer.flush()
         termios.tcsetattr(fd, termios.TCSANOW, saved)
         publish(directory / "result.json", report)
@@ -84,8 +103,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-tty", required=True)
     parser.add_argument("--report-dir", type=Path, required=True)
+    parser.add_argument("--suite", choices=["keys", "paste", "vscode"], default="keys")
     args = parser.parse_args()
-    run(args.expected_tty, args.report_dir)
+    expected_tty = os.ttyname(sys.stdin.fileno()) if args.expected_tty == "self" else args.expected_tty
+    stages = {"keys": STAGES, "paste": PASTE_STAGES, "vscode": STAGES + PASTE_STAGES}
+    run(expected_tty, args.report_dir, stages[args.suite])
 
 
 if __name__ == "__main__":

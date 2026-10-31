@@ -1,0 +1,9 @@
+{
+  "status": "FAIL",
+  "manual_splash_readiness_confirmed": true,
+  "error": "AXFocusedUIElement was missing after terminal creation; no native input or clipboard writes performed",
+  "ownership": {
+    "pid": 4990,
+    "marker": "CLIMON2-56-VSCODE-c56-so8w1eg9"
+  }
+}

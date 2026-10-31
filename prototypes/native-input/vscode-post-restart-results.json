@@ -1,0 +1,9 @@
+{
+  "status": "FAIL",
+  "error": "native automation failed: 973:1089: execution error: System Events got an error: Can\u2019t get menu bar item \"Terminal\" of menu bar 1 of application process \"Code\". (-1728)",
+  "ownership": {
+    "pid": 3597,
+    "marker": "CLIMON2-56-VSCODE-c56-5gqkzxya"
+  },
+  "launch_log_retained": "c56-5gqkzxya-launch.log"
+}

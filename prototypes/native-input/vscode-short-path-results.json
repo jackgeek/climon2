@@ -1,0 +1,4 @@
+{
+  "status": "FAIL",
+  "error": "Command '['/usr/local/bin/code', '--version']' timed out after 10 seconds"
+}

@@ -1,0 +1,8 @@
+{
+  "status": "FAIL",
+  "error": "Owned VS Code exited during startup: 1",
+  "ownership": {
+    "pid": 46938,
+    "marker": "CLIMON2-56-VSCODE-wr_oefj2"
+  }
+}

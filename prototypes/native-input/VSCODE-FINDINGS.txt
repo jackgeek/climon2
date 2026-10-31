@@ -1,0 +1,91 @@
+THROWAWAY #56: VS Code native-input qualification is BLOCKED.
+No passing native VS Code input result, production change or host approval.
+
+Scope
+  Developer confirmed cursor/keypad, standalone mode-handoff and ASCII/
+  multiline Unicode paste ON/OFF seams. Separately authorized isolated test
+  windows/profiles, synthetic clipboard overwrite/native Paste and each retry.
+  Existing Terminal.app paste evidence was accepted for reuse, not rerun.
+  After power loss/restart the developer explicitly requested another attempt.
+
+Environment and observations
+  Installed VS Code 1.144.0; macOS native Code/System Events, Python stdlib.
+  Default extensions disabled, shell integration/persistent terminal sessions
+  disabled, accessibility explicitly on, fixture-only terminal profile.
+  Test source remains outside the production workspace modules.
+
+  vscode-first-results.json: singular AppleScript process-existence lookup
+  threw before the GUI process registered. An exact-PID list lookup reproduced
+  the absence without throwing and replaced it; ownership guards remain.
+  vscode-results.json: native Code exited 1 before window creation.
+  vscode-diagnostic-results.json: retained diagnostic showed IPC socket path
+  exceeded 103 characters. Scratch profile moved to short private /tmp/c56-*.
+  Removing optional startup flags was not sufficient and is not claimed as
+  the root-cause fix.
+  vscode-short-path-results.json: after restart, CLI version query timed out
+  before GUI launch. Installed Info.plist now supplies the version without
+  invoking the CLI.
+  vscode-post-restart-results.json: owned window appeared, but Terminal menu
+  was not ready. Bounded menu readiness was added before opening the terminal.
+  Its launch log also showed access to ~/.vscode-shared despite --user-data-dir.
+  The developer was informed immediately; exact shared-storage effects remain
+  unverified, and no direct read/restore of that storage was attempted.
+  Installed app source exposed --shared-data-dir plus agent-data path options.
+  With separate approval those were redirected into the disposable test root.
+  vscode-isolated-results.json: corrected launch reached the terminal, but
+  AXFocusedUIElement was missing. The terminal-focus guard failed BEFORE any
+  key, native Paste or clipboard overwrite. This is the remaining blocker.
+  No fallback input injection or weakened focus guard was used.
+  vscode-manual-splash-results.json: developer requested a retry with manual
+  splash dismissal. A fresh isolated instance paused before terminal creation;
+  developer confirmed readiness. The same missing focused-element failure
+  occurred afterward, before input or clipboard use. Splash dismissal did
+  not resolve this observer blocker.
+
+  Latest log verified shared application storage under /tmp/c56-*/shared,
+  not the default shared path. This is observed storage isolation, not a
+  whole-application security or all-writes isolation audit.
+  Latest owned root process absent after cleanup (exact PID 4271). Temporary
+  profiles/workspaces were removed. Root termination alone is not proof that
+  every helper process has exited; no broad process kill was used.
+
+Test seam
+  Receiver includes independent expected key bytes and exact known paste
+  samples, permitting only LF/CR/CRLF variants with exact UTF-8 otherwise.
+  Successful match reports retain known expected bytes; unexpected contents
+  are not logged. No actual native VS Code input reached these assertions.
+  Receiver may have enabled modes in the owned terminal before the focus
+  failure. Closing the disposable instance does not prove original-mode
+  restoration or production cleanup. No user terminal was targeted.
+
+Reproduction
+  Offline from prototypes/native-input:
+    python3 -m unittest -v
+    python3 -m py_compile receiver.py vscode.py
+  Three PTY tests pass; syntax and diff whitespace checks pass.
+  No new mutation, CRAP, duplication, release or full-workspace pass claimed.
+
+  Native command ONLY with fresh explicit isolated-window and clipboard
+  permission and available macOS automation:
+    python3 vscode.py --permission-confirmed --clipboard-permission-confirmed
+  Currently expected to stop at the native focus-observer seam if unchanged.
+  Do not treat a generated report/checkpoint as permission to bypass the guard.
+  Raw diagnostic logs are retained locally under ignored artifacts, not
+  published. Sanitized findings and failure reports contain no user text.
+
+Action log
+  Reused accepted Terminal.app paste evidence instead of repeating clipboard
+  work; confirmed VS Code permissions/seams; saw the paste receiver test fail
+  for missing suite support before implementation; added minimal known-variant
+  matching and retained cursor/keypad behavior; isolated source on a throwaway
+  branch; attempted native qualification and retained failures; corrected
+  demonstrated startup problems with explicit retry permissions; surfaced
+  unintended shared-storage access and redirected supported paths; retried
+  after restart; stopped at missing focused-element evidence rather than
+  weakening the safety guard; checked owned-root cleanup and offline tests.
+
+Remaining
+  Establish a reliable owned-terminal focus oracle (or obtain a separately
+  approved human-driven test), then execute actual native input assertions.
+  Existing native host/engine/protocol acceptance remains open. Permission
+  to attempt tests is not human acceptance of a qualification result.

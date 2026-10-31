@@ -1,0 +1,9 @@
+{
+  "status": "FAIL",
+  "error": "Owned VS Code exited during startup: 1",
+  "ownership": {
+    "pid": 47305,
+    "marker": "CLIMON2-56-VSCODE-ri68jb0z"
+  },
+  "launch_log_retained": "CLIMON2-56-VSCODE-ri68jb0z-launch.log"
+}

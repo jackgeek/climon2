@@ -1,0 +1,9 @@
+{
+  "status": "FAIL",
+  "error": "native automation failed: 1063:1074: execution error: Can\u2019t get description of missing value. (-1728)",
+  "ownership": {
+    "pid": 4271,
+    "marker": "CLIMON2-56-VSCODE-c56-gxc92zw6"
+  },
+  "launch_log_retained": "c56-gxc92zw6-launch.log"
+}

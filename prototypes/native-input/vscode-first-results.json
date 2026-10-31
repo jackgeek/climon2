@@ -1,0 +1,4 @@
+{
+  "status": "FAIL",
+  "error": "native automation failed: 62:111: execution error: Can\u2019t get application process whose unix id = 46646. (-1728)"
+}
