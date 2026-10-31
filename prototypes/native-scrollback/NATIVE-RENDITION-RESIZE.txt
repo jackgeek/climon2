@@ -1,0 +1,123 @@
+THROWAWAY #52 - visible AX layout / native resize evidence, 2026-10-31.
+This qualifies the stated accessibility-box observations, NOT raster appearance,
+blue rendition, a supported host profile, or production/release integration.
+
+Permission and isolation:
+  This executing session reconfirmed the bounded scope: only existing window
+  258, /dev/ttys008, unique CLIMON2-52-NATIVE-TEST marker, one tab, idle at entry.
+  Known synthetic fixture replay, owned focus/scroll/selection, synthetic-range
+  accessibility geometry/style reads, and 24 -> 20 -> 32 -> 24 columns at six
+  rows were authorized. No clipboard operation, screenshot, profile/font change,
+  host-mode query, other-window control, or new window occurred.
+  Existing marker/TTY/single-tab/main/focus guards precede native actions.
+  The typed bridge checks the active app and exact current focused-window title.
+  Full derived titles are fetched live, not used as stable owned identity.
+
+Measured host and tools:
+  macOS 26.7.1 (25G241), Terminal.app 2.15 (470.2).
+  Basic; MesloLGS-NF-Regular 11. These are observed settings, not pristine-profile
+  or general Terminal.app support claims. Retention settings were unchanged.
+  Python 3.9.6; Apple Swift 6.3.3; Rust 1.96.0.
+  No packages/tools were installed. One Cargo job/test thread and Swift job.
+
+Capability result:
+  AXStringForRange, AXBoundsForRange, AXLineForIndex, AXReplaceRangeWithText,
+  AXRangeForPosition, AXRangeForIndex, AXRangeForLine were advertised.
+  AXReplaceRangeWithText was NEVER called. No native text was edited through AX.
+  AXAttributedStringForRange was not advertised. Its actual bounded lookup
+  returned -25213 (parameterizedAttributeUnsupported) at every checkpoint.
+  Blue U+754C rendition is therefore UNQUALIFIED, not silently inferred from
+  text presence, serializer SGR, or native character-box width.
+
+Independent native observations:
+  The observer locates and selects the latest known logical fixture block:
+    HARD-A, soft text, wide/combining text, HARD-Z, in that source-defined order.
+  It exports only known synthetic-range indices/boxes, capability/status facts,
+  clipping viewport geometry, synthetic counters, and approved host metadata.
+  Native per-UTF-16-unit AX bounds are the measurements, not unicode-width or
+  Alacritty model output. The ASCII reference width/height are measured from
+  HARD-A. Expected fixture relationships are then checked against native boxes.
+  Bounded scrollbar bisection uses actual native range/viewport rectangles,
+  not expected text widths. Both clipping containment and AXVisibleCharacterRange
+  must confirm visibility before any layout result is accepted.
+
+  Actual size   Soft rows   ASCII box   U+754C box   e / combining box
+  24x6          2           7x15        14x15        same 7x15 rectangle
+  20x6          2           7x15        14x15        same 7x15 rectangle
+  32x6          1           7x15        14x15        same 7x15 rectangle
+  24x6          2           7x15        14x15        same 7x15 rectangle
+
+  Dimensions are screen points, NOT pixels. Every printable ASCII unit has
+  the expected native row/column position. At 24, soft wrapping occurs after
+  24 ASCII cells; at 20, after 20; at 32, all 28 occupy one row. HARD-A/HARD-Z
+  occupy distinct rows, regardless of soft reflow. Logical range selection
+  preserves hard newlines and the original decomposed Unicode sequence.
+  Hard sentinel copies stayed 3/3 across all four checkpoints. The old
+  SAVED-SENTINEL was absent (count 0); this run does not requalify its preservation.
+  Duplicate synthetic fixture deliveries are expected under #49's full resend.
+
+Boundary:
+  These checks establish visible native accessibility character-box geometry
+  and hard/soft-row relationships for this fixture and profile. AX boxes do not
+  prove actual glyph outlines, clipping/painting correctness, foreground color,
+  or visual font rendering. Reports deliberately keep physical_geometry_qualified
+  and rendition_qualified false, while naming accessibility_layout_verified.
+  No image observer was authorized. A different independently validated style/
+  appearance observer would need separate permission; changing acceptance policy
+  is a decision for the driving session, not made by this experiment.
+
+Failures and corrections, not hidden passes:
+  1. An initial entry guard compared the complete title prefix with the marker.
+     It stopped before focus/replay/resize. Separate read-only diagnostic
+     permission established marker/TTY/one-tab/idle/24x6/Basic all matched.
+     Marker containment, as in the existing guarded helper, fixes that oracle.
+  2. Before fresh replay, the known Unicode range was absent: wrongSelection.
+     This stopped range observation; no unrelated text was substituted/exported.
+  3. After one normal replay, AX returned 14/7/shared boxes while the range was
+     offscreen. Selection alone did not scroll it into view. The document frame
+     is not the clipping viewport. Scrolling to 0.98 still left it offscreen;
+     0.99 brought it into view with AXVisibleCharacterRange agreement. These
+     discovery readings were not counted as the final four-width qualification.
+  4. The first full driver replay timed out at visible-normal readiness while
+     the viewport remained scrolled. No 20/32 resize happened. Guarded cleanup
+     restored 24x6/Basic/idle/bottom. The delivered hard counters advanced to 2.
+     A failing mocked real-call-order regression required scrolling to bottom
+     BEFORE write/readiness. This fixes the root cause, not the timeout budget.
+  5. Reading the existing sample source corrected the initially assumed block
+     order: Unicode precedes HARD-Z. Correct fixture-order layout tests went red
+     before the observer was corrected. No serializer/product behavior changed.
+  6. The same complete native command then passed all four actual sizes with
+     visible native unit boxes. Its third total normal delivery produced the
+     3/3 counts in terminal-app-rendition-resize-results.json.
+
+Automated checks and reproduction:
+  New offline cases reject wrong identity/idle/tab count, missing range/target,
+  unsupported-as-pass, API errors, actual-size mismatch, offscreen geometry,
+  incorrect wide/combining/soft positions, and exercise ordered resize/cleanup
+  on mid-sequence and final-checkpoint failures. They also reproduce scrolled
+  readiness. Native code is never called by the offline runner.
+  Final existing runner: 10 Rust + 38 Python runtime tests; formatting/Clippy
+  and diff whitespace checks passed. Swift bridge compiled with one job.
+  Quality executables crapper/mutator/dryer were not on this session's PATH.
+  No CRAP/zero-surviving-mutant acceptance is claimed for this throwaway observer.
+
+  From the isolated prototype worktree, bounded offline baseline:
+    bash prototypes/native-scrollback/run.sh
+  From prototypes/native-scrollback, after explicit owned-window permissions:
+    swiftc -j 1 select_range.swift -o artifacts/select-range
+    python3 rendition.py --permission-confirmed --window-id AUTHORIZED_ID \
+      --tty /dev/ttysNNN --report-file artifacts/NEW-REPORT.json
+  The actual passing command used window 258, /dev/ttys008, and report path
+  artifacts/native-rendition-resize.json. Existing report files are rejected.
+  Native actions have finite waits and a 20-attempt bounded scroll search.
+  The full raw synthetic-box report is persisted outside ignored artifacts as
+  terminal-app-rendition-resize-results.json.
+
+Cleanup and outstanding decisions:
+  Final actual geometry 24x6, Basic, busy=false; viewport returned to bottom.
+  The dedicated window remains open. No long-lived helper was started.
+  Main/root CLAUDE.md user changes were preserved; all experiment work is on
+  prototype/native-scrollback-52 only. This file extends earlier findings.
+  #52 stays OPEN. Human reaction is separate from permission. Rendition/raster
+  acceptance, other hosts/profiles, modes/cursor/protocol and #45 harness work
+  remain open. No production integration or product-policy decision was made.

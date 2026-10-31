@@ -1,0 +1,2442 @@
+{
+  "checkpoints": [
+    {
+      "bounds": {
+        "rect": [
+          68,
+          61,
+          168,
+          75
+        ],
+        "status": "observed"
+      },
+      "parameterized_attributes": [
+        "AXStringForRange",
+        "AXBoundsForRange",
+        "AXLineForIndex",
+        "AXReplaceRangeWithText",
+        "AXRangeForPosition",
+        "AXRangeForIndex",
+        "AXRangeForLine"
+      ],
+      "range_verified": true,
+      "range_visible": true,
+      "style": {
+        "ax_error": -25213,
+        "status": "unsupported"
+      },
+      "target": "block",
+      "unit_bounds": [
+        {
+          "bounds": {
+            "rect": [
+              68,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 0
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 1
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 2
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 3
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 4
+        },
+        {
+          "bounds": {
+            "rect": [
+              103,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 5
+        },
+        {
+          "bounds": {
+            "rect": [
+              110,
+              61,
+              126,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 6
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 7
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 8
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 9
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 10
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 11
+        },
+        {
+          "bounds": {
+            "rect": [
+              103,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 12
+        },
+        {
+          "bounds": {
+            "rect": [
+              110,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 13
+        },
+        {
+          "bounds": {
+            "rect": [
+              117,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 14
+        },
+        {
+          "bounds": {
+            "rect": [
+              124,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 15
+        },
+        {
+          "bounds": {
+            "rect": [
+              131,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 16
+        },
+        {
+          "bounds": {
+            "rect": [
+              138,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 17
+        },
+        {
+          "bounds": {
+            "rect": [
+              145,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 18
+        },
+        {
+          "bounds": {
+            "rect": [
+              152,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 19
+        },
+        {
+          "bounds": {
+            "rect": [
+              159,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 20
+        },
+        {
+          "bounds": {
+            "rect": [
+              166,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 21
+        },
+        {
+          "bounds": {
+            "rect": [
+              173,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 22
+        },
+        {
+          "bounds": {
+            "rect": [
+              180,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 23
+        },
+        {
+          "bounds": {
+            "rect": [
+              187,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 24
+        },
+        {
+          "bounds": {
+            "rect": [
+              194,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 25
+        },
+        {
+          "bounds": {
+            "rect": [
+              201,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 26
+        },
+        {
+          "bounds": {
+            "rect": [
+              208,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 27
+        },
+        {
+          "bounds": {
+            "rect": [
+              215,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 28
+        },
+        {
+          "bounds": {
+            "rect": [
+              222,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 29
+        },
+        {
+          "bounds": {
+            "rect": [
+              229,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 30
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 31
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 32
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 33
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 34
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              91,
+              140,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 35
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              106,
+              14,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 36
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              106,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 37
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              106,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 38
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              106,
+              147,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 39
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              121,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 40
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              121,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 41
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              121,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 42
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              121,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 43
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              121,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 44
+        },
+        {
+          "bounds": {
+            "rect": [
+              103,
+              121,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 45
+        }
+      ],
+      "utf16_length": 46,
+      "viewport_rect": [
+        58,
+        40,
+        188,
+        106
+      ],
+      "actual_geometry": "24,6",
+      "logical_range_verified": true,
+      "physical_geometry_qualified": false,
+      "rendition_qualified": false,
+      "boundary": "AX range data is not independently qualified glyph/cell or color fidelity",
+      "layout": {
+        "accessibility_layout_verified": true,
+        "ascii_cell_points": 7,
+        "row_points": 15,
+        "soft_physical_rows": 2,
+        "hard_lines_distinct": true,
+        "wide_cell_ratio": 2,
+        "combining_box_shared": true,
+        "boundary": "visible native AX boxes, not a raster/glyph-appearance oracle"
+      },
+      "retained_synthetic_counters": {
+        "hard_a_copies": 3,
+        "hard_z_copies": 3,
+        "saved_sentinel_copies": 0
+      }
+    },
+    {
+      "bounds": {
+        "rect": [
+          68,
+          46,
+          140,
+          75
+        ],
+        "status": "observed"
+      },
+      "parameterized_attributes": [
+        "AXStringForRange",
+        "AXBoundsForRange",
+        "AXLineForIndex",
+        "AXReplaceRangeWithText",
+        "AXRangeForPosition",
+        "AXRangeForIndex",
+        "AXRangeForLine"
+      ],
+      "range_verified": true,
+      "range_visible": true,
+      "style": {
+        "ax_error": -25213,
+        "status": "unsupported"
+      },
+      "target": "block",
+      "unit_bounds": [
+        {
+          "bounds": {
+            "rect": [
+              68,
+              46,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 0
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              46,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 1
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              46,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 2
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              46,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 3
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              46,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 4
+        },
+        {
+          "bounds": {
+            "rect": [
+              103,
+              46,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 5
+        },
+        {
+          "bounds": {
+            "rect": [
+              110,
+              46,
+              98,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 6
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 7
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 8
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 9
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 10
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 11
+        },
+        {
+          "bounds": {
+            "rect": [
+              103,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 12
+        },
+        {
+          "bounds": {
+            "rect": [
+              110,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 13
+        },
+        {
+          "bounds": {
+            "rect": [
+              117,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 14
+        },
+        {
+          "bounds": {
+            "rect": [
+              124,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 15
+        },
+        {
+          "bounds": {
+            "rect": [
+              131,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 16
+        },
+        {
+          "bounds": {
+            "rect": [
+              138,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 17
+        },
+        {
+          "bounds": {
+            "rect": [
+              145,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 18
+        },
+        {
+          "bounds": {
+            "rect": [
+              152,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 19
+        },
+        {
+          "bounds": {
+            "rect": [
+              159,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 20
+        },
+        {
+          "bounds": {
+            "rect": [
+              166,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 21
+        },
+        {
+          "bounds": {
+            "rect": [
+              173,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 22
+        },
+        {
+          "bounds": {
+            "rect": [
+              180,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 23
+        },
+        {
+          "bounds": {
+            "rect": [
+              187,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 24
+        },
+        {
+          "bounds": {
+            "rect": [
+              194,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 25
+        },
+        {
+          "bounds": {
+            "rect": [
+              201,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 26
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 27
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 28
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 29
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 30
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 31
+        },
+        {
+          "bounds": {
+            "rect": [
+              103,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 32
+        },
+        {
+          "bounds": {
+            "rect": [
+              110,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 33
+        },
+        {
+          "bounds": {
+            "rect": [
+              117,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 34
+        },
+        {
+          "bounds": {
+            "rect": [
+              124,
+              76,
+              84,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 35
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              91,
+              14,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 36
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 37
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 38
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              91,
+              119,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 39
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              106,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 40
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              106,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 41
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              106,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 42
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              106,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 43
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              106,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 44
+        },
+        {
+          "bounds": {
+            "rect": [
+              103,
+              106,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 45
+        }
+      ],
+      "utf16_length": 46,
+      "viewport_rect": [
+        58,
+        40,
+        160,
+        106
+      ],
+      "actual_geometry": "20,6",
+      "logical_range_verified": true,
+      "physical_geometry_qualified": false,
+      "rendition_qualified": false,
+      "boundary": "AX range data is not independently qualified glyph/cell or color fidelity",
+      "layout": {
+        "accessibility_layout_verified": true,
+        "ascii_cell_points": 7,
+        "row_points": 15,
+        "soft_physical_rows": 2,
+        "hard_lines_distinct": true,
+        "wide_cell_ratio": 2,
+        "combining_box_shared": true,
+        "boundary": "visible native AX boxes, not a raster/glyph-appearance oracle"
+      },
+      "retained_synthetic_counters": {
+        "hard_a_copies": 3,
+        "hard_z_copies": 3,
+        "saved_sentinel_copies": 0
+      }
+    },
+    {
+      "bounds": {
+        "rect": [
+          68,
+          46,
+          224,
+          60
+        ],
+        "status": "observed"
+      },
+      "parameterized_attributes": [
+        "AXStringForRange",
+        "AXBoundsForRange",
+        "AXLineForIndex",
+        "AXReplaceRangeWithText",
+        "AXRangeForPosition",
+        "AXRangeForIndex",
+        "AXRangeForLine"
+      ],
+      "range_verified": true,
+      "range_visible": true,
+      "style": {
+        "ax_error": -25213,
+        "status": "unsupported"
+      },
+      "target": "block",
+      "unit_bounds": [
+        {
+          "bounds": {
+            "rect": [
+              68,
+              46,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 0
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              46,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 1
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              46,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 2
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              46,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 3
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              46,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 4
+        },
+        {
+          "bounds": {
+            "rect": [
+              103,
+              46,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 5
+        },
+        {
+          "bounds": {
+            "rect": [
+              110,
+              46,
+              182,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 6
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 7
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 8
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 9
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 10
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 11
+        },
+        {
+          "bounds": {
+            "rect": [
+              103,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 12
+        },
+        {
+          "bounds": {
+            "rect": [
+              110,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 13
+        },
+        {
+          "bounds": {
+            "rect": [
+              117,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 14
+        },
+        {
+          "bounds": {
+            "rect": [
+              124,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 15
+        },
+        {
+          "bounds": {
+            "rect": [
+              131,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 16
+        },
+        {
+          "bounds": {
+            "rect": [
+              138,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 17
+        },
+        {
+          "bounds": {
+            "rect": [
+              145,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 18
+        },
+        {
+          "bounds": {
+            "rect": [
+              152,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 19
+        },
+        {
+          "bounds": {
+            "rect": [
+              159,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 20
+        },
+        {
+          "bounds": {
+            "rect": [
+              166,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 21
+        },
+        {
+          "bounds": {
+            "rect": [
+              173,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 22
+        },
+        {
+          "bounds": {
+            "rect": [
+              180,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 23
+        },
+        {
+          "bounds": {
+            "rect": [
+              187,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 24
+        },
+        {
+          "bounds": {
+            "rect": [
+              194,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 25
+        },
+        {
+          "bounds": {
+            "rect": [
+              201,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 26
+        },
+        {
+          "bounds": {
+            "rect": [
+              208,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 27
+        },
+        {
+          "bounds": {
+            "rect": [
+              215,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 28
+        },
+        {
+          "bounds": {
+            "rect": [
+              222,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 29
+        },
+        {
+          "bounds": {
+            "rect": [
+              229,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 30
+        },
+        {
+          "bounds": {
+            "rect": [
+              236,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 31
+        },
+        {
+          "bounds": {
+            "rect": [
+              243,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 32
+        },
+        {
+          "bounds": {
+            "rect": [
+              250,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 33
+        },
+        {
+          "bounds": {
+            "rect": [
+              257,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 34
+        },
+        {
+          "bounds": {
+            "rect": [
+              264,
+              61,
+              28,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 35
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              76,
+              14,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 36
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 37
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 38
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              76,
+              203,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 39
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 40
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 41
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 42
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 43
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 44
+        },
+        {
+          "bounds": {
+            "rect": [
+              103,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 45
+        }
+      ],
+      "utf16_length": 46,
+      "viewport_rect": [
+        58,
+        40,
+        244,
+        106
+      ],
+      "actual_geometry": "32,6",
+      "logical_range_verified": true,
+      "physical_geometry_qualified": false,
+      "rendition_qualified": false,
+      "boundary": "AX range data is not independently qualified glyph/cell or color fidelity",
+      "layout": {
+        "accessibility_layout_verified": true,
+        "ascii_cell_points": 7,
+        "row_points": 15,
+        "soft_physical_rows": 1,
+        "hard_lines_distinct": true,
+        "wide_cell_ratio": 2,
+        "combining_box_shared": true,
+        "boundary": "visible native AX boxes, not a raster/glyph-appearance oracle"
+      },
+      "retained_synthetic_counters": {
+        "hard_a_copies": 3,
+        "hard_z_copies": 3,
+        "saved_sentinel_copies": 0
+      }
+    },
+    {
+      "bounds": {
+        "rect": [
+          68,
+          61,
+          168,
+          75
+        ],
+        "status": "observed"
+      },
+      "parameterized_attributes": [
+        "AXStringForRange",
+        "AXBoundsForRange",
+        "AXLineForIndex",
+        "AXReplaceRangeWithText",
+        "AXRangeForPosition",
+        "AXRangeForIndex",
+        "AXRangeForLine"
+      ],
+      "range_verified": true,
+      "range_visible": true,
+      "style": {
+        "ax_error": -25213,
+        "status": "unsupported"
+      },
+      "target": "block",
+      "unit_bounds": [
+        {
+          "bounds": {
+            "rect": [
+              68,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 0
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 1
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 2
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 3
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 4
+        },
+        {
+          "bounds": {
+            "rect": [
+              103,
+              61,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 5
+        },
+        {
+          "bounds": {
+            "rect": [
+              110,
+              61,
+              126,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 6
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 7
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 8
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 9
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 10
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 11
+        },
+        {
+          "bounds": {
+            "rect": [
+              103,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 12
+        },
+        {
+          "bounds": {
+            "rect": [
+              110,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 13
+        },
+        {
+          "bounds": {
+            "rect": [
+              117,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 14
+        },
+        {
+          "bounds": {
+            "rect": [
+              124,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 15
+        },
+        {
+          "bounds": {
+            "rect": [
+              131,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 16
+        },
+        {
+          "bounds": {
+            "rect": [
+              138,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 17
+        },
+        {
+          "bounds": {
+            "rect": [
+              145,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 18
+        },
+        {
+          "bounds": {
+            "rect": [
+              152,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 19
+        },
+        {
+          "bounds": {
+            "rect": [
+              159,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 20
+        },
+        {
+          "bounds": {
+            "rect": [
+              166,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 21
+        },
+        {
+          "bounds": {
+            "rect": [
+              173,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 22
+        },
+        {
+          "bounds": {
+            "rect": [
+              180,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 23
+        },
+        {
+          "bounds": {
+            "rect": [
+              187,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 24
+        },
+        {
+          "bounds": {
+            "rect": [
+              194,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 25
+        },
+        {
+          "bounds": {
+            "rect": [
+              201,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 26
+        },
+        {
+          "bounds": {
+            "rect": [
+              208,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 27
+        },
+        {
+          "bounds": {
+            "rect": [
+              215,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 28
+        },
+        {
+          "bounds": {
+            "rect": [
+              222,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 29
+        },
+        {
+          "bounds": {
+            "rect": [
+              229,
+              76,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 30
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 31
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 32
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 33
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              91,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 34
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              91,
+              140,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 35
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              106,
+              14,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 36
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              106,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 37
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              106,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 38
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              106,
+              147,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 39
+        },
+        {
+          "bounds": {
+            "rect": [
+              68,
+              121,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 40
+        },
+        {
+          "bounds": {
+            "rect": [
+              75,
+              121,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 41
+        },
+        {
+          "bounds": {
+            "rect": [
+              82,
+              121,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 42
+        },
+        {
+          "bounds": {
+            "rect": [
+              89,
+              121,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 43
+        },
+        {
+          "bounds": {
+            "rect": [
+              96,
+              121,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 44
+        },
+        {
+          "bounds": {
+            "rect": [
+              103,
+              121,
+              7,
+              15
+            ],
+            "status": "observed"
+          },
+          "utf16_index": 45
+        }
+      ],
+      "utf16_length": 46,
+      "viewport_rect": [
+        58,
+        40,
+        188,
+        106
+      ],
+      "actual_geometry": "24,6",
+      "logical_range_verified": true,
+      "physical_geometry_qualified": false,
+      "rendition_qualified": false,
+      "boundary": "AX range data is not independently qualified glyph/cell or color fidelity",
+      "layout": {
+        "accessibility_layout_verified": true,
+        "ascii_cell_points": 7,
+        "row_points": 15,
+        "soft_physical_rows": 2,
+        "hard_lines_distinct": true,
+        "wide_cell_ratio": 2,
+        "combining_box_shared": true,
+        "boundary": "visible native AX boxes, not a raster/glyph-appearance oracle"
+      },
+      "retained_synthetic_counters": {
+        "hard_a_copies": 3,
+        "hard_z_copies": 3,
+        "saved_sentinel_copies": 0
+      }
+    }
+  ],
+  "cleanup": {
+    "geometry": "24,6",
+    "profile": "Basic",
+    "busy": "false"
+  },
+  "host": "2.15|Basic|MesloLGS-NF-Regular|11"
+}

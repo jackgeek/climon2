@@ -57,6 +57,10 @@ Resize/reflow checkpoints:
 
 Model oracle: alacritty_terminal 0.26.0, test-only, not a shipped-engine selection.
 Native Terminal.app partial evidence: NATIVE-FINDINGS.txt.
+Visible native AX-box/24 -> 20 -> 32 -> 24 evidence: NATIVE-RENDITION-RESIZE.txt.
+This does not qualify raster glyph appearance or blue rendition; attributed-text
+lookup is unsupported in the measured host. Use rendition.py only with separately
+confirmed owned-window scope, not the historical 12-column native request.
 Subsequent native copy/ordinary-input evidence: NATIVE-GESTURES.txt.
 Subsequent bounded native row-capacity evidence: NATIVE-CAPACITY.txt.
 Subsequent native paste/mode-query evidence: NATIVE-PASTE.txt.

@@ -1,6 +1,9 @@
 THROWAWAY #52 - PARTIAL native Terminal.app evidence, 2026-10-31.
 This is NOT complete native-host qualification or release acceptance.
 Subsequent native copy/input evidence is recorded in NATIVE-GESTURES.txt.
+Subsequent visible AX-box/reflow evidence at actual 24/20/32/24 is recorded in
+NATIVE-RENDITION-RESIZE.txt. Attributed-text lookup is unsupported; raster glyph
+appearance and blue rendition remain unqualified.
 
 Permission and isolation:
   The developer first authorized one new dedicated Terminal.app window, then

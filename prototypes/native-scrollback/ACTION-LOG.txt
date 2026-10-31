@@ -179,3 +179,50 @@ Permissioned multiline / Unicode native paste:
     site scan only, not CRAP/zero-survivor acceptance. Native result, prior
     receiver diagnostic and action log persist on the isolated branch, linked
     from #52. Production is unchanged; host/release/HITL gaps remain explicit.
+
+Permissioned rendition / native resize experiment (session 618f2314):
+49. Read the explicit handoff, root guidance, domain vocabulary/ADRs and current
+    #52/#49 amendment. Located the registered isolated worktree; both clean local
+    tip and remote tip matched 988c29b. Preserved unrelated root CLAUDE.md edits.
+    Loaded prototype/ub-mode; used native fixture format rather than an HTML UI.
+50. Reconfirmed the exact dedicated-window permission in this session, including
+    no clipboard/screenshots/profile changes/queries/new or other-window control.
+    Bounded offline baseline passed 10 Rust + 30 Python tests, fmt/Clippy.
+51. Initial full-title-prefix entry check stopped before GUI/replay/resize.
+    Loaded diagnosing-bugs and obtained separate metadata-only permission.
+    Marker/TTY/one-tab/idle/Basic/24x6 matched; the derived title was not stable.
+52. Wrote failing new observer tests, then implemented marker-based entry and
+    explicit unsupported/error statuses; unsupported data never become a pass.
+    Reused the typed selection bridge and native GUI guards, without clipboard.
+53. First known Unicode lookup stopped with wrongSelection before fresh replay.
+    Replayed only approved normal fixture bytes; observed parameterized range
+    bounds supported, attributed text unsupported (-25213). Exported no raw text.
+54. Selected only the known range. Selection did not scroll it into view.
+    Inspected owned scrolling capabilities and document/viewport geometry.
+    Tested scrollbar 0.98 (still offscreen), then 0.99 (visible). Native bounds
+    shifted with scrolling; offscreen readings were not layout qualification.
+55. Added failing layout/actual-size/ordered-resize cleanup tests, then the
+    bounded native driver. It selects the latest synthetic block and uses
+    actual bounds/viewport bisection plus visible-range agreement as its gate.
+56. First full native run timed out at fixture readiness, before 20/32 resizing.
+    Guarded finally cleanup verified Basic/24x6/idle/bottom. Restricted synthetic
+    counters showed delivery had advanced to 2/2, distinguishing viewport from
+    output delivery failure. No timeout or exception was suppressed.
+57. Read the existing serializer sample: Unicode comes before HARD-Z. Corrected
+    the test fixture order; observed its geometry oracle fail before fixing it.
+    Added a failing scrolled-readiness call-order regression and moved owned
+    scrolling to bottom before replay. No serializer/product change was needed.
+58. Re-ran the complete native command. Actual 24 -> 20 -> 32 -> 24 at six rows
+    passed visible native AX per-unit geometry, hard/soft-row and decomposed
+    Unicode selection checks. Soft rows were 2/2/1/2; ASCII 7x15 points, wide
+    14x15, base/combining same 7x15 rectangle. Hard counters stayed 3/3.
+59. Kept attributed-text/color unsupported at all checkpoints; reports retain
+    false raster/appearance qualification. No image observer or policy change.
+    Confirmed final Basic/24x6/idle/bottom; no long-lived helper exists.
+60. Ran final existing runner: 10 Rust + 38 Python tests, fmt/Clippy, whitespace;
+    built Swift with one job. Recorded exact host/tool versions. Quality tools
+    were absent from PATH; no install or CRAP/mutation acceptance claim.
+61. Persisted full synthetic native boxes, commands, outcomes, failures and
+    boundaries on the prototype branch. Prepared immutable commit/push and #52
+    publication; keep #52 open and return rendition/raster observer decisions
+    to the driving session instead of approving a product-policy relaxation.
