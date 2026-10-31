@@ -91,6 +91,26 @@ Post-query window disappearance
   visible and explicitly approved closure. AX focus still classified as missing.
   This resolves premature runner teardown, not the native-input focus blocker.
 
+Inspector handler dispatch
+  A synthetic AppleScript probe reproduced error -1708 ("Can't continue
+  safeText") when calling the inspector's local handler unqualified inside
+  tell application "System Events". The same call qualified with "my" returned
+  the expected synthetic text. Corrected the inspector's handler calls; query
+  errors now have a separate query-error classification rather than appearing
+  as missing focus, unavailable metadata is explicit, and rows are separated.
+  No focus guard or host setting was changed.
+  A retained automated regression executes the actual inspector role-conversion
+  statement and handler in System Events with synthetic AXGroup metadata. It
+  failed with -1708 when the original unqualified call was reinstated and
+  passed after restoring "my"; this checks dispatch, not native terminal focus.
+
+  The corrected native AX-only run returned actual AXGroup/AXButton roles and
+  false AXFocused flags instead of blank metadata. AXFocusedUIElement still
+  classified as missing, not query-error. The developer confirmed the window
+  and Bash prompt remained visible after querying, then approved cleanup.
+  No native key or clipboard action occurred. This fixes an inspector defect
+  but does not establish terminal focus or native input support.
+
 Test seam
   Receiver includes independent expected key bytes and exact known paste
   samples, permitting only LF/CR/CRLF variants with exact UTF-8 otherwise.
@@ -104,7 +124,7 @@ Reproduction
   Offline from prototypes/native-input:
     python3 -m unittest -v
     python3 -m py_compile receiver.py vscode.py
-  Ten PTY/profile/automation-script tests pass; syntax and diff whitespace
+  Eleven PTY/profile/automation-script tests pass; syntax and diff whitespace
   checks pass.
   No new mutation, CRAP, duplication, release or full-workspace pass claimed.
 
@@ -135,6 +155,9 @@ Action log
   Reproduced immediate post-query teardown, added a tested post-query inspection
   gate, and verified the actual VS Code window remained visible after querying.
   Closed the disposable window only after the developer approved cleanup.
+  Reproduced the inspector's AppleScript handler-dispatch error with synthetic
+  text, qualified local calls, and verified nonblank metadata in the isolated
+  native retry. Focus remained missing; retained the fail-closed input guard.
 
 Fix and verification
   Inspection-only mode now opens a plain Bash prompt so the developer can
@@ -142,7 +165,7 @@ Fix and verification
   receiver as a Bash child and leaves Bash open afterward. Explicit manual
   focus confirmation uses a 600-second receiver deadline; default runs retain
   eight seconds. Terminal-focused automation no longer raises/refocuses the
-  app before checking AX focus, and missing AX focus fails closed. Ten offline
+  app before checking AX focus, and missing AX focus fails closed. Eleven offline
   tests pass, including PTY execution through Bash, focus-deadline behavior,
   prompt persistence and focus-guard script generation. These changes do not
   establish native VS Code support.

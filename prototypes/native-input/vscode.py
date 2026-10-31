@@ -95,14 +95,16 @@ def inspect_ax_tree(pid, marker):
             if focusedElement is not missing value then
                 set focusedClassification to "other"
                 try
-                    if (safeText(role of focusedElement)) contains "Terminal" then
+                    if (my safeText(role of focusedElement)) contains "Terminal" then
                         set focusedClassification to "terminal"
                     end if
                 end try
                 try
-                    if (safeText(description of focusedElement)) contains "Terminal" then
+                    if (my safeText(description of focusedElement)) contains "Terminal" then
                         set focusedClassification to "terminal"
                     end if
+                on error errorText number errorNumber
+                    set focusedClassification to "query-error:" & errorNumber
                 end try
             end if
         end try
@@ -112,25 +114,27 @@ def inspect_ax_tree(pid, marker):
         if total > 500 then set total to 500
         repeat with index from 1 to total
             set elementRef to item index of elements
-            set elementRole to ""
-            set elementSubrole to ""
-            set elementFocused to ""
+            set elementRole to "unavailable"
+            set elementSubrole to "unavailable"
+            set elementFocused to "unavailable"
             set elementAttributes to ""
             try
-                set elementRole to safeText(role of elementRef)
+                set elementRole to my safeText(role of elementRef)
             end try
             try
-                set elementSubrole to safeText(subrole of elementRef)
+                set elementSubrole to my safeText(subrole of elementRef)
             end try
             try
                 set elementAttributes to (name of attributes of elementRef) as text
             end try
             try
-                set elementFocused to safeText(value of attribute "AXFocused" of elementRef)
+                set elementFocused to my safeText(value of attribute "AXFocused" of elementRef)
             end try
             set end of resultLines to (elementRole & "|" & elementSubrole & "|" & elementFocused & "|" & elementAttributes)
         end repeat
-        return "window|" & ((name of attributes of ownedWindow) as text) & linefeed & (resultLines as text)
+        set windowAttributes to (name of attributes of ownedWindow) as text
+        set AppleScript's text item delimiters to linefeed
+        return "window|" & windowAttributes & linefeed & (resultLines as text)
     end tell
     """)
 

@@ -263,6 +263,27 @@ class ReceiverTests(unittest.TestCase):
         self.assertIn('"focused|" & focusedClassification', source)
         self.assertNotIn("value of focusedElement", source)
 
+    def test_ax_role_conversion_runs_in_system_events_context(self):
+        with patch("vscode.script", side_effect=lambda value: value):
+            source = inspect_ax_tree(1234, "CLIMON2-56-TEST")
+        handler = source.split('tell application "System Events"', 1)[0]
+        conversion = next(
+            line for line in source.splitlines()
+            if line.strip().startswith("set elementRole to") and "safeText" in line
+        )
+        probe = handler + f'''
+        tell application "System Events"
+            set elementRef to {{role:"AXGroup"}}
+            {conversion}
+            return elementRole
+        end tell
+        '''
+        result = subprocess.run(
+            ["osascript", "-"], input=probe, text=True, capture_output=True, timeout=5,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "AXGroup")
+
 
 if __name__ == "__main__":
     unittest.main()
