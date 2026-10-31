@@ -55,6 +55,7 @@ Resize/reflow checkpoints:
 
 Model oracle: alacritty_terminal 0.26.0, test-only, not a shipped-engine selection.
 Native Terminal.app partial evidence: NATIVE-FINDINGS.txt.
+Subsequent native copy/ordinary-input evidence: NATIVE-GESTURES.txt.
 iTerm2 / VS Code versions/settings/results: NOT MEASURED.
 Underlying-normal capture, full modes/cursor, unknown initial host state,
 daemon/wire ordering, non-controller privacy, coarse truncation notices, and
@@ -72,6 +73,8 @@ Release acceptance:
   hard/soft wraps after native resize, normal/alternate return and native
   selection/copy need permissioned host-specific observers. Those observers
   are test infrastructure, not a presumed product integration.
-  A real PTY round trip must additionally establish normal input during native
-  scrolling, with no client browsing/input gate. Visual/manual-only findings
-  cannot satisfy the automated feature gate. #45 must consume these gaps.
+  NATIVE-GESTURES.txt records one real ordinary-input/scrolling round trip and
+  exact native copy oracles for the dedicated Terminal.app profile. This is
+  standalone feasibility evidence, not client/daemon feature implementation.
+  Visual/manual-only findings cannot satisfy the automated feature gate.
+  #45 must consume the demonstrated oracles and remaining profile/host gaps.

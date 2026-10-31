@@ -11,5 +11,5 @@ cargo test --locked --quiet -j 1 -- --test-threads=1
 printf 'Clippy\n'
 cargo clippy --locked --quiet -j 1 --all-targets -- -D warnings
 printf 'Offline native-observer unit tests (no Apple events or TTY access)\n'
-python3 -m unittest -q test_terminal_app
+python3 -m unittest -q test_terminal_app test_interactive_input test_terminal_gui
 printf 'PASS: offline checks only; these do not execute or qualify native hosts\n'

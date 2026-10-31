@@ -1,5 +1,6 @@
 THROWAWAY #52 - PARTIAL native Terminal.app evidence, 2026-10-31.
 This is NOT complete native-host qualification or release acceptance.
+Subsequent native copy/input evidence is recorded in NATIVE-GESTURES.txt.
 
 Permission and isolation:
   The developer first authorized one new dedicated Terminal.app window, then
@@ -63,7 +64,7 @@ Evidence chronology:
   The final strengthened replay increments counts from four to five/six/seven;
   terminal-app-results.txt records those stage observations. Repeated native
   copies are expected under the approved #49 full-resend amendment.
-  results.txt is OFFLINE validation: 10 Rust runtime tests, 6 Python observer
+  results.txt is OFFLINE validation: 10 Rust runtime tests, 10 Python observer/PTY
   tests, formatting and Clippy. Its runner emits no Apple events or native bytes.
   History fragments are restricted to exact known fixture lines; a regression
   rejects unrelated numeric shell lines from the export.
@@ -82,9 +83,10 @@ Reproduction boundaries:
   Existing artifact directories are not overwritten by the generator.
 
 Still outstanding:
-  - Actual native scrolling, selection/copy, visual rendition and physical
-    hard/soft-wrap/Unicode fidelity, including native resize/copy.
-  - Real application input while scrolled, and actual paste/mode alignment.
+  - Subsequent native scrolling, selection/copy and ordinary fixture input are
+    covered by the narrow oracles in NATIVE-GESTURES.txt. Visual rendition and
+    physical Unicode-width/resize fidelity remain unqualified.
+  - Actual paste/mode alignment and daemon/client integration.
   - Known unchanged native retention settings and a bounded native eviction
     oracle. This small run did not reach native capacity.
   - Full supported profiles and automated native acceptance, not manual-only

@@ -1,0 +1,7 @@
+{
+  "native_scrollbar_before_input": 0.0,
+  "input_received_while_scrolled": true,
+  "canonical_mode": true,
+  "echo_enabled": true,
+  "boundary": "ordinary fixture input after synthetic restoration; no daemon/client integration"
+}

@@ -1,0 +1,100 @@
+THROWAWAY #52 - native Terminal.app copy/input evidence, 2026-10-31.
+This extends NATIVE-FINDINGS.txt; it does NOT qualify the complete release.
+
+Scope and permission:
+  Same dedicated Terminal.app tab, 24 columns x 6 rows, Basic profile,
+  MesloLGS-NF-Regular 11, Terminal 2.15 (470.2), macOS 26.7.1 (25G241).
+  Developer explicitly allowed a synthetic interactive fixture, scoped GUI
+  scrolling/selection/copy, and overwriting/reading copied synthetic text.
+  Previous clipboard contents were never read or saved. Before each Copy,
+  the clipboard was replaced with a known pending sentinel, then the copied
+  result was checked for an exact synthetic match; unexpected data is not logged.
+  Only the dedicated tab got a unique custom title; profile settings were not
+  changed. Every GUI action checks that tab's TTY, unique title, single-tab
+  window and focused/main status. No other windows were controlled.
+
+Human-granted setup:
+  Accessibility was initially disabled. The developer ran a one-off wizard
+  and granted permission manually in macOS. Availability was rechecked from the
+  actual Copilot session before GUI actions. The wizard wrote no credentials,
+  environment files or settings; its unchanged library was syntax-checked.
+  Inherited template ShellCheck findings were not mistaken for a clean lint
+  result or fixed as unrelated repository work.
+  Accessibility is opt-in TEST infrastructure, not a product dependency.
+
+Actual native Copy results (terminal-app-copy-results.txt):
+  - "SOFT01234567890123456789tail": exact clipboard match, no inserted newline
+    at the supplied soft-wrap boundary.
+  - "HARD-A\n": exact clipboard match including the hard newline.
+  - U+754C + e + U+0301: exact clipboard match, preserving combining text.
+  The strings were selected from the native text area containing the previously
+  restored parsed-cell history, not injected directly into the clipboard as
+  the desired result. Native Cmd+C performed the copy.
+  This checks ordinary plain-text native copy and logical wrap provenance for
+  these fixtures. It does not measure glyph cell width, appearance, colors,
+  rich-text flavors, native retention capacity or arbitrary host settings.
+
+Range bridge finding:
+  Setting AXSelectedTextRange through the System Events integer-list path did
+  not produce the required selection; the exact-selection oracle went red.
+  A typed native AXValue(CFRange) bridge selects and verifies the known target
+  before Copy, and all three actual native clipboard checks pass.
+  This is observer plumbing, not a native Copy limitation or engine change.
+  The Swift helper uses only the currently focused, uniquely identified test
+  window's children. It reads no clipboard and emits no selected/raw text.
+  It validates CF element types and errors explicitly. UTF-16 range offsets
+  are tested with preceding supplementary/combining text.
+  The GUI adapter waits boundedly for the owned window to become main/focused;
+  a wrong or missing target fails before a keyboard action.
+
+Actual ordinary-input result (terminal-app-input-results.txt):
+  The dedicated tab ran interactive_input.py on its real PTY.
+  The fixture changed no terminal input modes and waited for one known line.
+  Its input flags were canonical and echoed.
+  After READY, the native scrollbar was moved away from the bottom and measured
+  at 0.0. System Events then typed INPUT-52-SYNTHETIC and Return through Terminal.
+  The waiting application received that exact line and emitted ACCEPTED.
+  Its closed report was observed only after the new ACCEPTED marker, avoiding
+  a partial-file or stale-ack success.
+  terminal-app-interactive-report.json contains only the known synthetic line
+  and mode/match flags. Unexpected input fails without recording its contents.
+  The fixture exited; the dedicated tab's busy property was false afterward.
+  It remains open at 24 x 6. No raw-input or custom browsing gate was added.
+  Host jump-to-bottom behavior belongs to the host; the assertion is that
+  native scrolling did not prevent ordinary input reaching the application.
+
+Bounds/tool provenance:
+  Python 3.9.6 standard library; Apple Swift 6.3.3, installed Command Line Tools.
+  No new dependencies or automation packages were installed.
+  Swift bridge builds with one job. The interactive fixture emits 32 finite
+  marker rows, accepts at most 64 input characters and times out after 60 s.
+  Observer checkpoints have finite waits. Offline validation: 10 Rust runtime
+  tests + 10 Python observer/PTY tests, formatting and Clippy. No mutation run.
+
+Reproduce only with fresh, explicit native permissions:
+  Generate artifacts using MANIFEST.txt, then from this prototype directory:
+    swiftc -j 1 select_range.swift -o artifacts/select-range
+  Set the new authorized tab's custom title to CLIMON2-52-NATIVE-TEST and record
+  its TTY/window ID; run prior restore stages as documented.
+  Do not interact with other windows or clipboard writers during a GUI check.
+  Replace placeholders with ONLY that authorized tab:
+    python3 terminal_gui.py --permission-confirmed --clipboard-permission-confirmed \
+      --window-id NEW_WINDOW_ID --tty /dev/ttysNNN --check soft
+  Repeat with --check hard and --check wide.
+  For ordinary input (no clipboard access):
+    python3 terminal_gui.py --permission-confirmed \
+      --window-id NEW_WINDOW_ID --tty /dev/ttysNNN --check input
+  Input report paths must be new; an existing report is not overwritten.
+  These commands are opt-in native tests. The offline runner calls none of them.
+
+Still outstanding for #52:
+  Native capacity/eviction with known unchanged retention settings; visual
+  rendition, physical wide-character/resize fidelity and native mouse/gesture
+  variants; paste/mode alignment; iTerm2 and VS Code isolated native runs;
+  full profile qualification and automated release-harness integration (#45).
+  The earlier 12-column request still clamped to 20; it is not a passing
+  12-column reflow test. No new host or release support approval is inferred.
+  The actual client/daemon/protocol input/restoration boundaries remain #48,
+  not behavior implemented by this standalone feasibility fixture.
+  Human reaction to this new stage is pending, not inferred from permission
+  or the preceding stage's "Looks reasonable" reaction. #52 remains open.

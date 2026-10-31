@@ -1,0 +1,15 @@
+{
+  "target": "soft",
+  "native_selection": true,
+  "clipboard_exact_match": true
+}
+{
+  "target": "hard",
+  "native_selection": true,
+  "clipboard_exact_match": true
+}
+{
+  "target": "wide",
+  "native_selection": true,
+  "clipboard_exact_match": true
+}

@@ -49,3 +49,26 @@ Permissioned native stage:
     10 Rust + 6 Python runtime tests, formatting/Clippy.
     Recorded exact OS/Terminal build, partial findings, chronology and remaining
     native/automated release gates. The dedicated tab is left open for HITL.
+
+Permissioned native copy/input stage:
+16. Obtained explicit permission for an ordinary interactive fixture, scoped
+    GUI automation and replacing/reading synthetic clipboard text. Checked the
+    dedicated tab identity and found Accessibility disabled.
+17. Supplied an ephemeral, unchanged-library wizard for the human-only macOS
+    permission step. Guarded against its screen/history-clearing behavior.
+    Rechecked from this actual session after the developer completed setup.
+18. Added a failing READY-marker PTY regression, then bounded ordinary canonical
+    input with synthetic-only reporting and unexpected-input rejection. The
+    fixture changes no input modes and has a 60-second idle timeout.
+19. The System Events range-selection path failed the actual exact-selection
+    oracle. Removed that range assignment and used a typed native CFRange
+    bridge; no renderer, client emulator or product integration was added.
+20. Verified actual native Cmd+C results for restored soft text, hard newline
+    and wide/combining text, with known-pending clipboard sentinels and no
+    capture of previous/unexpected clipboard contents.
+21. Measured the native scrollbar at 0.0 before GUI typing; the waiting real
+    PTY application accepted the exact synthetic line under canonical/echoed
+    input. Confirmed it exited and the tab remains at 24 x 6, busy false.
+22. Recorded native copy/input reports and tools, and retained the remaining
+    capacity/style/resize/other-host/release-harness boundaries. All evidence
+    remains on the throwaway prototype branch, not production.

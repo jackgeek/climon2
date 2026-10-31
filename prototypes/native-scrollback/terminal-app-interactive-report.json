@@ -1,0 +1,7 @@
+{
+  "input_matched": true,
+  "canonical_mode": true,
+  "echo_enabled": true,
+  "received": "INPUT-52-SYNTHETIC",
+  "boundary": "ordinary input; native scrolling must be established by the host observer"
+}
