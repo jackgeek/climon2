@@ -35,3 +35,13 @@ No source/dependency vulnerability audit, release pin approval, production
 resource/failure qualification, or native visible-latency claim is made.
 The deterministic timer probes service an explicit deadline without sleeping;
 they do not prove a real event loop schedules or displays within that deadline.
+
+mutation_test.py is verification infrastructure, not production input timing.
+It permits 120 seconds for compilation and separately bounds each compiled
+test executable at 5 seconds, retaining per-source-variant logs. Cargo's JSON
+artifact list supplies the executables; no-run compilation is not counted as
+execution. The full runner also checks documentation tests (currently zero).
+Runtime timeouts are reported
+separately from assertion kills and compiler-invalid mutations; no compiler
+timeout counts as behavioral evidence. This avoids letting a fresh-worker
+compilation budget also authorize a long-running, allocating infinite mutant.

@@ -20,13 +20,21 @@ The driving developer confirmed:
   input, discarding the old payload. The cleanup effect here is not a wire design
   or proof of daemon behaviour, especially after abrupt client loss.
 
-This snapshot demonstrates the unresolved Escape takeover ambiguity:
-while viewing, a single Escape might be the start of a fragmented paste marker.
-Waiting preserves paste safety but does not activate a standalone Escape key.
-The observation test documents that limitation rather than passing it as support.
+The ambiguity snapshot is preserved at commit
+6f8bfd58790a359426dc0e8d6f347f5f3ab0c6d0: while viewing, a single Escape might
+be the start of a fragmented paste marker. Waiting preserved paste safety but
+did not activate a standalone Escape key.
+
+The driving developer explicitly resolved this by excluding Ctrl+[ only from
+take_control_key for this release. The codec rejects it with EscapeTakeControl;
+all ASCII control prefixes, including Ctrl+[, remain supported. Default Ctrl+T
+and Control-Space takeover remain available. The confirmed #47 amendment requires this
+configuration error before startup/raw mode; no production config integration
+is supplied by this prototype.
 
 Codec rules:
 - Prefix/doubling/unknown suffix and configurable takeover follow #41/#47.
+  The approved Ctrl+[ take-control exclusion is the sole new binding restriction.
 - Recognised paste markers and contents are forwarded unchanged only when
   admitted, with client actions disabled within the recognised region.
 - Transitions discard pending old actions, retain enough marker provenance to
@@ -46,3 +54,19 @@ Unmarked paste cannot be distinguished from typing. Legacy paste delimiters have
 no payload escaping; bytes after a recognised end marker are outside the region.
 No guarantee about arbitrary physical clipboard payloads or native sanitisation
 is established by the synthetic marker fixtures.
+
+Action log for the confirmed second stage:
+1. Preserved the 26-test ambiguity snapshot in 6f8bfd58790a359426dc0e8d6f347f5f3ab0c6d0.
+2. Implemented only the approved Escape-takeover guard and retained binding rules.
+3. Added the literal-prefix-before-paste case and its retained-input budget check.
+4. Re-ran formatting, Clippy, the 71-method check and all 27 runtime tests.
+5. Refreshed measured LCOV/crapper evidence: maximum CRAP 5.
+6. Separated compilation from per-executable mutation execution; discarded
+   aggregate-budget false kills rather than reporting them as test coverage.
+7. Removed three unobservable decisions exposed by genuine survivors, without
+   inventing a chunk-packing requirement or tests of inaccessible buffer values.
+8. Re-ran the full runner/coverage/complexity and all remaining 61 mutation sites.
+   Final outcomes and exact tool pins are in mutation-results.txt.
+9. Prepared immutable prototype publication and only already-confirmed issue
+   amendments. Production integration/native qualification/human reaction remain
+   outside this stage; no new important product decision was made unattended.

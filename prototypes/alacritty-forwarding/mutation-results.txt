@@ -1,9 +1,159 @@
-Final mutation verification: 14 unique source variants, including passing baseline.
-11 mutants killed by failing assertions; 2 invalid tuple-field mutants rejected by rustc.
-0 survivors; do not describe compiler rejection as behavioral test evidence.
-Used --mutate-all --no-coverage --max-workers 1 --timeout-factor 1000.
-Earlier default-timeout runs were discarded: cached baselines underestimated fresh-worker compilation.
+Final current-source mutation verification: 61 selected sites plus passing baseline.
+54 assertion kills; 6 compiler-invalid mutations; 1 runtime timeout; 0 survivors.
+No compiler timeouts or unclassified outcomes.
+Sources: input.rs 48 sites, lib.rs 9, timing.rs 4.
+Baseline SHA-256 of concatenated input.rs, lib.rs, timing.rs:
+4c633052bf8e3772ef6d45447457815e49111ef2061add4bc5f5a7d94ae5f7c1
+
+Compiler-invalid sites:
+input.rs:186,187,204,205: mutated match patterns lose exhaustiveness.
+lib.rs:47: two invalid .0 -> .1 tuple-field mutations.
+Runtime timeout:
+input.rs:176: pending_len -= 1 mutated to pending_len -= 0; scanner loses
+progress. Its compiled codec test executable exceeds the separate 5s budget.
+Variant SHA-256:
+def35af6beac86575802007e506ec813cd5c69c992c8fec31a1934dc50719dbe
+These 7 outcomes are NOT assertion-based behavioral coverage.
+Macro-expanded Handler methods are not exhaustively mutation-tested.
+
+Reproduce from this prototype directory after bash run.sh:
+mutator --root "$PWD" --mutate-all --no-coverage --max-workers 1 \
+  --timeout-factor 1000 --test-command 'python3 mutation_test.py' probe/src
+mutation_test.py records per-variant logs in
+.cache/legacy-mutation-evidence-checked/<source-sha256>.txt.
+It separately budgets compilation (120s) and each test executable (5s).
+
+Discarded runs: cached baselines underestimated fresh-worker compilation;
+an initial oversized combined budget was stopped; a 5s aggregate runtime
+budget falsely classified slow executable startup as kills. Per-executable
+reverification exposed 3 genuine survivors in the earlier 65-site source:
+unobserved initial buffer contents, a redundant post-detach clear, and a
+coalescing boundary that changed only unconstrained application chunk grouping.
+Removed those unobservable decisions, using array Default, removing the dead
+write, and applying the declared output bound once through slice::chunks.
+Retained behavioral tests pass; all 61 remaining sites were re-executed.
+The earlier 13-site first-stage report is superseded, not current evidence.
+
 mutator pin: a5a0cb803b66e0cdb8bf471b3b08af701d424a41
 crapper pin: 6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d
 cargo-llvm-cov: 0.9.1; complexity results use measured LCOV coverage.
 dryer: unavailable (command not found); no duplication-tool pass claimed.
+
+Full final mutator output follows:
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/Observed.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/View.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/input/Bindings.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/input/Codec.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/timing.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/timing/FirstBeginTimeout.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/Observed.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/View.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/input/Bindings.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/input/Codec.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/timing.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/timing/FirstBeginTimeout.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/Observed.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/View.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/input/Bindings.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/input/Codec.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/timing.edn
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/.metrics/mutate/alacritty_embedding_probe/timing/FirstBeginTimeout.edn
+KILLED    probe/src/input.rs:39 > -> >=
+KILLED    probe/src/input.rs:42 && -> ||
+KILLED    probe/src/input.rs:42 == -> !=
+KILLED    probe/src/input.rs:45 == -> !=
+KILLED    probe/src/input.rs:81 false -> true
+KILLED    probe/src/input.rs:83 0 -> 1
+KILLED    probe/src/input.rs:84 0 -> 1
+KILLED    probe/src/input.rs:93 > -> >=
+KILLED    probe/src/input.rs:116 == -> !=
+KILLED    probe/src/input.rs:116 true -> false
+KILLED    probe/src/input.rs:117 false -> true
+KILLED    probe/src/input.rs:125 + -> -
+KILLED    probe/src/input.rs:130 0 -> 1
+KILLED    probe/src/input.rs:135 1 -> 0
+KILLED    probe/src/input.rs:142 0 -> 1
+KILLED    probe/src/input.rs:143 && -> ||
+KILLED    probe/src/input.rs:143 == -> !=
+KILLED    probe/src/input.rs:147 != -> ==
+KILLED    probe/src/input.rs:147 0 -> 1
+KILLED    probe/src/input.rs:150 == -> !=
+KILLED    probe/src/input.rs:151 != -> ==
+KILLED    probe/src/input.rs:151 0 -> 1
+KILLED    probe/src/input.rs:152 0 -> 1
+KILLED    probe/src/input.rs:153 0 -> 1
+KILLED    probe/src/input.rs:174 0 -> 1
+KILLED    probe/src/input.rs:175 1 -> 0
+KILLED    probe/src/input.rs:175 0 -> 1
+KILLED    probe/src/input.rs:176 1 -> 0
+KILLED    probe/src/input.rs:177 == -> !=
+KILLED    probe/src/input.rs:177 0 -> 1
+KILLED    probe/src/input.rs:180 1 -> 0
+KILLED    probe/src/input.rs:186 true -> false
+KILLED    probe/src/input.rs:187 false -> true
+KILLED    probe/src/input.rs:196 == -> !=
+KILLED    probe/src/input.rs:196 && -> ||
+KILLED    probe/src/input.rs:196 delete !
+KILLED    probe/src/input.rs:197 == -> !=
+KILLED    probe/src/input.rs:197 true -> false
+KILLED    probe/src/input.rs:204 true -> false
+KILLED    probe/src/input.rs:205 false -> true
+KILLED    probe/src/input.rs:213 == -> !=
+KILLED    probe/src/input.rs:215 == -> !=
+KILLED    probe/src/input.rs:215 && -> ||
+KILLED    probe/src/input.rs:215 == -> !=
+KILLED    probe/src/input.rs:223 == -> !=
+KILLED    probe/src/input.rs:224 true -> false
+KILLED    probe/src/input.rs:226 == -> !=
+KILLED    probe/src/input.rs:234 != -> ==
+KILLED    probe/src/lib.rs:39 delete -
+KILLED    probe/src/lib.rs:41 0 -> 1
+KILLED    probe/src/lib.rs:47 0 -> 1
+KILLED    probe/src/lib.rs:47 0 -> 1
+KILLED    probe/src/lib.rs:71 && -> ||
+KILLED    probe/src/lib.rs:71 delete !
+KILLED    probe/src/lib.rs:159 == -> !=
+KILLED    probe/src/lib.rs:160 && -> ||
+KILLED    probe/src/lib.rs:160 delete !
+KILLED    probe/src/timing.rs:22 + -> -
+KILLED    probe/src/timing.rs:43 >= -> >
+KILLED    probe/src/timing.rs:46 true -> false
+KILLED    probe/src/timing.rs:48 false -> true
+Function                Namespace                                             Killed  Survived  Uncovered  Sites   Score
+------------------------------------------------------------------------------------------------------------------------
+bound_application       alacritty_embedding_probe::input::Codec                    0         0          0      0    n/a
+clear_timeout           alacritty_embedding_probe::timing::FirstBeginTimeout       0         0          0      0    n/a
+deadline                alacritty_embedding_probe::timing::FirstBeginTimeout       0         0          0      0    n/a
+default                 alacritty_embedding_probe::input::Bindings                 0         0          0      0    n/a
+expected_marker         alacritty_embedding_probe::input::Codec                    0         0          0      0    n/a
+is_alternate            alacritty_embedding_probe::Observed                        0         0          0      0    n/a
+new                     alacritty_embedding_probe::Observed                        0         0          0      0    n/a
+pending_timeout         alacritty_embedding_probe::timing::FirstBeginTimeout       0         0          0      0    n/a
+reset_state             alacritty_embedding_probe::Observed                        0         0          0      0    n/a
+text                    alacritty_embedding_probe::View                            0         0          0      0    n/a
+unset_private_mode      alacritty_embedding_probe::Observed                        0         0          0      0    n/a
+application             alacritty_embedding_probe::input::Codec                    1         0          0      1 100.0%
+begin_paste             alacritty_embedding_probe::input::Codec                    5         0          0      5 100.0%
+buffered_bytes          alacritty_embedding_probe::input::Codec                    1         0          0      1 100.0%
+consume                 alacritty_embedding_probe::input::Codec                    2         0          0      2 100.0%
+doubled_escape          alacritty_embedding_probe::input::Codec                    3         0          0      3 100.0%
+drain_pending           alacritty_embedding_probe::input::Codec                    7         0          0      7 100.0%
+feed                    alacritty_embedding_probe::input::Codec                    1         0          0      1 100.0%
+flush_if_due            alacritty_embedding_probe::timing                          3         0          0      3 100.0%
+new                     alacritty_embedding_probe::input::Bindings                 4         0          0      4 100.0%
+new                     alacritty_embedding_probe::input::Codec                    3         0          0      3 100.0%
+observe_normal_exposure alacritty_embedding_probe::Observed                        2         0          0      2 100.0%
+ordinary                alacritty_embedding_probe::input::Codec                    4         0          0      4 100.0%
+paste_marker            alacritty_embedding_probe::input::Codec                    2         0          0      2 100.0%
+plain                   alacritty_embedding_probe::input::Codec                    2         0          0      2 100.0%
+prefixed                alacritty_embedding_probe::input::Codec                    3         0          0      3 100.0%
+release_pending         alacritty_embedding_probe::input::Codec                    7         0          0      7 100.0%
+set_private_mode        alacritty_embedding_probe::Observed                        3         0          0      3 100.0%
+set_timeout             alacritty_embedding_probe::timing::FirstBeginTimeout       1         0          0      1 100.0%
+transition              alacritty_embedding_probe::input::Codec                    3         0          0      3 100.0%
+view                    alacritty_embedding_probe                                  4         0          0      4 100.0%
+------------------------------------------------------------------------------------------------------------------------
+Total                                                                             61         0          0     61  100.0%

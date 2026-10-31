@@ -4,8 +4,23 @@ Languages: rust
 
 Function                       Namespace                                              CC    Cov%     CRAP
 ---------------------------------------------------------------------------------------------------------
+new                            alacritty_embedding_probe::input::Bindings              5 100.0%      5.0
+drain_pending                  alacritty_embedding_probe::input::Codec                 5 100.0%      5.0
+feed                           alacritty_embedding_probe::input::Codec                 5 100.0%      5.0
+ordinary                       alacritty_embedding_probe::input::Codec                 5 100.0%      5.0
+begin_paste                    alacritty_embedding_probe::input::Codec                 4 100.0%      4.0
+paste_marker                   alacritty_embedding_probe::input::Codec                 4 100.0%      4.0
+plain                          alacritty_embedding_probe::input::Codec                 4 100.0%      4.0
 observe_normal_exposure        alacritty_embedding_probe::Observed                     3 100.0%      3.0
 set_private_mode               alacritty_embedding_probe::Observed                     3 100.0%      3.0
+application                    alacritty_embedding_probe::input::Codec                 3 100.0%      3.0
+bound_application              alacritty_embedding_probe::input::Codec                 3 100.0%      3.0
+prefixed                       alacritty_embedding_probe::input::Codec                 3 100.0%      3.0
+transition                     alacritty_embedding_probe::input::Codec                 3 100.0%      3.0
+consume                        alacritty_embedding_probe::input::Codec                 2 100.0%      2.0
+doubled_escape                 alacritty_embedding_probe::input::Codec                 2 100.0%      2.0
+expected_marker                alacritty_embedding_probe::input::Codec                 2 100.0%      2.0
+release_pending                alacritty_embedding_probe::input::Codec                 2 100.0%      2.0
 flush_if_due                   alacritty_embedding_probe::timing                       2 100.0%      2.0
 view                           alacritty_embedding_probe                               1 100.0%      1.0
 is_alternate                   alacritty_embedding_probe::Observed                     1 100.0%      1.0
@@ -13,7 +28,11 @@ new                            alacritty_embedding_probe::Observed              
 reset_state                    alacritty_embedding_probe::Observed                     1 100.0%      1.0
 unset_private_mode             alacritty_embedding_probe::Observed                     1 100.0%      1.0
 text                           alacritty_embedding_probe::View                         1 100.0%      1.0
+default                        alacritty_embedding_probe::input::Bindings              1 100.0%      1.0
+buffered_bytes                 alacritty_embedding_probe::input::Codec                 1 100.0%      1.0
+new                            alacritty_embedding_probe::input::Codec                 1 100.0%      1.0
 clear_timeout                  alacritty_embedding_probe::timing::FirstBeginTimeout    1 100.0%      1.0
 deadline                       alacritty_embedding_probe::timing::FirstBeginTimeout    1 100.0%      1.0
 pending_timeout                alacritty_embedding_probe::timing::FirstBeginTimeout    1 100.0%      1.0
 set_timeout                    alacritty_embedding_probe::timing::FirstBeginTimeout    1 100.0%      1.0
+Wrote /Users/jackallan/.copilot/session-state/2d990d4e-8510-43bc-8c79-8a24180cf5f8/files/alacritty-forwarding-prototype/prototypes/alacritty-forwarding/probe/.metrics/crap.edn

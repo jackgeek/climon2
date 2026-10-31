@@ -33,4 +33,4 @@ python3 check_surface.py
 cargo fmt --manifest-path probe/Cargo.toml -- --check
 cargo clippy --quiet --locked --manifest-path probe/Cargo.toml --all-targets -- -D warnings
 cargo test --quiet --locked --manifest-path probe/Cargo.toml
-echo "PASS: API probes; native rendering, input codec and host qualification remain UNPROVEN"
+echo "PASS: exercised engine/codec seams; production input/delivery and native hosts remain UNPROVEN"

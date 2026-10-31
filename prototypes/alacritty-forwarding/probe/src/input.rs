@@ -23,6 +23,7 @@ pub enum Effect {
 pub enum Error {
     InvalidBinding,
     ConflictingBindings,
+    EscapeTakeControl,
     InputTooLarge,
     Detached,
 }
@@ -40,6 +41,9 @@ impl Bindings {
         }
         if prefix.is_some() && prefix == take_control {
             return Err(Error::ConflictingBindings);
+        }
+        if take_control == Some(0x1b) {
+            return Err(Error::EscapeTakeControl);
         }
         Ok(Self {
             prefix,
@@ -75,7 +79,7 @@ impl Codec {
             state,
             pending_prefix: None,
             detached: false,
-            pending: [0; 6],
+            pending: Default::default(),
             pending_len: 0,
             stale_bytes: 0,
             paste: None,
@@ -96,7 +100,10 @@ impl Codec {
                 break;
             }
         }
-        Ok(effects)
+        Ok(effects
+            .into_iter()
+            .flat_map(Self::bound_application)
+            .collect())
     }
 
     pub fn transition(&mut self, state: State) -> Result<Vec<Effect>, Error> {
@@ -150,7 +157,6 @@ impl Codec {
             }
             self.release_pending(effects);
             if self.detached {
-                self.pending_len = 0;
                 return;
             }
         }
@@ -228,12 +234,20 @@ impl Codec {
         if self.state != State::Ready {
             return;
         }
-        if let Some(Effect::Application(pending)) = effects.last_mut()
-            && pending.len() + bytes.len() <= MAX_FEED
-        {
+        if let Some(Effect::Application(pending)) = effects.last_mut() {
             pending.extend_from_slice(bytes);
         } else {
             effects.push(Effect::Application(bytes.to_vec()));
+        }
+    }
+
+    fn bound_application(effect: Effect) -> Vec<Effect> {
+        match effect {
+            Effect::Application(bytes) => bytes
+                .chunks(MAX_FEED)
+                .map(|chunk| Effect::Application(chunk.to_vec()))
+                .collect(),
+            action => vec![action],
         }
     }
 }

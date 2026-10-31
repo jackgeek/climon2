@@ -36,6 +36,17 @@ fn recognised_paste_keeps_markers_and_never_runs_client_actions_across_any_split
 }
 
 #[test]
+fn a_pending_prefix_is_literal_before_paste_and_does_not_escape_paste_actions() {
+    let mut codec = Codec::new(Bindings::default(), State::Ready);
+    assert_eq!(codec.feed(b"\x1d\x1b[200"), Ok(vec![]));
+    assert_eq!(codec.buffered_bytes(), 6);
+    assert_eq!(
+        application_bytes(codec.feed(b"~\x1dd\x1b[201~d").unwrap()),
+        b"\x1d\x1b[200~\x1dd\x1b[201~d"
+    );
+}
+
+#[test]
 fn interrupted_paste_requests_cleanup_once_and_discards_the_stale_tail_after_readiness() {
     let mut codec = Codec::new(Bindings::default(), State::Ready);
     assert_eq!(
@@ -103,7 +114,7 @@ fn nested_prefix_unknown_suffix_and_reply_shaped_keys_are_preserved_at_every_spl
 fn all_control_prefixes_double_literally_and_paste_shields_custom_bindings() {
     let paste = b"\x1b[200~\0\x01\x02\x03\x04\x1bd\x1dd\x14\x1b[201~";
     for prefix in 0..=31 {
-        let take = (prefix + 1) % 32;
+        let take = if prefix == 0x14 { 0x15 } else { 0x14 };
         let bindings = Bindings::new(Some(prefix), Some(take)).unwrap();
         let mut codec = Codec::new(bindings, State::Ready);
         assert_eq!(codec.feed(&[prefix]), Ok(vec![]));
@@ -206,14 +217,12 @@ fn oversized_feeds_do_not_consume_pending_actions_and_long_pastes_keep_bounded_s
 }
 
 #[test]
-fn escape_takeover_remains_ambiguous_with_the_first_byte_of_a_paste_header() {
-    let bindings = Bindings::new(Some(0x1d), Some(0x1b)).unwrap();
-    let mut codec = Codec::new(bindings, State::Viewing);
-    assert_eq!(codec.feed(b"\x1b"), Ok(vec![]));
-    assert_eq!(codec.buffered_bytes(), 1);
-    assert_eq!(codec.feed(b"[200~\x1dd\x1b[201~"), Ok(vec![]));
-    // A standalone Escape cannot trigger without a later byte or an unapproved timer.
-    let mut standalone = Codec::new(bindings, State::Viewing);
-    assert_eq!(standalone.feed(b"\x1b"), Ok(vec![]));
-    assert_eq!(standalone.feed(b"x"), Ok(vec![Effect::TakeControl]));
+fn escape_takeover_is_rejected_without_excluding_escape_prefix_or_control_space() {
+    assert!(matches!(
+        Bindings::new(Some(0x1d), Some(0x1b)),
+        Err(Error::EscapeTakeControl)
+    ));
+    assert!(Bindings::new(Some(0x1b), Some(0x14)).is_ok());
+    let mut codec = Codec::new(Bindings::new(None, Some(0)).unwrap(), State::Viewing);
+    assert_eq!(codec.feed(b"\0"), Ok(vec![Effect::TakeControl]));
 }
