@@ -1,0 +1,28 @@
+THROWAWAY #52 offline preparation - 2026-10-31.
+
+1. Recovered #56's completed, remote-verified handoff instead of restarting its
+   memory-heavy mutation qualification. Human selected #52 next.
+2. Claimed #52 before writes, read #49/#51 and relevant domain/ADR guidance.
+   Applied the confirmed #49 full-resend amendment, not the stale incremental
+   catch-up wording in #52. No new product decision was made.
+3. Obtained permission for fixture construction/testing only. No terminal
+   windows, profiles, history, clipboard or OS automation were inspected or
+   controlled. Native compatibility stays UNTESTED.
+4. Created isolated branch prototype/native-scrollback-52 from main. Production
+   files/dependencies are untouched. Native evidence needs real terminal bytes,
+   so a terminal fixture is used instead of the prototype skill's HTML demo.
+5. Wrote the first preservation/seed oracle against an empty serializer and
+   observed its expected HARD-A failure. Implemented constructed printable
+   cells, finite validation and full-height append/restoration.
+6. Corrected the hand-authored soft-row fixture's digit count to the declared
+   24-column width. The independent model verifies soft-wrap/reflow, wide and
+   combining cells, styles, capacity eviction and underlying normal return.
+7. Added file-only staged artifact generation, a refusal-to-overwrite check,
+   a strict emitted-control oracle and repeated full-resend cases. Application
+   output is explicitly simulated, not a claimed real input/clipboard test.
+8. Ran formatting, all 10 runtime tests and Clippy with locked dependencies,
+   one build job and one test thread. Results are recorded in results.txt.
+   Dependencies were available offline; no installation or mutation run.
+9. Prepared immutable publication on the prototype branch only, with native,
+   engine-capture, full-mode/cursor and protocol gaps explicit. #52 remains
+   open pending HITL reactions/permission and actual host qualification.

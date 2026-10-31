@@ -1,0 +1,74 @@
+THROWAWAY #52 - offline preparation, NOT native terminal qualification.
+
+Reproduce from the repository root with Rust 1.96.0 and Cargo:
+  bash prototypes/native-scrollback/run.sh
+Generate staged bytes without writing controls to a terminal:
+  cargo run --locked --manifest-path prototypes/native-scrollback/Cargo.toml \
+    -- --write-dir /absolute/path/to/a/new/artifact-directory
+The parent directory must exist; an existing target is rejected, not overwritten.
+The serializer depends only on unicode-width, not a terminal engine.
+Alacritty is a dev-dependency used only by the offline oracle.
+
+Do not print the .ansi files into existing terminals. No permission to open or
+control native test terminals has been granted in this stage.
+
+Native test preconditions, to agree before execution:
+- A new, dedicated normal-buffer terminal with 24 columns and 6 rows.
+- No partial scroll region, pre-existing alternate program, or custom text
+  auto-reactions. Host/profile versions and settings must be recorded.
+- The fixture uses unicode-width 0.2.3 non-CJK widths (not a native capability
+  claim). Wide/combining glyph width, font and reflow remain host qualification.
+- Output ordering is staged below. No terminal resize escape is emitted.
+- Native retention settings remain unchanged. No promise against ordinary
+  capacity eviction. Small retention should expose eviction, not be called
+  destructive clearing.
+
+01-prime.ansi:
+  Add SAVED-SENTINEL and VISIBLE-0 through VISIBLE-5. Record both saved and
+  visible content before restoration. These are synthetic, non-sensitive data.
+02-normal.ansi:
+  Move the full visible viewport into native history, append five supplied
+  physical history rows, and restore NORMAL-0 through NORMAL-5.
+  HARD-A and HARD-Z are hard lines. SOFT01234567890123456789 continues into
+  "tail" without a hard newline. Blue U+754C (width 2) and e + U+0301 exercise
+  wide/combining text and rendition. Check native scroll, selection and copy.
+03-regain-full-resend.ansi:
+  Repeat the complete retained snapshot, as amended in #49. HARD-A should
+  appear twice if host capacity permits. It is not incremental catch-up.
+04-alternate.ansi:
+  Full normal/history restoration followed by ALT-0 through ALT-5 on the
+  alternate screen. Do not claim history is browsable there in every host.
+05-return-normal.ansi:
+  Leave alternate screen. Underlying NORMAL rows and retained native history
+  should return; alternate rows must not be imported as session history.
+06-application-output.ansi:
+  Simulated application output after restore. This proves output parsing only,
+  NOT continued real PTY input, paste behavior or an actual interactive shell.
+
+Resize/reflow checkpoints:
+  After stage 02, inspect 24 -> 12 -> 24 columns without new output.
+  Soft text should rejoin on widening; HARD-A/HARD-Z must stay separate.
+  Check wide-character integrity and selection/copy, including trailing blanks.
+  Resize the isolated host only after permission; files do not perform resizing.
+
+Model oracle: alacritty_terminal 0.26.0, test-only, not a shipped-engine selection.
+Native Terminal.app / iTerm2 / VS Code versions/settings/results: NOT MEASURED.
+Underlying-normal capture, full modes/cursor, unknown initial host state,
+daemon/wire ordering, non-controller privacy, coarse truncation notices, and
+native-history read/copy automation are outside this offline fixture.
+
+Amended scope:
+  #49 comment 6531016859 replaces incremental catch-up with full resend on
+  restoration/control regain and accepts duplicates. No stable history identity
+  or custom history-byte accounting is implemented here. Coarse retention
+  notices remain undecided; this fixture introduces no gap-marker policy.
+
+Release acceptance:
+  These model tests do not qualify Terminal.app, iTerm2 or VS Code. Actual host
+  versions/profiles, saved/visible history sentinels, finite-capacity outcomes,
+  hard/soft wraps after native resize, normal/alternate return and native
+  selection/copy need permissioned host-specific observers. Those observers
+  are test infrastructure, not a presumed product integration.
+  A real PTY round trip must additionally establish normal input during native
+  scrolling, with no client browsing/input gate. Visual/manual-only findings
+  cannot satisfy the automated feature gate. #45 must consume these gaps.
