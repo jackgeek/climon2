@@ -1,0 +1,35 @@
+THROWAWAY #56: public-API forwarding and screen-transition qualification.
+
+Alacritty baseline (unchanged):
+https://github.com/alacritty/alacritty/tree/bbb2cbf9470a6707b1205fbddbdb25109b14e2fd
+Apache-2.0:
+https://github.com/alacritty/alacritty/blob/bbb2cbf9470a6707b1205fbddbdb25109b14e2fd/LICENSE-APACHE
+
+The mechanical Handler signatures mirror vte 0.15.0's public interface.
+vte's downloaded source and licences are retained by Cargo's source cache.
+The exact registry checksum and all dependency versions are in probe/Cargo.lock.
+Upstream source and licences are fetched intact; no engine patch is applied.
+cursor-icon 1.2.0 is a direct dependency because Handler's public signature
+uses its CursorIcon type, which vte::ansi does not publicly re-export.
+
+FirstBeginTimeout reuses the earlier local #43 public-API feasibility probe.
+The old probe and comparative findings are not altered by this prototype.
+
+Independent expected outcomes cover ordinary text/styles, normal/alternate
+transitions, saved normal history/cursor, reset, reflow, finite/zero history,
+selected query replies and live title/bell events.
+The 23-fixture x 4-feed-size x 3-drain-mode differential matrix checks adapter
+preservation only, not engine correctness or support for every fixture feature.
+In particular, unchanged forwarding of excluded clipboard/hyperlink/extended
+keyboard actions does not authorize emitting them to a host. Events stay local.
+
+Views are cloned observations, not a second terminal model. Their full-history
+cloning/retention costs are deliberately not production-qualified.
+This prototype exposes upstream types for inspection; the eventual product
+boundary must hide them. There is no renderer, PTY, client input codec, daemon
+event loop, transport, native terminal interaction or monitor here.
+
+No source/dependency vulnerability audit, release pin approval, production
+resource/failure qualification, or native visible-latency claim is made.
+The deterministic timer probes service an explicit deadline without sleeping;
+they do not prove a real event loop schedules or displays within that deadline.

@@ -1,0 +1,12 @@
+[package]
+name = "alacritty-embedding-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+alacritty_terminal = { path = "../.cache/alacritty/alacritty_terminal", default-features = false }
+cursor-icon = "=1.2.0"
+vte = { version = "=0.15.0", default-features = false, features = ["std", "ansi"] }

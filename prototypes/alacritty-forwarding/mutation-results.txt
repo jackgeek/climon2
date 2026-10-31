@@ -1,0 +1,9 @@
+Final mutation verification: 14 unique source variants, including passing baseline.
+11 mutants killed by failing assertions; 2 invalid tuple-field mutants rejected by rustc.
+0 survivors; do not describe compiler rejection as behavioral test evidence.
+Used --mutate-all --no-coverage --max-workers 1 --timeout-factor 1000.
+Earlier default-timeout runs were discarded: cached baselines underestimated fresh-worker compilation.
+mutator pin: a5a0cb803b66e0cdb8bf471b3b08af701d424a41
+crapper pin: 6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d
+cargo-llvm-cov: 0.9.1; complexity results use measured LCOV coverage.
+dryer: unavailable (command not found); no duplication-tool pass claimed.

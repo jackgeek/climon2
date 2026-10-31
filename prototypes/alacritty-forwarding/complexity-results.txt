@@ -1,0 +1,19 @@
+CRAP Report
+===========
+Languages: rust
+
+Function                       Namespace                                              CC    Cov%     CRAP
+---------------------------------------------------------------------------------------------------------
+observe_normal_exposure        alacritty_embedding_probe::Observed                     3 100.0%      3.0
+set_private_mode               alacritty_embedding_probe::Observed                     3 100.0%      3.0
+flush_if_due                   alacritty_embedding_probe::timing                       2 100.0%      2.0
+view                           alacritty_embedding_probe                               1 100.0%      1.0
+is_alternate                   alacritty_embedding_probe::Observed                     1 100.0%      1.0
+new                            alacritty_embedding_probe::Observed                     1 100.0%      1.0
+reset_state                    alacritty_embedding_probe::Observed                     1 100.0%      1.0
+unset_private_mode             alacritty_embedding_probe::Observed                     1 100.0%      1.0
+text                           alacritty_embedding_probe::View                         1 100.0%      1.0
+clear_timeout                  alacritty_embedding_probe::timing::FirstBeginTimeout    1 100.0%      1.0
+deadline                       alacritty_embedding_probe::timing::FirstBeginTimeout    1 100.0%      1.0
+pending_timeout                alacritty_embedding_probe::timing::FirstBeginTimeout    1 100.0%      1.0
+set_timeout                    alacritty_embedding_probe::timing::FirstBeginTimeout    1 100.0%      1.0
