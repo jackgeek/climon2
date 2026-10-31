@@ -45,3 +45,10 @@ Runtime timeouts are reported
 separately from assertion kills and compiler-invalid mutations; no compiler
 timeout counts as behavioral evidence. This avoids letting a fresh-worker
 compilation budget also authorize a long-running, allocating infinite mutant.
+
+THROWAWAY #43 extension (branch prototype/alacritty-restore-osc8-43): normal
+restoration under alternate screen and OSC 8 reconstruction, still on the
+unchanged pin. Described in RESTORE-OSC8.txt. vt100 0.18.1 is a dev-dependency
+used only as an independent replay oracle; @xterm/headless 6.0.0 (host-probe/,
+npm, not vendored) is used only to replay derived bytes. hand_mutants.py is
+verification infrastructure. No engine patch, validator or parallel model.

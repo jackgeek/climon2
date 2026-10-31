@@ -1,0 +1,159 @@
+THROWAWAY #43 (cross-link #56): normal-screen restoration under alternate
+screen, and safe OSC 8 reconstruction, on UNCHANGED Alacritty.
+
+Pin: alacritty_terminal bbb2cbf9470a6707b1205fbddbdb25109b14e2fd, vte 0.15.0.
+Base: prototype/alacritty-forwarding-56 @ 63256f62958d7a40b63a698087d33bea4cb3fc40.
+Fixed requirements honoured: no engine patch, no parallel parser/model, no
+in-band host queries, kitty_keyboard false, full retained-history resend.
+Citations below are file:line at the pin (Alacritty: alacritty_terminal/src,
+vte: vte-0.15.0/src).
+
+VERDICTS
+========
+Goal 1 (restore normal + history while on alternate, then return):
+  PASS at the exercised seam for restore OUTPUT fidelity, WITH ONE ENGINE-STATE
+  PERTURBATION that needs a user decision (see Finding 1).
+Goal 2 (safe OSC 8 reconstruction without a climon2 validator):
+  BLOCKED. The engine retains C1 (U+0080..U+009F) and DEL in hyperlink id/URI;
+  reconstructed OSC 8 carries them; xterm.js (VS Code's parser) executes the
+  injected C1 CSI. Safety needs a climon2-written check (Finding 2).
+
+GOAL 1: MECHANISM (probe/src/restore.rs)
+========================================
+Term keeps the hidden normal grid private (inactive_grid). Public seams used:
+Term::swap_alt (term/mod.rs:714-735), Term::grid/grid_mut, Grid: Clone.
+restore(term) while on alternate:
+  1. clone the active ALTERNATE grid (alternate history is always 0);
+  2. swap_alt(): alternate->normal path does not touch grid content;
+  3. serialise grid() = the true normal grid + retained history + cursor;
+  4. swap_alt(): normal->alternate path resets the inactive grid and assigns
+     cursors (mod.rs:717-723);
+  5. *grid_mut() = clone, reinstating the alternate grid exactly.
+  Output: normal history+screen (CRLF/soft-wrap continuity, default pen at
+  each line break), normal cursor, ESC[?1049h, alternate rows (CUP + EL2 each),
+  alternate saved cursor + ESC 7, alternate cursor and pen, then modes.
+Kitty keyboard stacks swap twice and cancel; selection is cleared and the
+grid is marked fully damaged (renderer cost only).
+Resource cost: one alternate-grid clone (screen_lines x columns x 24-byte Cell
+plus any zero-width/hyperlink Arc payloads) per restore, released on return;
+output is O((history + lines) x columns). The normal grid/history is NEVER
+cloned. No state is retained between restores.
+
+Oracle independence: restored bytes are fed to a FRESH vt100 0.18.1 Parser
+(separate screen model; dev-dependency only, used only as the oracle).
+Every expected cell/attribute/cursor/mode is hand-written in the test. Note
+vt100 parses with the vte crate too, so parser-level bugs shared with vte are
+not independently covered. Expected engine behaviour was checked against xterm
+semantics (1049h does not home the cursor; DECSC per buffer).
+
+Exercised (probe/tests/restore.rs, 12 tests):
+  - history limit 0 and 2, normal+history then alternate then normal on exit;
+  - alternate saved cursor and pen (with and without DECSC);
+  - normal reflowed while hidden (resize during alternate) with wrap continuity;
+  - modes, colours (named/bright/indexed/RGB), SGR flags, wide + combining;
+  - normal-only restore; reattach to a host already on alternate;
+  - non-perturbation: 3 setups x 4 continuations compare a restored engine with
+    an untouched control engine after identical later input.
+
+Finding 1 (needs decision): the step-4 swap executes
+  self.grid.saved_cursor = self.grid.cursor.clone();   (term/mod.rs:720)
+on the hidden NORMAL grid. On real 1049h entry these are already equal, so the
+assignment is normally a no-op. They diverge only if a resize reflows the
+normal cursor row while hidden: resize reflows the cursor but merely clamps
+saved_cursor (grid/resize.rs:93-94, 387-388). Then a DECRC after leaving
+alternate differs: control "ghi  Z" vs restored "ghiZ  "
+(restore_overwrites_hidden_normal_saved_cursor_after_cursor_row_reflow).
+Restore OUTPUT is still correct; only the source-of-truth engine's later
+behaviour diverges. Every public normal->inactive swap forces this
+assignment, so it is unavoidable through the public API.
+Options:
+  (a) accept the narrow perturbation (resize-while-alternate + DECRC after
+      1049l, which also relies on a saved cursor Alacritty already discarded at
+      1049h entry, mod.rs:719-720);
+  (b) entry snapshot: observe 1049h and keep a normal grid+history clone for
+      the whole alternate period, mirroring Grid::resize(true, ..)
+      (mod.rs:678), update_history (mod.rs:513) and reset_state; costs a
+      full-history clone per alternate session and arguably is a "parallel
+      model" (forbidden);
+  (c) upstream an inactive-grid accessor (engine patch unless merged);
+  (d) another engine.
+
+GOAL 2: WHAT THE ENGINE RETAINS / REJECTS
+=========================================
+Per cell: Option<Hyperlink{id: String, uri: String}> verbatim (term/cell.rs:
+55-104, set_hyperlink term/mod.rs:1874-1877). Parsing:
+  - vte OSC state drops C0 except BEL/CAN/SUB/ESC (vte lib.rs:409); BEL and
+    ESC\ terminate, CAN/SUB abort; DEL and every byte >= 0x80 are appended
+    (vte lib.rs:433).
+  - ansi.rs:1393-1418: URI segments are UTF-8-decoded; invalid UTF-8 becomes
+    "" (an all-invalid URI closes the link); invalid id becomes None and the
+    engine generates "N_alacritty"; ';' segments are rejoined.
+  - Valid UTF-8 C1 code points (U+0080..U+009F) and U+007F are retained.
+  - std feature: osc_raw is an unbounded Vec (vte lib.rs:64); a 1 MiB URI is
+    retained in full (oversize_uri_is_retained_unbounded).
+  - Ground-text C1 cannot reach cells: Term::input drops width-less chars
+    (term/mod.rs:1064-1066).
+Exercised (probe/tests/osc8.rs, 5 tests): C0/ST/BEL/CAN/non-UTF-8/
+unterminated/nested attacks are neutralised by the engine; derived output
+round-trips links with id grouping and close; C1/DEL attack asserts that the
+derived OSC 8 payload DOES contain U+009C/U+009B/U+007F (blocker evidence).
+Host consequence (host-probe/replay.mjs, @xterm/headless 6.0.0): restore
+bytes derived from URI "http://a/" U+009C U+009B "2J" terminate the OSC early
+and erase the host screen; a benign URI leaves it intact.
+
+Missing check (the blocker): reject or encode U+007F and U+0080..U+009F (and
+arguably bound length) in id and URI before emitting OSC 8. That is a
+climon2-written hyperlink check, which the fixed requirements forbid.
+Options:
+  (a) percent-encode the URI (RFC 3986 makes this lossless for URIs) and remap
+      ids to derived ASCII tokens: small climon2 encoder, not a validator, but
+      still climon2-written code on hyperlink data;
+  (b) drop links containing such code points (validator + partial omission);
+  (c) upstream vte/Alacritty change to reject C1/DEL in OSC 8 (engine change
+      until released);
+  (d) host-profile restriction (xterm.js/VS Code demonstrably unsafe);
+  (e) omission (already rejected).
+The unbounded OSC payload belongs to the open parser/control-string budget.
+
+LIMITATIONS
+===========
+Not restored (private or not attempted): scroll region, tab stops, active
+charset (private Term state); origin mode; pending wrap (input_needs_wrap);
+underline colour; title; cursor style. vt100 shares saved ATTRIBUTES across
+buffers (xterm/xterm.js save per buffer), so the alternate ESC 7 can change
+the normal pen vt100 restores at 1049l; tests assert positions there. vt100
+does not reflow or apply background-colour erase, so the default-pen-at-line-
+break property is asserted on the byte stream's pen state, not BCE cells.
+No production daemon, transport, native host, latency or resource budget is
+qualified. Live (non-restore) OSC 8 derivation is not separately built; it
+uses the same pen/link writer and has the same blocker.
+
+MUTATION
+========
+mutator/crapper/dryer are not installed. hand_mutants.py applies 18 hand-
+selected mutants to restore.rs (one Cargo job, one test thread, source always
+restored). Results: hand-mutation-results.txt. The surviving mutant "alternate
+rows not erased" is equivalent for hosts that clear the alternate buffer on
+1049h (xterm, vt100); EL2 is kept as a defensive reset for hosts that do not.
+
+REPRODUCE
+=========
+  cd prototypes/alacritty-forwarding
+  bash run.sh                      # full runner, -j1 / --test-threads=1
+  (cd host-probe && npm ci)        # optional: enables the xterm.js replay
+  python3 hand_mutants.py          # bounded mutants
+
+ACTION LOG
+==========
+1. Read AGENTS.md, issue-tracker/domain docs, GLOSSARY, ADR 0004, #43
+   6531012875/6544545973, #49 6531016859, #56 6541687949 and its assets.
+2. Own worktree, branch prototype/alacritty-restore-osc8-43 from 63256f6.
+3. Studied swap_alt/grid seams and vte OSC parsing at the pin.
+4. Tests first (red: missing restore module), then restore.rs. Two hand
+   expectations corrected after checking xterm semantics (1049h keeps cursor).
+   Non-perturbation test exposed Finding 1; recorded as an explicit test.
+5. OSC 8 safety test failed on C1/DEL as the blocker; recorded as evidence.
+6. xterm.js headless replay demonstrated host consequence.
+7. Hand mutants; added tests for survivors (cursor placement, colours, wide/
+   combining, line-break pen); one equivalent survivor remains.
+8. Full runner PASS (results.txt).

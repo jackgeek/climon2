@@ -3,3 +3,4 @@
 /.metrics/
 /probe/target/
 /probe/.metrics/
+/host-probe/node_modules/

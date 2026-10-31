@@ -1,0 +1,9 @@
+{
+  "name": "climon2-c1-host-probe",
+  "private": true,
+  "description": "THROWAWAY #43: replay engine-derived OSC 8 bytes into xterm.js (VS Code's terminal parser).",
+  "type": "module",
+  "dependencies": {
+    "@xterm/headless": "6.0.0"
+  }
+}
