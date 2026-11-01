@@ -11,6 +11,24 @@ pub const PTY_DRAIN_CAP: Duration = Duration::from_secs(1);
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub const HANGUP_GRACE: Duration = Duration::from_secs(5);
 
+pub(crate) const HELLO: u8 = 0x01;
+const ATTACH: u8 = 0x10;
+const INPUT: u8 = 0x11;
+const RESIZE: u8 = 0x12;
+const TAKE_CONTROL: u8 = 0x13;
+const READY: u8 = 0x14;
+const DETACH: u8 = 0x15;
+const KILL: u8 = 0x16;
+const ATTACHED: u8 = 0x20;
+const OUTPUT: u8 = 0x21;
+const EXIT: u8 = 0x22;
+const GRANTED: u8 = 0x23;
+const RESTORE_END: u8 = 0x24;
+const REVOKED: u8 = 0x25;
+const DETACHED: u8 = 0x26;
+const TERMINATED: u8 = 0x27;
+const ERROR: u8 = 0x7f;
+
 pub const MAX_FRAME_LENGTH: usize = 1_048_576;
 /// Limits include the type byte, just like the frozen length prefix.
 pub const MAX_DATA_FRAME_LENGTH: usize = 65_536;
@@ -44,14 +62,14 @@ fn invalid(message: &'static str) -> io::Error {
 
 fn validate_type(code: u8) -> io::Result<()> {
     match code {
-        0x01 | 0x10..=0x12 | 0x20..=0x22 | 0x7f => Ok(()),
+        HELLO | ATTACH..=KILL | ATTACHED..=TERMINATED | ERROR => Ok(()),
         _ => Err(invalid("unknown message type")),
     }
 }
 
 fn validate_body(code: u8, length: usize) -> io::Result<()> {
     let limit = match code {
-        0x11 | 0x21 => MAX_DATA_FRAME_LENGTH,
+        INPUT | OUTPUT => MAX_DATA_FRAME_LENGTH,
         _ => MAX_FRAME_LENGTH,
     };
     if length >= limit {
@@ -124,14 +142,17 @@ pub fn hello_time_remaining(elapsed: Duration) -> Option<Duration> {
         .filter(|left| !left.is_zero())
 }
 
-/// Per-connection receive state, not session ownership. A daemon must separately
-/// reject an Attach while another connection has the controlling client.
+/// Per-connection receive state, not session ownership: the daemon decides
+/// admission and control separately. After hello a connection sends Attach or
+/// Kill, never both; attachment requests need an accepted Attach.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ConnectionState {
     #[default]
     AwaitingHello,
     Probing,
     Attached,
+    /// A kill-mode connection; it is never an attachment.
+    Killing,
     Closed,
 }
 
@@ -148,8 +169,10 @@ impl ConnectionState {
         match message {
             ClientMessage::Error { .. } => Ok(Self::Closed),
             ClientMessage::Hello { protocol } => self.after_hello(*protocol),
-            ClientMessage::Attach(_) => self.after_attach(),
-            ClientMessage::Input(_) | ClientMessage::Resize(_) => self.after_stream(),
+            _ => operation(message).map_or_else(
+                || self.after_stream(),
+                |chosen| self.after_operation(chosen),
+            ),
         }
     }
 
@@ -160,10 +183,15 @@ impl ConnectionState {
         }
     }
 
-    fn after_attach(self) -> io::Result<Self> {
-        match self {
-            Self::Probing => Ok(Self::Attached),
-            Self::Attached => Err(invalid("session already has a controlling client")),
+    fn after_operation(self, chosen: Self) -> io::Result<Self> {
+        match (self, chosen) {
+            (Self::Probing, _) => Ok(chosen),
+            (Self::Attached, Self::Attached) => {
+                Err(invalid("session already has a controlling client"))
+            }
+            (Self::Attached | Self::Killing, _) => {
+                Err(invalid("connection already sent attach or kill"))
+            }
             _ => Err(not_allowed()),
         }
     }
@@ -173,6 +201,15 @@ impl ConnectionState {
             Self::Attached => Ok(self),
             _ => Err(not_allowed()),
         }
+    }
+}
+
+/// The state an operation request moves a probing connection into.
+fn operation(message: &ClientMessage) -> Option<ConnectionState> {
+    match message {
+        ClientMessage::Attach(_) => Some(ConnectionState::Attached),
+        ClientMessage::Kill => Some(ConnectionState::Killing),
+        _ => None,
     }
 }
 
@@ -209,11 +246,23 @@ impl HelloReply {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClientMessage {
-    Hello { protocol: u32 },
+    Hello {
+        protocol: u32,
+    },
     Attach(TerminalSize),
     Input(Vec<u8>),
     Resize(TerminalSize),
-    Error { message: String },
+    TakeControl,
+    /// Restoration for this control period is written; enable input.
+    Ready {
+        period: u64,
+    },
+    Detach,
+    /// Kill-mode request, sent instead of Attach.
+    Kill,
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -221,8 +270,25 @@ pub enum ServerMessage {
     Hello(HelloReply),
     Attached,
     Output(Vec<u8>),
-    Exit { code: u32 },
-    Error { message: String },
+    Exit {
+        code: u32,
+    },
+    /// This client controls; its restoration follows.
+    Granted {
+        period: u64,
+    },
+    RestoreEnd {
+        period: u64,
+    },
+    Revoked,
+    Detached,
+    /// Kill confirmed after cleanup.
+    Terminated {
+        code: u32,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -234,13 +300,17 @@ struct Exit {
     code: u32,
 }
 #[derive(Serialize, Deserialize)]
+struct Period {
+    period: u64,
+}
+#[derive(Serialize, Deserialize)]
 struct ErrorBody {
     message: String,
 }
 #[derive(Serialize, Deserialize)]
 struct Empty {}
 
-fn control(code: u8, value: &impl Serialize) -> io::Result<Frame> {
+pub(crate) fn control(code: u8, value: &impl Serialize) -> io::Result<Frame> {
     let body = serde_json::to_vec(value).map_err(io::Error::other)?;
     Frame::new(code, body)
 }
@@ -251,7 +321,7 @@ fn json<T: DeserializeOwned>(frame: &Frame) -> io::Result<T> {
 
 fn error_frame(message: &str) -> io::Result<Frame> {
     control(
-        0x7f,
+        ERROR,
         &ErrorBody {
             message: message.to_owned(),
         },
@@ -266,77 +336,156 @@ impl ClientMessage {
     pub fn to_frame(&self) -> io::Result<Frame> {
         match self {
             Self::Hello { protocol } => control(
-                0x01,
+                HELLO,
                 &HelloRequest {
                     protocol: *protocol,
                 },
             ),
-            Self::Attach(size) | Self::Resize(size) => control(self.size_type_code(), size),
-            Self::Input(bytes) => Frame::new(0x11, bytes.clone()),
+            Self::Input(bytes) => Frame::new(INPUT, bytes.clone()),
             Self::Error { message } => error_frame(message),
+            _ => self.request_frame(),
+        }
+    }
+
+    /// Requests carry a size, a control period or an empty object.
+    fn request_frame(&self) -> io::Result<Frame> {
+        match self {
+            Self::Attach(size) | Self::Resize(size) => control(self.size_type_code(), size),
+            Self::Ready { period } => control(READY, &Period { period: *period }),
+            _ => control(self.empty_type_code(), &Empty {}),
         }
     }
 
     /// Attach and Resize share a body and differ only in type code.
     fn size_type_code(&self) -> u8 {
         match self {
-            Self::Attach(_) => 0x10,
-            _ => 0x12,
+            Self::Attach(_) => ATTACH,
+            _ => RESIZE,
+        }
+    }
+
+    fn empty_type_code(&self) -> u8 {
+        match self {
+            Self::TakeControl => TAKE_CONTROL,
+            Self::Detach => DETACH,
+            _ => KILL,
         }
     }
 
     pub fn from_frame(frame: Frame) -> io::Result<Self> {
         match frame.type_code {
-            0x01 => json::<HelloRequest>(&frame).map(|hello| Self::Hello {
+            HELLO => json::<HelloRequest>(&frame).map(|hello| Self::Hello {
                 protocol: hello.protocol,
             }),
-            0x11 => Ok(Self::Input(frame.body)),
-            0x7f => error_message(&frame).map(|message| Self::Error { message }),
-            _ => Self::from_size_frame(&frame),
+            INPUT => Ok(Self::Input(frame.body)),
+            ERROR => error_message(&frame).map(|message| Self::Error { message }),
+            _ => Self::from_request_frame(&frame),
         }
     }
 
-    fn from_size_frame(frame: &Frame) -> io::Result<Self> {
+    fn from_request_frame(frame: &Frame) -> io::Result<Self> {
         match frame.type_code {
-            0x10 => json(frame).map(Self::Attach),
-            0x12 => json(frame).map(Self::Resize),
-            _ => Err(invalid("unexpected client message type")),
+            ATTACH => json(frame).map(Self::Attach),
+            RESIZE => json(frame).map(Self::Resize),
+            READY => json::<Period>(frame).map(|ready| Self::Ready {
+                period: ready.period,
+            }),
+            _ => Self::from_empty_frame(frame),
         }
+    }
+
+    fn from_empty_frame(frame: &Frame) -> io::Result<Self> {
+        let message = match frame.type_code {
+            TAKE_CONTROL => Self::TakeControl,
+            DETACH => Self::Detach,
+            KILL => Self::Kill,
+            _ => return Err(invalid("unexpected client message type")),
+        };
+        json::<Empty>(frame).map(|_| message)
     }
 }
 
 impl ServerMessage {
     pub fn to_frame(&self) -> io::Result<Frame> {
         match self {
-            Self::Hello(reply) => control(0x01, reply),
-            Self::Output(bytes) => Frame::new(0x21, bytes.clone()),
+            Self::Hello(reply) => control(HELLO, reply),
+            Self::Output(bytes) => Frame::new(OUTPUT, bytes.clone()),
             Self::Error { message } => error_frame(message),
-            Self::Attached | Self::Exit { .. } => self.lifecycle_frame(),
+            _ => self.lifecycle_frame(),
         }
     }
 
-    /// Attached and Exit bracket the attached lifetime of a session.
+    /// Lifecycle messages carry an exit code, a control period or nothing.
     fn lifecycle_frame(&self) -> io::Result<Frame> {
         match self {
-            Self::Exit { code } => control(0x22, &Exit { code: *code }),
-            _ => control(0x20, &Empty {}),
+            Self::Exit { code } | Self::Terminated { code } => {
+                control(self.code_type_code(), &Exit { code: *code })
+            }
+            Self::Granted { period } | Self::RestoreEnd { period } => {
+                control(self.period_type_code(), &Period { period: *period })
+            }
+            _ => control(self.empty_type_code(), &Empty {}),
+        }
+    }
+
+    fn code_type_code(&self) -> u8 {
+        match self {
+            Self::Exit { .. } => EXIT,
+            _ => TERMINATED,
+        }
+    }
+
+    fn period_type_code(&self) -> u8 {
+        match self {
+            Self::Granted { .. } => GRANTED,
+            _ => RESTORE_END,
+        }
+    }
+
+    fn empty_type_code(&self) -> u8 {
+        match self {
+            Self::Attached => ATTACHED,
+            Self::Revoked => REVOKED,
+            _ => DETACHED,
         }
     }
 
     pub fn from_frame(frame: Frame) -> io::Result<Self> {
         match frame.type_code {
-            0x01 => json(&frame).map(Self::Hello),
-            0x21 => Ok(Self::Output(frame.body)),
-            0x7f => error_message(&frame).map(|message| Self::Error { message }),
+            HELLO => json(&frame).map(Self::Hello),
+            OUTPUT => Ok(Self::Output(frame.body)),
+            ERROR => error_message(&frame).map(|message| Self::Error { message }),
             _ => Self::from_lifecycle_frame(&frame),
         }
     }
 
     fn from_lifecycle_frame(frame: &Frame) -> io::Result<Self> {
         match frame.type_code {
-            0x20 => json::<Empty>(frame).map(|_| Self::Attached),
-            0x22 => json::<Exit>(frame).map(|exit| Self::Exit { code: exit.code }),
-            _ => Err(invalid("unexpected server message type")),
+            EXIT => json::<Exit>(frame).map(|exit| Self::Exit { code: exit.code }),
+            TERMINATED => json::<Exit>(frame).map(|exit| Self::Terminated { code: exit.code }),
+            _ => Self::from_period_frame(frame),
         }
+    }
+
+    fn from_period_frame(frame: &Frame) -> io::Result<Self> {
+        match frame.type_code {
+            GRANTED => json::<Period>(frame).map(|body| Self::Granted {
+                period: body.period,
+            }),
+            RESTORE_END => json::<Period>(frame).map(|body| Self::RestoreEnd {
+                period: body.period,
+            }),
+            _ => Self::from_empty_frame(frame),
+        }
+    }
+
+    fn from_empty_frame(frame: &Frame) -> io::Result<Self> {
+        let message = match frame.type_code {
+            ATTACHED => Self::Attached,
+            REVOKED => Self::Revoked,
+            DETACHED => Self::Detached,
+            _ => return Err(invalid("unexpected server message type")),
+        };
+        json::<Empty>(frame).map(|_| message)
     }
 }

@@ -26,8 +26,10 @@ pub struct SessionEnvironment {
 }
 
 impl SessionEnvironment {
-    /// A nonempty enclosing session ID indicates nesting. Only the two session
-    /// variables are overwritten; TERM is defaulted only if completely absent.
+    /// A nonempty enclosing session ID indicates nesting. The session variables
+    /// and the command's terminal identity (`TERM=xterm-256color`,
+    /// `COLORTERM=truecolor`) replace any inherited value, the client startup
+    /// envelope is dropped, and everything else passes through exactly.
     pub fn for_session(
         id: &SessionId,
         inherited: &[(OsString, OsString)],
@@ -44,14 +46,13 @@ impl SessionEnvironment {
         });
         let mut values: Vec<_> = inherited
             .iter()
-            .filter(|(key, _)| !is_session_key(key))
+            .filter(|(key, _)| !is_replaced_key(key))
             .cloned()
             .collect();
         values.push(("CLIMON2_SESSION_ID".into(), id.as_str().into()));
         values.push(("CLIMON2_SESSION_DEPTH".into(), depth.to_string().into()));
-        if lookup(inherited, "TERM").is_none() {
-            values.push(("TERM".into(), "xterm-256color".into()));
-        }
+        values.push(("TERM".into(), "xterm-256color".into()));
+        values.push(("COLORTERM".into(), "truecolor".into()));
         Ok(Self {
             values,
             depth,
@@ -60,8 +61,16 @@ impl SessionEnvironment {
     }
 }
 
-fn is_session_key(key: &OsStr) -> bool {
-    key == "CLIMON2_SESSION_ID" || key == "CLIMON2_SESSION_DEPTH"
+const REPLACED_KEYS: [&str; 5] = [
+    "CLIMON2_SESSION_ID",
+    "CLIMON2_SESSION_DEPTH",
+    "TERM",
+    "COLORTERM",
+    crate::startup_envelope::ENVIRONMENT_VARIABLE,
+];
+
+fn is_replaced_key(key: &OsStr) -> bool {
+    REPLACED_KEYS.iter().any(|replaced| key == *replaced)
 }
 
 fn lookup<'a>(environment: &'a [(OsString, OsString)], key: &str) -> Option<&'a OsStr> {

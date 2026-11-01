@@ -269,14 +269,17 @@ fn fixture_runtime_environment(layout: &Layout) -> std::collections::BTreeMap<St
     actual
 }
 
-/// #29/#36: exact OS strings, cwd, whole inherited environment and absent TERM.
+/// #29/#36, plan 1.17: exact OS strings, cwd, whole inherited environment, a
+/// replaced TERM/COLORTERM identity and no client startup envelope.
 #[test]
 fn packaged_exec_preserves_runtime_argv_cwd_environment_and_initial_size() {
     let layout = Layout::new();
     let mut command = layout.command();
     let odd = OsString::from_vec(b"non-utf8-\xff".to_vec());
     command.env("SECRET_VALUE", &odd);
-    command.env("TERM", "");
+    command.env("TERM", "vt100");
+    command.env("COLORTERM", "");
+    command.env("CLIMON2_CLIENT_STARTUP", "inherited startup input");
     command.env("SHELL", "");
     command.args(["exec"]);
     command.arg(layout.fixture());
@@ -317,7 +320,8 @@ fn packaged_exec_preserves_runtime_argv_cwd_environment_and_initial_size() {
         ("PATH", "/usr/bin:/bin".into()),
         ("CLIMON2_TEST_ID", layout.marker().to_owned()),
         ("SECRET_VALUE", odd),
-        ("TERM", "".into()),
+        ("TERM", "xterm-256color".into()),
+        ("COLORTERM", "truecolor".into()),
         ("SHELL", "".into()),
         ("CLIMON2_SESSION_ID", metadata.session_id.as_str().into()),
         ("CLIMON2_SESSION_DEPTH", "1".into()),
@@ -413,11 +417,14 @@ fn nested_warning_uses_exact_ordinal_and_overflow_never_spawns() {
     layout.clean();
 }
 
-/// #29/#36: shells remain programs; real nested bash inherits depth and TERM.
+/// #29/#36, plan 1.17: shells remain programs; real nested bash inherits depth
+/// and every layer sees the fixed terminal identity.
 #[test]
-fn actual_nested_bash_session_increments_depth_and_defaults_only_absent_term() {
+fn actual_nested_bash_session_increments_depth_and_sees_the_fixed_terminal_identity() {
     let layout = Layout::new();
     let mut command = layout.command();
+    command.env("TERM", "dumb");
+    command.env("COLORTERM", "24bit");
     command.args([
         "exec",
         "/bin/bash",
@@ -453,6 +460,17 @@ fn actual_nested_bash_session_increments_depth_and_defaults_only_absent_term() {
                 "\"{}\":\"{}\"",
                 hex(OsStr::new("TERM")),
                 hex(OsStr::new("xterm-256color"))
+            )
+            .as_bytes(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    terminal
+        .wait_for_bytes(
+            format!(
+                "\"{}\":\"{}\"",
+                hex(OsStr::new("COLORTERM")),
+                hex(OsStr::new("truecolor"))
             )
             .as_bytes(),
             Duration::from_secs(1),
