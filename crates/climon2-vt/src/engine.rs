@@ -64,7 +64,15 @@ pub(crate) struct Engine {
     term: Term<Listener>,
     processor: Processor<Unbuffered>,
     events: Rc<RefCell<Vec<Event>>>,
+    signals: Signals,
+}
+
+/// What the engine reported through events: the application's title
+/// (`None` for the default) and how many bells rang.
+#[derive(Default)]
+struct Signals {
     title: Option<String>,
+    bells: u64,
 }
 
 impl Engine {
@@ -75,7 +83,7 @@ impl Engine {
             term: Term::new(config(history), &Size(geometry), listener),
             processor: Processor::new(),
             events,
-            title: None,
+            signals: Signals::default(),
         }
     }
 
@@ -91,26 +99,31 @@ impl Engine {
     fn event(&mut self, event: Event, replies: &mut Vec<u8>) {
         match event {
             Event::PtyWrite(text) => replies.extend_from_slice(text.as_bytes()),
+            Event::Bell => self.signals.bells += 1,
             other => self.retitle(other),
         }
     }
 
     fn retitle(&mut self, event: Event) {
         match event {
-            Event::Title(title) => self.title = Some(title),
-            Event::ResetTitle => self.title = None,
+            Event::Title(title) => self.signals.title = Some(title),
+            Event::ResetTitle => self.signals.title = None,
             _ => {}
         }
     }
 
     /// The application's title; `None` means the default title.
     pub(crate) fn title(&self) -> Option<&str> {
-        self.title.as_deref()
+        self.signals.title.as_deref()
+    }
+
+    pub(crate) fn bells(&self) -> u64 {
+        self.signals.bells
     }
 
     /// `ESC c` clears the engine's title without an event.
     pub(crate) fn reset_title(&mut self) {
-        self.title = None;
+        self.signals.title = None;
     }
 
     pub(crate) fn mode(&self) -> TermMode {

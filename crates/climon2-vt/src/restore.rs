@@ -9,10 +9,11 @@ use crate::{
 };
 use alacritty_terminal::{Grid, term::cell::Cell};
 
+pub(crate) const NOTICE_TEXT: &[u8] = b"[climon2: older session scrollback was discarded]";
 pub(crate) const NOTICE: &[u8] = b"\x1b[0m[climon2: older session scrollback was discarded]\r\n";
 
 /// A1: leave nothing an earlier stream may have set that history relies on.
-const PROLOGUE: &[u8] = b"\x1b[?2026l\x1b[r\x1b[?6l\x1b[4l\x1b[20l\x1b[?7h\x1b[0m";
+pub(crate) const PROLOGUE: &[u8] = b"\x1b[?2026l\x1b[r\x1b[?6l\x1b[4l\x1b[20l\x1b[?7h\x1b[0m";
 
 /// The next part of a restoration prefix.
 #[derive(Clone, Debug, PartialEq, Eq)]

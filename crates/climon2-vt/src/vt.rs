@@ -1,12 +1,13 @@
 use crate::{
     classify::{Clear, Live, classify},
+    derive::{Cache, derive},
     engine::Engine,
     geometry::{Geometry, STEP},
     history::Ledger,
     modes::{DIRECT, SHARED, cursor_style, transitions},
     presentation::{Mode, Presentation},
     render::{cursor, cursors, screen},
-    restore::{Chunk, Restoration, lead},
+    restore::{Chunk, PROLOGUE, Restoration, lead},
     sync::Latch,
     title,
     token::{Kind, Token, Tokenizer},
@@ -106,7 +107,53 @@ impl Vt {
             suffix,
             self.engine.alternate(),
         );
+        presentation.cache = Cache::current(&self.engine, &self.ledger, &self.title_text());
         (lead(presentation, notice), restoration)
+    }
+
+    /// The live update for a Derived controller whose restoration has
+    /// ended: rows pushed into history, changed rows, cursor, modes, title
+    /// and bell. Empty when nothing changed; never call while
+    /// [`Vt::sync_pending`].
+    pub fn derive(&mut self, presentation: &mut Presentation) -> Vec<u8> {
+        let title = self.title_text();
+        derive(&mut self.engine, &self.ledger, &title, presentation)
+    }
+
+    /// Apply a ready controller's new host size (after [`Vt::resize`]).
+    /// Returns what the host needs before further live output: nothing
+    /// between Direct sizes, otherwise a full derived repaint, preceded by
+    /// the prologue's baseline when entering Derived presentation and
+    /// followed by the Direct-only modes when leaving it. Never call while
+    /// [`Vt::sync_pending`].
+    pub fn present(&mut self, presentation: &mut Presentation, cols: u16, rows: u16) -> Vec<u8> {
+        let from = presentation.mode;
+        presentation.cols = cols;
+        presentation.rows = rows;
+        presentation.mode = Mode::of(cols, rows, self.geometry);
+        match (from, presentation.mode) {
+            (Mode::Direct, Mode::Direct) => Vec::new(),
+            (Mode::Direct, Mode::Derived) => self.enter_derived(presentation),
+            (Mode::Derived, Mode::Derived) => self.repaint(presentation),
+            (Mode::Derived, Mode::Direct) => self.leave_derived(presentation),
+        }
+    }
+
+    fn enter_derived(&mut self, presentation: &mut Presentation) -> Vec<u8> {
+        presentation.sync_open = false;
+        presentation.cache = Cache::current(&self.engine, &self.ledger, &self.title_text());
+        [PROLOGUE.to_vec(), self.repaint(presentation)].concat()
+    }
+
+    fn repaint(&mut self, presentation: &mut Presentation) -> Vec<u8> {
+        presentation.cache.repaint();
+        self.derive(presentation)
+    }
+
+    fn leave_derived(&mut self, presentation: &mut Presentation) -> Vec<u8> {
+        let mut out = self.repaint(presentation);
+        self.direct_modes(&mut out);
+        out
     }
 
     /// The next restoration bytes: whole history rows up to about `budget`
@@ -214,18 +261,32 @@ impl Vt {
     /// may move the cursor (origin), so it is re-established after them.
     fn modes(&self, direct: bool, out: &mut Vec<u8>) {
         let mode = self.engine.mode();
-        transitions(mode, SHARED, out);
+        transitions(None, mode, SHARED, out);
         out.extend(cursor_style(self.engine.cursor_style()));
         if direct {
-            transitions(mode, DIRECT, out);
+            self.direct_modes(out);
         }
-        if direct && mode.contains(TermMode::ORIGIN) {
-            cursor(self.engine.active(), direct, out);
+    }
+
+    /// Origin, autowrap, insert and new-line modes; origin may move the
+    /// cursor, so it is re-established after them.
+    fn direct_modes(&self, out: &mut Vec<u8>) {
+        let mode = self.engine.mode();
+        transitions(None, mode, DIRECT, out);
+        if mode.contains(TermMode::ORIGIN) {
+            cursor(self.engine.active(), true, out);
         }
     }
 
     fn title(&self) -> Vec<u8> {
-        title::osc(self.engine.title().unwrap_or(&self.default_title))
+        title::osc(&self.title_text())
+    }
+
+    fn title_text(&self) -> String {
+        self.engine
+            .title()
+            .unwrap_or(&self.default_title)
+            .to_owned()
     }
 }
 

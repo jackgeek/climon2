@@ -31,11 +31,20 @@ pub(crate) const DIRECT: &[Entry] = &[
     (TermMode::LINE_FEED_NEW_LINE, b"\x1b[20h", b"\x1b[20l"),
 ];
 
-/// Emit every mode of `table` as the engine has it; resets precede sets so
-/// exclusive groups such as mouse protocols end in the engine's state.
-pub(crate) fn transitions(to: TermMode, table: &[Entry], out: &mut Vec<u8>) {
+/// Emit the modes of `table` that differ between `from` (`None`: unknown,
+/// so every mode) and `to`; resets precede sets so exclusive groups such as
+/// mouse protocols end in the engine's state.
+pub(crate) fn transitions(
+    from: Option<TermMode>,
+    to: TermMode,
+    table: &[Entry],
+    out: &mut Vec<u8>,
+) {
+    let changed = table
+        .iter()
+        .filter(|(mode, _, _)| from.is_none_or(|from| from.contains(*mode) != to.contains(*mode)));
     let (sets, resets): (Vec<&Entry>, Vec<&Entry>) =
-        table.iter().partition(|(mode, _, _)| to.contains(*mode));
+        changed.partition(|(mode, _, _)| to.contains(*mode));
     resets
         .iter()
         .for_each(|(_, _, reset)| out.extend_from_slice(reset));

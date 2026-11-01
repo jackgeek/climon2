@@ -2,6 +2,7 @@
 //! around upstream Alacritty that keeps every engine type private.
 
 mod classify;
+mod derive;
 mod engine;
 mod geometry;
 mod history;

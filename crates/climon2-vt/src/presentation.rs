@@ -1,4 +1,4 @@
-use crate::{classify::private_modes, geometry::Geometry, token::Tokenizer};
+use crate::{classify::private_modes, derive::Cache, geometry::Geometry, token::Tokenizer};
 
 const ALTERNATE_SCREEN: u16 = 1049;
 const SYNC_UPDATE: u16 = 2026;
@@ -42,6 +42,7 @@ pub struct Presentation {
     pub(crate) mode: Mode,
     pub(crate) alternate: bool,
     pub(crate) sync_open: bool,
+    pub(crate) cache: Cache,
     observer: Tokenizer,
 }
 
@@ -54,6 +55,7 @@ impl Presentation {
             mode: Mode::Direct,
             alternate: false,
             sync_open: false,
+            cache: Cache::default(),
             observer: Tokenizer::new(),
         }
     }

@@ -474,3 +474,14 @@ fn a_soft_wrapped_last_history_row_is_ended_before_the_scroll_off() {
         "{prefix:?}"
     );
 }
+
+#[test]
+fn origin_mode_reestablishes_a_pending_wrap_after_the_modes() {
+    let mut vt = vt(10, 3, 10);
+    feed(&mut vt, b"\x1b[?6h0123456789");
+    let prefix = text(&restored(&mut vt));
+    assert!(
+        prefix.ends_with("\x1b[?7h\x1b[?6h\x1b[1;10H\x1b[0m9\x1b[0m\x1b]2;climon2 exec app\x1b\\"),
+        "{prefix:?}"
+    );
+}
