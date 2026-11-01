@@ -28,6 +28,16 @@ impl ControlKey {
     }
 }
 
+/// The vocabulary name, as shown to users (for example `Ctrl+T`).
+impl fmt::Display for ControlKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            0x00 => formatter.write_str("Ctrl+Space"),
+            byte => write!(formatter, "Ctrl+{}", char::from(byte + 0x40)),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SettingsError {
     TakeControlIsEscape,

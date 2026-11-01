@@ -1,7 +1,7 @@
 use crate::transport::{Pending, Transport, invalid, poll, ready};
 use climon2_core::{
     SessionId,
-    keys::ClientSettings,
+    keys::{ClientSettings, ControlKey},
     protocol::{ClientMessage, ServerMessage, TerminalSize},
 };
 use climon2_platform::terminal::{self, Signals};
@@ -15,7 +15,6 @@ use std::{
 const RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
-const OBSERVER_NOTICE: &[u8] = b"\r\n[climon2: observing; press Ctrl+]d to detach]\r\n";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Role {
@@ -30,11 +29,33 @@ enum FilterAction {
     TakeControl,
 }
 
+/// The local terminal's paste stream: never reset by role changes (section 1.4).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Paste {
+    Outside,
+    Open,
+    /// Began before the current role: discarded through its closing marker.
+    Stale,
+}
+
+impl Paste {
+    fn toggled(self) -> Self {
+        match self {
+            Self::Outside => Self::Open,
+            _ => Self::Outside,
+        }
+    }
+
+    fn forwards(self, controlling: bool) -> bool {
+        controlling && self != Self::Stale
+    }
+}
+
 struct InputFilter {
     escape: Option<u8>,
     take_control: Option<u8>,
     prefix_pending: bool,
-    paste: bool,
+    paste: Paste,
     marker: Vec<u8>,
 }
 
@@ -44,13 +65,17 @@ impl InputFilter {
             escape: settings.escape_prefix().map(|key| key.byte()),
             take_control: settings.take_control_key().map(|key| key.byte()),
             prefix_pending: false,
-            paste: false,
+            paste: Paste::Outside,
             marker: Vec::new(),
         }
     }
 
-    fn reset_keys(&mut self) {
+    /// Resets the key state; a paste still open is no longer this role's input.
+    fn role_changed(&mut self) {
         self.prefix_pending = false;
+        if self.paste == Paste::Open {
+            self.paste = Paste::Stale;
+        }
     }
 
     fn feed(&mut self, bytes: &[u8], controlling: bool) -> Vec<FilterAction> {
@@ -79,22 +104,26 @@ impl InputFilter {
     }
 
     fn expected(&self) -> &'static [u8] {
-        if self.paste { PASTE_END } else { PASTE_START }
+        if self.paste == Paste::Outside {
+            PASTE_START
+        } else {
+            PASTE_END
+        }
     }
 
     fn complete_marker(&mut self, controlling: bool, actions: &mut Vec<FilterAction>) {
         let expected = self.expected();
         if self.marker.len() == expected.len() {
             self.marker.clear();
-            self.paste = !self.paste;
-            push_input(actions, expected, controlling);
+            push_input(actions, expected, self.paste.forwards(controlling));
+            self.paste = self.paste.toggled();
         }
     }
 
     /// Paste payload is never interpreted as keys.
     fn pass(&mut self, byte: u8, controlling: bool, actions: &mut Vec<FilterAction>) -> bool {
-        if self.paste {
-            push_input(actions, &[byte], controlling);
+        if self.paste != Paste::Outside {
+            push_input(actions, &[byte], self.paste.forwards(controlling));
             return false;
         }
         self.key(byte, controlling, actions);
@@ -104,9 +133,21 @@ impl InputFilter {
     fn key(&mut self, byte: u8, controlling: bool, actions: &mut Vec<FilterAction>) {
         let prefixed = std::mem::take(&mut self.prefix_pending);
         match self.escape {
-            Some(escape) if prefixed => prefixed_key(escape, byte, controlling, actions),
+            Some(escape) if prefixed => self.prefixed(escape, byte, controlling, actions),
             Some(escape) if byte == escape => self.prefix_pending = true,
             _ => self.plain(byte, controlling, actions),
+        }
+    }
+
+    /// After the escape prefix: `d` detaches, the prefix again is itself, and
+    /// anything else is the prefix followed by that byte as a plain key.
+    fn prefixed(&self, escape: u8, byte: u8, controlling: bool, actions: &mut Vec<FilterAction>) {
+        if byte == b'd' {
+            return actions.push(FilterAction::Detach);
+        }
+        push_input(actions, &[escape], controlling);
+        if byte != escape {
+            self.plain(byte, controlling, actions);
         }
     }
 
@@ -119,16 +160,32 @@ impl InputFilter {
     }
 }
 
-/// After the escape prefix: `d` detaches, the prefix again is itself, and
-/// anything else is the prefix followed by that byte.
-fn prefixed_key(escape: u8, byte: u8, controlling: bool, actions: &mut Vec<FilterAction>) {
-    if byte == b'd' {
-        return actions.push(FilterAction::Detach);
+/// What a non-controlling client shows (section 1.5).
+fn placeholder_lines(takeover: Option<ControlKey>) -> Vec<u8> {
+    let mut lines = b"This session is being viewed elsewhere.".to_vec();
+    if let Some(key) = takeover {
+        lines.extend(format!("\r\nPress {key} to take control").bytes());
     }
-    if byte != escape {
-        push_input(actions, &[escape], controlling);
-    }
-    push_input(actions, &[byte], controlling);
+    lines
+}
+
+/// Line feeds from the bottom row scroll visible content into history.
+fn placeholder_start(rows: u16, takeover: Option<ControlKey>) -> Vec<u8> {
+    let mut bytes = format!("\x1b[{rows};1H").into_bytes();
+    bytes.resize(bytes.len() + usize::from(rows), b'\n');
+    bytes.extend(b"\x1b[H");
+    bytes.extend(placeholder_lines(takeover));
+    bytes
+}
+
+fn placeholder_redraw(takeover: Option<ControlKey>) -> Vec<u8> {
+    let mut bytes = b"\x1b[H\x1b[2J".to_vec();
+    bytes.extend(placeholder_lines(takeover));
+    bytes
+}
+
+fn placeholder_end(rows: u16) -> Vec<u8> {
+    format!("\x1b[{rows};1H\r\n").into_bytes()
 }
 
 fn push_input(actions: &mut Vec<FilterAction>, bytes: &[u8], controlling: bool) {
@@ -210,6 +267,7 @@ struct Bridge {
     terminal: File,
     signals: Signals,
     filter: InputFilter,
+    takeover: Option<ControlKey>,
     size: TerminalSize,
     resize: Option<TerminalSize>,
     output: Pending,
@@ -220,6 +278,8 @@ struct Bridge {
     /// unconfirmed, even while stdout is blocked.
     closing: Option<Instant>,
     hung_up: bool,
+    /// A terminal message waiting for the placeholder's end bytes to drain.
+    exit: Option<BridgeExit>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -242,6 +302,7 @@ pub fn run(
         terminal,
         signals,
         filter: InputFilter::new(settings),
+        takeover: settings.take_control_key(),
         size,
         resize: None,
         output: Pending::default(),
@@ -250,6 +311,7 @@ pub fn run(
         pending_detach: false,
         closing: None,
         hung_up: false,
+        exit: None,
     };
     bridge.run().map_err(|error| {
         if error.kind() == io::ErrorKind::UnexpectedEof {
@@ -353,7 +415,12 @@ impl Bridge {
         })
     }
 
+    /// Once a terminal message arrived, nothing more is read; it ends the
+    /// bridge when stdout has drained.
     fn dispatch(&mut self, descriptors: &[libc::pollfd; 3]) -> io::Result<Option<BridgeExit>> {
+        if self.exit.is_some() {
+            return Ok(self.exit.filter(|_| self.output.empty()));
+        }
         if let Some(code) = self.receive_ready(descriptors[0].revents)? {
             return Ok(Some(code));
         }
@@ -438,6 +505,7 @@ impl Bridge {
         if let Some(size) = self.resize.take() {
             self.transport.send(&ClientMessage::Resize(size))?;
             self.size = size;
+            self.redraw();
         }
         Ok(())
     }
@@ -449,11 +517,27 @@ impl Bridge {
         }
     }
 
+    fn redraw(&mut self) {
+        if self.role == Role::Observing {
+            self.output.append(placeholder_redraw(self.takeover));
+        }
+    }
+
     fn message(&mut self, message: ServerMessage) -> io::Result<Option<BridgeExit>> {
         if let Some(exit) = result(&message) {
-            return Ok(Some(exit));
+            return Ok(self.end(exit));
         }
         self.session_message(message).map(|()| None)
+    }
+
+    /// A shown placeholder ends below itself before the terminal is restored.
+    fn end(&mut self, exit: BridgeExit) -> Option<BridgeExit> {
+        if self.role != Role::Observing {
+            return Some(exit);
+        }
+        self.output.append(placeholder_end(self.size.rows));
+        self.exit = Some(exit);
+        None
     }
 
     fn session_message(&mut self, message: ServerMessage) -> io::Result<()> {
@@ -474,9 +558,10 @@ impl Bridge {
     fn enter(&mut self, role: Role) {
         self.role = role;
         self.ready_period = None;
-        self.filter.reset_keys();
+        self.filter.role_changed();
         if role == Role::Observing {
-            self.output = Pending::new(OBSERVER_NOTICE.to_vec());
+            self.output
+                .append(placeholder_start(self.size.rows, self.takeover));
         }
     }
 
@@ -540,7 +625,7 @@ impl Bridge {
     }
 
     fn ready(&mut self, period: u64) -> io::Result<()> {
-        self.filter.reset_keys();
+        self.filter.role_changed();
         self.transport.send(&ClientMessage::Ready { period })?;
         self.role = Role::Controlling;
         Ok(())
@@ -588,8 +673,14 @@ fn descriptor(fd: i32, events: i16, active: bool) -> libc::pollfd {
 
 #[cfg(test)]
 mod tests {
-    use super::{BridgeExit, FilterAction, InputFilter, Role, result, role_after};
-    use climon2_core::{keys::ClientSettings, protocol::ServerMessage};
+    use super::{
+        BridgeExit, FilterAction, InputFilter, Role, placeholder_end, placeholder_lines,
+        placeholder_redraw, placeholder_start, result, role_after,
+    };
+    use climon2_core::{
+        keys::{ClientSettings, ControlKey},
+        protocol::ServerMessage,
+    };
 
     fn actions(actions: Vec<FilterAction>) -> Vec<String> {
         actions
@@ -626,6 +717,43 @@ mod tests {
     }
 
     #[test]
+    fn a_paste_begun_before_a_role_change_is_discarded_through_its_closing_marker() {
+        let mut filter = InputFilter::new(ClientSettings::default());
+        assert_eq!(
+            actions(filter.feed(b"\x1b[200~a", true)),
+            ["input:[27, 91, 50, 48, 48, 126, 97]"]
+        );
+        filter.role_changed();
+        assert!(filter.feed(b"\x14\x1dd", true).is_empty());
+        assert!(filter.feed(b"b\x1b[201", true).is_empty());
+        assert_eq!(actions(filter.feed(b"~c", true)), ["input:[99]"]);
+
+        assert!(filter.feed(b"\x1b[200~x", false).is_empty());
+        filter.role_changed();
+        filter.role_changed();
+        assert!(filter.feed(b"y\x1b[201~", true).is_empty());
+        assert_eq!(
+            actions(filter.feed(b"\x1b[200~z\x1b[201~", true)),
+            ["input:[27, 91, 50, 48, 48, 126, 122, 27, 91, 50, 48, 49, 126]"]
+        );
+    }
+
+    #[test]
+    fn a_role_change_outside_a_paste_only_forgets_a_pending_prefix() {
+        let mut filter = InputFilter::new(ClientSettings::default());
+        assert!(filter.feed(b"\x1d", true).is_empty());
+        filter.role_changed();
+        assert_eq!(actions(filter.feed(b"d", true)), ["input:[100]"]);
+    }
+
+    #[test]
+    fn an_observer_takes_control_after_the_escape_prefix_too() {
+        let mut filter = InputFilter::new(ClientSettings::default());
+        assert_eq!(actions(filter.feed(b"\x1d\x14", false)), ["take-control"]);
+        assert_eq!(actions(filter.feed(b"\x1d\x14", true)), ["input:[29, 20]"]);
+    }
+
+    #[test]
     fn an_observer_takes_control_but_sends_no_keys_and_detach_drops_the_rest() {
         let mut filter = InputFilter::new(ClientSettings::default());
         assert_eq!(actions(filter.feed(b"a\x14b", false)), ["take-control"]);
@@ -633,7 +761,6 @@ mod tests {
             actions(filter.feed(b"\x14a\x1dd\x14", true)),
             ["input:[20, 97]", "detach"]
         );
-        assert!(filter.feed(b"\x1d\x14", false).is_empty());
     }
 
     #[test]
@@ -657,5 +784,30 @@ mod tests {
         assert_eq!(role_after(error).unwrap_err().to_string(), "refused");
         let other = role_after(ServerMessage::Attached).unwrap_err();
         assert_eq!(other.to_string(), "unexpected session message");
+    }
+
+    #[test]
+    fn the_placeholder_names_the_configured_takeover_key_or_omits_the_line() {
+        assert_eq!(
+            placeholder_lines(ControlKey::from_byte(0x0B)),
+            b"This session is being viewed elsewhere.\r\nPress Ctrl+K to take control"
+        );
+        assert_eq!(
+            placeholder_lines(None),
+            b"This session is being viewed elsewhere."
+        );
+    }
+
+    #[test]
+    fn the_placeholder_scrolls_visible_content_away_redraws_in_place_and_ends_below() {
+        let key = ControlKey::from_byte(0x14);
+        let lines = placeholder_lines(key);
+        let mut start = b"\x1b[3;1H\n\n\n\x1b[H".to_vec();
+        start.extend(&lines);
+        assert_eq!(placeholder_start(3, key), start);
+        let mut redraw = b"\x1b[H\x1b[2J".to_vec();
+        redraw.extend(&lines);
+        assert_eq!(placeholder_redraw(key), redraw);
+        assert_eq!(placeholder_end(42), b"\x1b[42;1H\r\n");
     }
 }

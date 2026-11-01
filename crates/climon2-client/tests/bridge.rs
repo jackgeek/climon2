@@ -170,6 +170,37 @@ impl Pty {
         }
     }
 
+    fn wait_consumed(&self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let mut pending = 0;
+            assert_eq!(
+                unsafe { libc::ioctl(self.slave.as_raw_fd(), libc::FIONREAD, &mut pending) },
+                0
+            );
+            if pending == 0 {
+                return;
+            }
+            assert!(Instant::now() < deadline, "client did not read its input");
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Everything the client wrote, up to and including `needle`.
+    fn read_until(&mut self, needle: &[u8]) -> Vec<u8> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 4096];
+        while !bytes.windows(needle.len()).any(|window| window == needle) {
+            assert!(Instant::now() < deadline, "client never wrote {needle:?}");
+            wait_ready(&self.master, libc::POLLIN, 5);
+            if let Ok(count) = self.master.read(&mut buffer) {
+                bytes.extend_from_slice(&buffer[..count]);
+            }
+        }
+        bytes
+    }
+
     fn finish(&mut self, expected: i32) -> (Vec<u8>, String) {
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut bytes = Vec::new();
@@ -455,22 +486,7 @@ fn input_typed_before_restore_end_is_drained_and_never_replayed() {
     pty.wait_raw();
 
     pty.master.write_all(b"stale\n").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let mut pending = 0;
-        assert_eq!(
-            unsafe { libc::ioctl(pty.slave.as_raw_fd(), libc::FIONREAD, &mut pending) },
-            0
-        );
-        if pending == 0 {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "client did not drain pre-ready input"
-        );
-        thread::sleep(Duration::from_millis(2));
-    }
+    pty.wait_consumed();
 
     send(&mut stream, ServerMessage::Granted { period: 1 });
     send(
@@ -491,6 +507,89 @@ fn input_typed_before_restore_end_is_drained_and_never_replayed() {
     assert_eq!(receive(&mut stream), ClientMessage::Input(b"live".to_vec()));
     send(&mut stream, ServerMessage::Exit { code: 0 });
     assert_eq!(pty.finish(0), (Vec::new(), String::new()));
+}
+
+const PLACEHOLDER: &[u8] =
+    b"\x1b[H\x1b[2JThis session is being viewed elsewhere.\r\nPress Ctrl+T to take control";
+
+/// #9: after its release bytes a revoked client blanks the screen without losing
+/// what was visible, redraws on resize, asks to take control with the configured
+/// key, and ends the placeholder below itself before restoring the terminal.
+#[test]
+fn a_revoked_client_shows_the_placeholder_until_the_session_ends() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    begin_bridge(&mut stream);
+    pty.wait_raw();
+    send(&mut stream, ServerMessage::Output(b"release".to_vec()));
+    send(&mut stream, ServerMessage::Revoked);
+    let mut expected = b"release\x1b[31;1H".to_vec();
+    expected.extend([b'\n'; 31]);
+    expected.extend(b"\x1b[H");
+    expected.extend(&PLACEHOLDER[7..]);
+    assert_eq!(pty.read_until(b"take control"), expected);
+
+    let mut size = libc::winsize {
+        ws_row: 44,
+        ws_col: 132,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    assert_eq!(
+        unsafe { libc::ioctl(pty.slave.as_raw_fd(), libc::TIOCSWINSZ, &mut size) },
+        0
+    );
+    assert_eq!(
+        unsafe { libc::kill(pty.child.id() as i32, libc::SIGWINCH) },
+        0
+    );
+    assert_eq!(
+        receive(&mut stream),
+        ClientMessage::Resize(climon2_core::protocol::TerminalSize {
+            cols: 132,
+            rows: 44
+        })
+    );
+    assert_eq!(pty.read_until(b"take control"), PLACEHOLDER);
+    pty.master.write_all(b"typed\x14").unwrap();
+    assert_eq!(receive(&mut stream), ClientMessage::TakeControl);
+    send(&mut stream, ServerMessage::Exit { code: 5 });
+    assert_eq!(pty.finish(5), (b"\x1b[44;1H\r\n".to_vec(), String::new()));
+}
+
+/// #9: the paste stream outlives role changes: a paste begun under one role is
+/// discarded through its closing marker, never read as keys, under the next.
+#[test]
+fn a_paste_spanning_role_changes_is_never_replayed_or_read_as_keys() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    begin_bridge(&mut stream);
+    pty.wait_raw();
+    pty.master.write_all(b"\x1b[200~abc").unwrap();
+    assert_eq!(
+        receive(&mut stream),
+        ClientMessage::Input(b"\x1b[200~abc".to_vec())
+    );
+    send(&mut stream, ServerMessage::Revoked);
+    pty.read_until(b"take control");
+    pty.master.write_all(b"\x14\x1dd more\x1b[201~").unwrap();
+    pty.wait_consumed();
+    pty.master.write_all(b"\x14").unwrap();
+    assert_eq!(receive(&mut stream), ClientMessage::TakeControl);
+
+    pty.master.write_all(b"\x1b[200~observed").unwrap();
+    pty.wait_consumed();
+    send(&mut stream, ServerMessage::Granted { period: 2 });
+    send(&mut stream, ServerMessage::RestoreEnd { period: 2 });
+    assert_eq!(receive(&mut stream), ClientMessage::Ready { period: 2 });
+    pty.master.write_all(b"\x1dd\x14tail\x1b[201~live").unwrap();
+    assert_eq!(receive(&mut stream), ClientMessage::Input(b"live".to_vec()));
+    send(&mut stream, ServerMessage::Exit { code: 0 });
+    pty.finish(0);
 }
 
 #[test]

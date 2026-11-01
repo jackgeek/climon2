@@ -46,6 +46,7 @@ fn every_vocabulary_name_maps_to_its_control_byte_and_back_by_byte() {
         let parsed = ControlKey::from_name(name).unwrap();
         assert_eq!(parsed.byte(), byte, "{name}");
         assert_eq!(ControlKey::from_byte(byte), Some(parsed), "{name}");
+        assert_eq!(parsed.to_string(), name);
     }
 }
 
