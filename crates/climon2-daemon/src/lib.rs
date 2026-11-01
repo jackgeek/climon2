@@ -4,6 +4,7 @@ compile_error!("climon2-daemon currently supports macOS only");
 
 mod args;
 mod connection;
+pub mod control;
 mod pty;
 mod session;
 mod startup;
