@@ -16,6 +16,8 @@ pub(crate) enum Live {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Clear {
     Nothing,
+    /// `CSI 3 J`: the active screen's history only.
+    History,
     /// `ESC c`: both screens, the title and every mode.
     Reset,
 }
@@ -136,7 +138,7 @@ fn csi(dispatch: &Dispatch) -> Policy {
     Policy {
         live: csi_live(dispatch),
         sync: sync(dispatch),
-        clear: Clear::Nothing,
+        clear: csi_clear(dispatch),
     }
 }
 
@@ -180,11 +182,11 @@ fn without_screens(kept: &[u16], action: u8) -> Live {
     if kept.is_empty() {
         Live::Strip
     } else {
-        Live::Replace(private_modes(kept, action))
+        Live::Replace(decset(kept, action))
     }
 }
 
-fn private_modes(modes: &[u16], action: u8) -> Vec<u8> {
+fn decset(modes: &[u16], action: u8) -> Vec<u8> {
     let modes: Vec<String> = modes.iter().map(u16::to_string).collect();
     let mut bytes = format!("\x1b[?{}", modes.join(";")).into_bytes();
     bytes.push(action);
@@ -193,4 +195,18 @@ fn private_modes(modes: &[u16], action: u8) -> Vec<u8> {
 
 fn sync(dispatch: &Dispatch) -> Option<bool> {
     private_mode(dispatch).filter(|_| dispatch.params.contains(&SYNC_MODE))
+}
+
+/// `(set, modes)` for a DECSET (`CSI ? … h`) or DECRST (`CSI ? … l`) token.
+pub(crate) fn private_modes(token: &Token) -> Option<(bool, Vec<u16>)> {
+    let dispatch = (token.kind == Kind::Csi).then(|| parse(&token.bytes))?;
+    private_mode(&dispatch).map(|set| (set, dispatch.params))
+}
+
+fn csi_clear(dispatch: &Dispatch) -> Clear {
+    if dispatch.is(b'J', b"") && dispatch.params.first() == Some(&3) {
+        Clear::History
+    } else {
+        Clear::Nothing
+    }
 }

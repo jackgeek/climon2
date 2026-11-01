@@ -23,7 +23,19 @@ impl Geometry {
     pub fn rows(self) -> u16 {
         self.rows
     }
+
+    /// The most rows one engine step can push into history at this
+    /// geometry: 64 line feeds or wraps from a 64-byte step, a screenful from
+    /// one scrolling sequence, or one REP (`CSI 65535 b`) of a wide character.
+    /// The engine keeps twice this many rows as counting headroom.
+    pub fn push_bound(self) -> usize {
+        let repeat = REPEATED_CELLS.div_ceil(usize::from(self.cols)) + 1;
+        repeat.max(STEP).max(usize::from(self.rows))
+    }
 }
+
+/// Cells one maximal REP of a wide character covers.
+const REPEATED_CELLS: usize = 2 * 65535;
 
 /// Bytes in one engine step of text and C0 controls.
 pub(crate) const STEP: usize = 64;

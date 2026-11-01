@@ -339,10 +339,9 @@ fn kind_of(bytes: &[u8]) -> Kind {
 
 /// Length of an unfinished but so far valid UTF-8 sequence ending the text.
 fn incomplete_utf8(text: &[u8]) -> usize {
-    (1..=text.len().min(3))
-        .rev()
-        .find(|&length| is_incomplete(&text[text.len() - length..]))
-        .unwrap_or(0)
+    (text.len().saturating_sub(3)..text.len())
+        .find(|&start| is_incomplete(&text[start..]))
+        .map_or(0, |start| text.len() - start)
 }
 
 fn is_incomplete(bytes: &[u8]) -> bool {

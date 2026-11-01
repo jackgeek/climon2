@@ -3,11 +3,11 @@
 
 use crate::geometry::Geometry;
 use alacritty_terminal::{
-    Term,
+    Grid, Term,
     event::{Event, EventListener},
     grid::Dimensions,
-    term::{Config, Osc52, TermMode},
-    vte::ansi::{Processor, Timeout},
+    term::{Config, Osc52, TermMode, cell::Cell},
+    vte::ansi::{CursorStyle, Processor, Timeout},
 };
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
@@ -115,5 +115,48 @@ impl Engine {
 
     pub(crate) fn mode(&self) -> TermMode {
         *self.term.mode()
+    }
+
+    /// Change the normal screen's history capacity, dropping its oldest rows
+    /// beyond it. The title event `set_options` always emits is discarded.
+    pub(crate) fn set_history(&mut self, rows: usize) {
+        self.term.set_options(config(rows));
+        self.events.borrow_mut().clear();
+    }
+
+    pub(crate) fn resize(&mut self, geometry: Geometry) {
+        self.term.resize(Size(geometry));
+    }
+
+    pub(crate) fn alternate(&self) -> bool {
+        self.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    /// History rows the normal screen holds, when it is the active screen.
+    pub(crate) fn normal_history(&self) -> Option<usize> {
+        (!self.alternate()).then(|| self.term.grid().history_size())
+    }
+
+    pub(crate) fn cursor_style(&self) -> CursorStyle {
+        self.term.cursor_style()
+    }
+
+    pub(crate) fn active(&self) -> &Grid<Cell> {
+        self.term.grid()
+    }
+
+    /// Read the normal screen's grid. While the alternate screen is active
+    /// this swaps screens and back, then restores the alternate grid exactly;
+    /// the swap sets the normal saved cursor to its current cursor (E1).
+    pub(crate) fn normal<R>(&mut self, read: impl FnOnce(&Grid<Cell>) -> R) -> R {
+        if !self.alternate() {
+            return read(self.term.grid());
+        }
+        let alternate = self.term.grid().clone();
+        self.term.swap_alt();
+        let result = read(self.term.grid());
+        self.term.swap_alt();
+        *self.term.grid_mut() = alternate;
+        result
     }
 }
