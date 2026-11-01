@@ -33,6 +33,10 @@ impl HomeLayout {
         &self.0
     }
 
+    pub fn config(&self) -> PathBuf {
+        self.0.join("config.jsonc")
+    }
+
     pub fn sessions(&self) -> PathBuf {
         self.0.join("sessions")
     }

@@ -1,14 +1,20 @@
 //! Platform-neutral session contracts: parsing and policy, never platform I/O.
 
 pub mod cli;
+pub mod config;
 pub mod diagnostics;
 pub mod exit;
+pub mod hello;
 mod identity;
 mod json;
+pub mod keys;
 pub mod layout;
 pub mod metadata;
 pub mod protocol;
+pub mod selector;
 pub mod session;
+pub mod startup_envelope;
+pub mod title;
 pub use identity::{ContractError, SessionId, Timestamp, VersionName};
 
 /// Keep hook instrumentation local to each binary's own feature selection (ADR 0004).

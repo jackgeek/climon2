@@ -11,6 +11,8 @@ pub const PTY_DRAIN_CAP: Duration = Duration::from_secs(1);
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub const HANGUP_GRACE: Duration = Duration::from_secs(5);
 
+pub(crate) const HELLO: u8 = 0x01;
+
 pub const MAX_FRAME_LENGTH: usize = 1_048_576;
 /// Limits include the type byte, just like the frozen length prefix.
 pub const MAX_DATA_FRAME_LENGTH: usize = 65_536;
@@ -240,7 +242,7 @@ struct ErrorBody {
 #[derive(Serialize, Deserialize)]
 struct Empty {}
 
-fn control(code: u8, value: &impl Serialize) -> io::Result<Frame> {
+pub(crate) fn control(code: u8, value: &impl Serialize) -> io::Result<Frame> {
     let body = serde_json::to_vec(value).map_err(io::Error::other)?;
     Frame::new(code, body)
 }
@@ -266,7 +268,7 @@ impl ClientMessage {
     pub fn to_frame(&self) -> io::Result<Frame> {
         match self {
             Self::Hello { protocol } => control(
-                0x01,
+                HELLO,
                 &HelloRequest {
                     protocol: *protocol,
                 },
@@ -287,7 +289,7 @@ impl ClientMessage {
 
     pub fn from_frame(frame: Frame) -> io::Result<Self> {
         match frame.type_code {
-            0x01 => json::<HelloRequest>(&frame).map(|hello| Self::Hello {
+            HELLO => json::<HelloRequest>(&frame).map(|hello| Self::Hello {
                 protocol: hello.protocol,
             }),
             0x11 => Ok(Self::Input(frame.body)),
@@ -308,7 +310,7 @@ impl ClientMessage {
 impl ServerMessage {
     pub fn to_frame(&self) -> io::Result<Frame> {
         match self {
-            Self::Hello(reply) => control(0x01, reply),
+            Self::Hello(reply) => control(HELLO, reply),
             Self::Output(bytes) => Frame::new(0x21, bytes.clone()),
             Self::Error { message } => error_frame(message),
             Self::Attached | Self::Exit { .. } => self.lifecycle_frame(),
@@ -325,7 +327,7 @@ impl ServerMessage {
 
     pub fn from_frame(frame: Frame) -> io::Result<Self> {
         match frame.type_code {
-            0x01 => json(&frame).map(Self::Hello),
+            HELLO => json(&frame).map(Self::Hello),
             0x21 => Ok(Self::Output(frame.body)),
             0x7f => error_message(&frame).map(|message| Self::Error { message }),
             _ => Self::from_lifecycle_frame(&frame),
