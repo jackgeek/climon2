@@ -43,6 +43,10 @@ fn issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors() {
         CliArgs::parse(["attach", "01234567"].map(OsString::from)).unwrap(),
         CliArgs::Attach(Selector::parse(OsStr::new("01234567")).unwrap())
     );
+    assert_eq!(
+        CliArgs::parse(["kill", "01234567"].map(OsString::from)).unwrap(),
+        CliArgs::Kill(Selector::parse(OsStr::new("01234567")).unwrap())
+    );
     for bad in [
         vec![],
         vec!["exec"],
@@ -55,6 +59,9 @@ fn issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors() {
         vec!["attach"],
         vec!["attach", "short"],
         vec!["attach", "01234567", "extra"],
+        vec!["kill"],
+        vec!["kill", "short"],
+        vec!["kill", "01234567", "extra"],
     ] {
         assert_eq!(
             CliArgs::parse(bad.into_iter().map(OsString::from))

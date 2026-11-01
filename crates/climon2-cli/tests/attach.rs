@@ -208,3 +208,110 @@ fn a_session_of_an_uninstalled_version_names_that_version() {
     drop(session);
     isolation.assert_clean();
 }
+
+/// `climon2 kill` without a terminal: (status, stdout, stderr).
+fn kill(isolation: &Isolation, cli: &Path, selector: &str) -> (i32, String, String) {
+    let output = std::process::Command::new(cli)
+        .env_clear()
+        .env("HOME", isolation.home())
+        .env("CLIMON2_HOME", isolation.climon2_home())
+        .args(["kill", selector])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    (
+        output.status.code().unwrap(),
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+fn installed_cli(isolation: &Isolation) -> PathBuf {
+    let installed = isolation.home().join("exe/0.1.0");
+    fs::create_dir_all(&installed).unwrap();
+    let cli = installed.join("climon2-cli");
+    fs::copy(bin_path("climon2-cli"), &cli).unwrap();
+    cli
+}
+
+#[test]
+fn kill_selects_exactly_one_live_session() {
+    let isolation = Isolation::new();
+    let cli = bin_path("climon2-cli");
+    let (status, stdout, stderr) = kill(&isolation, &cli, "abcdef12");
+    assert_eq!((status, stdout.as_str()), (125, ""));
+    assert!(
+        stderr.contains("no live session matches abcdef12"),
+        "{stderr}"
+    );
+
+    let home = home(&isolation);
+    let first = FakeSession::start(&home, 7, current);
+    let second = FakeSession::start(&home, 8, current);
+    let (status, _, stderr) = kill(&isolation, &cli, "12345678");
+    assert_eq!(status, 125);
+    assert!(stderr.contains("is ambiguous"), "{stderr}");
+    assert!(stderr.contains(first.metadata.session_id.as_str()));
+    assert!(stderr.contains(second.metadata.session_id.as_str()));
+    drop((first, second));
+    isolation.assert_clean();
+}
+
+#[test]
+fn kill_refuses_an_older_session_without_capabilities() {
+    let isolation = Isolation::new();
+    let session = FakeSession::start(&home(&isolation), 9, legacy);
+    let (status, stdout, stderr) = kill(&isolation, &bin_path("climon2-cli"), "12345678");
+    assert_eq!((status, stdout.as_str()), (125, ""));
+    let expected = format!(
+        "climon2: error: session {} does not support kill",
+        session.metadata.session_id
+    );
+    assert!(stderr.starts_with(&expected), "{stderr}");
+    drop(session);
+    isolation.assert_clean();
+}
+
+/// Kill never reads the configuration, so a malformed file cannot stop it.
+#[test]
+fn kill_of_an_uninstalled_version_names_that_version_and_ignores_config() {
+    let isolation = Isolation::new();
+    let cli = installed_cli(&isolation);
+    let home = home(&isolation);
+    fs::write(home.join("config.jsonc"), "{ malformed").unwrap();
+    let session = FakeSession::start(&home, 10, current);
+    let (status, _, stderr) = kill(&isolation, &cli, "12345678");
+    assert_eq!(status, 125);
+    let expected = format!(
+        "session {} needs climon2 999.0.0, which is not installed",
+        session.metadata.session_id
+    );
+    assert!(stderr.contains(&expected), "{stderr}");
+    drop(session);
+    isolation.assert_clean();
+}
+
+/// Attach validates the client section only: an unused bad retention is ignored,
+/// but a malformed file still fails before dispatch.
+#[test]
+fn attach_validates_only_the_client_configuration() {
+    let isolation = Isolation::new();
+    let cli = installed_cli(&isolation);
+    let home = home(&isolation);
+    let config = home.join("config.jsonc");
+    fs::write(&config, r#"{"scrollback":{"max_rows":100001}}"#).unwrap();
+    let session = FakeSession::start(&home, 11, current);
+    let (status, screen) = attach_in_terminal(&isolation, &cli, "12345678", None);
+    assert_eq!(status, 125);
+    assert!(screen.contains("which is not installed"), "{screen}");
+    drop(session);
+
+    fs::write(&config, r#"{"client":{"escape_prefix":"Alt+x"}}"#).unwrap();
+    let session = FakeSession::start(&home, 12, current);
+    let (status, screen) = attach_in_terminal(&isolation, &cli, "12345678", None);
+    assert_eq!(status, 125);
+    assert!(screen.contains("config.jsonc is invalid"), "{screen}");
+    assert!(!screen.contains("which is not installed"), "{screen}");
+    drop(session);
+    isolation.assert_clean();
+}

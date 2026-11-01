@@ -2,6 +2,7 @@
 
 mod attach;
 mod exec;
+mod kill;
 pub mod list;
 
 use climon2_core::{
@@ -101,6 +102,7 @@ enum Work {
     Exec(CommandArgs),
     List { json: bool },
     Attach(Selector),
+    Kill(Selector),
 }
 
 fn work(arguments: CliArgs) -> Result<Work, String> {
@@ -108,6 +110,7 @@ fn work(arguments: CliArgs) -> Result<Work, String> {
         CliArgs::Exec(command) => Ok(Work::Exec(command)),
         CliArgs::List { json } => Ok(Work::List { json }),
         CliArgs::Attach(selector) => Ok(Work::Attach(selector)),
+        CliArgs::Kill(selector) => Ok(Work::Kill(selector)),
         other => Err(presentation(&other)),
     }
 }
@@ -115,8 +118,7 @@ fn work(arguments: CliArgs) -> Result<Work, String> {
 fn presentation(arguments: &CliArgs) -> String {
     match arguments {
         CliArgs::Version => format!("climon2 {}", env!("CARGO_PKG_VERSION")),
-        _ => "usage: climon2 exec <command> [args...] | list [--json] | attach <session-prefix>"
-            .to_owned(),
+        _ => climon2_core::cli::USAGE.to_owned(),
     }
 }
 
@@ -139,5 +141,6 @@ fn command(work: Work, home: &Path, general: &LogFile, filter: Option<&str>) -> 
         Work::Exec(command) => exec::run(home, command, general, filter),
         Work::List { json } => list::run(home, json).map(|()| 0).map_err(Error::from),
         Work::Attach(selector) => attach::run(home, selector),
+        Work::Kill(selector) => kill::run(home, &selector),
     }
 }

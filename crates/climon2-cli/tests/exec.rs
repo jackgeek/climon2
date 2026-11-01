@@ -910,3 +910,162 @@ fn log_suffix_escapes_control_characters_in_the_actual_absolute_home() {
     assert!(error.contains("data\\nnext/logs/general/"), "{error}");
     assert_eq!(fs::read_dir(home.join("logs/general")).unwrap().count(), 1);
 }
+
+/// Starts `climon2 exec <fixture> hold` attached in a terminal and waits for the fixture.
+fn held_session(layout: &Layout) -> (Terminal, climon2_core::metadata::SessionMetadata) {
+    let mut command = layout.command();
+    command.args(["exec"]);
+    command.arg(layout.fixture());
+    command.arg("hold");
+    let mut terminal = Terminal::spawn(command, 31, 97).unwrap();
+    terminal
+        .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
+        .unwrap();
+    (terminal, only_metadata(layout))
+}
+
+/// `climon2 kill` with no terminal and an inherited attach envelope that must be
+/// overwritten: (status, stdout, stderr).
+fn kill_session(layout: &Layout, selector: &str) -> (i32, String, String) {
+    let output = layout
+        .process()
+        .env("CLIMON2_TEST_ID", layout.marker())
+        .env(
+            "CLIMON2_CLIENT_STARTUP",
+            r#"{"schema":1,"operation":"attach","settings":{"escape_prefix":29,"take_control_key":20}}"#,
+        )
+        .args(["kill", selector])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    (
+        output.status.code().unwrap(),
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn kill_terminates_a_detached_session_silently_after_cleanup() {
+    let layout = Layout::new();
+    let (mut terminal, metadata) = held_session(&layout);
+    terminal.send(b"\x1dd").unwrap();
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
+
+    let started = std::time::Instant::now();
+    let selector = &metadata.session_id.as_str()[..8];
+    assert_eq!(
+        kill_session(&layout, selector),
+        (0, String::new(), String::new())
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(layout.files_clean(), "kill confirmed before cleanup");
+    layout.clean();
+}
+
+#[test]
+fn kill_while_attached_gives_the_client_the_signal_status() {
+    let layout = Layout::new();
+    let (mut terminal, metadata) = held_session(&layout);
+    assert_eq!(
+        kill_session(&layout, metadata.session_id.as_str()),
+        (0, String::new(), String::new())
+    );
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 129);
+    layout.clean();
+}
+
+#[test]
+fn attach_overwrites_an_inherited_kill_envelope() {
+    let layout = Layout::new();
+    let (mut first, metadata) = held_session(&layout);
+    first.send(b"\x1dd").unwrap();
+    assert_eq!(first.wait_exit(Duration::from_secs(8)).unwrap(), 0);
+
+    let mut command = layout.command();
+    command.env(
+        "CLIMON2_CLIENT_STARTUP",
+        r#"{"schema":1,"operation":"kill"}"#,
+    );
+    command.args(["attach", metadata.session_id.as_str()]);
+    let mut second = Terminal::spawn(command, 31, 97).unwrap();
+    second
+        .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
+        .unwrap();
+    second.send(b"exit\n").unwrap();
+    assert_eq!(second.wait_exit(Duration::from_secs(8)).unwrap(), 0);
+    layout.clean();
+}
+
+/// A session that answers every hello as kill-capable but never confirms.
+fn unconfirming_session(layout: &Layout) -> climon2_core::metadata::SessionMetadata {
+    use climon2_core::{
+        hello::{Lifecycle, SessionState, advertise},
+        protocol::{HelloReply, PROTOCOL_VERSION, read_frame, write_frame},
+    };
+    let home = climon2_platform::runtime::canonical_home(&layout.home()).unwrap();
+    let id: climon2_core::SessionId = "12345678-1234-4234-8234-123456789abc".parse().unwrap();
+    let socket = climon2_platform::runtime::RuntimeDirectory::prepare(&home)
+        .unwrap()
+        .socket_path(&id)
+        .unwrap();
+    let pid = std::process::id();
+    let metadata: climon2_core::metadata::SessionMetadata =
+        serde_json::from_value(serde_json::json!({
+            "format_version":1,"session_id":id.as_str(),"socket_path":socket,
+            "daemon_pid":pid,
+            "daemon_start_time":climon2_platform::process::start_time(pid).unwrap().unwrap(),
+            "command":"bash","args":[],"cwd":home,"depth":1,
+            "created_at":"2026-10-28T07:21:02.930Z","climon2_version":"0.1.0"
+        }))
+        .unwrap();
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::write(
+        home.join("sessions").join(format!("{id}.pty")),
+        metadata.to_json().unwrap(),
+    )
+    .unwrap();
+    let listener = climon2_platform::runtime::bind(std::path::Path::new(&socket)).unwrap();
+    let reply = HelloReply {
+        session_id: id,
+        climon2_version: metadata.climon2_version.clone(),
+        protocol: PROTOCOL_VERSION,
+    };
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for socket in listener.incoming() {
+            let mut socket = socket.unwrap();
+            if read_frame(&mut socket).is_ok() {
+                let state = SessionState::new(Lifecycle::Detached, 0, false).unwrap();
+                let _ = write_frame(&mut socket, &advertise(&reply, state).unwrap());
+            }
+            held.push(socket);
+        }
+    });
+    metadata
+}
+
+#[test]
+fn an_unconfirmed_kill_fails_at_the_deadline_and_reaps_only_its_helper() {
+    let layout = Layout::new();
+    let metadata = unconfirming_session(&layout);
+    let started = std::time::Instant::now();
+    let (status, stdout, stderr) = kill_session(&layout, "12345678");
+    let elapsed = started.elapsed();
+    assert_eq!((status, stdout.as_str()), (125, ""));
+    assert!(
+        stderr.starts_with(&format!(
+            "climon2: error: termination of session {} was not confirmed",
+            metadata.session_id
+        )),
+        "{stderr}"
+    );
+    assert!(
+        elapsed >= Duration::from_secs(10) && elapsed < Duration::from_secs(12),
+        "{elapsed:?}"
+    );
+    assert!(layout.live_pids().is_empty(), "helper was not reaped");
+    let sessions = layout.home().join("sessions");
+    assert_eq!(fs::read_dir(sessions).unwrap().count(), 1);
+    fs::remove_file(metadata.socket_path.as_str()).unwrap();
+}
