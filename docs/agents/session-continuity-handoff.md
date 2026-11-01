@@ -132,8 +132,9 @@ than reopening the abandoned engine/renderer research.
   `bbb2cbf9470a6707b1205fbddbdb25109b14e2fd`; consult #43/#56 when selecting
   compatible dependency declarations. Prototype branches are reference assets,
   not product implementations to merge wholesale.
-- ADRs 0001-0005 exist locally. #44 refers to ADR 0006, which was absent from
-  this baseline; reconcile the authoritative startup contract when documenting it.
+- Read ADRs 0001-0006, including
+  `docs/adr/0006-version-matched-client-startup-envelope.md`, for the frozen
+  invocation and operation-specific startup envelope.
 - Respect the shipped/test-only dependency directions in ADR 0004. If a shipped
   VT crate is extracted, update dependency enforcement and quality/coverage source
   sets together so its functions remain subject to the gates.
