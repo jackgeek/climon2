@@ -154,8 +154,10 @@ claim those clocks necessarily expire in that OS scenario.
 
 With `test-hooks` only, `CLIMON2_DAEMON_FAULT=panic|never-ready` injects named
 pre-command startup faults. Their test checks capped panic capture, real
-five-second startup timeout and absence of spawned command/files. These fault
-branches and the extra generic fixture binary are absent from ordinary release
-builds. The ignored libtest function is a subprocess fixture, not a skipped
-requirement. Every controlled final path checks owned process/socket/metadata
-cleanup; logs intentionally survive.
+five-second startup timeout and absence of spawned command/files.
+`CLIMON2_DAEMON_FAULT=pty-write` makes the next PTY write fail, so the
+authoritative-failure path (release, then `Error`, client status 125) can be
+tested. These fault branches and the extra generic fixture binary are absent
+from ordinary release builds. The ignored libtest function is a subprocess
+fixture, not a skipped requirement. Every controlled final path checks owned
+process/socket/metadata cleanup; logs intentionally survive.

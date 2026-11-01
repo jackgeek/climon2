@@ -40,7 +40,8 @@ sibling. Fixtures remain test-only sibling binaries, not shipped programs.
 The smoke scenario leaves `CLIMON2_LOG` unset and checks the actual installed
 release's logs contain no DEBUG or TRACE records.
 
-Internal-only fault injections and the explicitly synthetic client-invocation
+Internal-only fault injections (including the client's `hold-attach` and the
+daemon's `pty-write`) and the explicitly synthetic client-invocation
 fixture are debug-sibling scenarios, not applicable to an unmodified no-hooks
 archive. All black-box terminal, lifecycle, missing-client, privacy, logging and
 raw-socket cases run against the archive. A removed client is restored by
@@ -52,6 +53,15 @@ client/session before installing the current archive into the same executable
 home, then both CLIs list both versions and both clients deliver command exit
 statuses. With no prior archive, the first-release gate explicitly reports that
 no compatibility evidence was fabricated.
+
+## Session continuity scenarios
+
+Detach and reattach, takeover and hand-back, the placeholder, kill, listing
+state, restoration and release are packaged scenarios driven through controlled
+bash 5 outer terminals (section 6.1 of
+`docs/agents/session-continuity-plan.reviewed.gao.reviewed.md`). Each asserts
+the actual exit statuses and ends with `assert_clean()`. Ordering uses
+acknowledgement files and observable completion, never sleeps.
 
 ## Specification mapping
 

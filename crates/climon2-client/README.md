@@ -59,7 +59,11 @@ sequences are emitted. Leave policy belongs exclusively to the daemon.
 - `log_filter_reaches_client_through_environment_without_cli_flags`
 - `concurrent_clients_on_one_session_each_write_their_own_log`
 
-The panic injection `CLIMON2_CLIENT_FAULT=panic` exists only with `test-hooks`.
+The fault injections exist only with `test-hooks`. `CLIMON2_CLIENT_FAULT=panic`
+panics after entering raw mode. `CLIMON2_CLIENT_FAULT=hold-attach` with
+`CLIMON2_CLIENT_HOLD=<path>` waits, at most 4 s (inside the daemon's 5 s
+initial-attachment deadline), for that file to exist before sending `Attach`, so
+tests can produce session output before the first restoration.
 The panic hook logs a static event, never payloads, argv or environment values.
 Tests create isolated files under the project and never run nested Cargo builds.
 Restoration assertions compare all configuration flags, control characters and
