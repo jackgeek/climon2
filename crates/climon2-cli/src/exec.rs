@@ -226,6 +226,8 @@ impl Startup<'_> {
             client.env("CLIMON2_LOG", filter);
         }
         tracing::debug!(session_id = %self.id, "handing off to version-matched client");
+        #[cfg(feature = "test-hooks")]
+        hold_handoff();
         Err(Error::from(client.exec()))
     }
 
@@ -262,6 +264,19 @@ struct Started<'a> {
     pid: u32,
     metadata: &'a Path,
     socket: &'a Path,
+}
+
+/// Test hook: announces `<CLIMON2_CLI_HOLD>.held`, then waits until the
+/// `CLIMON2_CLI_HOLD` file exists before the client starts.
+#[cfg(feature = "test-hooks")]
+fn hold_handoff() {
+    let Some(release) = std::env::var_os("CLIMON2_CLI_HOLD").map(PathBuf::from) else {
+        return;
+    };
+    let _ = fs::write(release.with_extension("held"), b"");
+    while !release.exists() {
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 impl Drop for Started<'_> {

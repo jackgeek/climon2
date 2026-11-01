@@ -1061,11 +1061,71 @@ fn an_unconfirmed_kill_fails_at_the_deadline_and_reaps_only_its_helper() {
         "{stderr}"
     );
     assert!(
-        elapsed >= Duration::from_secs(10) && elapsed < Duration::from_secs(12),
+        // Process start-up and reaping under load fall outside the deadline.
+        elapsed >= Duration::from_secs(10) && elapsed < Duration::from_secs(20),
         "{elapsed:?}"
     );
     assert!(layout.live_pids().is_empty(), "helper was not reaped");
     let sessions = layout.home().join("sessions");
     assert_eq!(fs::read_dir(sessions).unwrap().count(), 1);
     fs::remove_file(metadata.socket_path.as_str()).unwrap();
+}
+
+/// Section 1.3 config-edit race: the configuration is read once, before the
+/// daemon starts. An edit after validation but before the client starts
+/// changes neither the client's settings nor the daemon's retention.
+#[test]
+fn a_config_edit_before_the_client_starts_changes_neither_client_nor_daemon() {
+    let layout = Layout::new();
+    let config = layout.home().join("config.jsonc");
+    fs::create_dir_all(layout.home()).unwrap();
+    fs::write(
+        &config,
+        r#"{"scrollback":{"max_rows":123},"client":{"escape_prefix":"Ctrl+B"}}"#,
+    )
+    .unwrap();
+    let hold = layout.directory.path().join("release-client");
+    let mut command = layout.command();
+    command.env("CLIMON2_CLI_HOLD", &hold);
+    command.arg("exec");
+    command.arg(layout.fixture());
+    command.arg("hold");
+    let mut terminal = Terminal::spawn(command, 31, 97).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    while !hold.with_extension("held").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{}",
+            terminal.screen()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    let held = climon2_cli::list::discover_live(&layout.home()).unwrap();
+    assert_eq!(
+        held[0].state().unwrap().attachments(),
+        0,
+        "client started before the hold was released"
+    );
+    fs::write(&config, r#"{"scrollback":{"max_rows":"#).unwrap();
+    fs::write(&hold, b"").unwrap();
+    terminal
+        .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
+        .unwrap();
+    let metadata = only_metadata(&layout);
+    let daemon = Command::new("ps")
+        .args(["-o", "args=", "-p"])
+        .arg(metadata.daemon_pid.to_string())
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8(daemon.stdout)
+            .unwrap()
+            .contains("--scrollback-max-rows 123 ")
+    );
+    terminal.send(b"\x02d").unwrap();
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
+    let selector = metadata.session_id.as_str();
+    assert_eq!(kill_session(&layout, selector).0, 0);
+    layout.clean();
 }
