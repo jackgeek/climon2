@@ -44,7 +44,7 @@ fn confirm(mut child: Child, deadline: Instant, id: &SessionId) -> Result<u32, E
         if let Some(status) = child.try_wait()? {
             return Ok(code(status));
         }
-        if Instant::now() > deadline {
+        if deadline.checked_duration_since(Instant::now()).is_none() {
             let _ = child.kill();
             let _ = child.wait();
             return Err(Error::new(
