@@ -55,7 +55,7 @@ fn issue20_frame_bounds_include_type_and_reject_truncation_before_allocation() {
         let error = read_frame(&mut header.as_slice()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
-    for code in [0, 2, 0x13, 0x23, 0x7e, 0x80, 0xff] {
+    for code in [0, 2, 0x0f, 0x17, 0x1f, 0x28, 0x2f, 0x7e, 0x80, 0xff] {
         assert!(Frame::new(code, vec![]).is_err());
         assert_eq!(
             read_frame(&mut [0, 0, 0, 1, code].as_slice())
@@ -69,5 +69,32 @@ fn issue20_frame_bounds_include_type_and_reject_truncation_before_allocation() {
             read_frame(&mut &*bytes).unwrap_err().kind(),
             io::ErrorKind::UnexpectedEof
         );
+    }
+}
+
+/// Plan 3.4: every protocol code frames; only Input and Output are data frames.
+#[test]
+fn continuity_codes_frame_and_only_input_and_output_have_the_data_limit() {
+    let codes = [
+        0x01, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
+        0x27, 0x7f,
+    ];
+    for code in codes {
+        let size = if matches!(code, 0x11 | 0x21) {
+            65_535
+        } else {
+            1_048_575
+        };
+        let frame = Frame::new(code, vec![b'x'; size]).unwrap();
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, &frame).unwrap();
+        assert_eq!(read_frame(&mut bytes.as_slice()).unwrap(), frame, "{code}");
+        let mut header = ((size + 2) as u32).to_be_bytes().to_vec();
+        header.push(code);
+        let error = read_frame(&mut header.as_slice()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{code}");
+    }
+    for code in [0x13, 0x14, 0x16, 0x23, 0x24, 0x27] {
+        assert!(Frame::new(code, vec![0; 65_536]).is_ok(), "{code}");
     }
 }
