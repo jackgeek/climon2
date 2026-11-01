@@ -1,5 +1,11 @@
 THROWAWAY #56: public-API forwarding and screen-transition qualification.
 
+Continuation: QUALIFICATION-STATUS.txt consolidates bounded engine/native
+evidence and outstanding gates without overwriting this historical scope.
+DEPENDENCY-INVENTORY.json and verify_provenance.py retain verified locked
+archive/source/licence evidence. SECURITY-FINDINGS.txt records a later bounded
+advisory/source review; none of these assets confers release-pin approval.
+
 Alacritty baseline (unchanged):
 https://github.com/alacritty/alacritty/tree/bbb2cbf9470a6707b1205fbddbdb25109b14e2fd
 Apache-2.0:

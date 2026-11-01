@@ -1,0 +1,57 @@
+THROWAWAY #56: bounded source/dependency security review.
+Reviewed 2026-11-01 UTC. No production or safe-release-pin approval.
+
+Result
+  No actionable security vulnerabilities found in the reviewed scope.
+  This is not an exhaustive engine audit or a guarantee of absence.
+  The user explicitly authorized this review after accepting publication
+  of the separate bounded provenance stage.
+
+Advisory checks
+  Exact-version OSV queries returned no advisories for all 55 registry packages
+  in the committed dependency inventory, including target-specific resolutions.
+  No matching advisory IDs/affected ranges were returned.
+  OSV queries for alacritty_terminal 0.26.1-dev and 0.26.1 returned no records.
+  The public Alacritty GitHub advisories page reports no published advisories.
+  Registry version queries are not affected-range proof for the exact engine
+  Git revision bbb2cbf9470a6707b1205fbddbdb25109b14e2fd. That distinction remains
+  a review limitation. cargo-audit was not installed; no global installation,
+  engine revision change or dependency upgrade was performed.
+
+  Authoritative records:
+    https://api.osv.dev/v1/query
+    https://google.github.io/osv.dev/api/
+    https://github.com/alacritty/alacritty/security/advisories
+  OSV lookup shape: package.ecosystem = crates.io, package.name and version
+  taken from DEPENDENCY-INVENTORY.json. Advisory data changes over time;
+  a future release requires a fresh check of its actual dependency resolution.
+  The review report is retained here; no raw advisory response capture or
+  independent cargo-audit result is claimed.
+
+Source coverage
+  Read-only specialist review of the new provenance checker/tests/inventory,
+  prototype streaming input, timing/model seams, and pinned engine
+  configuration/event/clipboard handlers.
+  Checked the pending diff and whitespace; did not duplicate the existing
+  runner, full coverage/mutation suite, or all upstream source.
+  No production host emitter, serializer, daemon event loop or transport
+  exists in this prototype. Retained test events do not authorize OSC52/OSC8
+  or other excluded host side effects. Default OSC52 OnlyCopy must not be
+  mistaken for a production supported clipboard policy.
+
+Accepted risks and non-findings
+  Arbitrary upstream allocation/control-string retention, combining truncation,
+  in-process OOM/abort/stall and possible inability to run bounded cleanup
+  were explicitly accepted in the reduced contract. They were not reclassified
+  as new actionable defects to force an engine patch or custom budget.
+  Missing future production integration is a qualification gap, not an
+  exploitable defect in this standalone probe.
+  VS Code's known application-keypad mapping gap is outside this security
+  review and remains an explicit support blocker.
+
+Next approval boundary
+  This closes only the bounded advisory/source-review pass, not release-pin
+  approval. Full engine/profile acceptance, production rendering/query/control
+  delivery, costs/failure qualification and the blocked VS Code support
+  requirement remain outstanding on #56/#43 and downstream #48.
+  No code fix, host patch, fallback, issue closure or production merge resulted.

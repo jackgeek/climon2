@@ -1,0 +1,155 @@
+THROWAWAY #56: consolidated qualification and source-provenance continuation.
+No production merge, engine patch, safe release-pin approval or issue closure.
+
+Outcome
+  The unchanged baseline and existing locked probe reproduce successfully in
+  a fresh isolated worktree. All 55 resolved registry dependency archives match
+  Cargo.lock SHA-256 checksums; 3036 unpacked archive files match their originals.
+  Each registry package has a declared SPDX licence and retained root licence
+  files. Alacritty is unchanged at the expected commit/tree and retains its
+  Apache licence. This is identity/licence evidence, not a vulnerability audit,
+  legal distribution approval or complete source/dependency acceptance.
+  Registry inventory includes non-macOS dependencies, not just compiled crates.
+  No dependency or engine revision changed.
+
+  Actual engine probes and native-host results must not be conflated. Native
+  Terminal.app bounded cursor/keypad/paste findings were accepted separately.
+  VS Code's repeated 9/10 input result and diagnosed application-keypad gap
+  remain FAIL. The developer explicitly withheld VS Code support approval.
+  No other native host or broader physical-key profile is approved here.
+
+Consolidated reduced-contract evidence
+  Requirement                              Verdict and boundary
+  Complete mechanical forwarding           PASS: all 71 pinned signatures.
+  Adapter preservation                     PASS: 276 differential executions;
+                                           not independent engine correctness.
+  Deferred normal exposure/transitions     PASS at model seam: independent saved
+                                           text/history/cursor assertions;
+                                           brief normal output kept in one feed
+                                           and explicit/timeout sync drains.
+  Normal/history reflow                    PASS for exercised shrink/widen cases,
+                                           including hidden normal state.
+  Zero/finite history                      PASS for 0 and 2 retained rows;
+                                           default 10000 visible in source.
+  Full configured history/geometry policy   UNPROVEN in this standalone probe;
+                                           startup/attachment bounds and
+                                           controller capability loss need
+                                           daemon/control integration.
+  First-begin sync deadline                 PASS at public parser API: 150 ms
+                                           latch, no extension, explicit end,
+                                           idle timeout flush and rearming.
+                                           Native-visible scheduling latency
+                                           and CPU-stall containment unproven.
+  Legacy codec/actions/paste shielding      PASS at tested codec seam; streaming
+                                           and stale-partial-input assertions.
+  Native input alignment                   Terminal.app bounded cases accepted.
+                                           VS Code application keypad FAIL;
+                                           support explicitly BLOCKED.
+  Reply authority                          PASS only for independent event
+                                           assertions and codec collision
+                                           evidence. Real outer-response
+                                           separation/delivery UNPROVEN.
+  Titles/bells                             PASS as current live model events.
+                                           Derived repaint without historical
+                                           replay is not implemented here.
+  Safe derived rendering/restoration       UNPROVEN end to end: this probe
+                                           observes cells, not a serializer.
+                                           No raw-output fallback authorized.
+  Excluded metadata                        Differential forwarding retained;
+                                           not permission to emit OSC8,
+                                           clipboard or proprietary actions.
+  Production shared library boundary       UNPROVEN: inspection types are
+                                           intentionally upstream/public.
+                                           ADR 0004 amendment still required
+                                           when climon2-vt is introduced.
+  Source identity/locked dependencies       PASS at verified provenance seam.
+  Retained licence declarations/files      PASS at inventory seam; no legal
+                                           distribution decision inferred.
+  Source/dependency vulnerability review    Bounded pass: no actionable findings;
+                                           55 exact-version OSV checks and
+                                           selected source seams reviewed.
+                                           Not exhaustive/safe-pin approval;
+                                           see SECURITY-FINDINGS.txt.
+  Production costs/failure/transport        UNPROVEN, with previously accepted
+                                           allocation/OOM/stall risks intact.
+  Human complete engine/host acceptance     PENDING; #56 and #43 remain open.
+
+Source-seam review
+  Pinned upstream alacritty_terminal/src/term/mod.rs:334-366 provides public
+  Config history, Kitty and OSC52 options. Default history is 10000; Kitty is
+  false. OSC52 defaults to OnlyCopy, not Disabled. The accepted forwarding test
+  deliberately retains upstream event behavior and is not a host emitter.
+  Unsupported clipboard events must not be treated as product approval.
+  Term::new at lines 410-444 allocates authoritative active and inactive grids;
+  inactive history starts at zero. There is no PTY launch in this constructor.
+
+  The wrapper at probe/src/lib.rs forwards Handler operations mechanically and
+  snapshots normal state at actual transitions, rather than final-feed mode.
+  Its View clones cells/history for inspection; that clone's production cost
+  remains unqualified. The tests in probe/tests/transitions.rs and reflow.rs
+  use independent expected text/cursor/history, not only same-engine replay.
+  probe/src/timing.rs retains the first deadline and requires the caller to
+  service it. Tests do not prove a future daemon event loop meets that deadline.
+
+  Upstream alacritty_terminal/Cargo.toml and src/lib.rs:7-16 also include public
+  PTY/event-loop modules and Unix/Windows dependencies. Turning default features
+  off does not make the upstream dependency graph platform-free. The intended
+  climon2-vt boundary must still keep daemon I/O outside its API; no upstream
+  patch or new production crate was introduced. The inventory is the prototype's
+  resolution, not a decided production dependency footprint or cross-platform
+  build qualification.
+
+Immutable earlier evidence
+  Engine/codec baseline:
+    https://github.com/jackgeek/climon2/tree/63256f62958d7a40b63a698087d33bea4cb3fc40/prototypes/alacritty-forwarding
+  Accepted Terminal.app cursor/keypad:
+    https://github.com/jackgeek/climon2/issues/56#issuecomment-6548840912
+  Accepted Terminal.app paste evidence reuse:
+    https://github.com/jackgeek/climon2/issues/56#issuecomment-6549599361
+  Complete VS Code runs:
+    https://github.com/jackgeek/climon2/issues/56#issuecomment-6551217367
+  VS Code diagnosis and explicit support blocker:
+    https://github.com/jackgeek/climon2/issues/56#issuecomment-6551385796
+  Old removed requirements and failed comparisons remain historical; this
+  matrix does not turn them into passes.
+
+Reproduction
+  Use Rust/Cargo 1.96.0, Python 3, Git, and Cargo build prerequisites.
+  From this prototype worktree:
+    bash prototypes/alacritty-forwarding/run.sh
+  The existing runner fetches the pinned upstream source and checks the clean
+  revision, complete Handler surface, formatting, Clippy and 27 runtime tests.
+  It is unchanged in this continuation.
+  Then from prototypes/alacritty-forwarding:
+    python3 -m unittest -q test_provenance
+    python3 verify_provenance.py > /tmp/c56-dependency-inventory.json
+    cmp DEPENDENCY-INVENTORY.json /tmp/c56-dependency-inventory.json
+  The inventory command is offline after the runner, includes target-specific
+  resolved registry packages, and fails explicitly on missing/mismatched
+  archives/source/licences. It does not inspect user terminals or credentials.
+  Local Cargo source/cache paths are not published in the inventory.
+  The checker reads tar members without extracting them.
+  No quality-tool rerun on unchanged Rust code is claimed beyond the existing
+  runner; previous measured complexity/mutation evidence keeps its own scope.
+
+Action log
+  Continued other #56 gates without reopening the VS Code support decision.
+  Read existing #56 evidence, consolidated #43 scope, provenance, ADR 0004,
+  engine configuration/dependency seams and relevant independent tests.
+  Created a separate throwaway worktree from the accepted engine/codec baseline;
+  left the native prototype and other sessions' worktrees untouched.
+  Reproduced the complete existing runner on the pinned toolchain.
+  Obtained locked offline Cargo metadata; verified the upstream commit/tree,
+  cached crate archives, unpacked source and retained licence declarations.
+  Cargo's cache lacks the assumed .cargo-checksum.json files, so compared source
+  directly with checksum-verified archives instead; no dependency reinstall.
+  Added a small offline inventory verifier after failing tests, proving both
+  archive/source tampering and out-of-package path rejection. Two tests pass;
+  compilation/whitespace checks and exact inventory reproduction pass.
+  Recorded 55 archive checks, 3036 file checks and source/API caveats without
+  claiming vulnerability review, production readiness or host acceptance.
+  Obtained human acceptance/publication permission for this bounded stage and
+  explicit authorization for a read-only source/dependency security review.
+  The specialist found no actionable vulnerabilities in selected seams and no
+  matching OSV records for the 55 locked registry packages. Retained exact
+  coverage limitations in SECURITY-FINDINGS.txt; no safe-release-pin claim.
