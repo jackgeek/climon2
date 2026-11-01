@@ -1,0 +1,13 @@
+{
+  "xterm_version": "6.1.0-beta.304",
+  "upstream_git_head": "c58ea3637f3968e0e6e79cd92cf9aace7ef89ee2",
+  "registry_url": "https://registry.npmjs.org/@xterm%2Fxterm/6.1.0-beta.304",
+  "tarball_url": "https://registry.npmjs.org/@xterm/xterm/-/xterm-6.1.0-beta.304.tgz",
+  "tarball_integrity": "sha512-Wq9d4qFYslYQBIan+riXotdyurtREc6v+HWdAwV6Y2JSDI9eJ1dkWm/fzYb2rCGgGnM3baiYuSK4Z6OLNKLzDw==",
+  "npm_tarball_sha512_verified": true,
+  "official_bundle_sha256": "a796fb8366f676fbb6ed9f577b589694d1b79816a44fd264389c9714c37f150b",
+  "shipped_bundle_sha256": "45b51f9aea7f7dfd5b1b076ef45e188eec8be0a9aac7349d303cc4058aaa3c98",
+  "executable_prefix_sha256": "e406761f5195adbd8d3975be407ef80708ec9ab1f4118ba5787a725bb7b37dc9",
+  "executable_prefix_equal": true,
+  "difference": "Only final sourceMappingURL directive and preceding newline; no executable-byte change"
+}

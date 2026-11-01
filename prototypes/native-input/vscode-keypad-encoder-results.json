@@ -1,0 +1,119 @@
+{
+  "status": "FAIL",
+  "host": "VS Code 1.144.0 shipped dependency",
+  "xterm_version": "6.1.0-beta.304",
+  "xterm_sha256": "45b51f9aea7f7dfd5b1b076ef45e188eec8be0a9aac7349d303cc4058aaa3c98",
+  "input_source": "Explicit synthetic DOM events; not a physical/native keyboard test",
+  "parser_modes_verified": true,
+  "cursor_positive_control": true,
+  "stages": [
+    {
+      "mode": "normal",
+      "application_keypad": false,
+      "event": {
+        "key": "1",
+        "code": "Numpad1",
+        "keyCode": 97,
+        "location": 3,
+        "shiftKey": false,
+        "altKey": false,
+        "ctrlKey": false,
+        "metaKey": false,
+        "repeat": false
+      },
+      "expected_hex": "31",
+      "encoded_hex": "31",
+      "matched": true
+    },
+    {
+      "mode": "normal",
+      "application_keypad": false,
+      "event": {
+        "key": "1",
+        "code": "Digit1",
+        "keyCode": 49,
+        "location": 0,
+        "shiftKey": false,
+        "altKey": false,
+        "ctrlKey": false,
+        "metaKey": false,
+        "repeat": false
+      },
+      "expected_hex": "31",
+      "encoded_hex": "31",
+      "matched": true
+    },
+    {
+      "mode": "application",
+      "application_keypad": true,
+      "event": {
+        "key": "1",
+        "code": "Numpad1",
+        "keyCode": 97,
+        "location": 3,
+        "shiftKey": false,
+        "altKey": false,
+        "ctrlKey": false,
+        "metaKey": false,
+        "repeat": false
+      },
+      "expected_hex": "1b4f71",
+      "encoded_hex": "31",
+      "matched": false
+    },
+    {
+      "mode": "application",
+      "application_keypad": true,
+      "event": {
+        "key": "1",
+        "code": "Digit1",
+        "keyCode": 49,
+        "location": 0,
+        "shiftKey": false,
+        "altKey": false,
+        "ctrlKey": false,
+        "metaKey": false,
+        "repeat": false
+      },
+      "expected_hex": "31",
+      "encoded_hex": "31",
+      "matched": true
+    },
+    {
+      "mode": "handoff-normal",
+      "application_keypad": false,
+      "event": {
+        "key": "1",
+        "code": "Numpad1",
+        "keyCode": 97,
+        "location": 3,
+        "shiftKey": false,
+        "altKey": false,
+        "ctrlKey": false,
+        "metaKey": false,
+        "repeat": false
+      },
+      "expected_hex": "31",
+      "encoded_hex": "31",
+      "matched": true
+    },
+    {
+      "mode": "handoff-normal",
+      "application_keypad": false,
+      "event": {
+        "key": "1",
+        "code": "Digit1",
+        "keyCode": 49,
+        "location": 0,
+        "shiftKey": false,
+        "altKey": false,
+        "ctrlKey": false,
+        "metaKey": false,
+        "repeat": false
+      },
+      "expected_hex": "31",
+      "encoded_hex": "31",
+      "matched": true
+    }
+  ]
+}

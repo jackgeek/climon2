@@ -15,6 +15,7 @@ import tempfile
 import time
 
 from terminal_app import quote, script, wait_file
+from receiver import SUITES
 
 
 EXECUTABLE = "/Applications/Visual Studio Code.app/Contents/MacOS/Code"
@@ -148,7 +149,7 @@ def inspect_ax_tree(pid, marker):
 
 
 def configure(root, marker, inspect_only=False, manual_focus=False, human_key_probe=False,
-              collect_all_stages=False, multiline_paste=False):
+              collect_all_stages=False, multiline_paste=False, suite="vscode"):
     profile = root / "profile" / "User"
     profile.mkdir(parents=True)
     workspace = root / marker
@@ -161,7 +162,7 @@ def configure(root, marker, inspect_only=False, manual_focus=False, human_key_pr
         receiver_arguments = [
             sys.executable, str(Path(__file__).with_name("receiver.py")),
             "--expected-tty", "self", "--report-dir", str(reports),
-            "--suite", "cursor-normal" if human_key_probe else "vscode",
+            "--suite", "cursor-normal" if human_key_probe else suite,
             "--input-timeout-seconds", "60" if human_key_probe else "8",
         ]
         if manual_focus:
@@ -229,13 +230,14 @@ def wait_for_terminal_focus(process, marker):
 
 def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=False,
         inspection_complete_file=None, native_accessibility=False, human_key_probe=False,
-        collect_all_stages=False, multiline_paste=False):
+        collect_all_stages=False, multiline_paste=False, suite="vscode"):
     marker = "CLIMON2-56-VSCODE-" + root.name
     workspace, reports = configure(
         root, marker, inspect_only, manual_focus=not inspect_only,
         human_key_probe=human_key_probe,
         collect_all_stages=collect_all_stages,
         multiline_paste=multiline_paste,
+        suite=suite,
     )
     with Path("/Applications/Visual Studio Code.app/Contents/Info.plist").open("rb") as source:
         version = plistlib.load(source)["CFBundleShortVersionString"]
@@ -323,7 +325,7 @@ def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=Fal
                 wait_for_human_file(
                     result_path, process, 65, "Human Up probe did not produce a receiver result",
                 )
-            for index in range(0 if human_key_probe else 10):
+            for index in range(0 if human_key_probe else len(SUITES[suite])):
                 stage = wait_file(reports / f"ready-{index}.json", result_path)
                 if process.poll() is not None or result_path.exists():
                     raise RuntimeError("Owned test process ended before input")
@@ -373,6 +375,7 @@ def main():
     parser.add_argument("--human-key-probe", action="store_true")
     parser.add_argument("--collect-all-stages", action="store_true")
     parser.add_argument("--multiline-paste-permission-confirmed", action="store_true")
+    parser.add_argument("--suite", choices=["vscode", "keypad-application"], default="vscode")
     args = parser.parse_args()
     if args.human_key_probe and (args.inspect_only or args.terminal_focus_file is None):
         parser.error("--human-key-probe requires --terminal-focus-file and not --inspect-only")
@@ -380,6 +383,8 @@ def main():
         parser.error("--inspection-complete-file requires --inspect-only")
     if args.collect_all_stages and (args.inspect_only or args.human_key_probe):
         parser.error("--collect-all-stages requires a complete automatic run")
+    if args.suite != "vscode" and (args.inspect_only or args.human_key_probe):
+        parser.error("--suite requires automatic input")
     for path in (args.window_ready_file, args.terminal_focus_file, args.inspection_complete_file):
         if path is not None and path.exists():
             parser.error("manual readiness paths must be new")
@@ -391,7 +396,7 @@ def main():
             report = run(root, args.window_ready_file, args.terminal_focus_file, args.inspect_only,
                          args.inspection_complete_file, args.native_accessibility_permission_confirmed,
                          args.human_key_probe, args.collect_all_stages,
-                         args.multiline_paste_permission_confirmed)
+                         args.multiline_paste_permission_confirmed, args.suite)
         except (RuntimeError, TimeoutError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
             report = {"status": "FAIL", "error": str(error),
                       "native_accessibility_requested": args.native_accessibility_permission_confirmed,

@@ -1,0 +1,28 @@
+{
+  "status": "FAIL",
+  "error": "Native input receiver failed",
+  "native_accessibility_requested": true,
+  "multiline_paste_warning_disabled": false,
+  "input_source": "System Events",
+  "announced_stages": [
+    "keypad-application"
+  ],
+  "receiver": {
+    "status": "FAIL",
+    "stages": [
+      {
+        "stage": "keypad-application",
+        "expected_hex": "1b4f71",
+        "matched": false,
+        "received_length": 1,
+        "matched_expected_hex": null
+      }
+    ],
+    "tty": "/dev/ttys006"
+  },
+  "ownership": {
+    "pid": 35944,
+    "marker": "CLIMON2-56-VSCODE-c56-j9v3ivto"
+  },
+  "launch_log_retained": "c56-j9v3ivto-launch.log"
+}

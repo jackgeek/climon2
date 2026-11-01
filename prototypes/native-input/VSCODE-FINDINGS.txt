@@ -25,6 +25,61 @@ Final bounded verdict
   standalone qualification stage with an explicit limitation, not engine or
   production approval. Historical failures below retain their original scope.
 
+Application-keypad diagnosis after the requested continuation
+  The developer chose further investigation rather than a support-boundary
+  decision. Minimized the native suite to one application-keypad stage:
+  ESC =, then the same guarded native keypad-1 event. It still fails with one
+  received byte; previous cursor transitions and paste are not load-bearing.
+  No clipboard operation occurred and the multiline-warning override was off.
+  See vscode-keypad-minimal-results.json. The developer has no physical numeric
+  keypad available; no physical-key comparison is claimed.
+
+  Ranked predictions before probing:
+    1. Synthetic macOS events lose keypad identity; explicit Numpad1 identity
+       should make the correct encoder produce ESC O q.
+    2. The legacy encoder does not use application-keypad state; even explicit
+       keypad identity with a parsed enabled mode should produce an ordinary digit.
+    3. The mode change is not parsed; inspecting state after ESC = should be false.
+
+  Prediction 2 is confirmed at the actual shipped dependency seam.
+  Loaded VS Code's archived @xterm/xterm 6.1.0-beta.304 bundle unchanged into an
+  isolated Node VM with a macOS platform identity. Its real parser toggles
+  applicationKeypadMode false -> true -> false for ESC > / ESC = / ESC >.
+  Its real KeyboardService returns known synthetic "1" for an explicit
+  Numpad1 DOM event (keyCode 97, location 3) in all three states. A Digit1
+  comparison also returns "1"; independent cursor normal/application positive
+  controls produce ESC [ A / ESC O A. No key encoder was reimplemented.
+  See keypad_encoder_probe.cjs and vscode-keypad-encoder-results.json.
+  The private read-only seam is diagnosis only, not a production dependency.
+  The script exits FAIL for the unchanged application-keypad expectation.
+
+  Source corroboration at published upstream commit
+  c58ea3637f3968e0e6e79cd92cf9aace7ef89ee2:
+    src/browser/services/KeyboardService.ts, evaluateKeyDown:
+      the legacy evaluator receives applicationCursorKeys, not applicationKeypad.
+    src/common/input/Keyboard.ts, evaluateKeyboardEvent:
+      the ordinary single-character branch returns the event key.
+  Immutable source URLs:
+    https://github.com/xtermjs/xterm.js/blob/c58ea3637f3968e0e6e79cd92cf9aace7ef89ee2/src/browser/services/KeyboardService.ts
+    https://github.com/xtermjs/xterm.js/blob/c58ea3637f3968e0e6e79cd92cf9aace7ef89ee2/src/common/input/Keyboard.ts
+  Verified the official package tarball against its published SHA-512 integrity.
+  Full bundle hashes differ because VS Code rewrites the final sourceMappingURL
+  and preceding newline; executable prefixes are identical. Exact hashes and
+  registry provenance are in vscode-keypad-dependency-provenance.json.
+
+  Losing native keypad identity is therefore not necessary to reproduce the
+  defect; the shipped legacy encoder lacks this mapping even with explicit
+  identity and correctly parsed mode. This is not evidence of an intentional
+  macOS-only policy. Native event metadata and physical keyboard behavior remain
+  unmeasured; only known synthetic event bytes were logged in the VM probe.
+  No allowed harness fix can add the missing host mapping. A custom translator,
+  extended-keyboard workaround, host patch or upstream contribution would
+  change the agreed scope and needs a separate decision. Support approval
+  remains withheld: the developer selected publication of this diagnosis while
+  leaving VS Code support blocked on application keypad. No upstream issue or
+  patch was authorized. Expectations and previous overall FAIL reports are
+  unchanged.
+
 Scope
   Developer confirmed cursor/keypad, standalone mode-handoff and ASCII/
   multiline Unicode paste ON/OFF seams. Separately authorized isolated test
@@ -253,7 +308,7 @@ Reproduction
   Offline from prototypes/native-input:
     python3 -m unittest -v
     python3 -m py_compile receiver.py vscode.py
-  Sixteen PTY/profile/automation-script tests pass; syntax and diff whitespace
+  Eighteen PTY/profile/automation-script tests pass; syntax and diff whitespace
   checks pass.
   No new mutation, CRAP, duplication, release or full-workspace pass claimed.
 
@@ -268,6 +323,13 @@ Reproduction
   because application keypad does not match. Without the explicit native
   accessibility opt-in, the earlier focus blocker remains possible.
   Do not bypass the guard or interpret an overall FAIL as full host support.
+  Minimal native reproduction uses the same readiness/AX permission but
+  --suite keypad-application; no multiline override or clipboard operation
+  is needed. Offline shipped-dependency reproduction, with Node 24:
+    node keypad_encoder_probe.cjs
+  This takes milliseconds and exits 1 for the exact missing ESC O q mapping.
+  It verifies the recorded bundle hash and refuses a different version/build.
+  It is an executable dependency probe, not a replacement for native evidence.
   Raw diagnostic logs are retained locally under ignored artifacts, not
   published. Sanitized findings and failure reports contain no user text.
 
@@ -312,6 +374,20 @@ Action log
   at a dialog, consulted official paste-warning documentation, and obtained
   separate disposable-profile permission. Completed two identical ten-stage
   runs, accepted the bounded verdict, and retained all intermediate failures.
+  On further continuation, offered a supported-boundary decision; the developer
+  chose keypad investigation. Added a one-stage suite after a failing profile
+  test; verified ordinary digits still fail and literal application bytes pass.
+  Corrected the new test's cleanup after interactive Bash ignored SIGTERM;
+  bounded test-process cleanup does not change the native fixture.
+  Reproduced the native mismatch without preceding stages. Ranked event-identity,
+  encoder-state and parser-state hypotheses; established physical comparison
+  was unavailable. Located the actual dependency in node_modules.asar, not
+  the workbench bundle or an installed @xterm directory. Added required standard
+  structuredClone/performance globals to the isolated VM and exercised the
+  shipped parser/encoder. Verified source and official executable provenance,
+  retained the red-capable probe and exact reports; made no upstream/host patch.
+  Obtained the developer's reaction: publish the diagnosis and leave VS Code
+  support blocked. Verified owned-process cleanup and exact report reproduction.
 
 Fix and verification
   Inspection-only mode now opens a plain Bash prompt so the developer can
@@ -320,13 +396,16 @@ Fix and verification
   focus uses a 600-second start-gate wait, followed by eight-second input
   measurement; the physical-key-only probe uses 60 seconds for human input.
   Terminal-focused automation no longer raises/refocuses the app before checking
-  AX focus, and missing AX focus fails closed. Sixteen offline
+  AX focus, and missing AX focus fails closed. Eighteen offline
   tests pass, including PTY execution through Bash, focus-deadline behavior,
   prompt persistence and focus-guard script generation. These changes do not
   establish only the bounded results listed above, not complete native support.
 
 Remaining
   The standalone stage is complete with an application-keypad limitation.
+  VS Code support is explicitly blocked on this limitation by the developer's
+  latest decision. The dependency diagnosis is complete; no further automatic
+  native retry or unsupported workaround is scheduled.
   Any broader supported-profile decision must account for that mismatch;
   forwarding application-keypad input is not qualified here. Production
   daemon/control-transfer integration, arbitrary keys/profiles and full

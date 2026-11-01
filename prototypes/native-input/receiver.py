@@ -34,6 +34,13 @@ PASTE_STAGES = [
      tuple(b"\x1b[200~" + value + b"\x1b[201~" for value in UNICODE_VARIANTS)),
     ("paste-unicode-off", b"\x1b[?2004l", UNICODE_PASTE, UNICODE_VARIANTS),
 ]
+SUITES = {
+    "keys": STAGES,
+    "paste": PASTE_STAGES,
+    "vscode": STAGES + PASTE_STAGES,
+    "cursor-normal": STAGES[:1],
+    "keypad-application": STAGES[4:5],
+}
 
 
 def publish(path, value):
@@ -112,7 +119,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-tty", required=True)
     parser.add_argument("--report-dir", type=Path, required=True)
-    parser.add_argument("--suite", choices=["keys", "paste", "vscode", "cursor-normal"], default="keys")
+    parser.add_argument("--suite", choices=SUITES, default="keys")
     parser.add_argument("--input-timeout-seconds", type=int, default=8)
     parser.add_argument("--start-file", type=Path)
     parser.add_argument("--collect-all-stages", action="store_true")
@@ -122,9 +129,7 @@ def main():
     if args.start_file is not None and args.start_file.exists():
         parser.error("--start-file must be unused")
     expected_tty = os.ttyname(sys.stdin.fileno()) if args.expected_tty == "self" else args.expected_tty
-    stages = {"keys": STAGES, "paste": PASTE_STAGES, "vscode": STAGES + PASTE_STAGES,
-              "cursor-normal": STAGES[:1]}
-    run(expected_tty, args.report_dir, stages[args.suite], args.input_timeout_seconds, args.start_file,
+    run(expected_tty, args.report_dir, SUITES[args.suite], args.input_timeout_seconds, args.start_file,
         args.collect_all_stages)
 
 

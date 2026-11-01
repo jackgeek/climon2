@@ -83,6 +83,46 @@ class ReceiverTests(unittest.TestCase):
                     os.close(master)
                     os.close(slave)
 
+    def test_application_keypad_probe_checks_only_literal_application_bytes(self):
+        for payload in (b"1", b"\x1bOq"):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                configure(root, "CLIMON2-56-TEST", suite="keypad-application")
+                settings = json.loads((root / "profile/User/settings.json").read_text())
+                profile = settings["terminal.integrated.profiles.osx"]["NativeInputFixture"]
+                master, slave = pty.openpty()
+                process = None
+                try:
+                    process = subprocess.Popen(
+                        [profile["path"], *profile["args"]],
+                        stdin=slave, stdout=slave, stderr=slave,
+                        env={**os.environ, **profile["env"]},
+                    )
+                    ready = root / "reports/ready-0.json"
+                    deadline = time.monotonic() + 3
+                    while not ready.exists():
+                        if time.monotonic() >= deadline or process.poll() is not None:
+                            self.fail("Application-keypad receiver did not become ready")
+                        time.sleep(0.02)
+                    self.assertEqual(json.loads(ready.read_text())["stage"], "keypad-application")
+                    os.write(master, payload)
+                    result = root / "reports/result.json"
+                    deadline = time.monotonic() + 10
+                    while not result.exists():
+                        if time.monotonic() >= deadline:
+                            self.fail("Application-keypad receiver did not finish")
+                        time.sleep(0.02)
+                    report = json.loads(result.read_text())
+                    self.assertEqual(len(report["stages"]), 1)
+                    self.assertEqual(report["status"], "PASS" if payload == b"\x1bOq" else "FAIL")
+                    self.assertEqual(report["stages"][0]["expected_hex"], "1b4f71")
+                finally:
+                    if process is not None and process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=3)
+                    os.close(master)
+                    os.close(slave)
+
     def test_ax_query_keeps_owned_process_alive_until_post_query_confirmation(self):
         for query_error, native_accessibility in (
             (None, False), (None, True), (RuntimeError("AX query failed"), True),
@@ -394,6 +434,32 @@ class ReceiverTests(unittest.TestCase):
                 settings = json.loads((root / "profile/User/settings.json").read_text())
                 command = settings["terminal.integrated.profiles.osx"]["NativeInputFixture"]["args"][3]
                 self.assertIn("--start-file", command)
+                self.assertIsNotNone(process.poll())
+
+    def test_one_stage_keypad_run_sends_only_one_guarded_key_and_no_paste(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def checkpoint(path, result_path):
+                if path.name == "ready-0.json":
+                    return {"stage": "keypad-application", "key_code": 83}
+                self.assertEqual(path.name, "result.json", "Driver requested an unrelated stage")
+                return {"status": "PASS"}
+
+            with subprocess.Popen(["/bin/sleep", "30"]) as process:
+                with patch("vscode.subprocess.Popen", return_value=process), \
+                        patch("vscode.wait_window"), \
+                        patch("vscode.gui", return_value="1") as actions, \
+                        patch("vscode.wait_file", side_effect=checkpoint), \
+                        patch("vscode.enable_native_accessibility"), \
+                        patch("vscode.inspect_ax_tree", return_value="focused|terminal"):
+                    report = run(root, native_accessibility=True, suite="keypad-application")
+                self.assertEqual(report["status"], "PASS")
+                inputs = [call for call in actions.call_args_list
+                          if call.args[2].startswith(("key code", "keystroke"))]
+                self.assertEqual(len(inputs), 1)
+                self.assertEqual(inputs[0].args[2:], ("key code 83", True))
+                self.assertTrue((root / "input-start").exists())
                 self.assertIsNotNone(process.poll())
 
     def test_terminal_input_guard_does_not_raise_window_before_checking_focus(self):
