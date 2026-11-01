@@ -24,3 +24,6 @@ impl Geometry {
         self.rows
     }
 }
+
+/// Bytes in one engine step of text and C0 controls.
+pub(crate) const STEP: usize = 64;
