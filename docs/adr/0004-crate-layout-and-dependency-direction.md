@@ -10,9 +10,10 @@ The workspace has one package per shipped binary. The CLI, daemon and client nev
 | `climon2-core` | shipped lib | crates.io only |
 | `climon2-platform` | shipped lib | `core` |
 | `climon2-cli` (bin `climon2-cli`) | shipped lib + thin main | `core`, `platform` |
-| `climon2-daemon` (bin `climon2-daemon`) | shipped lib + thin main | `core`, `platform` |
+| `climon2-daemon` (bin `climon2-daemon`) | shipped lib + thin main | `core`, `platform`, `vt` |
 | `climon2-client` (bin `climon2-client`) | shipped lib + thin main | `core`, `platform` |
 | `climon2-install` (bin `climon2-install`, shipped as `install`) | shipped lib + thin main | `core`; contains seam 8 |
+| `climon2-vt` | shipped lib | crates.io only (the pinned `alacritty_terminal`, ADR 0007); platform-neutral, no `cfg(target_os)`; only the daemon may depend on it |
 | `climon2-test-term`, `climon2-fixtures`, `climon2-e2e`, `xtask` | test-only, `publish = false` | anything |
 
 Shipped crates may use test-only crates only as dev-dependencies. A workspace test reads `cargo metadata` to enforce these edges, and also checks that every package that owns a binary has at least one integration test.

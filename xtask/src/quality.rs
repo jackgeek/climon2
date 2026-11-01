@@ -21,6 +21,7 @@ const SHIPPED: &[&str] = &[
     "crates/climon2-daemon/src",
     "crates/climon2-client/src",
     "crates/climon2-install/src",
+    "crates/climon2-vt/src",
 ];
 const TEST_COMMAND: &str = "cargo test --workspace --locked --target-dir target/mutation-tests";
 

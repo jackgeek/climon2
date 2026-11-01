@@ -9,6 +9,7 @@ const PACKAGES: &[&str] = &[
     "climon2-daemon",
     "climon2-client",
     "climon2-install",
+    "climon2-vt",
     "climon2-test-term",
     "climon2-fixtures",
     "climon2-e2e",
@@ -73,9 +74,8 @@ fn is_test_only(name: &str) -> bool {
 fn allowed_internal_dependencies(name: &str) -> &[&str] {
     match name {
         "climon2-platform" | "climon2-install" => &["climon2-core"],
-        "climon2-cli" | "climon2-daemon" | "climon2-client" => {
-            &["climon2-core", "climon2-platform"]
-        }
+        "climon2-cli" | "climon2-client" => &["climon2-core", "climon2-platform"],
+        "climon2-daemon" => &["climon2-core", "climon2-platform", "climon2-vt"],
         _ => &[],
     }
 }
@@ -191,23 +191,25 @@ fn assert_neutral_sources(path: &std::path::Path) {
             let source = std::fs::read_to_string(&path).expect("read core source");
             assert!(
                 !source.contains("target_os"),
-                "core must not select platform bodies: {}",
+                "neutral libraries must not select platform bodies: {}",
                 path.display()
             );
         }
     }
 }
 
-/// ADRs 0003/0004: core stays platform-neutral and can be tested independently.
+/// ADRs 0003/0004/0007: core and the virtual terminal stay platform-neutral.
 #[test]
-fn core_has_no_target_os_conditions() {
+fn neutral_libraries_have_no_target_os_conditions() {
     let metadata = metadata();
-    let core = metadata
-        .packages
-        .iter()
-        .find(|package| package.name == "climon2-core")
-        .unwrap();
-    assert_neutral_sources(&core.manifest_path.parent().unwrap().join("src"));
+    for name in ["climon2-core", "climon2-vt"] {
+        let package = metadata
+            .packages
+            .iter()
+            .find(|package| package.name == name)
+            .unwrap();
+        assert_neutral_sources(&package.manifest_path.parent().unwrap().join("src"));
+    }
 }
 
 #[test]
@@ -225,6 +227,9 @@ fn dependency_guard_rejects_forbidden_edges() {
         ("climon2-cli", "climon2-client", None, Some(".")),
         ("climon2-daemon", "climon2-fixtures", None, Some(".")),
         ("climon2-install", "climon2-platform", None, Some(".")),
+        ("climon2-vt", "climon2-core", None, Some(".")),
+        ("climon2-client", "climon2-vt", None, Some(".")),
+        ("climon2-cli", "climon2-vt", None, Some(".")),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {
@@ -243,6 +248,7 @@ fn dependency_guard_accepts_shared_and_test_only_edges() {
         ("climon2-cli", "climon2-core", None),
         ("climon2-client", "climon2-platform", None),
         ("climon2-daemon", "climon2-test-term", Some("dev")),
+        ("climon2-daemon", "climon2-vt", None),
         ("climon2-test-term", "climon2-daemon", None),
     ] {
         package.name = from.to_owned();
