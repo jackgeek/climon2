@@ -10,6 +10,7 @@ pub(crate) struct Options {
     pub cli_pid: u32,
     pub readiness_fd: u32,
     pub size: TerminalSize,
+    pub max_history_rows: u32,
     pub command: OsString,
     pub arguments: Vec<OsString>,
     pub log: Option<String>,
@@ -28,7 +29,7 @@ impl Options {
     ) -> io::Result<Self> {
         let (id, version, cli_pid) = identity(&mut fields)?;
         let (home, socket, cwd) = locations(&mut fields)?;
-        let (readiness_fd, size) = transport(&mut fields)?;
+        let (readiness_fd, size, max_history_rows) = transport(&mut fields)?;
         let log = only_log(fields)?;
         Ok(Self {
             id,
@@ -39,6 +40,7 @@ impl Options {
             cli_pid,
             readiness_fd,
             size,
+            max_history_rows,
             command,
             arguments,
             log,
@@ -122,15 +124,27 @@ fn locations(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<(PathBuf, 
     ))
 }
 
-fn transport(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<(u32, TerminalSize)> {
-    Ok((
-        number(fields, "--readiness-fd")?,
-        TerminalSize {
-            cols: number(fields, "--cols")?,
-            rows: number(fields, "--rows")?,
-        }
-        .initial(),
-    ))
+fn transport(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<(u32, TerminalSize, u32)> {
+    let rows = scrollback_rows(fields)?;
+    let size = size(fields)?;
+    Ok((number(fields, "--readiness-fd")?, size, rows))
+}
+
+fn scrollback_rows(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<u32> {
+    let rows = number(fields, "--scrollback-max-rows")?;
+    (rows <= 100_000).then_some(rows).ok_or_else(invalid)
+}
+
+fn size(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<TerminalSize> {
+    let size = TerminalSize {
+        cols: number(fields, "--cols")?,
+        rows: number(fields, "--rows")?,
+    }
+    .initial();
+    Ok(TerminalSize {
+        cols: size.cols.clamp(2, 500),
+        rows: size.rows.min(200),
+    })
 }
 
 fn invalid() -> io::Error {
@@ -158,4 +172,63 @@ fn number<T: std::str::FromStr>(
     key: &str,
 ) -> io::Result<T> {
     text(fields, key)?.parse().map_err(|_| invalid())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arguments(max_rows: Option<&str>) -> Vec<OsString> {
+        let mut args = vec![
+            "--session-id",
+            "01234567-89ab-4cde-8fab-0123456789ab",
+            "--version",
+            "0.1.0",
+            "--cli-pid",
+            "1",
+            "--home",
+            "/home/test",
+            "--socket",
+            "/tmp/session.sock",
+            "--rows",
+            "24",
+            "--cols",
+            "80",
+            "--cwd",
+            "/home/test",
+        ];
+        let mut values: Vec<_> = args.drain(..).map(OsString::from).collect();
+        if let Some(rows) = max_rows {
+            values.extend([
+                OsString::from("--scrollback-max-rows"),
+                OsString::from(rows),
+            ]);
+        }
+        values.extend([
+            OsString::from("--readiness-fd"),
+            OsString::from("3"),
+            OsString::from("--"),
+            OsString::from("shell"),
+        ]);
+        values
+    }
+
+    #[test]
+    fn daemon_requires_a_valid_scrollback_limit() {
+        for value in [None, Some("-1"), Some("100001"), Some("not-a-number")] {
+            assert!(Options::parse(arguments(value)).is_err(), "{value:?}");
+        }
+        assert_eq!(
+            Options::parse(arguments(Some("0")))
+                .unwrap()
+                .max_history_rows,
+            0
+        );
+        assert_eq!(
+            Options::parse(arguments(Some("100000")))
+                .unwrap()
+                .max_history_rows,
+            100_000
+        );
+    }
 }

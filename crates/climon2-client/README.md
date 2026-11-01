@@ -21,10 +21,17 @@ log exists carry the ` (logs: <session-log directory>)` suffix.
 
 Connection, hello write, and complete hello reply share one real two-second
 deadline. Peers must have the effective UID and hello must match session,
-protocol, and metadata version. Attach precedes raw mode. The event loop has
-one incremental incoming frame, one pending Input/Resize frame, and one pending
-Output payload. Core validates framing; no payload exceeds 65,535 bytes.
-Socket or terminal backpressure stops the corresponding producer.
+protocol, metadata version, and attach capability. Raw mode begins only after
+the daemon accepts Attach. A controller waits for Granted, writes the
+restoration and live backlog, drains input typed during restoration, then sends
+Ready; application input is admitted only after that confirmation. Observers
+can take control, and Ctrl+] followed by `d` requests an explicit detach.
+
+The event loop has one incremental incoming frame, one pending Input/Resize
+frame, and one pending Output payload. Core validates framing; no payload
+exceeds 65,535 bytes. Socket or terminal backpressure stops the corresponding
+producer. A pending detach or lost-session result has a bounded five-second
+confirmation deadline, including while terminal output is blocked.
 
 SIGWINCH is coalesced and unchanged sizes are suppressed. HUP/TERM/INT close
 the socket and return 128+signal. Stdin EOF/EIO silently returns 129. Ctrl-C,

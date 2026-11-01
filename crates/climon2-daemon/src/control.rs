@@ -83,13 +83,7 @@ pub enum Effect {
 }
 
 /// The `lifecycle` value of the hello `state` object.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Lifecycle {
-    Starting,
-    Attached,
-    Detached,
-    Terminating,
-}
+pub use climon2_core::hello::Lifecycle;
 
 /// One consistent point-in-time view for the hello `state` object.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

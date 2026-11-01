@@ -59,6 +59,19 @@ fn text_controls_and_ordinary_sequences_are_forwarded_unchanged() {
 }
 
 #[test]
+fn c0_controls_inside_escape_sequences_keep_their_original_order() {
+    let bytes = b"\x1b\x1c\x1d\x1e\x1f 0";
+    assert_forwarded(bytes);
+}
+
+#[test]
+fn c0_controls_survive_a_stripped_query_in_their_original_order() {
+    let fed = feed(&mut vt(), b"\x1b[6\x1cn");
+    assert_eq!(fed.live, b"\x1c");
+    assert_eq!(fed.replies, b"\x1b[1;1R");
+}
+
+#[test]
 fn a_cpr_shaped_sequence_in_output_is_forwarded_and_answers_nothing() {
     assert_forwarded(b"\x1b[12;5R");
 }

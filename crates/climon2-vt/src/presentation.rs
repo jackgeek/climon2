@@ -60,6 +60,13 @@ impl Presentation {
         }
     }
 
+    /// Record a new reported host size ahead of a replacement grant, keeping
+    /// what this attachment's stream already put its host into.
+    pub fn resize_host(&mut self, cols: u16, rows: u16) {
+        self.cols = cols;
+        self.rows = rows;
+    }
+
     /// Presentation mode chosen at the latest grant or presentation resize.
     pub fn mode(&self) -> Mode {
         self.mode

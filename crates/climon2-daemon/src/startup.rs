@@ -29,7 +29,7 @@ impl Failure {
 }
 
 pub(crate) struct Resources {
-    pub listener: runtime::SocketListener,
+    listener: Option<runtime::SocketListener>,
     metadata: PathBuf,
     socket: PathBuf,
     temporary: PathBuf,
@@ -47,7 +47,7 @@ impl Resources {
             .join(format!("{}.pty", options.id));
         let temporary = metadata.with_extension("publishing");
         Ok(Self {
-            listener,
+            listener: Some(listener),
             metadata,
             temporary,
             socket: options.socket.clone(),
@@ -89,6 +89,10 @@ impl Resources {
         remove_owned(&self.metadata, &mut self.published)?;
         remove_owned(&self.temporary, &mut self.temporary_owned)?;
         remove(&self.socket)
+    }
+
+    pub fn take_listener(&mut self) -> runtime::SocketListener {
+        self.listener.take().expect("session listener is present")
     }
     fn create_metadata_file(&mut self) -> io::Result<std::fs::File> {
         let file = OpenOptions::new()
@@ -197,7 +201,7 @@ pub fn capture_diagnostics(log: &logging::LogFile) -> Result<logging::StderrCapt
 }
 
 #[cfg(feature = "test-hooks")]
-fn selected_fault(name: &str) -> bool {
+pub(crate) fn selected_fault(name: &str) -> bool {
     std::env::var("CLIMON2_DAEMON_FAULT").is_ok_and(|value| value == name)
 }
 

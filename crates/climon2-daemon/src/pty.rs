@@ -19,6 +19,7 @@ pub(crate) struct Pty {
     session: process::TerminalSession,
     observed: Instant,
     reaped: bool,
+    status: Option<u32>,
 }
 
 impl Pty {
@@ -45,6 +46,7 @@ impl Pty {
             session,
             observed: Instant::now(),
             reaped: false,
+            status: None,
         };
         pty.writer = Some(
             pty.master()
@@ -70,10 +72,18 @@ impl Pty {
             .map_err(|_| super::io_error("terminal resize failed"))
     }
     pub fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        #[cfg(feature = "test-hooks")]
+        if crate::startup::selected_fault("pty-write") {
+            return Err(super::io_error("controlled PTY write fault"));
+        }
         self.writer.as_mut().expect("live PTY writer").write(bytes)
     }
     /// Waits at most `timeout` for output (or hangup) without reading it.
     pub fn wait_readable(&self, timeout: std::time::Duration) {
+        if self.master.is_none() {
+            std::thread::sleep(timeout);
+            return;
+        }
         let mut descriptor = libc::pollfd {
             fd: self.fd(),
             events: libc::POLLIN,
@@ -92,26 +102,38 @@ impl Pty {
         Ok(count as usize)
     }
     pub fn try_wait(&mut self) -> io::Result<Option<u32>> {
-        let status = process::try_wait(self.pid)?;
-        if let Some(status) = status {
-            self.reaped = true;
-            return status.code().map(Some).map_err(io::Error::other);
+        if self.status.is_none() {
+            self.status = self.reap()?;
         }
-        Ok(None)
+        Ok(self.status)
+    }
+    fn reap(&mut self) -> io::Result<Option<u32>> {
+        let Some(status) = process::try_wait(self.pid)? else {
+            return Ok(None);
+        };
+        self.reaped = true;
+        status.code().map(Some).map_err(io::Error::other)
     }
     fn close_master(&mut self) {
         close(&mut self.master, &mut self.writer);
     }
-    pub fn leave(&mut self) -> io::Result<()> {
+    pub fn leave(&mut self) -> io::Result<u32> {
         if self.reaped {
-            self.close_master();
-            std::thread::sleep(climon2_core::protocol::HANGUP_GRACE);
-            return self.session.kill();
+            return self.leave_reaped();
         }
         let (master, writer) = (&mut self.master, &mut self.writer);
         let result = process::hangup(&mut self.session, || close(master, writer));
-        self.reaped = result.is_ok();
-        result.map(|_| ())
+        let code = result?.code().map_err(io::Error::other)?;
+        self.reaped = true;
+        self.status = Some(code);
+        Ok(code)
+    }
+    /// The leader already exited; its session still gets the hang-up grace.
+    fn leave_reaped(&mut self) -> io::Result<u32> {
+        self.close_master();
+        std::thread::sleep(climon2_core::protocol::HANGUP_GRACE);
+        self.session.kill()?;
+        Ok(self.status.unwrap_or(129))
     }
 
     pub fn finish(&mut self) -> io::Result<()> {

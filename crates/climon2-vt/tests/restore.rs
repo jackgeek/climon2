@@ -95,6 +95,18 @@ fn a_replacement_restoration_leaves_this_attachments_alternate_screen_first() {
 }
 
 #[test]
+fn a_replacement_grant_at_a_new_host_size_keeps_what_the_host_was_put_into() {
+    let mut vt = vt(10, 3, 10);
+    let mut presentation = Presentation::new(10, 3);
+    presentation.commit_live(b"\x1b[?1049h");
+    presentation.resize_host(12, 5);
+    let (lead, _) = vt.grant(&mut presentation);
+    let lead = text(&lead);
+    assert!(lead.starts_with(&format!("\x1b[?1049l{PROLOGUE}\x1b[5;1H\n\n\n\n\n")));
+    assert_eq!(presentation.mode(), climon2_vt::Mode::Derived);
+}
+
+#[test]
 fn retained_history_is_the_newest_max_rows_rows() {
     let mut vt = vt(60, 2, 3);
     feed(&mut vt, &lines(1..=6));

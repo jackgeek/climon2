@@ -2,10 +2,12 @@ use crate::Error;
 use climon2_core::{
     SessionId,
     cli::CommandArgs,
-    layout::{ExecutableLayout, VersionBinary},
+    config::{ConfigSource, ExecConfig},
+    layout::{ExecutableLayout, HomeLayout, VersionBinary},
     metadata::SessionMetadata,
     protocol::TerminalSize,
     session::SessionEnvironment,
+    startup_envelope::{ENVIRONMENT_VARIABLE, StartupEnvelope},
 };
 use climon2_platform::{
     daemon::{self, Readiness},
@@ -30,14 +32,33 @@ pub fn run(
     general: &LogFile,
     filter: Option<&str>,
 ) -> Result<u32, Error> {
-    let layout = preflight()?;
-    let id = new_session_id()?;
-    let session = session_log(home, &id, general)?;
+    let (config, layout) = prepare(home)?;
+    let (id, session) = new_session(home, general)?;
     let dispatch = session.dispatch(filter)?;
     tracing::dispatcher::with_default(&dispatch, || {
-        launch(home, command, &layout, &id, filter)
+        launch(home, command, &layout, &id, filter, config)
             .map_err(|error| error.logged(session.path().parent().expect("session log directory")))
     })
+}
+
+/// Configuration and terminals are checked before anything is created.
+fn prepare(home: &Path) -> Result<(ExecConfig, ExecutableLayout), Error> {
+    let config = exec_config(home)?;
+    Ok((config, preflight()?))
+}
+
+fn new_session(home: &Path, general: &LogFile) -> io::Result<(SessionId, LogFile)> {
+    let id = new_session_id()?;
+    let session = session_log(home, &id, general)?;
+    Ok((id, session))
+}
+
+fn exec_config(home: &Path) -> Result<ExecConfig, Error> {
+    let layout =
+        HomeLayout::resolve(Some(home.as_os_str()), Path::new("/")).map_err(io::Error::other)?;
+    ConfigSource::read(&layout)
+        .and_then(|source| source.exec())
+        .map_err(|error| Error::new(125, error))
 }
 
 /// TTY checks happen before anything is created or spawned.
@@ -72,6 +93,7 @@ struct Startup<'a> {
     home: &'a Path,
     layout: &'a ExecutableLayout,
     id: &'a SessionId,
+    max_history_rows: u32,
     metadata: PathBuf,
     socket: PathBuf,
     size: TerminalSize,
@@ -84,14 +106,15 @@ fn launch(
     layout: &ExecutableLayout,
     id: &SessionId,
     filter: Option<&str>,
+    config: ExecConfig,
 ) -> Result<u32, Error> {
-    let startup = Startup::new(home, layout, id)?;
+    let startup = Startup::new(home, layout, id, config.scrollback.max_rows.get())?;
     let inherited = std::env::vars_os().collect::<Vec<_>>();
     let environment =
         SessionEnvironment::for_session(id, &inherited).map_err(|error| Error::new(125, error))?;
     warn_if_nested(&environment);
     let _daemon = startup.ready(command, environment, filter)?;
-    startup.handoff(filter)
+    startup.handoff(filter, config.client)
 }
 
 fn warn_if_nested(environment: &SessionEnvironment) {
@@ -105,6 +128,7 @@ impl Startup<'_> {
         home: &'a Path,
         layout: &'a ExecutableLayout,
         id: &'a SessionId,
+        max_history_rows: u32,
     ) -> Result<Startup<'a>, Error> {
         let socket = RuntimeDirectory::prepare(home)?.socket_path(id)?;
         let metadata = home.join("sessions").join(format!("{id}.pty"));
@@ -118,6 +142,7 @@ impl Startup<'_> {
             socket,
             size,
             cwd,
+            max_history_rows,
         })
     }
 
@@ -170,6 +195,8 @@ impl Startup<'_> {
             .arg(self.size.rows.to_string())
             .arg("--cols")
             .arg(self.size.cols.to_string())
+            .arg("--scrollback-max-rows")
+            .arg(self.max_history_rows.to_string())
             .arg("--cwd")
             .arg(&self.cwd);
         if let Some(filter) = filter {
@@ -185,8 +212,16 @@ impl Startup<'_> {
         })
     }
 
-    fn handoff(&self, filter: Option<&str>) -> Result<u32, Error> {
+    fn handoff(
+        &self,
+        filter: Option<&str>,
+        settings: climon2_core::keys::ClientSettings,
+    ) -> Result<u32, Error> {
         let mut client = self.client(&self.written_metadata()?)?;
+        client.env(
+            ENVIRONMENT_VARIABLE,
+            StartupEnvelope::Attach(settings).to_json(),
+        );
         if let Some(filter) = filter {
             client.env("CLIMON2_LOG", filter);
         }

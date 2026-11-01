@@ -1,4 +1,5 @@
 //! CLI argument data without terminal, process or environment access.
+use crate::selector::Selector;
 use std::{ffi::OsString, fmt};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -11,6 +12,7 @@ pub struct CommandArgs {
 pub enum CliArgs {
     Exec(CommandArgs),
     List { json: bool },
+    Attach(Selector),
     Help,
     Version,
 }
@@ -26,7 +28,9 @@ impl UsageError {
 
 impl fmt::Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("usage: climon2 exec <command> [args...] | list [--json]")
+        formatter.write_str(
+            "usage: climon2 exec <command> [args...] | list [--json] | attach <session-prefix>",
+        )
     }
 }
 
@@ -39,13 +43,21 @@ impl CliArgs {
         let mut arguments = arguments.into_iter();
         let subcommand = arguments.next().ok_or(UsageError)?;
         let remaining: Vec<_> = arguments.collect();
-        match subcommand.to_str() {
-            Some("exec") => parse_exec(remaining),
-            Some("list") => parse_list(remaining),
-            name => parse_flag(name, &remaining),
+        let name = subcommand.to_str();
+        match SUBCOMMANDS.iter().find(|(known, _)| Some(*known) == name) {
+            Some((_, parse)) => parse(remaining),
+            None => parse_flag(name, &remaining),
         }
     }
 }
+
+type Parser = fn(Vec<OsString>) -> Result<CliArgs, UsageError>;
+
+const SUBCOMMANDS: [(&str, Parser); 3] = [
+    ("exec", parse_exec),
+    ("list", parse_list),
+    ("attach", parse_attach),
+];
 
 /// Help and version flags accept no further arguments.
 fn parse_flag(name: Option<&str>, remaining: &[OsString]) -> Result<CliArgs, UsageError> {
@@ -75,6 +87,13 @@ fn parse_list(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
     match arguments.as_slice() {
         [] => Ok(CliArgs::List { json: false }),
         [flag] if flag == "--json" => Ok(CliArgs::List { json: true }),
+        _ => Err(UsageError),
+    }
+}
+
+fn parse_attach(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
+    match arguments.as_slice() {
+        [selector] => Selector::parse(selector).map(CliArgs::Attach),
         _ => Err(UsageError),
     }
 }

@@ -1,9 +1,11 @@
 use climon2_core::{
+    hello::{HelloExtensions, Lifecycle},
     metadata::SessionMetadata,
     protocol::{ClientMessage, ServerMessage, TerminalSize, read_frame, write_frame},
 };
 use climon2_platform::{daemon, process, runtime::RuntimeDirectory};
 use std::{
+    cell::RefCell,
     fs,
     io::{self, Read, Write},
     os::unix::{fs::PermissionsExt, net::UnixStream},
@@ -56,6 +58,7 @@ struct Session {
     metadata: PathBuf,
     startup_socket: PathBuf,
     pid: u32,
+    restored: RefCell<Vec<u8>>,
 }
 
 impl Session {
@@ -115,6 +118,7 @@ impl Session {
                 metadata,
                 startup_socket,
                 pid,
+                restored: RefCell::new(Vec::new()),
             },
             readiness,
         )
@@ -137,7 +141,29 @@ impl Session {
             ClientMessage::Attach(TerminalSize { cols: 91, rows: 37 }),
         );
         assert_eq!(receive(&mut stream), ServerMessage::Attached);
+        self.ready(&mut stream);
         stream
+    }
+
+    fn ready(&self, stream: &mut UnixStream) {
+        let period = loop {
+            match receive(stream) {
+                ServerMessage::Granted { period } => break period,
+                ServerMessage::Output(bytes) => self.restored.borrow_mut().extend(bytes),
+                other => panic!("unexpected grant frame: {other:?}"),
+            }
+        };
+        loop {
+            match receive(stream) {
+                ServerMessage::Output(bytes) => self.restored.borrow_mut().extend(bytes),
+                ServerMessage::RestoreEnd { period: actual } => {
+                    assert_eq!(actual, period);
+                    break;
+                }
+                other => panic!("unexpected restoration frame: {other:?}"),
+            }
+        }
+        send(stream, ClientMessage::Ready { period });
     }
 
     fn finish(&mut self) {
@@ -146,7 +172,12 @@ impl Session {
             .and_then(|pid| pid.parse::<u32>().ok());
         let status = process::wait(self.pid).unwrap();
         self.pid = 0;
-        assert_eq!(status.code().unwrap(), 0);
+        assert_eq!(
+            status.code().unwrap(),
+            0,
+            "daemon log: {:?}",
+            fs::read_to_string(self.directory.path().join(format!("logs/{ID}/daemon.log")))
+        );
         assert!(!self.metadata.exists());
         assert!(!self.socket.exists());
         assert_eq!(
@@ -176,13 +207,14 @@ impl Session {
     }
 
     fn wait_marker(&self, stream: &mut UnixStream) {
-        let mut output = Vec::new();
+        let mut output = std::mem::take(&mut *self.restored.borrow_mut());
         while !output.windows(13).any(|bytes| bytes == b"fixture-ready") {
             match receive(stream) {
                 ServerMessage::Output(bytes) => output.extend(bytes),
                 other => panic!("fixture not ready: {other:?}"),
             }
         }
+        self.restored.borrow_mut().extend(output);
     }
 }
 
@@ -283,7 +315,13 @@ impl Prepared {
 }
 
 fn command_tail(command: &mut Command, fd: u32, home: &Path, mode: &str, missing: bool) {
-    command.args(["--readiness-fd", &fd.to_string(), "--"]);
+    command.args([
+        "--scrollback-max-rows",
+        "10000",
+        "--readiness-fd",
+        &fd.to_string(),
+        "--",
+    ]);
     if missing {
         command.arg(home.join("missing-command"));
     } else if mode == "cannot-run" {
@@ -380,34 +418,58 @@ fn long_home_and_executable_with_maximum_session_socket_start_and_clean_up() {
     session.finish();
 }
 
-/// #19/#20: reaping does not lose a signal or race the first Attach.
-#[test]
-fn exact_signal_exit_and_early_exit_are_delivered() {
-    for (mode, code) in [("signal", 143), ("early", 43)] {
-        let mut session = Session::start(mode);
-        if mode == "early" {
-            thread::sleep(Duration::from_millis(150));
-        }
-        let mut stream = session.attach();
-        if mode == "signal" {
-            send(&mut stream, ClientMessage::Input(b"go\n".to_vec()));
-        }
-        let mut output = Vec::new();
-        loop {
-            match receive(&mut stream) {
-                ServerMessage::Output(bytes) => output.extend(bytes),
-                ServerMessage::Exit { code: actual } => {
-                    assert_eq!(actual, code);
-                    break;
-                }
-                other => panic!("unexpected {other:?}"),
-            }
-        }
-        if mode == "early" {
-            assert!(output.windows(11).any(|bytes| bytes == b"early-final"));
-        }
-        session.finish();
+fn assert_exit_after_attachment(mode: &str, code: u32) {
+    let mut session = Session::start(mode);
+    if mode == "early" {
+        thread::sleep(Duration::from_millis(150));
     }
+    let mut stream = if mode == "early" {
+        let mut stream = session.connect();
+        send(
+            &mut stream,
+            ClientMessage::Attach(TerminalSize { cols: 91, rows: 37 }),
+        );
+        assert_eq!(receive(&mut stream), ServerMessage::Attached);
+        session.ready(&mut stream);
+        stream
+    } else {
+        session.attach()
+    };
+    if mode == "signal" {
+        send(&mut stream, ClientMessage::Input(b"go\n".to_vec()));
+    }
+    let mut output = Vec::new();
+    loop {
+        match receive(&mut stream) {
+            ServerMessage::Output(bytes) => output.extend(bytes),
+            ServerMessage::Exit { code: actual } => {
+                assert_eq!(actual, code);
+                break;
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    if mode == "early" {
+        let mut complete = std::mem::take(&mut *session.restored.borrow_mut());
+        complete.extend(output);
+        assert!(
+            complete.windows(11).any(|bytes| bytes == b"early-final"),
+            "final PTY bytes were not delivered before the result"
+        );
+    }
+    session.finish();
+}
+
+/// #19: reaping preserves an exact signal exit status.
+#[test]
+fn exact_signal_exit_is_delivered() {
+    assert_exit_after_attachment("signal", 143);
+}
+
+/// #20: an early exit still completes restoration readiness before its result.
+#[test]
+fn early_exit_is_delivered_after_restore_readiness() {
+    assert_exit_after_attachment("early", 43);
 }
 
 /// #20/#19: EOF/EIO may end drain before its idle/cap limits; no group member survives.
@@ -480,21 +542,20 @@ fn concurrent_probes_absolute_hello_deadline_and_second_attach() {
         &mut second,
         ClientMessage::Attach(TerminalSize { cols: 80, rows: 24 }),
     );
-    assert_eq!(
-        receive(&mut second),
-        ServerMessage::Error {
-            message: "session already has a controlling client".into()
-        }
-    );
-    assert!(read_frame(&mut second).is_err());
+    assert_eq!(receive(&mut second), ServerMessage::Attached);
+    session.ready(&mut second);
     thread::sleep(Duration::from_millis(1200));
     slow.write_all(&[0]).unwrap();
     let reply = receive(&mut slow);
     assert!(matches!(reply, ServerMessage::Error { .. }));
     assert!(accepted.elapsed() >= Duration::from_secs(2));
     assert!(accepted.elapsed() < Duration::from_millis(2900));
-    send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
-    while !matches!(receive(&mut controlling), ServerMessage::Exit { code: 42 }) {}
+    send(
+        &mut controlling,
+        ClientMessage::Input(b"ignored\n".to_vec()),
+    );
+    send(&mut second, ClientMessage::Input(b"go\n".to_vec()));
+    while !matches!(receive(&mut second), ServerMessage::Exit { code: 42 }) {}
     session.finish();
 }
 
@@ -593,7 +654,95 @@ fn raw_input_output_are_byte_transparent() {
             other => panic!("unexpected {other:?}"),
         }
     }
-    assert_eq!(actual, payload);
+    assert_eq!(&actual[..payload.len()], payload);
+    assert_eq!(
+        &actual[payload.len()..],
+        climon2_vt::Presentation::new(91, 37).release()
+    );
+    session.finish();
+}
+
+#[test]
+fn attached_client_restores_a_waiting_alternate_screen_before_input_is_ready() {
+    let mut session = Session::start("tui-restore");
+    let ready = session.directory.path().join("tui-ready");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !ready.exists() {
+        assert!(Instant::now() < deadline, "TUI fixture did not draw");
+        thread::sleep(Duration::from_millis(2));
+    }
+
+    let mut stream = session.connect();
+    send(
+        &mut stream,
+        ClientMessage::Attach(TerminalSize { cols: 91, rows: 37 }),
+    );
+    let mut restoration = Vec::new();
+    let period = loop {
+        match receive(&mut stream) {
+            ServerMessage::Attached => {}
+            ServerMessage::Granted { period } => break period,
+            ServerMessage::Output(bytes) => restoration.extend(bytes),
+            other => panic!("unexpected initial restoration frame: {other:?}"),
+        }
+    };
+    loop {
+        match receive(&mut stream) {
+            ServerMessage::Output(bytes) => restoration.extend(bytes),
+            ServerMessage::RestoreEnd { period: actual } => {
+                assert_eq!(actual, period);
+                break;
+            }
+            other => panic!("unexpected restoration frame: {other:?}"),
+        }
+    }
+    for sequence in [
+        b"RESTORED-DISPLAY".as_slice(),
+        b"\x1b[?1049h",
+        b"\x1b[?1000h",
+        b"\x1b[?2004h",
+        b"\x1b[?1h",
+    ] {
+        assert!(
+            restoration
+                .windows(sequence.len())
+                .any(|bytes| bytes == sequence),
+            "restoration omitted {sequence:?}: {restoration:?}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(session.directory.path().join("draw-count")).unwrap(),
+        "1"
+    );
+
+    send(&mut stream, ClientMessage::Ready { period });
+    send(&mut stream, ClientMessage::Input(vec![b'x']));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !fs::read_to_string(session.directory.path().join("input-accepted"))
+        .is_ok_and(|value| value == "x")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "input did not reach the waiting TUI"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+    let mut output = Vec::new();
+    loop {
+        match receive(&mut stream) {
+            ServerMessage::Output(bytes) => output.extend(bytes),
+            ServerMessage::Exit { code } => {
+                assert_eq!(code, 42);
+                break;
+            }
+            other => panic!("unexpected TUI result: {other:?}"),
+        }
+    }
+    assert!(
+        output
+            .windows(b"INPUT-ACCEPTED".len())
+            .any(|bytes| bytes == b"INPUT-ACCEPTED")
+    );
     session.finish();
 }
 
@@ -607,7 +756,6 @@ fn every_controlling_leave_hangs_up_then_kills_after_real_grace() {
         "unknown",
         "term",
         "input-backpressure",
-        "second-attach",
     ] {
         let mut session = Session::start("ignore-hup");
         let mut controlling = session.attach();
@@ -653,19 +801,6 @@ fn every_controlling_leave_hangs_up_then_kills_after_real_grace() {
                 }
                 drop(controlling);
             }
-            "second-attach" => {
-                send(
-                    &mut controlling,
-                    ClientMessage::Attach(TerminalSize { cols: 80, rows: 24 }),
-                );
-                assert_eq!(
-                    receive(&mut controlling),
-                    ServerMessage::Error {
-                        message: "session already has a controlling client".into()
-                    }
-                );
-                drop(controlling);
-            }
             _ => unreachable!(),
         }
         thread::sleep(Duration::from_millis(200));
@@ -691,6 +826,368 @@ fn every_controlling_leave_hangs_up_then_kills_after_real_grace() {
         .unwrap();
         assert!(!log.contains("untrusted secret"));
     }
+}
+
+fn until_terminal(stream: &mut UnixStream) -> (Vec<u8>, ServerMessage) {
+    let mut output = Vec::new();
+    loop {
+        match receive(stream) {
+            ServerMessage::Output(bytes) => output.extend(bytes),
+            other => return (output, other),
+        }
+    }
+}
+
+fn restoration(stream: &mut UnixStream) -> (u64, Vec<u8>) {
+    let mut bytes = Vec::new();
+    let period = loop {
+        match receive(stream) {
+            ServerMessage::Granted { period } => break period,
+            ServerMessage::Output(output) => bytes.extend(output),
+            other => panic!("unexpected grant frame: {other:?}"),
+        }
+    };
+    let (prefix, end) = until_terminal(stream);
+    assert_eq!(end, ServerMessage::RestoreEnd { period });
+    bytes.extend(prefix);
+    (period, bytes)
+}
+
+fn wait_file(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "{} never appeared",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn count(haystack: &[u8], needle: &[u8]) -> usize {
+    haystack
+        .windows(needle.len())
+        .filter(|bytes| *bytes == needle)
+        .count()
+}
+
+fn advertised_state(session: &Session) -> (Lifecycle, u32, bool) {
+    let mut probe = UnixStream::connect(&session.socket).unwrap();
+    send(&mut probe, ClientMessage::Hello { protocol: 1 });
+    let extensions = HelloExtensions::from_body(read_frame(&mut probe).unwrap().body());
+    let capabilities = extensions.capabilities.valid().unwrap();
+    assert!(capabilities.supports_attach() && capabilities.supports_kill());
+    assert!(capabilities.supports_state());
+    let state = extensions.state.valid().unwrap();
+    (state.lifecycle(), state.attachments(), state.controlled())
+}
+
+fn attach_at(session: &Session, size: TerminalSize) -> UnixStream {
+    let mut stream = session.connect();
+    send(&mut stream, ClientMessage::Attach(size));
+    assert_eq!(receive(&mut stream), ServerMessage::Attached);
+    stream
+}
+
+/// Section 6.2 release ordering: release bytes, then `Detached`; the session
+/// outlives the detach, advertises its state and accepts a reattachment.
+#[test]
+fn detach_releases_then_confirms_and_a_reattachment_resumes() {
+    let mut session = Session::start("exit");
+    assert_eq!(advertised_state(&session), (Lifecycle::Starting, 0, false));
+    let mut first = session.attach();
+    session.wait_marker(&mut first);
+    assert_eq!(advertised_state(&session), (Lifecycle::Attached, 1, true));
+    send(&mut first, ClientMessage::Detach);
+    let (released, confirmation) = until_terminal(&mut first);
+    assert_eq!(confirmation, ServerMessage::Detached);
+    assert_eq!(released, climon2_vt::Presentation::new(91, 37).release());
+    assert!(read_frame(&mut first).is_err());
+    assert_eq!(advertised_state(&session), (Lifecycle::Detached, 0, false));
+
+    let mut second = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
+    let (period, restored) = restoration(&mut second);
+    assert_eq!(count(&restored, b"fixture-ready"), 1);
+    send(&mut second, ClientMessage::Ready { period });
+    send(&mut second, ClientMessage::Input(b"go\n".to_vec()));
+    let (output, result) = until_terminal(&mut second);
+    assert_eq!(result, ServerMessage::Exit { code: 42 });
+    assert!(output.ends_with(&climon2_vt::Presentation::new(91, 37).release()));
+    assert_eq!(count(&output, b"final-bytes"), 1);
+    session.finish();
+}
+
+/// Section 6.2: a newer attachment takes control; the old controller gets its
+/// release (leaving the alternate screen it entered) and then `Revoked`, and
+/// may take control back. Exit from the alternate screen releases it too.
+#[test]
+fn takeover_revokes_with_release_and_exit_leaves_the_alternate_screen() {
+    let mut session = Session::start("tui-restore");
+    wait_file(&session.directory.path().join("tui-ready"));
+    let mut first = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
+    let (period, _) = restoration(&mut first);
+    send(&mut first, ClientMessage::Ready { period });
+    let mut second = attach_at(&session, TerminalSize { cols: 80, rows: 24 });
+    let (released, revoked) = until_terminal(&mut first);
+    assert_eq!(revoked, ServerMessage::Revoked);
+    assert_eq!(count(&released, b"\x1b[?1049l"), 1);
+    let (period, restored) = restoration(&mut second);
+    assert_eq!(count(&restored, b"RESTORED-DISPLAY"), 1);
+    send(&mut second, ClientMessage::Ready { period });
+
+    send(&mut first, ClientMessage::TakeControl);
+    let (released, revoked) = until_terminal(&mut second);
+    assert_eq!(revoked, ServerMessage::Revoked);
+    assert_eq!(count(&released, b"\x1b[?1049l"), 1);
+    let (period, _) = restoration(&mut first);
+    send(&mut first, ClientMessage::Ready { period });
+    send(&mut first, ClientMessage::Input(vec![b'x']));
+    let (output, result) = until_terminal(&mut first);
+    assert_eq!(result, ServerMessage::Exit { code: 42 });
+    let accepted = output
+        .windows(14)
+        .position(|bytes| bytes == b"INPUT-ACCEPTED")
+        .unwrap();
+    assert_eq!(count(&output[accepted..], b"\x1b[?1049l"), 1);
+    session.finish();
+}
+
+/// Section 6.2 replacement restoration: a resize before `Ready` retires the
+/// period; the new prologue leaves the committed alternate screen exactly once.
+#[test]
+fn resize_before_ready_replaces_the_restoration_period() {
+    let mut session = Session::start("tui-restore");
+    wait_file(&session.directory.path().join("tui-ready"));
+    let mut stream = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
+    let (first, restored) = restoration(&mut stream);
+    assert_eq!(count(&restored, b"\x1b[?1049h"), 1);
+    send(
+        &mut stream,
+        ClientMessage::Resize(TerminalSize {
+            cols: 100,
+            rows: 40,
+        }),
+    );
+    let (second, replacement) = restoration(&mut stream);
+    assert_eq!(second, first + 1);
+    assert!(replacement.starts_with(b"\x1b[?1049l"), "{replacement:?}");
+    assert_eq!(count(&replacement, b"\x1b[?1049l"), 1);
+    assert_eq!(count(&replacement, b"RESTORED-DISPLAY"), 1);
+    send(&mut stream, ClientMessage::Ready { period: first });
+    send(&mut stream, ClientMessage::Ready { period: second });
+    send(&mut stream, ClientMessage::Input(vec![b'x']));
+    let (_, result) = until_terminal(&mut stream);
+    assert_eq!(result, ServerMessage::Exit { code: 42 });
+    session.finish();
+}
+
+/// Section 6.2 resize burst: one write of several resizes is one PTY resize.
+#[test]
+fn a_resize_burst_is_one_pty_resize_to_the_last_size() {
+    let mut session = Session::start("winch");
+    let mut stream = session.attach();
+    session.wait_marker(&mut stream);
+    let mut burst = Vec::new();
+    for cols in [100, 101, 102] {
+        let resize = ClientMessage::Resize(TerminalSize { cols, rows: 30 });
+        write_frame(&mut burst, &resize.to_frame().unwrap()).unwrap();
+    }
+    stream.write_all(&burst).unwrap();
+    thread::sleep(Duration::from_millis(300));
+    send(&mut stream, ClientMessage::Input(b"go\n".to_vec()));
+    let (_, result) = until_terminal(&mut stream);
+    assert_eq!(result, ServerMessage::Exit { code: 0 });
+    assert_eq!(
+        fs::read_to_string(session.directory.path().join("resized")).unwrap(),
+        "1 102x30"
+    );
+    session.finish();
+}
+
+/// Section 6.2 unfinished token: a pending `ESC [` does not hold restoration.
+/// Kill then confirms the command's result to the requester.
+#[test]
+fn an_unfinished_token_still_restores_and_kill_confirms_termination() {
+    let mut session = Session::start("partial");
+    wait_file(&session.directory.path().join("partial-ready"));
+    let mut stream = session.attach();
+    send(&mut stream, ClientMessage::Detach);
+    assert_eq!(until_terminal(&mut stream).1, ServerMessage::Detached);
+    let mut killer = session.connect();
+    send(&mut killer, ClientMessage::Kill);
+    assert!(matches!(
+        receive(&mut killer),
+        ServerMessage::Terminated { .. }
+    ));
+    session.finish();
+}
+
+/// Section 1.7: attaching while the session terminates is refused.
+#[test]
+fn attach_during_termination_is_refused() {
+    let mut session = Session::start("ignore-hup");
+    let mut controlling = session.attach();
+    session.wait_marker(&mut controlling);
+    // The kill is serviced first; the attachment request is read while the
+    // session terminates.
+    let mut killer = session.connect();
+    let mut late = session.connect();
+    send(&mut killer, ClientMessage::Kill);
+    send(
+        &mut late,
+        ClientMessage::Attach(TerminalSize { cols: 91, rows: 37 }),
+    );
+    assert!(matches!(receive(&mut late), ServerMessage::Error { .. }));
+    let (released, result) = until_terminal(&mut controlling);
+    assert!(matches!(result, ServerMessage::Exit { .. }));
+    assert_eq!(released, climon2_vt::Presentation::new(91, 37).release());
+    assert!(matches!(
+        receive(&mut killer),
+        ServerMessage::Terminated { .. }
+    ));
+    session.finish();
+}
+
+/// Section 6.2 authoritative failure: a PTY write fault releases the
+/// controller, then reports `Error`, then cleans up.
+#[test]
+fn a_pty_write_failure_releases_then_reports_error() {
+    let mut session = Session::configured("exit", |command, _| {
+        command.env("CLIMON2_DAEMON_FAULT", "pty-write");
+    });
+    let mut stream = session.attach();
+    session.wait_marker(&mut stream);
+    send(&mut stream, ClientMessage::Input(b"go\n".to_vec()));
+    let (released, result) = until_terminal(&mut stream);
+    assert!(matches!(result, ServerMessage::Error { .. }), "{result:?}");
+    assert_eq!(released, climon2_vt::Presentation::new(91, 37).release());
+    session.finish();
+}
+
+/// Initial deadline: a command that ends before anyone attaches keeps the
+/// session for the five-second initial attach window, then it ends.
+#[test]
+fn an_unattached_session_ends_after_the_initial_deadline() {
+    let mut session = Session::start("early");
+    let started = Instant::now();
+    thread::sleep(Duration::from_millis(500));
+    assert!(session.socket.exists());
+    session.finish();
+    assert!(started.elapsed() >= Duration::from_millis(4500));
+    assert!(started.elapsed() < Duration::from_secs(7));
+}
+
+/// Kill after the command already ended, before anyone attached: the command
+/// session still gets its hang-up grace, and the kill confirms the real status.
+#[test]
+fn kill_after_an_unreported_exit_confirms_that_status() {
+    let mut session = Session::start("early");
+    thread::sleep(Duration::from_millis(300));
+    let mut killer = session.connect();
+    killer
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    send(&mut killer, ClientMessage::Kill);
+    assert_eq!(receive(&mut killer), ServerMessage::Terminated { code: 43 });
+    session.finish();
+}
+
+/// Section 6.2 stalled reader: a fast client reads the large prefix; a client
+/// that never reads is dropped after five seconds without progress, and the
+/// leave policy ends the command.
+#[test]
+fn a_stalled_reader_is_dropped_after_five_seconds_without_progress() {
+    let mut session = Session::start("history");
+    wait_file(&session.directory.path().join("history-ready"));
+    let mut fast = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
+    let (_, restored) = restoration(&mut fast);
+    assert!(count(&restored, b"history-row") >= 9000);
+    send(&mut fast, ClientMessage::Detach);
+    assert_eq!(until_terminal(&mut fast).1, ServerMessage::Detached);
+    let _stalled = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
+    let started = Instant::now();
+    session.finish();
+    assert!(started.elapsed() >= Duration::from_secs(5));
+    // Five seconds without progress, then the hang-up grace of the leave policy.
+    assert!(
+        started.elapsed() < Duration::from_secs(13),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// Section 6.2 withheld `Ready`: the restoration deadline is an unexpected
+/// departure, so the connection closes and the leave policy ends the command.
+#[test]
+fn withheld_ready_is_an_unexpected_departure_after_the_restore_deadline() {
+    let mut session = Session::start("exit");
+    let mut stream = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
+    stream
+        .set_read_timeout(Some(Duration::from_secs(40)))
+        .unwrap();
+    restoration(&mut stream);
+    let started = Instant::now();
+    while let Ok(frame) = read_frame(&mut stream) {
+        assert!(matches!(
+            ServerMessage::from_frame(frame).unwrap(),
+            ServerMessage::Output(_)
+        ));
+    }
+    assert!(started.elapsed() >= Duration::from_secs(29));
+    session.finish();
+}
+
+/// Section 6.2 sync latch: repeated synchronized-update begins never starve
+/// a grant; it is served through the latch, not after the command stops.
+#[test]
+fn repeated_sync_begins_do_not_hold_a_grant() {
+    let mut session = Session::start("sync");
+    wait_file(&session.directory.path().join("sync-ready"));
+    let mut stream = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
+    let attached = Instant::now();
+    let (period, _) = restoration(&mut stream);
+    assert!(
+        attached.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        attached.elapsed()
+    );
+    send(&mut stream, ClientMessage::Ready { period });
+    drop(stream);
+    session.finish();
+}
+
+/// A host beyond the session's size limits sees a derived presentation; a
+/// later host resize is presented without resizing the command.
+#[test]
+fn an_oversized_host_is_served_a_derived_presentation() {
+    let mut session = Session::start("zero-size");
+    let mut stream = attach_at(
+        &session,
+        TerminalSize {
+            cols: 600,
+            rows: 37,
+        },
+    );
+    let (period, restored) = restoration(&mut stream);
+    send(&mut stream, ClientMessage::Ready { period });
+    session.restored.borrow_mut().extend(restored);
+    session.wait_marker(&mut stream);
+    send(
+        &mut stream,
+        ClientMessage::Resize(TerminalSize {
+            cols: 700,
+            rows: 37,
+        }),
+    );
+    send(&mut stream, ClientMessage::Input(b"go\n".to_vec()));
+    let (_, result) = until_terminal(&mut stream);
+    assert_eq!(result, ServerMessage::Exit { code: 0 });
+    assert_eq!(
+        fs::read_to_string(session.directory.path().join("resized")).unwrap(),
+        "500x37"
+    );
+    session.finish();
 }
 
 fn job_pid(home: &Path, job: &str) -> u32 {
@@ -836,10 +1333,16 @@ fn saturation_backpressures_pty_without_blocking_probes_or_losing_bytes() {
     let elapsed = started.elapsed();
     let mut expected = b"go\r\n".to_vec();
     expected.resize(expected.len() + 8 * 1024 * 1024, b'x');
+    let release = climon2_vt::Presentation::new(91, 37).release();
+    let expected_len = expected.len();
     assert!(
-        output == expected,
-        "flood output differs ({} bytes)",
-        output.len()
+        output.len() == expected_len + release.len()
+            && output[..expected_len] == expected
+            && output[expected_len..] == release,
+        "flood output differs ({} bytes, prefix {:?}, suffix {:?})",
+        output.len(),
+        &output[..output.len().min(160)],
+        &output[output.len().saturating_sub(160)..]
     );
     assert!(elapsed < Duration::from_secs(15), "flood took {elapsed:?}");
     session.finish();
@@ -1356,6 +1859,8 @@ fn job_fixture(job: &str) -> ! {
     std::process::exit(0);
 }
 
+static WINCHES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 #[test]
 #[ignore = "owned generic terminal fixture subprocess"]
 fn fixture_child() {
@@ -1410,6 +1915,81 @@ fn fixture_child() {
         unsafe {
             libc::signal(libc::SIGHUP, libc::SIG_IGN);
         }
+    }
+    if mode == "sync" {
+        for frame in 0..200 {
+            print!("\x1b[?2026hframe-{frame}\r");
+            io::stdout().flush().unwrap();
+            if frame == 0 {
+                fs::write("sync-ready", b"").unwrap();
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        thread::sleep(Duration::from_secs(45));
+    }
+    if mode == "partial" {
+        print!("\x1b[");
+        io::stdout().flush().unwrap();
+        fs::write("partial-ready", b"").unwrap();
+        thread::sleep(Duration::from_secs(45));
+    }
+    if mode == "history" {
+        let mut out = io::stdout().lock();
+        for row in 0..10_000 {
+            write!(out, "history-row {row:05} {}\r\n", "h".repeat(60)).unwrap();
+        }
+        out.flush().unwrap();
+        fs::write("history-ready", b"").unwrap();
+        thread::sleep(Duration::from_secs(45));
+    }
+    if mode == "winch" {
+        extern "C" fn counted(_: libc::c_int) {
+            WINCHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        unsafe {
+            libc::signal(
+                libc::SIGWINCH,
+                counted as extern "C" fn(libc::c_int) as libc::sighandler_t,
+            );
+        }
+        print!("fixture-ready");
+        io::stdout().flush().unwrap();
+        let mut line = String::new();
+        io::stdin().read_line(&mut line).unwrap();
+        let mut size = std::mem::MaybeUninit::<libc::winsize>::uninit();
+        assert_eq!(
+            unsafe { libc::ioctl(0, libc::TIOCGWINSZ, size.as_mut_ptr()) },
+            0
+        );
+        let size = unsafe { size.assume_init() };
+        let winches = WINCHES.load(std::sync::atomic::Ordering::SeqCst);
+        fs::write(
+            "resized",
+            format!("{winches} {}x{}", size.ws_col, size.ws_row),
+        )
+        .unwrap();
+        std::process::exit(0);
+    }
+    if mode == "tui-restore" {
+        let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
+        assert_eq!(unsafe { libc::tcgetattr(0, termios.as_mut_ptr()) }, 0);
+        let mut termios = unsafe { termios.assume_init() };
+        unsafe {
+            libc::cfmakeraw(&mut termios);
+        }
+        assert_eq!(unsafe { libc::tcsetattr(0, libc::TCSANOW, &termios) }, 0);
+        print!(
+            "\x1b[?1049h\x1b[?1000h\x1b[?2004h\x1b[?1h\
+             \x1b[2J\x1b[4;5HRESTORED-DISPLAY"
+        );
+        io::stdout().flush().unwrap();
+        fs::write("draw-count", b"1").unwrap();
+        fs::write("tui-ready", b"").unwrap();
+        let mut byte = [0];
+        io::stdin().read_exact(&mut byte).unwrap();
+        fs::write("input-accepted", byte).unwrap();
+        print!("INPUT-ACCEPTED");
+        std::process::exit(42);
     }
     print!("fixture-ready");
     io::stdout().flush().unwrap();

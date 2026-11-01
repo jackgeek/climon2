@@ -7,12 +7,15 @@ climon2 exec bash --noprofile --norc
 climon2 exec vim
 climon2 list
 climon2 list --json
+climon2 attach <session-prefix>
 ```
 
 The command keeps its arguments, working directory and environment. Its exit
-status becomes climon2's exit status. Leaving the client ends the session; detach,
-reattach and screen restoration are not supported. Nested sessions are supported.
-Session data defaults to `~/.climon2`; set `CLIMON2_HOME` to override it.
+status becomes climon2's exit status. Press **Ctrl+]**, then **d** to detach
+without ending the command. Reattach with a unique session-ID prefix; climon2
+restores the current terminal screen and resumes input. Unexpected client loss
+ends the session after a grace period. Nested sessions are supported. Session
+data defaults to `~/.climon2`; set `CLIMON2_HOME` to override it.
 
 ## Install
 

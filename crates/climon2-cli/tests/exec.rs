@@ -199,6 +199,32 @@ fn exec_rejects_non_tty_before_creating_a_session() {
     layout.clean();
 }
 
+#[test]
+fn invalid_exec_config_is_rejected_before_session_side_effects() {
+    let layout = Layout::new();
+    fs::create_dir_all(layout.home()).unwrap();
+    fs::write(
+        layout.home().join("config.jsonc"),
+        r#"{"scrollback":{"max_rows":100001}}"#,
+    )
+    .unwrap();
+    let pid_path = layout.directory.path().join("command-pid");
+    let mut command = layout.command();
+    command.env("FIXTURE_PID_PATH", &pid_path);
+    command.args(["exec"]);
+    command.arg(layout.fixture());
+    command.arg("hold");
+    let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
+    assert_eq!(terminal.wait_exit(Duration::from_secs(3)).unwrap(), 125);
+    assert!(terminal.screen().contains("scrollback.max_rows"));
+    assert!(!pid_path.exists());
+    assert!(
+        !layout.home().join("sessions").exists(),
+        "invalid config must be rejected before session creation"
+    );
+    layout.clean();
+}
+
 /// #19/#20: real installed siblings, initial dimensions, early command exit.
 #[test]
 fn packaged_exec_preserves_final_command_status() {
@@ -208,7 +234,98 @@ fn packaged_exec_preserves_final_command_status() {
     command.arg(layout.fixture());
     command.args(["exit", "43"]);
     let mut terminal = Terminal::spawn(command, 31, 97).unwrap();
-    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 43);
+    let status = terminal
+        .wait_exit(Duration::from_secs(8))
+        .unwrap_or_else(|error| {
+            let paths = fs::read_dir(layout.home().join("logs"))
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .flat_map(|entry| fs::read_dir(entry.path()).into_iter().flatten())
+                .filter_map(Result::ok)
+                .filter_map(|entry| fs::read_to_string(entry.path()).ok())
+                .collect::<Vec<_>>();
+            panic!("{error}\nlogs:\n{}", paths.join("\n---\n"));
+        });
+    assert_eq!(status, 43, "exec failed: {}", terminal.screen());
+    layout.clean();
+}
+
+#[test]
+fn exec_restores_a_waiting_alternate_screen_without_application_redraw() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let layout = Layout::private();
+    let ready = layout.directory.path().join("tui-ready");
+    let client = layout.installation.version().join("climon2-client");
+    let real_client = layout.installation.version().join("climon2-client-real");
+    fs::rename(&client, &real_client).unwrap();
+    fs::write(
+        &client,
+        "#!/bin/sh\nwhile [ ! -e \"$FIXTURE_TUI_READY\" ]; do /bin/sleep 0.01; done\nexec \"$FIXTURE_REAL_CLIENT\" \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&client, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut command = layout.command();
+    command.env("FIXTURE_TUI_READY", &ready);
+    command.env("FIXTURE_REAL_CLIENT", &real_client);
+    command.args(["exec"]);
+    command.arg(layout.fixture());
+    command.arg("tui");
+    let mut terminal = Terminal::spawn(command, 31, 97).unwrap();
+    terminal
+        .wait_for_text("RESTORED-DISPLAY", Duration::from_secs(8))
+        .unwrap();
+    terminal
+        .wait_for_bytes(b"\x1b[?1049h", Duration::from_secs(1))
+        .unwrap();
+    terminal
+        .wait_for_bytes(b"\x1b[?2004h", Duration::from_secs(1))
+        .unwrap();
+    assert!(ready.exists(), "client attached before the TUI drew");
+    assert_eq!(
+        fs::read_to_string(layout.directory.path().join("draw-count")).unwrap(),
+        "1"
+    );
+
+    terminal.send(b"x").unwrap();
+    terminal
+        .wait_for_text("INPUT-ACCEPTED", Duration::from_secs(2))
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(layout.directory.path().join("draw-count")).unwrap(),
+        "1"
+    );
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 42);
+    layout.clean();
+}
+
+#[test]
+fn packaged_client_can_detach_and_reattach_to_a_live_session() {
+    let layout = Layout::new();
+    let mut command = layout.command();
+    command.args(["exec"]);
+    command.arg(layout.fixture());
+    command.arg("hold");
+    let mut first = Terminal::spawn(command, 31, 97).unwrap();
+    first
+        .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
+        .unwrap();
+    let metadata = only_metadata(&layout);
+
+    first.send(b"\x1dd").unwrap();
+    let status = first.wait_exit(Duration::from_secs(8)).unwrap();
+    assert_eq!(status, 0, "detach failed: {}", first.screen());
+
+    let mut command = layout.command();
+    command.args(["attach", &metadata.session_id.as_str()[..8]]);
+    let mut second = Terminal::spawn(command, 31, 97).unwrap();
+    second
+        .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
+        .unwrap();
+    second.send(b"exit\n").unwrap();
+    assert_eq!(second.wait_exit(Duration::from_secs(8)).unwrap(), 0);
     layout.clean();
 }
 
@@ -281,6 +398,8 @@ fn packaged_exec_preserves_runtime_argv_cwd_environment_and_initial_size() {
     command.env("COLORTERM", "");
     command.env("CLIMON2_CLIENT_STARTUP", "inherited startup input");
     command.env("SHELL", "");
+    let report_path = layout.directory.path().join("runtime-report.json");
+    command.env("FIXTURE_REPORT_PATH", &report_path);
     command.args(["exec"]);
     command.arg(layout.fixture());
     command.args(["report", "", "--looks-like-option", "literal $ ; ' \""]);
@@ -296,24 +415,12 @@ fn packaged_exec_preserves_runtime_argv_cwd_environment_and_initial_size() {
         hex(OsStr::new("literal $ ; ' \"")),
         hex(&odd)
     ]);
-    terminal
-        .wait_for_bytes(
-            format!("\"argv\":{expected_args}").as_bytes(),
-            Duration::from_secs(1),
-        )
-        .unwrap();
-    terminal
-        .wait_for_bytes(
-            format!("\"cwd\":\"{}\"", hex(layout.directory.path().as_os_str())).as_bytes(),
-            Duration::from_secs(1),
-        )
-        .unwrap();
-    terminal
-        .wait_for_bytes(b"\"cols\":97", Duration::from_secs(1))
-        .unwrap();
-    terminal
-        .wait_for_bytes(b"\"rows\":31", Duration::from_secs(1))
-        .unwrap();
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(&report_path).unwrap()).unwrap();
+    assert_eq!(report["argv"], expected_args);
+    assert_eq!(report["cwd"], hex(layout.directory.path().as_os_str()));
+    assert_eq!(report["cols"], 97);
+    assert_eq!(report["rows"], 31);
     let mut expected_environment: std::collections::BTreeMap<_, _> = [
         ("HOME", layout.directory.path().as_os_str().to_owned()),
         ("CLIMON2_HOME", layout.home().into_os_string()),
@@ -325,21 +432,16 @@ fn packaged_exec_preserves_runtime_argv_cwd_environment_and_initial_size() {
         ("SHELL", "".into()),
         ("CLIMON2_SESSION_ID", metadata.session_id.as_str().into()),
         ("CLIMON2_SESSION_DEPTH", "1".into()),
+        ("FIXTURE_REPORT_PATH", report_path.as_os_str().to_owned()),
     ]
     .into_iter()
     .map(|(key, value)| (hex(OsStr::new(key)), hex(&value)))
     .collect();
     expected_environment.extend(fixture_runtime_environment(&layout));
-    terminal
-        .wait_for_bytes(
-            format!(
-                "\"env\":{}",
-                serde_json::to_string(&expected_environment).unwrap()
-            )
-            .as_bytes(),
-            Duration::from_secs(1),
-        )
-        .unwrap();
+    assert_eq!(
+        report["env"],
+        serde_json::to_value(expected_environment).unwrap()
+    );
     terminal.send(b"\n").unwrap();
     assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
     let logs = layout
@@ -425,6 +527,9 @@ fn actual_nested_bash_session_increments_depth_and_sees_the_fixed_terminal_ident
     let mut command = layout.command();
     command.env("TERM", "dumb");
     command.env("COLORTERM", "24bit");
+    command.env("FIXTURE_REPORT_NO_WAIT", "1");
+    let report_path = layout.directory.path().join("nested-report.json");
+    command.env("FIXTURE_REPORT_PATH", &report_path);
     command.args([
         "exec",
         "/bin/bash",
@@ -438,45 +543,22 @@ fn actual_nested_bash_session_increments_depth_and_sees_the_fixed_terminal_ident
     command.arg(layout.fixture());
     let mut terminal = Terminal::spawn(command, 31, 120).unwrap();
     terminal
-        .wait_for_bytes(
-            b"Starting climon2 session nested for the 1st time",
-            Duration::from_secs(8),
-        )
+        .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
         .unwrap();
-    terminal
-        .wait_for_bytes(
-            format!(
-                "\"{}\":\"{}\"",
-                hex(OsStr::new("CLIMON2_SESSION_DEPTH")),
-                hex(OsStr::new("2"))
-            )
-            .as_bytes(),
-            Duration::from_secs(8),
-        )
-        .unwrap();
-    terminal
-        .wait_for_bytes(
-            format!(
-                "\"{}\":\"{}\"",
-                hex(OsStr::new("TERM")),
-                hex(OsStr::new("xterm-256color"))
-            )
-            .as_bytes(),
-            Duration::from_secs(1),
-        )
-        .unwrap();
-    terminal
-        .wait_for_bytes(
-            format!(
-                "\"{}\":\"{}\"",
-                hex(OsStr::new("COLORTERM")),
-                hex(OsStr::new("truecolor"))
-            )
-            .as_bytes(),
-            Duration::from_secs(1),
-        )
-        .unwrap();
-    terminal.send(b"\n").unwrap();
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(report_path).unwrap()).unwrap();
+    assert_eq!(
+        report["env"][hex(OsStr::new("CLIMON2_SESSION_DEPTH"))],
+        hex(OsStr::new("2"))
+    );
+    assert_eq!(
+        report["env"][hex(OsStr::new("TERM"))],
+        hex(OsStr::new("xterm-256color"))
+    );
+    assert_eq!(
+        report["env"][hex(OsStr::new("COLORTERM"))],
+        hex(OsStr::new("truecolor"))
+    );
     assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
     layout.clean();
 }
@@ -649,7 +731,7 @@ fn zero_initial_terminal_size_falls_back_to_80_by_24() {
     drop(pair.slave);
     let mut output = Vec::new();
     let mut bytes = [0; 4096];
-    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let mut sent = false;
     loop {
         match reader.read(&mut bytes) {

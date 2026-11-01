@@ -122,8 +122,16 @@ fn serve(
     pty: &mut pty::Pty,
     signals: &climon2_platform::terminal::Signals,
 ) -> Result<(), startup::Failure> {
-    session::serve(options, &resources.listener, pty, signals)
-        .map_err(|_| startup::Failure::own("session I/O failed"))?;
+    let listener = resources.take_listener();
+    session::serve(options, &listener, pty, signals, || {
+        resources
+            .cleanup()
+            .map_err(|_| io_error("cannot remove session files"))
+    })
+    .map_err(|error| {
+        tracing::error!(%error, "session I/O failed");
+        startup::Failure::own("session I/O failed")
+    })?;
     tracing::info!("session ended");
     resources
         .cleanup()

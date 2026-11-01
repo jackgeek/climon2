@@ -1,6 +1,7 @@
 use crate::transport::{Pending, Transport, invalid, poll, ready};
 use climon2_core::{
     SessionId,
+    keys::ClientSettings,
     protocol::{ClientMessage, ServerMessage, TerminalSize},
 };
 use climon2_platform::terminal::{self, Signals};
@@ -8,7 +9,137 @@ use std::{
     fs::File,
     io::{self, Read},
     os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd},
+    time::{Duration, Instant},
 };
+
+const RESULT_TIMEOUT: Duration = Duration::from_secs(5);
+const PASTE_START: &[u8] = b"\x1b[200~";
+const PASTE_END: &[u8] = b"\x1b[201~";
+const OBSERVER_NOTICE: &[u8] = b"\r\n[climon2: observing; press Ctrl+]d to detach]\r\n";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Role {
+    Restoring,
+    Controlling,
+    Observing,
+}
+
+enum FilterAction {
+    Input(Vec<u8>),
+    Detach,
+    TakeControl,
+}
+
+struct InputFilter {
+    escape: Option<u8>,
+    take_control: Option<u8>,
+    prefix_pending: bool,
+    paste: bool,
+    marker: Vec<u8>,
+}
+
+impl InputFilter {
+    fn new(settings: ClientSettings) -> Self {
+        Self {
+            escape: settings.escape_prefix().map(|key| key.byte()),
+            take_control: settings.take_control_key().map(|key| key.byte()),
+            prefix_pending: false,
+            paste: false,
+            marker: Vec::new(),
+        }
+    }
+
+    fn reset_keys(&mut self) {
+        self.prefix_pending = false;
+    }
+
+    fn feed(&mut self, bytes: &[u8], controlling: bool) -> Vec<FilterAction> {
+        let mut actions = Vec::new();
+        for byte in bytes {
+            self.marker.push(*byte);
+            if self.settle(controlling, &mut actions) {
+                self.marker.clear();
+                break;
+            }
+        }
+        actions
+    }
+
+    /// Passes on every pending byte that cannot start the next paste marker;
+    /// true once a key asked to detach, which discards the rest of the read.
+    fn settle(&mut self, controlling: bool, actions: &mut Vec<FilterAction>) -> bool {
+        while !self.expected().starts_with(&self.marker) {
+            let first = self.marker.remove(0);
+            if self.pass(first, controlling, actions) {
+                return true;
+            }
+        }
+        self.complete_marker(controlling, actions);
+        false
+    }
+
+    fn expected(&self) -> &'static [u8] {
+        if self.paste { PASTE_END } else { PASTE_START }
+    }
+
+    fn complete_marker(&mut self, controlling: bool, actions: &mut Vec<FilterAction>) {
+        let expected = self.expected();
+        if self.marker.len() == expected.len() {
+            self.marker.clear();
+            self.paste = !self.paste;
+            push_input(actions, expected, controlling);
+        }
+    }
+
+    /// Paste payload is never interpreted as keys.
+    fn pass(&mut self, byte: u8, controlling: bool, actions: &mut Vec<FilterAction>) -> bool {
+        if self.paste {
+            push_input(actions, &[byte], controlling);
+            return false;
+        }
+        self.key(byte, controlling, actions);
+        matches!(actions.last(), Some(FilterAction::Detach))
+    }
+
+    fn key(&mut self, byte: u8, controlling: bool, actions: &mut Vec<FilterAction>) {
+        let prefixed = std::mem::take(&mut self.prefix_pending);
+        match self.escape {
+            Some(escape) if prefixed => prefixed_key(escape, byte, controlling, actions),
+            Some(escape) if byte == escape => self.prefix_pending = true,
+            _ => self.plain(byte, controlling, actions),
+        }
+    }
+
+    fn plain(&self, byte: u8, controlling: bool, actions: &mut Vec<FilterAction>) {
+        if !controlling && Some(byte) == self.take_control {
+            actions.push(FilterAction::TakeControl);
+        } else {
+            push_input(actions, &[byte], controlling);
+        }
+    }
+}
+
+/// After the escape prefix: `d` detaches, the prefix again is itself, and
+/// anything else is the prefix followed by that byte.
+fn prefixed_key(escape: u8, byte: u8, controlling: bool, actions: &mut Vec<FilterAction>) {
+    if byte == b'd' {
+        return actions.push(FilterAction::Detach);
+    }
+    if byte != escape {
+        push_input(actions, &[escape], controlling);
+    }
+    push_input(actions, &[byte], controlling);
+}
+
+fn push_input(actions: &mut Vec<FilterAction>, bytes: &[u8], controlling: bool) {
+    if !controlling {
+        return;
+    }
+    match actions.last_mut() {
+        Some(FilterAction::Input(previous)) => previous.extend_from_slice(bytes),
+        _ => actions.push(FilterAction::Input(bytes.to_vec())),
+    }
+}
 
 /// The single owner of the terminal's file-status flags while bridging. Both originals
 /// are captured before either changes, because stdin and stdout may share one open-file
@@ -78,12 +209,23 @@ struct Bridge {
     transport: Transport,
     terminal: File,
     signals: Signals,
+    filter: InputFilter,
     size: TerminalSize,
     resize: Option<TerminalSize>,
     output: Pending,
-    /// The session closed its end: it accepts no more writes, but what it already
-    /// sent (output, Exit, then EOF) is still read once stdout drains.
+    role: Role,
+    ready_period: Option<u64>,
+    pending_detach: bool,
+    /// Set by a detach request or a session hang-up: past it, the result is
+    /// unconfirmed, even while stdout is blocked.
+    closing: Option<Instant>,
     hung_up: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BridgeExit {
+    Status(u32),
+    Detached,
 }
 
 pub fn run(
@@ -92,15 +234,21 @@ pub fn run(
     signals: Signals,
     size: TerminalSize,
     id: &SessionId,
-) -> io::Result<u32> {
+    settings: ClientSettings,
+) -> io::Result<BridgeExit> {
     let _flags = Nonblocking::new(terminal.as_fd(), io::stdout().as_fd())?;
     let mut bridge = Bridge {
         transport,
         terminal,
         signals,
+        filter: InputFilter::new(settings),
         size,
         resize: None,
         output: Pending::default(),
+        role: Role::Restoring,
+        ready_period: None,
+        pending_detach: false,
+        closing: None,
         hung_up: false,
     };
     bridge.run().map_err(|error| {
@@ -113,58 +261,129 @@ pub fn run(
 }
 
 impl Bridge {
-    fn run(&mut self) -> io::Result<u32> {
+    fn run(&mut self) -> io::Result<BridgeExit> {
         loop {
-            if let Some(signal) = self.signals.termination_signal() {
-                return Ok(128 + signal);
-            }
-            if let Some(code) = self.tick()? {
-                return Ok(code);
+            if let Some(exit) = self.step()? {
+                return Ok(exit);
             }
         }
     }
 
-    fn tick(&mut self) -> io::Result<Option<u32>> {
+    fn step(&mut self) -> io::Result<Option<BridgeExit>> {
+        if let Some(signal) = self.signals.termination_signal() {
+            return Ok(Some(BridgeExit::Status(128 + signal)));
+        }
+        self.check_closing()?;
+        self.tick()
+    }
+
+    fn check_closing(&self) -> io::Result<()> {
+        if self
+            .closing
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(invalid(self.unconfirmed()));
+        }
+        Ok(())
+    }
+
+    fn unconfirmed(&self) -> &'static str {
+        if self.pending_detach {
+            "detach not confirmed"
+        } else {
+            "session result not confirmed"
+        }
+    }
+
+    fn close_within_deadline(&mut self) {
+        self.closing
+            .get_or_insert_with(|| Instant::now() + RESULT_TIMEOUT);
+    }
+
+    fn tick(&mut self) -> io::Result<Option<BridgeExit>> {
         self.resize()?;
         let descriptors = self.poll()?;
-        self.hung_up |= descriptors[0].revents & libc::POLLHUP != 0;
-        self.flush_ready(&descriptors)?;
-        self.dispatch(&descriptors)
+        self.observe_hangup(descriptors[0].revents | self.probe_hangup()?);
+        self.exchange(&descriptors)
+    }
+
+    /// While stdout is blocked the socket is not polled for input, and macOS
+    /// then reports no hang-up either; one immediate probe per tick finds it.
+    fn probe_hangup(&self) -> io::Result<i16> {
+        if self.output.empty() {
+            return Ok(0);
+        }
+        let mut probe = [descriptor(
+            self.transport.stream.as_raw_fd(),
+            libc::POLLIN,
+            true,
+        )];
+        poll(&mut probe, 0)?;
+        Ok(probe[0].revents)
+    }
+
+    fn observe_hangup(&mut self, events: i16) {
+        if events & (libc::POLLHUP | libc::POLLERR) != 0 {
+            self.hung_up = true;
+            self.close_within_deadline();
+        }
+    }
+
+    fn exchange(&mut self, descriptors: &[libc::pollfd; 3]) -> io::Result<Option<BridgeExit>> {
+        self.flush_output(descriptors[2].revents)?;
+        self.flush_socket(descriptors[0].revents)?;
+        self.dispatch(descriptors)?.map_or_else(
+            || self.ready_after_drain(descriptors).map(|()| None),
+            |exit| Ok(Some(exit)),
+        )
     }
 
     fn poll(&self) -> io::Result<[libc::pollfd; 3]> {
         let mut descriptors = self.descriptors();
-        poll(&mut descriptors, 20)?;
+        poll(&mut descriptors, self.poll_timeout())?;
         Ok(descriptors)
     }
 
-    fn dispatch(&mut self, descriptors: &[libc::pollfd; 3]) -> io::Result<Option<u32>> {
+    fn poll_timeout(&self) -> i32 {
+        self.closing.map_or(20, |deadline| {
+            deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis()
+                .clamp(1, 20) as i32
+        })
+    }
+
+    fn dispatch(&mut self, descriptors: &[libc::pollfd; 3]) -> io::Result<Option<BridgeExit>> {
         if let Some(code) = self.receive_ready(descriptors[0].revents)? {
             return Ok(Some(code));
         }
         self.input_ready(descriptors[1].revents)
     }
 
-    fn flush_ready(&mut self, descriptors: &[libc::pollfd; 3]) -> io::Result<()> {
-        if descriptors[2].revents != 0 {
+    fn flush_output(&mut self, events: i16) -> io::Result<()> {
+        if events != 0 {
             self.output.flush(&mut Output)?;
         }
-        if descriptors[0].revents & libc::POLLOUT != 0 {
+        Ok(())
+    }
+
+    fn flush_socket(&mut self, events: i16) -> io::Result<()> {
+        if events & libc::POLLOUT != 0 {
             self.transport.outgoing.flush(&mut self.transport.stream)?;
         }
         Ok(())
     }
 
-    fn receive_ready(&mut self, events: i16) -> io::Result<Option<u32>> {
+    fn receive_ready(&mut self, events: i16) -> io::Result<Option<BridgeExit>> {
         if self.output.empty() && events & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
             return self.receive();
         }
         Ok(None)
     }
 
-    fn input_ready(&mut self, events: i16) -> io::Result<Option<u32>> {
+    fn input_ready(&mut self, events: i16) -> io::Result<Option<BridgeExit>> {
         if events != 0 && !self.input()? {
-            return Ok(Some(129));
+            return Ok(Some(BridgeExit::Status(129)));
         }
         Ok(None)
     }
@@ -173,59 +392,91 @@ impl Bridge {
     fn descriptors(&self) -> [libc::pollfd; 3] {
         let socket = self.socket_events();
         [
-            descriptor(self.transport.stream.as_raw_fd(), socket, socket != 0),
+            descriptor(self.transport.stream.as_raw_fd(), socket, true),
             descriptor(
                 self.terminal.as_raw_fd(),
                 libc::POLLIN,
-                self.transport.outgoing.empty(),
+                self.transport.outgoing.empty() && !self.pending_detach,
             ),
             descriptor(1, libc::POLLOUT, !self.output.empty()),
         ]
     }
 
+    /// macOS reports POLLHUP for any requested event, so waiting to write to a
+    /// hung-up session would spin while stdout is blocked.
     fn socket_events(&self) -> i16 {
-        let mut events = 0;
-        if self.output.empty() {
-            events |= libc::POLLIN;
-        }
-        // macOS reports POLLHUP for any requested event, so waiting to write to a
-        // hung-up session would spin while stdout is blocked.
-        if !self.hung_up && !self.transport.outgoing.empty() {
-            events |= libc::POLLOUT;
-        }
-        events
+        let reading = if self.output.empty() { libc::POLLIN } else { 0 };
+        let writing = if self.hung_up || self.transport.outgoing.empty() {
+            0
+        } else {
+            libc::POLLOUT
+        };
+        reading | writing
     }
 
     fn resize(&mut self) -> io::Result<()> {
+        if self.pending_detach {
+            return Ok(());
+        }
+        self.observe_resize()?;
+        self.send_resize()
+    }
+
+    fn observe_resize(&mut self) -> io::Result<()> {
         if self.signals.take_resize() {
             let size = terminal::size(&self.terminal)?;
             self.resize = (size != self.size).then_some(size);
         }
-        if self.transport.outgoing.empty()
-            && let Some(size) = self.resize.take()
-        {
+        Ok(())
+    }
+
+    /// One resize at a time, only after earlier messages left.
+    fn send_resize(&mut self) -> io::Result<()> {
+        if !self.transport.outgoing.empty() {
+            return Ok(());
+        }
+        if let Some(size) = self.resize.take() {
             self.transport.send(&ClientMessage::Resize(size))?;
             self.size = size;
         }
         Ok(())
     }
 
-    fn receive(&mut self) -> io::Result<Option<u32>> {
+    fn receive(&mut self) -> io::Result<Option<BridgeExit>> {
         match self.transport.receive()? {
             None => Ok(None),
             Some(message) => self.message(message),
         }
     }
 
-    fn message(&mut self, message: ServerMessage) -> io::Result<Option<u32>> {
+    fn message(&mut self, message: ServerMessage) -> io::Result<Option<BridgeExit>> {
+        if let Some(exit) = result(&message) {
+            return Ok(Some(exit));
+        }
+        self.session_message(message).map(|()| None)
+    }
+
+    fn session_message(&mut self, message: ServerMessage) -> io::Result<()> {
         match message {
             ServerMessage::Output(bytes) => {
                 self.output = Pending::new(bytes);
-                Ok(None)
+                Ok(())
             }
-            ServerMessage::Exit { code } => Ok(Some(code)),
-            ServerMessage::Error { message } => Err(invalid(message)),
-            _ => Err(invalid("unexpected session message")),
+            ServerMessage::RestoreEnd { period } => {
+                self.ready_period = Some(period);
+                Ok(())
+            }
+            other => role_after(other).map(|role| self.enter(role)),
+        }
+    }
+
+    /// A new grant restores before input is ready; a revoked controller observes.
+    fn enter(&mut self, role: Role) {
+        self.role = role;
+        self.ready_period = None;
+        self.filter.reset_keys();
+        if role == Role::Observing {
+            self.output = Pending::new(OBSERVER_NOTICE.to_vec());
         }
     }
 
@@ -239,16 +490,82 @@ impl Bridge {
     }
 
     /// An empty read is the terminal hanging up (EOF, or EIO via `hangup_as_eof`).
+    /// Keys typed while restoring are drained and dropped.
     fn forward(&mut self, read: &[u8]) -> io::Result<bool> {
         if read.is_empty() {
             return Ok(false);
         }
-        self.transport.send(&ClientMessage::Input(read.to_vec()))?;
+        let actions = self.filter.feed(read, self.role == Role::Controlling);
+        if self.role != Role::Restoring {
+            self.perform(actions)?;
+        }
         Ok(true)
+    }
+
+    fn perform(&mut self, actions: Vec<FilterAction>) -> io::Result<()> {
+        for action in actions {
+            self.act(action)?;
+        }
+        Ok(())
+    }
+
+    fn act(&mut self, action: FilterAction) -> io::Result<()> {
+        match action {
+            FilterAction::Input(bytes) => self.transport.send(&ClientMessage::Input(bytes)),
+            FilterAction::Detach => self.detach(),
+            FilterAction::TakeControl => self.transport.send(&ClientMessage::TakeControl),
+        }
+    }
+
+    fn detach(&mut self) -> io::Result<()> {
+        self.transport.send(&ClientMessage::Detach)?;
+        self.pending_detach = true;
+        self.close_within_deadline();
+        Ok(())
+    }
+
+    /// `Ready` waits until restoration is written and typed-ahead keys are drained.
+    fn ready_after_drain(&mut self, descriptors: &[libc::pollfd; 3]) -> io::Result<()> {
+        if !self.drained(descriptors) {
+            return Ok(());
+        }
+        if let Some(period) = self.ready_period.take() {
+            self.ready(period)?;
+        }
+        Ok(())
+    }
+
+    fn drained(&self, descriptors: &[libc::pollfd; 3]) -> bool {
+        self.output.empty() && descriptors[1].revents & libc::POLLIN == 0
+    }
+
+    fn ready(&mut self, period: u64) -> io::Result<()> {
+        self.filter.reset_keys();
+        self.transport.send(&ClientMessage::Ready { period })?;
+        self.role = Role::Controlling;
+        Ok(())
     }
 
     fn read_terminal(&mut self, bytes: &mut [u8]) -> io::Result<Option<usize>> {
         ready(self.terminal.read(bytes).or_else(hangup_as_eof))
+    }
+}
+
+/// The session's final answers end the bridge.
+fn result(message: &ServerMessage) -> Option<BridgeExit> {
+    match message {
+        ServerMessage::Exit { code } => Some(BridgeExit::Status(*code)),
+        ServerMessage::Detached => Some(BridgeExit::Detached),
+        _ => None,
+    }
+}
+
+fn role_after(message: ServerMessage) -> io::Result<Role> {
+    match message {
+        ServerMessage::Granted { .. } => Ok(Role::Restoring),
+        ServerMessage::Revoked => Ok(Role::Observing),
+        ServerMessage::Error { message } => Err(invalid(message)),
+        _ => Err(invalid("unexpected session message")),
     }
 }
 
@@ -266,5 +583,79 @@ fn descriptor(fd: i32, events: i16, active: bool) -> libc::pollfd {
         fd: if active { fd } else { -1 },
         events,
         revents: Default::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BridgeExit, FilterAction, InputFilter, Role, result, role_after};
+    use climon2_core::{keys::ClientSettings, protocol::ServerMessage};
+
+    fn actions(actions: Vec<FilterAction>) -> Vec<String> {
+        actions
+            .into_iter()
+            .map(|action| match action {
+                FilterAction::Input(bytes) => format!("input:{bytes:?}"),
+                FilterAction::Detach => "detach".into(),
+                FilterAction::TakeControl => "take-control".into(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn escape_prefix_detaches_and_double_prefix_is_literal() {
+        let mut filter = InputFilter::new(ClientSettings::default());
+        assert_eq!(
+            actions(filter.feed(b"\x1d\x1d\x1dX\x1dd", true)),
+            ["input:[29, 29, 88]", "detach"]
+        );
+    }
+
+    #[test]
+    fn paste_markers_survive_role_change_without_interpreting_payload() {
+        let mut filter = InputFilter::new(ClientSettings::default());
+        assert!(filter.feed(b"\x1b[20", true).is_empty());
+        assert_eq!(
+            actions(filter.feed(b"0~hello", true)),
+            ["input:[27, 91, 50, 48, 48, 126, 104, 101, 108, 108, 111]"]
+        );
+        assert!(filter.feed(b"\x1d", false).is_empty());
+        assert!(filter.feed(b"dworld\x1b[201", false).is_empty());
+        assert!(filter.feed(b"~", false).is_empty());
+        assert_eq!(actions(filter.feed(b"x", true)), ["input:[120]"]);
+    }
+
+    #[test]
+    fn an_observer_takes_control_but_sends_no_keys_and_detach_drops_the_rest() {
+        let mut filter = InputFilter::new(ClientSettings::default());
+        assert_eq!(actions(filter.feed(b"a\x14b", false)), ["take-control"]);
+        assert_eq!(
+            actions(filter.feed(b"\x14a\x1dd\x14", true)),
+            ["input:[20, 97]", "detach"]
+        );
+        assert!(filter.feed(b"\x1d\x14", false).is_empty());
+    }
+
+    #[test]
+    fn only_exit_and_detached_end_the_bridge() {
+        assert_eq!(
+            result(&ServerMessage::Exit { code: 3 }),
+            Some(BridgeExit::Status(3))
+        );
+        assert_eq!(result(&ServerMessage::Detached), Some(BridgeExit::Detached));
+        assert_eq!(result(&ServerMessage::Revoked), None);
+    }
+
+    #[test]
+    fn grants_restore_revocations_observe_and_anything_else_fails() {
+        let granted = ServerMessage::Granted { period: 1 };
+        assert_eq!(role_after(granted).unwrap(), Role::Restoring);
+        assert_eq!(role_after(ServerMessage::Revoked).unwrap(), Role::Observing);
+        let error = ServerMessage::Error {
+            message: "refused".into(),
+        };
+        assert_eq!(role_after(error).unwrap_err().to_string(), "refused");
+        let other = role_after(ServerMessage::Attached).unwrap_err();
+        assert_eq!(other.to_string(), "unexpected session message");
     }
 }

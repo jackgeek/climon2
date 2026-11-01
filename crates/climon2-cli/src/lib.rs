@@ -1,9 +1,14 @@
 //! Interactive startup orchestration; binaries communicate only through contracts.
 
+mod attach;
 mod exec;
 pub mod list;
 
-use climon2_core::{cli::CliArgs, layout::HomeLayout};
+use climon2_core::{
+    cli::{CliArgs, CommandArgs},
+    layout::HomeLayout,
+    selector::Selector,
+};
 use climon2_platform::{
     logging::{self, LogFile},
     runtime,
@@ -82,27 +87,40 @@ fn home() -> io::Result<PathBuf> {
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> {
     let arguments =
         CliArgs::parse(arguments).map_err(|error| Error::new(error.exit_code(), error))?;
-    if presentation(&arguments) {
-        return Ok(0);
+    match work(arguments) {
+        Ok(work) => logged_run(work),
+        Err(text) => {
+            println!("{text}");
+            Ok(0)
+        }
     }
-    logged_run(arguments)
 }
 
-fn presentation(arguments: &CliArgs) -> bool {
+/// The subcommands that need a home; help and version are answered here.
+enum Work {
+    Exec(CommandArgs),
+    List { json: bool },
+    Attach(Selector),
+}
+
+fn work(arguments: CliArgs) -> Result<Work, String> {
     match arguments {
-        CliArgs::Help => {
-            println!("usage: climon2 exec <command> [args...] | list [--json]");
-            true
-        }
-        CliArgs::Version => {
-            println!("climon2 {}", env!("CARGO_PKG_VERSION"));
-            true
-        }
-        _ => false,
+        CliArgs::Exec(command) => Ok(Work::Exec(command)),
+        CliArgs::List { json } => Ok(Work::List { json }),
+        CliArgs::Attach(selector) => Ok(Work::Attach(selector)),
+        other => Err(presentation(&other)),
     }
 }
 
-fn logged_run(arguments: CliArgs) -> Result<u32, Error> {
+fn presentation(arguments: &CliArgs) -> String {
+    match arguments {
+        CliArgs::Version => format!("climon2 {}", env!("CARGO_PKG_VERSION")),
+        _ => "usage: climon2 exec <command> [args...] | list [--json] | attach <session-prefix>"
+            .to_owned(),
+    }
+}
+
+fn logged_run(work: Work) -> Result<u32, Error> {
     let home = home()?;
     let general = LogFile::general(&home)?;
     let filter = std::env::var("CLIMON2_LOG").ok();
@@ -111,20 +129,15 @@ fn logged_run(arguments: CliArgs) -> Result<u32, Error> {
         .map_err(|error| Error::from(error).logged(general.path()))?;
     tracing::dispatcher::with_default(&dispatch, || {
         logging::prune(&home, SystemTime::now());
-        command(arguments, &home, &general, filter.as_deref())
+        command(work, &home, &general, filter.as_deref())
             .map_err(|error| error.logged(general.path()))
     })
 }
 
-fn command(
-    arguments: CliArgs,
-    home: &Path,
-    general: &LogFile,
-    filter: Option<&str>,
-) -> Result<u32, Error> {
-    match arguments {
-        CliArgs::Exec(command) => exec::run(home, command, general, filter),
-        CliArgs::List { json } => list::run(home, json).map(|()| 0).map_err(Error::from),
-        _ => unreachable!("help/version returned before home resolution"),
+fn command(work: Work, home: &Path, general: &LogFile, filter: Option<&str>) -> Result<u32, Error> {
+    match work {
+        Work::Exec(command) => exec::run(home, command, general, filter),
+        Work::List { json } => list::run(home, json).map(|()| 0).map_err(Error::from),
+        Work::Attach(selector) => attach::run(home, selector),
     }
 }

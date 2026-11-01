@@ -13,7 +13,7 @@ use crate::{
     token::{Kind, Token, Tokenizer},
 };
 use alacritty_terminal::{grid::Dimensions, term::TermMode};
-use std::time::Instant;
+use std::{borrow::Cow, time::Instant};
 
 /// Session settings fixed at startup.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -206,7 +206,8 @@ impl Vt {
         let title = self.engine.title().map(str::to_owned);
         self.execute(&token.bytes, policy.clear, &mut fed.replies);
         self.latch.observe(policy.sync, now);
-        fed.live.extend_from_slice(live(token, &policy.live));
+        fed.live
+            .extend_from_slice(live(token, &policy.live).as_ref());
         if self.engine.title() != title.as_deref() {
             fed.live.extend(self.title());
         }
@@ -290,10 +291,28 @@ impl Vt {
     }
 }
 
-fn live<'a>(token: &'a Token, live: &'a Live) -> &'a [u8] {
+fn live<'a>(token: &'a Token, live: &'a Live) -> Cow<'a, [u8]> {
     match live {
-        Live::Forward => &token.bytes,
-        Live::Strip => &[],
-        Live::Replace(bytes) => bytes,
+        Live::Forward => Cow::Borrowed(&token.bytes),
+        Live::Strip => stripped(token),
+        Live::Replace(bytes) => Cow::Borrowed(bytes),
     }
+}
+
+/// A stripped escape still performs the C0 controls embedded in it.
+fn stripped(token: &Token) -> Cow<'_, [u8]> {
+    if !matches!(
+        token.kind,
+        crate::token::Kind::Escape | crate::token::Kind::Csi
+    ) {
+        return Cow::Borrowed(&[]);
+    }
+    Cow::Owned(
+        token
+            .bytes
+            .iter()
+            .copied()
+            .filter(|byte| (0x00..=0x1f).contains(byte) && *byte != 0x1b)
+            .collect(),
+    )
 }

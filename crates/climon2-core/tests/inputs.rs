@@ -1,5 +1,5 @@
 //! #29 recovered baseline / #17: exact argv and inherited session environment.
-use climon2_core::{cli::CliArgs, session::*};
+use climon2_core::{cli::CliArgs, selector::Selector, session::*};
 use std::ffi::{OsStr, OsString};
 
 fn environment(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
@@ -39,6 +39,10 @@ fn issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors() {
         CliArgs::parse(["list"].map(OsString::from)).unwrap(),
         CliArgs::List { json: false }
     );
+    assert_eq!(
+        CliArgs::parse(["attach", "01234567"].map(OsString::from)).unwrap(),
+        CliArgs::Attach(Selector::parse(OsStr::new("01234567")).unwrap())
+    );
     for bad in [
         vec![],
         vec!["exec"],
@@ -48,6 +52,9 @@ fn issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors() {
         vec!["unknown"],
         vec!["list", "extra"],
         vec!["list", "--json", "--json"],
+        vec!["attach"],
+        vec!["attach", "short"],
+        vec!["attach", "01234567", "extra"],
     ] {
         assert_eq!(
             CliArgs::parse(bad.into_iter().map(OsString::from))

@@ -20,12 +20,15 @@ fn installer_built_bash_smoke_lists_one_session_and_preserves_exit_seven() {
     command.env("PS1", "OUTER> ");
     let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
     terminal.wait_for_text("OUTER> ", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
     terminal
         .send(format!(
             "PS1='INNER> ' climon2 exec {} --noprofile --norc -i; status=$?; printf '\\nOUTER-STATUS=%s\\n' \"$status\"; exit \"$status\"\n",
             quote(&bash)
         ))
         .unwrap();
+    terminal.wait_for_text("INNER> ", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
     terminal.send("echo $((6*7))-ok\n").unwrap();
     terminal.wait_for_text("42-ok", TIMEOUT).unwrap();
     let sessions = package.list();
@@ -48,11 +51,14 @@ fn launch(package: &Package, program: &str, args: &[&str]) -> Terminal {
 }
 
 fn launch_bash(package: &Package, bash: &Path) -> Terminal {
-    launch(
+    let mut terminal = launch(
         package,
         bash.to_str().unwrap(),
         &["--noprofile", "--norc", "-i"],
-    )
+    );
+    terminal.wait_for_text("bash-5.3$", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    terminal
 }
 
 fn report(path: &Path) -> Value {
@@ -109,6 +115,7 @@ fn installed_generic_fixture_preserves_runtime_contract_and_log_privacy() {
     command.args(args);
     let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
     terminal.wait_for_text("resize-ready", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
     terminal.send("input-secret-not-for-logs-72c").unwrap();
     terminal.resize(43, 137).unwrap();
     assert_eq!(
@@ -163,22 +170,31 @@ fn installed_nested_bash_sessions_are_both_listed_and_route_exit_status() {
         return;
     };
     let package = Package::new();
+    let nested_ready = package.isolation.home().join("nested-prompt-ready");
     let mut command = package.command("climon2");
     command.args(["exec"]);
     command.arg(&bash);
     command.args(["--noprofile", "--norc", "-i"]);
     command.env("PS1", "ENCLOSING> ");
+    command.env("CLIMON2_TEST_NESTED_READY", &nested_ready);
     let mut terminal = Terminal::spawn(command, 30, 160).unwrap();
     terminal.wait_for_text("ENCLOSING> ", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
     terminal
         .send(format!(
-            "climon2 exec {} --noprofile --norc -i; s=$?; printf '\\nNESTED-STATUS=%s\\n' \"$s\"\n",
+            "PS1='INNER> ' PROMPT_COMMAND='sleep 1; printf ready >\"$CLIMON2_TEST_NESTED_READY\"' climon2 exec {} --noprofile --norc -i; s=$?; printf '\\nNESTED-STATUS=%s\\n' \"$s\"\n",
             quote(&bash)
         ))
         .unwrap();
     terminal
         .wait_for_text("Starting climon2 session nested for the 1st time", TIMEOUT)
         .unwrap();
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while !nested_ready.exists() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
     terminal
         .send("echo depth:$CLIMON2_SESSION_DEPTH\n")
         .unwrap();
@@ -212,6 +228,7 @@ fn installed_tui_roundtrips_queries_mouse_paste_and_resize_without_reset() {
     let mut terminal = launch(&package, "climon2-tui-fixture", &[path.to_str().unwrap()]);
     terminal.wait_for_bytes(b"\x1b[?1049h", TIMEOUT).unwrap();
     terminal.wait_for_text("cursor-ok", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
     terminal
         .send("\x1b[<0;7;9M\x1b[200~paste-exact\x1b[201~")
         .unwrap();
@@ -246,6 +263,7 @@ fn installed_real_vim_edits_and_saves() {
         &["-Nu", "NONE", "-i", "NONE", "-n", path.to_str().unwrap()],
     );
     terminal.wait_for_text("vim-original", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
     terminal.send("Govim-through-session\x1b:wq\r").unwrap();
     assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
     drop(terminal);
@@ -269,6 +287,7 @@ fn installed_real_less_navigates_and_resizes() {
     .unwrap();
     let mut terminal = launch(&package, "/usr/bin/less", &["-R", path.to_str().unwrap()]);
     terminal.wait_for_text("less-top", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
     terminal.resize(38, 132).unwrap();
     terminal.send("G").unwrap();
     terminal.wait_for_text("less-bottom", TIMEOUT).unwrap();
@@ -729,6 +748,8 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
         command.args(["--noprofile", "--norc", "-i"]);
         command.env("CLIMON2_LOG", "warn");
         let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
+        terminal.wait_for_text("bash-5.3$", TIMEOUT).unwrap();
+        terminal.wait_for_input_ready(TIMEOUT).unwrap();
         terminal.send("echo $((6*7))-version-ready\n").unwrap();
         terminal.wait_for_text("42-version-ready", TIMEOUT).unwrap();
         terminal

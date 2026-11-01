@@ -1,18 +1,21 @@
 # climon2-daemon
 
 Real session daemon library with a thin executable. macOS only; no client
-implementation, terminal emulator, scrollback or descriptor passing.
+implementation or descriptor passing. The daemon owns the VT engine, bounded
+scrollback, terminal restoration and live presentation.
 
 ## CLI-to-daemon API
 
 ```text
 climon2-daemon --session-id GUID --home CANONICAL_ABSOLUTE_HOME \
   --socket ABSOLUTE_SOCKET --version SEMVER --cli-pid PID \
-  --readiness-fd FD --rows ROWS --cols COLS --cwd ABSOLUTE_CWD \
+  --readiness-fd FD --rows ROWS --cols COLS \
+  --scrollback-max-rows ROWS --cwd ABSOLUTE_CWD \
   [--log FILTER] -- COMMAND [ARG...]
 ```
 
 Options are private, order-independent, unique and required except `--log`.
+`--scrollback-max-rows` sets the VT engine's retained normal-screen history.
 All tokens after `--` are untouched OS-string command arguments. The CLI
 resolves home/socket/version, computes the session environment, and supplies
 initial terminal dimensions. The daemon does not reconstruct runtime values
@@ -154,7 +157,9 @@ claim those clocks necessarily expire in that OS scenario.
 
 With `test-hooks` only, `CLIMON2_DAEMON_FAULT=panic|never-ready` injects named
 pre-command startup faults. Their test checks capped panic capture, real
-five-second startup timeout and absence of spawned command/files. These fault
+five-second startup timeout and absence of spawned command/files.
+`CLIMON2_DAEMON_FAULT=pty-write` makes every PTY write fail, an authoritative
+session failure: the controller receives its release bytes, then `Error`. These fault
 branches and the extra generic fixture binary are absent from ordinary release
 builds. The ignored libtest function is a subprocess fixture, not a skipped
 requirement. Every controlled final path checks owned process/socket/metadata

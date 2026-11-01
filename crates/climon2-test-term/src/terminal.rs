@@ -54,6 +54,7 @@ struct Screen {
     recent: Vec<u8>,
     eof: bool,
     error: Option<io::Error>,
+    last_output: Instant,
 }
 
 impl Screen {
@@ -128,6 +129,7 @@ impl Terminal {
                 recent: Vec::new(),
                 eof: false,
                 error: None,
+                last_output: Instant::now(),
             }),
             Condvar::new(),
         ));
@@ -160,6 +162,7 @@ impl Terminal {
                     Ok(count) => {
                         parser.advance(&mut state.term, &buffer[..count]);
                         state.recent.extend_from_slice(&buffer[..count]);
+                        state.last_output = Instant::now();
                         let excess = state.recent.len().saturating_sub(65536);
                         state.recent.drain(..excess);
                         while let Ok(event) = events.try_recv() {
@@ -203,6 +206,36 @@ impl Terminal {
 
     pub fn wait_for_text(&mut self, text: &str, timeout: Duration) -> io::Result<()> {
         self.wait(timeout, |screen| screen.text().contains(text))
+    }
+
+    pub fn wait_for_input_ready(&self, timeout: Duration) -> io::Result<()> {
+        let deadline = Instant::now() + timeout;
+        let (screen, changed) = &*self.screen;
+        let mut state = screen.lock().expect("screen lock");
+        loop {
+            state.check()?;
+            let fd = self
+                .master
+                .as_raw_fd()
+                .ok_or_else(|| io::Error::other("terminal descriptor unavailable"))?;
+            if terminal_is_raw(fd)? && state.last_output.elapsed() >= Duration::from_millis(50) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline || state.eof {
+                return Err(state.failure(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "terminal input did not become ready",
+                )));
+            }
+            (state, _) = changed
+                .wait_timeout(
+                    state,
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(Duration::from_millis(5)),
+                )
+                .expect("screen wait");
+        }
     }
 
     pub fn wait_for_bytes(&mut self, bytes: &[u8], timeout: Duration) -> io::Result<()> {
@@ -307,6 +340,15 @@ impl Terminal {
 fn write(writer: &Writer, bytes: &[u8]) -> io::Result<()> {
     let mut writer = writer.lock().expect("PTY writer lock");
     writer.write_all(bytes).and_then(|()| writer.flush())
+}
+
+fn terminal_is_raw(fd: i32) -> io::Result<bool> {
+    let mut termios = std::mem::MaybeUninit::<nix::libc::termios>::uninit();
+    if unsafe { nix::libc::tcgetattr(fd, termios.as_mut_ptr()) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    let termios = unsafe { termios.assume_init() };
+    Ok(termios.c_lflag & (nix::libc::ICANON | nix::libc::ECHO) == 0)
 }
 
 fn pty_size(rows: u16, cols: u16) -> io::Result<PtySize> {

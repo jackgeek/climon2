@@ -259,6 +259,7 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
         .arg(isolation.home());
     let pending = daemon::spawn(command, |command, fd| {
         command
+            .args(["--scrollback-max-rows", "10000"])
             .arg("--readiness-fd")
             .arg(fd.to_string())
             .arg("--")
@@ -292,6 +293,13 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
         ServerMessage::from_frame(read_frame(&mut controller).unwrap()).unwrap(),
         ServerMessage::Attached
     );
+    let live = climon2_cli::list::discover_live(&home).unwrap();
+    assert_eq!(live.len(), 1);
+    let capabilities = live[0].extensions.capabilities.valid().unwrap();
+    assert!(capabilities.supports_attach());
+    assert!(capabilities.supports_kill());
+    assert!(capabilities.supports_state());
+    assert_eq!(live[0].extensions.state.valid().unwrap().attachments(), 1);
     let found = discover(&home).unwrap();
     assert_eq!(found.len(), 1);
     let output = std::process::Command::new(bin_path("climon2-cli"))
@@ -310,7 +318,14 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
     );
     loop {
         match ServerMessage::from_frame(read_frame(&mut controller).unwrap()).unwrap() {
-            ServerMessage::Output(_) => (),
+            ServerMessage::Output(_) | ServerMessage::Granted { .. } => (),
+            ServerMessage::RestoreEnd { period } => {
+                write_frame(
+                    &mut controller,
+                    &ClientMessage::Ready { period }.to_frame().unwrap(),
+                )
+                .unwrap();
+            }
             ServerMessage::Exit { code } => {
                 assert_eq!(code, 7);
                 break;

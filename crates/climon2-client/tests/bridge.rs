@@ -2,6 +2,7 @@
 
 use climon2_core::{
     SessionId,
+    hello::{Lifecycle, SessionState, advertise},
     protocol::{ClientMessage, HelloReply, ServerMessage, read_frame, write_frame},
 };
 use std::{
@@ -120,6 +121,10 @@ impl Pty {
             .env_clear()
             .env("HOME", home)
             .env("CLIMON2_HOME", home)
+            .env(
+                "CLIMON2_CLIENT_STARTUP",
+                r#"{"schema":1,"operation":"attach","settings":{"escape_prefix":29,"take_control_key":20}}"#,
+            )
             .stdin(slave.try_clone().unwrap())
             .stdout(output.try_clone().unwrap())
             .stderr(Stdio::piped());
@@ -186,7 +191,19 @@ impl Pty {
             );
             wait_ready(&self.master, libc::POLLIN, 5);
         };
-        assert_eq!(status.code(), Some(expected));
+        if status.code() != Some(expected) {
+            let mut error = String::new();
+            self.child
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut error)
+                .unwrap();
+            panic!(
+                "expected client exit {expected}, got {:?}: {error}",
+                status.code()
+            );
+        }
         self.assert_restored();
         while let Ok(count) = self.master.read(&mut buffer) {
             if count == 0 {
@@ -255,10 +272,11 @@ fn status_flags(file: &File) -> i32 {
 
 /// A new open-file description of the same terminal device.
 fn reopen(terminal: &File) -> File {
-    let mut name = [0 as libc::c_char; 128];
-    assert_eq!(
-        unsafe { libc::ttyname_r(terminal.as_raw_fd(), name.as_mut_ptr(), name.len()) },
-        0
+    // F_GETPATH, unlike Darwin's ttyname_r, never fails intermittently with ERANGE.
+    let mut name = [0 as libc::c_char; libc::PATH_MAX as usize];
+    assert_ne!(
+        unsafe { libc::fcntl(terminal.as_raw_fd(), libc::F_GETPATH, name.as_mut_ptr()) },
+        -1
     );
     let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
     fs::OpenOptions::new()
@@ -323,8 +341,19 @@ fn send(stream: &mut std::os::unix::net::UnixStream, message: ServerMessage) {
 }
 
 fn accept(listener: &UnixListener) -> std::os::unix::net::UnixStream {
+    accept_checked(listener, None)
+}
+
+fn accept_client(listener: &UnixListener, child: &mut Child) -> std::os::unix::net::UnixStream {
+    accept_checked(listener, Some(child))
+}
+
+fn accept_checked(
+    listener: &UnixListener,
+    mut child: Option<&mut Child>,
+) -> std::os::unix::net::UnixStream {
     listener.set_nonblocking(true).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
@@ -332,6 +361,20 @@ fn accept(listener: &UnixListener) -> std::os::unix::net::UnixStream {
                 return stream;
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if let Some(status) = child
+                    .as_deref_mut()
+                    .and_then(|child| child.try_wait().unwrap())
+                {
+                    let child = child.unwrap();
+                    let mut stderr = String::new();
+                    child
+                        .stderr
+                        .take()
+                        .unwrap()
+                        .read_to_string(&mut stderr)
+                        .unwrap();
+                    panic!("client exited before connecting ({status}): {stderr}");
+                }
                 assert!(Instant::now() < deadline, "client did not connect");
                 wait_ready(listener, libc::POLLIN, 5);
             }
@@ -345,18 +388,28 @@ fn hello(stream: &mut std::os::unix::net::UnixStream) {
         .set_read_timeout(Some(Duration::from_secs(4)))
         .unwrap();
     assert_eq!(receive(stream), ClientMessage::Hello { protocol: 1 });
-    send(
-        stream,
-        ServerMessage::Hello(HelloReply {
-            session_id: ID.parse::<SessionId>().unwrap(),
-            climon2_version: "0.1.0".parse().unwrap(),
-            protocol: 1,
-        }),
-    );
+    let reply = HelloReply {
+        session_id: ID.parse::<SessionId>().unwrap(),
+        climon2_version: "0.1.0".parse().unwrap(),
+        protocol: 1,
+    };
+    let frame = advertise(
+        &reply,
+        SessionState::new(Lifecycle::Starting, 0, false).unwrap(),
+    )
+    .unwrap();
+    write_frame(stream, &frame).unwrap();
     assert_eq!(
         receive(stream),
         ClientMessage::Attach(climon2_core::protocol::TerminalSize { cols: 97, rows: 31 })
     );
+}
+
+fn begin_bridge(stream: &mut std::os::unix::net::UnixStream) {
+    send(stream, ServerMessage::Attached);
+    send(stream, ServerMessage::Granted { period: 1 });
+    send(stream, ServerMessage::RestoreEnd { period: 1 });
+    assert_eq!(receive(stream), ClientMessage::Ready { period: 1 });
 }
 
 /// #20: real raw terminal, exact binary/TUI bytes, Ctrl-C/Ctrl-Z and final status.
@@ -364,14 +417,14 @@ fn hello(stream: &mut std::os::unix::net::UnixStream) {
 fn raw_bridge_preserves_bytes_and_restores_termios_after_final_output() {
     let (home, metadata, listener) = setup();
     let mut pty = Pty::spawn(home.path(), &metadata, None);
-    let mut stream = accept(&listener);
+    let mut stream = accept_client(&listener, &mut pty.child);
     hello(&mut stream);
     assert_ne!(
         pty.termios().c_lflag & libc::ICANON,
         0,
         "raw before Attached"
     );
-    send(&mut stream, ServerMessage::Attached);
+    begin_bridge(&mut stream);
     pty.wait_raw();
     let input = b"\x03\x1a\x00\xff\x1b[200~paste\x1b[201~";
     pty.master.write_all(input).unwrap();
@@ -390,6 +443,73 @@ fn raw_bridge_preserves_bytes_and_restores_termios_after_final_output() {
     let (bytes, error) = pty.finish(47);
     assert_eq!(bytes, output);
     assert_eq!(error, "");
+}
+
+#[test]
+fn input_typed_before_restore_end_is_drained_and_never_replayed() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    send(&mut stream, ServerMessage::Attached);
+    pty.wait_raw();
+
+    pty.master.write_all(b"stale\n").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let mut pending = 0;
+        assert_eq!(
+            unsafe { libc::ioctl(pty.slave.as_raw_fd(), libc::FIONREAD, &mut pending) },
+            0
+        );
+        if pending == 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "client did not drain pre-ready input"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+
+    send(&mut stream, ServerMessage::Granted { period: 1 });
+    send(
+        &mut stream,
+        ServerMessage::Output(b"restored-screen".to_vec()),
+    );
+    send(&mut stream, ServerMessage::RestoreEnd { period: 1 });
+    assert_eq!(receive(&mut stream), ClientMessage::Ready { period: 1 });
+    wait_ready(&pty.master, libc::POLLIN, 2);
+    let mut restored = [0; 128];
+    let count = pty.master.read(&mut restored).unwrap();
+    assert!(
+        restored[..count]
+            .windows(b"restored-screen".len())
+            .any(|bytes| bytes == b"restored-screen")
+    );
+    pty.master.write_all(b"live").unwrap();
+    assert_eq!(receive(&mut stream), ClientMessage::Input(b"live".to_vec()));
+    send(&mut stream, ServerMessage::Exit { code: 0 });
+    assert_eq!(pty.finish(0), (Vec::new(), String::new()));
+}
+
+#[test]
+fn unconfirmed_detach_exits_after_five_seconds_and_restores_terminal() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    begin_bridge(&mut stream);
+    pty.wait_raw();
+
+    pty.master.write_all(b"\x1dd").unwrap();
+    assert_eq!(receive(&mut stream), ClientMessage::Detach);
+    let started = Instant::now();
+    let (bytes, error) = pty.finish(125);
+    assert!(started.elapsed() >= Duration::from_secs(5));
+    assert!(started.elapsed() < Duration::from_secs(7));
+    assert!(bytes.is_empty());
+    assert!(error.contains("detach not confirmed"), "{error}");
 }
 
 /// #19/#20: signals are statuses even while waiting for Attached, never errors.
@@ -416,7 +536,7 @@ fn raw_client_signals_restore_termios_close_connection_and_return_signal_status(
         let mut pty = Pty::spawn(home.path(), &metadata, None);
         let mut stream = accept(&listener);
         hello(&mut stream);
-        send(&mut stream, ServerMessage::Attached);
+        begin_bridge(&mut stream);
         pty.wait_raw();
         assert_eq!(unsafe { libc::kill(pty.child.id() as i32, signal) }, 0);
         let (bytes, error) = pty.finish(128 + signal);
@@ -441,7 +561,11 @@ fn protocol_error_lost_connection_and_panic_restore_without_terminal_sequences()
         let mut pty = Pty::spawn(home.path(), &metadata, (mode == "panic").then_some("panic"));
         let mut stream = accept(&listener);
         hello(&mut stream);
-        send(&mut stream, ServerMessage::Attached);
+        if mode == "panic" {
+            send(&mut stream, ServerMessage::Attached);
+        } else {
+            begin_bridge(&mut stream);
+        }
         if mode != "panic" {
             pty.wait_raw();
         }
@@ -490,7 +614,14 @@ fn protocol_error_lost_connection_and_panic_restore_without_terminal_sequences()
 /// ADR 0001: each hello identity dimension is checked before raw mode.
 #[test]
 fn hello_rejects_mismatched_session_protocol_version_and_unexpected_frames() {
-    for mode in ["session", "protocol", "version", "attached", "malformed"] {
+    for mode in [
+        "session",
+        "protocol",
+        "version",
+        "capabilities",
+        "attached",
+        "malformed",
+    ] {
         let (home, metadata, listener) = setup();
         let mut pty = Pty::spawn(home.path(), &metadata, None);
         let mut stream = accept(&listener);
@@ -520,6 +651,9 @@ fn hello_rejects_mismatched_session_protocol_version_and_unexpected_frames() {
         let (bytes, error) = pty.finish(125);
         assert!(bytes.is_empty());
         assert_eq!(error.lines().count(), 1);
+        if mode == "capabilities" {
+            assert!(error.contains("session does not support attach"), "{error}");
+        }
         assert_eq!(stream.read(&mut [0]).unwrap(), 0);
     }
 }
@@ -555,6 +689,9 @@ fn fragmented_frames_and_coalesced_resize_preserve_the_stream() {
         stream.write_all(&[byte]).unwrap();
         thread::sleep(Duration::from_millis(2));
     }
+    send(&mut stream, ServerMessage::Granted { period: 1 });
+    send(&mut stream, ServerMessage::RestoreEnd { period: 1 });
+    assert_eq!(receive(&mut stream), ClientMessage::Ready { period: 1 });
     pty.wait_raw();
     let mut size = libc::winsize {
         ws_row: 44,
@@ -616,7 +753,7 @@ fn separate_stdin_and_stdout_descriptions_both_get_their_flags_back() {
         let mut pty = Pty::separate_output(home.path(), &metadata);
         let mut stream = accept(&listener);
         hello(&mut stream);
-        send(&mut stream, ServerMessage::Attached);
+        begin_bridge(&mut stream);
         pty.wait_raw();
         let expected = match ending {
             "exit" => {
@@ -652,7 +789,7 @@ fn bounded_output_backpressure_drains_every_byte_before_exit() {
     let mut pty = Pty::spawn(home.path(), &metadata, None);
     let mut stream = accept(&listener);
     hello(&mut stream);
-    send(&mut stream, ServerMessage::Attached);
+    begin_bridge(&mut stream);
     pty.wait_raw();
     stream
         .set_write_timeout(Some(Duration::from_secs(15)))
@@ -682,7 +819,7 @@ fn terminal_eof_or_eio_is_silent_status_129_and_closes_connection() {
     let mut pty = Pty::spawn(home.path(), &metadata, None);
     let mut stream = accept(&listener);
     hello(&mut stream);
-    send(&mut stream, ServerMessage::Attached);
+    begin_bridge(&mut stream);
     pty.wait_raw();
     drop(std::mem::replace(
         &mut pty.master,
@@ -715,7 +852,7 @@ fn terminal_eio_is_silent_status_129_and_restores_termios() {
     let mut pty = Pty::background(home.path(), &metadata);
     let mut stream = accept(&listener);
     hello(&mut stream);
-    send(&mut stream, ServerMessage::Attached);
+    begin_bridge(&mut stream);
     pty.wait_raw();
     pty.master.write_all(b"x").unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -771,7 +908,7 @@ fn hung_up_session_during_blocked_output_sleeps_then_delivers_everything() {
         let mut pty = Pty::spawn(home.path(), &metadata, None);
         let mut stream = accept(&listener);
         hello(&mut stream);
-        send(&mut stream, ServerMessage::Attached);
+        begin_bridge(&mut stream);
         pty.wait_raw();
         send(&mut stream, ServerMessage::Output(vec![b'X'; 60_000]));
         if let Some(code) = exit {
@@ -805,6 +942,73 @@ fn hung_up_session_during_blocked_output_sleeps_then_delivers_everything() {
             );
         }
     }
+}
+
+/// Waits for the client without ever reading its terminal, so stdout stays blocked.
+fn exit_while_blocked(pty: &mut Pty, bound: Duration) -> (i32, String) {
+    let deadline = Instant::now() + bound;
+    let status = loop {
+        if let Some(status) = pty.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "client did not exit while blocked"
+        );
+        thread::sleep(Duration::from_millis(5));
+    };
+    pty.assert_restored();
+    let mut error = String::new();
+    pty.child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut error)
+        .unwrap();
+    (status.code().unwrap(), error)
+}
+
+/// Section 6.3 blocked stdout: output pending, more `Output` and `Exit`
+/// queued, then the session connection closes. The client gives up within
+/// the closing deadline, restores the terminal and reports the result as
+/// unconfirmed.
+#[test]
+fn lost_session_while_stdout_is_blocked_ends_within_the_closing_deadline() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    begin_bridge(&mut stream);
+    pty.wait_raw();
+    send(&mut stream, ServerMessage::Output(vec![b'X'; 60_000]));
+    send(&mut stream, ServerMessage::Output(b"later".to_vec()));
+    send(&mut stream, ServerMessage::Exit { code: 0 });
+    thread::sleep(Duration::from_millis(200));
+    let closed = Instant::now();
+    drop(stream);
+    let (code, error) = exit_while_blocked(&mut pty, Duration::from_secs(7));
+    assert!(closed.elapsed() >= Duration::from_millis(4900));
+    assert_eq!(code, 125);
+    assert!(error.contains("session result not confirmed"), "{error}");
+}
+
+/// Section 6.3 pending detach with blocked stdout: without `Detached` the
+/// client reports the unconfirmed detach within the bound.
+#[test]
+fn pending_detach_while_stdout_is_blocked_ends_within_the_bound() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    begin_bridge(&mut stream);
+    pty.wait_raw();
+    send(&mut stream, ServerMessage::Output(vec![b'X'; 60_000]));
+    thread::sleep(Duration::from_millis(200));
+    pty.master.write_all(b"\x1dd").unwrap();
+    assert_eq!(receive(&mut stream), ClientMessage::Detach);
+    let (code, error) = exit_while_blocked(&mut pty, Duration::from_secs(7));
+    assert_eq!(code, 125);
+    assert!(error.contains("detach not confirmed"), "{error}");
 }
 
 /// CPU time (user + system) as reported by ps, e.g. `0:01.25`.
@@ -843,7 +1047,7 @@ fn invalid_length_prefix_closes_immediately_without_a_type_byte() {
         let mut pty = Pty::spawn(home.path(), &metadata, None);
         let mut stream = accept(&listener);
         hello(&mut stream);
-        send(&mut stream, ServerMessage::Attached);
+        begin_bridge(&mut stream);
         pty.wait_raw();
         stream.write_all(&prefix).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -867,7 +1071,7 @@ fn input_backpressure_is_bounded_and_lossless() {
     let mut pty = Pty::spawn(home.path(), &metadata, None);
     let mut stream = accept(&listener);
     hello(&mut stream);
-    send(&mut stream, ServerMessage::Attached);
+    begin_bridge(&mut stream);
     pty.wait_raw();
     let mut writer = pty.master.try_clone().unwrap();
     let producer = thread::spawn(move || {
@@ -936,7 +1140,7 @@ fn log_filter_reaches_client_through_environment_without_cli_flags() {
         let mut pty = Pty::configured(home.path(), &metadata, None, filter);
         let mut stream = accept(&listener);
         hello(&mut stream);
-        send(&mut stream, ServerMessage::Attached);
+        begin_bridge(&mut stream);
         send(&mut stream, ServerMessage::Exit { code: 0 });
         let (bytes, error) = pty.finish(0);
         assert!(bytes.is_empty());
@@ -978,13 +1182,13 @@ fn concurrent_clients_on_one_session_each_write_their_own_log() {
     let mut first = Pty::spawn(home.path(), &metadata, None);
     let mut first_stream = accept(&listener);
     hello(&mut first_stream);
-    send(&mut first_stream, ServerMessage::Attached);
+    begin_bridge(&mut first_stream);
     first.wait_raw();
     let first_log = client_log(home.path());
     let mut second = Pty::spawn(home.path(), &metadata, None);
     let mut second_stream = accept(&listener);
     hello(&mut second_stream);
-    send(&mut second_stream, ServerMessage::Attached);
+    begin_bridge(&mut second_stream);
     second.wait_raw();
     for stream in [&mut first_stream, &mut second_stream] {
         send(stream, ServerMessage::Exit { code: 0 });

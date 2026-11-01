@@ -1,0 +1,210 @@
+#![cfg(target_os = "macos")]
+
+use climon2_core::{
+    SessionId,
+    hello::{Lifecycle, SessionState, advertise},
+    metadata::SessionMetadata,
+    protocol::{Frame, HelloReply, PROTOCOL_VERSION, read_frame, write_frame},
+};
+use climon2_platform::{process, runtime};
+use climon2_test_term::{Isolation, Terminal, bin_path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    thread::{self, JoinHandle},
+    time::Duration,
+};
+
+/// A metadata file plus a socket that answers exactly one hello probe.
+struct FakeSession {
+    metadata: SessionMetadata,
+    path: PathBuf,
+    server: Option<JoinHandle<()>>,
+}
+
+impl FakeSession {
+    fn start(home: &Path, suffix: u8, reply: fn(&SessionMetadata) -> Frame) -> Self {
+        let metadata = metadata(home, suffix);
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let path = home
+            .join("sessions")
+            .join(format!("{}.pty", metadata.session_id));
+        fs::write(&path, metadata.to_json().unwrap()).unwrap();
+        let listener = runtime::bind(Path::new(metadata.socket_path.as_str())).unwrap();
+        let frame = reply(&metadata);
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            read_frame(&mut socket).unwrap();
+            write_frame(&mut socket, &frame).unwrap();
+        });
+        Self {
+            metadata,
+            path,
+            server: Some(server),
+        }
+    }
+}
+
+impl Drop for FakeSession {
+    fn drop(&mut self) {
+        if !thread::panicking() {
+            self.server.take().unwrap().join().unwrap();
+        }
+        let _ = fs::remove_file(self.metadata.socket_path.as_str());
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn metadata(home: &Path, suffix: u8) -> SessionMetadata {
+    let id: SessionId = format!("12345678-1234-4234-8234-123456789a{suffix:02x}")
+        .parse()
+        .unwrap();
+    let socket = runtime::RuntimeDirectory::prepare(home)
+        .unwrap()
+        .socket_path(&id)
+        .unwrap();
+    serde_json::from_value(serde_json::json!({
+        "format_version":1,"session_id":id.as_str(),"socket_path":socket,
+        "daemon_pid":std::process::id(),
+        "daemon_start_time":process::start_time(std::process::id()).unwrap().unwrap(),
+        "command":"bash","args":[],"cwd":home,"depth":1,
+        "created_at":"2026-10-28T07:21:02.930Z","climon2_version":"999.0.0"
+    }))
+    .unwrap()
+}
+
+fn reply(metadata: &SessionMetadata) -> HelloReply {
+    HelloReply {
+        session_id: metadata.session_id.clone(),
+        climon2_version: metadata.climon2_version.clone(),
+        protocol: PROTOCOL_VERSION,
+    }
+}
+
+/// An older daemon: the mandatory reply only, so no capabilities.
+fn legacy(metadata: &SessionMetadata) -> Frame {
+    let body = serde_json::to_vec(&reply(metadata)).unwrap();
+    Frame::new(1, body).unwrap()
+}
+
+fn current(metadata: &SessionMetadata) -> Frame {
+    let state = SessionState::new(Lifecycle::Detached, 0, false).unwrap();
+    advertise(&reply(metadata), state).unwrap()
+}
+
+/// Runs `climon2 attach` in a terminal and returns its status and screen.
+fn attach_in_terminal(
+    isolation: &Isolation,
+    cli: &Path,
+    selector: &str,
+    session: Option<&SessionId>,
+) -> (i32, String) {
+    let mut command = isolation.command(cli);
+    command.args(["attach", selector]);
+    if let Some(id) = session {
+        command.env("CLIMON2_SESSION_ID", id.as_str());
+    }
+    let mut terminal = Terminal::spawn(command, 24, 200).unwrap();
+    let status = terminal.wait_exit(Duration::from_secs(5)).unwrap();
+    (status, terminal.screen())
+}
+
+fn home(isolation: &Isolation) -> PathBuf {
+    runtime::canonical_home(&isolation.climon2_home()).unwrap()
+}
+
+#[test]
+fn a_selector_must_match_exactly_one_live_session() {
+    let isolation = Isolation::new();
+    let cli = bin_path("climon2-cli");
+    let (status, screen) = attach_in_terminal(&isolation, &cli, "abcdef12", None);
+    assert_eq!(status, 125);
+    assert!(
+        screen.contains("no live session matches abcdef12"),
+        "{screen}"
+    );
+
+    let home = home(&isolation);
+    let first = FakeSession::start(&home, 1, current);
+    let second = FakeSession::start(&home, 2, current);
+    let (status, screen) = attach_in_terminal(&isolation, &cli, "12345678", None);
+    assert_eq!(status, 125);
+    assert!(screen.contains("is ambiguous"), "{screen}");
+    assert!(
+        screen.contains(first.metadata.session_id.as_str()),
+        "{screen}"
+    );
+    assert!(
+        screen.contains(second.metadata.session_id.as_str()),
+        "{screen}"
+    );
+    drop((first, second));
+    isolation.assert_clean();
+}
+
+#[test]
+fn a_session_without_attach_capabilities_is_refused() {
+    let isolation = Isolation::new();
+    let session = FakeSession::start(&home(&isolation), 3, legacy);
+    let cli = bin_path("climon2-cli");
+    let (status, screen) = attach_in_terminal(&isolation, &cli, "12345678", None);
+    assert_eq!(status, 125);
+    let expected = format!(
+        "session {} does not support attach and client startup",
+        session.metadata.session_id
+    );
+    assert!(screen.contains(&expected), "{screen}");
+    drop(session);
+    isolation.assert_clean();
+}
+
+#[test]
+fn a_session_cannot_attach_to_itself() {
+    let isolation = Isolation::new();
+    let session = FakeSession::start(&home(&isolation), 4, current);
+    let id = session.metadata.session_id.clone();
+    let cli = bin_path("climon2-cli");
+    let (status, screen) = attach_in_terminal(&isolation, &cli, "12345678", Some(&id));
+    assert_eq!(status, 125);
+    let expected = format!("cannot attach to the current session {id}");
+    assert!(screen.contains(&expected), "{screen}");
+    drop(session);
+    isolation.assert_clean();
+}
+
+#[test]
+fn attach_needs_a_terminal() {
+    let isolation = Isolation::new();
+    let session = FakeSession::start(&home(&isolation), 5, current);
+    let output = std::process::Command::new(bin_path("climon2-cli"))
+        .env_clear()
+        .env("HOME", isolation.home())
+        .env("CLIMON2_HOME", isolation.climon2_home())
+        .args(["attach", "12345678"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(125));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("climon2 attach needs a terminal"), "{error}");
+    drop(session);
+    isolation.assert_clean();
+}
+
+#[test]
+fn a_session_of_an_uninstalled_version_names_that_version() {
+    let isolation = Isolation::new();
+    let installed = isolation.home().join("exe/0.1.0");
+    fs::create_dir_all(&installed).unwrap();
+    let cli = installed.join("climon2-cli");
+    fs::copy(bin_path("climon2-cli"), &cli).unwrap();
+    let session = FakeSession::start(&home(&isolation), 6, current);
+    let (status, screen) = attach_in_terminal(&isolation, &cli, "12345678", None);
+    assert_eq!(status, 125);
+    let expected = format!(
+        "session {} needs climon2 999.0.0, which is not installed",
+        session.metadata.session_id
+    );
+    assert!(screen.contains(&expected), "{screen}");
+    drop(session);
+    isolation.assert_clean();
+}

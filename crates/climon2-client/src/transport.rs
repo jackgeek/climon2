@@ -1,4 +1,5 @@
 use climon2_core::{
+    hello::HelloExtensions,
     metadata::SessionMetadata,
     protocol::{
         ClientMessage, Frame, HELLO_TIMEOUT, PROTOCOL_VERSION, ServerMessage, read_frame,
@@ -110,8 +111,8 @@ impl Transport {
             protocol: PROTOCOL_VERSION,
         })?;
         self.flush_until(signals, Some(self.deadline))?;
-        let message = self.receive_until(signals, Some(self.deadline))?;
-        validate_hello(message, metadata)
+        let frame = self.receive_frame_until(signals, Some(self.deadline))?;
+        validate_hello(frame, metadata)
     }
 
     pub fn attached(&mut self, signals: &Signals) -> io::Result<()> {
@@ -143,10 +144,23 @@ impl Transport {
         }
     }
 
+    fn receive_frame_until(
+        &mut self,
+        signals: &Signals,
+        deadline: Option<Instant>,
+    ) -> io::Result<Frame> {
+        loop {
+            self.wait(libc::POLLIN, signals, deadline)?;
+            if let Some(frame) = self.decoder.read(&mut self.stream)? {
+                return Ok(frame);
+            }
+        }
+    }
+
     pub fn send(&mut self, message: &ClientMessage) -> io::Result<()> {
         let mut bytes = Vec::new();
         write_frame(&mut bytes, &message.to_frame()?)?;
-        self.outgoing = Pending::new(bytes);
+        self.outgoing.append(bytes);
         Ok(())
     }
 
@@ -217,13 +231,24 @@ impl Decoder {
     }
 }
 
-fn validate_hello(message: ServerMessage, metadata: &SessionMetadata) -> io::Result<()> {
-    match message {
+fn validate_hello(frame: Frame, metadata: &SessionMetadata) -> io::Result<()> {
+    let extensions = HelloExtensions::from_body(frame.body());
+    match ServerMessage::from_frame(frame)? {
         ServerMessage::Hello(reply) => {
-            reply.validate_client(&metadata.session_id, &metadata.climon2_version)
+            reply.validate_client(&metadata.session_id, &metadata.climon2_version)?;
+            supports_attach(&extensions)
         }
         message => Err(rejection(message, "expected session hello")),
     }
+}
+
+fn supports_attach(extensions: &HelloExtensions) -> io::Result<()> {
+    extensions
+        .capabilities
+        .valid()
+        .is_some_and(|capabilities| capabilities.supports_attach())
+        .then_some(())
+        .ok_or_else(|| invalid("session does not support attach"))
 }
 
 /// The session's own diagnosis when it sent one, otherwise what was expected.
@@ -257,6 +282,16 @@ impl Pending {
     pub fn empty(&self) -> bool {
         self.position == self.bytes.len()
     }
+
+    pub fn append(&mut self, mut bytes: Vec<u8>) {
+        if self.empty() {
+            self.bytes = bytes;
+            self.position = 0;
+        } else {
+            self.bytes.append(&mut bytes);
+        }
+    }
+
     /// Only called while bytes remain, after poll reported the writer ready; a socket or
     /// terminal write of a nonempty buffer then never returns 0.
     pub fn flush(&mut self, writer: &mut impl Write) -> io::Result<()> {

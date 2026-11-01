@@ -3,6 +3,11 @@
 mod bridge;
 mod transport;
 
+use climon2_core::{
+    config::ConfigSource,
+    keys::ClientSettings,
+    startup_envelope::{ENVIRONMENT_VARIABLE, StartupEnvelope},
+};
 use climon2_core::{layout::HomeLayout, metadata::SessionMetadata};
 use climon2_platform::{
     logging::{LogFile, Role},
@@ -13,6 +18,7 @@ use std::{
     fmt, fs,
     fs::File,
     io,
+    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
 
@@ -69,18 +75,21 @@ fn metadata_path(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Pa
     }
 }
 
-fn home() -> io::Result<PathBuf> {
+fn layout() -> io::Result<HomeLayout> {
     let user_home = std::env::var_os("HOME").unwrap_or_default();
     let override_value = std::env::var_os("CLIMON2_HOME");
-    let layout = HomeLayout::resolve(override_value.as_deref(), Path::new(&user_home))
-        .map_err(io::Error::other)?;
+    HomeLayout::resolve(override_value.as_deref(), Path::new(&user_home)).map_err(io::Error::other)
+}
+
+fn home() -> io::Result<PathBuf> {
     // The CLI already canonicalized this input; direct clients must supply it too.
-    Ok(layout.root().to_owned())
+    Ok(layout()?.root().to_owned())
 }
 
 /// Arguments exclude argv[0]; all other configuration comes from environment.
 /// Errors are returned only after raw mode and file status flags are restored.
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> {
+    let settings = startup_settings().map_err(|error| failure(error, None))?;
     let (metadata, log) = session_log(arguments).map_err(|error| failure(error, None))?;
     let logs = log.path().parent();
     let filter = std::env::var("CLIMON2_LOG").ok();
@@ -88,8 +97,32 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> 
         .dispatch(filter.as_deref())
         .map_err(|error| failure(error, logs))?;
     tracing::dispatcher::with_default(&dispatch, || {
-        supervised_attach(&metadata).map_err(|error| session_failure(error, &metadata, logs))
+        supervised_attach(&metadata, settings)
+            .map_err(|error| session_failure(error, &metadata, logs))
     })
+}
+
+/// The CLI's startup envelope wins; a directly started client reads config.
+fn startup_settings() -> io::Result<ClientSettings> {
+    match std::env::var_os(ENVIRONMENT_VARIABLE) {
+        Some(envelope) => envelope_settings(envelope.as_bytes()),
+        None => config_settings(),
+    }
+}
+
+fn envelope_settings(envelope: &[u8]) -> io::Result<ClientSettings> {
+    match StartupEnvelope::parse(envelope).map_err(io::Error::other)? {
+        StartupEnvelope::Attach(settings) => Ok(settings),
+        StartupEnvelope::Kill => Err(io::Error::other("kill envelope cannot attach")),
+    }
+}
+
+fn config_settings() -> io::Result<ClientSettings> {
+    let source = ConfigSource::read(&layout()?).map_err(io::Error::other)?;
+    source
+        .attach()
+        .map(|config| config.client)
+        .map_err(io::Error::other)
 }
 
 /// Before the log exists, failures carry no logs suffix.
@@ -108,9 +141,9 @@ fn read_metadata(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Se
 }
 
 /// Panics are logged without their payload and reported as one generic failure.
-fn supervised_attach(metadata: &SessionMetadata) -> io::Result<u32> {
+fn supervised_attach(metadata: &SessionMetadata, settings: ClientSettings) -> io::Result<u32> {
     std::panic::set_hook(Box::new(|_| tracing::error!("client panic")));
-    std::panic::catch_unwind(|| attach(metadata))
+    std::panic::catch_unwind(|| attach(metadata, settings))
         .unwrap_or_else(|_| Err(io::Error::other("client panicked")))
 }
 
@@ -125,14 +158,14 @@ fn session_failure(error: io::Error, metadata: &SessionMetadata, logs: Option<&P
     failure(error, logs)
 }
 
-fn attach(metadata: &SessionMetadata) -> io::Result<u32> {
+fn attach(metadata: &SessionMetadata, settings: ClientSettings) -> io::Result<u32> {
     let state = Terminal::new()?;
     let result = connection(&state, metadata);
     if let Some(signal) = state.signals.termination_signal() {
         return Ok(128 + signal);
     }
     let (transport, size) = result?;
-    raw_bridge(transport, state, size, metadata)
+    raw_bridge(transport, state, size, metadata, settings)
 }
 
 fn connection(
@@ -178,17 +211,40 @@ fn raw_bridge(
     state: Terminal,
     size: climon2_core::protocol::TerminalSize,
     metadata: &SessionMetadata,
+    settings: ClientSettings,
 ) -> io::Result<u32> {
-    let _raw = terminal::RawModeGuard::new(&state.input)?;
+    let raw = terminal::RawModeGuard::new(&state.input)?;
     #[cfg(feature = "test-hooks")]
-    if std::env::var_os("CLIMON2_CLIENT_FAULT").as_deref() == Some(std::ffi::OsStr::new("panic")) {
-        panic!("CLIMON2_CLIENT_FAULT_PANIC");
-    }
-    bridge::run(
+    client_fault();
+    let result = bridge::run(
         transport,
         state.input,
         state.signals,
         size,
         &metadata.session_id,
-    )
+        settings,
+    )?;
+    drop(raw);
+    Ok(exit_code(result, metadata))
+}
+
+#[cfg(feature = "test-hooks")]
+fn client_fault() {
+    if std::env::var_os("CLIMON2_CLIENT_FAULT").as_deref() == Some(std::ffi::OsStr::new("panic")) {
+        panic!("CLIMON2_CLIENT_FAULT_PANIC");
+    }
+}
+
+/// Raw mode is already restored, so the detach notice lands on a cooked terminal.
+fn exit_code(result: bridge::BridgeExit, metadata: &SessionMetadata) -> u32 {
+    match result {
+        bridge::BridgeExit::Status(code) => code,
+        bridge::BridgeExit::Detached => {
+            eprintln!(
+                "climon2: detached from session {}; reattach with: climon2 attach {}",
+                metadata.session_id, metadata.session_id
+            );
+            0
+        }
+    }
 }

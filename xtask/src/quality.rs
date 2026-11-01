@@ -11,6 +11,7 @@ use std::{
 const CRAPPER: &str = "6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d";
 const MUTATOR: &str = "a5a0cb803b66e0cdb8bf471b3b08af701d424a41";
 const LLVM_COV: &str = "0.9.1";
+const MUTATION_WORKERS: &str = "2";
 /// Owner-set maximum CRAP score for every shipped function (#21, amended to 5).
 pub(crate) const CRAP_THRESHOLD: &str = "5";
 const SHIPPED: &[&str] = &[
@@ -212,7 +213,12 @@ pub fn check(root: &Path, all: bool) -> io::Result<()> {
     run(tool(root, "crapper")?
         .args(["--use-existing-coverage", "--threshold", CRAP_THRESHOLD])
         .args(SHIPPED))?;
-    mutation.args(["--use-existing-coverage", "--mutate-all"]);
+    mutation.args([
+        "--use-existing-coverage",
+        "--mutate-all",
+        "--max-workers",
+        MUTATION_WORKERS,
+    ]);
     if all {
         mutation.args(SHIPPED);
     } else {

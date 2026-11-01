@@ -1,6 +1,7 @@
 # climon2-cli
 
-CLI orchestration for `exec COMMAND [ARG...]` and `list [--json]`.
+CLI orchestration for `exec COMMAND [ARG...]`, `list [--json]` and
+`attach SESSION-PREFIX`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.
@@ -25,6 +26,12 @@ client home/filter configuration travels only through its environment.
 
 The parent-owned list interface is `list::run(home: &Path, json: bool) ->
 io::Result<()>`, called after common logging/pruning.
+
+Attach discovers live sessions, resolves an exact ID or unique prefix, checks
+the daemon's advertised capabilities, and replaces the CLI with the
+version-matched client. It validates the local attach configuration before
+handoff and passes a validated settings snapshot in the client startup envelope.
+An attach refuses non-TTY use and self-attachment.
 
 ## Behavioral evidence
 

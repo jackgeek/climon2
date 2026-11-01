@@ -1,4 +1,5 @@
 use climon2_core::{
+    hello::HelloExtensions,
     metadata::{SessionMetadata, metadata_session_id},
     protocol::{ClientMessage, HELLO_TIMEOUT, ServerMessage, read_frame, write_frame},
 };
@@ -49,6 +50,21 @@ fn read_metadata(path: &Path) -> Option<SessionMetadata> {
 }
 
 pub fn discover(home: &Path) -> io::Result<Vec<SessionMetadata>> {
+    discover_live(home).map(|sessions| {
+        sessions
+            .into_iter()
+            .map(|session| session.metadata)
+            .collect()
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct LiveSession {
+    pub metadata: SessionMetadata,
+    pub extensions: HelloExtensions,
+}
+
+pub fn discover_live(home: &Path) -> io::Result<Vec<LiveSession>> {
     let metadata: Vec<_> = candidates(home)?
         .iter()
         .filter_map(|path| read_metadata(path))
@@ -70,7 +86,7 @@ pub fn discover(home: &Path) -> io::Result<Vec<SessionMetadata>> {
     .into_iter()
     .flatten()
     .collect::<Vec<_>>();
-    live.sort_by(|first, second| second.created_at.cmp(&first.created_at));
+    live.sort_by(|first, second| second.metadata.created_at.cmp(&first.metadata.created_at));
     Ok(live)
 }
 
@@ -128,15 +144,25 @@ impl Write for DeadlineStream {
     }
 }
 
-fn hello(stream: SocketStream, deadline: Instant, metadata: &SessionMetadata) -> io::Result<bool> {
-    match exchange_hello(stream, deadline)? {
-        ServerMessage::Hello(reply) => Ok(reply.is_live_session(&metadata.session_id)),
-        _ => Ok(false),
+fn hello(
+    stream: SocketStream,
+    deadline: Instant,
+    metadata: &SessionMetadata,
+) -> io::Result<Option<HelloExtensions>> {
+    let (message, extensions) = exchange_hello(stream, deadline)?;
+    match message {
+        ServerMessage::Hello(reply) if reply.is_live_session(&metadata.session_id) => {
+            Ok(Some(extensions))
+        }
+        _ => Ok(None),
     }
 }
 
 /// Nonblocking I/O under one absolute deadline; never socket timeouts (Darwin EINVAL after FIN).
-fn exchange_hello(stream: SocketStream, deadline: Instant) -> io::Result<ServerMessage> {
+fn exchange_hello(
+    stream: SocketStream,
+    deadline: Instant,
+) -> io::Result<(ServerMessage, HelloExtensions)> {
     stream.set_nonblocking(true)?;
     let mut stream = DeadlineStream { stream, deadline };
     send_hello(&mut stream)?;
@@ -147,15 +173,20 @@ fn send_hello(stream: &mut DeadlineStream) -> io::Result<()> {
     write_frame(stream, &ClientMessage::Hello { protocol: 1 }.to_frame()?)
 }
 
-fn receive_hello(stream: &mut DeadlineStream) -> io::Result<ServerMessage> {
-    ServerMessage::from_frame(read_frame(stream)?)
+fn receive_hello(stream: &mut DeadlineStream) -> io::Result<(ServerMessage, HelloExtensions)> {
+    let frame = read_frame(stream)?;
+    let extensions = HelloExtensions::from_body(frame.body());
+    Ok((ServerMessage::from_frame(frame)?, extensions))
 }
 
-fn inspect(home: &Path, metadata: SessionMetadata) -> Option<SessionMetadata> {
+fn inspect(home: &Path, metadata: SessionMetadata) -> Option<LiveSession> {
     let deadline = Instant::now() + HELLO_TIMEOUT;
     match connection::connect(Path::new(metadata.socket_path.as_str()), HELLO_TIMEOUT) {
         Ok(stream) => match hello(stream, deadline, &metadata) {
-            Ok(true) => Some(metadata),
+            Ok(Some(extensions)) => Some(LiveSession {
+                metadata,
+                extensions,
+            }),
             result => {
                 tracing::debug!(responded = result.is_ok(), "session probe did not match");
                 None

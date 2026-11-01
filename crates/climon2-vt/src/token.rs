@@ -110,7 +110,7 @@ const RULES: &[Rule] = &[
     rule(SEQUENCE, 0x18, 0x18, Tokenizer::abort, Some(State::Ground)),
     rule(SEQUENCE, 0x1A, 0x1A, Tokenizer::abort, Some(State::Ground)),
     rule(SEQUENCE, ESC, ESC, Tokenizer::restart, Some(State::Escape)),
-    rule(SEQUENCE, 0x00, 0x1F, Tokenizer::execute, None),
+    rule(SEQUENCE, 0x00, 0x1F, Tokenizer::execute_sequence, None),
     rule(
         ESCAPE | ESC_INTER,
         0x20,
@@ -266,12 +266,33 @@ impl Tokenizer {
         });
     }
 
+    fn execute_sequence(&mut self, byte: u8, _: &mut Vec<Token>) {
+        self.oversized |= self.held.len() >= LIMIT;
+        if !self.oversized {
+            self.held.push(byte);
+        }
+    }
+
+    fn flush_controls(&mut self, out: &mut Vec<Token>) {
+        let controls = self
+            .held
+            .iter()
+            .copied()
+            .filter(|held| (0x00..=0x1F).contains(held) && *held != ESC)
+            .collect::<Vec<_>>();
+        for control in controls {
+            self.execute(control, out);
+        }
+    }
+
     fn abort(&mut self, byte: u8, out: &mut Vec<Token>) {
+        self.flush_controls(out);
         self.reset();
         self.execute(byte, out);
     }
 
-    fn restart(&mut self, byte: u8, _: &mut Vec<Token>) {
+    fn restart(&mut self, byte: u8, out: &mut Vec<Token>) {
+        self.flush_controls(out);
         self.reset();
         self.held.push(byte);
     }

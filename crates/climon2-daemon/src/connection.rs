@@ -3,20 +3,31 @@ use climon2_core::protocol::{
     write_frame,
 };
 use std::{
+    collections::VecDeque,
     io::{self, Read, Write},
     net::Shutdown,
-    os::{fd::AsRawFd, unix::net::UnixStream},
-    time::Instant,
+    os::unix::net::UnixStream,
+    time::{Duration, Instant},
 };
+
+const WRITE_WINDOW: usize = 16 * 1024 * 1024;
+const NO_PROGRESS: Duration = Duration::from_secs(5);
+
+struct PendingFrame {
+    bytes: Vec<u8>,
+    written: usize,
+}
 
 pub(crate) struct Connection {
     stream: UnixStream,
     pub state: ConnectionState,
     accepted: Instant,
     incoming: Vec<u8>,
-    outgoing: Vec<u8>,
-    written: usize,
+    outgoing: VecDeque<PendingFrame>,
+    queued_bytes: usize,
+    last_progress: Instant,
     terminal: bool,
+    close_when_empty: bool,
 }
 
 impl Connection {
@@ -27,9 +38,11 @@ impl Connection {
             state: ConnectionState::default(),
             accepted: Instant::now(),
             incoming: Vec::new(),
-            outgoing: Vec::new(),
-            written: 0,
+            outgoing: VecDeque::new(),
+            queued_bytes: 0,
+            last_progress: Instant::now(),
             terminal: false,
+            close_when_empty: false,
         })
     }
 
@@ -37,75 +50,87 @@ impl Connection {
         self.outgoing.is_empty()
     }
 
-    pub fn disconnected(&self) -> io::Result<bool> {
-        let mut descriptor = libc::pollfd {
-            fd: self.stream.as_raw_fd(),
-            events: 0,
-            revents: 0,
-        };
-        if unsafe { libc::poll(&mut descriptor, 1, 0) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0)
+    pub fn queued_bytes(&self) -> usize {
+        self.queued_bytes
+    }
+
+    pub fn stalled(&self, now: Instant) -> bool {
+        self.queued_bytes > 0 && now.duration_since(self.last_progress) >= NO_PROGRESS
+    }
+
+    pub fn should_close(&self) -> bool {
+        self.close_when_empty && self.available()
+    }
+
+    pub fn close_after_flush(&mut self) {
+        self.close_when_empty = true;
     }
 
     pub fn queue(&mut self, message: ServerMessage) -> io::Result<()> {
-        if !self.available() {
+        self.queue_frame(message.to_frame()?)
+    }
+
+    pub fn queue_frame(&mut self, frame: climon2_core::protocol::Frame) -> io::Result<()> {
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, &frame)?;
+        if self.queued_bytes.saturating_add(bytes.len()) > WRITE_WINDOW {
             return Err(super::io_error("connection output queue is full"));
         }
-        write_frame(&mut self.outgoing, &message.to_frame()?)
-    }
-
-    pub fn finish(&mut self, code: u32) -> io::Result<()> {
-        let frame = ServerMessage::Exit { code }.to_frame()?;
-        write_frame(&mut self.outgoing, &frame)?;
-        self.flush_until(Instant::now() + climon2_core::protocol::PTY_DRAIN_CAP)
-    }
-
-    fn flush_until(&mut self, deadline: Instant) -> io::Result<()> {
-        while !self.available() && Instant::now() < deadline {
-            self.flush()?;
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
+        self.queued_bytes += bytes.len();
+        self.outgoing.push_back(PendingFrame { bytes, written: 0 });
         Ok(())
     }
 
     pub fn error(&mut self, message: &str) {
         self.terminal = true;
         // A terminal error may replace unsent output, but never splice a partially written frame.
-        if self.written == 0 {
+        if self.outgoing.front().is_none_or(|frame| frame.written == 0) {
+            self.queued_bytes = 0;
             self.outgoing.clear();
         }
-        if self.available() {
-            let _ = self.queue(ServerMessage::Error {
-                message: message.into(),
-            });
-        }
+        let _ = self.queue(ServerMessage::Error {
+            message: message.into(),
+        });
         let _ = self.flush();
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
-        if self.available() {
-            return Ok(());
-        }
-        // A stream write of a non-empty buffer never returns 0; it makes progress or fails.
-        if let Some(count) =
-            super::unless_would_block(self.stream.write(&self.outgoing[self.written..]))?
-        {
-            self.advance_written(count);
+        while let Some(frame) = self.outgoing.front_mut() {
+            // A stream write of a non-empty buffer never returns 0; it makes progress or fails.
+            let Some(count) =
+                super::unless_would_block(self.stream.write(&frame.bytes[frame.written..]))?
+            else {
+                break;
+            };
+            frame.written += count;
+            self.queued_bytes -= count;
+            self.last_progress = Instant::now();
+            if frame.written == frame.bytes.len() {
+                self.outgoing.pop_front();
+            }
         }
         Ok(())
     }
 
-    fn advance_written(&mut self, count: usize) {
-        self.written += count;
-        if self.written == self.outgoing.len() {
-            self.outgoing.clear();
-            self.written = 0;
+    /// Every frame already readable, so a burst sent in one write is handled
+    /// in one iteration.
+    pub fn receive_available(&mut self) -> io::Result<Vec<ClientMessage>> {
+        let mut messages = Vec::new();
+        if !self.receiving() {
+            return Ok(messages);
         }
+        while let Some(message) = self.receive()? {
+            messages.extend(message);
+        }
+        Ok(messages)
     }
 
-    pub fn receive(&mut self) -> io::Result<Option<ClientMessage>> {
+    fn receiving(&self) -> bool {
+        !(self.terminal || self.close_when_empty)
+    }
+
+    /// `None` once nothing is readable; `Some(None)` after part of a frame.
+    fn receive(&mut self) -> io::Result<Option<Option<ClientMessage>>> {
         self.validate_receive()?;
         self.read_message()
     }
@@ -121,10 +146,10 @@ impl Connection {
         Ok(())
     }
 
-    fn read_message(&mut self) -> io::Result<Option<ClientMessage>> {
+    fn read_message(&mut self) -> io::Result<Option<Option<ClientMessage>>> {
         let mut bytes = self.read_buffer()?;
         match super::unless_would_block(self.stream.read(&mut bytes))? {
-            Some(count) => self.received(&bytes[..count]),
+            Some(count) => self.received(&bytes[..count]).map(Some),
             None => Ok(None),
         }
     }

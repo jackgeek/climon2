@@ -84,19 +84,23 @@ fn invalid_utf8_is_text_and_never_held() {
 }
 
 #[test]
-fn c0_controls_inside_escape_sequences_execute_before_them() {
+fn c0_controls_inside_escape_sequences_keep_their_order() {
     assert_eq!(
         tokens(&[b"\x1b[3\n1\x08m\x1b(\rB\x1b\x07c"]),
         [
-            text(b"\n"),
-            text(b"\x08"),
-            token(Kind::Csi, b"\x1b[31m"),
-            text(b"\r"),
-            token(Kind::Escape, b"\x1b(B"),
-            text(b"\x07"),
-            token(Kind::Escape, b"\x1bc"),
+            token(Kind::Csi, b"\x1b[3\n1\x08m"),
+            token(Kind::Escape, b"\x1b(\rB"),
+            token(Kind::Escape, b"\x1b\x07c"),
         ]
     );
+}
+
+#[test]
+fn c0_controls_inside_an_escape_sequence_remain_bounded() {
+    let mut bytes = vec![0x1b, b'['];
+    bytes.resize(MAX_BODY + 3, 0x1c);
+    bytes.push(b'm');
+    assert_eq!(tokens(&[&bytes]), [token(Kind::Oversized, b"")]);
 }
 
 #[test]
@@ -298,9 +302,29 @@ fn feeding_tokens_drives_vte_exactly_as_the_raw_stream_does() {
             for read in [&input[..split], &input[split..]] {
                 fed.extend(tokenizer.push(read).into_iter().map(|token| token.bytes));
             }
-            assert_eq!(vte_actions(&fed), expected, "input {input:?} split {split}");
+            assert_eq!(
+                vte_actions(&fed),
+                expected,
+                "input {input:?} split {split} tokens {fed:?}"
+            );
         }
     }
+}
+
+#[test]
+fn c0_controls_in_aborted_escape_sequences_still_reach_the_engine() {
+    let input = b"\x1b \n\x18Z".to_vec();
+    let mut tokenizer = Tokenizer::new();
+    let tokens = tokenizer.push(&input);
+    assert_eq!(
+        vte_actions(
+            &tokens
+                .into_iter()
+                .map(|token| token.bytes)
+                .collect::<Vec<_>>()
+        ),
+        vte_actions(std::slice::from_ref(&input))
+    );
 }
 
 #[test]
