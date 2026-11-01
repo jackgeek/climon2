@@ -80,6 +80,10 @@ pub(super) enum Command {
         code: u32,
         drain: Drain,
     },
+    /// Hung up; the rest of its terminal session is killed at `until`.
+    HangingUp {
+        until: Instant,
+    },
     /// Its exit status is known to the control state machine.
     Ended,
 }
@@ -90,7 +94,7 @@ impl Command {
         match self {
             Self::Running => true,
             Self::Draining { drain, .. } => !drain.finished(now),
-            Self::Ended => false,
+            Self::HangingUp { .. } | Self::Ended => false,
         }
     }
 
@@ -98,6 +102,11 @@ impl Command {
         if let Self::Draining { drain, .. } = self {
             drain.observe(read, now);
         }
+    }
+
+    /// Whether the hang-up grace has elapsed.
+    pub fn hung_up(&self, now: Instant) -> bool {
+        matches!(self, Self::HangingUp { until } if now >= *until)
     }
 
     /// The exit status, once the drain finished.
@@ -175,5 +184,17 @@ mod tests {
         assert_eq!(command.drained(now), Some(7));
         assert!(!Command::Ended.reads(now));
         assert_eq!(Command::Ended.drained(now), None);
+    }
+
+    #[test]
+    fn a_hang_up_neither_reads_nor_drains_and_ends_at_its_deadline() {
+        let now = Instant::now();
+        let command = Command::HangingUp { until: now };
+        assert!(!command.reads(now));
+        assert_eq!(command.drained(now), None);
+        assert!(!command.hung_up(now - Duration::from_nanos(1)));
+        assert!(command.hung_up(now));
+        assert!(!Command::Ended.hung_up(now));
+        assert!(!Command::Running.hung_up(now));
     }
 }

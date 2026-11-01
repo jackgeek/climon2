@@ -66,8 +66,12 @@ impl Pty {
     fn fd(&self) -> i32 {
         self.master().as_raw_fd().expect("macOS PTY descriptor")
     }
+    /// After hang-up there is no terminal left to resize.
     pub fn resize(&self, value: climon2_core::protocol::TerminalSize) -> io::Result<()> {
-        self.master()
+        let Some(master) = &self.master else {
+            return Ok(());
+        };
+        master
             .resize(size(value))
             .map_err(|_| super::io_error("terminal resize failed"))
     }
@@ -76,7 +80,11 @@ impl Pty {
         if crate::startup::selected_fault("pty-write") {
             return Err(super::io_error("controlled PTY write fault"));
         }
-        self.writer.as_mut().expect("live PTY writer").write(bytes)
+        // After hang-up nothing reads the terminal; pending bytes are dropped.
+        let Some(writer) = &mut self.writer else {
+            return Ok(bytes.len());
+        };
+        writer.write(bytes)
     }
     /// Waits at most `timeout` for output (or hangup) without reading it.
     pub fn wait_readable(&self, timeout: std::time::Duration) {
@@ -128,6 +136,30 @@ impl Pty {
         self.status = Some(code);
         Ok(code)
     }
+    /// Closes the terminal without waiting; `end_hangup` follows once the
+    /// hang-up grace has elapsed.
+    pub fn hang_up(&mut self) -> io::Result<()> {
+        if !self.reaped {
+            self.session.observe()?;
+        }
+        self.close_master();
+        Ok(())
+    }
+
+    /// Kills what remains of the command session; the command's status.
+    pub fn end_hangup(&mut self) -> io::Result<u32> {
+        if self.reaped {
+            self.session.kill()?;
+            return Ok(self.status.unwrap_or(129));
+        }
+        let code = process::end_hangup(&mut self.session)?
+            .code()
+            .map_err(io::Error::other)?;
+        self.reaped = true;
+        self.status = Some(code);
+        Ok(code)
+    }
+
     /// The leader already exited; its session still gets the hang-up grace.
     fn leave_reaped(&mut self) -> io::Result<u32> {
         self.close_master();
