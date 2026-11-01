@@ -193,6 +193,46 @@ class ReceiverTests(unittest.TestCase):
                 os.close(master)
                 os.close(slave)
 
+    def test_collect_all_stages_retains_failure_and_checks_later_handoff(self):
+        payloads = [b"\x1b[A", b"\x1bOA", b"\x1b[A", b"1", b"unexpected-input", b"1"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            master, slave = pty.openpty()
+            try:
+                with subprocess.Popen(
+                    [sys.executable, str(Path(__file__).with_name("receiver.py")),
+                     "--expected-tty", os.ttyname(slave), "--report-dir", directory,
+                     "--collect-all-stages"],
+                    stdin=slave, stdout=slave, stderr=subprocess.PIPE,
+                ) as process:
+                    for index, payload in enumerate(payloads):
+                        checkpoint = root / f"ready-{index}.json"
+                        deadline = time.monotonic() + 3
+                        while not checkpoint.exists() and process.poll() is None:
+                            if time.monotonic() >= deadline:
+                                self.fail("receiver did not announce the next diagnostic stage")
+                            time.sleep(0.02)
+                        self.assertTrue(
+                            checkpoint.exists(),
+                            process.stderr.read().decode() if process.poll() is not None else "",
+                        )
+                        os.write(master, payload)
+                    _, errors = process.communicate(timeout=3)
+                    self.assertNotEqual(process.returncode, 0, errors.decode())
+                    text = (root / "result.json").read_text()
+                    report = json.loads(text)
+                    self.assertEqual(report["status"], "FAIL")
+                    self.assertEqual(
+                        [stage["matched"] for stage in report["stages"]],
+                        [True, True, True, True, False, True],
+                    )
+                    self.assertIsNone(report["stages"][4]["matched_expected_hex"])
+                    self.assertNotIn("unexpected-input", text)
+                    self.assertNotIn(b"unexpected-input".hex(), text)
+            finally:
+                os.close(master)
+                os.close(slave)
+
     def test_receiver_can_wait_for_manual_focus_longer_than_key_deadline(self):
         expected = [b"\x1b[A", b"\x1bOA", b"\x1b[A", b"1", b"\x1bOq", b"1"]
         with tempfile.TemporaryDirectory() as directory:
@@ -269,7 +309,7 @@ class ReceiverTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            configure(root, "CLIMON2-56-TEST")
+            configure(root, "CLIMON2-56-TEST", collect_all_stages=True)
             settings = json.loads((root / "profile" / "User" / "settings.json").read_text())
             profile = settings["terminal.integrated.profiles.osx"]["NativeInputFixture"]
             self.assertEqual(profile["path"], "/bin/bash")
@@ -323,6 +363,39 @@ class ReceiverTests(unittest.TestCase):
             self.assertIn("--input-timeout-seconds 8", profile["args"][3])
             self.assertIn("--start-file", profile["args"][3])
 
+    def test_automatic_run_releases_start_only_after_terminal_guard_passes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gate_checks = []
+
+            def guard(pid, marker, action, require_terminal=False):
+                if require_terminal:
+                    gate_checks.append((root / "input-start").exists())
+                    raise RuntimeError("Synthetic terminal focus unavailable")
+                return "1"
+
+            def checkpoint(path, result_path):
+                return {"stage": "cursor-normal", "key_code": 126}
+
+            with subprocess.Popen(["/bin/sleep", "30"]) as process:
+                with patch("vscode.subprocess.Popen", return_value=process), \
+                        patch("vscode.wait_window"), \
+                        patch("vscode.gui", side_effect=guard), \
+                        patch("vscode.wait_file", side_effect=checkpoint), \
+                        patch("vscode.enable_native_accessibility", create=True), \
+                        patch("vscode.inspect_ax_tree", side_effect=[
+                            "focused|missing", "focused|terminal",
+                        ]) as focused:
+                    with self.assertRaisesRegex(RuntimeError, "Synthetic terminal focus unavailable"):
+                        run(root, native_accessibility=True)
+                    self.assertEqual(focused.call_count, 2)
+                self.assertEqual(gate_checks, [False])
+                self.assertFalse((root / "input-start").exists())
+                settings = json.loads((root / "profile/User/settings.json").read_text())
+                command = settings["terminal.integrated.profiles.osx"]["NativeInputFixture"]["args"][3]
+                self.assertIn("--start-file", command)
+                self.assertIsNotNone(process.poll())
+
     def test_terminal_input_guard_does_not_raise_window_before_checking_focus(self):
         with patch("vscode.script", side_effect=lambda value: value):
             source = gui(1234, "CLIMON2-56-TEST", "key code 126", require_terminal=True)
@@ -332,6 +405,30 @@ class ReceiverTests(unittest.TestCase):
             'if focusedElement is missing value then error "Owned terminal input is not focused"',
             source,
         )
+
+    def test_automatic_run_never_releases_input_on_invalid_focus_or_timeout(self):
+        for observation, exception, message in (
+            ("focused|other", RuntimeError, "Owned terminal input is not focused"),
+            ("focused|query-error:-25212", RuntimeError, "focus query failed"),
+            ("focused|missing", TimeoutError, "focus did not become available"),
+        ):
+            with self.subTest(observation=observation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                with subprocess.Popen(["/bin/sleep", "30"]) as process:
+                    with patch("vscode.subprocess.Popen", return_value=process), \
+                            patch("vscode.wait_window"), \
+                            patch("vscode.gui", return_value="1") as actions, \
+                            patch("vscode.wait_file", return_value={"key_code": 126}), \
+                            patch("vscode.enable_native_accessibility"), \
+                            patch("vscode.inspect_ax_tree", return_value=observation), \
+                            patch("vscode.time.monotonic", side_effect=[0, 0, 0, 11]):
+                        with self.assertRaisesRegex(exception, message):
+                            run(root, native_accessibility=True)
+                        self.assertFalse((root / "input-start").exists())
+                        self.assertFalse(any(
+                            call.args[2] == "key code 126" for call in actions.call_args_list
+                        ))
+                    self.assertIsNotNone(process.poll())
 
     def test_ax_inspection_reports_only_focused_element_classification(self):
         with patch("vscode.script", side_effect=lambda value: value):

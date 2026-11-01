@@ -1,0 +1,23 @@
+{
+  "status": "FAIL",
+  "error": "native automation failed: 1346:1387: execution error: Owned dialog appeared; no approval sent (-2700)",
+  "native_accessibility_requested": true,
+  "input_source": "System Events",
+  "announced_stages": [
+    "cursor-normal",
+    "cursor-application",
+    "cursor-handoff-normal",
+    "keypad-normal",
+    "keypad-application",
+    "keypad-handoff-normal",
+    "paste-ascii-on",
+    "paste-ascii-off",
+    "paste-unicode-on",
+    "paste-unicode-off"
+  ],
+  "ownership": {
+    "pid": 32066,
+    "marker": "CLIMON2-56-VSCODE-c56-i0jytft3"
+  },
+  "launch_log_retained": "c56-i0jytft3-launch.log"
+}

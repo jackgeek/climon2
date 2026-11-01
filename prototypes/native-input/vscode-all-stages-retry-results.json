@@ -1,0 +1,100 @@
+{
+  "status": "FAIL",
+  "error": "Native input receiver failed",
+  "native_accessibility_requested": true,
+  "multiline_paste_warning_disabled": true,
+  "input_source": "System Events",
+  "announced_stages": [
+    "cursor-normal",
+    "cursor-application",
+    "cursor-handoff-normal",
+    "keypad-normal",
+    "keypad-application",
+    "keypad-handoff-normal",
+    "paste-ascii-on",
+    "paste-ascii-off",
+    "paste-unicode-on",
+    "paste-unicode-off"
+  ],
+  "receiver": {
+    "status": "FAIL",
+    "stages": [
+      {
+        "stage": "cursor-normal",
+        "expected_hex": "1b5b41",
+        "matched": true,
+        "received_length": 3,
+        "matched_expected_hex": "1b5b41"
+      },
+      {
+        "stage": "cursor-application",
+        "expected_hex": "1b4f41",
+        "matched": true,
+        "received_length": 3,
+        "matched_expected_hex": "1b4f41"
+      },
+      {
+        "stage": "cursor-handoff-normal",
+        "expected_hex": "1b5b41",
+        "matched": true,
+        "received_length": 3,
+        "matched_expected_hex": "1b5b41"
+      },
+      {
+        "stage": "keypad-normal",
+        "expected_hex": "31",
+        "matched": true,
+        "received_length": 1,
+        "matched_expected_hex": "31"
+      },
+      {
+        "stage": "keypad-application",
+        "expected_hex": "1b4f71",
+        "matched": false,
+        "received_length": 1,
+        "matched_expected_hex": null
+      },
+      {
+        "stage": "keypad-handoff-normal",
+        "expected_hex": "31",
+        "matched": true,
+        "received_length": 1,
+        "matched_expected_hex": "31"
+      },
+      {
+        "stage": "paste-ascii-on",
+        "expected_hex": "1b5b3230307e232050415354452d35362d41534349491b5b3230317e",
+        "matched": true,
+        "received_length": 28,
+        "matched_expected_hex": "1b5b3230307e232050415354452d35362d41534349491b5b3230317e"
+      },
+      {
+        "stage": "paste-ascii-off",
+        "expected_hex": "232050415354452d35362d4153434949",
+        "matched": true,
+        "received_length": 16,
+        "matched_expected_hex": "232050415354452d35362d4153434949"
+      },
+      {
+        "stage": "paste-unicode-on",
+        "expected_hex": "1b5b3230307e232050415354452d35362de7958c65cc810a23205345434f4e442d35361b5b3230317e",
+        "matched": true,
+        "received_length": 41,
+        "matched_expected_hex": "1b5b3230307e232050415354452d35362de7958c65cc810d23205345434f4e442d35361b5b3230317e"
+      },
+      {
+        "stage": "paste-unicode-off",
+        "expected_hex": "232050415354452d35362de7958c65cc810a23205345434f4e442d3536",
+        "matched": true,
+        "received_length": 29,
+        "matched_expected_hex": "232050415354452d35362de7958c65cc810d23205345434f4e442d3536"
+      }
+    ],
+    "tty": "/dev/ttys006"
+  },
+  "ownership": {
+    "pid": 33900,
+    "marker": "CLIMON2-56-VSCODE-c56-yr_ad8ab"
+  },
+  "launch_log_retained": "c56-yr_ad8ab-launch.log"
+}

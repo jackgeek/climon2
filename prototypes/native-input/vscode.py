@@ -64,6 +64,8 @@ def gui(pid, marker, action, require_terminal=False):
         if focusedElement is missing value then error "Owned terminal input is not focused"
         set focusedDescription to description of focusedElement
         if focusedDescription does not contain "Terminal" then error "Owned terminal input is not focused"
+        set focusedClasses to value of attribute "AXDOMClassList" of focusedElement
+        if focusedClasses does not contain "xterm-helper-textarea" then error "Owned terminal input control is not focused"
     """ if require_terminal else ""
     return script(f"""
     tell application "System Events"
@@ -145,7 +147,8 @@ def inspect_ax_tree(pid, marker):
     """)
 
 
-def configure(root, marker, inspect_only=False, manual_focus=False, human_key_probe=False):
+def configure(root, marker, inspect_only=False, manual_focus=False, human_key_probe=False,
+              collect_all_stages=False, multiline_paste=False):
     profile = root / "profile" / "User"
     profile.mkdir(parents=True)
     workspace = root / marker
@@ -163,6 +166,8 @@ def configure(root, marker, inspect_only=False, manual_focus=False, human_key_pr
         ]
         if manual_focus:
             receiver_arguments.extend(["--start-file", str(root / "input-start")])
+        if collect_all_stages:
+            receiver_arguments.append("--collect-all-stages")
         receiver_command = shlex.join(receiver_arguments)
         shell_command = (
             f"{receiver_command}; receiver_status=$?; "
@@ -190,6 +195,8 @@ def configure(root, marker, inspect_only=False, manual_focus=False, human_key_pr
             "NativeInputFixture": terminal_profile,
         },
     }
+    if multiline_paste:
+        settings["terminal.integrated.enableMultiLinePasteWarning"] = False
     (profile / "settings.json").write_text(json.dumps(settings, indent=2))
     return workspace, reports
 
@@ -204,12 +211,31 @@ def wait_for_human_file(path, process, timeout, message):
         time.sleep(0.2)
 
 
+def wait_for_terminal_focus(process, marker):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError("Owned VS Code exited while establishing terminal focus")
+        observation = inspect_ax_tree(process.pid, marker)
+        if "focused|terminal" in observation.splitlines():
+            return
+        if "focused|query-error:" in observation:
+            raise RuntimeError(f"Owned terminal focus query failed: {observation}")
+        if "focused|other" in observation.splitlines():
+            raise RuntimeError("Owned terminal input is not focused")
+        time.sleep(0.1)
+    raise TimeoutError("Owned terminal focus did not become available")
+
+
 def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=False,
-        inspection_complete_file=None, native_accessibility=False, human_key_probe=False):
+        inspection_complete_file=None, native_accessibility=False, human_key_probe=False,
+        collect_all_stages=False, multiline_paste=False):
     marker = "CLIMON2-56-VSCODE-" + root.name
     workspace, reports = configure(
-        root, marker, inspect_only, manual_focus=terminal_focus_file is not None,
+        root, marker, inspect_only, manual_focus=not inspect_only,
         human_key_probe=human_key_probe,
+        collect_all_stages=collect_all_stages,
+        multiline_paste=multiline_paste,
     )
     with Path("/Applications/Visual Studio Code.app/Contents/Info.plist").open("rb") as source:
         version = plistlib.load(source)["CFBundleShortVersionString"]
@@ -278,17 +304,19 @@ def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=Fal
                             "Post-query inspection expired or owned VS Code exited",
                         )
             result_path = reports / "result.json"
+            wait_file(reports / "ready-0.json", result_path)
+            if process.poll() is not None or result_path.exists():
+                raise RuntimeError("Owned test process ended before focus verification")
             if terminal_focus_file is not None:
-                wait_file(reports / "ready-0.json", result_path)
-                if process.poll() is not None or result_path.exists():
-                    raise RuntimeError("Owned test process ended before manual focus")
                 print("Inspect the Bash-backed fixture, focus its terminal pane, then confirm readiness.",
                       flush=True)
                 wait_for_human_file(
                     terminal_focus_file, process, 600, "Manual focus confirmation expired",
                 )
-                gui(process.pid, marker, 'return "terminal-ready"', True)
-                (root / "input-start").touch(exist_ok=False)
+            if native_accessibility:
+                wait_for_terminal_focus(process, marker)
+            gui(process.pid, marker, 'return "terminal-ready"', True)
+            (root / "input-start").touch(exist_ok=False)
             if human_key_probe:
                 print("Measurement started: press physical Up once in the owned fixture terminal.",
                       flush=True)
@@ -343,11 +371,15 @@ def main():
     parser.add_argument("--inspect-only", action="store_true")
     parser.add_argument("--native-accessibility-permission-confirmed", action="store_true")
     parser.add_argument("--human-key-probe", action="store_true")
+    parser.add_argument("--collect-all-stages", action="store_true")
+    parser.add_argument("--multiline-paste-permission-confirmed", action="store_true")
     args = parser.parse_args()
     if args.human_key_probe and (args.inspect_only or args.terminal_focus_file is None):
         parser.error("--human-key-probe requires --terminal-focus-file and not --inspect-only")
     if args.inspection_complete_file is not None and not args.inspect_only:
         parser.error("--inspection-complete-file requires --inspect-only")
+    if args.collect_all_stages and (args.inspect_only or args.human_key_probe):
+        parser.error("--collect-all-stages requires a complete automatic run")
     for path in (args.window_ready_file, args.terminal_focus_file, args.inspection_complete_file):
         if path is not None and path.exists():
             parser.error("manual readiness paths must be new")
@@ -358,10 +390,12 @@ def main():
         try:
             report = run(root, args.window_ready_file, args.terminal_focus_file, args.inspect_only,
                          args.inspection_complete_file, args.native_accessibility_permission_confirmed,
-                         args.human_key_probe)
+                         args.human_key_probe, args.collect_all_stages,
+                         args.multiline_paste_permission_confirmed)
         except (RuntimeError, TimeoutError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
             report = {"status": "FAIL", "error": str(error),
                       "native_accessibility_requested": args.native_accessibility_permission_confirmed,
+                      "multiline_paste_warning_disabled": args.multiline_paste_permission_confirmed,
                       "input_source": "human physical Up" if args.human_key_probe else "System Events"}
             report["announced_stages"] = [
                 json.loads(path.read_text())["stage"]
@@ -379,6 +413,7 @@ def main():
             print(json.dumps(report, indent=2))
             raise SystemExit(1) from error
         report["boundary"] = "Owned native Code instance; standalone mode handoff, not daemon integration"
+        report["multiline_paste_warning_disabled"] = args.multiline_paste_permission_confirmed
         print(json.dumps(report, indent=2))
 
 

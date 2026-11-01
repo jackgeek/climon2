@@ -1,5 +1,29 @@
-THROWAWAY #56: VS Code native-input qualification is BLOCKED.
-No passing native VS Code input result, production change or host approval.
+THROWAWAY #56: bounded VS Code native-input qualification completed.
+Two complete runs: nine of ten assertions pass; application keypad fails.
+Overall FAIL remains. No production change or complete host approval.
+
+Final bounded verdict
+  VS Code 1.144.0, isolated macOS profile, extensions/shell integration disabled.
+  Native System Events Up (126), keypad-1 (83), and Command-V events; independent
+  literal byte assertions, not injected expected sequences.
+
+  Cursor normal/application/handoff                PASS
+  Keypad normal/handoff                           PASS
+  Keypad application (expected ESC O q)            FAIL: one byte, not three
+  ASCII bracketed paste ON/OFF                     PASS
+  Multiline Unicode bracketed paste ON/OFF         PASS: LF becomes CR
+
+  The two complete runs have identical per-stage reports, including the one
+  keypad mismatch. Unexpected input contents remain unrecorded. This shows the
+  tested native keypad event does not meet the application-keypad assertion;
+  it does not prove every physical keyboard or arbitrary profile behaves alike.
+  No custom key translation or weakened expected value was introduced.
+  See vscode-all-stages-results.json and vscode-all-stages-retry-results.json.
+
+  The developer accepted the bounded findings and authorized publication, then
+  requested a retry. The retry reproduced all ten outcomes. This completes the
+  standalone qualification stage with an explicit limitation, not engine or
+  production approval. Historical failures below retain their original scope.
 
 Scope
   Developer confirmed cursor/keypad, standalone mode-handoff and ASCII/
@@ -178,12 +202,49 @@ Gated input measurement and physical-key comparison
   Exact effects of earlier Bash history loading/writes remain unverified; no
   user history was read, restored, or modified deliberately by the agent.
 
+Ownership, automatic readiness, and complete collection
+  Live ownership inspection found only one terminal under the isolated root:
+  Bash and its Python receiver shared the foreground process group on the
+  announced TTY. The focused element was terminal 1's xterm-helper-textarea.
+  No terminal text or unrelated process arguments were read. The partial
+  ownership probe matched cursor normal/application, then failed handoff when
+  the complete sequence was not sent. That traceback was a deliberate
+  incomplete probe, not a Python startup failure.
+
+  Native AX enablement is asynchronous: an immediate full attempt failed its
+  focus guard before input. Added a bounded readiness observation before gate
+  release; query errors and a different focused element fail closed. Every
+  automatic receiver now waits behind the start gate. The per-event guard also
+  requires the actual xterm-helper-textarea class, not just a terminal label.
+  The next complete attempt passed the cursor cases and normal keypad, then
+  failed the application-keypad assertion. Earlier zero-byte/physical-history
+  observations remain inconclusive about their exact input target/timing.
+
+  With explicit permission, --collect-all-stages continues after byte mismatches
+  while retaining every mismatch and exiting overall FAIL. The default remains
+  fail-fast. A PTY regression injects a wrong stage and verifies later handoff
+  is checked, unexpected contents are not logged, and final status stays FAIL.
+
+  The first all-stage attempt reached multiline Unicode paste OFF and stopped
+  when a dialog appeared. The guard sent no approval; the receiver report was
+  unavailable after teardown. VS Code documents its multiline-paste warning
+  for bracketed paste OFF:
+    https://code.visualstudio.com/docs/terminal/basics#_copy--paste
+  The developer separately approved disabling that warning only in the
+  disposable profile for synthetic samples. With this explicit opt-in, two
+  full runs completed, preserving the keypad failure and passing all paste
+  assertions. Normal user settings and other dialog guards were unchanged.
+  Synthetic clipboard samples replaced the clipboard; prior contents were
+  never read and are not restored. Both disposable roots/helpers were absent
+  afterward. This is not a whole-application write-isolation audit.
+
 Test seam
   Receiver includes independent expected key bytes and exact known paste
   samples, permitting only LF/CR/CRLF variants with exact UTF-8 otherwise.
   Successful match reports retain known expected bytes; unexpected contents
-  are not logged. No native VS Code assertion has passed. A guarded native Up
-  action was sent in the latest retry, but the receiver did not advance.
+  are not logged. Nine native assertions pass in each of two complete runs;
+  application keypad fails in both. Synthetic PTY assertions do not by
+  themselves qualify native hosts.
   Receiver may have enabled modes in the owned terminal before the focus
   failure. Closing the disposable instance does not prove original-mode
   restoration or production cleanup. No user terminal was targeted.
@@ -192,7 +253,7 @@ Reproduction
   Offline from prototypes/native-input:
     python3 -m unittest -v
     python3 -m py_compile receiver.py vscode.py
-  Thirteen PTY/profile/automation-script tests pass; syntax and diff whitespace
+  Sixteen PTY/profile/automation-script tests pass; syntax and diff whitespace
   checks pass.
   No new mutation, CRAP, duplication, release or full-workspace pass claimed.
 
@@ -200,10 +261,13 @@ Reproduction
   and transient accessibility permission and available macOS automation:
     python3 vscode.py --permission-confirmed --clipboard-permission-confirmed \
       --native-accessibility-permission-confirmed \
-      --window-ready-file NEW_WINDOW_MARKER --terminal-focus-file NEW_FOCUS_MARKER
-  The latest full attempt passes the focus guard but fails to advance beyond
-  cursor-normal. Without the explicit native accessibility opt-in, the earlier
-  focus blocker remains possible. Do not bypass the guard.
+      --multiline-paste-permission-confirmed --collect-all-stages \
+      --window-ready-file NEW_WINDOW_MARKER
+  Dismiss startup screens and release the fresh marker only when ready; leave
+  the window untouched while the sequence runs. Expected overall exit is 1
+  because application keypad does not match. Without the explicit native
+  accessibility opt-in, the earlier focus blocker remains possible.
+  Do not bypass the guard or interpret an overall FAIL as full host support.
   Raw diagnostic logs are retained locally under ignored artifacts, not
   published. Sanitized findings and failure reports contain no user text.
 
@@ -240,6 +304,14 @@ Action log
   Isolated Bash history/startup through the profile environment and verified
   that boundary using synthetic history only. Stopped native retries pending
   receiver/pane ownership and timing evidence; cleaned exact gate markers.
+  Inspected only the owned TTY/process metadata and focused input class; kept
+  the partial ownership probe as incomplete evidence. Added automatic start
+  gating, bounded AX readiness and a stricter xterm input-control guard.
+  Obtained actual cursor/keypad results, then collected all stages under
+  explicit permission without converting mismatches into successes. Stopped
+  at a dialog, consulted official paste-warning documentation, and obtained
+  separate disposable-profile permission. Completed two identical ten-stage
+  runs, accepted the bounded verdict, and retained all intermediate failures.
 
 Fix and verification
   Inspection-only mode now opens a plain Bash prompt so the developer can
@@ -248,18 +320,15 @@ Fix and verification
   focus uses a 600-second start-gate wait, followed by eight-second input
   measurement; the physical-key-only probe uses 60 seconds for human input.
   Terminal-focused automation no longer raises/refocuses the app before checking
-  AX focus, and missing AX focus fails closed. Thirteen offline
+  AX focus, and missing AX focus fails closed. Sixteen offline
   tests pass, including PTY execution through Bash, focus-deadline behavior,
   prompt persistence and focus-guard script generation. These changes do not
-  establish native VS Code support.
+  establish only the bounded results listed above, not complete native support.
 
 Remaining
-  Focus is observable in the tested isolated VS Code 1.144.0 process after
-  explicit native accessibility enablement. Both guarded native Up and the
-  approved physical-key comparison produced zero-byte receiver reports; the
-  physical-key observation suggests input reached Bash instead. Establish which
-  pane/process was actually receiving input and whether the receiver was alive
-  at the key event before attempting another qualification. Retain the strict
-  focus guard; action dispatch is not a byte assertion. Existing native
-  host/engine/protocol acceptance remains open.
-  Permission to attempt tests is not human acceptance of a qualification result.
+  The standalone stage is complete with an application-keypad limitation.
+  Any broader supported-profile decision must account for that mismatch;
+  forwarding application-keypad input is not qualified here. Production
+  daemon/control-transfer integration, arbitrary keys/profiles and full
+  host/engine/protocol acceptance remain open. #56 and the engine decision
+  remain open; this finding does not authorize a production fallback.

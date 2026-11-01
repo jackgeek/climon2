@@ -1,0 +1,14 @@
+{
+  "status": "FAIL",
+  "error": "native automation failed: 812:849: execution error: Owned terminal input is not focused (-2700)",
+  "native_accessibility_requested": true,
+  "input_source": "System Events",
+  "announced_stages": [
+    "cursor-normal"
+  ],
+  "ownership": {
+    "pid": 30308,
+    "marker": "CLIMON2-56-VSCODE-c56-petdng5m"
+  },
+  "launch_log_retained": "c56-petdng5m-launch.log"
+}

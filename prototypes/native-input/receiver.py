@@ -62,7 +62,8 @@ def receive(fd, expected, timeout_seconds):
     return bytes(received)
 
 
-def run(expected_tty, directory, stages=STAGES, input_timeout_seconds=8, start_file=None):
+def run(expected_tty, directory, stages=STAGES, input_timeout_seconds=8, start_file=None,
+        collect_all_stages=False):
     fd = sys.stdin.fileno()
     if not os.isatty(fd) or os.ttyname(fd) != expected_tty:
         raise RuntimeError("receiver is not on its expected test TTY")
@@ -93,8 +94,10 @@ def run(expected_tty, directory, stages=STAGES, input_timeout_seconds=8, start_f
                 "matched": matched, "received_length": len(received),
                 "matched_expected_hex": received.hex() if matched else None,
             })
-            if not matched:
+            if not matched and not collect_all_stages:
                 raise RuntimeError(f"{name}: native input did not match the expected bytes; unexpected contents not recorded")
+        if any(not stage["matched"] for stage in report["stages"]):
+            raise RuntimeError("Native input did not match in one or more stages; unexpected contents not recorded")
         report["status"] = "PASS"
     finally:
         sys.stdout.buffer.write(RESET)
@@ -112,6 +115,7 @@ def main():
     parser.add_argument("--suite", choices=["keys", "paste", "vscode", "cursor-normal"], default="keys")
     parser.add_argument("--input-timeout-seconds", type=int, default=8)
     parser.add_argument("--start-file", type=Path)
+    parser.add_argument("--collect-all-stages", action="store_true")
     args = parser.parse_args()
     if not 1 <= args.input_timeout_seconds <= 600:
         parser.error("--input-timeout-seconds must be between 1 and 600")
@@ -120,7 +124,8 @@ def main():
     expected_tty = os.ttyname(sys.stdin.fileno()) if args.expected_tty == "self" else args.expected_tty
     stages = {"keys": STAGES, "paste": PASTE_STAGES, "vscode": STAGES + PASTE_STAGES,
               "cursor-normal": STAGES[:1]}
-    run(expected_tty, args.report_dir, stages[args.suite], args.input_timeout_seconds, args.start_file)
+    run(expected_tty, args.report_dir, stages[args.suite], args.input_timeout_seconds, args.start_file,
+        args.collect_all_stages)
 
 
 if __name__ == "__main__":

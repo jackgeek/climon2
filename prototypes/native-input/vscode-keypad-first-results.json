@@ -1,0 +1,59 @@
+{
+  "status": "FAIL",
+  "error": "receiver ended before the next native stage",
+  "native_accessibility_requested": true,
+  "input_source": "System Events",
+  "announced_stages": [
+    "cursor-normal",
+    "cursor-application",
+    "cursor-handoff-normal",
+    "keypad-normal",
+    "keypad-application"
+  ],
+  "receiver": {
+    "status": "FAIL",
+    "stages": [
+      {
+        "stage": "cursor-normal",
+        "expected_hex": "1b5b41",
+        "matched": true,
+        "received_length": 3,
+        "matched_expected_hex": "1b5b41"
+      },
+      {
+        "stage": "cursor-application",
+        "expected_hex": "1b4f41",
+        "matched": true,
+        "received_length": 3,
+        "matched_expected_hex": "1b4f41"
+      },
+      {
+        "stage": "cursor-handoff-normal",
+        "expected_hex": "1b5b41",
+        "matched": true,
+        "received_length": 3,
+        "matched_expected_hex": "1b5b41"
+      },
+      {
+        "stage": "keypad-normal",
+        "expected_hex": "31",
+        "matched": true,
+        "received_length": 1,
+        "matched_expected_hex": "31"
+      },
+      {
+        "stage": "keypad-application",
+        "expected_hex": "1b4f71",
+        "matched": false,
+        "received_length": 1,
+        "matched_expected_hex": null
+      }
+    ],
+    "tty": "/dev/ttys006"
+  },
+  "ownership": {
+    "pid": 31088,
+    "marker": "CLIMON2-56-VSCODE-c56-60q1fbfs"
+  },
+  "launch_log_retained": "c56-60q1fbfs-launch.log"
+}
