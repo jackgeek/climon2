@@ -145,7 +145,7 @@ def inspect_ax_tree(pid, marker):
     """)
 
 
-def configure(root, marker, inspect_only=False, manual_focus=False):
+def configure(root, marker, inspect_only=False, manual_focus=False, human_key_probe=False):
     profile = root / "profile" / "User"
     profile.mkdir(parents=True)
     workspace = root / marker
@@ -155,12 +155,15 @@ def configure(root, marker, inspect_only=False, manual_focus=False):
     if inspect_only:
         terminal_profile = {"path": "/bin/bash", "args": ["--noprofile", "--norc"]}
     else:
-        receiver_command = shlex.join([
+        receiver_arguments = [
             sys.executable, str(Path(__file__).with_name("receiver.py")),
             "--expected-tty", "self", "--report-dir", str(reports),
-            "--suite", "vscode", "--input-timeout-seconds",
-            "600" if manual_focus else "8",
-        ])
+            "--suite", "cursor-normal" if human_key_probe else "vscode",
+            "--input-timeout-seconds", "60" if human_key_probe else "8",
+        ]
+        if manual_focus:
+            receiver_arguments.extend(["--start-file", str(root / "input-start")])
+        receiver_command = shlex.join(receiver_arguments)
         shell_command = (
             f"{receiver_command}; receiver_status=$?; "
             'printf "\\nNativeInputFixture exited with status %s\\n" "$receiver_status"; '
@@ -170,6 +173,7 @@ def configure(root, marker, inspect_only=False, manual_focus=False):
             "path": "/bin/bash",
             "args": ["--noprofile", "--norc", "-c", shell_command],
         }
+    terminal_profile["env"] = {"HISTFILE": "/dev/null", "BASH_ENV": ""}
     settings = {
         "workbench.startupEditor": "none",
         "window.restoreWindows": "none",
@@ -201,10 +205,11 @@ def wait_for_human_file(path, process, timeout, message):
 
 
 def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=False,
-        inspection_complete_file=None, native_accessibility=False):
+        inspection_complete_file=None, native_accessibility=False, human_key_probe=False):
     marker = "CLIMON2-56-VSCODE-" + root.name
     workspace, reports = configure(
         root, marker, inspect_only, manual_focus=terminal_focus_file is not None,
+        human_key_probe=human_key_probe,
     )
     with Path("/Applications/Visual Studio Code.app/Contents/Info.plist").open("rb") as source:
         version = plistlib.load(source)["CFBundleShortVersionString"]
@@ -282,7 +287,15 @@ def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=Fal
                 wait_for_human_file(
                     terminal_focus_file, process, 600, "Manual focus confirmation expired",
                 )
-            for index in range(10):
+                gui(process.pid, marker, 'return "terminal-ready"', True)
+                (root / "input-start").touch(exist_ok=False)
+            if human_key_probe:
+                print("Measurement started: press physical Up once in the owned fixture terminal.",
+                      flush=True)
+                wait_for_human_file(
+                    result_path, process, 65, "Human Up probe did not produce a receiver result",
+                )
+            for index in range(0 if human_key_probe else 10):
                 stage = wait_file(reports / f"ready-{index}.json", result_path)
                 if process.poll() is not None or result_path.exists():
                     raise RuntimeError("Owned test process ended before input")
@@ -307,6 +320,7 @@ def run(root, window_ready_file=None, terminal_focus_file=None, inspect_only=Fal
             report["host"] = version
             report["profile"] = "isolated NativeInputFixture; accessibility on, extensions disabled"
             report["native_accessibility_requested"] = native_accessibility
+            report["input_source"] = "human physical Up" if human_key_probe else "System Events"
             return report
         finally:
             if process.poll() is None:
@@ -328,7 +342,10 @@ def main():
     parser.add_argument("--inspection-complete-file", type=Path)
     parser.add_argument("--inspect-only", action="store_true")
     parser.add_argument("--native-accessibility-permission-confirmed", action="store_true")
+    parser.add_argument("--human-key-probe", action="store_true")
     args = parser.parse_args()
+    if args.human_key_probe and (args.inspect_only or args.terminal_focus_file is None):
+        parser.error("--human-key-probe requires --terminal-focus-file and not --inspect-only")
     if args.inspection_complete_file is not None and not args.inspect_only:
         parser.error("--inspection-complete-file requires --inspect-only")
     for path in (args.window_ready_file, args.terminal_focus_file, args.inspection_complete_file):
@@ -340,10 +357,12 @@ def main():
         root = Path(directory)
         try:
             report = run(root, args.window_ready_file, args.terminal_focus_file, args.inspect_only,
-                         args.inspection_complete_file, args.native_accessibility_permission_confirmed)
+                         args.inspection_complete_file, args.native_accessibility_permission_confirmed,
+                         args.human_key_probe)
         except (RuntimeError, TimeoutError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
             report = {"status": "FAIL", "error": str(error),
-                      "native_accessibility_requested": args.native_accessibility_permission_confirmed}
+                      "native_accessibility_requested": args.native_accessibility_permission_confirmed,
+                      "input_source": "human physical Up" if args.human_key_probe else "System Events"}
             report["announced_stages"] = [
                 json.loads(path.read_text())["stage"]
                 for path in sorted((root / "reports").glob("ready-*.json"))

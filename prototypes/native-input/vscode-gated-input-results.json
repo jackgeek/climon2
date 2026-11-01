@@ -1,0 +1,24 @@
+{
+  "status": "FAIL",
+  "error": "receiver ended before the next native stage",
+  "native_accessibility_requested": true,
+  "announced_stages": ["cursor-normal"],
+  "receiver": {
+    "status": "FAIL",
+    "stages": [
+      {
+        "stage": "cursor-normal",
+        "expected_hex": "1b5b41",
+        "matched": false,
+        "received_length": 0,
+        "matched_expected_hex": null
+      }
+    ],
+    "tty": "/dev/ttys006"
+  },
+  "ownership": {
+    "pid": 26391,
+    "marker": "CLIMON2-56-VSCODE-c56-kucq5q8d"
+  },
+  "launch_log_retained": "c56-kucq5q8d-launch.log"
+}

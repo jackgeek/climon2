@@ -145,6 +145,39 @@ Native accessibility opt-in: focus resolved, cursor input blocked
   and vscode-native-accessibility-retry-results.json. Temporary diagnostic
   breadcrumbs were removed. Owned process cleanup was checked after each run.
 
+Gated input measurement and physical-key comparison
+  Separated manual focus from measurement: the receiver announces its first
+  stage and waits up to 600 seconds for an unused start-file marker. After the
+  unchanged terminal-focus guard passes, the controller creates that marker;
+  the receiver then measures input for the normal eight seconds. A PTY test
+  waits past a one-second measurement deadline before release, then checks
+  absent input, partial input and a passing literal cursor-normal sequence.
+  Manual readiness no longer starts an extended input measurement.
+
+  The approved native retry completed a FAIL receiver report with zero bytes
+  for cursor-normal over the eight-second measurement. It did not reach keypad
+  or paste; no clipboard write occurred. See vscode-gated-input-results.json.
+  This narrows the prior checkpoint timeout to absent input at the receiver.
+
+  A separately approved human comparison used --human-key-probe: one
+  cursor-normal stage, no synthetic event or clipboard action, and a gated
+  60-second human-input deadline. The developer confirmed pressing physical Up.
+  The receiver again reported zero bytes; see vscode-physical-up-results.json.
+  The developer reported Bash command-history recall in response to Up. This
+  suggests a shell received the key, not the raw receiver, but neither the
+  correct pane nor receiver liveness at that exact instant was independently
+  established. Do not infer a VS Code input-support failure or physical-key
+  pass from this comparison. Fixture ownership/timing needs investigation.
+
+  That observation also exposed incomplete Bash isolation: --noprofile/--norc
+  do not prevent normal history loading. No history file was inspected by the
+  agent. The disposable profile now sets HISTFILE=/dev/null and BASH_ENV="" to
+  avoid history persistence/loading and inherited noninteractive startup files.
+  A regression using only a synthetic history file failed before this change
+  and passed after it; test-launched Bash uses the same profile environment.
+  Exact effects of earlier Bash history loading/writes remain unverified; no
+  user history was read, restored, or modified deliberately by the agent.
+
 Test seam
   Receiver includes independent expected key bytes and exact known paste
   samples, permitting only LF/CR/CRLF variants with exact UTF-8 otherwise.
@@ -159,7 +192,7 @@ Reproduction
   Offline from prototypes/native-input:
     python3 -m unittest -v
     python3 -m py_compile receiver.py vscode.py
-  Eleven PTY/profile/automation-script tests pass; syntax and diff whitespace
+  Thirteen PTY/profile/automation-script tests pass; syntax and diff whitespace
   checks pass.
   No new mutation, CRAP, duplication, release or full-workspace pass claimed.
 
@@ -200,22 +233,33 @@ Action log
   established focus and passed the existing guard. Added an opt-in adapter and
   bounded inspector; retained two native input failures and used one approved
   instrumented retry to isolate the first cursor stage. Removed breadcrumbs.
+  Separated readiness and measurement using an explicit receiver start gate;
+  verified absent/partial/matching inputs on PTY; obtained a zero-byte native
+  report and a separately approved zero-byte physical-key comparison. Retained
+  the developer's shell-history observation without publishing recalled text.
+  Isolated Bash history/startup through the profile environment and verified
+  that boundary using synthetic history only. Stopped native retries pending
+  receiver/pane ownership and timing evidence; cleaned exact gate markers.
 
 Fix and verification
   Inspection-only mode now opens a plain Bash prompt so the developer can
   inspect a live shell before the AX check. Native qualification launches the
   receiver as a Bash child and leaves Bash open afterward. Explicit manual
-  focus confirmation uses a 600-second receiver deadline; default runs retain
-  eight seconds. Terminal-focused automation no longer raises/refocuses the
-  app before checking AX focus, and missing AX focus fails closed. Eleven offline
+  focus uses a 600-second start-gate wait, followed by eight-second input
+  measurement; the physical-key-only probe uses 60 seconds for human input.
+  Terminal-focused automation no longer raises/refocuses the app before checking
+  AX focus, and missing AX focus fails closed. Thirteen offline
   tests pass, including PTY execution through Bash, focus-deadline behavior,
   prompt persistence and focus-guard script generation. These changes do not
   establish native VS Code support.
 
 Remaining
   Focus is observable in the tested isolated VS Code 1.144.0 process after
-  explicit native accessibility enablement, but the first native Up action
-  does not advance the receiver. Diagnose that input boundary separately;
-  retain the strict focus guard and do not treat action dispatch as a passing
-  byte assertion. Existing native host/engine/protocol acceptance remains open.
+  explicit native accessibility enablement. Both guarded native Up and the
+  approved physical-key comparison produced zero-byte receiver reports; the
+  physical-key observation suggests input reached Bash instead. Establish which
+  pane/process was actually receiving input and whether the receiver was alive
+  at the key event before attempting another qualification. Retain the strict
+  focus guard; action dispatch is not a byte assertion. Existing native
+  host/engine/protocol acceptance remains open.
   Permission to attempt tests is not human acceptance of a qualification result.

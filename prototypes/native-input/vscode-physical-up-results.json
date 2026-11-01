@@ -1,0 +1,24 @@
+{
+  "status": "FAIL",
+  "error": "Native input receiver failed",
+  "native_accessibility_requested": true,
+  "announced_stages": ["cursor-normal"],
+  "receiver": {
+    "status": "FAIL",
+    "stages": [
+      {
+        "stage": "cursor-normal",
+        "expected_hex": "1b5b41",
+        "matched": false,
+        "received_length": 0,
+        "matched_expected_hex": null
+      }
+    ],
+    "tty": "/dev/ttys006"
+  },
+  "ownership": {
+    "pid": 27357,
+    "marker": "CLIMON2-56-VSCODE-c56-oh8ccvi1"
+  },
+  "launch_log_retained": "c56-oh8ccvi1-launch.log"
+}

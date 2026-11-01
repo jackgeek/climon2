@@ -62,7 +62,7 @@ def receive(fd, expected, timeout_seconds):
     return bytes(received)
 
 
-def run(expected_tty, directory, stages=STAGES, input_timeout_seconds=8):
+def run(expected_tty, directory, stages=STAGES, input_timeout_seconds=8, start_file=None):
     fd = sys.stdin.fileno()
     if not os.isatty(fd) or os.ttyname(fd) != expected_tty:
         raise RuntimeError("receiver is not on its expected test TTY")
@@ -80,6 +80,12 @@ def run(expected_tty, directory, stages=STAGES, input_timeout_seconds=8):
                 "stage": name, "tty": expected_tty,
                 **({"key_code": action} if isinstance(action, int) else {"paste_text": action}),
             })
+            if index == 0 and start_file is not None:
+                deadline = time.monotonic() + 600
+                while not start_file.exists():
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Receiver start confirmation expired")
+                    time.sleep(0.02)
             received = receive(fd, variants[0], input_timeout_seconds)
             matched = received in variants
             report["stages"].append({
@@ -103,14 +109,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-tty", required=True)
     parser.add_argument("--report-dir", type=Path, required=True)
-    parser.add_argument("--suite", choices=["keys", "paste", "vscode"], default="keys")
+    parser.add_argument("--suite", choices=["keys", "paste", "vscode", "cursor-normal"], default="keys")
     parser.add_argument("--input-timeout-seconds", type=int, default=8)
+    parser.add_argument("--start-file", type=Path)
     args = parser.parse_args()
     if not 1 <= args.input_timeout_seconds <= 600:
         parser.error("--input-timeout-seconds must be between 1 and 600")
+    if args.start_file is not None and args.start_file.exists():
+        parser.error("--start-file must be unused")
     expected_tty = os.ttyname(sys.stdin.fileno()) if args.expected_tty == "self" else args.expected_tty
-    stages = {"keys": STAGES, "paste": PASTE_STAGES, "vscode": STAGES + PASTE_STAGES}
-    run(expected_tty, args.report_dir, stages[args.suite], args.input_timeout_seconds)
+    stages = {"keys": STAGES, "paste": PASTE_STAGES, "vscode": STAGES + PASTE_STAGES,
+              "cursor-normal": STAGES[:1]}
+    run(expected_tty, args.report_dir, stages[args.suite], args.input_timeout_seconds, args.start_file)
 
 
 if __name__ == "__main__":

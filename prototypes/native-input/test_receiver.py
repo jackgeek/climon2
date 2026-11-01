@@ -18,6 +18,71 @@ from vscode import configure, gui, inspect_ax_tree, run
 
 
 class ReceiverTests(unittest.TestCase):
+    def test_disposable_bash_profile_does_not_load_inherited_shell_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configure(root, "CLIMON2-56-TEST", inspect_only=True)
+            settings = json.loads((root / "profile" / "User" / "settings.json").read_text())
+            profile = settings["terminal.integrated.profiles.osx"]["NativeInputFixture"]
+            history = root / "synthetic-history"
+            history.write_text("echo SYNTHETIC-HISTORY-56\n")
+            environment = os.environ.copy()
+            environment["HISTFILE"] = str(history)
+            environment["BASH_ENV"] = ""
+            environment.update(profile.get("env", {}))
+            result = subprocess.run(
+                [profile["path"], *profile["args"], "-c", "set -o history; history -r; history"],
+                env=environment, capture_output=True, text=True, timeout=3, check=True,
+            )
+            self.assertNotIn("SYNTHETIC-HISTORY-56", result.stdout)
+
+    def test_receiver_waits_for_start_then_reports_absent_or_partial_input(self):
+        for payload in (b"", b"x", b"\x1b[A"):
+            with self.subTest(payload_length=len(payload)), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                start = root / "start"
+                master, slave = pty.openpty()
+                process = None
+                try:
+                    process = subprocess.Popen(
+                        [sys.executable, str(Path(__file__).with_name("receiver.py")),
+                         "--expected-tty", os.ttyname(slave), "--report-dir", directory,
+                         "--input-timeout-seconds", "1", "--start-file", str(start),
+                         "--suite", "cursor-normal"],
+                        stdin=slave, stdout=slave, stderr=subprocess.PIPE,
+                    )
+                    ready = root / "ready-0.json"
+                    deadline = time.monotonic() + 3
+                    while not ready.exists() and process.poll() is None:
+                        if time.monotonic() >= deadline:
+                            self.fail("Receiver did not announce readiness")
+                        time.sleep(0.02)
+                    self.assertTrue(
+                        ready.exists(),
+                        process.communicate(timeout=3)[1].decode() if process.poll() is not None else "",
+                    )
+                    time.sleep(1.2)
+                    self.assertIsNone(process.poll(), "Input deadline ran before the start gate")
+                    start.touch()
+                    if payload:
+                        os.write(master, payload)
+                    process.communicate(timeout=3)
+                    report = json.loads((root / "result.json").read_text())
+                    matched = payload == b"\x1b[A"
+                    self.assertEqual(process.returncode == 0, matched)
+                    self.assertEqual(report["status"], "PASS" if matched else "FAIL")
+                    self.assertEqual(report["stages"][0]["received_length"], len(payload))
+                    self.assertEqual(report["stages"][0]["matched"], matched)
+                    self.assertEqual(report["stages"][0]["matched_expected_hex"],
+                                     "1b5b41" if matched else None)
+                finally:
+                    if process is not None:
+                        if process.poll() is None:
+                            process.terminate()
+                        process.communicate(timeout=3)
+                    os.close(master)
+                    os.close(slave)
+
     def test_ax_query_keeps_owned_process_alive_until_post_query_confirmation(self):
         for query_error, native_accessibility in (
             (None, False), (None, True), (RuntimeError("AX query failed"), True),
@@ -184,6 +249,7 @@ class ReceiverTests(unittest.TestCase):
                 with subprocess.Popen(
                     [profile["path"], *profile["args"]],
                     stdin=slave, stdout=slave, stderr=slave,
+                    env={**os.environ, **profile["env"]},
                 ) as process:
                     time.sleep(0.2)
                     self.assertIsNone(process.poll(), "Bash prompt exited without input")
@@ -223,6 +289,7 @@ class ReceiverTests(unittest.TestCase):
                 process = subprocess.Popen(
                     [profile["path"], *profile["args"]],
                     stdin=slave, stdout=slave, stderr=slave,
+                    env={**os.environ, **profile["env"]},
                 )
                 for index, payload in enumerate(expected):
                     ready = root / "reports" / f"ready-{index}.json"
@@ -253,7 +320,8 @@ class ReceiverTests(unittest.TestCase):
             configure(root, "CLIMON2-56-TEST", manual_focus=True)
             settings = json.loads((root / "profile" / "User" / "settings.json").read_text())
             profile = settings["terminal.integrated.profiles.osx"]["NativeInputFixture"]
-            self.assertIn("--input-timeout-seconds 600", profile["args"][3])
+            self.assertIn("--input-timeout-seconds 8", profile["args"][3])
+            self.assertIn("--start-file", profile["args"][3])
 
     def test_terminal_input_guard_does_not_raise_window_before_checking_focus(self):
         with patch("vscode.script", side_effect=lambda value: value):
