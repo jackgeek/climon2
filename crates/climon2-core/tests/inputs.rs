@@ -73,7 +73,7 @@ fn issue29_help_and_version_flags_take_no_arguments() {
 }
 
 #[test]
-fn issue29_top_level_ignores_stray_depth_and_sets_only_session_vars_and_absent_term() {
+fn issue29_top_level_ignores_stray_depth_and_sets_session_vars_and_terminal_identity() {
     let id = "550e8400-e29b-41d4-a716-446655440000".parse().unwrap();
     let inherited = environment(&[
         ("CLIMON2_SESSION_DEPTH", "88"),
@@ -86,13 +86,59 @@ fn issue29_top_level_ignores_stray_depth_and_sets_only_session_vars_and_absent_t
     assert_eq!(value(&env, "CLIMON2_SESSION_ID"), id.as_str());
     assert_eq!(value(&env, "CLIMON2_SESSION_DEPTH"), "1");
     assert_eq!(value(&env, "TERM"), "xterm-256color");
+    assert_eq!(value(&env, "COLORTERM"), "truecolor");
     assert_eq!(value(&env, "TOKEN"), "literal\n日本語");
     assert_eq!(value(&env, "CLIMON2_HOME"), "unchanged");
     assert_eq!(inherited[0].1, "88");
 }
 
+/// Plan 1.17: the command's terminal identity replaces any inherited value and
+/// the client startup envelope never reaches the daemon or the command.
 #[test]
-fn issue29_nested_depth_defaults_malformed_enclosing_to_one_and_preserves_empty_term() {
+fn projected_environment_replaces_term_and_colorterm_and_drops_startup_envelope() {
+    let id = "550e8400-e29b-41d4-a716-446655440000".parse().unwrap();
+    for (term, colorterm) in [("", ""), ("dumb", "24bit"), ("xterm-256color", "truecolor")] {
+        let inherited = environment(&[
+            ("TERM", term),
+            ("A", "1"),
+            ("COLORTERM", colorterm),
+            (
+                "CLIMON2_CLIENT_STARTUP",
+                r#"{"schema":1,"operation":"kill"}"#,
+            ),
+            ("TERM", "second"),
+            ("COLORTERM", "second"),
+            ("CLIMON2_CLIENT_STARTUP", "second"),
+            ("TERM_PROGRAM", "kept"),
+            ("Z", "2"),
+        ]);
+        let env = SessionEnvironment::for_session(&id, &inherited).unwrap();
+        let keys: Vec<_> = env
+            .values
+            .iter()
+            .map(|(key, _)| key.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "A",
+                "TERM_PROGRAM",
+                "Z",
+                "CLIMON2_SESSION_ID",
+                "CLIMON2_SESSION_DEPTH",
+                "TERM",
+                "COLORTERM"
+            ],
+            "{term:?}"
+        );
+        assert_eq!(value(&env, "TERM"), "xterm-256color");
+        assert_eq!(value(&env, "COLORTERM"), "truecolor");
+        assert_eq!(value(&env, "TERM_PROGRAM"), "kept");
+    }
+}
+
+#[test]
+fn issue29_nested_depth_defaults_malformed_enclosing_to_one_and_replaces_empty_term() {
     let id = "550e8400-e29b-41d4-a716-446655440000".parse().unwrap();
     for malformed in ["", "no", "0", "-1", " 2", "+2", "4294967296"] {
         let inherited = environment(&[
@@ -102,7 +148,7 @@ fn issue29_nested_depth_defaults_malformed_enclosing_to_one_and_preserves_empty_
         ]);
         let env = SessionEnvironment::for_session(&id, &inherited).unwrap();
         assert_eq!(env.depth.get(), 2, "{malformed}");
-        assert_eq!(value(&env, "TERM"), "");
+        assert_eq!(value(&env, "TERM"), "xterm-256color");
         assert_eq!(
             env.nested_warning.as_deref(),
             Some("Starting climon2 session nested for the 1st time")

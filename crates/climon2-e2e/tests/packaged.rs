@@ -137,6 +137,9 @@ fn installed_generic_fixture_preserves_runtime_contract_and_log_privacy() {
         environment.remove("CLIMON2_SESSION_DEPTH"),
         Some(json!("1"))
     );
+    // Plan 1.17: the command's terminal identity is fixed, not inherited.
+    assert_eq!(environment.remove("COLORTERM"), Some(json!("truecolor")));
+    assert_eq!(environment["TERM"], json!("xterm-256color"));
     assert_eq!(json!(environment), report(&before)["env"]);
     for path in package.logs() {
         let log = fs::read_to_string(path).unwrap();
