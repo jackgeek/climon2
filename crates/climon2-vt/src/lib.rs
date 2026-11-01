@@ -2,5 +2,6 @@
 //! around upstream Alacritty that keeps every engine type private.
 
 mod geometry;
+pub mod token;
 
 pub use geometry::Geometry;
