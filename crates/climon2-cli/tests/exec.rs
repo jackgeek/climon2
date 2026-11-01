@@ -220,6 +220,21 @@ fn hex(value: &OsStr) -> String {
         .collect()
 }
 
+/// The only log a role wrote in a session-log directory: `<role>.log`, or
+/// `<role>-<stamp>-<pid>.log` for a per-invocation client log.
+fn role_log(directory: &std::path::Path, role: &str) -> String {
+    let paths = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            name == format!("{role}.log") || name.starts_with(&format!("{role}-"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(paths.len(), 1, "{role}: {paths:?}");
+    fs::read_to_string(&paths[0]).unwrap()
+}
+
 fn only_metadata(layout: &Layout) -> climon2_core::metadata::SessionMetadata {
     let paths = fs::read_dir(layout.home().join("sessions"))
         .unwrap()
@@ -328,7 +343,7 @@ fn packaged_exec_preserves_runtime_argv_cwd_environment_and_initial_size() {
         .join("logs")
         .join(metadata.session_id.as_str());
     for role in ["cli", "daemon", "client"] {
-        let contents = fs::read_to_string(logs.join(format!("{role}.log"))).unwrap();
+        let contents = role_log(&logs, role);
         assert!(contents.contains(&format!("role={role}")));
         assert!(!contents.contains("SECRET_VALUE"));
         assert!(!contents.contains("looks-like-option"));
@@ -765,14 +780,13 @@ fn log_filter_is_forwarded_to_companions_without_changing_command_environment() 
     terminal.send(b"\n").unwrap();
     assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
     for role in ["cli", "daemon", "client"] {
-        let log = fs::read_to_string(
-            layout
+        let log = role_log(
+            &layout
                 .home()
                 .join("logs")
-                .join(metadata.session_id.as_str())
-                .join(format!("{role}.log")),
-        )
-        .unwrap();
+                .join(metadata.session_id.as_str()),
+            role,
+        );
         assert!(!log.contains("DEBUG"), "{role}: {log}");
         assert!(!log.contains("TRACE"), "{role}: {log}");
     }

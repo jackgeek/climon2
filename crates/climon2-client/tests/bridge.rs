@@ -9,7 +9,11 @@ use std::{
     io::{Read, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::{fs::OpenOptionsExt, net::UnixListener, process::CommandExt},
+        unix::{
+            fs::{OpenOptionsExt, PermissionsExt},
+            net::UnixListener,
+            process::CommandExt,
+        },
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -476,8 +480,7 @@ fn protocol_error_lost_connection_and_panic_restore_without_terminal_sequences()
         }
         if mode == "panic" {
             assert!(error.contains("client panicked"));
-            let log =
-                fs::read_to_string(home.path().join(format!("logs/{ID}/client.log"))).unwrap();
+            let log = client_log(home.path());
             assert!(log.contains("client panic"));
             assert!(!log.contains("CLIMON2_CLIENT_FAULT_PANIC"));
         }
@@ -938,8 +941,72 @@ fn log_filter_reaches_client_through_environment_without_cli_flags() {
         let (bytes, error) = pty.finish(0);
         assert!(bytes.is_empty());
         assert!(error.is_empty());
-        let log = fs::read_to_string(home.path().join(format!("logs/{ID}/client.log"))).unwrap();
+        let log = client_log(home.path());
         assert_eq!(log.contains("DEBUG"), debug, "{log}");
         assert!(!log.contains("CLIMON2_LOG"));
+    }
+}
+
+/// The client logs in the session-log directory, keyed by file name.
+fn client_logs(home: &Path) -> Vec<(String, String)> {
+    let directory = home.join(format!("logs/{ID}"));
+    let mut logs: Vec<_> = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_name().to_str().unwrap().starts_with("client"))
+        .map(|entry| {
+            let name = entry.file_name().into_string().unwrap();
+            (name, fs::read_to_string(entry.path()).unwrap())
+        })
+        .collect();
+    logs.sort();
+    logs
+}
+
+/// The contents of the only client log.
+fn client_log(home: &Path) -> String {
+    let mut logs = client_logs(home);
+    assert_eq!(logs.len(), 1, "{logs:?}");
+    logs.remove(0).1
+}
+
+/// #25: each client invocation writes its own private log, so a second client on the
+/// same session reaches hello while the first is still attached.
+#[test]
+fn concurrent_clients_on_one_session_each_write_their_own_log() {
+    let (home, metadata, listener) = setup();
+    let mut first = Pty::spawn(home.path(), &metadata, None);
+    let mut first_stream = accept(&listener);
+    hello(&mut first_stream);
+    send(&mut first_stream, ServerMessage::Attached);
+    first.wait_raw();
+    let first_log = client_log(home.path());
+    let mut second = Pty::spawn(home.path(), &metadata, None);
+    let mut second_stream = accept(&listener);
+    hello(&mut second_stream);
+    send(&mut second_stream, ServerMessage::Attached);
+    second.wait_raw();
+    for stream in [&mut first_stream, &mut second_stream] {
+        send(stream, ServerMessage::Exit { code: 0 });
+    }
+    for pty in [&mut first, &mut second] {
+        assert_eq!(pty.finish(0), (Vec::new(), String::new()));
+    }
+    let logs = client_logs(home.path());
+    assert_eq!(logs.len(), 2, "{logs:?}");
+    assert!(logs.iter().any(|(_, text)| text.starts_with(&first_log)));
+    for pid in [first.child.id(), second.child.id()] {
+        let (name, text) = logs
+            .iter()
+            .find(|(name, _)| name.ends_with(&format!("-{pid}.log")))
+            .expect("client log named by pid");
+        let stamp = &name["client-".len()..name.len() - format!("-{pid}.log").len()];
+        assert_eq!(stamp.len(), "20261028T000000Z".len(), "{name}");
+        assert!(text.contains(&format!("role=client pid={pid} ")), "{text}");
+        let path = home.path().join(format!("logs/{ID}/{name}"));
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }

@@ -64,7 +64,8 @@ xattr -dr com.apple.quarantine climon2-0.1.0-macos-universal
 Operational failures use status 125 and identify a log file. Logs contain climon2 diagnostics,
 not terminal content, command arguments or environment values. Release logging
 defaults to INFO; `CLIMON2_LOG` accepts a tracing filter. Session logs are capped
-at 8 MiB each; inactive session logs older than seven days are pruned.
+at 8 MiB each; every client invocation writes its own session log; inactive session
+logs older than seven days are pruned.
 
 ## Development and releases
 

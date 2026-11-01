@@ -12,6 +12,13 @@ The thin binary prints one diagnostic after all terminal guards have dropped.
 `CLIMON2_HOME` and `CLIMON2_LOG` are configuration inputs from the environment;
 the command's environment is never used for internal descriptors.
 
+Every invocation writes its own session log,
+`<home>/logs/<session-id>/client-<UTC YYYYMMDDTHHMMSSZ>-<pid>.log`, created
+`0600` with `create_new` and `O_NOFOLLOW`. No client truncates, deletes, shares
+or reopens another client's log, so concurrent and later clients of one session
+never collide; a collision would be an ordinary I/O failure. Failures after the
+log exists carry the ` (logs: <session-log directory>)` suffix.
+
 Connection, hello write, and complete hello reply share one real two-second
 deadline. Peers must have the effective UID and hello must match session,
 protocol, and metadata version. Attach precedes raw mode. The event loop has
@@ -50,6 +57,7 @@ sequences are emitted. Leave policy belongs exclusively to the daemon.
 - `input_backpressure_is_bounded_and_lossless`
 - `nonexistent_socket_and_bad_metadata_fail_without_touching_termios`
 - `log_filter_reaches_client_through_environment_without_cli_flags`
+- `concurrent_clients_on_one_session_each_write_their_own_log`
 
 The panic injection `CLIMON2_CLIENT_FAULT=panic` exists only with `test-hooks`.
 The panic hook logs a static event, never payloads, argv or environment values.

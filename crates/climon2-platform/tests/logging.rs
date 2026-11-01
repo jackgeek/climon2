@@ -1,6 +1,11 @@
 use climon2_core::SessionId;
-use climon2_platform::logging::{LogFile, Role, prune, timestamp};
-use std::{fs, io::Write, os::unix::fs::PermissionsExt, time::SystemTime};
+use climon2_platform::logging::{LogFile, Role, client_log_name, prune, timestamp};
+use std::{
+    fs,
+    io::Write,
+    os::unix::fs::PermissionsExt,
+    time::{Duration, SystemTime},
+};
 
 fn id() -> SessionId {
     "12345678-1234-4234-8234-123456789abc".parse().unwrap()
@@ -25,6 +30,14 @@ fn diagnostic_roles_have_private_files_and_required_headers() {
             0o600
         );
     }
+    let names = [&cli, &daemon, &client].map(|log| log.path().file_name().unwrap().to_owned());
+    assert_eq!(names[..2], ["cli.log", "daemon.log"]);
+    let client_name = names[2].to_str().unwrap();
+    assert!(client_name.starts_with("client-"), "{client_name}");
+    assert!(
+        client_name.ends_with(&format!("Z-{}.log", std::process::id())),
+        "{client_name}"
+    );
     let text = fs::read_to_string(cli.path()).unwrap();
     assert!(text.contains(general.path().to_str().unwrap()));
     assert!(
@@ -60,6 +73,16 @@ fn session_role_log_is_never_reopened() {
         .expect("second daemon log");
     assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
     assert_eq!(fs::read_to_string(first.path()).unwrap(), before);
+}
+
+/// #25: each client invocation's log is named by its UTC second and its pid.
+#[test]
+fn client_log_name_is_the_utc_second_and_pid() {
+    let at = SystemTime::UNIX_EPOCH + Duration::from_millis(1_793_232_245_678);
+    assert_eq!(
+        client_log_name(at, 4242).unwrap(),
+        "client-20261029T000405Z-4242.log"
+    );
 }
 
 /// #25: prune only old non-live session logs and old general logs, never metadata.

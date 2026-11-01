@@ -427,7 +427,18 @@ fn installed_log_headers_links_and_filters_survive_exec_handoffs() {
             .join(metadata.session_id.to_string());
         let cli = fs::read_to_string(directory.join("cli.log")).unwrap();
         let daemon = fs::read_to_string(directory.join("daemon.log")).unwrap();
-        let client = fs::read_to_string(directory.join("client.log")).unwrap();
+        let clients: Vec<_> = fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.starts_with("client"))
+            .collect();
+        assert_eq!(clients.len(), 1, "{clients:?}");
+        assert!(clients[0].starts_with("client-"), "{clients:?}");
+        assert!(
+            clients[0].ends_with(&format!("Z-{client_pid}.log")),
+            "{clients:?}"
+        );
+        let client = fs::read_to_string(directory.join(&clients[0])).unwrap();
         for (role, pid, log) in [
             ("cli", client_pid.to_string(), &cli),
             ("client", client_pid.to_string(), &client),
@@ -813,7 +824,7 @@ fn debug_hook_client_panic_after_exec_logs_and_uses_daemon_leave_policy() {
     drop(terminal);
     package.assert_clean();
     assert!(package.logs().iter().any(|path| {
-        path.file_name().unwrap() == "client.log"
-            && fs::read_to_string(path).unwrap().contains("client panic")
+        let name = path.file_name().unwrap().to_str().unwrap();
+        name.starts_with("client-") && fs::read_to_string(path).unwrap().contains("client panic")
     }));
 }

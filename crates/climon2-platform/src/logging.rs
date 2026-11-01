@@ -47,6 +47,26 @@ pub fn timestamp() -> io::Result<Timestamp> {
     text.parse().map_err(io::Error::other)
 }
 
+fn file_stamp(at: SystemTime) -> io::Result<String> {
+    OffsetDateTime::from(at)
+        .format(format_description!(
+            "[year][month][day]T[hour][minute][second]Z"
+        ))
+        .map_err(io::Error::other)
+}
+
+/// Every client invocation gets its own log; a name collision is an ordinary failure.
+pub fn client_log_name(at: SystemTime, pid: u32) -> io::Result<String> {
+    Ok(format!("client-{}-{pid}.log", file_stamp(at)?))
+}
+
+fn session_log_name(role: Role) -> io::Result<String> {
+    match role {
+        Role::Client => client_log_name(SystemTime::now(), std::process::id()),
+        Role::Cli | Role::Daemon => Ok(format!("{}.log", role.name())),
+    }
+}
+
 impl LogFile {
     fn open(directory: &Path, name: &str, role: &str) -> io::Result<Self> {
         crate::runtime::private_directory(directory)?;
@@ -70,11 +90,7 @@ impl LogFile {
 
     pub fn general(home: &Path) -> io::Result<Self> {
         crate::runtime::private_directory(&home.join("logs"))?;
-        let stamp = OffsetDateTime::now_utc()
-            .format(format_description!(
-                "[year][month][day]T[hour][minute][second]Z"
-            ))
-            .map_err(io::Error::other)?;
+        let stamp = file_stamp(SystemTime::now())?;
         Self::open(
             &home.join("logs/general"),
             &format!("{stamp}-{}.log", std::process::id()),
@@ -90,14 +106,14 @@ impl LogFile {
         previous: Option<&Path>,
     ) -> io::Result<Self> {
         crate::runtime::private_directory(&home.join("logs"))?;
-        let mut log = Self::open(
-            &home.join("logs").join(id.as_str()),
-            &format!("{}.log", role.name()),
-            role.name(),
-        )?;
+        let mut log = Self::session_file(&home.join("logs").join(id.as_str()), role)?;
         writeln!(log.writer, "session_id={id}")?;
         log.links(cli_pid, previous)?;
         Ok(log)
+    }
+
+    fn session_file(directory: &Path, role: Role) -> io::Result<Self> {
+        Self::open(directory, &session_log_name(role)?, role.name())
     }
 
     fn links(&mut self, cli_pid: Option<u32>, previous: Option<&Path>) -> io::Result<()> {
