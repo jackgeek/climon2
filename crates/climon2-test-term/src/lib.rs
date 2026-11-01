@@ -6,5 +6,5 @@ mod shell;
 mod terminal;
 
 pub use isolation::{Isolation, bin_path};
-pub use shell::bash_profiles;
+pub use shell::controlled_bash;
 pub use terminal::Terminal;

@@ -2,7 +2,7 @@
 
 mod support;
 
-use climon2_test_term::{Terminal, bash_profiles};
+use climon2_test_term::{Terminal, controlled_bash};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 use support::{Package, TIMEOUT, quote};
@@ -12,31 +12,32 @@ use support::{Package, TIMEOUT, quote};
 /// session, the command's status reaches the outer shell, then nothing survives.
 #[test]
 fn installer_built_bash_smoke_lists_one_session_and_preserves_exit_seven() {
-    for bash in bash_profiles() {
-        let package = Package::new();
-        let mut command = package.bash(&bash);
-        command.env("PS1", "OUTER> ");
-        let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
-        terminal.wait_for_text("OUTER> ", TIMEOUT).unwrap();
-        terminal
-            .send(format!(
-                "PS1='INNER> ' climon2 exec {} --noprofile --norc -i; status=$?; printf '\\nOUTER-STATUS=%s\\n' \"$status\"; exit \"$status\"\n",
-                quote(&bash)
-            ))
-            .unwrap();
-        terminal.send("echo $((6*7))-ok\n").unwrap();
-        terminal.wait_for_text("42-ok", TIMEOUT).unwrap();
-        let sessions = package.list();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0]["depth"], 1);
-        terminal.send("exit 7\n").unwrap();
-        assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 7);
-        terminal.wait_for_text("OUTER-STATUS=7", TIMEOUT).unwrap();
-        drop(terminal);
-        assert!(package.list().is_empty());
-        package.assert_clean();
-        package.assert_archive_default_levels();
-    }
+    let Some(bash) = controlled_bash() else {
+        return;
+    };
+    let package = Package::new();
+    let mut command = package.bash(&bash);
+    command.env("PS1", "OUTER> ");
+    let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
+    terminal.wait_for_text("OUTER> ", TIMEOUT).unwrap();
+    terminal
+        .send(format!(
+            "PS1='INNER> ' climon2 exec {} --noprofile --norc -i; status=$?; printf '\\nOUTER-STATUS=%s\\n' \"$status\"; exit \"$status\"\n",
+            quote(&bash)
+        ))
+        .unwrap();
+    terminal.send("echo $((6*7))-ok\n").unwrap();
+    terminal.wait_for_text("42-ok", TIMEOUT).unwrap();
+    let sessions = package.list();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0]["depth"], 1);
+    terminal.send("exit 7\n").unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 7);
+    terminal.wait_for_text("OUTER-STATUS=7", TIMEOUT).unwrap();
+    drop(terminal);
+    assert!(package.list().is_empty());
+    package.assert_clean();
+    package.assert_archive_default_levels();
 }
 
 fn launch(package: &Package, program: &str, args: &[&str]) -> Terminal {
@@ -44,6 +45,14 @@ fn launch(package: &Package, program: &str, args: &[&str]) -> Terminal {
     command.args(["exec", program]);
     command.args(args);
     Terminal::spawn(command, 30, 120).unwrap()
+}
+
+fn launch_bash(package: &Package, bash: &Path) -> Terminal {
+    launch(
+        package,
+        bash.to_str().unwrap(),
+        &["--noprofile", "--norc", "-i"],
+    )
 }
 
 fn report(path: &Path) -> Value {
@@ -147,46 +156,47 @@ fn installed_generic_fixture_preserves_runtime_contract_and_log_privacy() {
 /// command's status returns through its own version-matched client.
 #[test]
 fn installed_nested_bash_sessions_are_both_listed_and_route_exit_status() {
-    for bash in bash_profiles() {
-        let package = Package::new();
-        let mut command = package.command("climon2");
-        command.args(["exec"]);
-        command.arg(&bash);
-        command.args(["--noprofile", "--norc", "-i"]);
-        command.env("PS1", "ENCLOSING> ");
-        let mut terminal = Terminal::spawn(command, 30, 160).unwrap();
-        terminal.wait_for_text("ENCLOSING> ", TIMEOUT).unwrap();
-        terminal
-            .send(format!(
-                "climon2 exec {} --noprofile --norc -i; s=$?; printf '\\nNESTED-STATUS=%s\\n' \"$s\"\n",
-                quote(&bash)
-            ))
-            .unwrap();
-        terminal
-            .wait_for_text("Starting climon2 session nested for the 1st time", TIMEOUT)
-            .unwrap();
-        terminal
-            .send("echo depth:$CLIMON2_SESSION_DEPTH\n")
-            .unwrap();
-        terminal.wait_for_text("depth:2", TIMEOUT).unwrap();
-        let sessions = package.list();
-        assert_eq!(sessions.len(), 2);
-        assert_ne!(sessions[0]["session_id"], sessions[1]["session_id"]);
-        let mut depths: Vec<_> = sessions
-            .iter()
-            .map(|session| session["depth"].clone())
-            .collect();
-        depths.sort_by_key(|depth| depth.as_u64().unwrap());
-        assert_eq!(depths, [json!(1), json!(2)]);
-        terminal.send("exit 7\n").unwrap();
-        terminal.wait_for_text("NESTED-STATUS=7", TIMEOUT).unwrap();
-        assert_eq!(package.list().len(), 1);
-        terminal.send("exit 9\n").unwrap();
-        assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 9);
-        drop(terminal);
-        assert!(package.list().is_empty());
-        package.assert_clean();
-    }
+    let Some(bash) = controlled_bash() else {
+        return;
+    };
+    let package = Package::new();
+    let mut command = package.command("climon2");
+    command.args(["exec"]);
+    command.arg(&bash);
+    command.args(["--noprofile", "--norc", "-i"]);
+    command.env("PS1", "ENCLOSING> ");
+    let mut terminal = Terminal::spawn(command, 30, 160).unwrap();
+    terminal.wait_for_text("ENCLOSING> ", TIMEOUT).unwrap();
+    terminal
+        .send(format!(
+            "climon2 exec {} --noprofile --norc -i; s=$?; printf '\\nNESTED-STATUS=%s\\n' \"$s\"\n",
+            quote(&bash)
+        ))
+        .unwrap();
+    terminal
+        .wait_for_text("Starting climon2 session nested for the 1st time", TIMEOUT)
+        .unwrap();
+    terminal
+        .send("echo depth:$CLIMON2_SESSION_DEPTH\n")
+        .unwrap();
+    terminal.wait_for_text("depth:2", TIMEOUT).unwrap();
+    let sessions = package.list();
+    assert_eq!(sessions.len(), 2);
+    assert_ne!(sessions[0]["session_id"], sessions[1]["session_id"]);
+    let mut depths: Vec<_> = sessions
+        .iter()
+        .map(|session| session["depth"].clone())
+        .collect();
+    depths.sort_by_key(|depth| depth.as_u64().unwrap());
+    assert_eq!(depths, [json!(1), json!(2)]);
+    terminal.send("exit 7\n").unwrap();
+    terminal.wait_for_text("NESTED-STATUS=7", TIMEOUT).unwrap();
+    assert_eq!(package.list().len(), 1);
+    terminal.send("exit 9\n").unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 9);
+    drop(terminal);
+    assert!(package.list().is_empty());
+    package.assert_clean();
 }
 
 /// #16/#20/#38: alternate screen, automatic cursor query replies, SGR mouse,
@@ -460,8 +470,11 @@ fn installed_session_survives_raw_socket_abuse_and_pending_hello() {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
 
+    let Some(bash) = controlled_bash() else {
+        return;
+    };
     let package = Package::new();
-    let mut terminal = launch(&package, "/bin/bash", &["--noprofile", "--norc", "-i"]);
+    let mut terminal = launch_bash(&package, &bash);
     terminal.send("echo $((40+2))-raw\n").unwrap();
     terminal.wait_for_text("42-raw", TIMEOUT).unwrap();
     let metadata = package.metadata();
@@ -509,8 +522,11 @@ fn actual_previous_release_remains_live_across_current_archive_install() {
         eprintln!("first-release gate: no previous archive supplied; no compatibility fabricated");
         return;
     };
+    let Some(bash) = controlled_bash() else {
+        return;
+    };
     let start = || {
-        let mut terminal = launch(&package, "/bin/bash", &["--noprofile", "--norc", "-i"]);
+        let mut terminal = launch_bash(&package, &bash);
         terminal.send("echo $((6*7))-upgrade-ready\n").unwrap();
         terminal.wait_for_text("42-upgrade-ready", TIMEOUT).unwrap();
         terminal
@@ -596,10 +612,13 @@ fn debug_hook_mid_install_crash_recovers_without_stranding_live_client() {
     if std::env::var_os("CLIMON2_E2E_ARCHIVE").is_some() {
         return;
     }
+    let Some(bash) = controlled_bash() else {
+        return;
+    };
     let package = Package::private();
     let installer = package.executable_home().join("install");
     fs::copy(climon2_test_term::bin_path("climon2-install"), &installer).unwrap();
-    let mut terminal = launch(&package, "/bin/bash", &["--noprofile", "--norc", "-i"]);
+    let mut terminal = launch_bash(&package, &bash);
     terminal.send("echo $((6*7))-install-ready\n").unwrap();
     terminal.wait_for_text("42-install-ready", TIMEOUT).unwrap();
     let session = package.metadata().session_id.to_string();
@@ -677,6 +696,9 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
     if std::env::var_os("CLIMON2_E2E_ARCHIVE").is_some() {
         return;
     }
+    let Some(bash) = controlled_bash() else {
+        return;
+    };
     let package = Package::private();
     let old_version = env!("CARGO_PKG_VERSION");
     let old_folder = package.executable_home().join(old_version);
@@ -688,7 +710,9 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
     );
     let start = || {
         let mut command = package.command("climon2");
-        command.args(["exec", "/bin/bash", "--noprofile", "--norc", "-i"]);
+        command.arg("exec");
+        command.arg(&bash);
+        command.args(["--noprofile", "--norc", "-i"]);
         command.env("CLIMON2_LOG", "warn");
         let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
         terminal.send("echo $((6*7))-version-ready\n").unwrap();

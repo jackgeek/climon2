@@ -1,0 +1,19 @@
+name: Select controlled bash 5
+description: >
+  Install Homebrew GNU bash 5.x and export it as CLIMON2_TEST_BASH. Interactive
+  tests are qualified on bash 5.x only; macOS /bin/bash (3.2) is never selected.
+runs:
+  using: composite
+  steps:
+    - name: Select controlled bash 5
+      shell: bash
+      run: |
+        brew list bash >/dev/null 2>&1 || brew install bash
+        bash_path="$(brew --prefix bash)/bin/bash"
+        test -x "$bash_path"
+        actual="$("$bash_path" --version)"
+        case "$actual" in
+          "GNU bash, version 5."*) ;;
+          *) echo "::error::Expected GNU bash 5.x at $bash_path, found $actual"; exit 1 ;;
+        esac
+        echo "CLIMON2_TEST_BASH=$bash_path" >> "$GITHUB_ENV"

@@ -15,12 +15,11 @@ permissions:
 
 jobs:
   macos:
-    name: ${{ matrix.runner }} / bash ${{ matrix.bash }}
+    name: ${{ matrix.runner }} / bash 5
     strategy:
       fail-fast: false
       matrix:
         runner: [macos-15, macos-15-intel]
-        bash: ["3.2", "5"]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -37,23 +36,7 @@ jobs:
         run: rustup show active-toolchain
       - name: Install ShellCheck
         run: brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
-      - name: Select required bash
-        env:
-          BASH_PROFILE: ${{ matrix.bash }}
-        run: |
-          if [[ "$BASH_PROFILE" == "3.2" ]]; then
-            bash_path=/bin/bash
-          else
-            brew list bash >/dev/null 2>&1 || brew install bash
-            bash_path="$(brew --prefix bash)/bin/bash"
-          fi
-          test -x "$bash_path"
-          actual="$("$bash_path" --version)"
-          case "$actual" in
-            "GNU bash, version $BASH_PROFILE".*) ;;
-            *) echo "::error::Expected bash $BASH_PROFILE, found $actual"; exit 1 ;;
-          esac
-          echo "CLIMON2_TEST_BASH=$bash_path" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/controlled-bash
       - name: Run formatting, lint and real-terminal tests
         run: cargo xtask test
   neutral:
@@ -76,7 +59,6 @@ jobs:
     name: Coverage and isolated mutation checks
     runs-on: macos-15
     env:
-      CLIMON2_TEST_BASH: /bin/bash
       CARGO_TARGET_DIR: target/quality-run
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +73,7 @@ jobs:
         run: |
           test "$(uname -m)" = arm64
           brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
+      - uses: ./.github/actions/controlled-bash
       - name: Select the changed-source mutation base (fixture history is checked independently)
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -134,13 +117,12 @@ jobs:
           path: target/dist/*
           if-no-files-found: error
   archive:
-    name: Final archive / ${{ matrix.runner }} / bash ${{ matrix.bash }}
+    name: Final archive / ${{ matrix.runner }} / bash 5
     needs: dist
     strategy:
       fail-fast: false
       matrix:
         runner: [macos-15, macos-15-intel]
-        bash: ["3.2", "5"]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -148,23 +130,14 @@ jobs:
         with:
           name: release-dist
           path: target/dist
-      - name: Require the advertised architecture and shell
+      - name: Require the advertised architecture
         env:
           RUNNER_LABEL: ${{ matrix.runner }}
-          BASH_PROFILE: ${{ matrix.bash }}
         run: |
           expected=arm64
           if [[ "$RUNNER_LABEL" == macos-15-intel ]]; then expected=x86_64; fi
           test "$(uname -m)" = "$expected"
-          if [[ "$BASH_PROFILE" == 3.2 ]]; then
-            bash_path=/bin/bash
-          else
-            brew list bash >/dev/null 2>&1 || brew install bash
-            bash_path="$(brew --prefix bash)/bin/bash"
-          fi
-          actual="$("$bash_path" --version)"
-          case "$actual" in "GNU bash, version $BASH_PROFILE".*) ;; *) exit 1 ;; esac
-          echo "CLIMON2_TEST_BASH=$bash_path" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/controlled-bash
       - name: Verify the exact downloaded artifact
         run: |
           cd target/dist

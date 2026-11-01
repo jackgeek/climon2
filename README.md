@@ -76,10 +76,13 @@ cargo xtask check --mutate-all
 cargo xtask dist
 ```
 
-Install ShellCheck before `xtask check`. Full tests need controlled bash 3.2 and
-5.x, vim and less. `CLIMON2_TEST_BASH` selects one required shell; missing shells
-fail in CI. Linux and Windows run only neutral contracts (Linux also tests the
-Unix launcher), not the macOS product.
+Install ShellCheck before `xtask check`. Full tests need GNU bash 5.x, vim and
+less. Interactive shells are qualified on bash 5.x only: tests use
+`CLIMON2_TEST_BASH`, else `/opt/homebrew/bin/bash`, else `/usr/local/bin/bash`,
+never macOS `/bin/bash` (3.2). A missing bash 5 fails in CI and is a reported
+local skip. `install.sh` stays compatible with, and is tested under, `/bin/bash`
+3.2. Linux and Windows run only neutral contracts (Linux also tests the Unix
+launcher), not the macOS product.
 
 `xtask check` runs formatting, strict clippy, unit/integration/installer-built
 packaged tests, ShellCheck, append-only metadata fixtures, instrumentation and
@@ -93,7 +96,7 @@ It writes the universal archive, version-stamped `install.sh` and `SHA256SUMS`
 to `target/dist/`. Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
 
 A `v<workspace version>` tag runs full mutation and all gates. The same final
-archive must pass both architectures and bash profiles, including vim and less,
+archive must pass both architectures under bash 5, including vim and less,
 before a non-draft GitHub Release and provenance attestation are published.
 `-rc.N` tags are prereleases. Starting with the second published release, actual
 previous-release compatibility is mandatory; the first release invents none.

@@ -18,9 +18,13 @@ data homes and mutable installation scenarios never share state. Cleared child
 environments preserve only the harness controls and inherited
 `LLVM_PROFILE_FILE`, including for the installed instrumented executables.
 
-`bash_profiles` selects macOS bash 3.2 and Homebrew bash 5. Missing profiles fail
-CI and are explicitly reported locally. `CLIMON2_TEST_BASH` selects one existing
-profile for a matrix job. Vim and less are the actual `/usr/bin` applications.
+Interactive shells are GNU bash 5.x only. `controlled_bash` uses
+`CLIMON2_TEST_BASH`, else `/opt/homebrew/bin/bash`, else `/usr/local/bin/bash`,
+and never macOS `/bin/bash`; anything other than bash 5.x is rejected. A missing
+bash 5 fails CI and is explicitly reported as a local skip. `/bin/bash` remains
+only for non-interactive `-c` helpers and fixture scripts; `install.sh`
+compatibility with `/bin/bash` 3.2 is tested in `xtask/tests/install_script.rs`.
+Vim and less are the actual `/usr/bin` applications.
 
 ## Exact final archive
 
@@ -105,9 +109,9 @@ would not prove ownership, so no vacuous architecture test is claimed.
 
 ## Validation and remaining release evidence
 
-The local development run covers bash 3.2; Homebrew bash 5 was explicitly missing.
-The full architecture/bash matrix, exact final universal archive execution and
-actual prior-release branch require their CI/release inputs. A successful debug
+Local development runs use bash 5 (`CLIMON2_TEST_BASH`, Homebrew or
+`/usr/local`). The full architecture matrix, exact final universal archive
+execution and actual prior-release branch require their CI/release inputs. A successful debug
 run is not evidence that those release gates passed. Packaged slow-reader,
 unsafe-runtime and empty-readiness scenarios are not newly claimed here; their
 preceding public-boundary evidence above remains required.
