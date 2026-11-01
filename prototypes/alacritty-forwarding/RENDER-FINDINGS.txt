@@ -98,3 +98,27 @@ Action log
   fresh dependency provenance without rewriting earlier failures or approvals.
   The developer explicitly accepted publication of this bounded rendering
   stage with the listed remaining control-state/native/delivery gaps.
+
+Saved-cursor/text-attribute continuation
+  A focused independent regression failed before the change: subsequent X
+  used default foreground instead of the current blue pen. The original
+  serializer reset the pen and did not serialize the saved cursor/template.
+  Added current/saved position and template observations to View, directly
+  from the active grid's public fields. Frames establish the saved position
+  and pen, emit DECSC, then establish the current position and pen.
+  No hidden-grid access or engine mutation is needed.
+  The independent test now passes on normal and alternate screens: X at row 1
+  column 2 is blue/nonbold; DECRC then Z at row 3 column 4 is red/bold; final
+  cursor is row 3 column 5. The observed source remains unchanged.
+  View equality now also checks both templates/saved position in existing
+  differential tests, strengthening preservation assertions.
+  Six rendering tests and 33 runtime tests total pass; complete surface,
+  formatting, Clippy and whitespace checks pass. Results are retained in
+  render-pen-results.txt. No dependency changes in this continuation.
+  This establishes basic saved/current pen-position fidelity at attachment,
+  not all DECSC state: charset/origin/wrap and pending-wrap semantics, extended
+  styles/palette/cursor style, native per-screen saved-attribute behavior and
+  production delivery remain unproven. The preceding limitations describe
+  the original checkpoint; this subsection supersedes only its missing basic
+  saved-pen/position evidence, not the wider fidelity boundaries.
+  The developer explicitly accepted publication of this bounded follow-up.

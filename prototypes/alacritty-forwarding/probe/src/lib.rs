@@ -22,6 +22,9 @@ pub struct View {
     pub rows: Vec<Vec<Cell>>,
     pub history_rows: usize,
     pub cursor: (i32, usize),
+    pub cursor_pen: Cell,
+    pub saved_cursor: (i32, usize),
+    pub saved_pen: Cell,
     pub mode: TermMode,
 }
 
@@ -46,6 +49,12 @@ pub fn view<T>(term: &Term<T>) -> View {
             .collect(),
         history_rows: grid.history_size(),
         cursor: (grid.cursor.point.line.0, grid.cursor.point.column.0),
+        cursor_pen: grid.cursor.template.clone(),
+        saved_cursor: (
+            grid.saved_cursor.point.line.0,
+            grid.saved_cursor.point.column.0,
+        ),
+        saved_pen: grid.saved_cursor.template.clone(),
         mode: *term.mode(),
     }
 }

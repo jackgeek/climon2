@@ -150,3 +150,30 @@ fn reflow_restore_retains_soft_wrap_and_repaint_clears_stale_cells() {
     assert!(host.screen().bracketed_paste());
     assert!(host.screen().hide_cursor());
 }
+
+#[test]
+fn attachment_preserves_current_pen_and_saved_cursor_pen_on_each_screen() {
+    for alternate in [false, true] {
+        let mut term = Term::new(Config::default(), &TermSize::new(10, 3), VoidListener);
+        let mut parser: Processor = Processor::new();
+        if alternate {
+            parser.advance(&mut term, b"\x1b[?1049h");
+        }
+        parser.advance(&mut term, b"\x1b[3;4H\x1b[31;1m\x1b7\x1b[1;2H\x1b[0;34m");
+        let before = view(&term);
+        let mut host = host();
+        host.process(&restore(&term));
+        assert_eq!(view(&term), before);
+        host.process(b"X");
+        assert_eq!(rows(&host), [" X", "", ""]);
+        let current = host.screen().cell(0, 1).unwrap();
+        assert_eq!(current.fgcolor(), vt100::Color::Idx(4));
+        assert!(!current.bold());
+        host.process(b"\x1b8Z");
+        assert_eq!(rows(&host), [" X", "", "   Z"]);
+        let saved = host.screen().cell(2, 3).unwrap();
+        assert_eq!(saved.fgcolor(), vt100::Color::Idx(1));
+        assert!(saved.bold());
+        assert_eq!(host.screen().cursor_position(), (2, 4));
+    }
+}

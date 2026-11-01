@@ -73,15 +73,9 @@ impl Writer {
             }
             continued = self.row(row);
         }
-        self.out.extend(b"\x1b[0m");
-        self.style = Some(Style::of(&Cell::default()));
-        write!(
-            self.out,
-            "\x1b[{};{}H",
-            frame.cursor.0 + 1,
-            frame.cursor.1 + 1
-        )
-        .unwrap();
+        self.cursor(frame.saved_cursor, &frame.saved_pen);
+        self.out.extend(b"\x1b7");
+        self.cursor(frame.cursor, &frame.cursor_pen);
         for (mode, enabled, disabled) in [
             (
                 TermMode::SHOW_CURSOR,
@@ -97,6 +91,11 @@ impl Writer {
                 disabled
             });
         }
+    }
+
+    fn cursor(&mut self, point: (i32, usize), pen: &Cell) {
+        write!(self.out, "\x1b[{};{}H", point.0 + 1, point.1 + 1).unwrap();
+        self.pen(Style::of(pen));
     }
 
     fn row(&mut self, row: &[Cell]) -> bool {
