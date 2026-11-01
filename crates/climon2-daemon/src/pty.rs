@@ -76,6 +76,8 @@ impl Pty {
         if crate::startup::selected_fault("pty-write") {
             return Err(super::io_error("controlled PTY write fault"));
         }
+        #[cfg(feature = "test-hooks")]
+        let bytes = trickle(bytes);
         self.writer.as_mut().expect("live PTY writer").write(bytes)
     }
     /// Waits at most `timeout` for output (or hangup) without reading it.
@@ -411,4 +413,14 @@ fn confirmation(bytes: &[u8], eof: bool) -> io::Result<Option<u8>> {
         (_, [0, code @ (126 | 127)]) => Ok(Some(*code)),
         _ => Err(super::io_error("invalid command confirmation")),
     }
+}
+
+/// The `pty-write-partial` fault: every PTY write takes one byte, slowly.
+#[cfg(feature = "test-hooks")]
+fn trickle(bytes: &[u8]) -> &[u8] {
+    if !crate::startup::selected_fault("pty-write-partial") {
+        return bytes;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    &bytes[..bytes.len().min(1)]
 }

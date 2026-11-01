@@ -950,7 +950,121 @@ fn takeover_revokes_with_release_and_exit_leaves_the_alternate_screen() {
         .position(|bytes| bytes == b"INPUT-ACCEPTED")
         .unwrap();
     assert_eq!(count(&output[accepted..], b"\x1b[?1049l"), 1);
+    let (observed, result) = until_terminal(&mut second);
+    assert_eq!(result, ServerMessage::Exit { code: 42 });
+    assert!(observed.is_empty(), "{observed:?}");
     session.finish();
+}
+
+fn wait_contents(path: &Path, done: impl Fn(&[u8]) -> bool) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let contents = fs::read(path).unwrap_or_default();
+        if done(&contents) {
+            return contents;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{} stayed {:?}",
+            path.display(),
+            String::from_utf8_lossy(&contents)
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn wait_line(session: &Session, line: &str) {
+    let path = session.directory.path().join("lines");
+    wait_contents(&path, |contents| {
+        String::from_utf8_lossy(contents)
+            .lines()
+            .any(|seen| seen == line)
+    });
+}
+
+/// Section 1.5/1.6: the controller's size drives the PTY; a non-controller's
+/// resize is only remembered; input from a non-controller or from a controller
+/// before its `Ready` is dropped; and hand-back applies the remaining size.
+#[test]
+fn the_controller_drives_the_size_and_input_outside_its_period_is_dropped() {
+    let mut session = Session::start("lines");
+    let mut first = session.attach();
+    session.wait_marker(&mut first);
+    send(&mut first, ClientMessage::Input(b"a1\n".to_vec()));
+    wait_line(&session, "a1 91x37");
+
+    let mut second = attach_at(&session, TerminalSize { cols: 80, rows: 24 });
+    let (released, revoked) = until_terminal(&mut first);
+    assert_eq!(revoked, ServerMessage::Revoked);
+    assert!(released.ends_with(&climon2_vt::Presentation::new(91, 37).release()));
+    send(&mut first, ClientMessage::Input(b"stale\n".to_vec()));
+    let resized = TerminalSize {
+        cols: 100,
+        rows: 30,
+    };
+    send(&mut first, ClientMessage::Resize(resized));
+    let (period, _) = restoration(&mut second);
+    send(&mut second, ClientMessage::Ready { period });
+    send(&mut second, ClientMessage::Input(b"b1\n".to_vec()));
+    wait_line(&session, "b1 80x24");
+
+    send(&mut first, ClientMessage::TakeControl);
+    let (_, revoked) = until_terminal(&mut second);
+    assert_eq!(revoked, ServerMessage::Revoked);
+    let (period, _) = restoration(&mut first);
+    send(&mut first, ClientMessage::Input(b"early\n".to_vec()));
+    send(&mut first, ClientMessage::Ready { period });
+    send(&mut first, ClientMessage::Input(b"a2\n".to_vec()));
+    wait_line(&session, "a2 100x30");
+
+    send(&mut first, ClientMessage::Detach);
+    let (_, detached) = until_terminal(&mut first);
+    assert_eq!(detached, ServerMessage::Detached);
+    let (period, _) = restoration(&mut second);
+    send(&mut second, ClientMessage::Ready { period });
+    send(&mut second, ClientMessage::Input(b"b2\nend\n".to_vec()));
+    let (_, result) = until_terminal(&mut second);
+    assert_eq!(result, ServerMessage::Exit { code: 0 });
+    session.finish();
+    assert_eq!(
+        fs::read_to_string(session.directory.path().join("lines")).unwrap(),
+        "a1 91x37\nb1 80x24\na2 100x30\nb2 80x24\n"
+    );
+}
+
+/// Section 1.5 paste cleanup: a paste cut short by revocation is closed with
+/// exactly the closing marker, written whole across one-byte PTY writes,
+/// before the next controller's input.
+#[test]
+fn a_revoked_paste_is_closed_before_the_next_controllers_input() {
+    let mut session = Session::configured("paste-record", |command, _| {
+        command.env("CLIMON2_DAEMON_FAULT", "pty-write-partial");
+    });
+    let mut first = session.attach();
+    session.wait_marker(&mut first);
+    let mut paste = b"\x1b[200~".to_vec();
+    paste.extend([b'p'; 400]);
+    send(&mut first, ClientMessage::Input(paste));
+    let path = session.directory.path().join("pasted");
+    wait_contents(&path, |contents| contents.len() >= 8);
+
+    let mut second = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
+    let (_, revoked) = until_terminal(&mut first);
+    assert_eq!(revoked, ServerMessage::Revoked);
+    let (period, _) = restoration(&mut second);
+    send(&mut second, ClientMessage::Ready { period });
+    send(&mut second, ClientMessage::Input(b"after-END".to_vec()));
+    let (_, result) = until_terminal(&mut second);
+    assert_eq!(result, ServerMessage::Exit { code: 0 });
+    session.finish();
+
+    let pasted = fs::read(&path).unwrap();
+    let payload = pasted
+        .strip_prefix(b"\x1b[200~".as_slice())
+        .and_then(|rest| rest.strip_suffix(b"\x1b[201~after-END".as_slice()))
+        .unwrap_or_else(|| panic!("{:?}", String::from_utf8_lossy(&pasted)));
+    assert!(payload.iter().all(|byte| *byte == b'p'), "{payload:?}");
+    assert!((1..400).contains(&payload.len()), "{}", payload.len());
 }
 
 /// Section 6.2 replacement restoration: a resize before `Ready` retires the
@@ -1861,6 +1975,55 @@ fn job_fixture(job: &str) -> ! {
 
 static WINCHES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+fn terminal_size() -> String {
+    let mut size = std::mem::MaybeUninit::<libc::winsize>::uninit();
+    assert_eq!(
+        unsafe { libc::ioctl(0, libc::TIOCGWINSZ, size.as_mut_ptr()) },
+        0
+    );
+    let size = unsafe { size.assume_init() };
+    format!("{}x{}", size.ws_col, size.ws_row)
+}
+
+/// Records each line it reads with the terminal size at that moment.
+fn record_lines() -> ! {
+    for line in io::stdin().lines() {
+        let line = line.unwrap();
+        if line == "end" {
+            std::process::exit(0);
+        }
+        let mut lines = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("lines")
+            .unwrap();
+        writeln!(lines, "{line} {}", terminal_size()).unwrap();
+    }
+    std::process::exit(1);
+}
+
+/// A raw bracketed-paste application recording every byte it reads until `END`.
+fn record_paste() -> ! {
+    let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
+    assert_eq!(unsafe { libc::tcgetattr(0, termios.as_mut_ptr()) }, 0);
+    let mut termios = unsafe { termios.assume_init() };
+    unsafe {
+        libc::cfmakeraw(&mut termios);
+    }
+    assert_eq!(unsafe { libc::tcsetattr(0, libc::TCSANOW, &termios) }, 0);
+    print!("\x1b[?2004hfixture-ready");
+    io::stdout().flush().unwrap();
+    let mut pasted = Vec::new();
+    let mut buffer = [0; 4096];
+    while !pasted.ends_with(b"END") {
+        let count = io::stdin().read(&mut buffer).unwrap();
+        assert_ne!(count, 0);
+        pasted.extend_from_slice(&buffer[..count]);
+        fs::write("pasted", &pasted).unwrap();
+    }
+    std::process::exit(0);
+}
+
 #[test]
 #[ignore = "owned generic terminal fixture subprocess"]
 fn fixture_child() {
@@ -1991,8 +2154,14 @@ fn fixture_child() {
         print!("INPUT-ACCEPTED");
         std::process::exit(42);
     }
+    if mode == "paste-record" {
+        record_paste();
+    }
     print!("fixture-ready");
     io::stdout().flush().unwrap();
+    if mode == "lines" {
+        record_lines();
+    }
     if mode.starts_with("drain-") {
         let mut line = String::new();
         io::stdin().read_line(&mut line).unwrap();
