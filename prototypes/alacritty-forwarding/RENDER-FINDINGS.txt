@@ -1,0 +1,100 @@
+THROWAWAY #56: reduced-profile derived restore/repaint qualification.
+No production library, native rendering claim, wire protocol or full approval.
+
+Question and answer
+  Can unchanged Alacritty expose enough state for a small, derived byte-stream
+  restore/repaint, deferring hidden normal content until actual exposure?
+  YES for the bounded independently asserted cases below. Five new tests pass;
+  32 runtime tests total, complete forwarding surface, formatting and Clippy.
+  This is additional feasibility evidence, not every retained style/control
+  state or production delivery guarantee. Human reaction is recorded on #56.
+
+Mechanism
+  Reuses the earlier #43 serializer approach, narrowed to cells/styles without
+  hyperlinks, and the accepted #56 transition observer. restore reads only an
+  immutable active View. No swap_alt, inactive-grid accessor, hidden normal
+  preload or source-state mutation occurs.
+  On an alternate attachment it paints only alternate content. On actual
+  normal exposure, it paints normal/history. If normal output and alternate
+  reentry share one feed or synchronized drain, ordered normal snapshots are
+  serialized before final alternate content. Full-history resend may duplicate
+  native rows, as accepted. Snapshots are only of the current drain; the caller
+  must not reuse stale transitions.
+  Each frame resets positioning/pen state after selecting its screen. It emits
+  derived text/styles and supported input modes, never raw command output.
+  Historical title/bell/clipboard effects and OSC8 metadata are omitted.
+  No custom application-key encoder or application-keypad output is included.
+
+Independent assertions
+  PASS normal history/screen/cursor: h0/h1 history, styled R, wide U+754C,
+    e + U+0301 and final end; source observation remains unchanged.
+  PASS alternate attach without normal preload; actual normal exposure,
+    one-feed Q output and alternate reentry retain prompt>Q and its cursor.
+  PASS explicit and timeout synchronized drains at feed sizes 1/7/65536:
+    no normal snapshot before drain; savedQ remains available after reentry.
+  PASS 10-to-6-column normal/history reflow and soft-wrap continuity;
+    a subsequent repaint clears stale cells and applies cursor/paste/visibility.
+  PASS excluded OSC8 hostile C1 metadata never enters derived output;
+    ordinary link text remains. Historical bells/OSC actions never replay.
+
+Oracle and limitations
+  vt100 0.18.1 is a separate terminal-state implementation, not Alacritty replay
+  into itself. Expectations are hand-written. Both depend on vte 0.15.0:
+  this is not an independent parser oracle. Native Terminal.app/VS Code
+  rendering/scrollback preservation is not exercised in this stage.
+  This snapshot serializer is not a fidelity claim for saved pen/DECSC/DECRC,
+  arbitrary scroll regions/tabs/charset/origin/pending wrap, cursor style,
+  underline colour/extended underline forms, altered palettes or all modes.
+  Those are explicit unproven areas, not approved silent product downgrades.
+  Tested style fidelity is red/bold and default resets; the serializer's broader
+  basic SGR/indexed/RGB emission is not exhaustively oracle-qualified here.
+  Live title/bell forwarding is not implemented by this serializer; prior model
+  event assertions retain their separate scope.
+  No native scheduling/atomic presentation, transport backpressure, catch-up
+  races, cross-version behavior or maximum-resource bound is claimed.
+  View copies rows/history and output is materialized: production cost remains
+  unqualified; no extra authoritative model is introduced.
+
+Dependencies
+  Alacritty revision unchanged: bbb2cbf9470a6707b1205fbddbdb25109b14e2fd.
+  All existing dependency versions remain unchanged. Added only test dependency
+  vt100 =0.18.1 and transitive itoa 1.0.18 through Cargo's offline lock update.
+  RENDER-DEPENDENCY-INVENTORY.json records archive/source/licence checks for
+  this 57-registry-package resolution. The earlier DEPENDENCY-INVENTORY.json
+  and SECURITY-FINDINGS.txt remain historical for the 55-package baseline;
+  their security review does not automatically cover the two test additions.
+  No shipped dependency decision or safe-release-pin approval follows.
+
+Reproduction
+  Rust/Cargo 1.96.0, Python 3, Git and Cargo prerequisites:
+    bash prototypes/alacritty-forwarding/run.sh
+  Targeted from prototypes/alacritty-forwarding:
+    CARGO_TARGET_DIR="$PWD/.cache/target" cargo test --locked \
+      --manifest-path probe/Cargo.toml --test render
+  Full captured output is render-results.txt.
+  Fresh identity/source/licence evidence:
+    python3 verify_provenance.py
+  Compare stdout with RENDER-DEPENDENCY-INVENTORY.json, not the historical
+  baseline inventory. Formatting, Clippy and diff whitespace checks passed.
+  No new measured CRAP/coverage/mutation or duplication-tool pass is claimed;
+  earlier measurements did not include this renderer.
+
+Action log
+  Continued after the explicit application-keypad scope reduction; read #48
+  and #45 to keep wire implementation out of #56. Obtained explicit permission
+  for a reduced-profile restore/repaint probe with independent assertions.
+  Read the earlier #43 serializer and tests; avoided its hidden-grid swap,
+  saved-cursor perturbation and now-excluded hyperlink machinery.
+  Created a fresh throwaway branch from ca13e4c; added tests before renderer.
+  The locked runner initially refused the changed manifest, then the offline
+  Cargo update added only the two test packages; tests failed for missing module.
+  Implemented a small immutable active-view serializer and ordered drain replay.
+  First fixture mistakenly relied on implicit alternate homing; made application
+  homing explicit. The normal-cursor regression then genuinely failed: resetting
+  scroll region before alternate entry overwrote the cursor saved by 1049.
+  Moved screen selection before positioning reset; the assertion passed.
+  Added sync-drain, reflow/repaint and mode assertions. Full 32-test runner,
+  formatting, Clippy and whitespace checks pass. Retained complete results and
+  fresh dependency provenance without rewriting earlier failures or approvals.
+  The developer explicitly accepted publication of this bounded rendering
+  stage with the listed remaining control-state/native/delivery gaps.

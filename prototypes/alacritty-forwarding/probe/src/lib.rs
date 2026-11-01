@@ -1,6 +1,7 @@
 //! THROWAWAY: public-API forwarding/transition qualification, not a renderer.
 
 pub mod input;
+pub mod render;
 pub mod timing;
 
 use alacritty_terminal::event::EventListener;
