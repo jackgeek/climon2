@@ -291,7 +291,7 @@ fn exec_restores_a_waiting_alternate_screen_without_application_redraw() {
 
     terminal.send(b"x").unwrap();
     terminal
-        .wait_for_text("INPUT-ACCEPTED", Duration::from_secs(2))
+        .wait_for_bytes(b"INPUT-ACCEPTED", Duration::from_secs(2))
         .unwrap();
     assert_eq!(
         fs::read_to_string(layout.directory.path().join("draw-count")).unwrap(),
@@ -852,6 +852,11 @@ fn invalid_home_and_filter_fail_with_only_actual_written_log_paths() {
     );
 }
 
+/// The report as one line: a restored display reaches the terminal cut into rows.
+fn unwrapped(screen: &str) -> String {
+    screen.lines().map(str::trim_end).collect()
+}
+
 /// #25/#28: one read filter reaches daemon args/client env without altering command.
 #[test]
 fn log_filter_is_forwarded_to_companions_without_changing_command_environment() {
@@ -865,17 +870,13 @@ fn log_filter_is_forwarded_to_companions_without_changing_command_environment() 
     terminal
         .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
         .unwrap();
-    terminal
-        .wait_for_bytes(
-            format!(
-                "\"{}\":\"{}\"",
-                hex(OsStr::new("CLIMON2_LOG")),
-                hex(OsStr::new("warn"))
-            )
-            .as_bytes(),
-            Duration::from_secs(1),
-        )
-        .unwrap();
+    let pair = format!(
+        "\"{}\":\"{}\"",
+        hex(OsStr::new("CLIMON2_LOG")),
+        hex(OsStr::new("warn"))
+    );
+    let report = unwrapped(&terminal.screen());
+    assert!(report.contains(&pair), "{report}");
     let metadata = only_metadata(&layout);
     terminal.send(b"\n").unwrap();
     assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
