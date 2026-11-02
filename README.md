@@ -33,9 +33,9 @@ is interpreted inside a bracketed paste.
 **Attach** with `climon2 attach <session>`. It needs a terminal on stdin and
 stdout, and takes control immediately. `<session>` is a full session ID or a
 unique prefix of at least 8 hex digits, case-insensitive, with or without
-hyphens, matching a live session. No match, or more than one, fails with 125;
-an ambiguous prefix lists every matching ID. Attaching to the session you are
-running inside is refused.
+hyphens, matching a live session. A malformed `<session>` is a usage error (2).
+No match, or more than one, fails with 125; an ambiguous prefix lists every
+matching ID. Attaching to the session you are running inside is refused.
 
 On every attach or takeover, climon2 first scrolls the visible terminal into its
 native scrollback. It then restores the session's retained history, screen,
@@ -52,10 +52,12 @@ This session is being viewed elsewhere.
 Press Ctrl+T to take control
 ```
 
-Press the take-control key (Ctrl+T) in a placeholder to take control. Ctrl+T
-reaches the command normally while you are in control. The most recent attach or
-takeover always wins, without a prompt. When the controller leaves, control
-returns to the most recently controlling client that is still attached.
+Press the take-control key (Ctrl+T) in a placeholder to take control; with
+`take_control_key` set to `null` the placeholder shows only its first line. Other
+keys typed in a placeholder are discarded, and the escape prefix still detaches.
+Ctrl+T reaches the command normally while you are in control. The most recent
+attach or takeover always wins, without a prompt. When the controller leaves,
+control returns to the most recently controlling client that is still attached.
 
 **Leave policy**:
 
@@ -65,14 +67,19 @@ returns to the most recently controlling client that is still attached.
 - When the last client leaves any other way (terminal closed, client crashed,
   connection lost), the session ends at once: its terminal is hung up and
   remaining jobs are killed after five seconds. There is no reconnection grace.
+  A client also counts as lost if its terminal accepts no output for five
+  seconds, falls more than 16 MiB behind, or does not finish restoring within
+  30 seconds plus one second per 4 MiB restored.
 - A session that no client attaches to within five seconds of starting ends.
 - When the command exits, every attached client exits with its status.
 
 **Kill** one session with `climon2 kill <session>` (same selector rules), whether
-or not clients are attached. It needs no terminal and prints nothing. It exits 0
-once the command has ended and the session is cleaned up, or 125 if that is not
-confirmed within 10 seconds. Attached clients exit with the command's
-signal-derived status.
+or not clients are attached. It needs no terminal and prints nothing. The
+session hangs up its terminal and always waits the full five-second grace
+before killing any remaining jobs, so a kill normally takes about five seconds.
+It exits 0 once the command has ended and the session is cleaned up, or 125 if
+that is not confirmed within 10 seconds. Attached clients exit with the
+command's signal-derived status.
 
 When a client's view of a session ends (detach, exit, kill or takeover by
 another client), climon2 returns its terminal to a normal shell state: it ends
