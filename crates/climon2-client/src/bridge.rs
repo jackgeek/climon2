@@ -462,7 +462,7 @@ impl Bridge {
 
     fn flush_socket(&mut self, events: i16) -> io::Result<()> {
         if events & libc::POLLOUT != 0 {
-            self.transport.outgoing.flush(&mut self.transport.stream)?;
+            self.transport.flush()?;
         }
         Ok(())
     }

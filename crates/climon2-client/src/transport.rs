@@ -126,7 +126,7 @@ impl Transport {
     fn flush_until(&mut self, signals: &Signals, deadline: Option<Instant>) -> io::Result<()> {
         while !self.outgoing.empty() {
             self.wait(libc::POLLOUT, signals, deadline)?;
-            self.outgoing.flush(&mut self.stream)?;
+            self.flush()?;
         }
         Ok(())
     }
@@ -164,6 +164,17 @@ impl Transport {
         Ok(())
     }
 
+    /// A write to a lost session discards what was outgoing; reading reports the loss.
+    pub fn flush(&mut self) -> io::Result<()> {
+        match self.outgoing.flush(&mut self.stream) {
+            Err(error) if lost(&error) => {
+                self.outgoing = Pending::default();
+                Ok(())
+            }
+            result => result,
+        }
+    }
+
     pub fn receive(&mut self) -> io::Result<Option<ServerMessage>> {
         self.decoder
             .read(&mut self.stream)?
@@ -179,7 +190,7 @@ struct Decoder {
 }
 
 impl Decoder {
-    fn read(&mut self, stream: &mut UnixStream) -> io::Result<Option<Frame>> {
+    fn read(&mut self, stream: &mut impl Read) -> io::Result<Option<Frame>> {
         if self.bytes.is_empty() {
             self.bytes.resize(4, 0);
         }
@@ -189,15 +200,13 @@ impl Decoder {
         self.frame()
     }
 
-    fn fill(&mut self, stream: &mut UnixStream) -> io::Result<bool> {
-        let Some(count) = ready(stream.read(&mut self.bytes[self.position..]))? else {
+    fn fill(&mut self, stream: &mut impl Read) -> io::Result<bool> {
+        let read = stream.read(&mut self.bytes[self.position..]);
+        let Some(count) = ready(read).map_err(lost_as_eof)? else {
             return Ok(false);
         };
         if count == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "lost connection to session",
-            ));
+            return Err(lost_connection());
         }
         self.position += count;
         Ok(self.position == self.bytes.len())
@@ -229,6 +238,28 @@ impl Decoder {
         };
         self.bytes.resize(target, 0);
     }
+}
+
+/// However the OS reports it, a session connection that is gone is unexpected loss.
+fn lost(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::NotConnected
+    )
+}
+
+fn lost_as_eof(error: io::Error) -> io::Error {
+    if lost(&error) {
+        return lost_connection();
+    }
+    error
+}
+
+fn lost_connection() -> io::Error {
+    io::Error::new(io::ErrorKind::UnexpectedEof, "lost connection to session")
 }
 
 fn validate_hello(frame: Frame, metadata: &SessionMetadata) -> io::Result<()> {
@@ -299,5 +330,72 @@ impl Pending {
             self.position += count;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Decoder, Pending, Transport};
+    use climon2_core::protocol::ClientMessage;
+    use std::{
+        io::{self, ErrorKind, Read},
+        os::{fd::OwnedFd, unix::net::UnixStream},
+        time::Instant,
+    };
+
+    struct Failing(ErrorKind);
+
+    impl Read for Failing {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(self.0.into())
+        }
+    }
+
+    #[test]
+    fn a_connection_that_fails_while_reading_is_lost_and_other_errors_stay_themselves() {
+        for kind in [
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::BrokenPipe,
+            ErrorKind::NotConnected,
+            ErrorKind::PermissionDenied,
+        ] {
+            let error = Decoder::default().read(&mut Failing(kind)).unwrap_err();
+            let lost = kind != ErrorKind::PermissionDenied;
+            let expected = if lost { ErrorKind::UnexpectedEof } else { kind };
+            assert_eq!(error.kind(), expected, "{kind:?}");
+        }
+    }
+
+    fn transport(stream: UnixStream) -> Transport {
+        let mut transport = Transport {
+            stream,
+            decoder: Decoder::default(),
+            outgoing: Pending::default(),
+            deadline: Instant::now(),
+        };
+        transport.send(&ClientMessage::Detach).unwrap();
+        transport
+    }
+
+    #[test]
+    fn writing_to_a_lost_session_discards_outgoing_and_reading_reports_the_loss() {
+        let (stream, peer) = UnixStream::pair().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let mut transport = transport(stream);
+        drop(peer);
+        transport.flush().unwrap();
+        assert!(transport.outgoing.empty());
+        let error = transport.receive().unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn other_write_failures_are_not_mistaken_for_loss() {
+        let read_only = std::fs::File::open("/dev/null").unwrap();
+        let mut transport = transport(UnixStream::from(OwnedFd::from(read_only)));
+        let error = transport.flush().unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ENOTSOCK));
+        assert!(!transport.outgoing.empty());
     }
 }
