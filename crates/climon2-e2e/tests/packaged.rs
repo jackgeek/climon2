@@ -69,6 +69,7 @@ fn report(path: &Path) -> Value {
 /// inherited environment through the installer-built launcher, not metadata's
 /// lossy display projection; initial size, live resize and final status survive.
 /// #25: TRACE diagnostics contain neither argument, input nor environment data.
+/// Plan 6.1.15: a conflicting inherited `TERM`/`COLORTERM` is replaced.
 #[test]
 fn installed_generic_fixture_preserves_runtime_contract_and_log_privacy() {
     let package = Package::new();
@@ -85,6 +86,9 @@ fn installed_generic_fixture_preserves_runtime_contract_and_log_privacy() {
         command.env("CLIMON2_LOG", "trace");
         command.env("E2E_SECRET", "env-secret-not-for-logs-91b");
         command.env("E2E_EMPTY", "");
+        // Plan 6.1.15: a conflicting inherited terminal identity.
+        command.env("TERM", "vt100");
+        command.env("COLORTERM", "24bit");
     };
     let mut direct = package.command("climon2-fixture");
     configure(&mut direct);
@@ -146,8 +150,11 @@ fn installed_generic_fixture_preserves_runtime_contract_and_log_privacy() {
     );
     // Plan 1.17: the command's terminal identity is fixed, not inherited.
     assert_eq!(environment.remove("COLORTERM"), Some(json!("truecolor")));
-    assert_eq!(environment["TERM"], json!("xterm-256color"));
-    assert_eq!(json!(environment), report(&before)["env"]);
+    assert_eq!(environment.remove("TERM"), Some(json!("xterm-256color")));
+    let mut inherited = report(&before)["env"].as_object().unwrap().clone();
+    assert_eq!(inherited.remove("COLORTERM"), Some(json!("24bit")));
+    assert_eq!(inherited.remove("TERM"), Some(json!("vt100")));
+    assert_eq!(environment, inherited, "unrelated variables are unchanged");
     for path in package.logs() {
         let log = fs::read_to_string(path).unwrap();
         for secret in [

@@ -317,7 +317,7 @@ impl Prepared {
 fn command_tail(command: &mut Command, fd: u32, home: &Path, mode: &str, missing: bool) {
     command.args([
         "--scrollback-max-rows",
-        "10000",
+        mode.strip_prefix("retain-").unwrap_or("10000"),
         "--readiness-fd",
         &fd.to_string(),
         "--",
@@ -1341,6 +1341,96 @@ fn a_stalled_reader_is_dropped_after_five_seconds_without_progress() {
     );
 }
 
+/// Appends one command for [`follow_script`] and waits for the fixture to
+/// have written its output.
+fn script(session: &Session, command: &str) {
+    let path = session.directory.path().join("script");
+    let mut commands = fs::read_to_string(&path).unwrap_or_default();
+    commands.push_str(command);
+    commands.push('\n');
+    let staged = path.with_extension("tmp");
+    fs::write(&staged, &commands).unwrap();
+    fs::rename(staged, path).unwrap();
+    let issued = commands.lines().count();
+    wait_contents(&session.directory.path().join("acks"), |acks| {
+        String::from_utf8_lossy(acks).lines().count() == issued
+    });
+}
+
+/// Takes over with fresh 91x37 attachments, leaving each restoration
+/// unfinished, until the daemon's snapshot includes `marker`. The fixture has
+/// already written it, so only the daemon's PTY read is awaited.
+fn restoration_through(session: &Session, clients: &mut Vec<UnixStream>, marker: &str) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let mut client = attach_at(session, TerminalSize { cols: 91, rows: 37 });
+        let (_, restored) = restoration(&mut client);
+        clients.push(client);
+        if count(&restored, marker.as_bytes()) > 0 {
+            return restored;
+        }
+        assert!(Instant::now() < deadline, "{marker} never restored");
+    }
+}
+
+/// The numbers of the `row-NNNN` rows in a restoration, in order.
+fn numbered_rows(restored: &[u8]) -> Vec<u32> {
+    restored
+        .windows(8)
+        .filter(|bytes| bytes.starts_with(b"row-") && bytes[4..].iter().all(u8::is_ascii_digit))
+        .map(|bytes| std::str::from_utf8(&bytes[4..]).unwrap().parse().unwrap())
+        .collect()
+}
+
+fn kill(mut session: Session) {
+    let mut killer = session.connect();
+    send(&mut killer, ClientMessage::Kill);
+    assert!(matches!(
+        receive(&mut killer),
+        ServerMessage::Terminated { .. }
+    ));
+    session.finish();
+}
+
+/// Section 6.2 retention with an unfinished prefix: scrolling while a
+/// restoration is unfinished still honours `max_rows`, so the takeover's
+/// snapshot has no history for 0 and only the newest rows for 2.
+#[test]
+fn retention_with_an_unfinished_prefix_keeps_only_the_newest_rows() {
+    for max_rows in [0, 2] {
+        let session = Session::start(&format!("retain-{max_rows}"));
+        script(&session, "rows 1 100");
+        let mut clients = vec![attach_at(&session, TerminalSize { cols: 91, rows: 37 })];
+        script(&session, "rows 101 200");
+        let restored = restoration_through(&session, &mut clients, "row-0200");
+        // 37 rows show rows 165..=200 above the empty cursor row.
+        let expected: Vec<u32> = (165 - max_rows..=200).collect();
+        assert_eq!(numbered_rows(&restored), expected, "max_rows {max_rows}");
+        drop(clients);
+        kill(session);
+    }
+}
+
+/// Section 6.2 identical-row eviction: identical rows still evict and leave a
+/// notice; clearing history clears it, so a later restoration has none.
+#[test]
+fn identical_rows_evict_and_cleared_history_has_no_stale_notice() {
+    let session = Session::start("retain-2");
+    let mut clients = Vec::new();
+    script(&session, "same 100");
+    script(&session, "rows 1 1");
+    let restored = restoration_through(&session, &mut clients, "row-0001");
+    let notice = b"[climon2: older session scrollback was discarded]";
+    assert_eq!(count(&restored, notice), 1);
+    script(&session, "clear");
+    script(&session, "rows 2 2");
+    let restored = restoration_through(&session, &mut clients, "row-0002");
+    assert_eq!(count(&restored, notice), 0);
+    assert_eq!(numbered_rows(&restored), [1, 2]);
+    drop(clients);
+    kill(session);
+}
+
 /// Section 6.2 withheld `Ready`: the restoration deadline is an unexpected
 /// departure, so the connection closes and the leave policy ends the command.
 #[test]
@@ -2112,6 +2202,46 @@ fn record_lines() -> ! {
     std::process::exit(1);
 }
 
+/// Prints what the test appends to `script`, one command per line, and
+/// acknowledges each in `acks`: `rows A B` prints numbered rows, `same N`
+/// prints `N` identical rows and `clear` erases the scrollback.
+fn follow_script() -> ! {
+    print!("fixture-ready\r\n");
+    io::stdout().flush().unwrap();
+    let mut done = 0;
+    loop {
+        let script = fs::read_to_string("script").unwrap_or_default();
+        let commands: Vec<&str> = script.lines().collect();
+        for command in &commands[done..] {
+            let words: Vec<&str> = command.split(' ').collect();
+            let mut out = io::stdout().lock();
+            match words[..] {
+                ["rows", first, last] => {
+                    for row in first.parse::<u32>().unwrap()..=last.parse().unwrap() {
+                        write!(out, "row-{row:04}\r\n").unwrap();
+                    }
+                }
+                ["same", rows] => {
+                    for _ in 0..rows.parse().unwrap() {
+                        write!(out, "same\r\n").unwrap();
+                    }
+                }
+                ["clear"] => write!(out, "\x1b[3J").unwrap(),
+                _ => panic!("unknown script command {command:?}"),
+            }
+            out.flush().unwrap();
+            let mut acks = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("acks")
+                .unwrap();
+            writeln!(acks, "{command}").unwrap();
+        }
+        done = commands.len();
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
 /// A raw bracketed-paste application recording every byte it reads until
 /// `END`; with a `query`, it asks the terminal once its first input arrives.
 fn record_input(file: &str, query: Option<&str>) -> ! {
@@ -2281,6 +2411,9 @@ fn fixture_child() {
     }
     if mode == "reply-record" {
         record_input("recorded", Some("\x1b[c"));
+    }
+    if mode.starts_with("retain-") {
+        follow_script();
     }
     print!("fixture-ready");
     io::stdout().flush().unwrap();

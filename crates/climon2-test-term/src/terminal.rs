@@ -3,7 +3,7 @@ use alacritty_terminal::{
     event::{Event, EventListener},
     grid::Dimensions,
     index::{Column, Line},
-    term::Config,
+    term::{Config, Osc52, TermMode},
     vte::ansi::Processor,
 };
 use nix::{
@@ -49,8 +49,79 @@ impl EventListener for Events {
     }
 }
 
+/// How the emulated host answers and how much native scrollback it keeps.
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    /// Whether the host answers queries (`Event::PtyWrite`) like a real terminal.
+    pub replies: bool,
+    /// Native scrollback rows kept by the host.
+    pub history: usize,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            replies: true,
+            history: 10_000,
+        }
+    }
+}
+
+/// The host terminal's mode state, for release and restoration assertions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Modes {
+    pub alternate_screen: bool,
+    pub cursor_visible: bool,
+    pub mouse: bool,
+    pub focus: bool,
+    pub bracketed_paste: bool,
+    pub application_cursor: bool,
+    pub application_keypad: bool,
+    pub autowrap: bool,
+    pub origin: bool,
+    pub insert: bool,
+    pub line_feed_new_line: bool,
+}
+
+impl Modes {
+    /// Plan 1.7.1's documented normal-shell baseline.
+    pub const BASELINE: Self = Self {
+        alternate_screen: false,
+        cursor_visible: true,
+        mouse: false,
+        focus: false,
+        bracketed_paste: false,
+        application_cursor: false,
+        application_keypad: false,
+        autowrap: true,
+        origin: false,
+        insert: false,
+        line_feed_new_line: false,
+    };
+
+    fn of(mode: TermMode) -> Self {
+        Self {
+            alternate_screen: mode.contains(TermMode::ALT_SCREEN),
+            cursor_visible: mode.contains(TermMode::SHOW_CURSOR),
+            mouse: mode.intersects(TermMode::MOUSE_MODE | TermMode::SGR_MOUSE),
+            focus: mode.contains(TermMode::FOCUS_IN_OUT),
+            bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
+            application_cursor: mode.contains(TermMode::APP_CURSOR),
+            application_keypad: mode.contains(TermMode::APP_KEYPAD),
+            autowrap: mode.contains(TermMode::LINE_WRAP),
+            origin: mode.contains(TermMode::ORIGIN),
+            insert: mode.contains(TermMode::INSERT),
+            line_feed_new_line: mode.contains(TermMode::LINE_FEED_NEW_LINE),
+        }
+    }
+}
+
 struct Screen {
     term: Term<Events>,
+    replies: bool,
+    title: Option<String>,
+    /// Queries and clipboard operations the host was asked to perform.
+    requests: Vec<String>,
     recent: Vec<u8>,
     eof: bool,
     error: Option<io::Error>,
@@ -61,13 +132,44 @@ impl Screen {
     fn text(&self) -> String {
         let grid = self.term.grid();
         (0..grid.screen_lines())
-            .map(|row| {
-                (0..grid.columns())
-                    .map(|col| grid[Line(row as i32)][Column(col)].c)
-                    .collect::<String>()
-            })
+            .map(|row| self.row(row as i32))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn row(&self, line: i32) -> String {
+        let grid = self.term.grid();
+        (0..grid.columns())
+            .map(|col| grid[Line(line)][Column(col)].c)
+            .collect()
+    }
+
+    /// Native scrollback rows, oldest first, without trailing blanks.
+    fn history(&self) -> Vec<String> {
+        let rows = self.term.grid().history_size() as i32;
+        (1..=rows)
+            .rev()
+            .map(|row| self.row(-row).trim_end().to_owned())
+            .collect()
+    }
+
+    fn handle(&mut self, event: Event, writer: &Writer) -> io::Result<()> {
+        match event {
+            Event::Title(title) => self.title = Some(title),
+            Event::ResetTitle => self.title = None,
+            Event::PtyWrite(reply) => {
+                self.requests.push(format!("reply {reply:?}"));
+                if self.replies {
+                    write(writer, reply.as_bytes())?;
+                }
+            }
+            Event::ClipboardStore(..)
+            | Event::ClipboardLoad(..)
+            | Event::ColorRequest(..)
+            | Event::TextAreaSizeRequest(..) => self.requests.push(format!("{event:?}")),
+            _ => (),
+        }
+        Ok(())
     }
 
     fn failure(&self, error: io::Error) -> io::Error {
@@ -106,6 +208,15 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn spawn(command: CommandBuilder, rows: u16, cols: u16) -> io::Result<Self> {
+        Self::spawn_with(command, rows, cols, Options::default())
+    }
+
+    pub fn spawn_with(
+        command: CommandBuilder,
+        rows: u16,
+        cols: u16,
+        options: Options,
+    ) -> io::Result<Self> {
         let pair = {
             let _allocation = climon2_platform::pty::allocation()?;
             portable_pty::native_pty_system().openpty(pty_size(rows, cols)?)
@@ -119,13 +230,20 @@ impl Terminal {
         let screen = Arc::new((
             Mutex::new(Screen {
                 term: Term::new(
-                    Config::default(),
+                    Config {
+                        scrolling_history: options.history,
+                        osc52: Osc52::CopyPaste,
+                        ..Config::default()
+                    },
                     &Size {
                         rows: rows.into(),
                         cols: cols.into(),
                     },
                     Events(sender),
                 ),
+                replies: options.replies,
+                title: None,
+                requests: Vec::new(),
                 recent: Vec::new(),
                 eof: false,
                 error: None,
@@ -166,9 +284,7 @@ impl Terminal {
                         let excess = state.recent.len().saturating_sub(65536);
                         state.recent.drain(..excess);
                         while let Ok(event) = events.try_recv() {
-                            if let Event::PtyWrite(reply) = event
-                                && let Err(error) = write(&reader_writer, reply.as_bytes())
-                            {
+                            if let Err(error) = state.handle(event, &reader_writer) {
                                 state.error = Some(error);
                                 break;
                             }
@@ -204,6 +320,53 @@ impl Terminal {
         self.screen.0.lock().expect("screen lock").text()
     }
 
+    /// The process the terminal was spawned with.
+    pub fn pid(&self) -> i32 {
+        self.pid.as_raw()
+    }
+
+    /// The visible screen row `row` (0-based), with every column.
+    pub fn row(&self, row: usize) -> String {
+        self.screen.0.lock().expect("screen lock").row(row as i32)
+    }
+
+    pub fn history(&self) -> Vec<String> {
+        self.screen.0.lock().expect("screen lock").history()
+    }
+
+    /// The host's window title; `None` before any title or after a reset.
+    pub fn title(&self) -> Option<String> {
+        self.screen.0.lock().expect("screen lock").title.clone()
+    }
+
+    pub fn modes(&self) -> Modes {
+        Modes::of(*self.screen.0.lock().expect("screen lock").term.mode())
+    }
+
+    /// The cursor's visible-screen (row, column), 0-based.
+    pub fn cursor(&self) -> (usize, usize) {
+        let point = self
+            .screen
+            .0
+            .lock()
+            .expect("screen lock")
+            .term
+            .grid()
+            .cursor
+            .point;
+        (point.line.0 as usize, point.column.0)
+    }
+
+    /// Every query and clipboard operation the host was asked to perform.
+    pub fn host_requests(&self) -> Vec<String> {
+        self.screen.0.lock().expect("screen lock").requests.clone()
+    }
+
+    /// The most recent output bytes (at most 64 KiB).
+    pub fn received(&self) -> Vec<u8> {
+        self.screen.0.lock().expect("screen lock").recent.clone()
+    }
+
     pub fn wait_for_text(&mut self, text: &str, timeout: Duration) -> io::Result<()> {
         self.wait(timeout, |screen| screen.text().contains(text))
     }
@@ -236,6 +399,15 @@ impl Terminal {
                 )
                 .expect("screen wait");
         }
+    }
+
+    /// Waits until `condition` holds for the visible screen text.
+    pub fn wait_for_screen(
+        &mut self,
+        timeout: Duration,
+        condition: impl Fn(&str) -> bool,
+    ) -> io::Result<()> {
+        self.wait(timeout, |screen| condition(&screen.text()))
     }
 
     pub fn wait_for_bytes(&mut self, bytes: &[u8], timeout: Duration) -> io::Result<()> {
