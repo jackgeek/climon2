@@ -1,6 +1,6 @@
 # climon2
 
-climon2 runs a terminal command inside a managed session that the user's terminal attaches to, and can list the sessions that are running.
+climon2 runs a terminal command inside a managed session that users' terminals attach to, detach from and reattach to, and can list and end the sessions that are running.
 
 ## Sessions
 
@@ -16,31 +16,6 @@ _Avoid_: Server, host, backend
 The process that connects the user's terminal to a session daemon.
 _Avoid_: Viewer, frontend, terminal
 
-**Attachment**:
-One client's connection to a session for interactive use, whether or not that client currently controls it.
-_Avoid_: Session, control
-
-**Detach**:
-End one client's attachment without ending the session or its command.
-_Avoid_: Exit the session, kill, stop
-
-**Client escape prefix**:
-The key that begins a client-side action instead of being sent directly to the session's command.
-_Avoid_: Hotkey, command prefix
-
-**Take-control key**:
-The configurable key a non-controlling client uses to request control of a session.
-_Avoid_: Space-to-control, hotkey
-
-**Controlling client**:
-The attached client whose input and terminal size drive the session; only one client controls a session at a time.
-When it leaves, control returns to the attached client that held control most recently, and the leave policy applies only if none remains.
-_Avoid_: Primary client, owner
-
-**Control period**:
-One uninterrupted period in which a particular client controls a session; regaining control begins a new period.
-_Avoid_: Attachment, client identity
-
 **Monitor**:
 A program that shows one session at a time in the user's terminal and switches between sessions, keeping every session's screen current through its own clients.
 _Avoid_: Dashboard, multiplexer, switcher
@@ -48,23 +23,6 @@ _Avoid_: Dashboard, multiplexer, switcher
 **Virtual terminal**:
 A model of a session's screen, kept current from the session's output; the session daemon's is the source of truth, and a monitor's is a copy.
 _Avoid_: Screen buffer, emulator, scrollback
-
-**Session scrollback**:
-The normal-screen history retained by a session for restoration to attached terminals, not a recording of every output byte or alternate-screen change.
-_Avoid_: Transcript, session log
-
-**Native scrollback**:
-The outer terminal's own history, browsed with its normal scrolling, selection and copy features.
-It can contain unrelated output and copies of session scrollback.
-_Avoid_: Session scrollback, daemon history
-
-**History gap**:
-A portion of session scrollback no longer retained when a client needs it for catch-up.
-_Avoid_: Native eviction, missing logs
-
-**Leave policy**:
-What a session daemon does with its session when the last client leaves.
-_Avoid_: Disconnect handler, kill policy
 
 **Hello handshake**:
 The first exchange on every connection to a session daemon, in which the daemon identifies its session; frozen across all climon2 versions.
@@ -90,6 +48,14 @@ _Avoid_: Running session, active session
 A live session with no attached clients that continues after deliberate detach.
 _Avoid_: Disconnected session, completed session
 
+**Capabilities**:
+The operations a session daemon advertises in its hello reply, such as `attach`, `kill` and `state-v1`; support is never inferred from versions.
+_Avoid_: Features, protocol version
+
+**Startup envelope**:
+The internal schema-1 JSON in `CLIMON2_CLIENT_STARTUP` that tells a version-matched client its operation (attach or kill) and validated settings.
+_Avoid_: Client config, startup arguments
+
 **Stale metadata**:
 Session metadata whose session is no longer live.
 _Avoid_: Dead session, orphan
@@ -109,6 +75,96 @@ _Avoid_: Transcript, history, session output
 **General log**:
 Diagnostic records from a climon2 process that are not tied to any session, such as `list` or `exec` before its session exists.
 _Avoid_: Global log, main log
+
+## Attachment and control
+
+**Attachment**:
+One client's accepted connection to a session for interactive use, whether or not that client currently controls it.
+Probes and kill requests are not attachments.
+_Avoid_: Session, control
+
+**Controller**:
+The attached client whose input and terminal size drive the session; whenever any client is attached, exactly one is the controller.
+_Avoid_: Controlling client, primary client, owner
+
+**Grant**:
+The session daemon's act of making an attachment the controller, which starts a new control period and sends a restoration.
+_Avoid_: Handover, switch
+
+**Control period**:
+One uninterrupted period in which a particular client controls a session, numbered in increasing order; every grant begins a new period, and input from an earlier period is discarded.
+_Avoid_: Attachment, client identity
+
+**Take control**:
+A non-controlling client's request to become the controller; each accepted request, like each attach, is granted at once, so the last one wins.
+_Avoid_: Steal, lock, request approval
+
+**Hand-back**:
+The grant that returns control, when the controller leaves, to the most recently controlling client still attached.
+_Avoid_: Failover, fallback
+
+**Detach**:
+End one client's attachment without ending the session or its command; it is deliberate only once the session daemon accepts the request.
+_Avoid_: Exit the session, kill, stop
+
+**Leave policy**:
+What a session daemon does when an attachment leaves: hand back control while another client remains, keep running after the final client detaches, and terminate after the final client leaves any other way.
+_Avoid_: Disconnect handler, kill policy
+
+**Client escape prefix**:
+The key that begins a client-side action instead of being sent directly to the session's command.
+_Avoid_: Hotkey, command prefix
+
+**Take-control key**:
+The configurable key a non-controlling client uses to take control of a session.
+_Avoid_: Space-to-control, hotkey
+
+**Placeholder**:
+The screen a non-controlling client shows instead of session content, saying the session is being viewed elsewhere.
+_Avoid_: Viewer mode, read-only view
+
+## Restoration and presentation
+
+**Restoration**:
+The bytes that bring a newly granted controller's terminal to the session's state: retained history, screen, cursor, modes and title, never raw historical output.
+_Avoid_: Replay, catch-up, redraw
+
+**Restoration prefix**:
+The restoration as the leading part of an attachment's output stream, produced incrementally as the connection drains and followed by live output.
+_Avoid_: Snapshot buffer, preamble
+
+**Snapshot point**:
+The virtual terminal state, after the last completed output token, that a restoration describes.
+_Avoid_: Checkpoint, capture time
+
+**Retained history**:
+The newest normal-screen history rows, at most `scrollback.max_rows`, that a session keeps for restoration; not a recording of every output byte or alternate-screen change.
+_Avoid_: Session scrollback, transcript, session log
+
+**Native scrollback**:
+The outer terminal's own history, browsed with its normal scrolling, selection and copy features.
+It can contain unrelated output and copies of retained history.
+_Avoid_: Retained history, daemon history
+
+**Truncation notice**:
+The line `[climon2: older session scrollback was discarded]` that marks, without measuring, retained history lost before it could be restored.
+_Avoid_: History gap, eviction marker
+
+**Presentation**:
+The session daemon's per-attachment record of what that attachment's output stream has put its terminal into, such as the alternate screen or an open synchronized update.
+_Avoid_: Host state, client state
+
+**Direct presentation**:
+Live output forwarded to a controller as filtered tokens, used when its terminal is exactly the session's size.
+_Avoid_: Raw mode, passthrough
+
+**Derived presentation**:
+Live output rendered from the virtual terminal's state, used when the controller's terminal is larger than the session's maximum size.
+_Avoid_: Emulated mode, redraw mode
+
+**Release**:
+The bytes that return a terminal to the normal-shell baseline when an attachment's presentation ends.
+_Avoid_: Reset, cleanup
 
 ## Installation
 

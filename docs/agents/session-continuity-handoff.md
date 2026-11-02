@@ -1,5 +1,11 @@
 # Session continuity: implementation handoff
 
+> **Superseded.** This handoff is historical. The authoritative instruction set
+> for session continuity is
+> [`session-continuity-plan.reviewed.gao.reviewed.md`](session-continuity-plan.reviewed.gao.reviewed.md),
+> which replaces this document and every earlier continuity plan. Where they
+> differ, follow the plan.
+
 ## Start here
 
 Implement the agreed next-release session-continuity behavior in `jackgeek/climon2`.
