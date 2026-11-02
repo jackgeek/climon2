@@ -1179,6 +1179,40 @@ fn pending_detach_while_stdout_is_blocked_ends_within_the_bound() {
     assert!(error.contains("detach not confirmed"), "{error}");
 }
 
+/// Section 1.7.1: reading `Exit` starts the closing deadline. When stdout is
+/// already full, the placeholder's end can never be written; the client gives
+/// up within the bound while the session connection stays open.
+#[test]
+fn exit_read_while_stdout_is_full_ends_within_the_closing_deadline() {
+    let (_home, mut pty, mut stream) = observing();
+    fill_output_queue(&pty.slave);
+    let parsed = Instant::now();
+    send(&mut stream, ServerMessage::Exit { code: 5 });
+    let (code, error) = exit_while_blocked(&mut pty, Duration::from_secs(7));
+    assert!(parsed.elapsed() >= Duration::from_millis(4900));
+    assert_eq!(code, 125);
+    assert!(error.contains("session result not confirmed"), "{error}");
+    drop(stream);
+}
+
+/// Writes through a separate description of the terminal until its output
+/// queue, which the test never reads, refuses more.
+fn fill_output_queue(terminal: &File) {
+    let mut writer = reopen(terminal);
+    let flags = status_flags(&writer);
+    assert_eq!(
+        unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) },
+        0
+    );
+    loop {
+        match writer.write(&[b'Q'; 1024]) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return,
+            Err(error) => panic!("{error}"),
+        }
+    }
+}
+
 /// CPU time (user + system) as reported by ps, e.g. `0:01.25`.
 fn cpu_time(pid: u32) -> Duration {
     let output = Command::new("/bin/ps")
