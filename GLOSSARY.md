@@ -10,7 +10,11 @@ _Avoid_: Job, instance, terminal
 
 **Session daemon**:
 The detached background process that owns a session's terminal and the command running in it.
-_Avoid_: Server, host, backend
+_Avoid_: Server, backend
+
+**Host**:
+The user's outer terminal that a client writes to.
+_Avoid_: Local terminal, outer screen
 
 **Client**:
 The process that connects the user's terminal to a session daemon.
@@ -84,7 +88,7 @@ Probes and kill requests are not attachments.
 _Avoid_: Session, control
 
 **Controller**:
-The attached client whose input and terminal size drive the session; whenever any client is attached, exactly one is the controller.
+The attached client whose input and terminal size drive the session; at most one client is the controller at a time.
 _Avoid_: Controlling client, primary client, owner
 
 **Grant**:
@@ -106,6 +110,14 @@ _Avoid_: Failover, fallback
 **Detach**:
 End one client's attachment without ending the session or its command; it is deliberate only once the session daemon accepts the request.
 _Avoid_: Exit the session, kill, stop
+
+**Kill**:
+A request, made with `climon2 kill`, to end a session whatever its attachments; it is confirmed only after the command has ended and the session is cleaned up.
+_Avoid_: Stop, force-detach
+
+**Hang-up grace**:
+The five seconds a terminating session waits, after hanging up its terminal, before killing the jobs still in it.
+_Avoid_: Kill timeout, reconnection grace
 
 **Leave policy**:
 What a session daemon does when an attachment leaves: hand back control while another client remains, keep running after the final client detaches, and terminate after the final client leaves any other way.
@@ -155,11 +167,11 @@ The session daemon's per-attachment record of what that attachment's output stre
 _Avoid_: Host state, client state
 
 **Direct presentation**:
-Live output forwarded to a controller as filtered tokens, used when its terminal is exactly the session's size.
+Live output forwarded to a controller as filtered tokens, used when its host is no larger than the session in either dimension.
 _Avoid_: Raw mode, passthrough
 
 **Derived presentation**:
-Live output rendered from the virtual terminal's state, used when the controller's terminal is larger than the session's maximum size.
+Live output rendered from the virtual terminal's state, used when the controller's host is larger than the session in either dimension, which happens only beyond the maximum session size.
 _Avoid_: Emulated mode, redraw mode
 
 **Release**:
