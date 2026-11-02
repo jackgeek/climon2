@@ -843,3 +843,275 @@ fn installed_client_releases_the_host_on_every_ending() {
     drop(controller);
     package.assert_clean();
 }
+
+/// Records every input byte in `$1` with bracketed paste enabled.
+const RECORDER: &str = r#"stty raw -echo
+printf '\e[?2004hREC-READY'
+exec cat > "$1"
+"#;
+
+fn recorder(package: &Package, bash: &Path, name: &str) -> (Terminal, PathBuf) {
+    let script = script(package, bash, "recorder.sh", RECORDER);
+    let path = package.isolation.home().join(name);
+    let mut terminal = climon2(
+        package,
+        &["exec", script.to_str().unwrap(), path.to_str().unwrap()],
+        ROWS,
+        COLS,
+    );
+    terminal.wait_for_text("REC-READY", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    (terminal, path)
+}
+
+fn attach_recorder(package: &Package, id: &str) -> Terminal {
+    let mut terminal = climon2(package, &["attach", id], ROWS, COLS);
+    terminal.wait_for_text("REC-READY", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    terminal
+}
+
+fn wait_controlling(terminal: &mut Terminal) {
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| {
+            screen.contains("REC-READY") && !screen.contains(PLACEHOLDER)
+        })
+        .unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+}
+
+fn is_client(pid: i32) -> bool {
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .ends_with("/climon2-client")
+}
+
+const PASTE_START: &str = "\x1b[200~first";
+/// The rest of the paste, holding both client-action bindings.
+const PASTE_REST: &str = "\x1dd\x14rest\x1b[201~";
+
+/// Section 6.1.12: a fragmented paste interrupted by takeover, by the
+/// controller's socket loss, and by a readiness change while the local paste
+/// is still streaming. The application sees exactly one closing marker, no
+/// stale payload and no client action, then the next controller's input.
+#[test]
+fn installed_interrupted_paste_is_closed_once_without_stale_payload() {
+    let Some(bash) = controlled_bash() else {
+        return;
+    };
+    let package = Package::new();
+    let closed = |after: &str| format!("\x1b[200~first\x1b[201~{after}").into_bytes();
+
+    let (mut a, rec) = recorder(&package, &bash, "takeover");
+    let id = session_id(&package);
+    a.send(PASTE_START).unwrap();
+    wait_contents(&rec, |bytes| bytes.ends_with(b"first"));
+    let mut b = attach_recorder(&package, &id);
+    a.wait_for_text(PLACEHOLDER, TIMEOUT).unwrap();
+    a.send(format!("{PASTE_REST}A-STALE")).unwrap();
+    b.send("B-AFTER").unwrap();
+    assert_eq!(
+        wait_contents(&rec, |bytes| bytes.ends_with(b"B-AFTER")),
+        closed("B-AFTER")
+    );
+    assert_eq!(
+        package.list()[0]["state"],
+        json!({"lifecycle": "attached", "attachments": 2, "controlled": true}),
+        "the remaining payload took no client action"
+    );
+    assert!(a.screen().contains(PLACEHOLDER));
+    kill_session(&package, &id);
+    assert_eq!(a.wait_exit(TIMEOUT).unwrap(), 129);
+    assert_eq!(b.wait_exit(TIMEOUT).unwrap(), 129);
+    drop((a, b));
+
+    let (mut b, rec) = recorder(&package, &bash, "loss");
+    let id = session_id(&package);
+    let mut a = attach_recorder(&package, &id);
+    assert!(is_client(a.pid()), "the launcher becomes the client");
+    a.send(PASTE_START).unwrap();
+    wait_contents(&rec, |bytes| bytes.ends_with(b"first"));
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(a.pid()),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .unwrap();
+    wait_controlling(&mut b);
+    b.send("B-AFTER").unwrap();
+    assert_eq!(
+        wait_contents(&rec, |bytes| bytes.ends_with(b"B-AFTER")),
+        closed("B-AFTER")
+    );
+    kill_session(&package, &id);
+    assert_eq!(b.wait_exit(TIMEOUT).unwrap(), 129);
+    drop((a, b));
+
+    let (mut a, rec) = recorder(&package, &bash, "readiness");
+    let id = session_id(&package);
+    a.send(PASTE_START).unwrap();
+    wait_contents(&rec, |bytes| bytes.ends_with(b"first"));
+    let mut b = attach_recorder(&package, &id);
+    a.wait_for_text(PLACEHOLDER, TIMEOUT).unwrap();
+    detach(&mut b, &id);
+    drop(b);
+    wait_controlling(&mut a);
+    a.send(format!("{PASTE_REST}A-AFTER")).unwrap();
+    assert_eq!(
+        wait_contents(&rec, |bytes| bytes.ends_with(b"A-AFTER")),
+        closed("A-AFTER")
+    );
+    assert_eq!(package.list()[0]["state"]["attachments"], 1);
+    kill_session(&package, &id);
+    assert_eq!(a.wait_exit(TIMEOUT).unwrap(), 129);
+    drop(a);
+    package.assert_clean();
+}
+
+/// Section 6.1.13: a restoration prefix larger than 16 MiB reaches a healthy
+/// host completely and in order, and numbered output produced during the
+/// restoration is neither lost nor duplicated.
+#[test]
+fn installed_large_restoration_is_complete_and_ordered() {
+    const ROWS_PRODUCED: u32 = 80_000;
+    const LIVE: u32 = 3_000;
+    const SLOW: Duration = Duration::from_secs(120);
+    let Some(bash) = controlled_bash() else {
+        return;
+    };
+    let package = Package::new();
+    configure(&package, r#"{"scrollback": {"max_rows": 100000}}"#);
+    let mut first = exec_bash(&package, &bash);
+    first
+        .send(format!(
+            "until [ -e ~/go ]; do sleep 0.05; done; \
+             awk 'BEGIN {{ for (i = 1; i <= {ROWS_PRODUCED}; i++) {{ printf \"%06d\", i; \
+             for (j = 0; j < 73; j++) printf \"€\"; printf \"\\n\" }} }}'; : > ~/done; \
+             until [ -e ~/live ]; do sleep 0.01; done; \
+             for i in $(seq 1 {LIVE}); do echo live-$i; done; echo LIVE-$((2+2))\n"
+        ))
+        .unwrap();
+    first.wait_for_text("LIVE-$((2+2))", TIMEOUT).unwrap();
+    first.wait_for_input_ready(TIMEOUT).unwrap();
+    let id = session_id(&package);
+    detach(&mut first, &id);
+    drop(first);
+    fs::write(package.isolation.home().join("go"), "").unwrap();
+    let done = package.isolation.home().join("done");
+    let deadline = Instant::now() + SLOW;
+    while !done.exists() {
+        assert!(Instant::now() < deadline, "production timed out");
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let options = Options {
+        history: 100_000,
+        ..Options::default()
+    };
+    let mut command = package.command("climon2");
+    command.args(["attach", &id]);
+    let mut second = Terminal::spawn_with(command, ROWS, 80, options).unwrap();
+    fs::write(package.isolation.home().join("live"), "").unwrap();
+    second.wait_for_text("\nLIVE-4", SLOW).unwrap();
+    second.wait_for_input_ready(TIMEOUT).unwrap();
+
+    let lines = lines(&second);
+    let produced: Vec<u32> = lines
+        .iter()
+        .filter(|line| line.chars().nth(6) == Some('€'))
+        .map(|line| {
+            assert_eq!(line.chars().count(), 79, "{line}");
+            line[..6].parse().unwrap()
+        })
+        .collect();
+    assert!(
+        produced.iter().copied().eq(1..=ROWS_PRODUCED),
+        "restored rows are complete and ordered: {} rows, first {:?}",
+        produced.len(),
+        produced.first()
+    );
+    assert_eq!(numbered(&second, "live-"), (1..=LIVE).collect::<Vec<_>>());
+    second.send("exit 0\n").unwrap();
+    assert_eq!(second.wait_exit(TIMEOUT).unwrap(), 0);
+    drop(second);
+    package.assert_clean();
+}
+
+/// Releases a script waiting with `WAITING` once the client is ready.
+fn after_readiness(terminal: &mut Terminal) {
+    terminal.wait_for_text("WAITING", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    terminal.send("g").unwrap();
+}
+
+/// Section 6.1.14: a 24x501 host shows a 24x500 session that wraps at its own
+/// width and clamps cursor positioning to its own rectangle.
+#[test]
+fn installed_wide_host_presents_the_session_rectangle() {
+    let Some(bash) = controlled_bash() else {
+        return;
+    };
+    let package = Package::new();
+    let wide = script(
+        &package,
+        &bash,
+        "wide.sh",
+        "stty raw -echo\nprintf WAITING; IFS= read -rsn1 _\nprintf '\\e[H\\e[2J'; printf '%500s' '' | tr ' ' a; printf b\nprintf '\\e[5;999HX\\e[12;1HWIDE-DONE'\nIFS= read -rsn1 _\n",
+    );
+    let mut terminal = climon2(&package, &["exec", wide.to_str().unwrap()], 24, 501);
+    after_readiness(&mut terminal);
+    terminal.wait_for_text("WIDE-DONE", TIMEOUT).unwrap();
+    let first = terminal.row(0);
+    assert_eq!(first.chars().filter(|&c| c == 'a').count(), 500);
+    assert_eq!(
+        first.chars().nth(500),
+        Some(' '),
+        "host column 501 is unused"
+    );
+    assert!(terminal.row(1).starts_with("b "), "{:?}", terminal.row(1));
+    let fifth: Vec<char> = terminal.row(4).chars().collect();
+    assert_eq!((fifth[499], fifth[500]), ('X', ' '));
+    terminal.send("q").unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    drop(terminal);
+    package.assert_clean();
+}
+
+/// Section 6.1.14: on a 201x80 host, a line feed on session row 200 scrolls
+/// the session only: new text lands on host row 200, host row 201 stays blank
+/// and the scrolled-off row is in the host's native scrollback.
+#[test]
+fn installed_tall_host_scrolls_the_session_rectangle() {
+    let Some(bash) = controlled_bash() else {
+        return;
+    };
+    let package = Package::new();
+    let tall = script(
+        &package,
+        &bash,
+        "tall.sh",
+        "stty raw -echo\nprintf WAITING; IFS= read -rsn1 _\nprintf '\\e[H\\e[2JTOP-ROW\\e[200;1HBOTTOM\\nNEXT-TEXT\\e[300;20HY'\nIFS= read -rsn1 _\n",
+    );
+    let mut terminal = climon2(&package, &["exec", tall.to_str().unwrap()], 201, 80);
+    after_readiness(&mut terminal);
+    terminal.wait_for_text("NEXT-TEXT", TIMEOUT).unwrap();
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| !screen.contains("TOP-ROW"))
+        .unwrap();
+    assert_eq!(terminal.row(198).trim_end(), "BOTTOM");
+    // Raw mode: LF moves down without a carriage return.
+    assert_eq!(terminal.row(199).trim_end(), "      NEXT-TEXT    Y");
+    assert_eq!(terminal.row(200).trim_end(), "", "host row 201 is unused");
+    assert!(
+        terminal.history().iter().any(|line| line == "TOP-ROW"),
+        "{:?}",
+        terminal.history()
+    );
+    terminal.send("q").unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    drop(terminal);
+    package.assert_clean();
+}

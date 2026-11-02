@@ -55,12 +55,13 @@ no compatibility evidence was fabricated.
 
 ## Specification mapping
 
-Each test also has a specification doc comment in `tests/packaged.rs`.
+Each test also has a specification doc comment in `tests/packaged.rs` or, for
+session continuity (plan section 6.1), `tests/continuity.rs`.
 
 | Requirement | Named packaged test |
 |---|---|
 | #16/#21.6/#38 outer/inner controlled bash, arithmetic 42, second PTY list exactly one, outer status 7, empty list and leaks | `installer_built_bash_smoke_lists_one_session_and_preserves_exit_seven` |
-| #16/#29 exact literal/empty argv, cwd, whole environment, real initial size/resize/status; #25 TRACE argv/input/environment privacy | `installed_generic_fixture_preserves_runtime_contract_and_log_privacy` |
+| #16/#29 exact literal/empty argv, cwd, whole environment, real initial size/resize/status; #25 TRACE argv/input/environment privacy; continuity 6.1.15 `TERM`/`COLORTERM` overrides, otherwise inherited environment | `installed_generic_fixture_preserves_runtime_contract_and_log_privacy` |
 | #16/#29 real nested bash, both GUIDs and depths, independent exit statuses | `installed_nested_bash_sessions_are_both_listed_and_route_exit_status` |
 | #16/#20 alternate screen, cursor query replies, SGR mouse, bracketed paste, resize redraw, fixture's final screen survives | `installed_tui_roundtrips_queries_mouse_paste_and_resize_without_reset` |
 | #16/#21.10 real vim edits/saves | `installed_real_vim_edits_and_saves` |
@@ -77,6 +78,34 @@ Each test also has a specification doc comment in `tests/packaged.rs`.
 | ADRs 0001/0002/0005/#26/#39 actual previous/current archive compatibility, no fabricated previous release | `actual_previous_release_remains_live_across_current_archive_install` |
 | #19/#25 client panic after exec, diagnostic/log suffix, actual daemon leave policy | `debug_hook_client_panic_after_exec_logs_and_uses_daemon_leave_policy` |
 | #25/#39 actual release default INFO-or-above | smoke's `assert_archive_default_levels` in archive mode |
+
+### Session continuity (plan section 6.1)
+
+| Scenario | Named packaged test (`tests/continuity.rs` unless noted) |
+|---|---|
+| 6.1.1 detach, list `detached`, reattach on an occupied host, prior host content kept, termios restored | `installed_session_detaches_and_reattaches_on_an_occupied_host` |
+| 6.1.2 alternate-screen restoration, quitting reveals normal content | `installed_alternate_screen_is_reattached_and_quitting_shows_normal_content` |
+| 6.1.3 shared session, one controller, take-control, controller size drives the PTY | `installed_clients_share_a_session_with_exactly_one_controller` |
+| 6.1.4 client SIGKILL uses the daemon leave policy | `killed_installed_client_uses_daemon_leave_policy_and_leaves_nothing` (`tests/packaged.rs`) |
+| 6.1.5 kill of detached and attached sessions | `installed_kill_ends_detached_and_attached_sessions` |
+| 6.1.6 self-attach refused without disturbing the session | `installed_self_attach_is_refused_without_disturbing_the_session` |
+| 6.1.7 invalid configuration refused before a session exists; rebound keys | `installed_invalid_config_is_refused_before_a_session_exists`, `installed_config_rebinds_the_client_keys` |
+| 6.1.8 `scrollback.max_rows` bounds restored history with a notice | `installed_scrollback_max_rows_bounds_restored_history` |
+| 6.1.9 detached queries answered by the session, never forwarded to the host | `installed_session_answers_queries_without_the_host` |
+| 6.1.10 encoded titles, OSC 8 links as plain text | `installed_titles_are_encoded_and_links_are_plain_text` |
+| 6.1.11 detached session absorbs an 8 MiB write | `installed_detached_session_absorbs_a_large_write` |
+| 6.1.11 host released (modes, termios) on detach, takeover, exit and kill | `installed_client_releases_the_host_on_every_ending` |
+| 6.1.12 interrupted paste closed once on takeover, socket loss and readiness change | `installed_interrupted_paste_is_closed_once_without_stale_payload` |
+| 6.1.13 large restoration complete, live output once and in order | `installed_large_restoration_is_complete_and_ordered` |
+| 6.1.14 wide and tall hosts present the session rectangle | `installed_wide_host_presents_the_session_rectangle`, `installed_tall_host_scrolls_the_session_rectangle` |
+| 6.1.15 `TERM`/`COLORTERM` overrides | `installed_generic_fixture_preserves_runtime_contract_and_log_privacy` (`tests/packaged.rs`) |
+| 6.1.17 previous-release compatibility | `actual_previous_release_remains_live_across_current_archive_install` (`tests/packaged.rs`) |
+
+Not packaged, with lower-boundary evidence: resize before `Ready` (no public
+hold-attach hook; daemon `resize_before_ready_replaces_the_restoration_period`)
+and the ambiguous selector (random GUIDs; CLI
+`a_selector_must_match_exactly_one_live_session`). Daemon raw-socket (6.2) and
+client bridge (6.3) scenarios are mapped in those crates' test doc comments.
 
 ### Deliberately reused preceding boundary evidence
 
