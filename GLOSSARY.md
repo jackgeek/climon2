@@ -21,7 +21,7 @@ The process that connects the user's terminal to a session daemon.
 _Avoid_: Viewer, frontend, terminal
 
 **Monitor**:
-A program that shows one session at a time in the user's terminal and switches between sessions, keeping every session's screen current through its own clients.
+A program that lets the user interact with one session at a time and switch between sessions, keeping previously visited sessions' screens current through clients it owns.
 _Avoid_: Dashboard, multiplexer, switcher
 
 **Virtual terminal**:
