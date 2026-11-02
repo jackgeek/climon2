@@ -125,17 +125,6 @@ impl Pty {
     fn close_master(&mut self) {
         close(&mut self.master, &mut self.writer);
     }
-    pub fn leave(&mut self) -> io::Result<u32> {
-        if self.reaped {
-            return self.leave_reaped();
-        }
-        let (master, writer) = (&mut self.master, &mut self.writer);
-        let result = process::hangup(&mut self.session, || close(master, writer));
-        let code = result?.code().map_err(io::Error::other)?;
-        self.reaped = true;
-        self.status = Some(code);
-        Ok(code)
-    }
     /// Closes the terminal without waiting; `end_hangup` follows once the
     /// hang-up grace has elapsed.
     pub fn hang_up(&mut self) -> io::Result<()> {
@@ -160,12 +149,11 @@ impl Pty {
         Ok(code)
     }
 
-    /// The leader already exited; its session still gets the hang-up grace.
-    fn leave_reaped(&mut self) -> io::Result<u32> {
-        self.close_master();
+    /// The daemon loop failed, so the command session gets its grace here.
+    pub fn abandon(&mut self) {
+        let _ = self.hang_up();
         std::thread::sleep(climon2_core::protocol::HANGUP_GRACE);
-        self.session.kill()?;
-        Ok(self.status.unwrap_or(129))
+        let _ = self.end_hangup();
     }
 
     pub fn finish(&mut self) -> io::Result<()> {

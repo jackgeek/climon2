@@ -113,7 +113,7 @@ fn session_vt(options: &Options) -> io::Result<Vt> {
 
 fn end_pty(pty: &mut Pty, result: io::Result<()>) -> io::Result<()> {
     if result.is_err() {
-        let _ = pty.leave();
+        pty.abandon();
         return result;
     }
     pty.finish()

@@ -14,12 +14,17 @@ pub fn run(home: &std::path::Path, selector: &Selector) -> Result<u32, Error> {
     let deadline = Instant::now() + DEADLINE;
     let sessions = list::discover_live(home)?;
     let session = attach::select(&sessions, selector)?;
+    let child = start(home, session)?;
+    confirm(child, deadline, &session.metadata.session_id)
+}
+
+fn start(home: &std::path::Path, session: &list::LiveSession) -> Result<Child, Error> {
     require_kill(session)?;
     let child = attach::client(home, &session.metadata, StartupEnvelope::Kill)?
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .spawn()?;
-    confirm(child, deadline, &session.metadata.session_id)
+    Ok(child)
 }
 
 fn require_kill(session: &list::LiveSession) -> Result<(), Error> {

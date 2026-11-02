@@ -109,6 +109,12 @@ fn work(arguments: CliArgs) -> Result<Work, String> {
     match arguments {
         CliArgs::Exec(command) => Ok(Work::Exec(command)),
         CliArgs::List { json } => Ok(Work::List { json }),
+        other => session_work(other),
+    }
+}
+
+fn session_work(arguments: CliArgs) -> Result<Work, String> {
+    match arguments {
         CliArgs::Attach(selector) => Ok(Work::Attach(selector)),
         CliArgs::Kill(selector) => Ok(Work::Kill(selector)),
         other => Err(presentation(&other)),
