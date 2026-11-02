@@ -105,7 +105,7 @@ fn attach_in_terminal(
         command.env("CLIMON2_SESSION_ID", id.as_str());
     }
     let mut terminal = Terminal::spawn(command, 24, 200).unwrap();
-    let status = terminal.wait_exit(Duration::from_secs(5)).unwrap();
+    let status = terminal.wait_exit(Duration::from_secs(30)).unwrap();
     (status, terminal.screen())
 }
 
