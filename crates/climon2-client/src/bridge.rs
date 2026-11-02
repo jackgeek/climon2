@@ -15,6 +15,11 @@ use std::{
 const RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
+/// What unexpected loss can restore without a daemon response (section 1.7.1):
+/// synchronized update ended, attributes, cursor, mouse, focus, bracketed paste,
+/// application cursor keys and keypad. Never the main screen.
+const CONSERVATIVE_RESET: &[u8] = b"\x1b[?2026l\x1b[0m\x1b[?25h\
+\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b>";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Role {
@@ -278,8 +283,8 @@ struct Bridge {
     /// unconfirmed, even while stdout is blocked.
     closing: Option<Instant>,
     hung_up: bool,
-    /// A terminal message waiting for the placeholder's end bytes to drain.
-    exit: Option<BridgeExit>,
+    /// The bridge's result, waiting for its farewell bytes to drain.
+    ending: Option<io::Result<BridgeExit>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -311,7 +316,7 @@ pub fn run(
         pending_detach: false,
         closing: None,
         hung_up: false,
-        exit: None,
+        ending: None,
     };
     bridge.run().map_err(|error| {
         if error.kind() == io::ErrorKind::UnexpectedEof {
@@ -333,20 +338,42 @@ impl Bridge {
 
     fn step(&mut self) -> io::Result<Option<BridgeExit>> {
         if let Some(signal) = self.signals.termination_signal() {
+            self.abandon(false);
             return Ok(Some(BridgeExit::Status(128 + signal)));
         }
         self.check_closing()?;
         self.tick()
     }
 
-    fn check_closing(&self) -> io::Result<()> {
+    fn check_closing(&mut self) -> io::Result<()> {
         if self
             .closing
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
+            self.abandon(true);
             return Err(invalid(self.unconfirmed()));
         }
         Ok(())
+    }
+
+    /// Stops writing pending output and makes one non-blocking attempt at the farewell.
+    fn abandon(&mut self, reset: bool) {
+        self.output = Pending::new(self.farewell(reset));
+        let _ = self.output.flush(&mut Output);
+    }
+
+    /// The conservative reset when no daemon response restored the terminal, then
+    /// the end of a shown placeholder (section 1.7.1).
+    fn farewell(&self, reset: bool) -> Vec<u8> {
+        let mut bytes = if reset {
+            CONSERVATIVE_RESET.to_vec()
+        } else {
+            Vec::new()
+        };
+        if self.role == Role::Observing {
+            bytes.extend(placeholder_end(self.size.rows));
+        }
+        bytes
     }
 
     fn unconfirmed(&self) -> &'static str {
@@ -415,11 +442,10 @@ impl Bridge {
         })
     }
 
-    /// Once a terminal message arrived, nothing more is read; it ends the
-    /// bridge when stdout has drained.
+    /// Once the bridge is ending, nothing more is read; it ends when stdout has drained.
     fn dispatch(&mut self, descriptors: &[libc::pollfd; 3]) -> io::Result<Option<BridgeExit>> {
-        if self.exit.is_some() {
-            return Ok(self.exit.filter(|_| self.output.empty()));
+        if self.ending.is_some() {
+            return self.ended();
         }
         if let Some(code) = self.receive_ready(descriptors[0].revents)? {
             return Ok(Some(code));
@@ -511,9 +537,14 @@ impl Bridge {
     }
 
     fn receive(&mut self) -> io::Result<Option<BridgeExit>> {
-        match self.transport.receive()? {
-            None => Ok(None),
-            Some(message) => self.message(message),
+        match self.transport.receive() {
+            Ok(None) => Ok(None),
+            Ok(Some(message)) => self.message(message),
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                let reset = self.farewell(true);
+                self.finish(Err(error), reset)
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -524,20 +555,29 @@ impl Bridge {
     }
 
     fn message(&mut self, message: ServerMessage) -> io::Result<Option<BridgeExit>> {
-        if let Some(exit) = result(&message) {
-            return Ok(self.end(exit));
+        if let Some(ending) = result(&message) {
+            let farewell = self.farewell(false);
+            return self.finish(ending, farewell);
         }
         self.session_message(message).map(|()| None)
     }
 
-    /// A shown placeholder ends below itself before the terminal is restored.
-    fn end(&mut self, exit: BridgeExit) -> Option<BridgeExit> {
-        if self.role != Role::Observing {
-            return Some(exit);
+    /// The farewell is written before the terminal is restored.
+    fn finish(
+        &mut self,
+        ending: io::Result<BridgeExit>,
+        farewell: Vec<u8>,
+    ) -> io::Result<Option<BridgeExit>> {
+        self.output.append(farewell);
+        self.ending = Some(ending);
+        self.ended()
+    }
+
+    fn ended(&mut self) -> io::Result<Option<BridgeExit>> {
+        if !self.output.empty() {
+            return Ok(None);
         }
-        self.output.append(placeholder_end(self.size.rows));
-        self.exit = Some(exit);
-        None
+        self.ending.take().transpose()
     }
 
     fn session_message(&mut self, message: ServerMessage) -> io::Result<()> {
@@ -637,10 +677,11 @@ impl Bridge {
 }
 
 /// The session's final answers end the bridge.
-fn result(message: &ServerMessage) -> Option<BridgeExit> {
+fn result(message: &ServerMessage) -> Option<io::Result<BridgeExit>> {
     match message {
-        ServerMessage::Exit { code } => Some(BridgeExit::Status(*code)),
-        ServerMessage::Detached => Some(BridgeExit::Detached),
+        ServerMessage::Exit { code } => Some(Ok(BridgeExit::Status(*code))),
+        ServerMessage::Detached => Some(Ok(BridgeExit::Detached)),
+        ServerMessage::Error { message } => Some(Err(invalid(message.clone()))),
         _ => None,
     }
 }
@@ -649,7 +690,6 @@ fn role_after(message: ServerMessage) -> io::Result<Role> {
     match message {
         ServerMessage::Granted { .. } => Ok(Role::Restoring),
         ServerMessage::Revoked => Ok(Role::Observing),
-        ServerMessage::Error { message } => Err(invalid(message)),
         _ => Err(invalid("unexpected session message")),
     }
 }
@@ -764,13 +804,21 @@ mod tests {
     }
 
     #[test]
-    fn only_exit_and_detached_end_the_bridge() {
+    fn only_exit_detached_and_error_end_the_bridge() {
+        let ended = |message| result(&message).map(|ending| ending.map_err(|e| e.to_string()));
         assert_eq!(
-            result(&ServerMessage::Exit { code: 3 }),
-            Some(BridgeExit::Status(3))
+            ended(ServerMessage::Exit { code: 3 }),
+            Some(Ok(BridgeExit::Status(3)))
         );
-        assert_eq!(result(&ServerMessage::Detached), Some(BridgeExit::Detached));
-        assert_eq!(result(&ServerMessage::Revoked), None);
+        assert_eq!(
+            ended(ServerMessage::Detached),
+            Some(Ok(BridgeExit::Detached))
+        );
+        let error = ServerMessage::Error {
+            message: "refused".into(),
+        };
+        assert_eq!(ended(error), Some(Err("refused".into())));
+        assert_eq!(ended(ServerMessage::Revoked), None);
     }
 
     #[test]
@@ -778,10 +826,6 @@ mod tests {
         let granted = ServerMessage::Granted { period: 1 };
         assert_eq!(role_after(granted).unwrap(), Role::Restoring);
         assert_eq!(role_after(ServerMessage::Revoked).unwrap(), Role::Observing);
-        let error = ServerMessage::Error {
-            message: "refused".into(),
-        };
-        assert_eq!(role_after(error).unwrap_err().to_string(), "refused");
         let other = role_after(ServerMessage::Attached).unwrap_err();
         assert_eq!(other.to_string(), "unexpected session message");
     }

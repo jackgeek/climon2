@@ -37,8 +37,19 @@ SIGWINCH is coalesced and unchanged sizes are suppressed. HUP/TERM/INT close
 the socket and return 128+signal. Stdin EOF/EIO silently returns 129. Ctrl-C,
 Ctrl-Z, binary bytes and all terminal control sequences are forwarded unchanged.
 Exit is read only after pending output drains. Termios and nonblocking flags
-are restored on normal exit, errors, signals, and unwinding; no screen reset
-sequences are emitted. Leave policy belongs exclusively to the daemon.
+are restored on normal exit, errors, signals, and unwinding. Leave policy
+belongs exclusively to the daemon.
+
+The daemon's release bytes return the terminal to its normal-shell baseline. A
+shown placeholder is ended below itself (cursor to the last row, CR LF) on Exit,
+Detached and Error, and with one non-blocking attempt on a termination signal.
+Only when no daemon response arrives (unexpected connection loss, or the
+five-second deadline expiring) does the client write its conservative reset:
+synchronized update ended, `CSI 0 m`, cursor shown, mouse, focus and bracketed
+paste off, application cursor keys and keypad off. It never leaves the
+alternate screen blindly, so alternate-screen and other unknown state (for
+example the title) cannot be restored without a daemon response. On expiry
+pending output is discarded and the reset gets one non-blocking attempt.
 
 ## Behavioral evidence
 
@@ -47,7 +58,10 @@ sequences are emitted. Leave policy belongs exclusively to the daemon.
 - `raw_bridge_preserves_bytes_and_restores_termios_after_final_output`
 - `raw_client_signals_restore_termios_close_connection_and_return_signal_status`
 - `termination_before_attached_does_not_enter_raw_mode_or_report_error`
-- `protocol_error_lost_connection_and_panic_restore_without_terminal_sequences`
+- `protocol_error_lost_connection_and_panic_restore_before_one_line_diagnosis`
+- `an_error_while_observing_ends_the_placeholder_before_the_diagnostic`
+- `a_signal_while_observing_ends_the_placeholder_and_keeps_the_signal_status`
+- `a_lost_connection_while_observing_resets_conservatively_and_ends_the_placeholder`
 - `hello_rejects_mismatched_session_protocol_version_and_unexpected_frames`
 - `hello_deadline_is_absolute_across_partial_reply`
 - `fragmented_frames_and_coalesced_resize_preserve_the_stream`

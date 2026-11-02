@@ -559,6 +559,66 @@ fn a_revoked_client_shows_the_placeholder_until_the_session_ends() {
     assert_eq!(pty.finish(5), (b"\x1b[44;1H\r\n".to_vec(), String::new()));
 }
 
+/// Section 1.7.1 item 3: what unexpected loss can still restore without a daemon
+/// response; never the main screen.
+const CONSERVATIVE_RESET: &[u8] = b"\x1b[?2026l\x1b[0m\x1b[?25h\
+\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b>";
+
+/// A client that shows the placeholder after release bytes and a revocation.
+fn observing() -> (tempfile::TempDir, Pty, std::os::unix::net::UnixStream) {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    begin_bridge(&mut stream);
+    pty.wait_raw();
+    send(&mut stream, ServerMessage::Revoked);
+    pty.read_until(b"take control");
+    (home, pty, stream)
+}
+
+/// Section 3.5 exit ordering: an `Error` ends the placeholder below itself before
+/// the terminal is restored and the one-line diagnostic is printed.
+#[test]
+fn an_error_while_observing_ends_the_placeholder_before_the_diagnostic() {
+    let (_home, mut pty, mut stream) = observing();
+    send(
+        &mut stream,
+        ServerMessage::Error {
+            message: "refused".into(),
+        },
+    );
+    let (bytes, error) = pty.finish(125);
+    assert_eq!(bytes, b"\x1b[31;1H\r\n");
+    assert_eq!(error.lines().count(), 1, "{error}");
+    assert!(error.contains("refused"), "{error}");
+}
+
+/// A termination signal keeps its status but never leaves the placeholder's
+/// cursor at the top of the screen.
+#[test]
+fn a_signal_while_observing_ends_the_placeholder_and_keeps_the_signal_status() {
+    let (_home, mut pty, _stream) = observing();
+    assert_eq!(
+        unsafe { libc::kill(pty.child.id() as i32, libc::SIGTERM) },
+        0
+    );
+    assert_eq!(pty.finish(143), (b"\x1b[31;1H\r\n".to_vec(), String::new()));
+}
+
+/// Section 1.7.1 item 3: unexpected loss writes the conservative reset, then
+/// still ends the placeholder it knows it drew.
+#[test]
+fn a_lost_connection_while_observing_resets_conservatively_and_ends_the_placeholder() {
+    let (_home, mut pty, stream) = observing();
+    drop(stream);
+    let (bytes, error) = pty.finish(125);
+    let mut expected = CONSERVATIVE_RESET.to_vec();
+    expected.extend(b"\x1b[31;1H\r\n");
+    assert_eq!(bytes, expected);
+    assert!(error.contains(&format!("lost connection to session {ID}")));
+}
+
 /// #9: the paste stream outlives role changes: a paste begun under one role is
 /// discarded through its closing marker, never read as keys, under the next.
 #[test]
@@ -607,7 +667,7 @@ fn unconfirmed_detach_exits_after_five_seconds_and_restores_terminal() {
     let (bytes, error) = pty.finish(125);
     assert!(started.elapsed() >= Duration::from_secs(5));
     assert!(started.elapsed() < Duration::from_secs(7));
-    assert!(bytes.is_empty());
+    assert_eq!(bytes, CONSERVATIVE_RESET);
     assert!(error.contains("detach not confirmed"), "{error}");
 }
 
@@ -645,9 +705,10 @@ fn raw_client_signals_restore_termios_close_connection_and_return_signal_status(
     }
 }
 
-/// #20/#25: every terminal protocol failure restores before one-line diagnosis.
+/// #20/#25: every terminal protocol failure restores before one-line diagnosis;
+/// only a lost connection writes the conservative reset (section 1.7.1).
 #[test]
-fn protocol_error_lost_connection_and_panic_restore_without_terminal_sequences() {
+fn protocol_error_lost_connection_and_panic_restore_before_one_line_diagnosis() {
     for mode in [
         "error",
         "lost",
@@ -691,7 +752,12 @@ fn protocol_error_lost_connection_and_panic_restore_without_terminal_sequences()
             _ => (),
         }
         let (bytes, error) = pty.finish(125);
-        assert!(bytes.is_empty(), "{mode}: {bytes:?}");
+        let reset: &[u8] = if mode == "lost" {
+            CONSERVATIVE_RESET
+        } else {
+            b""
+        };
+        assert_eq!(bytes, reset, "{mode}");
         assert_eq!(error.lines().count(), 1, "{mode}: {error}");
         assert!(error.starts_with("climon2: error: "), "{mode}: {error}");
         assert!(
@@ -1025,8 +1091,11 @@ fn hung_up_session_during_blocked_output_sleeps_then_delivers_everything() {
             "client used {used:?} CPU in 1 s while output was blocked"
         );
         let (bytes, error) = pty.finish(exit.map_or(125, |code| code as i32));
-        assert_eq!(bytes.len(), 60_000);
-        assert!(bytes.iter().all(|byte| *byte == b'X'));
+        let mut expected = vec![b'X'; 60_000];
+        if exit.is_none() {
+            expected.extend(CONSERVATIVE_RESET);
+        }
+        assert!(bytes == expected, "{:?}", &bytes[59_990.min(bytes.len())..]);
         if exit.is_some() {
             assert_eq!(error, "");
         } else {
