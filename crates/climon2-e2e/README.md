@@ -40,8 +40,8 @@ sibling. Fixtures remain test-only sibling binaries, not shipped programs.
 The smoke scenario leaves `CLIMON2_LOG` unset and checks the actual installed
 release's logs contain no DEBUG or TRACE records.
 
-Internal-only fault injections (including the client's `hold-attach` and the
-daemon's `pty-write`) and the explicitly synthetic client-invocation
+Internal-only fault injections (including the CLI's `CLIMON2_CLI_HOLD` and the
+daemon's `pty-write` and `pty-write-partial`) and the explicitly synthetic client-invocation
 fixture are debug-sibling scenarios, not applicable to an unmodified no-hooks
 archive. All black-box terminal, lifecycle, missing-client, privacy, logging and
 raw-socket cases run against the archive. A removed client is restored by
@@ -111,8 +111,9 @@ session continuity (plan section 6.1), `tests/continuity.rs`.
 | 6.1.15 `TERM`/`COLORTERM` overrides | `installed_generic_fixture_preserves_runtime_contract_and_log_privacy` (`tests/packaged.rs`) |
 | 6.1.17 previous-release compatibility | `actual_previous_release_remains_live_across_current_archive_install` (`tests/packaged.rs`) |
 
-Not packaged, with lower-boundary evidence: resize before `Ready` (no public
-hold-attach hook; daemon `resize_before_ready_replaces_the_restoration_period`)
+Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
+holds a packaged client between `Granted` and `Ready`; daemon
+`resize_before_ready_replaces_the_restoration_period`)
 and the ambiguous selector (random GUIDs; CLI
 `a_selector_must_match_exactly_one_live_session`). Daemon raw-socket (6.2) and
 client bridge (6.3) scenarios are mapped in those crates' test doc comments.

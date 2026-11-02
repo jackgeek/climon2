@@ -1,7 +1,8 @@
 # climon2-core
 
 Pure contracts for platform, CLI, daemon and client callers. Core performs no
-filesystem/process/terminal access and contains no platform selection.
+process/terminal access and contains no platform selection; its only
+filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
 `test_hook_marker!` is preserved.
 
 ## Public boundaries
@@ -19,10 +20,22 @@ filesystem/process/terminal access and contains no platform selection.
   Parse errors do not echo untrusted values into diagnostics.
   `HelloReply::{is_live_session,validate_client}` separates cross-version probes
   from version-matched client validation.
-- `protocol::ConnectionState::receive`: per-connection hello/probe/attach/input
-  sequencing, poisoned on protocol error. This does **not** arbitrate session
-  ownership across connections; the daemon separately rejects a second client.
-  Error closes the connection; no Detach, Snapshot or protocol-2 fields exist.
+- `hello`: optional hello-reply extensions. `Capabilities` (`attach`, `kill`,
+  `state-v1`, `client-startup-v1`; attach and kill each also need
+  `client-startup-v1`) and `SessionState` (lifecycle `starting`, `attached`,
+  `detached` or `terminating`, attachment count, controlled) are parsed
+  leniently: absent grants nothing, malformed is reported and never trusted,
+  unknown tokens are ignored. `advertise` builds the daemon's reply frame.
+- Protocol-1 messages: client `Hello`, `Attach`, `Input`, `Resize`,
+  `TakeControl`, `Ready{period}`, `Detach`, `Kill`, `Error`; server `Hello`,
+  `Attached`, `Output`, `Exit{code}`, `Granted{period}`, `RestoreEnd{period}`,
+  `Revoked`, `Detached`, `Terminated{code}`, `Error`.
+- `protocol::ConnectionState::receive`: per-connection sequencing through
+  `AwaitingHello`, `Probing`, `Attached`, `Killing` and `Closed`, poisoned on
+  protocol error. A connection chooses `Attach` or `Kill` once; attachment
+  requests need `Attached`. This does **not** arbitrate control across
+  connections; the daemon decides which attachment controls. Error closes the
+  connection.
 - `protocol::TerminalSize::{initial,resize}` handles fallback and ignored sizes.
   `hello_time_remaining(elapsed)` is an absolute two-second budget, not a
   per-read timeout. Callers must enforce it on their transport, starting before
@@ -54,11 +67,33 @@ filesystem/process/terminal access and contains no platform selection.
 - `cli::CliArgs::parse`: arguments **exclude** argv[0]. Exec retains
   `CommandArgs { command: OsString, args: Vec<OsString> }`, including empty
   trailing arguments and option-looking tokens. Optional `--` separates exec
-  from a command. List permits only `--json`; top-level help/version are modeled.
-  `UsageError::exit_code` returns 2.
+  from a command. Attach and kill take exactly one `selector::Selector`. List
+  permits only `--json`; top-level help/version take no arguments.
+  `UsageError::exit_code` returns 2; `cli::USAGE` is the usage line.
+- `selector::Selector`: 8 to 32 hex digits after removing hyphens and folding
+  case; anything else is a `UsageError`. `select` picks exactly one candidate by
+  unique prefix or full ID; no match or ambiguity (listing every full ID) is a
+  `SelectionError`.
+- `config`: `ConfigSource::read` reads `config.jsonc` once (absent means
+  defaults, unreadable is an error). `exec()` validates the whole file into
+  `ExecConfig` (scrollback `MaxRows`, an integer 0..=100000, default 10000, plus
+  client settings); `attach()` validates only the `client` section into
+  `AttachConfig`. JSONC comments and trailing commas are accepted; unknown
+  fields are ignored; errors name their class.
+- `keys`: `ControlKey` is one C0 control byte named in the `Ctrl+` vocabulary.
+  `ClientSettings` holds the escape prefix (default `Ctrl+]`) and take-control
+  key (default `Ctrl+T`); either may be disabled, take-control may not be
+  `Ctrl+[` (Escape), and enabled bindings may not share a byte.
+- `startup_envelope::StartupEnvelope`: the schema-1 `CLIMON2_CLIENT_STARTUP`
+  JSON, `attach` with exact settings or `kill`, at most 4096 bytes; a present
+  envelope is used exactly or rejected.
+- `title::{encode,default_title}`: percent-encodes C0, DEL and C1 per UTF-8
+  byte; the default title joins the command argv with single spaces.
 - `session::SessionEnvironment::for_session`: preserves inherited OS-string
-  values except the two overwritten session variables and absent-only TERM
-  default. Nonempty enclosing session ID means nested; malformed enclosing
+  values except the replaced keys: the two session variables,
+  `TERM=xterm-256color` and `COLORTERM=truecolor` are always set, and any
+  inherited `CLIMON2_CLIENT_STARTUP` is dropped. Nonempty enclosing session ID
+  means nested; malformed enclosing
   depth means 1. `depth` is nonzero; an increment beyond u32 returns
   `DepthOverflow`. `nested_warning` contains exact stderr text without newline.
   `ordinal` handles English teen/century exceptions.
@@ -78,8 +113,13 @@ Integration tests call only these public boundaries:
 | ADR 0005 GUID/SemVer/time validation | `adr0005_guid_and_version_are_validated_without_normalizing_untrusted_paths`, `adr0005_created_at_requires_real_utc_calendar_time_with_exact_milliseconds` |
 | ADR 0005 / #26 frozen fields, future999 and one-way display | `adr0005_append_only_goldens_include_future999_and_unknown_fields`, `adr0005_frozen_fields_reject_missing_wrong_types_invalid_values_and_filename_mismatch`, `adr0005_metadata_requires_a_json_object_not_a_positional_array`, `adr0005_metadata_paths_are_absolute_cross_os_display_strings_not_native_paths`, `adr0005_display_is_lossy_only_and_never_used_as_runtime_argv` |
 | #17/#18/#28 home, layout, hash and frozen invocation | `issue17_home_defaults_only_when_unset_and_never_accepts_empty_or_relative`, `adr0001_version_matched_client_has_exact_frozen_invocation`, `issue18_runtime_hash_is_sha256_of_exact_canonical_home_and_socket_is_bounded` |
-| #29 recovered argv/environment/depth/ordinal rules | `issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors`, `issue29_top_level_ignores_stray_depth_and_sets_only_session_vars_and_absent_term`, `issue29_nested_depth_defaults_malformed_enclosing_to_one_and_preserves_empty_term`, `issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow` |
+| #29 recovered argv/environment/depth/ordinal rules | `issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors`, `issue29_help_and_version_flags_take_no_arguments`, `issue29_top_level_ignores_stray_depth_and_sets_session_vars_and_terminal_identity`, `projected_environment_replaces_term_and_colorterm_and_drops_startup_envelope`, `issue29_nested_depth_defaults_malformed_enclosing_to_one_and_replaces_empty_term`, `issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow` |
+| Continuity messages and connection choice | `continuity_messages_have_exact_wire_codes_and_json`, `continuity_bodies_are_typed_objects_and_each_code_has_one_direction`, `a_connection_chooses_attach_or_kill_once_and_attachment_requests_need_attach` |
 | #17 / #20 exit mapping | `issue17_failures_remain_distinct_from_command_status_and_signal_mapping` |
+
+`tests/config.rs`, `tests/hello.rs`, `tests/keys.rs`, `tests/selector.rs`,
+`tests/startup_envelope.rs` and `tests/title.rs` specify those modules one rule
+per test.
 
 `adr0005_every_checked_in_golden_is_readable_by_the_current_reader` automatically
 discovers every golden. `malformed_metadata_and_control_errors_do_not_echo_external_values`

@@ -19,19 +19,42 @@ or reopens another client's log, so concurrent and later clients of one session
 never collide; a collision would be an ordinary I/O failure. Failures after the
 log exists carry the ` (logs: <session-log directory>)` suffix.
 
+The operation comes from the `CLIMON2_CLIENT_STARTUP` startup envelope (core
+`startup_envelope`, at most 4096 bytes), which the CLI sets: `attach` with the
+exact validated client settings, or `kill`. A present envelope is used exactly
+or rejected. Without one, a directly started client reads and validates the
+`client` section of `config.jsonc` and attaches.
+
 Connection, hello write, and complete hello reply share one real two-second
 deadline. Peers must have the effective UID and hello must match session,
-protocol, metadata version, and attach capability. Raw mode begins only after
-the daemon accepts Attach. A controller waits for Granted, writes the
-restoration and live backlog, drains input typed during restoration, then sends
-Ready; application input is admitted only after that confirmation. Observers
-can take control, and Ctrl+] followed by `d` requests an explicit detach.
+protocol, metadata version, and the capability for the operation (`attach` or
+`kill`); a missing capability fails before any request is sent.
+
+**Kill mode** opens no terminal and no attachment: it sends `Kill` and waits for
+`Terminated`. Confirmed termination returns 0 whatever the command's status; an
+`Error`, a refusal or a lost connection is a failure, and HUP/TERM/INT while
+waiting return 128+signal. The CLI bounds the whole operation.
+
+**Attach mode**: raw mode begins only after the daemon accepts Attach. A
+controller waits for Granted, writes the restoration and live backlog, drains
+and discards input typed during restoration, then sends Ready; application
+input is admitted only after that confirmation. A revoked client shows the
+placeholder: the first line `This session is being viewed elsewhere.` and, when
+a take-control key is configured, `Press <key> to take control`. It is redrawn
+on resize. That key takes control; observer input is never sent. The escape
+prefix (default Ctrl+]) followed by `d` requests an explicit detach from either
+role; after `Detached` the client prints
+`climon2: detached from session <id>; reattach with: climon2 attach <id>` on the
+restored terminal and returns 0. Bracketed paste spanning a role change is
+discarded through its closing marker, never replayed or read as keys.
 
 The event loop has one incremental incoming frame, one pending Input/Resize
 frame, and one pending Output payload. Core validates framing; no payload
 exceeds 65,535 bytes. Socket or terminal backpressure stops the corresponding
-producer. A pending detach or lost-session result has a bounded five-second
-confirmation deadline, including while terminal output is blocked.
+producer, and no further frames are read while stdout has pending bytes. A
+pending detach or a hung-up session has a bounded five-second closing deadline
+(`detach not confirmed` or `session result not confirmed`), serviced even while
+terminal output is blocked.
 
 SIGWINCH is coalesced and unchanged sizes are suppressed. HUP/TERM/INT close
 the socket and return 128+signal. Stdin EOF/EIO silently returns 129. Ctrl-C,
@@ -79,12 +102,25 @@ pending output is discarded and the reset gets one non-blocking attempt.
 - `nonexistent_socket_and_bad_metadata_fail_without_touching_termios`
 - `log_filter_reaches_client_through_environment_without_cli_flags`
 - `concurrent_clients_on_one_session_each_write_their_own_log`
+- `input_typed_before_restore_end_is_drained_and_never_replayed`
+- `a_revoked_client_shows_the_placeholder_until_the_session_ends`
+- `a_paste_spanning_role_changes_is_never_replayed_or_read_as_keys`
+- `unconfirmed_detach_exits_after_five_seconds_and_restores_terminal`
+- `lost_session_while_stdout_is_blocked_ends_within_the_closing_deadline`
+- `pending_detach_while_stdout_is_blocked_ends_within_the_bound`
 
-The fault injections exist only with `test-hooks`. `CLIMON2_CLIENT_FAULT=panic`
-panics after entering raw mode. `CLIMON2_CLIENT_FAULT=hold-attach` with
-`CLIMON2_CLIENT_HOLD=<path>` waits, at most 4 s (inside the daemon's 5 s
-initial-attachment deadline), for that file to exist before sending `Attach`, so
-tests can produce session output before the first restoration.
+`tests/termination.rs` covers kill mode:
+`confirmed_termination_is_silent_success_whatever_the_command_status`,
+`a_daemon_error_or_lost_connection_is_a_failed_kill`,
+`kill_needs_the_kill_capability_and_never_sends_a_request_without_it`,
+`a_kill_capable_session_without_attach_refuses_attach_mode` and
+`a_signal_while_waiting_for_confirmation_is_the_signal_status`.
+`tests/scaffold.rs` has `missing_metadata_is_a_one_line_failure_without_stdout`.
+
+The only fault injection, `CLIMON2_CLIENT_FAULT=panic` (with `test-hooks`
+only), panics after entering raw mode. The client has no attach-hold hook (the
+plan's `hold-attach` was not implemented); the CLI's `CLIMON2_CLI_HOLD` hook
+holds before the client starts instead.
 The panic hook logs a static event, never payloads, argv or environment values.
 Tests create isolated files under the project and never run nested Cargo builds.
 Restoration assertions compare all configuration flags, control characters and
