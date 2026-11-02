@@ -1067,6 +1067,35 @@ fn a_revoked_paste_is_closed_before_the_next_controllers_input() {
     assert!((1..400).contains(&payload.len()), "{}", payload.len());
 }
 
+/// Section 3.3 one PTY writer: a terminal reply produced while input is being
+/// written, one byte at a time, follows that input whole and never splits it.
+#[test]
+fn a_terminal_reply_never_interleaves_with_input_being_written() {
+    let mut session = Session::configured("reply-record", |command, _| {
+        command.env("CLIMON2_DAEMON_FAULT", "pty-write-partial");
+    });
+    let mut client = session.attach();
+    session.wait_marker(&mut client);
+    send(&mut client, ClientMessage::Input(vec![b'i'; 100]));
+    let path = session.directory.path().join("recorded");
+    wait_contents(&path, |contents| contents.contains(&b'c'));
+    send(&mut client, ClientMessage::Input(b"END".to_vec()));
+    let (_, result) = until_terminal(&mut client);
+    assert_eq!(result, ServerMessage::Exit { code: 0 });
+    session.finish();
+
+    let recorded = fs::read(&path).unwrap();
+    let reply = recorded
+        .strip_prefix([b'i'; 100].as_slice())
+        .and_then(|rest| rest.strip_suffix(b"END".as_slice()))
+        .unwrap_or_else(|| panic!("{:?}", String::from_utf8_lossy(&recorded)));
+    assert!(
+        reply.starts_with(b"\x1b[?") && reply.ends_with(b"c") && !reply.contains(&b'i'),
+        "{:?}",
+        String::from_utf8_lossy(reply)
+    );
+}
+
 /// Section 6.2 replacement restoration: a resize before `Ready` retires the
 /// period; the new prologue leaves the committed alternate screen exactly once.
 #[test]
@@ -2002,8 +2031,9 @@ fn record_lines() -> ! {
     std::process::exit(1);
 }
 
-/// A raw bracketed-paste application recording every byte it reads until `END`.
-fn record_paste() -> ! {
+/// A raw bracketed-paste application recording every byte it reads until
+/// `END`; with a `query`, it asks the terminal once its first input arrives.
+fn record_input(file: &str, query: Option<&str>) -> ! {
     let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
     assert_eq!(unsafe { libc::tcgetattr(0, termios.as_mut_ptr()) }, 0);
     let mut termios = unsafe { termios.assume_init() };
@@ -2018,8 +2048,14 @@ fn record_paste() -> ! {
     while !pasted.ends_with(b"END") {
         let count = io::stdin().read(&mut buffer).unwrap();
         assert_ne!(count, 0);
+        if pasted.is_empty()
+            && let Some(query) = query
+        {
+            print!("{query}");
+            io::stdout().flush().unwrap();
+        }
         pasted.extend_from_slice(&buffer[..count]);
-        fs::write("pasted", &pasted).unwrap();
+        fs::write(file, &pasted).unwrap();
     }
     std::process::exit(0);
 }
@@ -2155,7 +2191,10 @@ fn fixture_child() {
         std::process::exit(42);
     }
     if mode == "paste-record" {
-        record_paste();
+        record_input("pasted", None);
+    }
+    if mode == "reply-record" {
+        record_input("recorded", Some("\x1b[c"));
     }
     print!("fixture-ready");
     io::stdout().flush().unwrap();

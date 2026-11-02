@@ -5,6 +5,7 @@ mod command;
 mod delivery;
 mod paste;
 mod pending;
+mod writes;
 
 use crate::{
     args::Options,
@@ -30,12 +31,12 @@ use climon2_vt::{Geometry, Vt, VtConfig};
 use command::{Command, Drain, Read, classify};
 use delivery::{Delivery, LIVE_LIMIT, Out};
 use paste::PasteTracker;
-use pending::PendingBytes;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     time::{Duration, Instant},
 };
+use writes::PtyWrites;
 
 const OUTPUT_CHUNK: usize = 32 * 1024;
 const MAX_CONNECTIONS: usize = 64;
@@ -60,9 +61,8 @@ struct Session<'a, C> {
     controller: Option<u64>,
     pending_grants: BTreeMap<u64, (Period, TerminalSize)>,
     pending_lost: BTreeSet<u64>,
-    replies: PendingBytes,
+    pty_writes: PtyWrites,
     paste: PasteTracker,
-    paste_cleanup: PendingBytes,
     command: Command,
     initial_deadline: Instant,
     finish_deadline: Option<Instant>,
@@ -90,9 +90,8 @@ pub(crate) fn serve(
         controller: None,
         pending_grants: BTreeMap::new(),
         pending_lost: BTreeSet::new(),
-        replies: PendingBytes::default(),
+        pty_writes: PtyWrites::default(),
         paste: PasteTracker::default(),
-        paste_cleanup: PendingBytes::default(),
         command: Command::Running,
         initial_deadline: Instant::now() + INITIAL_TIMEOUT,
         finish_deadline: None,
@@ -244,9 +243,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         if !self.control.admits_input(ConnectionId(id)) {
             return;
         }
-        if let Some(delivery) = self.deliveries.get_mut(&id) {
-            delivery.input.extend(bytes);
-        }
+        self.pty_writes.input(id, bytes);
     }
 
     fn protocol_failure(&mut self, id: u64, error: &io::Error) -> io::Result<()> {
@@ -350,7 +347,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn fed(&mut self, bytes: &[u8], now: Instant) {
         let fed = self.vt.feed(bytes, now);
-        self.replies.extend(&fed.replies);
+        self.pty_writes.daemon(&fed.replies);
         self.route(fed.live);
     }
 
@@ -451,27 +448,11 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
-    /// Terminal replies, then paste cleanup, which must be fully written
-    /// before any later admitted input.
+    /// One ordered queue: replies and paste cleanup before later input, and
+    /// a partly written sequence always completes first.
     fn write_pty(&mut self) -> io::Result<()> {
         let pty = &mut *self.pty;
-        self.replies.write_with(|bytes| pty.write(bytes))?;
-        self.paste_cleanup.write_with(|bytes| pty.write(bytes))?;
-        if !self.paste_cleanup.is_empty() {
-            return Ok(());
-        }
-        self.write_controller_input()
-    }
-
-    fn write_controller_input(&mut self) -> io::Result<()> {
-        let Some(id) = self.controller else {
-            return Ok(());
-        };
-        let Some(delivery) = self.deliveries.get_mut(&id) else {
-            return Ok(());
-        };
-        let pty = &mut *self.pty;
-        let written = delivery.input.write_with(|bytes| pty.write(bytes))?;
+        let written = self.pty_writes.write_with(|bytes| pty.write(bytes))?;
         self.paste.written(&written);
         Ok(())
     }
@@ -722,14 +703,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn discard_input(&mut self, id: u64) {
-        if let Some(delivery) = self.deliveries.get_mut(&id) {
-            delivery.input.clear();
-        }
+        self.pty_writes.discard(id);
     }
 
     fn close_paste(&mut self) {
         let bytes = self.paste.cleanup(self.vt.bracketed_paste());
-        self.paste_cleanup.extend(&bytes);
+        self.pty_writes.daemon(&bytes);
     }
 
     fn resize_host(&mut self, id: u64, host: TerminalSize) {
@@ -817,6 +796,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn remove_delivery(&mut self, id: u64) {
         self.deliveries.remove(&id);
+        self.pty_writes.discard(id);
         self.pending_grants.remove(&id);
         self.forget_controller(id);
     }

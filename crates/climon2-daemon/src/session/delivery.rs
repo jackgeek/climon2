@@ -1,4 +1,3 @@
-use super::pending::PendingBytes;
 use crate::control::Period;
 use climon2_core::protocol::{MAX_DATA_FRAME_LENGTH, TerminalSize};
 use climon2_vt::{Mode, Presentation, Restoration, Vt};
@@ -25,15 +24,14 @@ pub(super) enum Out {
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Overflow;
 
-/// One attachment's presentation, its current control period and the input
-/// it owes the PTY (plan section 3.3, delivery per attachment).
+/// One attachment's presentation and its current control period (plan
+/// section 3.3, delivery per attachment).
 pub(super) struct Delivery {
     presentation: Presentation,
     granted: Option<Granted>,
     backlog: Vec<u8>,
     stale: bool,
     resized: Option<TerminalSize>,
-    pub input: PendingBytes,
 }
 
 struct Granted {
@@ -51,7 +49,6 @@ impl Delivery {
             backlog: Vec::new(),
             stale: false,
             resized: None,
-            input: PendingBytes::default(),
         }
     }
 
