@@ -36,7 +36,10 @@ fn admit(session: &LiveSession) -> Result<(), Error> {
     require_terminal()
 }
 
-fn select<'a>(sessions: &'a [LiveSession], selector: &Selector) -> Result<&'a LiveSession, Error> {
+pub(crate) fn select<'a>(
+    sessions: &'a [LiveSession],
+    selector: &Selector,
+) -> Result<&'a LiveSession, Error> {
     selector
         .select(sessions, |session| &session.metadata.session_id)
         .map_err(|error| Error::new(125, error))
@@ -58,17 +61,23 @@ fn require_attach(session: &LiveSession) -> Result<(), Error> {
         })
 }
 
-/// The client of the session's own version, never this CLI's.
 fn client_command(home: &Path, metadata: &SessionMetadata) -> Result<Command, Error> {
     let settings = attach_config(home)?.client;
+    client(home, metadata, StartupEnvelope::Attach(settings))
+}
+
+/// The client of the session's own version, never this CLI's. The envelope always
+/// overwrites an inherited one.
+pub(crate) fn client(
+    home: &Path,
+    metadata: &SessionMetadata,
+    envelope: StartupEnvelope,
+) -> Result<Command, Error> {
     let invocation = client_invocation(home, metadata)?;
     let mut command = Command::new(installed(&invocation.program, metadata)?);
     command
         .args(invocation.args)
-        .env(
-            ENVIRONMENT_VARIABLE,
-            StartupEnvelope::Attach(settings).to_json(),
-        )
+        .env(ENVIRONMENT_VARIABLE, envelope.to_json())
         .env("CLIMON2_HOME", home);
     Ok(command)
 }

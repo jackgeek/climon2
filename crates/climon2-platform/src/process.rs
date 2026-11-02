@@ -337,6 +337,12 @@ mod macos {
         session.observe()?;
         close_master();
         std::thread::sleep(HANGUP_GRACE);
+        end_hangup(session)
+    }
+
+    /// Ends a hang-up whose grace has elapsed: SIGKILL for whatever remains of the
+    /// terminal session, then the leader's status (as it exited, or as killed).
+    pub fn end_hangup(session: &mut TerminalSession) -> io::Result<ExitStatus> {
         let leader = session.leader();
         let exited = try_wait(leader)?;
         session.kill()?;

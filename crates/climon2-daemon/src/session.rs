@@ -16,8 +16,8 @@ use climon2_core::{
     exit::CLIMON2_ERROR,
     hello::{SessionState, advertise},
     protocol::{
-        ClientMessage, Frame, HelloReply, MAX_DATA_FRAME_LENGTH, PROTOCOL_VERSION, PTY_DRAIN_CAP,
-        ServerMessage, TerminalSize,
+        ClientMessage, Frame, HANGUP_GRACE, HelloReply, MAX_DATA_FRAME_LENGTH, PROTOCOL_VERSION,
+        PTY_DRAIN_CAP, ServerMessage, TerminalSize,
     },
     title::default_title,
 };
@@ -113,7 +113,7 @@ fn session_vt(options: &Options) -> io::Result<Vt> {
 
 fn end_pty(pty: &mut Pty, result: io::Result<()>) -> io::Result<()> {
     if result.is_err() {
-        let _ = pty.leave();
+        pty.abandon();
         return result;
     }
     pty.finish()
@@ -274,7 +274,21 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.terminate_on_signal()?;
         self.react(|control| control.apply_pending())?;
         self.observe_command(now)?;
+        self.end_hangup(now)?;
         self.initial_deadline(now)
+    }
+
+    fn end_hangup(&mut self, now: Instant) -> io::Result<()> {
+        if !self.command.hung_up(now) {
+            return Ok(());
+        }
+        let code = self.pty.end_hangup().unwrap_or(CLIMON2_ERROR);
+        self.end_command(code)
+    }
+
+    fn end_command(&mut self, code: u32) -> io::Result<()> {
+        self.command = Command::Ended;
+        self.react(|control| control.command_exited(code))
     }
 
     fn terminate_on_signal(&mut self) -> io::Result<()> {
@@ -549,8 +563,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         if self.awaiting(now) {
             return Ok(());
         }
-        self.command = Command::Ended;
-        self.react(|control| control.command_exited(code))
+        self.end_command(code)
     }
 
     fn awaiting(&self, now: Instant) -> bool {
@@ -681,10 +694,16 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
+    /// The grace is a loop deadline, so probes, refusals and joining kills
+    /// are served while the command session hangs up.
     fn begin_shutdown(&mut self) -> io::Result<()> {
-        let code = self.pty.leave().unwrap_or(CLIMON2_ERROR);
-        self.command = Command::Ended;
-        self.react(|control| control.command_exited(code))
+        if self.pty.hang_up().is_err() {
+            return self.end_command(CLIMON2_ERROR);
+        }
+        self.command = Command::HangingUp {
+            until: Instant::now() + HANGUP_GRACE,
+        };
+        Ok(())
     }
 
     fn run_cleanup(&mut self) -> io::Result<()> {

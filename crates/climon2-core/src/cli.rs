@@ -13,6 +13,7 @@ pub enum CliArgs {
     Exec(CommandArgs),
     List { json: bool },
     Attach(Selector),
+    Kill(Selector),
     Help,
     Version,
 }
@@ -26,11 +27,11 @@ impl UsageError {
     }
 }
 
+pub const USAGE: &str = "usage: climon2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json]";
+
 impl fmt::Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(
-            "usage: climon2 exec <command> [args...] | list [--json] | attach <session-prefix>",
-        )
+        formatter.write_str(USAGE)
     }
 }
 
@@ -53,10 +54,13 @@ impl CliArgs {
 
 type Parser = fn(Vec<OsString>) -> Result<CliArgs, UsageError>;
 
-const SUBCOMMANDS: [(&str, Parser); 3] = [
+const SUBCOMMANDS: [(&str, Parser); 4] = [
     ("exec", parse_exec),
     ("list", parse_list),
-    ("attach", parse_attach),
+    ("attach", |arguments| {
+        parse_selector(arguments, CliArgs::Attach)
+    }),
+    ("kill", |arguments| parse_selector(arguments, CliArgs::Kill)),
 ];
 
 /// Help and version flags accept no further arguments.
@@ -91,9 +95,13 @@ fn parse_list(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
     }
 }
 
-fn parse_attach(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
+/// `attach` and `kill` take exactly one selector.
+fn parse_selector(
+    arguments: Vec<OsString>,
+    operation: fn(Selector) -> CliArgs,
+) -> Result<CliArgs, UsageError> {
     match arguments.as_slice() {
-        [selector] => Selector::parse(selector).map(CliArgs::Attach),
+        [selector] => Selector::parse(selector).map(operation),
         _ => Err(UsageError),
     }
 }

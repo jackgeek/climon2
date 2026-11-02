@@ -1,5 +1,5 @@
 use climon2_core::{
-    hello::HelloExtensions,
+    hello::{HelloExtensions, SessionState},
     metadata::{SessionMetadata, metadata_session_id},
     protocol::{ClientMessage, HELLO_TIMEOUT, ServerMessage, read_frame, write_frame},
 };
@@ -12,14 +12,36 @@ use std::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub fn run(home: &Path, json: bool) -> io::Result<()> {
-    let sessions = discover(home)?;
-    let output = if json {
-        format!("{}\n", serde_json::to_string(&sessions)?)
+/// Never reads the configuration and never needs a version's client.
+pub fn run(home: &Path, as_json: bool) -> io::Result<()> {
+    let sessions = discover_live(home)?;
+    let output = if as_json {
+        json(&sessions)?
     } else {
         table(&sessions, presentation::columns())?
     };
     io::stdout().lock().write_all(output.as_bytes())
+}
+
+/// The metadata objects, unchanged, each with the advertised `state` or `null`.
+pub fn json(sessions: &[LiveSession]) -> io::Result<String> {
+    let entries = sessions
+        .iter()
+        .map(json_entry)
+        .collect::<io::Result<Vec<_>>>()?;
+    Ok(format!("{}\n", serde_json::to_string(&entries)?))
+}
+
+fn json_entry(session: &LiveSession) -> io::Result<serde_json::Value> {
+    let mut entry = serde_json::to_value(&session.metadata)?;
+    entry["state"] = session.state().map_or(serde_json::Value::Null, |state| {
+        serde_json::json!({
+            "lifecycle": state.lifecycle().name(),
+            "attachments": state.attachments(),
+            "controlled": state.controlled(),
+        })
+    });
+    Ok(entry)
 }
 
 fn candidates(home: &Path) -> io::Result<Vec<PathBuf>> {
@@ -64,6 +86,15 @@ pub struct LiveSession {
     pub extensions: HelloExtensions,
 }
 
+impl LiveSession {
+    /// Shown only when `state-v1` is advertised with a valid snapshot.
+    pub fn state(&self) -> Option<SessionState> {
+        let capabilities = self.extensions.capabilities.valid()?;
+        let state = self.extensions.state.valid().copied();
+        state.filter(|_| capabilities.supports_state())
+    }
+}
+
 pub fn discover_live(home: &Path) -> io::Result<Vec<LiveSession>> {
     let metadata: Vec<_> = candidates(home)?
         .iter()
@@ -85,6 +116,7 @@ pub fn discover_live(home: &Path) -> io::Result<Vec<LiveSession>> {
     })?
     .into_iter()
     .flatten()
+    .inspect(warn_if_malformed)
     .collect::<Vec<_>>();
     live.sort_by(|first, second| second.metadata.created_at.cmp(&first.metadata.created_at));
     Ok(live)
@@ -199,6 +231,14 @@ fn inspect(home: &Path, metadata: SessionMetadata) -> Option<LiveSession> {
     }
 }
 
+/// Logged on the caller's thread so its subscriber records it.
+fn warn_if_malformed(session: &LiveSession) {
+    let extensions = &session.extensions;
+    if extensions.capabilities.is_malformed() || extensions.state.is_malformed() {
+        tracing::warn!(session = %session.metadata.session_id, "malformed hello extensions");
+    }
+}
+
 fn inspect_failure(home: &Path, metadata: &SessionMetadata, error: &io::Error) {
     if matches!(
         error.raw_os_error(),
@@ -295,36 +335,67 @@ fn local_created(metadata: &SessionMetadata) -> io::Result<String> {
     presentation::local_datetime(&metadata.created_at)
 }
 
-pub fn table(sessions: &[SessionMetadata], width: usize) -> io::Result<String> {
+const HEADERS: [&str; 6] = [
+    "SESSION", "CREATED", "VERSION", "STATE", "CLIENTS", "COMMAND",
+];
+
+/// The padded columns before ARGS.
+fn cells(session: &LiveSession) -> io::Result<[String; 6]> {
+    let metadata = &session.metadata;
+    let state = session.state();
+    Ok([
+        metadata.session_id.to_string(),
+        local_created(metadata)?,
+        metadata.climon2_version.to_string(),
+        state.map_or("unknown".to_owned(), |state| {
+            state.lifecycle().name().to_owned()
+        }),
+        state.map_or("-".to_owned(), |state| state.attachments().to_string()),
+        escaped(&metadata.command),
+    ])
+}
+
+fn widths(rows: &[[String; 6]]) -> [usize; 6] {
+    let mut widths = HEADERS.map(str::len);
+    for row in rows {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.width());
+        }
+    }
+    widths
+}
+
+/// Each cell padded to its column, then the separator before ARGS.
+fn prefix(cells: &[impl AsRef<str>], widths: &[usize; 6]) -> String {
+    let mut line = String::new();
+    for (cell, width) in cells.iter().zip(widths) {
+        let cell = cell.as_ref();
+        line.push_str(cell);
+        line.push_str(&" ".repeat(width - cell.width() + 2));
+    }
+    line
+}
+
+fn arguments(metadata: &SessionMetadata) -> String {
+    metadata
+        .args
+        .iter()
+        .map(|arg| quoted(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn table(sessions: &[LiveSession], width: usize) -> io::Result<String> {
     if sessions.is_empty() {
         return Ok("No climon2 sessions running.\n".to_owned());
     }
-    let command_width = sessions
-        .iter()
-        .map(|session| escaped(&session.command).width())
-        .max()
-        .unwrap_or(0)
-        .max("COMMAND".len());
-    let mut output = format!(
-        "{:<36}  {:<19}  {:<command_width$}  ARGS\n",
-        "SESSION", "CREATED", "COMMAND"
-    );
-    for metadata in sessions {
-        let command = escaped(&metadata.command);
-        let padding = command_width.saturating_sub(command.width());
-        let prefix = format!(
-            "{}  {}  {}{}  ",
-            metadata.session_id,
-            local_created(metadata)?,
-            command,
-            " ".repeat(padding)
-        );
-        let arguments = metadata
-            .args
-            .iter()
-            .map(|arg| quoted(arg))
-            .collect::<Vec<_>>()
-            .join(" ");
+    let rows = sessions.iter().map(cells).collect::<io::Result<Vec<_>>>()?;
+    let widths = widths(&rows);
+    let mut output = prefix(&HEADERS, &widths);
+    output.push_str("ARGS\n");
+    for (session, row) in sessions.iter().zip(&rows) {
+        let prefix = prefix(row, &widths);
+        let arguments = arguments(&session.metadata);
         output.push_str(&prefix);
         output.push_str(&truncate(&arguments, width.saturating_sub(prefix.width())));
         output.push('\n');

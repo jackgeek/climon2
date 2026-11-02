@@ -89,7 +89,7 @@ fn home() -> io::Result<PathBuf> {
 /// Arguments exclude argv[0]; all other configuration comes from environment.
 /// Errors are returned only after raw mode and file status flags are restored.
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> {
-    let settings = startup_settings().map_err(|error| failure(error, None))?;
+    let operation = startup_operation().map_err(|error| failure(error, None))?;
     let (metadata, log) = session_log(arguments).map_err(|error| failure(error, None))?;
     let logs = log.path().parent();
     let filter = std::env::var("CLIMON2_LOG").ok();
@@ -97,23 +97,15 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> 
         .dispatch(filter.as_deref())
         .map_err(|error| failure(error, logs))?;
     tracing::dispatcher::with_default(&dispatch, || {
-        supervised_attach(&metadata, settings)
-            .map_err(|error| session_failure(error, &metadata, logs))
+        supervised(&metadata, operation).map_err(|error| session_failure(error, &metadata, logs))
     })
 }
 
-/// The CLI's startup envelope wins; a directly started client reads config.
-fn startup_settings() -> io::Result<ClientSettings> {
+/// The CLI's startup envelope wins; a directly started client attaches with config.
+fn startup_operation() -> io::Result<StartupEnvelope> {
     match std::env::var_os(ENVIRONMENT_VARIABLE) {
-        Some(envelope) => envelope_settings(envelope.as_bytes()),
-        None => config_settings(),
-    }
-}
-
-fn envelope_settings(envelope: &[u8]) -> io::Result<ClientSettings> {
-    match StartupEnvelope::parse(envelope).map_err(io::Error::other)? {
-        StartupEnvelope::Attach(settings) => Ok(settings),
-        StartupEnvelope::Kill => Err(io::Error::other("kill envelope cannot attach")),
+        Some(envelope) => StartupEnvelope::parse(envelope.as_bytes()).map_err(io::Error::other),
+        None => config_settings().map(StartupEnvelope::Attach),
     }
 }
 
@@ -141,10 +133,31 @@ fn read_metadata(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Se
 }
 
 /// Panics are logged without their payload and reported as one generic failure.
-fn supervised_attach(metadata: &SessionMetadata, settings: ClientSettings) -> io::Result<u32> {
+fn supervised(metadata: &SessionMetadata, operation: StartupEnvelope) -> io::Result<u32> {
     std::panic::set_hook(Box::new(|_| tracing::error!("client panic")));
-    std::panic::catch_unwind(|| attach(metadata, settings))
-        .unwrap_or_else(|_| Err(io::Error::other("client panicked")))
+    std::panic::catch_unwind(|| match operation {
+        StartupEnvelope::Attach(settings) => attach(metadata, settings),
+        StartupEnvelope::Kill => kill(metadata),
+    })
+    .unwrap_or_else(|_| Err(io::Error::other("client panicked")))
+}
+
+/// Kill mode: no terminal, no attachment; success only on confirmed termination.
+fn kill(metadata: &SessionMetadata) -> io::Result<u32> {
+    let signals = terminal::Signals::client()?;
+    let result = kill_request(metadata, &signals);
+    if let Some(signal) = signals.termination_signal() {
+        return Ok(128 + signal);
+    }
+    result
+}
+
+fn kill_request(metadata: &SessionMetadata, signals: &terminal::Signals) -> io::Result<u32> {
+    let mut transport = transport::Transport::connect(metadata)?;
+    transport.hello(metadata, signals, transport::Request::Kill)?;
+    transport.send(&climon2_core::protocol::ClientMessage::Kill)?;
+    transport.terminated(signals)?;
+    Ok(0)
 }
 
 fn session_failure(error: io::Error, metadata: &SessionMetadata, logs: Option<&Path>) -> Error {
@@ -198,7 +211,7 @@ fn handshake(
     metadata: &SessionMetadata,
 ) -> io::Result<climon2_core::protocol::TerminalSize> {
     tracing::debug!("starting hello handshake");
-    transport.hello(metadata, &state.signals)?;
+    transport.hello(metadata, &state.signals, transport::Request::Attach)?;
     let size = terminal::size(&state.input)?;
     transport.send(&climon2_core::protocol::ClientMessage::Attach(size))?;
     transport.attached(&state.signals)?;

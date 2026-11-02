@@ -1163,6 +1163,87 @@ fn attach_during_termination_is_refused() {
     session.finish();
 }
 
+/// Section 3.3: the hang-up grace is a loop deadline. Probes promptly see
+/// `terminating`, attaches are refused, a second kill joins without
+/// restarting the grace, and both requesters are confirmed only after cleanup.
+#[test]
+fn the_hang_up_grace_keeps_serving_and_a_second_kill_joins_it() {
+    let mut session = Session::start("ignore-hup");
+    let mut controlling = session.attach();
+    session.wait_marker(&mut controlling);
+    let mut first = session.connect();
+    first
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let started = Instant::now();
+    send(&mut first, ClientMessage::Kill);
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(advertised_state(&session).0, Lifecycle::Terminating);
+    let mut late = session.connect();
+    send(
+        &mut late,
+        ClientMessage::Attach(TerminalSize { cols: 91, rows: 37 }),
+    );
+    assert!(matches!(receive(&mut late), ServerMessage::Error { .. }));
+    let mut second = session.connect();
+    second
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    send(&mut second, ClientMessage::Kill);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "grace blocked the loop"
+    );
+    assert!(matches!(
+        receive(&mut first),
+        ServerMessage::Terminated { .. }
+    ));
+    let confirmed = started.elapsed();
+    assert!(!session.metadata.exists() && !session.socket.exists());
+    assert!(matches!(
+        receive(&mut second),
+        ServerMessage::Terminated { .. }
+    ));
+    assert!(confirmed >= Duration::from_secs(5), "{confirmed:?}");
+    assert!(
+        started.elapsed() < Duration::from_millis(6500),
+        "grace restarted"
+    );
+    assert!(matches!(
+        until_terminal(&mut controlling).1,
+        ServerMessage::Exit { .. }
+    ));
+    session.finish();
+}
+
+/// Section 1.5: killing with an application paste open queues cleanup bytes
+/// that can no longer reach the hung-up terminal; termination still completes.
+#[test]
+fn a_kill_with_an_open_application_paste_still_terminates() {
+    let mut session = Session::start("paste");
+    let mut controlling = session.attach();
+    session.wait_marker(&mut controlling);
+    send(
+        &mut controlling,
+        ClientMessage::Input(b"\x1b[200~abc".to_vec()),
+    );
+    thread::sleep(Duration::from_millis(200));
+    let mut killer = session.connect();
+    killer
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    send(&mut killer, ClientMessage::Kill);
+    assert!(matches!(
+        receive(&mut killer),
+        ServerMessage::Terminated { .. }
+    ));
+    assert!(matches!(
+        until_terminal(&mut controlling).1,
+        ServerMessage::Exit { .. }
+    ));
+    session.finish();
+}
+
 /// Section 6.2 authoritative failure: a PTY write fault releases the
 /// controller, then reports `Error`, then cleans up.
 #[test]
@@ -2078,6 +2159,11 @@ fn fixture_child() {
         unsafe {
             libc::signal(libc::SIGHUP, libc::SIG_IGN);
         }
+    }
+    if mode == "paste" {
+        print!("\x1b[?2004hfixture-ready");
+        io::stdout().flush().unwrap();
+        thread::sleep(Duration::from_secs(45));
     }
     if mode == "sync" {
         for frame in 0..200 {

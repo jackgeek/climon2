@@ -8,12 +8,15 @@ climon2 exec vim
 climon2 list
 climon2 list --json
 climon2 attach <session-prefix>
+climon2 kill <session-prefix>
 ```
 
 The command keeps its arguments, working directory and environment. Its exit
 status becomes climon2's exit status. Press **Ctrl+]**, then **d** to detach
 without ending the command. Reattach with a unique session-ID prefix; climon2
-restores the current terminal screen and resumes input. Unexpected client loss
+restores the current terminal screen and resumes input. `climon2 kill` ends a
+session's command and waits up to 10 seconds for confirmation. `climon2 list`
+shows each session's version, state and attached clients. Unexpected client loss
 ends the session after a grace period. Nested sessions are supported. Session
 data defaults to `~/.climon2`; set `CLIMON2_HOME` to override it.
 

@@ -66,8 +66,12 @@ impl Pty {
     fn fd(&self) -> i32 {
         self.master().as_raw_fd().expect("macOS PTY descriptor")
     }
+    /// After hang-up there is no terminal left to resize.
     pub fn resize(&self, value: climon2_core::protocol::TerminalSize) -> io::Result<()> {
-        self.master()
+        let Some(master) = &self.master else {
+            return Ok(());
+        };
+        master
             .resize(size(value))
             .map_err(|_| super::io_error("terminal resize failed"))
     }
@@ -78,7 +82,11 @@ impl Pty {
         }
         #[cfg(feature = "test-hooks")]
         let bytes = trickle(bytes);
-        self.writer.as_mut().expect("live PTY writer").write(bytes)
+        // After hang-up nothing reads the terminal; pending bytes are dropped.
+        let Some(writer) = &mut self.writer else {
+            return Ok(bytes.len());
+        };
+        writer.write(bytes)
     }
     /// Waits at most `timeout` for output (or hangup) without reading it.
     pub fn wait_readable(&self, timeout: std::time::Duration) {
@@ -119,23 +127,35 @@ impl Pty {
     fn close_master(&mut self) {
         close(&mut self.master, &mut self.writer);
     }
-    pub fn leave(&mut self) -> io::Result<u32> {
-        if self.reaped {
-            return self.leave_reaped();
+    /// Closes the terminal without waiting; `end_hangup` follows once the
+    /// hang-up grace has elapsed.
+    pub fn hang_up(&mut self) -> io::Result<()> {
+        if !self.reaped {
+            self.session.observe()?;
         }
-        let (master, writer) = (&mut self.master, &mut self.writer);
-        let result = process::hangup(&mut self.session, || close(master, writer));
-        let code = result?.code().map_err(io::Error::other)?;
+        self.close_master();
+        Ok(())
+    }
+
+    /// Kills what remains of the command session; the command's status.
+    pub fn end_hangup(&mut self) -> io::Result<u32> {
+        if self.reaped {
+            self.session.kill()?;
+            return Ok(self.status.unwrap_or(129));
+        }
+        let code = process::end_hangup(&mut self.session)?
+            .code()
+            .map_err(io::Error::other)?;
         self.reaped = true;
         self.status = Some(code);
         Ok(code)
     }
-    /// The leader already exited; its session still gets the hang-up grace.
-    fn leave_reaped(&mut self) -> io::Result<u32> {
-        self.close_master();
+
+    /// The daemon loop failed, so the command session gets its grace here.
+    pub fn abandon(&mut self) {
+        let _ = self.hang_up();
         std::thread::sleep(climon2_core::protocol::HANGUP_GRACE);
-        self.session.kill()?;
-        Ok(self.status.unwrap_or(129))
+        let _ = self.end_hangup();
     }
 
     pub fn finish(&mut self) -> io::Result<()> {

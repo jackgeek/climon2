@@ -1,5 +1,5 @@
-use climon2_cli::list::{discover, table};
-use climon2_core::{SessionId, metadata::SessionMetadata};
+use climon2_cli::list::{LiveSession, discover, json, table};
+use climon2_core::{SessionId, hello::HelloExtensions, metadata::SessionMetadata};
 use climon2_platform::{logging, process, runtime};
 use std::{fs, io::Write};
 
@@ -22,6 +22,18 @@ fn metadata(home: &std::path::Path, suffix: u8, created: &str) -> SessionMetadat
     .unwrap()
 }
 
+/// A probed session whose hello carried `extensions` beside the mandatory fields.
+fn live(metadata: &SessionMetadata, extensions: serde_json::Value) -> LiveSession {
+    LiveSession {
+        metadata: metadata.clone(),
+        extensions: HelloExtensions::from_value(&extensions),
+    }
+}
+
+fn legacy(metadata: &SessionMetadata) -> LiveSession {
+    live(metadata, serde_json::json!({}))
+}
+
 fn save(home: &std::path::Path, metadata: &SessionMetadata) -> std::path::PathBuf {
     fs::create_dir_all(home.join("sessions")).unwrap();
     let path = home
@@ -38,22 +50,23 @@ fn list_presentation_quotes_controls_and_fits_terminal_width() {
     assert_eq!(table(&[], 80).unwrap(), "No climon2 sessions running.\n");
     let home = tempfile::tempdir().unwrap();
     let first = metadata(home.path(), 1, "2026-10-28T07:21:02.930Z");
-    let rendered = table(std::slice::from_ref(&first), 80).unwrap();
+    let first_live = legacy(&first);
+    let rendered = table(std::slice::from_ref(&first_live), 120).unwrap();
     assert!(rendered.contains(first.session_id.as_str()));
     assert!(!rendered.contains('\x1b'));
     assert!(rendered.lines().last().unwrap().ends_with('…'));
     assert!(
         rendered
             .lines()
-            .all(|line| unicode_width::UnicodeWidthStr::width(line) <= 80)
+            .all(|line| unicode_width::UnicodeWidthStr::width(line) <= 120)
     );
     let prefix = rendered.lines().last().unwrap().split('\'').next().unwrap();
     let prefix_width = unicode_width::UnicodeWidthStr::width(prefix);
-    let filled = table(std::slice::from_ref(&first), prefix_width).unwrap();
+    let filled = table(std::slice::from_ref(&first_live), prefix_width).unwrap();
     assert_eq!(filled.lines().last().unwrap(), prefix);
-    let one_cell = table(std::slice::from_ref(&first), prefix_width + 1).unwrap();
+    let one_cell = table(std::slice::from_ref(&first_live), prefix_width + 1).unwrap();
     assert_eq!(one_cell.lines().last().unwrap(), format!("{prefix}…"));
-    let full = table(std::slice::from_ref(&first), 200).unwrap();
+    let full = table(std::slice::from_ref(&first_live), 200).unwrap();
     assert!(full.contains("'space arg'"));
     assert!(full.contains("'quote'\\''arg'"));
     assert!(full.contains("\\u{1b}"));
@@ -210,7 +223,7 @@ fn list_created_column_uses_the_local_timezone() {
         let home = tempfile::tempdir().unwrap();
         let metadata = metadata(home.path(), 9, "2026-10-28T07:21:02.930Z");
         assert!(
-            table(&[metadata], 200)
+            table(&[legacy(&metadata)], 200)
                 .unwrap()
                 .contains("2026-10-28 09:21:02")
         );
@@ -302,6 +315,8 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
     assert_eq!(live[0].extensions.state.valid().unwrap().attachments(), 1);
     let found = discover(&home).unwrap();
     assert_eq!(found.len(), 1);
+    // Section 1.3: list never reads the configuration.
+    fs::write(home.join("config.jsonc"), "{ not jsonc").unwrap();
     let output = std::process::Command::new(bin_path("climon2-cli"))
         .env("HOME", isolation.home())
         .env("CLIMON2_HOME", &home)
@@ -315,6 +330,10 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
     assert_eq!(
         json[0]["args"],
         serde_json::json!(["print", "list-live", "sleep", "2500", "exit", "7"])
+    );
+    assert_eq!(
+        json[0]["state"],
+        serde_json::json!({"lifecycle":"attached","attachments":1,"controlled":true})
     );
     loop {
         match ServerMessage::from_frame(read_frame(&mut controller).unwrap()).unwrap() {
@@ -419,4 +438,110 @@ fn frozen_probes_are_concurrent_and_sort_newest_first() {
     for metadata in &entries {
         fs::remove_file(metadata.socket_path.as_str()).unwrap();
     }
+}
+
+/// Section 1.11: VERSION, STATE and CLIENTS; state only from `state-v1` with a
+/// valid snapshot, otherwise `unknown` and `-`.
+#[test]
+fn list_shows_version_state_and_clients_only_when_advertised() {
+    let home = tempfile::tempdir().unwrap();
+    let state = serde_json::json!({"lifecycle":"terminating","attachments":2,"controlled":true});
+    let mut current = metadata(home.path(), 20, "2026-10-28T07:21:02.930Z");
+    current.climon2_version = "1.20.300".parse().unwrap();
+    let sessions = [
+        live(
+            &current,
+            serde_json::json!({"capabilities":["state-v1"],"state":state}),
+        ),
+        live(
+            &metadata(home.path(), 21, "2026-10-28T07:21:02.930Z"),
+            serde_json::json!({"capabilities":["attach"],"state":state}),
+        ),
+        live(
+            &metadata(home.path(), 22, "2026-10-28T07:21:02.930Z"),
+            serde_json::json!({"capabilities":["state-v1"],"state":{"lifecycle":"attached","attachments":0,"controlled":true}}),
+        ),
+        live(
+            &metadata(home.path(), 23, "2026-10-28T07:21:02.930Z"),
+            serde_json::json!({"capabilities":["state-v1"],"state":{"lifecycle":"detached","attachments":0,"controlled":false}}),
+        ),
+    ];
+    let rendered = table(&sessions, 400).unwrap();
+    let lines: Vec<_> = rendered.lines().collect();
+    assert_eq!(
+        lines[0],
+        format!(
+            "{:<36}  {:<19}  VERSION   STATE        CLIENTS  COMMAND  ARGS",
+            "SESSION", "CREATED"
+        )
+    );
+    fn columns(line: &str) -> Vec<&str> {
+        line.split_whitespace().skip(3).take(4).collect()
+    }
+    assert_eq!(columns(lines[1]), ["1.20.300", "terminating", "2", "bash"]);
+    assert_eq!(columns(lines[2]), ["999.0.0", "unknown", "-", "bash"]);
+    assert_eq!(columns(lines[3]), ["999.0.0", "unknown", "-", "bash"]);
+    assert_eq!(columns(lines[4]), ["999.0.0", "detached", "0", "bash"]);
+    assert_eq!(lines[1].find("1.20.300"), Some(59));
+    assert_eq!(lines[1].find("terminating"), Some(69));
+    assert_eq!(lines[4].find(" 0  "), Some(81));
+}
+
+/// Section 1.11: each JSON object is the unchanged metadata plus `state`.
+#[test]
+fn list_json_adds_the_state_object_or_null() {
+    let home = tempfile::tempdir().unwrap();
+    let first = metadata(home.path(), 24, "2026-10-28T07:21:02.930Z");
+    let second = metadata(home.path(), 25, "2026-10-28T07:21:02.930Z");
+    let rendered = json(&[
+        live(
+            &first,
+            serde_json::json!({"capabilities":["state-v1"],"state":{"lifecycle":"attached","attachments":1,"controlled":true}}),
+        ),
+        legacy(&second),
+    ])
+    .unwrap();
+    assert!(rendered.ends_with("]\n"));
+    let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+    let mut expected = serde_json::to_value(&first).unwrap();
+    expected["state"] =
+        serde_json::json!({"lifecycle":"attached","attachments":1,"controlled":true});
+    assert_eq!(value[0], expected);
+    let mut expected = serde_json::to_value(&second).unwrap();
+    expected["state"] = serde_json::Value::Null;
+    assert_eq!(value[1], expected);
+}
+
+/// Section 1.11: malformed optional hello data is logged; the session stays listed.
+#[test]
+fn malformed_hello_extensions_are_logged_and_the_session_stays_live() {
+    use climon2_core::protocol::{Frame, read_frame, write_frame};
+    let home = tempfile::tempdir().unwrap();
+    let metadata = metadata(home.path(), 26, "2026-10-28T07:21:02.930Z");
+    save(home.path(), &metadata);
+    let listener = runtime::bind(std::path::Path::new(metadata.socket_path.as_str())).unwrap();
+    let id = metadata.session_id.clone();
+    let worker = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        read_frame(&mut socket).unwrap();
+        let body = format!(
+            "{{\"session_id\":\"{id}\",\"climon2_version\":\"0.1.0\",\"protocol\":1,\"capabilities\":7}}"
+        );
+        write_frame(&mut socket, &Frame::new(1, body.into_bytes()).unwrap()).unwrap();
+    });
+    let log = logging::LogFile::general(home.path()).unwrap();
+    let dispatch = log.dispatch(Some("warn")).unwrap();
+    let found = tracing::dispatcher::with_default(&dispatch, || {
+        climon2_cli::list::discover_live(home.path())
+    })
+    .unwrap();
+    worker.join().unwrap();
+    assert_eq!(found.len(), 1);
+    assert!(found[0].extensions.capabilities.is_malformed());
+    assert!(
+        fs::read_to_string(log.path())
+            .unwrap()
+            .contains("malformed hello extensions")
+    );
+    fs::remove_file(metadata.socket_path.as_str()).unwrap();
 }
