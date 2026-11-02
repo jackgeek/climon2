@@ -279,8 +279,8 @@ struct Bridge {
     role: Role,
     ready_period: Option<u64>,
     pending_detach: bool,
-    /// Set by a detach request or a session hang-up: past it, the result is
-    /// unconfirmed, even while stdout is blocked.
+    /// Set by a detach request, a terminal message or connection loss: past it,
+    /// the result is unconfirmed, even while stdout is blocked.
     closing: Option<Instant>,
     hung_up: bool,
     /// The bridge's result, waiting for its farewell bytes to drain.
@@ -562,7 +562,8 @@ impl Bridge {
         self.session_message(message).map(|()| None)
     }
 
-    /// The farewell is written before the terminal is restored.
+    /// The farewell is written before the terminal is restored, within the closing
+    /// deadline that a terminal message or connection loss starts (section 1.7.1).
     fn finish(
         &mut self,
         ending: io::Result<BridgeExit>,
@@ -570,6 +571,7 @@ impl Bridge {
     ) -> io::Result<Option<BridgeExit>> {
         self.output.append(farewell);
         self.ending = Some(ending);
+        self.close_within_deadline();
         self.ended()
     }
 
