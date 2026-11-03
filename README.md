@@ -252,6 +252,9 @@ logs older than seven days are pruned.
 
 ## Development and releases
 
+See the [executable and dynamic-library relationships](https://github.com/jackgeek/climon2/blob/main/docs/runtime-artifacts.md)
+for the current runtime, test tooling, and planned monitor/client-library design.
+
 ```sh
 cargo test --workspace --locked
 cargo xtask setup-quality

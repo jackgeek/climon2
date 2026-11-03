@@ -1,6 +1,10 @@
 Invoke the `ub-mode` skill whenever developing or making implementation plans.
 Features are incomplete if they are not tested by automated testing.
 
+When executable or dynamic-library artifacts, their consumption relationships,
+or their architecture decisions change, update `docs/runtime-artifacts.md`.
+Keep current and planned relationships distinct and preserve its README link.
+
 ## Agent skills
 
 ### Issue tracker
