@@ -2,7 +2,7 @@
 
 This diagram covers every climon2-owned executable target and dynamic library,
 including development fixtures. Arrows run from consumer to consumed artifact;
-labels distinguish execution, communication, loading, and installation.
+labels distinguish execution, communication, and loading.
 Solid relationships exist today; dashed relationships are planned.
 
 ```mermaid
@@ -19,11 +19,6 @@ flowchart TB
         command(["Session command<br/>external executable"])
         monitor(["Monitor runtime: monitor / mon<br/>planned; executable placement undecided"])
 
-        installer -->|"installs"| launcher
-        installer -->|"installs"| cli
-        installer -->|"installs"| client
-        installer -->|"installs"| daemon
-        installer -.->|"installs; planned"| library
         launcher -->|"execs current version"| cli
         cli -->|"starts for exec"| daemon
         cli -->|"exec / attach / kill: session version"| client
@@ -62,6 +57,9 @@ flowchart TB
 version selected by the launcher. The CLI starts a new session using its own
 version; attachment and termination use the existing session's version.
 The installer is a release-payload executable, not a `climon2 install` command.
+Installation relationships are outside this consumption diagram.
+
+For workspace crate consumption, see the [crate diagram](crate-relationships.md).
 
 **Current:** no climon2 dynamic library is built or shipped. Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,
