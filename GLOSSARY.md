@@ -17,11 +17,23 @@ The user's outer terminal that a client writes to.
 _Avoid_: Local terminal, outer screen
 
 **Client**:
-The process that connects the user's terminal to a session daemon.
+The participant that connects the user's terminal or a monitor to a session daemon.
 _Avoid_: Viewer, frontend, terminal
 
+**Client executable**:
+The standalone form of a client.
+_Avoid_: Client library, monitor
+
+**Client library**:
+The reusable form of a client hosted by another program.
+_Avoid_: Client executable, daemon library
+
+**Client helper**:
+A client executable running on behalf of a monitor for one session.
+_Avoid_: Session daemon, monitor
+
 **Monitor**:
-A program that lets the user interact with one session at a time and switch between sessions, keeping previously visited sessions' screens current through clients it owns.
+A program that lets the user interact with one session at a time and switch between sessions through clients it owns.
 _Avoid_: Dashboard, multiplexer, switcher
 
 **Virtual terminal**:
