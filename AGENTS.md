@@ -12,7 +12,11 @@ Features are incomplete if they are not tested by automated testing.
 
 When executable or dynamic-library artifacts, their consumption relationships,
 or their architecture decisions change, update `docs/runtime-artifacts.md`.
-Keep current and planned relationships distinct and preserve its README link.
+Show consumption relationships rather than installation arrows.
+When workspace crates, their consumption relationships, or their architecture
+decisions change, update `docs/crate-relationships.md`; include all workspace
+crates and omit third-party crates. Keep current and planned relationships
+distinct in both diagrams and preserve their README links.
 
 ## Agent skills
 
