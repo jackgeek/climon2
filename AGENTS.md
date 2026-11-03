@@ -31,3 +31,7 @@ Use the five default triage labels. Read `docs/agents/triage-labels.md` before c
 ### Domain docs
 
 Single-context layout: root `GLOSSARY.md` and `docs/adr/`. Read `docs/agents/domain.md` before exploring the codebase.
+
+### Protocol docs
+
+Invoke `protocol-docs` when specifying or changing a communication protocol, plugin extension contract, or protocol documentation.
