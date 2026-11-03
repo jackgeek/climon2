@@ -65,11 +65,11 @@ A live session with no attached clients that continues after deliberate detach.
 _Avoid_: Disconnected session, completed session
 
 **Capabilities**:
-The operations a session daemon advertises in its hello reply, such as `attach`, `kill` and `state-v1`; support is never inferred from versions.
+The operations or extensions a climon2 participant explicitly advertises as supported; support is never inferred from release versions.
 _Avoid_: Features, protocol version
 
 **Startup envelope**:
-The internal schema-1 JSON in `CLIMON2_CLIENT_STARTUP` that tells a version-matched client its operation (attach or kill) and validated settings.
+The internal schema-1 JSON in `CLIMON2_CLIENT_STARTUP` that tells a version-matched client its operation and validated settings.
 _Avoid_: Client config, startup arguments
 
 **Stale metadata**:
@@ -106,6 +106,10 @@ _Avoid_: Controlling client, primary client, owner
 **Grant**:
 The session daemon's act of making an attachment the controller, which starts a new control period and sends a restoration.
 _Avoid_: Handover, switch
+
+**Revocation**:
+The end of an attachment's control when another attachment receives a grant.
+_Avoid_: Detach, session end, read-only mode
 
 **Control period**:
 One uninterrupted period in which a particular client controls a session, numbered in increasing order; every grant begins a new period, and input from an earlier period is discarded.
@@ -189,6 +193,29 @@ _Avoid_: Emulated mode, redraw mode
 **Release**:
 The bytes that return a terminal to the normal-shell baseline when an attachment's presentation ends.
 _Avoid_: Reset, cleanup
+
+## Protocol and plugin concepts
+
+**Session ID**:
+The globally unique identifier (GUID) naming one climon2 session.
+_Avoid_: Process ID, session number
+
+**Restoration ID**:
+The identifier distinguishing one restoration from others, including restorations in the same control period.
+_Avoid_: Control period, snapshot point
+
+**Readiness**:
+The state in which a controlling client has completed restoration and may accept application input.
+For a monitor, the current restoration must also have been applied to its presentation.
+_Avoid_: Connected, granted, attached
+
+**Protocol extension**:
+An explicitly negotiated family of additional climon2 messages, identified by a namespaced name and revision.
+_Avoid_: Unknown core message, capability
+
+**Plugin**:
+A future extension hosted by a session daemon or monitor that observes or transforms traffic or provides additional behavior.
+_Avoid_: Client helper, protocol extension
 
 ## Installation
 

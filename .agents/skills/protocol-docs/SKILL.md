@@ -12,17 +12,18 @@ reference in the same change.
 ## Workflow
 
 1. Establish the contract. Read the relevant agreed specifications, ADRs,
-   implementation, contract tests, and root `GLOSSARY.md`. Read
-   `docs/agents/issue-tracker.md` before fetching specifications from issues.
+   implementation, contract tests, root `GLOSSARY.md`, and protocol `TERMS.md`.
+   Read `docs/agents/issue-tracker.md` before fetching specifications from issues.
    Distinguish agreed but unimplemented behavior from shipped behavior. Mark
    unresolved details explicitly and link their decision tickets.
 
 2. Maintain `docs/protocol/README.md` as the entry point. Explain which programs
    communicate, the basic framing and message structure for each interface,
    startup and capability negotiation, and how to read the message reference.
-   Link the glossary and a separate Markdown page for every message type.
-   Group the message index by interface and show each message's direction and
-   purpose. Keep message-specific details on their own pages.
+   Link the domain glossary, technical terms, and a separate Markdown page for
+   every message type. Group the message index by interface and show each
+   message's direction and purpose. Keep message-specific details on their
+   own pages.
 
 3. Maintain message pages under `docs/protocol/<interface>/`. Use distinct
    filenames for requests, responses, and events where names overlap. When one
@@ -39,17 +40,18 @@ reference in the same change.
    - A valid example and any binary payload explained separately.
    - Links to related messages and the specification that owns the contract.
 
-4. Maintain terminology in root `GLOSSARY.md`, the single glossary for this
-   repository. Invoke `domain-modeling` when adding or changing terms. Define
-   climon2-specific and non-intuitive terms there; keep wire schemas and
-   implementation details in the protocol reference. Link the glossary from
-   the overview and every message page, and link unfamiliar terms at first use.
+4. Maintain domain concepts in root `GLOSSARY.md`, the single domain glossary
+   for this repository. Invoke `domain-modeling` when changing those concepts.
+   Define non-intuitive technical vocabulary in `docs/protocol/TERMS.md`;
+   keep wire schemas and implementation details in the message reference.
+   Link both references from the overview and every message page, and link
+   unfamiliar terms at first use. Each definition belongs in one reference.
 
 5. Synchronize the change. Update every affected message page, the overview,
-   related examples, compatibility guidance, and glossary together. Document
-   plugin extension negotiation, relay, interception, and validation guarantees
-   where relevant. Preserve the distinction between protocol support for future
-   plugins and an implemented plugin system.
+   related examples, compatibility guidance, and affected terminology together.
+   Document plugin extension negotiation, relay, interception, and validation
+   guarantees where relevant. Preserve the distinction between protocol support
+   for future plugins and an implemented plugin system.
 
 6. Verify completeness. Every documented message and operation is reachable
    from the overview; relative links resolve; examples match the stated

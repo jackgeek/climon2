@@ -18,6 +18,10 @@ becomes the exit status of every client attached when it finishes. Nested
 sessions are supported. Session data defaults to `~/.climon2`; set
 `CLIMON2_HOME` to override it.
 
+The [protocol reference](docs/protocol/README.md) explains the current daemon
+handshake and the planned monitor-helper contract for future plugin authors.
+It distinguishes implemented behavior from agreed plans and unresolved details.
+
 ## Sessions
 
 `exec` starts the command and attaches to it. There is no start-detached option.
