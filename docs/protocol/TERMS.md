@@ -92,6 +92,7 @@ grammar and registration policy are still unspecified.
 
 Operating System Command, a terminal escape-sequence family.
 An OSC terminal sequence is not itself a structured plugin protocol message.
+OSC 7501 is the Program Status Protocol in the attention-plugin example.
 The first draft does not specify OSC 7501 or OSC 9 plugin decoding.
 
 ## Payload

@@ -170,11 +170,10 @@ Future daemon plugins need distinct interception seams for PTY traffic and
 structured daemon/socket traffic, plus observation before filtering and
 read-only terminal snapshots. These are requirements, not implemented hooks.
 
-An attention plugin might observe Program Status Protocol (OSC 7501), BEL, OSC 9,
-terminal idleness, or activity, then notify a monitor plugin. OSC means
-Operating System Command, a terminal escape-sequence family; BEL is the terminal
-bell control byte. Detection strategies, toast UI, subscriptions, plugin
-loading, hook ordering, and sandboxing are not specified here.
+An attention plugin might observe [OSC 7501](TERMS.md#osc), [BEL](TERMS.md#bel),
+[OSC 9](TERMS.md#osc), terminal idleness, or activity, then notify a monitor
+plugin. Detection strategies, toast UI, subscriptions, plugin loading, hook
+ordering, and sandboxing are not specified here.
 
 Status extensions may define notifications while revoked. They do not authorize
 live core screen mirroring, input, or resize while revoked.

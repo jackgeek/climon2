@@ -44,8 +44,13 @@ reference in the same change.
    for this repository. Invoke `domain-modeling` when changing those concepts.
    Define non-intuitive technical vocabulary in `docs/protocol/TERMS.md`;
    keep wire schemas and implementation details in the message reference.
-   Link both references from the overview and every message page, and link
-   unfamiliar terms at first use. Each definition belongs in one reference.
+   Link both references from the overview and every message page. At the first
+   prose occurrence of each domain term, non-intuitive technical term, or
+   abbreviation in each document, link the term itself to its owning definition
+   (using an anchor where available). Keep definitions and abbreviation
+   expansions solely in those references, not inline in the overview or
+   message pages. A later explanation or a general reference link does not
+   satisfy first-use linking.
 
 5. Synchronize the change. Update every affected message page, the overview,
    related examples, compatibility guidance, and affected terminology together.
@@ -56,13 +61,17 @@ reference in the same change.
 6. Verify completeness. Every documented message and operation is reachable
    from the overview; relative links resolve; examples match the stated
    contract; and fields, limits, ordering, and failure behavior agree with the
-   owning specification and implementation status. Use existing documentation
-   checks and contract tests where available. Report unresolved discrepancies
-   rather than describing planned behavior as implemented.
+   owning specification and implementation status. Read each changed document
+   from top to bottom: verify first-use term links appear before subsequent
+   mentions and that prose contains no duplicated definitions or abbreviation
+   expansions. Use existing documentation checks and contract tests where
+   available. Report unresolved discrepancies rather than describing planned
+   behavior as implemented.
 
 ## Language
 
 Use simple, informative language, short sentences, and concrete examples.
-Explain abbreviations on first use. Describe observable behavior precisely
-without requiring knowledge of internal functions or crates. Define shared
-structure once in the overview and link to it from message pages.
+Link abbreviations to their technical definitions on first use. Describe
+observable behavior precisely without requiring knowledge of internal functions
+or crates. Define shared structure once in the overview and link to it from
+message pages.
