@@ -79,8 +79,40 @@ a session that unexpectedly loses its final attachment.
    [restoration](../../GLOSSARY.md#restoration-and-presentation) has been applied.
 
 The [startup/discovery decision](https://github.com/jackgeek/climon2/issues/59)
-is reopened to integrate eager clients and continuous discovery with its retained
-eligibility, ordering, uncertainty, and selection rules.
+is agreed, not implemented. Run an immediate discovery pass, then start the next
+pass one second after the preceding pass completes, without overlap. Preserve
+the two-second hello deadline and bounded probes. Reconcile by full session ID,
+reusing starting and retained clients; discovery uncertainty never overrides an
+established client's state or tears it down.
+
+Pin the newest confirmed-live initial candidate while it starts. New arrivals
+receive passive clients without displacing it. Only definitive loss permits
+automatic progression, at most once per candidate per pass. Other startup
+failures stay visible on that candidate without silent fallback. Startup
+selection succeeds only after control and the current complete restoration
+have been applied. Revocation before readiness leaves a non-controlling
+placeholder requiring explicit user action, not repeated automatic takeover.
+After the first successful startup, selected-session loss and recovery belong
+to the lifecycle decision.
+
+## Session menu titles
+
+The menu shows the daemon's latest non-empty terminal title, falling back to
+command plus arguments, never session IDs. IDs remain internal identity:
+duplicate or changing titles cannot retarget selection, highlight, or
+confirmation. Render titles and metadata literally, never as terminal commands.
+Command, working directory, creation time, depth, and availability provide
+distinguishing details; exact layout belongs to the selector decision.
+
+The planned [title state/change interaction](monitor-client/event-title.md)
+provides a current title and gap-free ordered updates regardless of control,
+menu visibility, or input readiness. This is core metadata, not plugin data or
+screen mirroring. Cached titles must be marked stale/unavailable when connection
+freshness is uncertain. An empty title restores the command/arguments fallback.
+User-assigned persisted names and renaming remain future work; they would
+require revisiting the [write-once metadata rule](../adr/0005-frozen-session-metadata-core.md).
+
+## Retained control
 
 Switching away retains a client and its existing control until
 [revocation](../../GLOSSARY.md#attachment-and-control). Background clients receive
@@ -172,6 +204,7 @@ owning decisions settle the interface.
 | [Display](monitor-client/event-display.md) | Client -> monitor | Deliver ordered presentation updates. |
 | [Restoration completion](monitor-client/event-restoration-complete.md) | Client -> monitor | End the identified restoration. |
 | [Geometry](monitor-client/event-geometry.md) | Client -> monitor | Report actual geometry. |
+| [Title state/change](monitor-client/event-title.md) | Client -> monitor | Supply current daemon title and ongoing changes regardless of control. |
 | [Session end](monitor-client/event-session-ended.md) | Client -> monitor | Report command/session completion. |
 | [Client outcome](monitor-client/event-outcome.md) | Client -> monitor, when possible | Report client completion or failure. |
 | [Extension event](monitor-client/event-extension.md) | Either endpoint, through client | Report negotiated plugin information regardless of control. |
@@ -191,7 +224,8 @@ messages from the future frozen contract and passive plugin connection.
 - [Define monitor client ownership and control](https://github.com/jackgeek/climon2/issues/58):
   canonical thread-based hosting, eager clients, passive plugin traffic, and control.
 - [Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59):
-  integrate continuous discovery and eager client startup.
+  agreed startup/discovery integration and continuously updated menu titles;
+  not implemented, exact title schemas still pending.
 - [Define version-matched client library loading and lifetime](https://github.com/jackgeek/climon2/issues/65):
   agreed [multi-instance embedding, compatibility, and lifetime](library-embedding.md);
   not implemented, complete declarations still pending.

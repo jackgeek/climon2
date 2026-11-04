@@ -31,6 +31,14 @@ monitor for background and revoked clients without permitting core screen
 mirroring, application input, or resize. The exact passive connection/attachment
 model and wire schemas are not yet assigned.
 
+The [startup/discovery resolution](https://github.com/jackgeek/climon2/issues/59)
+also requires core [title state and changes](../monitor-client/event-title.md)
+for passive, background, and revoked clients. Provide a current title and
+gap-free ordered updates without requiring control or plugin support. The
+implemented hello reply does not currently advertise a title; its frozen
+required fields remain unchanged. Exact title schemas and compatibility
+behavior remain with the future daemon contract.
+
 The in-process [monitor-client contract](https://github.com/jackgeek/climon2/issues/66)
 does not select this daemon transport's framing or encoding.
 
