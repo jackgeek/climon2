@@ -28,10 +28,6 @@ _Avoid_: Client library, monitor
 The reusable form of a client hosted by another program.
 _Avoid_: Client executable, daemon library
 
-**Client helper**:
-A client executable running on behalf of a monitor for one session.
-_Avoid_: Session daemon, monitor
-
 **Monitor**:
 A program that lets the user interact with one session at a time and switch between sessions through clients it owns.
 _Avoid_: Dashboard, multiplexer, switcher
@@ -215,7 +211,7 @@ _Avoid_: Unknown core message, capability
 
 **Plugin**:
 A future extension hosted by a session daemon or monitor that observes or transforms traffic or provides additional behavior.
-_Avoid_: Client helper, protocol extension
+_Avoid_: Client, protocol extension
 
 ## Installation
 

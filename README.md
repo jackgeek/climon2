@@ -19,7 +19,7 @@ sessions are supported. Session data defaults to `~/.climon2`; set
 `CLIMON2_HOME` to override it.
 
 The [protocol reference](docs/protocol/README.md) explains the current daemon
-handshake and the planned monitor-helper contract for future plugin authors.
+handshake and the planned in-process monitor-client interface for future plugin authors.
 It distinguishes implemented behavior from agreed plans and unresolved details.
 
 ## Sessions

@@ -41,7 +41,7 @@ A byte count is not a character count.
 
 An unsigned integer written as decimal digits in one unambiguous form:
 `"0"` or a nonzero digit followed by digits, without a sign, spaces, or leading
-zeros. Helper request IDs additionally require a positive value.
+zeros. Each interface specifies its permitted range separately.
 
 ## Discriminator
 
@@ -58,8 +58,8 @@ A message that reports information without asking for a response.
 
 ## EOF
 
-End of file: the end of a byte stream. Pipe EOF alone does not explain whether
-a helper detached successfully, crashed, or completed cleanup.
+End of file: the end of a byte stream. EOF alone does not explain whether
+a client detached successfully or completed cleanup.
 
 ## Frame
 
@@ -78,8 +78,8 @@ Strictly increasing IDs let a receiver detect reuse without storing all past IDs
 ## Idempotency key
 
 An identifier that an explicitly defined retry mechanism uses to recognize
-the same logical operation. Baseline helper request IDs do not supply that
-mechanism or promise exactly-once execution.
+the same logical operation. A request ID alone does not supply that mechanism
+or promise exactly-once execution.
 
 ## Indeterminate outcome
 
@@ -95,7 +95,7 @@ structured messages. It is not an unchecked bypass of protocol validation.
 
 JavaScript Object Notation, a text format for objects, arrays, strings, numbers,
 booleans, and null. JSON wire examples in this reference show message bodies,
-not their length prefixes or following binary frames.
+not their length prefixes.
 
 ## MiB
 
@@ -104,7 +104,7 @@ A mebibyte: 1,048,576 bytes. This unit is distinct from a decimal megabyte.
 ## Namespaced name
 
 A name scoped to avoid collisions with names owned by other extensions.
-`org.example.attention` illustrates the agreed extension shape; the exact naming
+`org.example.attention` illustrates an extension name; the exact naming
 grammar and registration policy are still unspecified.
 
 ## OSC
@@ -116,8 +116,8 @@ The first draft does not specify OSC 7501 or OSC 9 plugin decoding.
 
 ## Payload
 
-The message-specific content inside an envelope or its declared binary frame.
-Its encoding and schema belong to the operation or extension that owns it.
+The content carried by a message or operation, distinct from its routing and
+correlation metadata.
 
 ## Pseudo-terminal (PTY)
 
@@ -127,7 +127,7 @@ It is distinct from the user's host terminal and a daemon socket.
 ## QUIC
 
 A secure transport with multiple streams. It provides ordered bytes within a
-stream, but not ordering between streams. It is not the agreed helper transport.
+stream, but not ordering between streams. It is outside the current monitor plan.
 See [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000.html#section-2).
 
 ## Request
@@ -155,8 +155,7 @@ The permitted structure, fields, types, and values of a message.
 ## Standard streams
 
 Stdin, stdout, and stderr are a process's standard input, output, and diagnostic
-streams. Helper mode reserves stdin/stdout for protocol frames and stderr for
-diagnostics.
+streams.
 
 ## Toast
 

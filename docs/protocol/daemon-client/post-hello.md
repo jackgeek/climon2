@@ -8,12 +8,11 @@ and [technical terms](../TERMS.md).
 The [current implementation](../../../crates/climon2-core/src/protocol.rs)
 contains attach/control, raw input/output, resize, [readiness](../../../GLOSSARY.md), [detach](../../../GLOSSARY.md), [kill](../../../GLOSSARY.md), and
 termination messages. Current input/output [frames](../TERMS.md#frame) are limited to 65,536 [bytes](../TERMS.md#byte)
-including the type byte; their bodies are raw bytes, not [helper](../../../GLOSSARY.md)-style adjacent
-binary [payloads](../TERMS.md#payload).
+including the type byte; their bodies are raw bytes.
 
 This first draft deliberately does not reproduce those private message [schemas](../TERMS.md#schema)
 as a future [plugin](../../../GLOSSARY.md) contract. Their type codes, period representation, geometry,
-and acknowledgement shapes cannot simply be copied into the helper interface
+and acknowledgement shapes cannot simply be copied into the monitor-client interface
 or assumed frozen across future releases.
 
 The implemented [hello request](hello-request.md) and [reply](hello-reply.md)
@@ -25,9 +24,15 @@ remain the documented frozen discovery exchange.
 owns post-hello framing and message schemas, [capabilities](../../../GLOSSARY.md), validation,
 readiness/control semantics, compatible [extensions](../../../GLOSSARY.md), and rejection behavior.
 
-It must provide pre-[attachment](../../../GLOSSARY.md) support discovery and mapping for the agreed
-bidirectional [JSON](../TERMS.md#json)/binary plugin extension relay. The helper framing decision
-does not select this daemon transport's full framing for it.
+It must provide support discovery before [control acquisition](../../../GLOSSARY.md),
+passive monitor connections without automatic takeover, and bidirectional plugin
+extension relay regardless of control. Negotiated plugin data must reach the
+monitor for background and revoked clients without permitting core screen
+mirroring, application input, or resize. The exact passive connection/attachment
+model and wire schemas are not yet assigned.
+
+The in-process [monitor-client contract](https://github.com/jackgeek/climon2/issues/66)
+does not select this daemon transport's framing or encoding.
 
 Numerical cross-interface bounds belong to
 [operational limits](https://github.com/jackgeek/climon2/issues/69).
@@ -39,4 +44,4 @@ operation, with valid examples. Until then, no future post-hello wire example,
 extension advertisement shape, or plugin interface is assigned here.
 
 **Sources:** [current handshake/private-protocol ADR](../../adr/0001-version-matched-client-and-frozen-hello.md)
-and [helper relay resolution](https://github.com/jackgeek/climon2/issues/66#issuecomment-6616062936).
+and [monitor ownership resolution](https://github.com/jackgeek/climon2/issues/58#issuecomment-6597610447).

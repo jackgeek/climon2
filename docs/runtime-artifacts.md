@@ -12,12 +12,12 @@ flowchart TB
         installer["install<br/>built as climon2-install"]
         subgraph version["Installed version v; versions coexist"]
             cli["climon2-cli<br/>CLI executable"]
-            client["climon2-client<br/>client executable / planned helper"]
+            client["climon2-client<br/>client executable"]
             daemon["climon2-daemon<br/>session daemon executable"]
             library[["Client dynamic library<br/>planned Rust cdylib; filename undecided"]]
         end
         command(["Session command<br/>external executable"])
-        monitor(["Monitor runtime: monitor / mon<br/>planned; executable placement undecided"])
+        monitor(["Monitor runtime: monitor / mon<br/>planned Ratatui TUI; executable placement undecided"])
 
         launcher -->|"execs current version"| cli
         cli -->|"starts for exec"| daemon
@@ -26,8 +26,8 @@ flowchart TB
         client -->|"daemon-client communication; current"| daemon
         daemon -->|"runs on session PTY"| command
         cli -.->|"monitor / mon; planned"| monitor
-        monitor -.->|"starts and communicates with one session-version helper per visited session"| client
-        client -.->|"loads same-version library through C-compatible interface"| library
+        monitor -.->|"loads session-version library; one client thread per live session"| library
+        client -.->|"loads same-release library; interface unresolved"| library
         library -.->|"daemon-client communication; planned"| daemon
     end
 
@@ -66,12 +66,19 @@ For workspace crate consumption, see the [crate diagram](crate-relationships.md)
 are not separately loaded dynamic libraries. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
 
-**Planned:** the client executable hosts its same-version dynamic library in
-one isolated helper process per visited session. The monitor does not load
-session client libraries itself. Its node represents a runtime role, not a
-decision to ship an executable named `climon2-monitor`. Library filenames,
-loading/lifetime details, monitor-helper communication, and the frozen
-daemon-client contract remain specification work.
+**Planned:** the monitor loads version-matched client libraries directly into
+its own process, sharing a loaded library for sessions on the same release.
+Each live session has its own client thread. Clients start eagerly, newest
+first, with bounded concurrent progress; continuous discovery adds clients for
+new sessions. Background clients relay negotiated plugin data without taking
+control. Native client crashes can terminate the entire monitor. Ratatui powers
+the planned monitor's rendering; terminal integration remains specification work.
+
+The client executable will also load its same-release library for ordinary
+operations. The monitor node represents a runtime role, not a decision to ship
+an executable named `climon2-monitor`. Library filenames, the multi-instance
+cross-release embedding interface, loading/lifetime details, monitor-client
+communication, and the frozen daemon-client contract remain specification work.
 
 The planned relationships are indexed by
 [Chart the interactive monitor specification](https://github.com/jackgeek/climon2/issues/57);
