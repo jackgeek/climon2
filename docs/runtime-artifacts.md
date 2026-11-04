@@ -14,7 +14,7 @@ flowchart TB
             cli["climon2-cli<br/>CLI executable"]
             client["climon2-client<br/>client executable"]
             daemon["climon2-daemon<br/>session daemon executable"]
-            library[["Client dynamic library<br/>planned Rust cdylib; filename undecided"]]
+            library[["libclimon2_client.dylib<br/>planned Rust cdylib on macOS"]]
         end
         command(["Session command<br/>external executable"])
         monitor(["Monitor runtime: monitor / mon<br/>planned Ratatui TUI; executable placement undecided"])
@@ -27,7 +27,7 @@ flowchart TB
         daemon -->|"runs on session PTY"| command
         cli -.->|"monitor / mon; planned"| monitor
         monitor -.->|"loads session-version library; one client thread per live session"| library
-        client -.->|"loads same-release library; interface unresolved"| library
+        client -.->|"loads same-release library; versioned C interface planned"| library
         library -.->|"daemon-client communication; planned"| daemon
     end
 
@@ -76,9 +76,18 @@ the planned monitor's rendering; terminal integration remains specification work
 
 The client executable will also load its same-release library for ordinary
 operations. The monitor node represents a runtime role, not a decision to ship
-an executable named `climon2-monitor`. Library filenames, the multi-instance
-cross-release embedding interface, loading/lifetime details, monitor-client
-communication, and the frozen daemon-client contract remain specification work.
+an executable named `climon2-monitor`.
+
+The agreed [embedding design](protocol/library-embedding.md) loads
+`<executable home>/<session version>/libclimon2_client.dylib` on macOS with no
+release fallback. It uses a versioned C interface, per-instance client threads,
+release-private dependency resolution, and explicit memory ownership.
+Every successfully opened library handle stays loaded until monitor exit,
+including handles rejected by later validation. Such releases remain in use
+until process exit; completed instance cleanup and joins do not unload them.
+These are planned relationships, not shipped artifacts. Complete interface
+declarations, monitor-client communication, and the frozen daemon-client
+contract remain specification work.
 
 The planned relationships are indexed by
 [Chart the interactive monitor specification](https://github.com/jackgeek/climon2/issues/57);

@@ -37,6 +37,11 @@ For example, the four bytes `00 00 00 0f` encode the decimal number 15.
 A unit of eight bits, with a value from 0 through 255.
 A byte count is not a character count.
 
+## C ABI
+
+The C application binary interface: the calling convention and binary data
+layout used to call functions across a native-library seam.
+
 ## Canonical decimal string
 
 An unsigned integer written as decimal digits in one unambiguous form:
@@ -65,6 +70,11 @@ a client detached successfully or completed cleanup.
 
 A length-delimited unit on a communication channel.
 A logical message can use several frames, and a read can contain part of a frame.
+
+## Function table
+
+An agreed layout of function pointers through which a caller uses one revision
+of a native-library interface.
 
 ## GUID
 
@@ -106,6 +116,16 @@ A mebibyte: 1,048,576 bytes. This unit is distinct from a decimal megabyte.
 A name scoped to avoid collisions with names owned by other extensions.
 `org.example.attention` illustrates an extension name; the exact naming
 grammar and registration policy are still unspecified.
+
+## Native path
+
+A filesystem path represented without losing platform-native data, including
+non-UTF-8 bytes on Unix or native code units on Windows.
+
+## Opaque handle
+
+An identifier for library-owned state whose internal representation a caller
+must not inspect. Its interface specifies validity, permitted uses, and release.
 
 ## OSC
 

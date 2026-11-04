@@ -15,12 +15,15 @@ message names, field layouts, or encodings.
 |---|---|---|
 | [Client](../../GLOSSARY.md#sessions) to [session daemon](../../GLOSSARY.md#sessions): hello | Implemented and frozen | [Request](daemon-client/hello-request.md) and [reply](daemon-client/hello-reply.md). |
 | Client to session daemon: after hello | Implemented as a version-matched private protocol; future frozen contract unresolved | [Decision boundary](daemon-client/post-hello.md). |
-| Monitor to [client library](../../GLOSSARY.md#sessions) | In-process hosting agreed; embedding and communication interfaces reopened, not implemented | [Library loading and lifetime](https://github.com/jackgeek/climon2/issues/65), [communication contract](https://github.com/jackgeek/climon2/issues/66), and [interface schemas](https://github.com/jackgeek/climon2/issues/71). |
-| [Client executable](../../GLOSSARY.md#sessions) to same-release library | Planned; interface unresolved | [Library decision](https://github.com/jackgeek/climon2/issues/65). |
+| Monitor to [client library](../../GLOSSARY.md#sessions) | Embedding design agreed, not implemented; communication and complete declarations unresolved | [Library embedding](library-embedding.md), [communication contract](https://github.com/jackgeek/climon2/issues/66), and [interface schemas](https://github.com/jackgeek/climon2/issues/71). |
+| [Client executable](../../GLOSSARY.md#sessions) to same-release library | Same-release loading agreed, not implemented | [Library embedding](library-embedding.md). |
 
-The in-process interface does not yet have a frozen [schema](TERMS.md#schema),
-[framing](TERMS.md#frame), calling convention, or valid call example. Do not infer a pipe protocol,
-serialized [envelope](TERMS.md#envelope), frame limit, or cross-release interface from these pages.
+The embedding design selects a versioned [C ABI](TERMS.md#c-abi), but its
+complete declarations and valid call examples are not yet published.
+Communication does not yet have a frozen [schema](TERMS.md#schema) or
+[framing](TERMS.md#frame). Do not infer a pipe protocol,
+serialized [envelope](TERMS.md#envelope), frame limit, or complete cross-release
+declarations from these pages.
 The existing daemon hello exchange is unaffected.
 
 ## Who communicates?
@@ -48,9 +51,10 @@ must define how session state reaches that renderer, including restoration,
 overlays, resize, and fidelity. Choosing Ratatui does not choose the client
 interface or display payload representation.
 
-Each client has its own connection and per-session state. Exact multi-instance
-library calls, channel ownership, memory ownership, callbacks or queues, native
-path handling, shutdown, and cross-release compatibility remain open decisions.
+Each client has its own connection and per-session state. The
+[embedding reference](library-embedding.md) specifies exact-release lookup,
+revision negotiation, thread ownership, memory rules, and library lifetime.
+Exact declarations, channel ownership, and callbacks or queues remain open.
 No client may repurpose process-global arguments, signals, or
 [standard streams](TERMS.md#standard-streams) as though it owned the monitor.
 
@@ -64,7 +68,7 @@ a session that unexpectedly loses its final attachment.
 
 1. Discover live sessions in deterministic newest-first order.
 2. Load each required session-version library and validate identity and interface
-   support before it can connect or take control.
+   support before instance creation or a daemon connection.
 3. Start one client per live session, with bounded concurrency. A slow or broken
    session must not indefinitely prevent older sessions from getting clients.
 4. Establish passive background connections that relay negotiated plugin data
@@ -87,10 +91,11 @@ to flow regardless of control.
 
 ## Compatibility, errors, and limits
 
-The communication and library decisions must specify a multi-instance,
-cross-release-safe embedding interface. Exact-release executable/library
-matching alone is not sufficient when a monitor loads libraries from several
-releases simultaneously. Never substitute a different installed release or
+The agreed library design uses a multi-instance, cross-release-safe embedding
+interface; complete declarations and communication remain to be specified.
+Exact-release executable/library matching alone is not sufficient when a monitor
+loads libraries from several releases simultaneously. Never substitute a
+different installed release or
 silently ignore a missing library.
 
 Preserve structured operations and explicit outcomes; terminal output is not a
@@ -188,7 +193,8 @@ messages from the future frozen contract and passive plugin connection.
 - [Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59):
   integrate continuous discovery and eager client startup.
 - [Define version-matched client library loading and lifetime](https://github.com/jackgeek/climon2/issues/65):
-  multi-instance embedding, cross-release compatibility, and resource lifetime.
+  agreed [multi-instance embedding, compatibility, and lifetime](library-embedding.md);
+  not implemented, complete declarations still pending.
 - [Define monitor-client communication contract](https://github.com/jackgeek/climon2/issues/66):
   in-process operations, transport/representation, validation, and plugin relay.
 - [Complete monitor-client interface schemas](https://github.com/jackgeek/climon2/issues/71):
