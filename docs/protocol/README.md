@@ -105,11 +105,24 @@ Command, working directory, creation time, depth, and availability provide
 distinguishing details; exact layout belongs to the selector decision.
 
 The planned [title state/change interaction](monitor-client/event-title.md)
-provides a current title and gap-free ordered updates regardless of control,
-menu visibility, or input readiness. This is core metadata, not plugin data or
-screen mirroring. Cached titles must be marked stale/unavailable when connection
-freshness is uncertain. An empty title restores the command/arguments fallback.
-User-assigned persisted names and renaming remain future work; they would
+uses a built-in daemon plugin through the actual plugin interfaces and negotiated
+extension relay, not a dedicated core title message. When supported, it provides
+the authoritative current title and gap-free ordered updates regardless of
+control, menu visibility, or input readiness, without screen mirroring.
+Cached titles must be marked stale/unavailable when delivery becomes uncertain.
+An empty title restores the command/arguments fallback.
+
+The title plugin is a release requirement: do not release without its real
+implementation and automated integration evidence through the plugin interfaces.
+It may be contained in the daemon executable; general-purpose plugin loading
+and configuration remain out of scope. This is planned behavior, not an
+implemented plugin. Older daemons without support remain usable by the monitor
+with command/arguments fallback; lack of title support must not block takeover.
+The release requirement is not a required peer capability.
+
+Users do not set terminal titles through climon2. User-assigned persisted session
+names and renaming remain future work; a name will appear alongside a non-empty
+terminal title, not replace or change it. Persisting renames would
 require revisiting the [write-once metadata rule](../adr/0005-frozen-session-metadata-core.md).
 
 ## Retained control
@@ -154,6 +167,8 @@ Support must be explicitly negotiated by
 [namespaced name](TERMS.md#namespaced-name) and revision, including relay support.
 Required support must be checked before control acquisition; missing optional
 support disables that extension. Exact negotiation schemas remain unresolved.
+The built-in title plugin is mandatory for new releases, but title-extension
+support is not required of older peers; its absence uses the menu fallback.
 
 Bidirectional extension [requests](TERMS.md#request), outcomes, and [events](TERMS.md#event) must work for passive,
 background, and revoked clients as well as the selected controller. Receiving
@@ -172,8 +187,15 @@ for PTY traffic and structured daemon/socket traffic, observation before
 filtering, and read-only terminal snapshots. An attention plugin might observe
 [OSC](TERMS.md#osc) 7501, [BEL](TERMS.md#bel), OSC 9, terminal idleness, or activity.
 These are motivating examples, not implemented hooks or frozen plugin schemas.
-Detection strategies, [toast notifications](TERMS.md#toast), plugin loading,
-hook ordering, and [sandboxing](TERMS.md#sandboxing) remain outside this map.
+Concrete plugin interfaces are the next design priority. Use the built-in title
+plugin as the first worked example: registration/lifetime, authoritative title
+subscription, extension publication, opaque client relay, and monitor consumption.
+Publish declarations and an end-to-end example; do not treat these unresolved
+interfaces as already agreed.
+Detection strategies, [toast notifications](TERMS.md#toast), general-purpose
+plugin loading/configuration, unrelated hook implementation, and
+[sandboxing](TERMS.md#sandboxing) remain outside this map. The title plugin and
+the interfaces it exercises are not deferred with those features.
 
 [QUIC](TERMS.md#quic), reconnect deduplication, outcome caches, and replay policies
 also remain out of scope. [Request IDs](TERMS.md#request-id) alone do not provide
@@ -204,7 +226,7 @@ owning decisions settle the interface.
 | [Display](monitor-client/event-display.md) | Client -> monitor | Deliver ordered presentation updates. |
 | [Restoration completion](monitor-client/event-restoration-complete.md) | Client -> monitor | End the identified restoration. |
 | [Geometry](monitor-client/event-geometry.md) | Client -> monitor | Report actual geometry. |
-| [Title state/change](monitor-client/event-title.md) | Client -> monitor | Supply current daemon title and ongoing changes regardless of control. |
+| [Title plugin state/change](monitor-client/event-title.md) | Daemon plugin -> monitor, through client extension relay | Supply current daemon title and ongoing changes regardless of control; not a separate core event. |
 | [Session end](monitor-client/event-session-ended.md) | Client -> monitor | Report command/session completion. |
 | [Client outcome](monitor-client/event-outcome.md) | Client -> monitor, when possible | Report client completion or failure. |
 | [Extension event](monitor-client/event-extension.md) | Either endpoint, through client | Report negotiated plugin information regardless of control. |

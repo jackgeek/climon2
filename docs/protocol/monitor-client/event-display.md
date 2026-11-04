@@ -11,8 +11,9 @@ The [client](../../../GLOSSARY.md) delivers ordered updates to the
 do not provide live core read-only mirroring; restoration brings the view
 current on regaining control. [Plugin](../../../GLOSSARY.md) status is independent of screen access.
 
-[Daemon title updates](event-title.md) are also independent of screen access.
-They must reach passive/background/revoked clients without display scraping.
+[Daemon title plugin updates](event-title.md) are also independent of screen
+access. When supported, negotiated extension traffic must reach
+passive/background/revoked clients without display scraping.
 
 Ratatui is the required monitor renderer; its session-state integration remains
 with the terminal decision.

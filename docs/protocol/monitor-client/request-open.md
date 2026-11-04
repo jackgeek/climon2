@@ -16,9 +16,12 @@ control. Current ordinary attach immediately requests control; it is not the
 passive connection mechanism. Initial selection or explicit user actions acquire
 control separately. Open success alone is not [readiness](../../../GLOSSARY.md).
 
-Opening also establishes [current title state and ongoing changes](event-title.md)
-without a subscription gap, independently of control and readiness. Exact
-title support discovery and compatibility behavior remain unresolved.
+When title-extension support is negotiated, opening also establishes
+[current title state and ongoing changes](event-title.md) through the built-in
+daemon plugin, without a subscription gap and independently of control and
+readiness. Older daemons without support remain usable with command/arguments
+fallback; missing title support must not block control acquisition. Exact
+support discovery and interface schemas remain unresolved.
 
 The [ownership decision](https://github.com/jackgeek/climon2/issues/58) owns these
 requirements. The [daemon contract](https://github.com/jackgeek/climon2/issues/67)

@@ -13,9 +13,10 @@ silently disappear through plugin filtering.
 background, or [revoked](../../../GLOSSARY.md) clients. It does not grant screen
 access, application input, or resize permission.
 
-[Title state and changes](event-title.md) are core metadata, not plugin events
-or screen mirroring. Supply current daemon title state and ordered updates
-without a subscription gap, regardless of control, menu visibility, or
+[Title plugin state and changes](event-title.md) use negotiated extension
+traffic, not a dedicated core title event or screen mirroring. When supported,
+supply authoritative current daemon title state and ordered updates without a
+subscription gap, regardless of control, menu visibility, or
 [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts).
 Exact representation remains unresolved.
 
