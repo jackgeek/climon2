@@ -1,15 +1,15 @@
 # Session-end event
 
-**Status:** agreed meaning; wire name and payload schema pending; not implemented.
+**Status:** agreed meaning; wire name and [payload](../TERMS.md#payload) [schema](../TERMS.md#schema) pending; not implemented.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
-The helper reports command/session completion explicitly through the
+The [helper](../../../GLOSSARY.md) reports command/[session](../../../GLOSSARY.md) completion explicitly through the
 [event envelope](event.md). Terminal output is not an exit-status protocol.
 
-Session end, deliberate detach, and helper process exit are different events.
-Do not interpret missing output, EOF, or a crashed helper as an accepted
-session-end result. Unfinished request outcomes remain indeterminate on failure.
+Session end, deliberate [detach](../../../GLOSSARY.md), and helper process exit are different events.
+Do not interpret missing output, [EOF](../TERMS.md#eof), or a crashed helper as an accepted
+session-end result. Unfinished [request](../TERMS.md#request) outcomes remain [indeterminate](../TERMS.md#indeterminate-outcome) on failure.
 
 ## Schema pending
 

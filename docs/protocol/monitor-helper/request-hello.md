@@ -1,19 +1,19 @@
 # Hello request
 
-**Status:** agreed behavior; complete schema pending; not implemented.
+**Status:** agreed behavior; complete [schema](../TERMS.md#schema) pending; not implemented.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
-The monitor sends `op: "hello"` first on a new helper channel. It establishes
-baseline protocol 1 and helper support before daemon attachment.
+The [monitor](../../../GLOSSARY.md) sends `op: "hello"` first on a new [helper](../../../GLOSSARY.md) channel. It establishes
+[baseline](../TERMS.md#baseline) protocol 1 and helper support before [daemon](../../../GLOSSARY.md) [attachment](../../../GLOSSARY.md).
 
-Use the [request envelope](request.md). No binary payload is specified for hello.
-The helper response must report its intended session ID, exact packaged release,
-baseline, and capabilities. Monitor extension support participates in negotiation.
-The monitor compares identity with its selected session.
+Use the [request envelope](request.md). No binary [payload](../TERMS.md#payload) is specified for hello.
+The helper [response](../TERMS.md#response) must report its intended [session ID](../../../GLOSSARY.md), exact packaged release,
+baseline, and [capabilities](../../../GLOSSARY.md). Monitor [extension](../../../GLOSSARY.md) support participates in negotiation.
+The monitor compares identity with its selected [session](../../../GLOSSARY.md).
 
-Saying hello does not connect an attachment, take control, or establish
-readiness. Only [open](request-open.md) proceeds to daemon checks and attachment.
+Saying hello does not connect an attachment, [take control](../../../GLOSSARY.md), or establish
+[readiness](../../../GLOSSARY.md). Only [open](request-open.md) proceeds to daemon checks and attachment.
 Missing required support or identity mismatch must fail before takeover.
 
 ## Unresolved schema

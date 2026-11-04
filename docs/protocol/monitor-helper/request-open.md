@@ -1,23 +1,23 @@
 # Open request
 
-**Status:** agreed behavior; complete schema pending; not implemented.
+**Status:** agreed behavior; complete [schema](../TERMS.md#schema) pending; not implemented.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
-After a successful [hello](request-hello.md), the monitor sends `op: "open"`
+After a successful [hello](request-hello.md), the [monitor](../../../GLOSSARY.md) sends `op: "open"`
 using the [request envelope](request.md).
 
-The helper verifies daemon session/release identity and required capabilities
-and extensions before attaching. A channel is permanently bound to that session
-and at most one attachment. Discovery alone never takes control.
+The [helper](../../../GLOSSARY.md) verifies [daemon](../../../GLOSSARY.md) [session](../../../GLOSSARY.md)/release identity and required [capabilities](../../../GLOSSARY.md)
+and [extensions](../../../GLOSSARY.md) before attaching. A channel is permanently bound to that session
+and at most one [attachment](../../../GLOSSARY.md). Discovery alone never takes control.
 
 Missing optional extension support disables that extension. Missing required
-support rejects open before takeover. The accepted response reports effective
+support rejects open before [takeover](../../../GLOSSARY.md). The accepted [response](../TERMS.md#response) reports effective
 negotiated support. That set stays fixed for this connection.
 
-Attachment can grant control. Open success is not restoration completion or
+Attachment can [grant](../../../GLOSSARY.md) control. Open success is not [restoration](../../../GLOSSARY.md) completion or
 permission to send [input](request-input.md).
-Observe [control](event-control.md) and restoration events.
+Observe [control](event-control.md) and restoration [events](../TERMS.md#event).
 
 ## Unresolved schema
 

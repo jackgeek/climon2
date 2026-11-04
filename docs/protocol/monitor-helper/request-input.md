@@ -1,25 +1,25 @@
 # Input request
 
-**Status:** agreed behavior; argument/result schemas pending; not implemented.
+**Status:** agreed behavior; argument/result [schemas](../TERMS.md#schema) pending; not implemented.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
-The monitor sends `op: "input"` through the [request envelope](request.md) only
-for its selected, controlling, ready session.
+The [monitor](../../../GLOSSARY.md) sends `op: "input"` through the [request envelope](request.md) only
+for its selected, [controlling](../../../GLOSSARY.md), [ready](../../../GLOSSARY.md) [session](../../../GLOSSARY.md).
 
-Application bytes use a declared binary payload. For example, `binary.length: 2`
+Application [bytes](../TERMS.md#byte) use a declared binary [payload](../TERMS.md#payload). For example, `binary.length: 2`
 followed by body bytes `00 ff` preserves those exact bytes. This is a payload
 example, not a complete input request: the period argument's field schema is
 still unspecified.
 
-Input must identify the current control period. The helper rejects stale,
-revoked, or not-ready requests. The monitor also waits until it has applied the
-complete current restoration. No application input is queued for a future
+Input must identify the current [control period](../../../GLOSSARY.md). The [helper](../../../GLOSSARY.md) rejects stale,
+[revoked](../../../GLOSSARY.md), or not-ready requests. The monitor also waits until it has applied the
+complete current [restoration](../../../GLOSSARY.md). No application input is queued for a future
 controlling session or sent to a background helper.
 
 Success means accepted for forwarding, not consumed by the application.
-Helper mode never interprets these bytes as client shortcuts. Literal prefix+d,
-take-control bytes, and pasted shortcut text remain application data.
+Helper mode never interprets these bytes as [client](../../../GLOSSARY.md) shortcuts. Literal prefix+d,
+[take-control](../../../GLOSSARY.md) bytes, and pasted shortcut text remain application data.
 Explicit [take control](request-take-control.md) is a separate request.
 
 ## Unresolved schema and limits
@@ -32,8 +32,8 @@ unstated in the [helper resolution](https://github.com/jackgeek/climon2/issues/6
 `not_ready` is an agreed shared error example, not a complete error catalog.
 No complete valid input-request example is available yet.
 
-The binary body maximum is 1,048,575 bytes per paired frame. Input decoding and
-non-key event representation belong to
+The binary body maximum is 1,048,575 bytes per paired [frame](../TERMS.md#frame). Input decoding and
+non-key [event](../TERMS.md#event) representation belong to
 [terminal integration](https://github.com/jackgeek/climon2/issues/63);
 queue/deadline limits belong to
 [operational limits](https://github.com/jackgeek/climon2/issues/69).

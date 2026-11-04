@@ -1,23 +1,23 @@
 # Helper outcome and failure notification
 
-**Status:** agreed observations; wire names and payload schemas pending;
+**Status:** agreed observations; wire names and [payload](../TERMS.md#payload) [schemas](../TERMS.md#schema) pending;
 not implemented.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
-When orderly communication remains possible, the helper reports an explicit
+When orderly communication remains possible, the [helper](../../../GLOSSARY.md) reports an explicit
 terminal outcome through structured messages. This page covers the agreed
-outcome/failure obligation; it does not assign a single event name or exclude
+outcome/failure obligation; it does not assign a single [event](../TERMS.md#event) name or exclude
 separate message types in the completed schema.
 
-The monitor independently observes protocol state, EOF, and process exit.
+The [monitor](../../../GLOSSARY.md) independently observes protocol state, [EOF](../TERMS.md#eof), and process exit.
 A final message alone does not prove normal cleanup or clean exit.
 Normal library return requires workers and resources to finish cleanup;
-incomplete cleanup is a helper failure, not successful detach.
+incomplete cleanup is a helper failure, not successful [detach](../../../GLOSSARY.md).
 
-Loader failures before communication use stderr and the climon2 error code.
+Loader failures before communication use [stderr](../TERMS.md#standard-streams) and the [climon2 error code](../../../GLOSSARY.md).
 Native crashes may make a final message impossible. The monitor and other
-helpers must remain operational without assuming the affected session survived.
+helpers must remain operational without assuming the affected [session](../../../GLOSSARY.md) survived.
 
 ## Schema pending
 

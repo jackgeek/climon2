@@ -1,22 +1,22 @@
 # Event envelope
 
-**Status:** agreed, not implemented; individual event schemas may be pending.
+**Status:** agreed, not implemented; individual [event](../TERMS.md#event) [schemas](../TERMS.md#schema) may be pending.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
-An event reports a change without asking for a response. Core events originate
-at the helper. Negotiated extension events can travel in either direction.
+Core events originate at the [helper](../../../GLOSSARY.md). Negotiated [extension](../../../GLOSSARY.md) events can travel in
+either direction.
 
 | Required field | Type | Meaning |
 |---|---|---|
-| `kind` | String, exactly `"event"` | Envelope discriminator. |
+| `kind` | String, exactly `"event"` | [Envelope](../TERMS.md#envelope) [discriminator](../TERMS.md#discriminator). |
 | `event` | String | Event name. |
 | `data` | Object | Event-specific fields. |
 
 Optional binary data follows the shared
 [header/payload rules](../README.md#binary-payloads).
-Fields identifying control periods and restorations must follow their event
-schema; they are not request IDs.
+Fields identifying [control periods](../../../GLOSSARY.md) and [restorations](../../../GLOSSARY.md) must follow their event
+schema; they are not [request IDs](../TERMS.md#request-id).
 
 ## Example
 
@@ -26,7 +26,7 @@ A complete example for a negotiated attention extension:
 {"kind":"event","event":"extension","data":{"name":"org.example.attention","revision":1,"event":"status_changed","payload":{"status":"waiting_for_user"}}}
 ```
 
-This is plugin-defined status information, not a core readiness or control event.
+This is [plugin](../../../GLOSSARY.md)-defined status information, not a core [readiness](../../../GLOSSARY.md) or control event.
 Its meaning requires that exact extension/revision to be negotiated.
 
 Core events preserve control/restoration ordering. An impossible transition,

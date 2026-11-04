@@ -1,21 +1,21 @@
 # Display event
 
-**Status:** agreed delivery rules; wire name and payload schema pending;
+**Status:** agreed delivery rules; wire name and [payload](../TERMS.md#payload) [schema](../TERMS.md#schema) pending;
 not implemented.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
-The helper sends ordered display updates to the monitor, using the
-[event envelope](event.md). Updates identify their control period and any
-restoration they belong to.
+The [helper](../../../GLOSSARY.md) sends ordered display updates to the [monitor](../../../GLOSSARY.md), using the
+[event envelope](event.md). Updates identify their [control period](../../../GLOSSARY.md) and any
+[restoration](../../../GLOSSARY.md) they belong to.
 
-The helper maintains its screen while controlling, including in the background.
-Revoked helpers do not provide core live read-only screen mirroring. On regaining
+The helper maintains its screen while [controlling](../../../GLOSSARY.md), including in the background.
+[Revoked](../../../GLOSSARY.md) helpers do not provide core live read-only screen mirroring. On regaining
 control, restoration brings the view current.
 
-Bulk bytes can use the declared [binary frame](../README.md#binary-payloads).
+Bulk [bytes](../TERMS.md#byte) can use the declared [binary frame](../README.md#binary-payloads).
 Each binary body is at most 1,048,575 bytes. Larger transfers require ordered
-bounded chunks; required updates are not silently dropped under backpressure.
+bounded chunks; required updates are not silently dropped under [backpressure](../TERMS.md#backpressure).
 
 ## Schema pending
 
@@ -28,8 +28,8 @@ explicit form remains with
 The event name, exact identity/payload fields, chunk schema, and application rules
 are not yet assigned. There is no complete valid display-event example.
 
-Display content is not the control protocol: never infer readiness, grants, or
-daemon acknowledgements by scraping terminal bytes. Plugins cannot bypass
+Display content is not the control protocol: never infer [readiness](../../../GLOSSARY.md), [grants](../../../GLOSSARY.md), or
+[daemon](../../../GLOSSARY.md) acknowledgements by scraping terminal bytes. [Plugins](../../../GLOSSARY.md) cannot bypass
 control or query authority by hiding core commands in a binary payload.
 Use [common validation and limits](../README.md#compatibility-errors-and-limits).
 

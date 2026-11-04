@@ -2,7 +2,7 @@
 
 This first draft is for future [plugin authors](../../GLOSSARY.md). It describes
 what is implemented, what has been agreed, and what still needs a decision.
-It is not a claim that monitor or plugin support already exists.
+It is not a claim that [monitor](../../GLOSSARY.md) or plugin support already exists.
 
 Use the [domain glossary](../../GLOSSARY.md) for climon2 concepts and the
 [technical terms](TERMS.md) for unfamiliar protocol vocabulary.
@@ -12,12 +12,12 @@ Every message page links back here and to its owning specification.
 
 | Interface | Status | What this draft covers |
 |---|---|---|
-| Client to session daemon: hello | Implemented and frozen | Request, reply, capabilities, and session-state advertisement. |
+| [Client](../../GLOSSARY.md) to [session daemon](../../GLOSSARY.md): hello | Implemented and frozen | [Request](TERMS.md#request), reply, [capabilities](../../GLOSSARY.md), and [session](../../GLOSSARY.md)-state advertisement. |
 | Client to session daemon: after hello | Implemented as a version-matched private protocol; future frozen contract unresolved | [Decision boundary](daemon-client/post-hello.md), not a promised plugin interface. |
-| Monitor to client helper | Agreed, not implemented | Hybrid framing, shared envelopes, operation meanings, and extension rules. Several complete message schemas remain unspecified. |
-| Client executable to same-release library | Agreed, not implemented | [Separate library decision](https://github.com/jackgeek/climon2/issues/65#issuecomment-6612616128); this is not the plugin message channel. |
+| Monitor to [client helper](../../GLOSSARY.md) | Agreed, not implemented | Hybrid [framing](TERMS.md#frame), shared [envelopes](TERMS.md#envelope), operation meanings, and [extension](../../GLOSSARY.md) rules. Several complete message [schemas](TERMS.md#schema) remain unspecified. |
+| [Client executable](../../GLOSSARY.md) to same-release library | Agreed, not implemented | [Separate library decision](https://github.com/jackgeek/climon2/issues/65#issuecomment-6612616128); this is not the plugin message channel. |
 
-The helper resolution does not assign every argument field, event name, result
+The helper resolution does not assign every argument field, [event](TERMS.md#event) name, result
 schema, or error code. [Schema completion](https://github.com/jackgeek/climon2/issues/71)
 tracks these gaps; pages identify them instead of inventing wire
 examples. A page marked **schema pending** is not sufficient to implement that
@@ -25,16 +25,18 @@ message. Filenames are navigation labels, not newly assigned wire names.
 
 ## Who communicates?
 
+The command runs behind a [PTY](TERMS.md#pseudo-terminal-pty).
+
 ```text
 monitor
   <-> client library inside the session's version-matched client helper
       <-> session daemon
-          <-> command through its pseudo-terminal (PTY)
+          <-> command through its PTY
 ```
 
 The [client helper](../../GLOSSARY.md) is isolated from the monitor and other
 helpers. Its executable loads its own release's library. The monitor does not
-load session client libraries. The daemon remains the authority for session
+load session [client libraries](../../GLOSSARY.md). The daemon remains the authority for session
 terminal state and terminal-query replies.
 
 Future plugins are anticipated in the monitor and daemon, not in the client.
@@ -43,23 +45,23 @@ The client relays negotiated extensions between their endpoints.
 ## Monitor-helper framing
 
 **Agreed, not implemented.** Each direction uses a private pipe: the helper
-reads stdin and writes stdout. Stderr is diagnostic text, not protocol traffic.
+reads [stdin](TERMS.md#standard-streams) and writes [stdout](TERMS.md#standard-streams). [Stderr](TERMS.md#standard-streams) is diagnostic text, not protocol traffic.
 There is no helper PTY or terminal-output scraping.
 
 ```text
 4-byte big-endian length | 1-byte frame kind | frame body
 ```
 
-The length includes the kind and body, but not the four-byte prefix. It must be
+The length includes the kind and body, but not the four-[byte](TERMS.md#byte) prefix. It must be
 between 1 and 1,048,576 bytes inclusive.
 
 | Kind | Body |
 |---|---|
-| `0x01` | One UTF-8 JSON object. |
+| `0x01` | One [UTF-8](TERMS.md#unicode-and-utf-8) [JSON](TERMS.md#json) object. |
 | `0x02` | Arbitrary binary bytes declared by the preceding JSON object. |
 
-Both kinds belong to the required baseline. JSON text supports Unicode;
-lengths count bytes, not characters. Arbitrary terminal input/output is not
+Both kinds belong to the required [baseline](TERMS.md#baseline).
+Lengths count bytes, not characters. Arbitrary terminal input/output is not
 converted lossily to JSON text.
 
 ### Binary payloads
@@ -76,11 +78,11 @@ following binary frame with exactly two body bytes. For example, body bytes
 
 - A JSON header and its binary frame form one logical message.
 - Nothing may interleave between them, including plugin-injected messages.
-- Process the message only after its complete declared payload arrives.
+- Process the message only after its complete declared [payload](TERMS.md#payload) arrives.
 - A binary body is at most 1,048,575 bytes.
 - A declared zero-length payload still requires its binary frame.
-- Standalone binary frames, wrong lengths, unknown kinds, and EOF inside a pair
-  fail the channel. EOF means end of the byte stream.
+- Standalone binary frames, wrong lengths, unknown kinds, and [EOF](TERMS.md#eof) inside a pair
+  fail the channel.
 - Larger transfers need ordered bounded chunks defined by the owning message
   or extension. A transfer is not permission to allocate an unbounded snapshot.
 
@@ -100,10 +102,10 @@ Message-specific content lives in `args`, `result`, `error`, or `data`.
 
 [Request IDs](TERMS.md#request-id) are positive decimal strings, strictly
 increasing within each originating direction. For example, `"1"` then `"2"`.
-Leading zeros and reuse are invalid. A receiver can track a high-water mark
+Leading zeros and reuse are invalid. A receiver can track a [high-water mark](TERMS.md#high-water-mark)
 rather than keep every historical ID. Responses may complete out of order.
 
-Control-period and restoration counters are also canonical decimal strings.
+[Control-period](../../GLOSSARY.md) and [restoration](../../GLOSSARY.md) counters are also [canonical decimal strings](TERMS.md#canonical-decimal-string).
 Their maximum magnitude, length, and exhaustion policy are
 [not yet settled](https://github.com/jackgeek/climon2/issues/69).
 No default numerical limit should be inferred from this draft.
@@ -116,14 +118,14 @@ No default numerical limit should be inferred from this draft.
    and required support. Launching or saying hello does not attach.
 3. Send [open](monitor-helper/request-open.md). The helper checks daemon identity
    and required support before attaching.
-4. Observe control and restoration events. A grant is not readiness.
+4. Observe control and restoration events. A [grant](../../GLOSSARY.md) is not [readiness](../../GLOSSARY.md).
 5. Apply the current complete restoration before sending application input.
 
-The channel stays bound to one verified session. A restoration ID distinguishes
-successive restorations even within the same control period.
-Revocation invalidates readiness.
+The channel stays bound to one verified session. Successive restorations must
+have distinct [restoration IDs](../../GLOSSARY.md) even within the same [control period](../../GLOSSARY.md).
+[Revocation](../../GLOSSARY.md) invalidates readiness.
 
-The current startup envelope only implements attach and kill. The
+The current [startup envelope](../../GLOSSARY.md) only implements attach and [kill](../../GLOSSARY.md). The
 helper-specific operation spelling and complete startup schema are pending;
 do not guess an operation value from a filename or this sequence.
 
@@ -137,23 +139,23 @@ do not guess an operation value from a filename or this sequence.
 - A well-formed unknown request gets `unsupported_operation`. Unknown core
   events fail the channel.
 - Request rejection and channel failure are different. A rejected request is
-  not successful work; channel failure leaves unfinished outcomes indeterminate.
+  not successful work; channel failure leaves unfinished outcomes [indeterminate](TERMS.md#indeterminate-outcome).
 - Silence, EOF, a final message, and process exit are not interchangeable
-  evidence of readiness, detach, or cleanup.
-- Use independent bounded queues and backpressure. Required updates are not
+  evidence of readiness, [detach](../../GLOSSARY.md), or cleanup.
+- Use independent bounded queues and [backpressure](TERMS.md#backpressure). Required updates are not
   silently dropped. One slow helper must not disable other helpers or monitor
   commands.
 
-The 1 MiB frame maximum is agreed. Queue budgets, parser limits, outstanding
+The 1 [MiB](TERMS.md#mib) frame maximum is agreed. Queue budgets, parser limits, outstanding
 request counts, deadlines, and admission/exhaustion policies remain with
 [Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69).
 
 ## Future plugin authors
 
-An extension has a namespaced name and explicit revision. Its effective support
-is the intersection of monitor support, daemon support, and helper relay support.
-Discover required support before attachment. Missing optional support disables
-that extension; missing required support rejects open before takeover.
+Negotiate extension support using its [namespaced name](TERMS.md#namespaced-name) and explicit revision.
+Effective support is the intersection of monitor support, daemon support, and helper relay support.
+Discover required support before [attachment](../../GLOSSARY.md). Missing optional support disables
+that extension; missing required support rejects open before [takeover](../../GLOSSARY.md).
 
 Extensions can use [requests](monitor-helper/request-extension.md) and
 [events](monitor-helper/event-extension.md) in either direction, with JSON and
@@ -166,19 +168,19 @@ rejection. Injected work gets its own ID and outcome. Replacing a request with
 several requires one truthful final outcome for the original. Responses and
 essential state events cannot silently disappear.
 
-Future daemon plugins need distinct interception seams for PTY traffic and
+Future daemon plugins need distinct [interception seams](TERMS.md#interception-seam) for PTY traffic and
 structured daemon/socket traffic, plus observation before filtering and
 read-only terminal snapshots. These are requirements, not implemented hooks.
 
 An attention plugin might observe [OSC 7501](TERMS.md#osc), [BEL](TERMS.md#bel),
 [OSC 9](TERMS.md#osc), terminal idleness, or activity, then notify a monitor
-plugin. Detection strategies, toast UI, subscriptions, plugin loading, hook
-ordering, and sandboxing are not specified here.
+plugin. Detection strategies, [toast notifications](TERMS.md#toast), subscriptions, plugin loading, hook
+ordering, and [sandboxing](TERMS.md#sandboxing) are not specified here.
 
 Status extensions may define notifications while revoked. They do not authorize
 live core screen mirroring, input, or resize while revoked.
 
-QUIC transports, cross-stream ordering, reconnect deduplication, and replay
+[QUIC](TERMS.md#quic) transports, cross-stream ordering, reconnect deduplication, and replay
 handling are future work. Baseline IDs do not provide retry safety or exactly-once
 execution. See [idempotency key](TERMS.md#idempotency-key).
 
@@ -194,13 +196,13 @@ execution. See [idempotency key](TERMS.md#idempotency-key).
 | [Hello request](monitor-helper/request-hello.md) | Monitor -> helper | Establish compatibility before attachment. |
 | [Open request](monitor-helper/request-open.md) | Monitor -> helper | Check daemon identity/support, then attach. |
 | [Input request](monitor-helper/request-input.md) | Monitor -> helper | Forward literal application bytes. |
-| [Resize request](monitor-helper/request-resize.md) | Monitor -> helper | Request controlling geometry. |
+| [Resize request](monitor-helper/request-resize.md) | Monitor -> helper | Request [controlling](../../GLOSSARY.md) geometry. |
 | [Take-control request](monitor-helper/request-take-control.md) | Monitor -> helper | Explicitly request takeover. |
 | [Detach request](monitor-helper/request-detach.md) | Monitor -> helper | Request deliberate detach. |
 | [Extension request](monitor-helper/request-extension.md) | Either endpoint, through helper | Request plugin-defined work. |
 | [Control event](monitor-helper/event-control.md) | Helper -> monitor | Report grant or revocation. |
 | [Restoration-start event](monitor-helper/event-restoration-start.md) | Helper -> monitor | Begin a distinct restoration. |
-| [Display event](monitor-helper/event-display.md) | Helper -> monitor | Deliver ordered presentation updates. |
+| [Display event](monitor-helper/event-display.md) | Helper -> monitor | Deliver ordered [presentation](../../GLOSSARY.md) updates. |
 | [Restoration-completion event](monitor-helper/event-restoration-complete.md) | Helper -> monitor | End the identified restoration. |
 | [Geometry event](monitor-helper/event-geometry.md) | Helper -> monitor | Report actual geometry. |
 | [Session-end event](monitor-helper/event-session-ended.md) | Helper -> monitor | Report command/session completion. |
@@ -211,8 +213,8 @@ execution. See [idempotency key](TERMS.md#idempotency-key).
 
 | Message | Direction | Purpose |
 |---|---|---|
-| [Hello request](daemon-client/hello-request.md) | Client/prober -> daemon | Begin the frozen handshake. |
-| [Hello reply](daemon-client/hello-reply.md) | Daemon -> client/prober | Identify the session and advertise support/state. |
+| [Hello request](daemon-client/hello-request.md) | Client performing a [probe](../../GLOSSARY.md) or attaching -> daemon | Begin the frozen handshake. |
+| [Hello reply](daemon-client/hello-reply.md) | Daemon -> client performing a probe or attaching | Identify the session and advertise support/state. |
 
 The [post-hello page](daemon-client/post-hello.md) explains why the existing
 private messages are not yet a frozen plugin reference.

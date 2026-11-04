@@ -1,18 +1,18 @@
 # Restoration-completion event
 
-**Status:** agreed meaning; wire name and payload schema pending; not implemented.
+**Status:** agreed meaning; wire name and [payload](../TERMS.md#payload) [schema](../TERMS.md#schema) pending; not implemented.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
-The helper reports completion of an identified restoration after its ordered
-updates. Use the [event envelope](event.md), identifying the control period and
-the same restoration ID as [start](event-restoration-start.md).
+The [helper](../../../GLOSSARY.md) reports completion of an identified [restoration](../../../GLOSSARY.md) after its ordered
+updates. Use the [event envelope](event.md), identifying the [control period](../../../GLOSSARY.md) and
+the same [restoration ID](../../../GLOSSARY.md) as [start](event-restoration-start.md).
 
-Receiving completion is not enough. The monitor must apply the complete current
-restoration before enabling application input. A successful takeover or open
-response cannot substitute for this barrier.
+Receiving completion is not enough. The [monitor](../../../GLOSSARY.md) must apply the complete current
+restoration before enabling application input. A successful [takeover](../../../GLOSSARY.md) or open
+[response](../TERMS.md#response) cannot substitute for this barrier.
 
-Revocation or a newer restoration invalidates the earlier readiness state.
+[Revocation](../../../GLOSSARY.md) or a newer restoration invalidates the earlier [readiness](../../../GLOSSARY.md) state.
 Do not apply completion for an obsolete restoration to a new one.
 
 ## Schema pending

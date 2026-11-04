@@ -4,22 +4,22 @@
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
-A response travels opposite its [request](request.md). It reports one explicit
-outcome, including for plugin-injected work.
+[Responses](../TERMS.md#response) must travel opposite their [requests](request.md) and report one
+explicit outcome, including for [plugin](../../../GLOSSARY.md)-injected work.
 
 ## Required fields
 
 | Field | Type | Meaning |
 |---|---|---|
-| `kind` | String, exactly `"response"` | Envelope discriminator. |
-| `id` | String | Echo of the outstanding request ID. |
+| `kind` | String, exactly `"response"` | [Envelope](../TERMS.md#envelope) [discriminator](../TERMS.md#discriminator). |
+| `id` | String | Echo of the outstanding [request ID](../TERMS.md#request-id). |
 | `ok` | Boolean | Whether the request succeeded. |
 | `result` | Object, success only | Operation-specific result. |
 | `error` | Object, failure only | Required `code` and `message` strings. |
 
 Do not combine success and failure variants. Optional binary data must be
 declared and paired as described in the [overview](../README.md#binary-payloads).
-Extension-owned nested payloads may be any JSON value their schema permits.
+[Extension](../../../GLOSSARY.md)-owned nested [payloads](../TERMS.md#payload) may be any [JSON](../TERMS.md#json) value their [schema](../TERMS.md#schema) permits.
 
 ## Examples
 
@@ -33,8 +33,8 @@ Extension-owned nested payloads may be any JSON value their schema permits.
 
 These demonstrate the shared envelope, not every operation's result schema.
 Operation pages explain what success proves. Input acceptance is not application
-consumption; takeover acceptance is not readiness; detach acceptance is not
-clean helper exit.
+consumption; [takeover](../../../GLOSSARY.md) acceptance is not [readiness](../../../GLOSSARY.md); [detach](../../../GLOSSARY.md) acceptance is not
+clean [helper](../../../GLOSSARY.md) exit.
 
 Unknown or already-completed response IDs are invalid. A broken channel does
 not produce implicit success. Plugins cannot silently suppress a response after

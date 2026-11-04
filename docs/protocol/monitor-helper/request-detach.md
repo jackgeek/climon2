@@ -1,19 +1,19 @@
 # Detach request
 
-**Status:** agreed behavior; complete schema pending; not implemented.
+**Status:** agreed behavior; complete [schema](../TERMS.md#schema) pending; not implemented.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
-The monitor sends `op: "detach"` through the [request envelope](request.md)
-to end a retained attachment deliberately.
+The [monitor](../../../GLOSSARY.md) sends `op: "detach"` through the [request envelope](request.md)
+to end a retained [attachment](../../../GLOSSARY.md) deliberately.
 
-Success is reported only after the daemon accepts detach. The helper then
+Success is reported only after the [daemon](../../../GLOSSARY.md) accepts [detach](../../../GLOSSARY.md). The [helper](../../../GLOSSARY.md) then
 completes resource cleanup and exits. Detach acceptance, a final outcome message,
 and clean helper process exit are separate observations.
 
-EOF, a crash, a timeout, or incomplete cleanup is not proof of accepted detach.
+[EOF](../TERMS.md#eof), a crash, a timeout, or incomplete cleanup is not proof of accepted detach.
 Application input stops when monitor exit starts. Losing a helper does not by
-itself guarantee that its session survives.
+itself guarantee that its [session](../../../GLOSSARY.md) survives.
 
 Switching away is not detach: it keeps the helper and its background attachment.
 
@@ -24,7 +24,7 @@ Helper-specific fields are tracked by
 
 The resolution fixes the operation meaning, but not a complete argument/result
 schema or all error codes. No complete valid wire example is assigned here.
-No binary payload is specified for detach.
+No binary [payload](../TERMS.md#payload) is specified for detach.
 
 [Lifecycle](https://github.com/jackgeek/climon2/issues/61) owns session survival,
 recovery, and visible exit behavior.
