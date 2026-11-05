@@ -17,6 +17,11 @@ Do not interpret monitor-routed bytes a second time as client shortcuts.
 Success means accepted for forwarding, not consumed by the application.
 [Take control](request-take-control.md) is a separate operation.
 
+Accepted real user application input, including paste, clears either
+`needs_attention` or `acknowledged` under the
+[daemon attention FSM](../../session-status.md#attention). Monitor navigation,
+terminal-query replies, and injected work do not count as that user event.
+
 [Input routing](https://github.com/jackgeek/climon2/issues/64) owns literal prefix
 and paste behavior. [Terminal integration](https://github.com/jackgeek/climon2/issues/63)
 owns non-key input representation; the

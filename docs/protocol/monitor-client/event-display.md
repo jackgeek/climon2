@@ -11,9 +11,15 @@ The [client](../../../GLOSSARY.md) delivers ordered updates to the
 do not provide live core read-only mirroring; restoration brings the view
 current on regaining control. [Plugin](../../../GLOSSARY.md) status is independent of screen access.
 
-[Daemon title plugin updates](event-title.md) are also independent of screen
-access. When supported, negotiated extension traffic must reach
-passive/background/revoked clients without display scraping.
+[Daemon title updates](event-title.md) and
+[session status reports](event-session-status.md) are core data independent of
+screen access. Supported updates reach passive/background/revoked clients
+without display scraping or implementing plugins.
+
+The monitor retains a per-session `climon2-vt` model and bounded local scrollback
+for [disconnected inspection](../../session-status.md#connection-loss-and-retained-terminal-views).
+Cached content is explicitly stale/read-only, not a continuation of live
+mirroring; reconnection alone does not make it current.
 
 Ratatui is the required monitor renderer; its session-state integration remains
 with the terminal decision.

@@ -32,16 +32,21 @@ mirroring, application input, or resize. The exact passive connection/attachment
 model and wire schemas are not yet assigned.
 
 The [startup/discovery resolution](https://github.com/jackgeek/climon2/issues/59)
-also requires a built-in daemon plugin for
-[title state and changes](../monitor-client/event-title.md), using negotiated
-extension traffic for passive, background, and revoked clients. Publish the
-authoritative current title and gap-free ordered updates without requiring
-control. The plugin and real integration evidence are release requirements,
-not deferred production-plugin delivery. Older daemons lacking support remain
-usable with command/arguments fallback and no title-related takeover barrier.
-The implemented hello reply does not currently advertise a title; its frozen
-required fields remain unchanged. Exact title schemas and plugin interfaces
-remain with the future daemon contract.
+also requires daemon-core
+[title state and changes](../monitor-client/event-title.md) and
+[effective session status/time](../monitor-client/event-session-status.md)
+for passive, background, and revoked clients, without taking control or
+implementing plugins. The [mechanics and diagrams](../../session-status.md)
+supersede the earlier plugin release requirement. Older daemons lacking title
+support remain usable with command/arguments fallback.
+
+Specify [viewing reports](../monitor-client/request-viewing.md) independently
+of retained control, and distinguish command completion from uncertain
+disconnection/passive reconnect. Current hello's optional `state` describes
+lifecycle/attachments/control, not these new activity/attention machines.
+Do not silently repurpose that existing shape. Frozen hello required fields
+remain unchanged; exact core status/title/viewing schemas and compatibility
+remain unresolved.
 
 The in-process [monitor-client contract](https://github.com/jackgeek/climon2/issues/66)
 does not select this daemon transport's framing or encoding.

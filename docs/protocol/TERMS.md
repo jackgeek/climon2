@@ -76,6 +76,11 @@ A logical message can use several frames, and a read can contain part of a frame
 An agreed layout of function pointers through which a caller uses one revision
 of a native-library interface.
 
+## FSM
+
+A finite state machine: a set of states and the event-driven transitions
+between them.
+
 ## GUID
 
 A globally unique identifier. A climon2 session ID is a GUID, not a process ID.
@@ -110,6 +115,11 @@ not their length prefixes.
 ## MiB
 
 A mebibyte: 1,048,576 bytes. This unit is distinct from a decimal megabyte.
+
+## Monotonic clock
+
+A clock for measuring elapsed time that does not go backwards when wall-clock
+time is corrected. Inactivity deadlines use this clock, not UTC timestamps.
 
 ## Namespaced name
 
@@ -179,8 +189,9 @@ streams.
 
 ## Toast
 
-A brief on-screen notification. The attention-plugin example anticipates such
-notifications but does not specify their presentation.
+A brief on-screen notification. The planned monitor's
+[attention mechanics](../session-status.md#titles-and-notifications) specify
+when notifications occur; exact visual presentation remains unresolved.
 
 ## Unicode and UTF-8
 
@@ -192,3 +203,9 @@ Arbitrary terminal bytes need not be valid UTF-8.
 
 A whole number that cannot be negative. Its bit width determines the largest
 representable value.
+
+## UTC
+
+Coordinated Universal Time, used for externally reported status-change
+timestamps. A UTC timestamp is not an implicit unique identifier or a
+monotonic elapsed-time measurement.

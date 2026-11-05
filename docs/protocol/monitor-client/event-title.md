@@ -1,19 +1,17 @@
-# Title plugin state and changes
+# Title state and changes
 
 **Status:** agreed semantics, not implemented; exact interface and wire schemas unresolved.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
-A built-in [session daemon](../../../GLOSSARY.md#sessions)
-[plugin](../../../GLOSSARY.md#protocol-and-plugin-concepts) publishes the daemon's
-authoritative current terminal title through negotiated
-[extension](../../../GLOSSARY.md#protocol-and-plugin-concepts) traffic. The
-[client](../../../GLOSSARY.md#sessions) relays it opaquely to the
-[monitor](../../../GLOSSARY.md#sessions), without a dedicated core title message
-or a special bypass of the plugin interfaces. With support negotiated,
-establishing a passive connection must provide current title state followed by
-ordered changes, with no gap in which a change can be missed. Updates continue
-while background,
+The [session daemon](../../../GLOSSARY.md#sessions)'s core supplies authoritative
+current terminal title state through the
+[client](../../../GLOSSARY.md#sessions) to the
+[monitor](../../../GLOSSARY.md#sessions). Title delivery is not a
+[plugin](../../../GLOSSARY.md#protocol-and-plugin-concepts) extension.
+Establishing a supported passive connection must provide current title state
+followed by ordered changes, with no gap in which a change can be missed.
+Updates continue while background,
 [revoked](../../../GLOSSARY.md#attachment-and-control), or before
 [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts), including when
 the menu is closed.
@@ -24,14 +22,13 @@ nor permits screen mirroring, input, or resize. Do not scrape
 display output or require [restoration](../../../GLOSSARY.md#restoration-and-presentation)
 to obtain the title.
 
-The built-in plugin may be contained in the daemon executable. Release is
-blocked until it is implemented and automated integration evidence demonstrates
-the actual plugin interfaces, publication, relay, and monitor consumption.
-Conforming test endpoints alone do not prove that integration. General-purpose
-plugin loading/configuration remains deferred.
+The [status/activity revision](../../session-status.md) supersedes the earlier
+built-in title-plugin requirement. Plugin implementation, configuration, and
+interface examples are deferred; there is no plugin release prerequisite.
+Title changes also count as activity under the
+[snapshot strategy](../../session-status.md#snapshot-sampling-and-the-inactivity-deadline).
 
-This mandatory implementation is distinct from a required peer capability.
-Older daemons without title-extension support remain usable: absence must not
+Older daemons without title support remain usable: absence must not
 block monitor connection or control. Other required extensions retain their
 fail-before-control rule. Report negotiation/runtime failures explicitly and
 mark cached titles stale/unavailable if delivery becomes uncertain.

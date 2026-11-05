@@ -3,6 +3,10 @@
 This reference is for future [plugin](../../GLOSSARY.md#protocol-and-plugin-concepts)
 authors. It distinguishes implemented behavior, agreed plans, and unresolved
 interfaces. The [monitor](../../GLOSSARY.md#sessions) is not implemented.
+Plugin implementation is deferred. Title detection and
+[session status](../../GLOSSARY.md#status-and-attention) belong in daemon core;
+the agreed [mechanics and state diagrams](../session-status.md) are not shipped
+behavior.
 
 Use the [domain glossary](../../GLOSSARY.md) for climon2 concepts and the
 [technical terms](TERMS.md) for protocol vocabulary. Each operation page links
@@ -71,10 +75,14 @@ a session that unexpectedly loses its final attachment.
    support before instance creation or a daemon connection.
 3. Start one client per live session, with bounded concurrency. A slow or broken
    session must not indefinitely prevent older sessions from getting clients.
-4. Establish passive background connections that relay negotiated plugin data
+4. Establish passive background connections that receive core title/status data
    without taking control. The daemon contract must specify this connection mode;
    current ordinary attach is not a passive connection.
-5. Acquire control for initial selection or explicit user selection/takeover.
+5. Collect current daemon status and its change time passively, with bounded
+   progress. Choose the first candidate in the
+   [status/time ordering](../session-status.md#reporting-ordering-and-initial-selection),
+   not by creation time. Unknown status remains explicit uncertainty.
+6. Acquire control for initial selection or explicit user selection/takeover.
    Enable application input only after the current complete
    [restoration](../../GLOSSARY.md#restoration-and-presentation) has been applied.
 
@@ -85,7 +93,7 @@ the two-second hello deadline and bounded probes. Reconcile by full session ID,
 reusing starting and retained clients; discovery uncertainty never overrides an
 established client's state or tears it down.
 
-Pin the newest confirmed-live initial candidate while it starts. New arrivals
+Pin the chosen initial candidate while it starts. New arrivals
 receive passive clients without displacing it. Only definitive loss permits
 automatic progression, at most once per candidate per pass. Other startup
 failures stay visible on that candidate without silent fallback. Startup
@@ -94,6 +102,30 @@ have been applied. Revocation before readiness leaves a non-controlling
 placeholder requiring explicit user action, not repeated automatic takeover.
 After the first successful startup, selected-session loss and recovery belong
 to the lifecycle decision.
+
+## Session status and monitor recovery
+
+The daemon owns independent
+[activity/attention states](../../GLOSSARY.md#status-and-attention) and reports
+their effective status plus its [UTC](TERMS.md#utc) change timestamp on connection
+and on changes.
+The monitor orders rows by status, then newest change time, with an internal
+[GUID](TERMS.md#guid) tie-breaker. Later sorting must preserve selected/highlighted identity.
+See the [canonical mechanics](../session-status.md) for both diagrams, the
+snapshot strategy, exact ranking, and notification behavior.
+
+[Viewing](../../GLOSSARY.md#status-and-attention) is reported per attachment;
+retained control alone is not viewing. Merely being visible does not
+acknowledge attention. The planned [viewing operation](monitor-client/request-viewing.md)
+and [status reports](monitor-client/event-session-status.md) still need complete
+schemas.
+
+The monitor retains a per-session `climon2-vt` model and bounded local scrollback
+for disconnected inspection, and retries uncertain connections passively.
+Reconnect never automatically takes control. Definitive completion stops
+retrying; cached output/status is not proof of a live or completed session.
+Detailed [connection/retention rules](../session-status.md#connection-loss-and-retained-terminal-views)
+preserve the existing leave policy and native-crash failure boundary.
 
 ## Session menu titles
 
@@ -105,20 +137,16 @@ Command, working directory, creation time, depth, and availability provide
 distinguishing details; exact layout belongs to the selector decision.
 
 The planned [title state/change interaction](monitor-client/event-title.md)
-uses a built-in daemon plugin through the actual plugin interfaces and negotiated
-extension relay, not a dedicated core title message. When supported, it provides
+uses daemon core, not a plugin or plugin extension. When supported, it provides
 the authoritative current title and gap-free ordered updates regardless of
 control, menu visibility, or input readiness, without screen mirroring.
 Cached titles must be marked stale/unavailable when delivery becomes uncertain.
 An empty title restores the command/arguments fallback.
 
-The title plugin is a release requirement: do not release without its real
-implementation and automated integration evidence through the plugin interfaces.
-It may be contained in the daemon executable; general-purpose plugin loading
-and configuration remain out of scope. This is planned behavior, not an
-implemented plugin. Older daemons without support remain usable by the monitor
-with command/arguments fallback; lack of title support must not block takeover.
-The release requirement is not a required peer capability.
+Plugin implementation, configuration, and interface examples are deferred;
+the earlier title-plugin release requirement is superseded. Older daemons
+without title support remain usable by the monitor with command/arguments
+fallback; lack of title support must not block takeover.
 
 Users do not set terminal titles through climon2. User-assigned persisted session
 names and renaming remain future work; a name will appear alongside a non-empty
@@ -131,8 +159,8 @@ Switching away retains a client and its existing control until
 [revocation](../../GLOSSARY.md#attachment-and-control). Background clients receive
 neither application input nor monitor resize requests. A revoked client shows a
 [placeholder](../../GLOSSARY.md#attachment-and-control), not live screen mirroring,
-and must not automatically take control back. Negotiated plugin data continues
-to flow regardless of control.
+and must not automatically take control back. Core title/status data continues
+to flow regardless of control; future plugin implementation remains deferred.
 
 ## Compatibility, errors, and limits
 
@@ -167,8 +195,8 @@ Support must be explicitly negotiated by
 [namespaced name](TERMS.md#namespaced-name) and revision, including relay support.
 Required support must be checked before control acquisition; missing optional
 support disables that extension. Exact negotiation schemas remain unresolved.
-The built-in title plugin is mandatory for new releases, but title-extension
-support is not required of older peers; its absence uses the menu fallback.
+These future extension requirements do not require implementing plugins now.
+Core title/status delivery does not use plugin negotiation.
 
 Bidirectional extension [requests](TERMS.md#request), outcomes, and [events](TERMS.md#event) must work for passive,
 background, and revoked clients as well as the selected controller. Receiving
@@ -187,19 +215,15 @@ for PTY traffic and structured daemon/socket traffic, observation before
 filtering, and read-only terminal snapshots. An attention plugin might observe
 [OSC](TERMS.md#osc) 7501, [BEL](TERMS.md#bel), OSC 9, terminal idleness, or activity.
 These are motivating examples, not implemented hooks or frozen plugin schemas.
-Concrete plugin interfaces are the next design priority. Use the built-in title
-plugin as the first worked example: registration/lifetime, authoritative title
-subscription, extension publication, opaque client relay, and monitor consumption.
-Publish declarations and an end-to-end example; do not treat these unresolved
-interfaces as already agreed.
-Detection strategies, [toast notifications](TERMS.md#toast), general-purpose
-plugin loading/configuration, unrelated hook implementation, and
-[sandboxing](TERMS.md#sandboxing) remain outside this map. The title plugin and
-the interfaces it exercises are not deferred with those features.
+Plugin interfaces, examples, implementation, configuration, and
+[sandboxing](TERMS.md#sandboxing) are deferred. The agreed core
+[attention strategy and toast behavior](../session-status.md) are in scope;
+additional detection strategies and plugin delivery are not prerequisites.
 
-[QUIC](TERMS.md#quic), reconnect deduplication, outcome caches, and replay policies
-also remain out of scope. [Request IDs](TERMS.md#request-id) alone do not provide
-retry safety or exactly-once execution.
+[QUIC](TERMS.md#quic), request-retry deduplication, outcome caches, and replay
+policies remain out of scope. Passive connection retry is in scope; it is not
+permission to retry indeterminate operations. [Request IDs](TERMS.md#request-id)
+alone do not provide retry safety or exactly-once execution.
 
 ## Operation and event index
 
@@ -219,6 +243,7 @@ owning decisions settle the interface.
 | [Input](monitor-client/request-input.md) | Monitor -> client | Forward literal application bytes. |
 | [Resize](monitor-client/request-resize.md) | Monitor -> client | Request controlling geometry. |
 | [Take control](monitor-client/request-take-control.md) | Monitor -> client | Explicitly request takeover. |
+| [Viewing](monitor-client/request-viewing.md) | Monitor -> client -> daemon | Report selected presentation independently of retained control. |
 | [Detach](monitor-client/request-detach.md) | Monitor -> client | Request deliberate detach. |
 | [Extension request](monitor-client/request-extension.md) | Either endpoint, through client | Request negotiated plugin work regardless of control. |
 | [Control](monitor-client/event-control.md) | Client -> monitor | Report grant or revocation. |
@@ -226,7 +251,8 @@ owning decisions settle the interface.
 | [Display](monitor-client/event-display.md) | Client -> monitor | Deliver ordered presentation updates. |
 | [Restoration completion](monitor-client/event-restoration-complete.md) | Client -> monitor | End the identified restoration. |
 | [Geometry](monitor-client/event-geometry.md) | Client -> monitor | Report actual geometry. |
-| [Title plugin state/change](monitor-client/event-title.md) | Daemon plugin -> monitor, through client extension relay | Supply current daemon title and ongoing changes regardless of control; not a separate core event. |
+| [Title state/change](monitor-client/event-title.md) | Daemon core -> client -> monitor | Supply current daemon title and ongoing changes regardless of control. |
+| [Session status](monitor-client/event-session-status.md) | Daemon core -> client -> monitor | Supply effective activity/attention status and its change timestamp. |
 | [Session end](monitor-client/event-session-ended.md) | Client -> monitor | Report command/session completion. |
 | [Client outcome](monitor-client/event-outcome.md) | Client -> monitor, when possible | Report client completion or failure. |
 | [Extension event](monitor-client/event-extension.md) | Either endpoint, through client | Report negotiated plugin information regardless of control. |
@@ -239,20 +265,22 @@ owning decisions settle the interface.
 | [Hello reply](daemon-client/hello-reply.md) | Daemon -> client | Identify the session and advertise support/state. |
 
 The [post-hello page](daemon-client/post-hello.md) distinguishes current private
-messages from the future frozen contract and passive plugin connection.
+messages from the future frozen contract and passive connection.
 
 ## Sources and unresolved decisions
 
 - [Define monitor client ownership and control](https://github.com/jackgeek/climon2/issues/58):
-  canonical thread-based hosting, eager clients, passive plugin traffic, and control.
+  canonical thread-based hosting, eager clients, passive connections, and control;
+  later core-status mechanics defer plugin implementation.
 - [Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59):
-  agreed startup/discovery integration and continuously updated menu titles;
-  not implemented, exact title schemas still pending.
+  agreed startup/discovery integration, revised status/time ordering and core
+  title/status reporting; not implemented, exact schemas still pending.
 - [Define version-matched client library loading and lifetime](https://github.com/jackgeek/climon2/issues/65):
   agreed [multi-instance embedding, compatibility, and lifetime](library-embedding.md);
   not implemented, complete declarations still pending.
 - [Define monitor-client communication contract](https://github.com/jackgeek/climon2/issues/66):
-  in-process operations, transport/representation, validation, and plugin relay.
+  in-process operations, core title/status/viewing, transport/representation,
+  and validation; plugin implementation remains deferred.
 - [Complete monitor-client interface schemas](https://github.com/jackgeek/climon2/issues/71):
   exact fields, calls/events, results, errors, and examples.
 - [Freeze daemon-client communication contract](https://github.com/jackgeek/climon2/issues/67):

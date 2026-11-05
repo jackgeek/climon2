@@ -13,8 +13,14 @@ Revocation invalidates readiness and pending restoration; show the
 
 [Hand-back](../../../GLOSSARY.md) may restore background control without
 changing selection. That client resumes screen maintenance but receives no
-monitor application input or resize. Negotiated [plugin](../../../GLOSSARY.md) data continues even
-without control.
+monitor application input or resize. Core title/status reports continue even
+without control; [plugin](../../../GLOSSARY.md) implementation is deferred.
+
+[Viewing](request-viewing.md) is separate from retained control. A grant or
+hand-back alone does not establish a selected, displayed presentation.
+Revocation clears viewing. Explicit selection/takeover can acknowledge
+[attention](../../session-status.md#attention), but merely being visible must
+not automatically acknowledge a new attention request.
 
 The [ownership decision](https://github.com/jackgeek/climon2/issues/58) owns these
 rules. The [communication decision](https://github.com/jackgeek/climon2/issues/66)

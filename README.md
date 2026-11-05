@@ -21,6 +21,8 @@ sessions are supported. Session data defaults to `~/.climon2`; set
 The [protocol reference](docs/protocol/README.md) explains the current daemon
 handshake and the planned in-process monitor-client interface for future plugin authors.
 It distinguishes implemented behavior from agreed plans and unresolved details.
+The planned [session status, attention, and activity mechanics](docs/session-status.md)
+include both daemon state machines and the monitor's ordering/recovery behavior.
 
 ## Sessions
 

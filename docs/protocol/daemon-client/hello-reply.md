@@ -67,6 +67,11 @@ A snapshot can become outdated immediately. It does not [grant](../../../GLOSSAR
 future successful attachment. Use the [post-hello decision boundary](post-hello.md)
 for the unresolved future frozen interface.
 
+This implemented `state` object does not contain the planned
+[activity/attention status or its UTC change timestamp](../../session-status.md).
+Those core reports need separately completed schemas; do not infer them from
+the current lifecycle advertisement or silently repurpose its existing fields.
+
 **Sources:** [implementation](../../../crates/climon2-core/src/protocol.rs),
 [hello advertisements](../../../crates/climon2-core/src/hello.rs), and
 [hello tests](../../../crates/climon2-core/tests/hello.rs).

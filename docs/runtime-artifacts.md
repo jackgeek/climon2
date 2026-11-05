@@ -74,14 +74,17 @@ new sessions. Background clients relay negotiated plugin data without taking
 control. Native client crashes can terminate the entire monitor. Ratatui powers
 the planned monitor's rendering; terminal integration remains specification work.
 
-The [title-plugin amendment](https://github.com/jackgeek/climon2/issues/59)
-requires a built-in daemon plugin using real plugin interfaces and negotiated
-extension traffic through the client library to the monitor. It may be contained
-in the daemon executable; no separate plugin executable or dynamic library is
-specified. Its implementation and automated real-integration evidence are
-release requirements, not shipped behavior. Older daemons without title support
-remain usable with command/arguments fallback. General-purpose plugin loading
-and configuration remain deferred.
+The [status/activity revision](session-status.md) puts title detection and both
+state machines in daemon core, not plugins. The client library carries core
+title/status reports and explicit viewing information. Plugin implementation,
+configuration, and interface examples are deferred; the earlier title-plugin
+release prerequisite is superseded. No new plugin executable or dynamic library
+is specified. These are planned mechanics, not shipped behavior.
+
+The monitor retains a `climon2-vt` model per session for disconnected terminal/
+scrollback inspection and reconnects passively without automatic takeover.
+Known completion stops retries. These relationships do not introduce a session
+survival guarantee or a persisted archive of completed sessions.
 
 The client executable will also load its same-release library for ordinary
 operations. The monitor node represents a runtime role, not a decision to ship

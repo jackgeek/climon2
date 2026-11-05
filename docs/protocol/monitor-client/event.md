@@ -13,12 +13,16 @@ silently disappear through plugin filtering.
 background, or [revoked](../../../GLOSSARY.md) clients. It does not grant screen
 access, application input, or resize permission.
 
-[Title plugin state and changes](event-title.md) use negotiated extension
-traffic, not a dedicated core title event or screen mirroring. When supported,
+[Title state and changes](event-title.md) use daemon core, not plugin traffic
+or screen mirroring. When supported,
 supply authoritative current daemon title state and ordered updates without a
 subscription gap, regardless of control, menu visibility, or
 [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts).
 Exact representation remains unresolved.
+
+[Session status](event-session-status.md) is also daemon-owned core data, with
+its stored change timestamp. Reports support passive startup ordering and
+reconnection without taking control. Plugin implementation is deferred.
 
 [Define monitor-client communication contract](https://github.com/jackgeek/climon2/issues/66)
 owns delivery, validation, and unknown-event behavior.

@@ -147,6 +147,28 @@ _Avoid_: Space-to-control, hotkey
 The screen a non-controlling client shows instead of session content, saying the session is being viewed elsewhere.
 _Avoid_: Viewer mode, read-only view
 
+## Status and attention
+
+**Activity state**:
+A session's record of whether its sampled terminal content is changing or quiet.
+_Avoid_: Connection state, viewing state
+
+**Attention state**:
+A session's record of pending or acknowledged user attention and its final command outcome.
+_Avoid_: Monitor state, activity state
+
+**Session status**:
+The effective state reported by a session, combining its activity and attention states.
+_Avoid_: Lifecycle, connection status
+
+**Viewing**:
+A connected controller's active presentation of a session to the user, distinct from retaining control in the background.
+_Avoid_: Attachment, control ownership
+
+**Connection status**:
+A monitor's record of whether its client is connected to a session daemon, distinct from the session's last reported status.
+_Avoid_: Session status, daemon outcome
+
 ## Restoration and presentation
 
 **Restoration**:

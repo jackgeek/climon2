@@ -73,6 +73,13 @@ artifact diagram, not as a Cargo dependency. The client library's planned
 Ratatui is required for monitor rendering; third-party crates are deliberately
 excluded from this workspace-only diagram.
 
+The [status/activity revision](session-status.md) also requires the monitor role
+to consume `climon2-vt`, keeping one terminal model per session across uncertain
+disconnections. Its crate placement remains undecided, so this is not an
+invented Cargo edge or a new workspace crate. Daemon-core title detection and
+activity/attention machines do not require a plugin crate; plugin implementation
+is deferred.
+
 Current edges come from workspace `Cargo.toml` files. This is a consumption
 index, not a replacement for the architecture decisions or their permitted
 dependency rules.
