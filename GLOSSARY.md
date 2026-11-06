@@ -150,7 +150,7 @@ _Avoid_: Viewer mode, read-only view
 ## Status and attention
 
 **Activity state**:
-A session's record of whether its sampled terminal content is changing or quiet.
+A session's record of being idle, working on its own, or responding to recent user input.
 _Avoid_: Connection state, viewing state
 
 **Attention state**:

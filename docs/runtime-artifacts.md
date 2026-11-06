@@ -75,9 +75,12 @@ control. Native client crashes can terminate the entire monitor. Ratatui powers
 the planned monitor's rendering; terminal integration remains specification work.
 
 The [status/activity revision](session-status.md) puts title detection and both
-state machines in daemon core, not plugins. The client library carries core
-title/status reports and explicit viewing information. Plugin implementation,
-configuration, and interface examples are deferred; the earlier title-plugin
+state machines and terminal-signal interpretation in daemon core, not plugins.
+The client library carries core title/status reports, structured notification/
+progress metadata, and explicit viewing information. Metadata is available
+without control, not raw OSC passthrough to host terminals. Root program status
+and shell lifecycle choose explicit detection or heuristic fallback.
+Plugin implementation, configuration, and interface examples are deferred; the earlier title-plugin
 release prerequisite is superseded. No new plugin executable or dynamic library
 is specified. These are planned mechanics, not shipped behavior.
 

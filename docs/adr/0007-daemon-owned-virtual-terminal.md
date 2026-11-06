@@ -20,6 +20,21 @@ A front filter that mirrors vte 0.15.0's state machine splits PTY output into co
 
 The engine is fed in steps of at most 64 bytes of text and C0 controls; every escape sequence is its own step(s).
 
+### Agreed terminal-status extension, not implemented
+
+The [session-status revision](../session-status.md) adds daemon-core observation
+of OSC 7501, OSC 133, and OSC 9/99/777 before host-output filtering. The daemon
+will answer OSC 7501 capability queries locally. Root program reports and
+shell lifecycle select explicit or heuristic activity detection; recognized
+notifications request attention, while progress alone does not.
+
+Raw sequences remain stripped from host output. Clients/monitors instead
+receive structured notification/progress metadata, including while background
+or noncontrolling. This extends local interpretation and daemon-owned replies,
+not the permission to send host-dependent requests to an outer terminal.
+Exact structured schemas remain unresolved; the current filter and query
+implementation above are not evidence that these planned signals are supported.
+
 ## Restoration: three phases, produced incrementally
 
 Every grant sends a restoration prefix, then live output. Phase A (prologue reset, preservation of visible host content into native scrollback, coarse truncation notice) is computed from this attachment's presentation. Phase B sends retained history rows oldest first, produced incrementally as the socket drains. Phase C (screen suffix: scroll-off, normal screen and cursor, alternate screen, modes, title) is captured at the snapshot point S. Raw history is never replayed, so historical side effects never repeat; native duplicates on reattach are accepted.

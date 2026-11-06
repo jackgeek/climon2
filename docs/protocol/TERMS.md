@@ -141,8 +141,10 @@ must not inspect. Its interface specifies validity, permitted uses, and release.
 
 Operating System Command, a terminal escape-sequence family.
 An OSC terminal sequence is not itself a structured plugin protocol message.
-OSC 7501 is the Program Status Protocol in the attention-plugin example.
-The first draft does not specify OSC 7501 or OSC 9 plugin decoding.
+OSC 7501 is the Program Status Protocol; OSC 133 marks shell prompts and
+commands. The planned core interpretation and notification/progress relay are
+specified by the [session-status revision](../session-status.md), not a plugin
+decoder contract.
 
 ## Payload
 

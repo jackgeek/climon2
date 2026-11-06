@@ -21,7 +21,16 @@ application input, or resize.
 
 Use the [canonical mechanics and diagrams](../../session-status.md) for all
 transitions, effective-state timestamp semantics, status/time ordering,
-initial selection, and notification behavior. Do not assign a connection-time
+initial selection, and notification behavior. Internal `agent_working` and
+`user_working` both project to `running` when attention is `cleared`; changes
+between them or between detection modes alone do not update the effective
+timestamp. Root terminal-status reports, heuristic inactivity, and recognized
+notifications can request attention, but child program-status records cannot.
+Structured [notification](event-notification.md) and
+[progress](event-progress.md) metadata are separate interactions, not raw
+terminal sequences embedded in status reports.
+
+Do not assign a connection-time
 timestamp to unchanged cached daemon state, silently map unsupported status to
 `cleared`, or treat a timestamp as an implicit unique attention-episode ID.
 

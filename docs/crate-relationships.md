@@ -77,8 +77,10 @@ The [status/activity revision](session-status.md) also requires the monitor role
 to consume `climon2-vt`, keeping one terminal model per session across uncertain
 disconnections. Its crate placement remains undecided, so this is not an
 invented Cargo edge or a new workspace crate. Daemon-core title detection and
-activity/attention machines do not require a plugin crate; plugin implementation
-is deferred.
+activity/attention machines, terminal-signal interpretation, and structured
+notification/progress relay do not require a plugin crate; plugin
+implementation is deferred. The agreed detection modes and fallback policy
+do not assign another workspace crate or change the current dependency edges.
 
 Current edges come from workspace `Cargo.toml` files. This is a consumption
 index, not a replacement for the architecture decisions or their permitted

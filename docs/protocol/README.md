@@ -3,7 +3,7 @@
 This reference is for future [plugin](../../GLOSSARY.md#protocol-and-plugin-concepts)
 authors. It distinguishes implemented behavior, agreed plans, and unresolved
 interfaces. The [monitor](../../GLOSSARY.md#sessions) is not implemented.
-Plugin implementation is deferred. Title detection and
+Plugin implementation is deferred. Title and terminal-signal detection and
 [session status](../../GLOSSARY.md#status-and-attention) belong in daemon core;
 the agreed [mechanics and state diagrams](../session-status.md) are not shipped
 behavior.
@@ -75,7 +75,8 @@ a session that unexpectedly loses its final attachment.
    support before instance creation or a daemon connection.
 3. Start one client per live session, with bounded concurrency. A slow or broken
    session must not indefinitely prevent older sessions from getting clients.
-4. Establish passive background connections that receive core title/status data
+4. Establish passive background connections that receive core title/status and
+   structured notification/progress data
    without taking control. The daemon contract must specify this connection mode;
    current ordinary attach is not a passive connection.
 5. Collect current daemon status and its change time passively, with bounded
@@ -112,7 +113,38 @@ and on changes.
 The monitor orders rows by status, then newest change time, with an internal
 [GUID](TERMS.md#guid) tie-breaker. Later sorting must preserve selected/highlighted identity.
 See the [canonical mechanics](../session-status.md) for both diagrams, the
-snapshot strategy, exact ranking, and notification behavior.
+snapshot strategy, exact ranking, and notification behavior. Both internal
+working states report the existing `running` status; detector changes alone do
+not update its timestamp.
+
+### Terminal signals and metadata
+
+The agreed revision interprets [OSC](TERMS.md#osc) 7501 program status,
+OSC 133 shell lifecycle, and OSC 9/99/777 notification/progress signals in daemon
+core before host-output filtering. This is planned behavior, not an implemented
+parser or plugin contract. External sequence framing and validation belong to
+their upstream references:
+
+| Program/daemon interaction | Direction | Reference and local policy |
+|---|---|---|
+| OSC 7501 root/child reports and clearing | Program -> daemon | [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status); [root-only effects and fallback](../session-status.md#explicit-program-status-and-fallback). |
+| OSC 7501 capability query/reply | Program -> daemon -> program | Same upstream reference; daemon replies locally, and a query does not activate explicit detection. |
+| OSC 133 prompt/command markers | Shell -> daemon | [Shell integration](https://learn.microsoft.com/en-us/windows/terminal/tutorials/shell-integration); [scope retirement and prompt exclusion](../session-status.md#shell-boundaries-and-prompt-rendering). |
+| OSC 9 text notification | Program -> daemon | [iTerm2 sequences](https://iterm2.com/documentation-escape-codes.html); [notification policy](../session-status.md#notification-and-progress-signals). |
+| OSC 9 progress/control operations | Program -> daemon | [ConEmu sequences](https://conemu.github.io/en/AnsiEscapeCodes.html#ConEmu_specific_OSC); progress is metadata, not attention. |
+| OSC 99 logical notification and auxiliary operations | Program -> daemon | [kitty notifications](https://sw.kovidgoyal.net/kitty/desktop-notifications/); only completed notifications request attention. |
+| OSC 777 `notify` | Program -> daemon | [Notification convention](https://sw.kovidgoyal.net/kitty/desktop-notifications/); other extension operations are not notifications. |
+
+These are not new climon2 wire encodings. The daemon remains responsible for
+terminal-query replies; raw sequences do not pass through to host terminals.
+Notification detection does not promise a full desktop-notification protocol
+implementation; unsupported notification queries/control operations are ignored.
+The [notification](monitor-client/event-notification.md) and
+[progress](monitor-client/event-progress.md) interactions relay structured
+metadata through clients to subscribers, including background/noncontrolling
+ones. They are distinct from terminal display updates and do not authorize
+screen mirroring. Their exact climon2 schemas/capabilities and future UI remain
+unresolved.
 
 [Viewing](../../GLOSSARY.md#status-and-attention) is reported per attachment;
 retained control alone is not viewing. Merely being visible does not
@@ -160,7 +192,8 @@ Switching away retains a client and its existing control until
 neither application input nor monitor resize requests. A revoked client shows a
 [placeholder](../../GLOSSARY.md#attachment-and-control), not live screen mirroring,
 and must not automatically take control back. Core title/status data continues
-to flow regardless of control; future plugin implementation remains deferred.
+to flow regardless of control, as does planned structured notification/progress
+metadata; future plugin implementation remains deferred.
 
 ## Compatibility, errors, and limits
 
@@ -196,7 +229,8 @@ Support must be explicitly negotiated by
 Required support must be checked before control acquisition; missing optional
 support disables that extension. Exact negotiation schemas remain unresolved.
 These future extension requirements do not require implementing plugins now.
-Core title/status delivery does not use plugin negotiation.
+Core title/status and structured notification/progress delivery do not use
+plugin negotiation.
 
 Bidirectional extension [requests](TERMS.md#request), outcomes, and [events](TERMS.md#event) must work for passive,
 background, and revoked clients as well as the selected controller. Receiving
@@ -212,9 +246,10 @@ disappear. The in-process representation of these guarantees is still open.
 
 Future daemon plugins need distinct [interception seams](TERMS.md#interception-seam)
 for PTY traffic and structured daemon/socket traffic, observation before
-filtering, and read-only terminal snapshots. An attention plugin might observe
-[OSC](TERMS.md#osc) 7501, [BEL](TERMS.md#bel), OSC 9, terminal idleness, or activity.
-These are motivating examples, not implemented hooks or frozen plugin schemas.
+filtering, and read-only terminal snapshots. The agreed OSC 7501, OSC 133,
+OSC 9/99/777, input, and viewport strategies now belong to daemon core.
+[BEL](TERMS.md#bel) and other future plugin strategies remain motivating
+examples, not implemented hooks or frozen plugin schemas.
 Plugin interfaces, examples, implementation, configuration, and
 [sandboxing](TERMS.md#sandboxing) are deferred. The agreed core
 [attention strategy and toast behavior](../session-status.md) are in scope;
@@ -253,6 +288,8 @@ owning decisions settle the interface.
 | [Geometry](monitor-client/event-geometry.md) | Client -> monitor | Report actual geometry. |
 | [Title state/change](monitor-client/event-title.md) | Daemon core -> client -> monitor | Supply current daemon title and ongoing changes regardless of control. |
 | [Session status](monitor-client/event-session-status.md) | Daemon core -> client -> monitor | Supply effective activity/attention status and its change timestamp. |
+| [Notification metadata](monitor-client/event-notification.md) | Daemon core -> client -> subscriber | Relay a recognized logical notification independently of control. |
+| [Progress metadata](monitor-client/event-progress.md) | Daemon core -> client -> subscriber | Relay progress information without implying attention or control. |
 | [Session end](monitor-client/event-session-ended.md) | Client -> monitor | Report command/session completion. |
 | [Client outcome](monitor-client/event-outcome.md) | Client -> monitor, when possible | Report client completion or failure. |
 | [Extension event](monitor-client/event-extension.md) | Either endpoint, through client | Report negotiated plugin information regardless of control. |
