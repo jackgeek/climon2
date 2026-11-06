@@ -1,6 +1,6 @@
 # Resize
 
-**Status:** planned semantics; interface [schema](../TERMS.md#schema) unresolved, not implemented.
+**Status:** agreed communication requirements; interface [schema](../TERMS.md#schema) unresolved, not implemented.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
@@ -10,13 +10,24 @@ its [control period](../../../GLOSSARY.md). A controlling resize may establish
 initial geometry before [restoration](../../../GLOSSARY.md) is ready; this does
 not enable application input. Reject stale-period or revoked resize explicitly.
 
-Background clients receive no monitor resize requests. Daemon acceptance does
+Background [clients](../../../GLOSSARY.md#sessions) receive no monitor resize requests.
+[Daemon](../../../GLOSSARY.md#sessions) acceptance does
 not prove final geometry or applied restoration; observe
 [geometry](event-geometry.md) and restoration separately.
 
+The [shared contract](../README.md#shared-in-process-communication-contract)
+and [semantic examples](../README.md#semantic-examples) apply. Local acceptance
+only queues a copied record. Recheck
+[connection generation](../TERMS.md#connection-generation) and current authority
+at execution: known unexecuted stale work gets an explicit asynchronous
+rejection; uncertain execution is
+[indeterminate](../TERMS.md#indeterminate-outcome). Never carry old-generation
+resize into a reconnected [controller](../../../GLOSSARY.md#attachment-and-control).
+
 [Terminal integration](https://github.com/jackgeek/climon2/issues/63) owns
 columns/rows, clamping, available area, and restoration effects.
-The [communication decision](https://github.com/jackgeek/climon2/issues/66) and
-[interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign
-types, results, errors, and valid examples. Numerical budgets belong to
+The [communication decision](https://github.com/jackgeek/climon2/issues/66) owns
+the shared rules.
+[Interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign
+exact types, results, errors, and executable examples. Numerical budgets belong to
 [operational limits](https://github.com/jackgeek/climon2/issues/69).

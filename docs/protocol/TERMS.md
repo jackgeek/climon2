@@ -12,6 +12,11 @@ do not add protocol requirements.
 An architecture decision record: a document explaining a design decision and
 the alternatives considered.
 
+## API
+
+An application programming interface: the operations and data contract exposed
+to a caller. A public native API also requires an agreed binary interface.
+
 ## Backpressure
 
 Slowing a sender when the receiver cannot keep up, so pending data stays bounded.
@@ -20,11 +25,13 @@ It is not permission to silently drop required messages.
 ## Baseline
 
 The required common protocol behavior that compatible participants agree to
-support. Optional extensions add behavior without redefining that common contract.
+support. Optional [extensions](../../GLOSSARY.md#protocol-and-plugin-concepts)
+add behavior without redefining that common contract.
 
 ## BEL
 
-The terminal bell control byte, hexadecimal `07`. A future attention plugin
+The terminal bell control [byte](#byte), hexadecimal `07`. A future
+[attention](../../GLOSSARY.md#status-and-attention) [plugin](../../GLOSSARY.md#protocol-and-plugin-concepts)
 could observe it; that plugin strategy is not specified by this reference.
 
 ## Big endian
@@ -44,9 +51,25 @@ layout used to call functions across a native-library seam.
 
 ## Canonical decimal string
 
-An unsigned integer written as decimal digits in one unambiguous form:
+An [unsigned integer](#unsigned-integer) written as decimal digits in one unambiguous form:
 `"0"` or a nonzero digit followed by digits, without a sign, spaces, or leading
 zeros. Each interface specifies its permitted range separately.
+
+## Communication handle
+
+An [opaque](#opaque-handle) per-instance library handle through which the
+[monitor](../../GLOSSARY.md#sessions) submits work
+and drains deliveries. It is distinct from the independent shutdown control
+handle; thread safety does not allow concurrent instance destruction.
+
+## Connection generation
+
+The identity distinguishing successive [daemon](../../GLOSSARY.md#sessions)
+connections within one [client](../../GLOSSARY.md#sessions)
+instance. It is separate from [request IDs](#request-id),
+[control periods](../../GLOSSARY.md#attachment-and-control),
+[restoration IDs](../../GLOSSARY.md#protocol-and-plugin-concepts),
+and attention-episode identities.
 
 ## Discriminator
 
@@ -55,16 +78,21 @@ A field or code identifying which message variant is being sent.
 ## Envelope
 
 The outer structure that identifies a message and carries shared fields.
-It is distinct from the message-specific payload and the client startup envelope.
+It is distinct from the message-specific [payload](#payload) and the client
+[startup envelope](../../GLOSSARY.md#sessions).
 
 ## Event
 
-A message that reports information without asking for a response.
+A message that reports information without asking for a [response](#response).
 
 ## EOF
 
 End of file: the end of a byte stream. EOF alone does not explain whether
-a client detached successfully or completed cleanup.
+a client [detached](../../GLOSSARY.md#attachment-and-control) successfully or completed cleanup.
+
+## FIFO
+
+First in, first out: records leave a queue in the order they entered it.
 
 ## Frame
 
@@ -83,12 +111,14 @@ between them.
 
 ## GUID
 
-A globally unique identifier. A climon2 session ID is a GUID, not a process ID.
+A globally unique identifier. A climon2 [session ID](../../GLOSSARY.md#protocol-and-plugin-concepts)
+is a GUID, not a process ID.
 
 ## High-water mark
 
-The greatest request ID received in one originating direction.
-Strictly increasing IDs let a receiver detect reuse without storing all past IDs.
+The greatest locally accepted request ID in one instance's lifetime for the
+monitor-client contract. Rejected submissions do not advance it. Strictly
+increasing IDs detect reuse without storing all past IDs.
 
 ## Idempotency key
 
@@ -106,6 +136,10 @@ It is neither confirmed success nor proof that nothing happened.
 A defined place where a plugin can observe or transform terminal traffic or
 structured messages. It is not an unchecked bypass of protocol validation.
 
+## I/O
+
+Input/output: reading or writing data to another resource, such as a socket.
+
 ## JSON
 
 JavaScript Object Notation, a text format for objects, arrays, strings, numbers,
@@ -119,7 +153,7 @@ A mebibyte: 1,048,576 bytes. This unit is distinct from a decimal megabyte.
 ## Monotonic clock
 
 A clock for measuring elapsed time that does not go backwards when wall-clock
-time is corrected. Inactivity deadlines use this clock, not UTC timestamps.
+time is corrected. Inactivity deadlines use this clock, not [UTC](#utc) timestamps.
 
 ## Namespaced name
 
@@ -130,7 +164,12 @@ grammar and registration policy are still unspecified.
 ## Native path
 
 A filesystem path represented without losing platform-native data, including
-non-UTF-8 bytes on Unix or native code units on Windows.
+non-[UTF-8](#unicode-and-utf-8) bytes on Unix or native code units on Windows.
+
+## NUL
+
+The zero-valued byte. It terminates traditional C strings but is ordinary data
+in a length-delimited binary buffer.
 
 ## Opaque handle
 
@@ -151,10 +190,17 @@ decoder contract.
 The content carried by a message or operation, distinct from its routing and
 correlation metadata.
 
+## Pollable notification descriptor
+
+A library-owned operating-system notification resource that the monitor can
+include in its event wait. Readiness signals possible drain progress or stream
+closure, not the number of records. The interface drain operation, not direct
+descriptor [I/O](#io), consumes deliveries and manages notification state.
+
 ## Pseudo-terminal (PTY)
 
 An operating-system terminal pair connecting a session daemon to its command.
-It is distinct from the user's host terminal and a daemon socket.
+It is distinct from the user's [host](../../GLOSSARY.md#sessions) terminal and a daemon socket.
 
 ## QUIC
 
@@ -168,8 +214,8 @@ A message asking another participant to perform an operation.
 
 ## Request ID
 
-An identifier matching a request with its response in a conversation.
-It is distinct from a control period, restoration ID, and idempotency key.
+An identifier matching a [request](#request) with its response in a conversation.
+It is distinct from a control period, restoration ID, and [idempotency key](#idempotency-key).
 
 ## Response
 
@@ -194,6 +240,10 @@ streams.
 A brief on-screen notification. The planned monitor's
 [attention mechanics](../session-status.md#titles-and-notifications) specify
 when notifications occur; exact visual presentation remains unresolved.
+
+## UI
+
+User interface: a program's user-facing presentation and controls.
 
 ## Unicode and UTF-8
 

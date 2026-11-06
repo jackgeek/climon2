@@ -6,18 +6,28 @@ and [technical terms](../TERMS.md).
 
 Initial selection, selector confirmation, and explicit
 [take control](../../../GLOSSARY.md) acquire control when needed. Confirming a
-[revoked](../../../GLOSSARY.md) selected session can reclaim it; confirming an
+[revoked](../../../GLOSSARY.md) selected [session](../../../GLOSSARY.md#sessions) can reclaim it; confirming an
 already-controlled session retains it. Last-request-wins semantics remain.
 Discovery, eager background connections, [plugin](../../../GLOSSARY.md) traffic, and browsing/cancelling
 the selector must not request takeover.
 
-Success means daemon acceptance, not [readiness](../../../GLOSSARY.md).
-Observe [control](event-control.md), [restoration](event-restoration-start.md),
+Success means [daemon](../../../GLOSSARY.md#sessions) acceptance, not [readiness](../../../GLOSSARY.md).
+Observe [control](event-control.md), [restoration](../../../GLOSSARY.md#restoration-and-presentation),
 and monitor-side application before enabling input.
+See [restoration start](event-restoration-start.md).
+
+The [shared contract](../README.md#shared-in-process-communication-contract)
+and [semantic examples](../README.md#semantic-examples) apply. Local submission
+acceptance is only validated queuing, not takeover acceptance. Check required
+[capabilities](../../../GLOSSARY.md#sessions) through both library and daemon
+before acquisition; unsupported work fails explicitly. Do not silently execute
+an old [connection generation](../TERMS.md#connection-generation)'s queued
+takeover against a new connection.
 
 The [ownership decision](https://github.com/jackgeek/climon2/issues/58) owns these
 rules. The [daemon contract](https://github.com/jackgeek/climon2/issues/67)
 must distinguish passive connections from control acquisition.
-The [communication decision](https://github.com/jackgeek/climon2/issues/66) and
-[interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign
-calls, arguments, outcomes, errors, and valid examples.
+The [communication decision](https://github.com/jackgeek/climon2/issues/66) owns
+the shared rules.
+[Interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign
+exact calls, arguments, outcomes, errors, and executable examples.

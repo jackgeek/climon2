@@ -4,7 +4,8 @@ This reference is for future [plugin](../../GLOSSARY.md#protocol-and-plugin-conc
 authors. It distinguishes implemented behavior, agreed plans, and unresolved
 interfaces. The [monitor](../../GLOSSARY.md#sessions) is not implemented.
 Plugin implementation is deferred. Title and terminal-signal detection and
-[session status](../../GLOSSARY.md#status-and-attention) belong in daemon core;
+[session status](../../GLOSSARY.md#status-and-attention) belong in
+[session daemon](../../GLOSSARY.md#sessions) core;
 the agreed [mechanics and state diagrams](../session-status.md) are not shipped
 behavior.
 
@@ -17,17 +18,18 @@ message names, field layouts, or encodings.
 
 | Interface | Status | Reference |
 |---|---|---|
-| [Client](../../GLOSSARY.md#sessions) to [session daemon](../../GLOSSARY.md#sessions): hello | Implemented and frozen | [Request](daemon-client/hello-request.md) and [reply](daemon-client/hello-reply.md). |
+| [Client](../../GLOSSARY.md#sessions) to session daemon: [hello handshake](../../GLOSSARY.md#sessions) | Implemented and frozen | [Request](daemon-client/hello-request.md) and [reply](daemon-client/hello-reply.md). |
 | Client to session daemon: after hello | Implemented as a version-matched private protocol; future frozen contract unresolved | [Decision boundary](daemon-client/post-hello.md). |
-| Monitor to [client library](../../GLOSSARY.md#sessions) | Embedding design agreed, not implemented; communication and complete declarations unresolved | [Library embedding](library-embedding.md), [communication contract](https://github.com/jackgeek/climon2/issues/66), and [interface schemas](https://github.com/jackgeek/climon2/issues/71). |
+| Monitor to [client library](../../GLOSSARY.md#sessions) | Embedding and communication design agreed, not implemented; complete declarations unresolved | [Library embedding](library-embedding.md), [shared communication contract](#shared-in-process-communication-contract), and [interface schemas](https://github.com/jackgeek/climon2/issues/71). |
 | [Client executable](../../GLOSSARY.md#sessions) to same-release library | Same-release loading agreed, not implemented | [Library embedding](library-embedding.md). |
 
 The embedding design selects a versioned [C ABI](TERMS.md#c-abi), but its
 complete declarations and valid call examples are not yet published.
-Communication does not yet have a frozen [schema](TERMS.md#schema) or
-[framing](TERMS.md#frame). Do not infer a pipe protocol,
-serialized [envelope](TERMS.md#envelope), frame limit, or complete cross-release
-declarations from these pages.
+Communication uses tagged C-compatible records, not [JSON](TERMS.md#json),
+a pipe protocol, or serialized [envelopes](TERMS.md#envelope). Complete
+[schemas](TERMS.md#schema) remain pending. No in-process
+[framing](TERMS.md#frame), [frame](TERMS.md#frame) limit, or complete cross-release declarations
+are assigned by these pages.
 The existing daemon hello exchange is unaffected.
 
 ## Who communicates?
@@ -51,20 +53,23 @@ The daemon remains the authority for terminal state and terminal-query replies.
 
 Ratatui powers the planned monitor's rendering. The
 [terminal integration decision](https://github.com/jackgeek/climon2/issues/63)
-must define how session state reaches that renderer, including restoration,
+must define how [session](../../GLOSSARY.md#sessions) state reaches that renderer,
+including [restoration](../../GLOSSARY.md#restoration-and-presentation),
 overlays, resize, and fidelity. Choosing Ratatui does not choose the client
-interface or display payload representation.
+interface or display [payload](TERMS.md#payload) representation.
 
 Each client has its own connection and per-session state. The
 [embedding reference](library-embedding.md) specifies exact-release lookup,
 revision negotiation, thread ownership, memory rules, and library lifetime.
-Exact declarations, channel ownership, and callbacks or queues remain open.
+The [shared communication contract](#shared-in-process-communication-contract)
+selects bounded per-instance queues and explicit ownership, without callbacks
+into monitor application code. Exact declarations remain open.
 No client may repurpose process-global arguments, signals, or
 [standard streams](TERMS.md#standard-streams) as though it owned the monitor.
 
 Native client crashes or aborts can terminate the entire monitor and all its
 clients. Ordinary errors and recoverable panics should remain local where
-possible. There is no new [session](../../GLOSSARY.md#sessions)-survival guarantee:
+possible. There is no new session-survival guarantee:
 the existing [leave policy](../../GLOSSARY.md#attachment-and-control) can terminate
 a session that unexpectedly loses its final attachment.
 
@@ -77,7 +82,7 @@ a session that unexpectedly loses its final attachment.
    session must not indefinitely prevent older sessions from getting clients.
 4. Establish passive background connections that receive core title/status and
    structured notification/progress data
-   without taking control. The daemon contract must specify this connection mode;
+   without taking [control](../../GLOSSARY.md#attachment-and-control). The daemon contract must specify this connection mode;
    current ordinary attach is not a passive connection.
 5. Collect current daemon status and its change time passively, with bounded
    progress. Choose the first candidate in the
@@ -90,7 +95,8 @@ a session that unexpectedly loses its final attachment.
 The [startup/discovery decision](https://github.com/jackgeek/climon2/issues/59)
 is agreed, not implemented. Run an immediate discovery pass, then start the next
 pass one second after the preceding pass completes, without overlap. Preserve
-the two-second hello deadline and bounded probes. Reconcile by full session ID,
+the two-second hello deadline and bounded [probes](../../GLOSSARY.md#sessions).
+Reconcile by full [session ID](../../GLOSSARY.md#protocol-and-plugin-concepts),
 reusing starting and retained clients; discovery uncertainty never overrides an
 established client's state or tears it down.
 
@@ -99,8 +105,9 @@ receive passive clients without displacing it. Only definitive loss permits
 automatic progression, at most once per candidate per pass. Other startup
 failures stay visible on that candidate without silent fallback. Startup
 selection succeeds only after control and the current complete restoration
-have been applied. Revocation before readiness leaves a non-controlling
-placeholder requiring explicit user action, not repeated automatic takeover.
+have been applied. [Revocation](../../GLOSSARY.md#attachment-and-control) before
+[readiness](../../GLOSSARY.md#protocol-and-plugin-concepts) leaves a non-controlling
+[placeholder](../../GLOSSARY.md#attachment-and-control) requiring explicit user action, not repeated automatic takeover.
 After the first successful startup, selected-session loss and recovery belong
 to the lifecycle decision.
 
@@ -136,17 +143,20 @@ their upstream references:
 | OSC 777 `notify` | Program -> daemon | [Notification convention](https://sw.kovidgoyal.net/kitty/desktop-notifications/); other extension operations are not notifications. |
 
 These are not new climon2 wire encodings. The daemon remains responsible for
-terminal-query replies; raw sequences do not pass through to host terminals.
+terminal-query replies; raw sequences do not pass through to
+[host](../../GLOSSARY.md#sessions) terminals.
 Notification detection does not promise a full desktop-notification protocol
 implementation; unsupported notification queries/control operations are ignored.
 The [notification](monitor-client/event-notification.md) and
 [progress](monitor-client/event-progress.md) interactions relay structured
 metadata through clients to subscribers, including background/noncontrolling
 ones. They are distinct from terminal display updates and do not authorize
-screen mirroring. Their exact climon2 schemas/capabilities and future UI remain
+screen mirroring. Their exact climon2 schemas/[capabilities](../../GLOSSARY.md#sessions)
+and future [UI](TERMS.md#ui) remain
 unresolved.
 
-[Viewing](../../GLOSSARY.md#status-and-attention) is reported per attachment;
+[Viewing](../../GLOSSARY.md#status-and-attention) is reported per
+[attachment](../../GLOSSARY.md#attachment-and-control);
 retained control alone is not viewing. Merely being visible does not
 acknowledge attention. The planned [viewing operation](monitor-client/request-viewing.md)
 and [status reports](monitor-client/event-session-status.md) still need complete
@@ -195,10 +205,210 @@ and must not automatically take control back. Core title/status data continues
 to flow regardless of control, as does planned structured notification/progress
 metadata; future plugin implementation remains deferred.
 
+## Shared in-process communication contract
+
+**Status:** [communication design agreed in #66](https://github.com/jackgeek/climon2/issues/66),
+not implemented. This section owns the common rules for every monitor-client
+operation and delivery. The [embedding contract](library-embedding.md) remains
+authoritative for loading and lifetime. Revision 1 is not published.
+
+### Execution and representation
+
+Each instance has bounded submission and delivery queues. A per-instance
+thread-safe [communication handle](TERMS.md#communication-handle) lets the
+monitor submit work and drain deliveries without blocking. The dedicated
+monitor-created client thread executes connection work and operations; it also
+creates and cleans up the instance. There are no calls into monitor application
+code and no callback reentrancy. No lock-free implementation is required.
+
+Submit, drain, and delivered-object release perform bounded local work: no
+daemon [I/O](TERMS.md#io), terminal processing, waiting for queue space, or joining threads.
+Copying accepted data may scale with its bounded payload; nonblocking does not
+mean zero work. There is one monitor consumer per instance. The separate
+thread-safe shutdown control handle remains serviceable independently of full
+ordinary queues. Shutdown can interrupt ordinary execution order, but cannot
+fabricate successful outcomes.
+
+Records use a [discriminator](TERMS.md#discriminator), fixed-width values,
+and length-delimited buffers across the C ABI, never Rust layouts or unbounded
+C strings. Binary fields preserve every [byte](TERMS.md#byte), including
+[NUL](TERMS.md#nul) and invalid [UTF-8](TERMS.md#unicode-and-utf-8).
+[Native path](TERMS.md#native-path) and text encodings
+remain for #71; terminal representation/chunking remains for #63 and #69.
+Exact tags, widths, required/optional fields, defaults, unknown-field handling,
+result codes, and declarations remain for #71. Unknown-field handling must not
+silently convert invalid or unsupported core tags into extensions.
+
+This in-process contract uses no checksum. Copies, immutable
+deliveries, explicit lengths, and ownership address its relevant data-lifetime
+risks; checksums provide neither memory safety nor authentication. This makes no
+daemon-wire integrity/checksum decision; that belongs to #67.
+
+### Ownership, wakeup, and cleanup
+
+Submit borrows arguments only during the call. Before returning local acceptance,
+the library copies all accepted data. Rejected submissions retain no ownership
+and produce no later [response](TERMS.md#response). Drain transfers an immutable library-owned
+delivery object, including any response or [event](TERMS.md#event), which the monitor releases
+through the same loaded library. No monitor allocator crosses the boundary.
+Delivered-object release is thread-safe subject to coordinated instance lifetime.
+
+All delivered objects must be released before instance destruction. Outstanding
+objects explicitly prevent successful destruction rather than leaving dangling
+data. Thread-safe handles do not permit concurrent destruction: stop new calls
+and release deliveries before dedicated-thread cleanup completes. A closed
+stream or final session event does not prove that the instance is cleaned up,
+the thread returned, or the monitor joined it. Exact destruction/release
+declarations remain for #71 and safe shutdown coordination/policy for #61.
+
+Each instance supplies a library-owned
+[pollable notification descriptor](TERMS.md#pollable-notification-descriptor),
+borrowed by the monitor until instance cleanup. It indicates that draining can
+make progress or observe stream closure, not a record count. The monitor polls
+it, but never directly reads, writes, or closes it; it calls interface drain.
+The library manages race-free signaling and rearming so work or closure cannot
+be missed. Cleanup coordination prevents polling a closed descriptor. This
+avoids periodic polling and an extra monitor waiter thread per instance without
+freezing platform-specific descriptor internals into the ABI.
+
+### Admission, correlation, and authority
+
+Local acceptance means validated and queued, not daemon acceptance or application
+consumption. Submission explicitly distinguishes accepted, full, and closed,
+and rejects malformed records, invalid length/null-buffer descriptions,
+unsupported operation tags, and invalid [request IDs](TERMS.md#request-id).
+Length validation does not make invalid native pointers safe.
+
+Monitor-assigned accepted request IDs increase strictly within the instance
+lifetime, without wrap. Reject an ID at or below the last accepted ID.
+Locally rejected submissions do not consume an ID. The monitor serializes
+per-instance submissions when allocating IDs; instances are independent.
+A [high-water mark](TERMS.md#high-water-mark), not an unbounded used-ID set,
+is sufficient. Exhaustion explicitly requires a new instance; exact width
+remains for #71. IDs are not [idempotency keys](TERMS.md#idempotency-key) and
+provide no retry mechanism.
+
+Every accepted [request](TERMS.md#request) has one correlated eventual success/failure outcome
+while communication remains healthy. No locally rejected request has a later
+outcome. Execution follows accepted submission order except independent
+shutdown. Runtime execution rechecks connection, generation, control, and
+restoration authority that may have changed since admission. Known unexecuted
+stale work gets an explicit asynchronous rejection; uncertain execution is
+[indeterminate](TERMS.md#indeterminate-outcome). Never silently discard stale work or reassign it to new authority.
+
+### Delivery order and bounded progress
+
+Each instance has one [FIFO](TERMS.md#fifo) response-and-event stream preserving
+causal control, restoration, and result order. Initial title/status and later
+changes have no subscription gap. There is no ordering between instances.
+Receiving restoration completion does not prove the monitor applied it.
+
+Full queues apply [backpressure](TERMS.md#backpressure) to ordinary production
+and socket reading as needed.
+Required records cannot be dropped, overwritten, or reordered. In particular,
+status transitions, attention episodes, responses, and control/restoration
+boundaries cannot be lossily coalesced. Other clients and global monitor
+actions remain responsive; shutdown and failure detection remain serviceable.
+
+Bounds account for bytes, records, and drained-but-unreleased objects.
+Draining without releasing must not permit indefinite growth. If the progress
+policy in #69 cannot be met, fail explicitly instead of growing indefinitely.
+Stream closure/failure reason is observable outside ordinary queue capacity;
+already queued records remain ahead of the terminal indication when draining.
+An instance stream's closure is distinct from recoverable daemon connection
+loss. This contract does not require reconnect to close/reopen the stream.
+
+### Capabilities and connection generations
+
+After interface-revision and exact-release validation, the instance reports
+[capabilities](../../GLOSSARY.md#sessions) actually available through both library
+and daemon. Required support is checked before control acquisition and operation
+submission. Unsupported operations fail explicitly. Optional title/status
+support is reported unavailable/unknown, never fabricated as an empty title or
+cleared attention. A supported empty title remains valid and selects the
+command-name fallback. Exact required capabilities depend on #67, #63, and #61.
+
+Unknown core operation/event tags are invalid, not implicit extensions.
+Future [namespaced](TERMS.md#namespaced-name) extensions require explicit name/revision negotiation of the
+intersection including relay support; their [APIs](TERMS.md#api) and delivery implementation
+remain deferred.
+
+Each instance distinguishes a
+[connection generation](TERMS.md#connection-generation) from request IDs,
+[control periods](../../GLOSSARY.md#attachment-and-control),
+[restoration IDs](../../GLOSSARY.md#protocol-and-plugin-concepts), and attention episodes. Unfinished work from
+a lost connection is indeterminate, with no automatic retry/replay. Queued
+authority-sensitive work for the old generation never crosses to the new
+connection. Reconnect is passive; retained metadata and the monitor-owned
+terminal model remain stale until refreshed. Application input requires fresh
+control, restoration, and monitor-applied barriers. Confirmed final command
+outcomes remain distinct from loss and stop reconnecting.
+
+For each generation, explicitly delimit initial core metadata synchronization
+from subsequent changes. Report current title, effective status, and stored
+UTC change time, or an explicit unsupported indication. Supply reliable attention
+episode and final-outcome identities; UTC timestamps are not unique identities.
+This gap-free metadata barrier is independent of control, readiness, and
+selection, and never makes stale terminal content fresh. Exact event forms,
+timestamps, identities, and daemon mapping remain for #67/#71; retry schedules,
+recreation, cleanup, and budgets remain for #61/#69.
+
+### Semantic examples
+
+These are valid behavioral timelines, not assigned calls or serialized records.
+Every operation page inherits them. Executable C call examples and schema
+fixtures cannot be published before #71 completes the declarations.
+
+| Situation | Required observations |
+|---|---|
+| Library compatibility | A library supports the requested revision but reports the wrong session release. Reject it before creating an instance or daemon connection; retain the opened library until monitor exit. Supporting the revision does not waive exact-release validation. |
+| Local admission | ID 10 is accepted and copied. ID 11 is rejected as full: no ownership or later outcome. Retrying local admission with ID 11 can succeed; submitting ID 10 again cannot. |
+| Literal binary data | A supported binary submission contains hexadecimal `00 ff 41`; its accepted copy preserves all three bytes. A binary delivery containing those bytes drains unchanged too. Neither NUL nor invalid UTF-8 truncates or changes them. This does not imply input echo or choose a display encoding. |
+| Control and restoration | A grant precedes its restoration start, ordered updates, and completion in the single stream. Until the monitor applies the complete current restoration, completion alone cannot enable input. A revocation invalidates that readiness. |
+| Passive metadata | A generation's initial title/status synchronization is delimited, then changes follow gap-free while unselected or revoked. Unchanged status retains its stored UTC time; a new attention episode uses its own identity, not timestamp uniqueness. |
+| Resize and viewing | Only the selected [controller](../../GLOSSARY.md#attachment-and-control) receives monitor resize requests; a local acceptance is not actual geometry. After current restoration is applied, report selected viewing. Switching away clears viewing but retains control; background control receives no monitor input/resize. Visibility alone never acknowledges a new attention episode; explicit selection does. |
+| Core notification/progress | A recognized logical notification requests attention; repeated requests while pending are not new episodes. Progress metadata alone does not request attention or confirm command completion. Delivery remains independent of control and does not permit screen mirroring. |
+| Deliberate detach | Local acceptance queues detach. Only daemon acceptance confirms deliberate detach; neither that outcome nor stream closure proves instance cleanup or a joined thread. No timeout or shutdown fabricates success. |
+| Loss during work | An accepted unfinished request on the lost generation is indeterminate. Passive reconnect does not replay it or carry old-generation input forward. Retained terminal content stays stale until fresh control/restoration/application. |
+| Stalled consumer | Capacity includes drained unreleased objects. Ordinary production backpressures; other instances and shutdown progress. Closure reason remains observable, with queued records drained before the terminal indication. Objects are released and polling/calls coordinated before cleanup; closure alone is not a join. |
+
+### Required future evidence
+
+These are specification requirements, not checks passed by current code:
+
+- Automated public-ABI evidence with multiple same-release instances and
+  simultaneous mixed-release libraries, including explicit unsupported/rejection
+  behavior and ownership on accepted, rejected, and outstanding deliveries.
+- Causal ordering and applied-restoration readiness, passive initial metadata
+  and changes, reconnect generations, attention/final-outcome identities,
+  arbitrary-byte integrity, stall/backpressure isolation, and truthful failure,
+  detach, cleanup, and thread-completion reporting.
+- Representative input/display latency, event throughput, memory use, and
+  global responsiveness measurements under normal operation, load, and stalls.
+  Numerical thresholds belong to #69.
+- Exact valid executable examples and schema fixtures in #71 after #67, #63,
+  #61, and #69 settle their contracts. Documentation-only checks are not
+  evidence of a working ABI.
+
+### Remaining decision boundaries
+
+The queue, ownership, notification, admission, ordering, and generation rules
+above are agreed; they are not placeholders for #71 to redesign. These remaining
+decisions are still open:
+
+| Owner | Unresolved details |
+|---|---|
+| [Daemon wire #67](https://github.com/jackgeek/climon2/issues/67) | Passive connection model, support discovery, wire messages/encoding/integrity, and mapping core metadata, viewing, attention identities, and command outcomes into the client contract. |
+| [Terminal integration #63](https://github.com/jackgeek/climon2/issues/63) | Display/input representation, geometry, restoration application, and terminal transfer/chunking with #69. |
+| [Lifecycle #61](https://github.com/jackgeek/climon2/issues/61) | Recovery/recreation, cleanup coordination and incomplete-cleanup policy, retry schedules with #69, and visible lifecycle behavior. No additional survival guarantee is implied. |
+| [Operational limits #69](https://github.com/jackgeek/climon2/issues/69) | Numeric byte/record/object and aggregate bounds, progress/stall deadlines, scheduling/admission/exhaustion policy, transfer budgets, and measurement thresholds. |
+| [Interface schemas #71](https://github.com/jackgeek/climon2/issues/71) | Exact declarations, record fields/tags/widths, handle and release operations, descriptor exposure, capability tokens, timestamp/identity encodings, error catalog, schema fixtures, and valid executable examples after the above decisions. It remains blocked. |
+
 ## Compatibility, errors, and limits
 
 The agreed library design uses a multi-instance, cross-release-safe embedding
-interface; complete declarations and communication remain to be specified.
+interface and the communication contract above; complete declarations remain
+to be specified.
 Exact-release executable/library matching alone is not sufficient when a monitor
 loads libraries from several releases simultaneously. Never substitute a
 different installed release or
@@ -217,7 +427,7 @@ Use bounded per-client and monitor-wide queues with
 monitor actions. Numerical budgets, startup concurrency, deadlines, and
 admission/exhaustion policies belong to
 [Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69).
-No monitor-client frame maximum or [request-ID](TERMS.md#request-id) encoding is currently assigned.
+No monitor-client frame maximum or request-ID width is currently assigned.
 
 ## Future plugin authors
 
@@ -233,7 +443,8 @@ Core title/status and structured notification/progress delivery do not use
 plugin negotiation.
 
 Bidirectional extension [requests](TERMS.md#request), outcomes, and [events](TERMS.md#event) must work for passive,
-background, and revoked clients as well as the selected controller. Receiving
+background, and revoked clients as well as the selected
+[controller](../../GLOSSARY.md#attachment-and-control). Receiving
 plugin data does not require control: an attention status must reach the
 monitor even while another attachment controls that session. This does not
 permit core screen mirroring, application input, or resize without control.
@@ -242,7 +453,8 @@ Preserve core ordering, readiness, control, truthful outcomes, and resource
 limits. Injected work needs its own correlation and outcome; removal before
 execution requires explicit rejection. Replacement work must account truthfully
 for the original outcome. [Responses](TERMS.md#response) and essential state changes cannot silently
-disappear. The in-process representation of these guarantees is still open.
+disappear. The shared in-process contract preserves these guarantees without
+assigning a plugin API.
 
 Future daemon plugins need distinct [interception seams](TERMS.md#interception-seam)
 for PTY traffic and structured daemon/socket traffic, observation before
@@ -264,9 +476,10 @@ alone do not provide retry safety or exactly-once execution.
 
 ### Monitor-client: semantic requirements; interface schemas unresolved
 
-All entries describe planned in-process interactions, not implemented calls or
-wire messages. Pages must gain complete schemas and valid examples when their
-owning decisions settle the interface.
+All entries inherit the [shared communication contract](#shared-in-process-communication-contract)
+and its semantic examples. They describe agreed but unimplemented in-process
+interactions, not assigned calls or wire messages. Pages must gain complete
+schemas and executable examples when #71 completes the interface.
 
 | Operation or event | Direction | Purpose |
 |---|---|---|
@@ -316,10 +529,12 @@ messages from the future frozen contract and passive connection.
   agreed [multi-instance embedding, compatibility, and lifetime](library-embedding.md);
   not implemented, complete declarations still pending.
 - [Define monitor-client communication contract](https://github.com/jackgeek/climon2/issues/66):
-  in-process operations, core title/status/viewing, transport/representation,
-  and validation; plugin implementation remains deferred.
+  agreed, unimplemented queues, tagged records, ownership, notification,
+  correlation/order, validation, compatibility, bounded progress, core metadata,
+  and future evidence requirements above; plugin implementation remains deferred.
 - [Complete monitor-client interface schemas](https://github.com/jackgeek/climon2/issues/71):
-  exact fields, calls/events, results, errors, and examples.
+  still blocked on the remaining terminal, lifecycle, daemon-wire, and numeric
+  limit decisions; owns exact fields, calls/events, results, errors, and examples.
 - [Freeze daemon-client communication contract](https://github.com/jackgeek/climon2/issues/67):
   future post-hello wire schemas, passive connections, and daemon extensions.
 - [Choose the monitor terminal integration contract](https://github.com/jackgeek/climon2/issues/63):

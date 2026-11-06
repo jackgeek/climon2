@@ -1,6 +1,6 @@
 # Title state and changes
 
-**Status:** agreed semantics, not implemented; exact interface and wire schemas unresolved.
+**Status:** agreed semantics, not implemented; exact interface and wire [schemas](../TERMS.md#schema) unresolved.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
@@ -8,7 +8,8 @@ The [session daemon](../../../GLOSSARY.md#sessions)'s core supplies authoritativ
 current terminal title state through the
 [client](../../../GLOSSARY.md#sessions) to the
 [monitor](../../../GLOSSARY.md#sessions). Title delivery is not a
-[plugin](../../../GLOSSARY.md#protocol-and-plugin-concepts) extension.
+[plugin](../../../GLOSSARY.md#protocol-and-plugin-concepts)
+[extension](../../../GLOSSARY.md#protocol-and-plugin-concepts).
 Establishing a supported passive connection must provide current title state
 followed by ordered changes, with no gap in which a change can be missed.
 Updates continue while background,
@@ -37,6 +38,18 @@ The menu uses the latest non-empty daemon title, otherwise command plus
 arguments. This fallback also applies before a title is received or when a
 daemon cannot supply one. Keep otherwise live sessions visible. An empty title
 returns to the fallback. Render all text literally, never as terminal commands.
+Unsupported/unknown title state is not a fabricated supported empty title,
+even though both use the same menu fallback.
+
+The [shared contract](../README.md#shared-in-process-communication-contract)
+and [semantic examples](../README.md#semantic-examples) require explicit
+initial core metadata synchronization boundaries per
+[connection generation](../TERMS.md#connection-generation), followed by
+gap-free changes. This metadata barrier does not make stale terminal content
+current. On passive reconnect, refresh cached title state without acquiring
+control. Reports use the single [response](../TERMS.md#response)/[event](../TERMS.md#event)
+stream and its bounded ownership/[backpressure](../TERMS.md#backpressure) rules,
+without silently losing required updates.
 
 Never display [session IDs](../../../GLOSSARY.md#protocol-and-plugin-concepts)
 in the menu. Use them internally to preserve identity, highlight, and
@@ -45,11 +58,11 @@ may distinguish rows; layout belongs to the
 [selector decision](https://github.com/jackgeek/climon2/issues/60).
 
 The [startup/discovery resolution](https://github.com/jackgeek/climon2/issues/59)
-owns these semantics. The [daemon contract](https://github.com/jackgeek/climon2/issues/67),
-[monitor-client communication](https://github.com/jackgeek/climon2/issues/66),
+owns these semantics. The [daemon contract](https://github.com/jackgeek/climon2/issues/67)
 and [interface schemas](https://github.com/jackgeek/climon2/issues/71) must
-define exact fields, encoding, initial-state/change ordering, compatibility,
-support detection, validation, errors, and valid examples.
+define exact fields, encoding, metadata boundary forms, capability tokens,
+daemon mapping, error codes, and executable examples, preserving
+[#66's agreed communication rules](https://github.com/jackgeek/climon2/issues/66).
 [Operational limits](https://github.com/jackgeek/climon2/issues/69) owns numerical
 bounds and progress. No event name, signature, capability token, or wire example
 is assigned here.

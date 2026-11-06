@@ -16,14 +16,22 @@ changing selection. That client resumes screen maintenance but receives no
 monitor application input or resize. Core title/status reports continue even
 without control; [plugin](../../../GLOSSARY.md) implementation is deferred.
 
-[Viewing](request-viewing.md) is separate from retained control. A grant or
+[Viewing](../../../GLOSSARY.md#status-and-attention) is separate from retained control.
+See [viewing reports](request-viewing.md). A grant or
 hand-back alone does not establish a selected, displayed presentation.
 Revocation clears viewing. Explicit selection/takeover can acknowledge
-[attention](../../session-status.md#attention), but merely being visible must
+[attention](../../../GLOSSARY.md#status-and-attention), but merely being visible must
 not automatically acknowledge a new attention request.
 
 The [ownership decision](https://github.com/jackgeek/climon2/issues/58) owns these
 rules. The [communication decision](https://github.com/jackgeek/climon2/issues/66)
-and [interface schemas](https://github.com/jackgeek/climon2/issues/71) must define
-event types, period representation, ordering validation, errors, and examples.
+owns the agreed [shared contract](../README.md#shared-in-process-communication-contract)
+and [semantic examples](../README.md#semantic-examples). One per-instance
+[FIFO](../TERMS.md#fifo) [response](../TERMS.md#response)/[event](../TERMS.md#event) stream preserves causal grant,
+restoration, revocation, and result order. Deliveries cannot be dropped,
+overwritten, or lossily coalesced under [backpressure](../TERMS.md#backpressure). Identify the current
+[connection generation](../TERMS.md#connection-generation) separately from the
+control period; old authority never transfers across reconnect.
+[Interface schemas](https://github.com/jackgeek/climon2/issues/71) must define
+exact event tags, identity fields, error codes, and executable examples.
 Essential control changes cannot silently disappear through plugin filtering.

@@ -1,6 +1,6 @@
 # Restoration completion
 
-**Status:** planned semantics; interface [schema](../TERMS.md#schema) unresolved, not implemented.
+**Status:** agreed communication requirements; interface [schema](../TERMS.md#schema) unresolved, not implemented.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
@@ -15,9 +15,16 @@ Open or [takeover](../../../GLOSSARY.md) acceptance cannot substitute for this b
 a newer restoration invalidates earlier [readiness](../../../GLOSSARY.md);
 obsolete completion must not enable input.
 
-[Terminal integration](https://github.com/jackgeek/climon2/issues/63),
-[communication](https://github.com/jackgeek/climon2/issues/66), and
+[Terminal integration](https://github.com/jackgeek/climon2/issues/63) and
 [interface schemas](https://github.com/jackgeek/climon2/issues/71) must define
-identity fields, completion/application ordering, rejection, and valid examples.
+exact identity fields, application mechanics, errors, and executable examples.
+The [shared contract](../README.md#shared-in-process-communication-contract)
+and [semantic examples](../README.md#semantic-examples), agreed in
+[#66](https://github.com/jackgeek/climon2/issues/66), preserve causal
+[grant](../../../GLOSSARY.md#attachment-and-control)/start/update/completion order in one
+[response](../TERMS.md#response)/[event](../TERMS.md#event) stream. Completion
+is a receipt barrier, not the monitor's applied barrier. Neither may be reused
+after a changed [connection generation](../TERMS.md#connection-generation).
+Required restoration boundaries cannot be dropped or lossily coalesced.
 [Operational limits](https://github.com/jackgeek/climon2/issues/69) owns remaining
 deadlines and transfer budgets.

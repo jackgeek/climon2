@@ -2,7 +2,8 @@
 
 **Status:** agreed design, not implemented. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
-requirements. Complete declarations, data layouts, result codes, native-path
+requirements. Complete declarations, data layouts, result codes,
+[native-path](TERMS.md#native-path)
 encoding, and executable examples remain with
 [interface schemas](https://github.com/jackgeek/climon2/issues/71).
 Revision 1 is planned, not a published interface.
@@ -81,11 +82,16 @@ connection, per-session state, and any internal workers. Only documented
 control/communication operations may execute concurrently with that instance.
 A separate thread-safe control handle lets the monitor request shutdown without
 waiting for the running operation or thread to finish.
+The agreed [communication contract](README.md#shared-in-process-communication-contract)
+adds a per-instance thread-safe
+[communication handle](TERMS.md#communication-handle) for nonblocking submit/drain,
+without callbacks into monitor application code. Shutdown is independent of
+ordinary queue capacity; connection work remains on the dedicated client thread.
 
 Complete instance and internal-worker cleanup before the client thread returns.
 The monitor joins the thread before reporting completed shutdown. Release the
 control handle only after its permitted concurrent uses end; exact handle
-validity and release operations belong to the completed schemas. A final
+validity and release operations belong to the completed [schemas](TERMS.md#schema). A final
 [event](TERMS.md#event), connection closure, or daemon-accepted
 [detach](../../GLOSSARY.md#attachment-and-control) is not proof of cleanup or
 thread completion. Cleanup failure must be reported, not called success.
@@ -115,8 +121,16 @@ the monitor owns its [host](../../GLOSSARY.md#sessions) terminal.
 Each allocator frees its own allocations. Every later buffer must explicitly
 use copying, call-scoped borrowing, or ownership transfer with a matching release
 operation. Never retain a caller buffer by implication or free a library
-allocation with another release's allocator. Any callback introduced by the
-communication design must obey the same lifetime and no-unwinding rules.
+allocation with another release's allocator. The communication interface does
+not call monitor application code.
+
+Submit copies all accepted data before return and retains no rejected arguments.
+Drain transfers immutable library-owned deliveries, released through the same
+library. Thread-safe release obeys coordinated instance lifetime. Outstanding
+deliveries prevent successful destruction; stop new calls, release objects,
+and coordinate polling of the borrowed
+[notification descriptor](TERMS.md#pollable-notification-descriptor) before
+dedicated-thread cleanup completes. Descriptor ownership never transfers.
 
 Instance state is separate; function tables and release metadata are immutable.
 Shared library resources must be thread-safe. No single-client process-global
@@ -155,8 +169,8 @@ These are obligations for later implementation, not tests already run:
   whole-monitor failure exposure; do not assert process-isolated client
   survival or guaranteed session survival.
 
-The [communication decision](https://github.com/jackgeek/climon2/issues/66)
-still owns operation delivery and representation, ordering and correlation.
+The agreed [communication decision](https://github.com/jackgeek/climon2/issues/66)
+owns [operation delivery and representation, ordering and correlation](README.md#shared-in-process-communication-contract).
 Lifecycle owns recovery and incomplete cleanup; operational limits own budgets;
 interface schemas own exact declarations and valid call examples. These
 decisions must preserve this embedding contract without inventing

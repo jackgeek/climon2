@@ -25,14 +25,15 @@ owns post-hello framing and message schemas, [capabilities](../../../GLOSSARY.md
 readiness/control semantics, compatible [extensions](../../../GLOSSARY.md), and rejection behavior.
 
 It must provide support discovery before [control acquisition](../../../GLOSSARY.md),
-passive monitor connections without automatic takeover, and bidirectional plugin
+passive [monitor](../../../GLOSSARY.md#sessions) connections without automatic takeover, and bidirectional plugin
 extension relay regardless of control. Negotiated plugin data must reach the
-monitor for background and revoked clients without permitting core screen
+monitor for background and [revoked](../../../GLOSSARY.md#attachment-and-control)
+[clients](../../../GLOSSARY.md#sessions) without permitting core screen
 mirroring, application input, or resize. The exact passive connection/attachment
 model and wire schemas are not yet assigned.
 
 The [startup/discovery resolution](https://github.com/jackgeek/climon2/issues/59)
-also requires daemon-core
+also requires [daemon](../../../GLOSSARY.md#sessions)-core
 [title state and changes](../monitor-client/event-title.md) and
 [effective session status/time](../monitor-client/event-session-status.md)
 for passive, background, and revoked clients, without taking control or
@@ -40,16 +41,24 @@ implementing plugins. The [mechanics and diagrams](../../session-status.md)
 supersede the earlier plugin release requirement. Older daemons lacking title
 support remain usable with command/arguments fallback.
 
-Specify [viewing reports](../monitor-client/request-viewing.md) independently
+Specify [viewing](../../../GLOSSARY.md#status-and-attention)
+[reports](../monitor-client/request-viewing.md) independently
 of retained control, and distinguish command completion from uncertain
 disconnection/passive reconnect. Current hello's optional `state` describes
-lifecycle/attachments/control, not these new activity/attention machines.
+lifecycle/attachments/control, not these new
+[activity/attention](../../../GLOSSARY.md#status-and-attention) machines.
 Do not silently repurpose that existing shape. Frozen hello required fields
 remain unchanged; exact core status/title/viewing schemas and compatibility
 remain unresolved.
 
 The in-process [monitor-client contract](https://github.com/jackgeek/climon2/issues/66)
-does not select this daemon transport's framing or encoding.
+selects [bounded queues and tagged C-compatible records](../README.md#shared-in-process-communication-contract),
+not this daemon transport's framing or encoding. Its explicit no-checksum
+decision is in-process only; wire integrity remains for #67. The monitor
+requires gap-free initial core metadata synchronization and changes per
+[connection generation](../TERMS.md#connection-generation); exact daemon mapping,
+capability tokens, timestamp/episode identities, and [event](../TERMS.md#event) forms remain
+unresolved here.
 
 Numerical cross-interface bounds belong to
 [operational limits](https://github.com/jackgeek/climon2/issues/69).
