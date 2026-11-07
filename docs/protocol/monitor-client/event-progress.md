@@ -1,7 +1,6 @@
 # Progress metadata
 
-**Status:** agreed semantics, not implemented; exact declarations,
-[capabilities](../../../GLOSSARY.md#sessions), and wire
+**Status:** agreed semantics/wire mapping, not implemented; native
 [schemas](../TERMS.md#schema) unresolved. See the [overview](../README.md),
 [domain glossary](../../../GLOSSARY.md), and [technical terms](../TERMS.md).
 
@@ -21,7 +20,7 @@ control operations; merely observing an OSC number is not sufficient.
 
 Progress does not emit `attention_request`, change
 [activity](../../../GLOSSARY.md#status-and-attention)/detection mode,
-grant control, or establish a confirmed session command outcome. A progress
+[grant](../../../GLOSSARY.md#attachment-and-control) control, or establish a confirmed session command outcome. A progress
 operation's error indicator is not the daemon's terminal `failed` status.
 Relaying progress enables future progress-bar/spinner [UI](../TERMS.md#ui); that UI is not part
 of this revision.
@@ -36,20 +35,24 @@ and [semantic examples](../README.md#semantic-examples), agreed in
 records, immutable library-owned drain objects, the single causal
 [response](../TERMS.md#response)/[event](../TERMS.md#event) stream, explicit failures,
 and bounded [backpressure](../TERMS.md#backpressure) rather than
-silent loss of required records. This assigns no new progress retention or
-coalescing policy.
+silent loss of required records.
 
-The [daemon contract](https://github.com/jackgeek/climon2/issues/67) and
-[interface schemas](https://github.com/jackgeek/climon2/issues/71) must specify
-accepted sources, required/optional fields, determinate and unknown progress and
-clear/reset representation, units/ranges, encoding, identity, ordering,
-subscription/initial state, reconnect/staleness, capability tokens, error codes,
-and executable examples. Current-progress retention is not
-implicitly selected by this document. The
+The [daemon contract](https://github.com/jackgeek/climon2/issues/67) assigns
+`progress-v1`, retained current normalized Progress in
+[Initial metadata](../daemon-client/event-initial-metadata.md), and
+[Progress changed](../daemon-client/event-progress-changed.md).
+States are `none`/`normal`/`indeterminate`/`error`/`paused`; percent is integer 0..100 or
+null with the shared variant constraints.
+The [source normalization](../daemon-client/core-v1.md#source-normalization)
+retains an internal last-number cache, exposes only current Progress, emits
+nothing for unchanged values and never equates 100 with command completion.
+Invalid application sequences leave the indicator unchanged; invalid wire
+records are not silently ignored.
+[Interface schemas](https://github.com/jackgeek/climon2/issues/71) still owns
+native representation, error codes, declarations and executable examples. The
 [operational limits](https://github.com/jackgeek/climon2/issues/69) own queue,
 rate, retention, and exhaustion budgets.
 
-No exact event identifier, function, [frame](../TERMS.md#frame), or
-[payload](../TERMS.md#payload) encoding is assigned
-here. No [plugin](../../../GLOSSARY.md#protocol-and-plugin-concepts) implementation
+No native event identifier, function or layout is assigned here.
+No [plugin](../../../GLOSSARY.md#protocol-and-plugin-concepts) implementation
 or plugin negotiation is required.

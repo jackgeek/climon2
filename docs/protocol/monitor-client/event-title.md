@@ -1,6 +1,6 @@
 # Title state and changes
 
-**Status:** agreed semantics, not implemented; exact interface and wire [schemas](../TERMS.md#schema) unresolved.
+**Status:** agreed semantics/wire mapping, not implemented; native [schemas](../TERMS.md#schema) unresolved.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
@@ -18,7 +18,8 @@ Updates continue while background,
 the menu is closed.
 
 Title delivery is independent of
-[control](../../../GLOSSARY.md#attachment-and-control). It neither grants control
+[control](../../../GLOSSARY.md#attachment-and-control). It neither
+[grants](../../../GLOSSARY.md#attachment-and-control) control
 nor permits screen mirroring, input, or resize. Do not scrape
 display output or require [restoration](../../../GLOSSARY.md#restoration-and-presentation)
 to obtain the title.
@@ -59,13 +60,18 @@ may distinguish rows; layout belongs to the
 
 The [startup/discovery resolution](https://github.com/jackgeek/climon2/issues/59)
 owns these semantics. The [daemon contract](https://github.com/jackgeek/climon2/issues/67)
-and [interface schemas](https://github.com/jackgeek/climon2/issues/71) must
-define exact fields, encoding, metadata boundary forms, capability tokens,
-daemon mapping, error codes, and executable examples, preserving
+assigns `title-v1`, [Initial metadata](../daemon-client/event-initial-metadata.md)
+with explicit availability, then [Title changed](../daemon-client/event-title-changed.md).
+Available title permits null (unset), empty or nonempty
+[Unicode](../TERMS.md#unicode-and-utf-8) text.
+Text is inert [JSON](../TERMS.md#json) metadata, not terminal presentation encoding or
+percent-encoded [OSC](../TERMS.md#osc); source invalid
+[UTF-8](../TERMS.md#unicode-and-utf-8) replacement is a text-boundary choice.
+[Interface schemas](https://github.com/jackgeek/climon2/issues/71) still owns
+native fields/tags, declarations and executable examples, preserving
 [#66's agreed communication rules](https://github.com/jackgeek/climon2/issues/66).
 [Operational limits](https://github.com/jackgeek/climon2/issues/69) owns numerical
-bounds and progress. No event name, signature, capability token, or wire example
-is assigned here.
+bounds and progress.
 
 Users do not set terminal titles through climon2. Future user-assigned session
 names and persisted renaming are separate: the name will appear alongside the

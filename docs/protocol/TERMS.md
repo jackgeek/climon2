@@ -75,6 +75,21 @@ and attention-episode identities.
 
 A field or code identifying which message variant is being sent.
 
+## Counter
+
+An increasing identifier or sequence value. Its range, representation and
+scope belong to the owning interface; it is not a timestamp or a retry key.
+
+## Geometry
+
+A terminal's size in columns and rows, distinct from pixel dimensions.
+Representable values do not determine operational sizing or clamping policy.
+
+## Availability
+
+Whether an interface can supply a value, distinct from a supported value being
+unset or empty. The owning interface specifies its explicit representation.
+
 ## Envelope
 
 The outer structure that identifies a message and carries shared fields.
@@ -240,6 +255,23 @@ streams.
 A brief on-screen notification. The planned monitor's
 [attention mechanics](../session-status.md#titles-and-notifications) specify
 when notifications occur; exact visual presentation remains unresolved.
+
+## TCP/IP
+
+Transmission Control Protocol / Internet Protocol: networking protocols that
+can carry an ordered byte stream between hosts. Selecting this carrier alone
+does not specify routing, authentication, or application multiplexing.
+
+## UID
+
+A user identifier assigned by the operating system. Same-UID peer checks are
+part of the current local socket deployment, not a remote authentication scheme.
+
+## WebSocket
+
+A browser-compatible bidirectional transport over a network connection.
+It can carry forwarded terminal traffic without loading a native client
+library in the browser.
 
 ## UI
 

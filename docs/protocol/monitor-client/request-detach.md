@@ -32,3 +32,11 @@ the shared rules.
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign
 exact arguments, results, errors, and executable examples.
 [Operational limits](https://github.com/jackgeek/climon2/issues/69) owns deadlines.
+
+[Wire Leave](../daemon-client/request-leave.md) removes registration/membership
+before succession and closes after its response. Its `attachment_detached`
+distinguishes passive departure from accepted detach. Any
+[controller](../../../GLOSSARY.md#attachment-and-control) departure,
+deliberate or lost, can promote a passive successor after existing attachment
+hand-back and before final-participant policy; committed termination overrides
+succession. Native declarations remain #71.

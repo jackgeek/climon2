@@ -1,10 +1,16 @@
 # Frozen session metadata core
 
-Apart from the hello handshake, session metadata is the only data read across climon2 versions (ADR 0001). Any version of `climon2 list` must read every version's metadata to show, probe and clean up sessions, and the CLI uses it to find the version-matched client. So the location and all eleven fields are frozen forever: their names, JSON types and meanings. The format may only grow. Readers ignore unknown fields and accept any `format_version` of 1 or higher. The version number only tells a reader which of the later, optional fields to expect.
+In the current implementation, apart from the [hello handshake](../../GLOSSARY.md#sessions), [session metadata](../../GLOSSARY.md#sessions) is the only data read across climon2 versions (ADR 0001). Any version of `climon2 list` must read every version's metadata to show, probe and clean up [sessions](../../GLOSSARY.md#sessions), and the CLI uses it to find the version-matched [client](../../GLOSSARY.md#sessions). So the location and all eleven fields are frozen forever: their names, [JSON](../protocol/TERMS.md#json) types and meanings. The format may only grow. Readers ignore unknown fields and accept any `format_version` of 1 or higher. The version number only tells a reader which of the later, optional fields to expect.
 
 ## Frozen layout
 
-- **Location:** `<climon2 home>/sessions/<guid>.pty`. The directory is 0700 and the file 0600. Files are written to a temp name and then renamed, and the temp name never matches `<guid>.pty`. Readers only consider files whose stem parses as a GUID and whose extension is `.pty`.
+The agreed [native embedding](../protocol/library-embedding.md) and
+[daemon wire revision 1](../protocol/daemon-client/core-v1.md) extend the planned
+cross-release data boundaries. They do not change this frozen write-once core.
+Dynamic title, status, episodes and progress come from daemon communication,
+not metadata rewrites. Neither planned interface is implemented by this record.
+
+- **Location:** `<climon2 home>/sessions/<guid>.pty`. The directory is 0700 and the file 0600. Files are written to a temp name and then renamed, and the temp name never matches `<guid>.pty`. Readers only consider files whose stem parses as a [GUID](../protocol/TERMS.md#guid) and whose extension is `.pty`.
 - **Fields:**
   - `format_version`: u32.
   - `session_id`: lowercase hyphenated GUID, equal to the filename stem.
@@ -15,9 +21,9 @@ Apart from the hello handshake, session metadata is the only data read across cl
   - `args`: array of strings.
   - `cwd`: absolute path.
   - `depth`: u32, at least 1.
-  - `created_at`: RFC 3339 UTC with milliseconds.
+  - `created_at`: RFC 3339 [UTC](../protocol/TERMS.md#utc) with milliseconds.
   - `climon2_version`: SemVer, equal to the version folder name.
-- `command`, `args` and `cwd` are for display only. Bytes that aren't valid UTF-8 are replaced with U+FFFD.
+- `command`, `args` and `cwd` are for display only. [Bytes](../protocol/TERMS.md#byte) that aren't valid [UTF-8](../protocol/TERMS.md#unicode-and-utf-8) are replaced with U+FFFD.
 - **Write-once:** only the owning daemon writes or deletes the file, except that `list` may delete stale metadata. State that changes during a session comes from the daemon over the protocol, never from metadata.
 
 ## Considered options

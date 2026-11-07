@@ -19,7 +19,10 @@ and [semantic examples](../README.md#semantic-examples), agreed in
 restoration, and result order in one per-instance
 [response](../TERMS.md#response)/[event](../TERMS.md#event) stream.
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign
-exact types, error codes, and executable examples. Do not copy the current private
-[daemon](../../../GLOSSARY.md#sessions) geometry schema by assumption.
+exact native types, error codes, and executable examples.
+[Wire Geometry](../daemon-client/event-geometry.md) reports actual positive
+unsigned 32-bit columns/rows with period. This is separate from the current
+private [daemon](../../../GLOSSARY.md#sessions) schema and does not choose
+operational bounds or native layout.
 [Operational limits](https://github.com/jackgeek/climon2/issues/69) owns numerical
 bounds not intrinsic to the chosen geometry contract.

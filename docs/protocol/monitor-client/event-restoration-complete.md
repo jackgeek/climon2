@@ -28,3 +28,8 @@ after a changed [connection generation](../TERMS.md#connection-generation).
 Required restoration boundaries cannot be dropped or lossily coalesced.
 [Operational limits](https://github.com/jackgeek/climon2/issues/69) owns remaining
 deadlines and transfer budgets.
+
+[Wire Restoration complete](../daemon-client/event-restoration-complete.md)
+identifies period/restoration; matching complete sent and applied is required
+before [Ready](../daemon-client/request-ready.md). A superseded restoration
+gets no fabricated completion. Native declarations remain #71.

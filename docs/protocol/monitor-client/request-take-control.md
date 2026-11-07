@@ -26,7 +26,13 @@ takeover against a new connection.
 
 The [ownership decision](https://github.com/jackgeek/climon2/issues/58) owns these
 rules. The [daemon contract](https://github.com/jackgeek/climon2/issues/67)
-must distinguish passive connections from control acquisition.
+distinguishes passive connections from control acquisition in
+[wire Acquire](../daemon-client/request-acquire.md). Acquisition has no implicit
+resize or [attention](../../../GLOSSARY.md#status-and-attention) acknowledgement. Already controlling returns no-change
+without another [grant](../../../GLOSSARY.md#attachment-and-control)/restoration. [Succession](../daemon-client/core-v1.md#membership-and-succession)
+may promote a passive [client](../../../GLOSSARY.md#sessions)
+without selecting, resizing, sending input or
+acknowledging; promoted membership persists on switch/revocation.
 The [communication decision](https://github.com/jackgeek/climon2/issues/66) owns
 the shared rules.
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign

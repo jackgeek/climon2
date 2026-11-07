@@ -1,6 +1,6 @@
 # Session status
 
-**Status:** agreed semantics, not implemented; exact declarations and wire
+**Status:** agreed semantics and wire mapping, not implemented; native
 [schemas](../TERMS.md#schema) unresolved. See the [overview](../README.md),
 [domain glossary](../../../GLOSSARY.md), and
 [technical terms](../TERMS.md).
@@ -16,7 +16,8 @@ Plugin implementation is deferred.
 
 Reports work before control/input [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts) and while background or
 [revoked](../../../GLOSSARY.md#attachment-and-control), independently of
-menu visibility. They neither grant control nor permit screen mirroring,
+menu visibility. They neither [grant](../../../GLOSSARY.md#attachment-and-control)
+control nor permit screen mirroring,
 application input, or resize.
 
 Use the [canonical mechanics and diagrams](../../session-status.md) for all
@@ -52,12 +53,18 @@ fact, not a daemon `failed` result. Preserve definitively reported final
 statuses after closure. Reports do not prove application consumption, accepted
 detach, or completed thread/resource cleanup.
 
-The [daemon contract](https://github.com/jackgeek/climon2/issues/67) and
-[interface schemas](https://github.com/jackgeek/climon2/issues/71) must specify
-exact names/types, synchronization [event](../TERMS.md#event) forms, timestamp encoding, episode
-and final-outcome identities, capability tokens, daemon mapping, error codes,
-and executable examples, preserving
+The [daemon contract](https://github.com/jackgeek/climon2/issues/67) assigns
+`status-v1`, [Initial metadata](../daemon-client/event-initial-metadata.md),
+[Status changed](../daemon-client/event-status-changed.md), and
+[Command final](../daemon-client/event-command-final.md).
+Final carries the terminal transition with no duplicate status-change event.
+Wire Status has required state, exact UTC time and nullable episode counter;
+pending coalesces, acknowledgement preserves identity, clear removes it.
+Final deduplication uses session [GUID](../TERMS.md#guid) plus fixed category `final outcome`,
+not exit/signal variant. Terminal status/result must agree: completed is normal
+exit zero; failed is nonzero exit or signal.
+[Interface schemas](https://github.com/jackgeek/climon2/issues/71) still owns
+native representation and executable examples, preserving
 [#66's agreed communication rules](https://github.com/jackgeek/climon2/issues/66).
-No exact function, event name, capability token, or wire example is assigned
-here. Unknown core tags are invalid, not implicitly negotiated extensions or
+Unknown core tags are invalid, not implicitly negotiated extensions or
 silent successes.

@@ -65,13 +65,37 @@ valid support.
 
 A snapshot can become outdated immediately. It does not [grant](../../../GLOSSARY.md) control or promise
 future successful attachment. Use the [post-hello decision boundary](post-hello.md)
-for the unresolved future frozen interface.
+to distinguish the private implementation from the agreed wire revision.
 
 This implemented `state` object does not contain the planned
 [activity/attention status or its UTC change timestamp](../../session-status.md).
-Those core reports need separately completed schemas; do not infer them from
+Those core reports use [separate wire schemas](core-v1.md); do not infer them from
 the current lifecycle advertisement or silently repurpose its existing fields.
 
 **Sources:** [implementation](../../../crates/climon2-core/src/protocol.rs),
 [hello advertisements](../../../crates/climon2-core/src/hello.rs), and
 [hello tests](../../../crates/climon2-core/tests/hello.rs).
+
+## Revision 1 advertisement (agreed, not implemented)
+
+The [approved contract](https://github.com/jackgeek/climon2/issues/67) adds
+`daemon-wire-v1` to capabilities and optional `daemon_wire_v1` with required
+`max_request_frame_bytes` and `max_server_frame_bytes`: positive unsigned
+32-bit integer limits counting type plus body, not the four-byte prefix.
+The entire advertisement must fit inside frozen hello's existing limit.
+These example numbers are **illustrative advertisements, not agreed defaults**;
+[#69](https://github.com/jackgeek/climon2/issues/69) chooses actual values.
+
+```json
+{"session_id":"550e8400-e29b-41d4-a716-446655440000","climon2_version":"1.2.3","protocol":1,"capabilities":["daemon-wire-v1","monitor-v1","title-v1","status-v1","notification-v1","progress-v1"],"daemon_wire_v1":{"max_request_frame_bytes":1048576,"max_server_frame_bytes":1048576}}
+```
+
+Missing/malformed advertisement makes revision 1 unavailable, not the session
+stale. Existing optional-field behavior and required fields remain frozen;
+this is not permission to apply post-hello strict unknown-field rejection to
+hello. Optional family meanings are in the
+[core reference](core-v1.md#capability-families), including notification's status
+dependency. Existing `attach`/`kill` tokens do not promise these new schemas.
+[Open](request-open.md) or standalone [Kill](request-kill.md) selects revision
+and validates required support before effects, without another exchange.
+Exact-release matching remains mandatory and separate.

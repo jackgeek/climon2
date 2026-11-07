@@ -1,7 +1,6 @@
 # Notification metadata
 
-**Status:** agreed semantics, not implemented; exact declarations,
-[capabilities](../../../GLOSSARY.md#sessions), and wire
+**Status:** agreed semantics/wire mapping, not implemented; native
 [schemas](../TERMS.md#schema) unresolved. See the [overview](../README.md),
 [domain glossary](../../../GLOSSARY.md), and [technical terms](../TERMS.md).
 
@@ -45,16 +44,22 @@ Arbitrary binary fields preserve their [bytes](../TERMS.md#byte), including
 [NUL](../TERMS.md#nul) and invalid
 [UTF-8](../TERMS.md#unicode-and-utf-8); this does not choose text encoding.
 
-The [daemon contract](https://github.com/jackgeek/climon2/issues/67) and
-[interface schemas](https://github.com/jackgeek/climon2/issues/71) own field
-names/types, source/id representation, text encoding, chunk assembly and
-correlation, subscription/reconnect details, capability tokens, error codes,
-and executable examples. The
+The [daemon contract](https://github.com/jackgeek/climon2/issues/67) assigns
+[Notification](../daemon-client/event-notification.md) with required
+source, nullable source ID/title/body and nullable episode counter.
+`notification-v1` requires `status-v1`.
+The [normalized source rules](../daemon-client/core-v1.md#source-normalization)
+include completed OSC 99 assembly and the climon2 first-delimiter OSC 777
+subset, with inert [Unicode](../TERMS.md#unicode-and-utf-8) text and chosen invalid-text replacement.
+There is no notification payload archive/replay; pending episode identity is
+retained separately. Local menu/episode/final deduplication follows
+[this monitor's own viewing](../daemon-client/core-v1.md#viewing-acknowledgement-and-local-notifications),
+never aggregate viewing. [Interface schemas](https://github.com/jackgeek/climon2/issues/71)
+still owns native fields/tags, declarations, errors and executable examples. The
 [operational limits](https://github.com/jackgeek/climon2/issues/69) own queue,
 assembly, rate, and exhaustion budgets.
 
-No exact event identifier, [frame](../TERMS.md#frame), function, or
-[payload](../TERMS.md#payload) encoding is assigned
-here. Unknown traffic must follow those completed contracts, not an invented
+No native identifier, function or layout is assigned here.
+Unknown traffic must follow the agreed wire and eventual native contracts, not an invented
 silent-success rule. Unsupported operation filtering in the external terminal
 protocol is not permission to hide structured-interface failures.

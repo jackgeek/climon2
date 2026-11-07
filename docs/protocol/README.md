@@ -11,15 +11,16 @@ behavior.
 
 Use the [domain glossary](../../GLOSSARY.md) for climon2 concepts and the
 [technical terms](TERMS.md) for protocol vocabulary. Each operation page links
-to its owning specification. Descriptive filenames do not assign function names,
-message names, field layouts, or encodings.
+to its owning specification. Descriptive filenames do not assign
+native function names or layouts. The daemon wire pages do assign exact
+agreed codes and schemas, separately from current implementation.
 
 ## Status and scope
 
 | Interface | Status | Reference |
 |---|---|---|
 | [Client](../../GLOSSARY.md#sessions) to session daemon: [hello handshake](../../GLOSSARY.md#sessions) | Implemented and frozen | [Request](daemon-client/hello-request.md) and [reply](daemon-client/hello-reply.md). |
-| Client to session daemon: after hello | Implemented as a version-matched private protocol; future frozen contract unresolved | [Decision boundary](daemon-client/post-hello.md). |
+| Client to session daemon: after hello | Current private protocol implemented; separate wire revision 1 agreed, not implemented | [Decision boundary](daemon-client/post-hello.md), [complete wire rules](daemon-client/core-v1.md). |
 | Monitor to [client library](../../GLOSSARY.md#sessions) | Embedding and communication design agreed, not implemented; complete declarations unresolved | [Library embedding](library-embedding.md), [shared communication contract](#shared-in-process-communication-contract), and [interface schemas](https://github.com/jackgeek/climon2/issues/71). |
 | [Client executable](../../GLOSSARY.md#sessions) to same-release library | Same-release loading agreed, not implemented | [Library embedding](library-embedding.md). |
 
@@ -27,7 +28,7 @@ The embedding design selects a versioned [C ABI](TERMS.md#c-abi), but its
 complete declarations and valid call examples are not yet published.
 Communication uses tagged C-compatible records, not [JSON](TERMS.md#json),
 a pipe protocol, or serialized [envelopes](TERMS.md#envelope). Complete
-[schemas](TERMS.md#schema) remain pending. No in-process
+native [schemas](TERMS.md#schema) remain pending. No in-process
 [framing](TERMS.md#frame), [frame](TERMS.md#frame) limit, or complete cross-release declarations
 are assigned by these pages.
 The existing daemon hello exchange is unaffected.
@@ -51,6 +52,22 @@ discovery adds clients for newly discovered sessions without changing selection.
 The command remains behind the daemon's [PTY](TERMS.md#pseudo-terminal-pty).
 The daemon remains the authority for terminal state and terminal-query replies.
 
+The [agreed daemon wire](daemon-client/core-v1.md) is portable, independent of
+today's local private sockets. Future monitor-to-monitor forwarding over
+[TCP/IP](TERMS.md#tcpip) presents forwarded sessions as local at the downstream
+monitor; future [WebSocket](TERMS.md#websocket) forwarding feeds xterm.js in a
+browser, not a native library in that browser. Routing, multiplexing, discovery
+and remote security remain unresolved. The
+[artifact diagram](../runtime-artifacts.md) shows these planned consumers.
+There is no initial application checksum; only a future negotiated integrity
+revision could add one if chosen.
+
+Future headless exec returns immediately and can launch several sessions without
+initial clients. [#61](https://github.com/jackgeek/climon2/issues/61) must define
+zero-client lifetime; CLI spelling and implementation remain open. Today's
+interactive leave policy is not universal headless policy and does not make all
+sessions persistent.
+
 Ratatui powers the planned monitor's rendering. The
 [terminal integration decision](https://github.com/jackgeek/climon2/issues/63)
 must define how [session](../../GLOSSARY.md#sessions) state reaches that renderer,
@@ -70,8 +87,12 @@ No client may repurpose process-global arguments, signals, or
 Native client crashes or aborts can terminate the entire monitor and all its
 clients. Ordinary errors and recoverable panics should remain local where
 possible. There is no new session-survival guarantee:
-the existing [leave policy](../../GLOSSARY.md#attachment-and-control) can terminate
-a session that unexpectedly loses its final attachment.
+the current [leave policy](../../GLOSSARY.md#attachment-and-control) can terminate
+a session that unexpectedly loses its final
+[attachment](../../GLOSSARY.md#attachment-and-control). The agreed wire
+[succession rules](daemon-client/core-v1.md#membership-and-succession) try
+remaining attachments, then eligible passive registrations, before
+final-participant policy; they do not guarantee survival of losing every client.
 
 ## Startup and control
 
@@ -82,8 +103,12 @@ a session that unexpectedly loses its final attachment.
    session must not indefinitely prevent older sessions from getting clients.
 4. Establish passive background connections that receive core title/status and
    structured notification/progress data
-   without taking [control](../../GLOSSARY.md#attachment-and-control). The daemon contract must specify this connection mode;
-   current ordinary attach is not a passive connection.
+   without taking [control](../../GLOSSARY.md#attachment-and-control).
+   [Open monitor mode](daemon-client/request-open.md) registers a
+   [passive monitor connection](../../GLOSSARY.md#attachment-and-control),
+   always eligible as a successor but not counted as an attachment until
+   explicit acquisition or promotion. Registration alone never takes over a
+   detached session; there is no observation-only option.
 5. Collect current daemon status and its change time passively, with bounded
    progress. Choose the first candidate in the
    [status/time ordering](../session-status.md#reporting-ordering-and-initial-selection),
@@ -135,12 +160,12 @@ their upstream references:
 | Program/daemon interaction | Direction | Reference and local policy |
 |---|---|---|
 | OSC 7501 root/child reports and clearing | Program -> daemon | [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status); [root-only effects and fallback](../session-status.md#explicit-program-status-and-fallback). |
-| OSC 7501 capability query/reply | Program -> daemon -> program | Same upstream reference; daemon replies locally, and a query does not activate explicit detection. |
+| OSC 7501 [capability](../../GLOSSARY.md#sessions) query/reply | Program -> daemon -> program | Same upstream reference; daemon replies locally, and a query does not activate explicit detection. |
 | OSC 133 prompt/command markers | Shell -> daemon | [Shell integration](https://learn.microsoft.com/en-us/windows/terminal/tutorials/shell-integration); [scope retirement and prompt exclusion](../session-status.md#shell-boundaries-and-prompt-rendering). |
 | OSC 9 text notification | Program -> daemon | [iTerm2 sequences](https://iterm2.com/documentation-escape-codes.html); [notification policy](../session-status.md#notification-and-progress-signals). |
 | OSC 9 progress/control operations | Program -> daemon | [ConEmu sequences](https://conemu.github.io/en/AnsiEscapeCodes.html#ConEmu_specific_OSC); progress is metadata, not attention. |
 | OSC 99 logical notification and auxiliary operations | Program -> daemon | [kitty notifications](https://sw.kovidgoyal.net/kitty/desktop-notifications/); only completed notifications request attention. |
-| OSC 777 `notify` | Program -> daemon | [Notification convention](https://sw.kovidgoyal.net/kitty/desktop-notifications/); other extension operations are not notifications. |
+| OSC 777 `notify` | Program -> daemon | [foot syntax](https://codeberg.org/dnkl/foot/src/branch/master/doc/foot-ctlseqs.7.scd) and [parser](https://codeberg.org/dnkl/foot/src/branch/master/osc.c); [climon2 normalization](daemon-client/core-v1.md#source-normalization), not every upstream quirk. |
 
 These are not new climon2 wire encodings. The daemon remains responsible for
 terminal-query replies; raw sequences do not pass through to
@@ -151,16 +176,18 @@ The [notification](monitor-client/event-notification.md) and
 [progress](monitor-client/event-progress.md) interactions relay structured
 metadata through clients to subscribers, including background/noncontrolling
 ones. They are distinct from terminal display updates and do not authorize
-screen mirroring. Their exact climon2 schemas/[capabilities](../../GLOSSARY.md#sessions)
-and future [UI](TERMS.md#ui) remain
-unresolved.
+screen mirroring. Their exact daemon wire
+[schemas and capabilities](daemon-client/core-v1.md) are agreed, not implemented;
+native declarations remain #71 and future [UI](TERMS.md#ui) remains unresolved.
 
 [Viewing](../../GLOSSARY.md#status-and-attention) is reported per
 [attachment](../../GLOSSARY.md#attachment-and-control);
 retained control alone is not viewing. Merely being visible does not
 acknowledge attention. The planned [viewing operation](monitor-client/request-viewing.md)
-and [status reports](monitor-client/event-session-status.md) still need complete
-schemas.
+and [status reports](monitor-client/event-session-status.md) map the agreed wire
+without assigning native declarations. Menus clear this monitor's viewing
+without releasing control/restoration. Only this monitor's own unobstructed
+presentation suppresses its toasts; another viewer does not.
 
 The monitor retains a per-session `climon2-vt` model and bounded local scrollback
 for disconnected inspection, and retries uncertain connections passively.
@@ -241,8 +268,10 @@ silently convert invalid or unsupported core tags into extensions.
 
 This in-process contract uses no checksum. Copies, immutable
 deliveries, explicit lengths, and ownership address its relevant data-lifetime
-risks; checksums provide neither memory safety nor authentication. This makes no
-daemon-wire integrity/checksum decision; that belongs to #67.
+risks; checksums provide neither memory safety nor authentication.
+The [agreed daemon wire](daemon-client/core-v1.md#framing-and-validation) also
+has no initial checksum; a future negotiated integrity revision is a separate
+decision.
 
 ### Ownership, wakeup, and cleanup
 
@@ -350,7 +379,9 @@ UTC change time, or an explicit unsupported indication. Supply reliable attentio
 episode and final-outcome identities; UTC timestamps are not unique identities.
 This gap-free metadata barrier is independent of control, readiness, and
 selection, and never makes stale terminal content fresh. Exact event forms,
-timestamps, identities, and daemon mapping remain for #67/#71; retry schedules,
+timestamps, identities, and daemon mapping are specified by
+[wire revision 1](daemon-client/core-v1.md); native representation remains #71.
+Retry schedules,
 recreation, cleanup, and budgets remain for #61/#69.
 
 ### Semantic examples
@@ -364,9 +395,11 @@ fixtures cannot be published before #71 completes the declarations.
 | Library compatibility | A library supports the requested revision but reports the wrong session release. Reject it before creating an instance or daemon connection; retain the opened library until monitor exit. Supporting the revision does not waive exact-release validation. |
 | Local admission | ID 10 is accepted and copied. ID 11 is rejected as full: no ownership or later outcome. Retrying local admission with ID 11 can succeed; submitting ID 10 again cannot. |
 | Literal binary data | A supported binary submission contains hexadecimal `00 ff 41`; its accepted copy preserves all three bytes. A binary delivery containing those bytes drains unchanged too. Neither NUL nor invalid UTF-8 truncates or changes them. This does not imply input echo or choose a display encoding. |
-| Control and restoration | A grant precedes its restoration start, ordered updates, and completion in the single stream. Until the monitor applies the complete current restoration, completion alone cannot enable input. A revocation invalidates that readiness. |
+| Control and restoration | A [grant](../../GLOSSARY.md#attachment-and-control) precedes its restoration start, ordered updates, and completion in the single stream. Until the monitor applies the complete current restoration, completion alone cannot enable input. A revocation invalidates that readiness. |
 | Passive metadata | A generation's initial title/status synchronization is delimited, then changes follow gap-free while unselected or revoked. Unchanged status retains its stored UTC time; a new attention episode uses its own identity, not timestamp uniqueness. |
-| Resize and viewing | Only the selected [controller](../../GLOSSARY.md#attachment-and-control) receives monitor resize requests; a local acceptance is not actual geometry. After current restoration is applied, report selected viewing. Switching away clears viewing but retains control; background control receives no monitor input/resize. Visibility alone never acknowledges a new attention episode; explicit selection does. |
+| Resize and viewing | Only the selected [controller](../../GLOSSARY.md#attachment-and-control) receives monitor resize requests; local acceptance is not actual geometry. Report viewing once ready and unobstructed. Switching away or opening menus clears viewing without releasing control/restoration. Explicit selection/focus or menu close/cancel may separately acknowledge current pending attention once ready and viewing; opening/browsing never acknowledges. Cancel deferred acknowledgement if target context changes. Visibility alone never acknowledges a new request. |
+| Menu notifications | Attention arriving while a menu is open toasts immediately over it without a daemon round trip. Still-pending attention never toasted becomes eligible on menu opening. Deduplicate per episode over this monitor lifetime, including reconnects. A final first learned viewed stays suppressed forever here; another client's viewing never suppresses this monitor. |
+| Succession | On any controller departure, most-recent-control existing attachment wins first; otherwise newest accepted passive registration is promoted before final-participant policy. Inheritance does not select, resize, send input or acknowledge. Promoted membership persists through switching/revocation. Committed termination overrides succession. |
 | Core notification/progress | A recognized logical notification requests attention; repeated requests while pending are not new episodes. Progress metadata alone does not request attention or confirm command completion. Delivery remains independent of control and does not permit screen mirroring. |
 | Deliberate detach | Local acceptance queues detach. Only daemon acceptance confirms deliberate detach; neither that outcome nor stream closure proves instance cleanup or a joined thread. No timeout or shutdown fabricates success. |
 | Loss during work | An accepted unfinished request on the lost generation is indeterminate. Passive reconnect does not replay it or carry old-generation input forward. Retained terminal content stays stale until fresh control/restoration/application. |
@@ -398,9 +431,9 @@ decisions are still open:
 
 | Owner | Unresolved details |
 |---|---|
-| [Daemon wire #67](https://github.com/jackgeek/climon2/issues/67) | Passive connection model, support discovery, wire messages/encoding/integrity, and mapping core metadata, viewing, attention identities, and command outcomes into the client contract. |
+| [Daemon wire #67](https://github.com/jackgeek/climon2/issues/67) | Agreed [wire revision 1](daemon-client/core-v1.md), not implemented. No remaining schema decision is delegated back to #67. |
 | [Terminal integration #63](https://github.com/jackgeek/climon2/issues/63) | Display/input representation, geometry, restoration application, and terminal transfer/chunking with #69. |
-| [Lifecycle #61](https://github.com/jackgeek/climon2/issues/61) | Recovery/recreation, cleanup coordination and incomplete-cleanup policy, retry schedules with #69, and visible lifecycle behavior. No additional survival guarantee is implied. |
+| [Lifecycle #61](https://github.com/jackgeek/climon2/issues/61) | Recovery/recreation, cleanup coordination and incomplete-cleanup policy, retry schedules with #69, visible lifecycle behavior, and future headless zero-client lifetime. No additional survival guarantee is implied. |
 | [Operational limits #69](https://github.com/jackgeek/climon2/issues/69) | Numeric byte/record/object and aggregate bounds, progress/stall deadlines, scheduling/admission/exhaustion policy, transfer budgets, and measurement thresholds. |
 | [Interface schemas #71](https://github.com/jackgeek/climon2/issues/71) | Exact declarations, record fields/tags/widths, handle and release operations, descriptor exposure, capability tokens, timestamp/identity encodings, error catalog, schema fixtures, and valid executable examples after the above decisions. It remains blocked. |
 
@@ -492,7 +525,10 @@ schemas and executable examples when #71 completes the interface.
 | [Resize](monitor-client/request-resize.md) | Monitor -> client | Request controlling geometry. |
 | [Take control](monitor-client/request-take-control.md) | Monitor -> client | Explicitly request takeover. |
 | [Viewing](monitor-client/request-viewing.md) | Monitor -> client -> daemon | Report selected presentation independently of retained control. |
+| [Readiness](monitor-client/request-ready.md) | Monitor -> client -> daemon | Report current complete restoration applied. |
+| [Acknowledge attention](monitor-client/request-acknowledge.md) | Monitor -> client -> daemon | Explicitly acknowledge current pending attention. |
 | [Detach](monitor-client/request-detach.md) | Monitor -> client | Request deliberate detach. |
+| [Kill](monitor-client/request-kill.md) | Monitor -> client | Confirm command termination and daemon cleanup through a standalone role. |
 | [Extension request](monitor-client/request-extension.md) | Either endpoint, through client | Request negotiated plugin work regardless of control. |
 | [Control](monitor-client/event-control.md) | Client -> monitor | Report grant or revocation. |
 | [Restoration start](monitor-client/event-restoration-start.md) | Client -> monitor | Begin a distinct restoration. |
@@ -515,7 +551,42 @@ schemas and executable examples when #71 completes the interface.
 | [Hello reply](daemon-client/hello-reply.md) | Daemon -> client | Identify the session and advertise support/state. |
 
 The [post-hello page](daemon-client/post-hello.md) distinguishes current private
-messages from the future frozen contract and passive connection.
+messages from the agreed wire revision.
+
+### Daemon-client: agreed wire revision 1, not implemented
+
+Every page inherits the [complete shared wire rules](daemon-client/core-v1.md):
+portable framing, strict JSON/binary types, IDs, capabilities, ordering,
+acceptance/errors, bounded delivery and unresolved owners. Hello advertises
+support; first Open/Kill validates before effects without a separate exchange.
+There are nine request types and fourteen server types, including Response.
+Examples are wire bodies, not native declarations or conformance evidence.
+
+| Code | Message | Direction | Purpose |
+|---|---|---|---|
+| `0x30` | [Open](daemon-client/request-open.md) | Client -> daemon | Validate revision/families and enter monitor or interactive role. |
+| `0x31` | [Input](daemon-client/request-input.md) | Client -> daemon | Forward literal nonempty user bytes with authority IDs. |
+| `0x32` | [Resize](daemon-client/request-resize.md) | Client -> daemon | Request geometry under current authority. |
+| `0x33` | [Acquire](daemon-client/request-acquire.md) | Client -> daemon | Explicitly acquire control, not acknowledgement or resize. |
+| `0x34` | [Ready](daemon-client/request-ready.md) | Client -> daemon | Report complete current restoration applied. |
+| `0x35` | [Set viewing](daemon-client/request-viewing.md) | Client -> daemon | Report this attachment's unobstructed presentation. |
+| `0x36` | [Acknowledge attention](daemon-client/request-acknowledge.md) | Client -> daemon | Acknowledge currently pending attention without observed episode ID. |
+| `0x37` | [Leave](daemon-client/request-leave.md) | Client -> daemon | Remove membership/registration and accept departure. |
+| `0x38` | [Kill](daemon-client/request-kill.md) | Client -> daemon | Standalone termination with daemon-cleanup confirmation. |
+| `0x40` | [Response](daemon-client/response.md) | Daemon -> client | Correlated explicit outcome/result/error. |
+| `0x41` | [Initial metadata](daemon-client/event-initial-metadata.md) | Daemon -> client | Atomic current availability/state before gap-free changes. |
+| `0x42` | [Title changed](daemon-client/event-title-changed.md) | Daemon -> client | Inert [Unicode](TERMS.md#unicode-and-utf-8) title. |
+| `0x43` | [Status changed](daemon-client/event-status-changed.md) | Daemon -> client | Effective state, stored time and episode. |
+| `0x44` | [Notification](daemon-client/event-notification.md) | Daemon -> client | Normalized source metadata, not an archive. |
+| `0x45` | [Progress changed](daemon-client/event-progress-changed.md) | Daemon -> client | Retained normalized progress. |
+| `0x46` | [Control granted](daemon-client/event-control-granted.md) | Daemon -> client | New authority, including hand-back/successor. |
+| `0x47` | [Control revoked](daemon-client/event-control-revoked.md) | Daemon -> client | Invalidate old authority immediately. |
+| `0x48` | [Restoration begin](daemon-client/event-restoration-begin.md) | Daemon -> client | Start a distinct restoration. |
+| `0x49` | [Display](daemon-client/event-display.md) | Daemon -> client | Ordered nonempty binary terminal bytes. |
+| `0x4a` | [Restoration complete](daemon-client/event-restoration-complete.md) | Daemon -> client | Sent barrier, not applied readiness. |
+| `0x4b` | [Geometry](daemon-client/event-geometry.md) | Daemon -> client | Actual daemon geometry. |
+| `0x4c` | [Command final](daemon-client/event-command-final.md) | Daemon -> client | Authoritative exit/signal and selected terminal status. |
+| `0x4d` | [Fatal error](daemon-client/event-fatal-error.md) | Daemon -> client | Best-effort connection failure diagnostic. |
 
 ## Sources and unresolved decisions
 
@@ -533,10 +604,11 @@ messages from the future frozen contract and passive connection.
   correlation/order, validation, compatibility, bounded progress, core metadata,
   and future evidence requirements above; plugin implementation remains deferred.
 - [Complete monitor-client interface schemas](https://github.com/jackgeek/climon2/issues/71):
-  still blocked on the remaining terminal, lifecycle, daemon-wire, and numeric
+  still blocked on the remaining terminal, lifecycle, and numeric
   limit decisions; owns exact fields, calls/events, results, errors, and examples.
 - [Freeze daemon-client communication contract](https://github.com/jackgeek/climon2/issues/67):
-  future post-hello wire schemas, passive connections, and daemon extensions.
+  agreed [revision-1 post-hello wire](daemon-client/core-v1.md), passive
+  succession, metadata, outcomes and validation; no implementation claim.
 - [Choose the monitor terminal integration contract](https://github.com/jackgeek/climon2/issues/63):
   display/input representation, geometry, and restoration.
 - [Define monitor exit and failure behavior](https://github.com/jackgeek/climon2/issues/61):

@@ -1,73 +1,47 @@
 # Daemon-client post-hello boundary
 
-**Status:** the existing version-matched private protocol is implemented.
-Its future cross-release frozen contract is unresolved.
+**Current:** the version-matched private protocol is implemented.
+**Agreed, not implemented:** [daemon wire revision 1](core-v1.md), owned by
+[#67](https://github.com/jackgeek/climon2/issues/67), freezes a separate portable
+core contract. These are not interchangeable formats.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
 The [current implementation](../../../crates/climon2-core/src/protocol.rs)
-contains attach/control, raw input/output, resize, [readiness](../../../GLOSSARY.md), [detach](../../../GLOSSARY.md), [kill](../../../GLOSSARY.md), and
-termination messages. Current input/output [frames](../TERMS.md#frame) are limited to 65,536 [bytes](../TERMS.md#byte)
-including the type byte; their bodies are raw bytes.
+contains attach/control, raw input/output, resize,
+[readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts),
+[detach](../../../GLOSSARY.md#attachment-and-control),
+[kill](../../../GLOSSARY.md#attachment-and-control) and termination messages.
+Current input/output [frames](../TERMS.md#frame) are limited to 65,536
+[bytes](../TERMS.md#byte), including type; their bodies are raw bytes.
+Do not treat their private codes, authority IDs or response shapes as revision 1.
 
-This first draft deliberately does not reproduce those private message [schemas](../TERMS.md#schema)
-as a future [plugin](../../../GLOSSARY.md) contract. Their type codes, period representation, geometry,
-and acknowledgement shapes cannot simply be copied into the monitor-client interface
-or assumed frozen across future releases.
+The frozen [hello request](hello-request.md) and [reply](hello-reply.md) remain
+unchanged in required fields, protocol 1 and existing limits.
+New optional support advertisement and first-role validation precede effects;
+no separate negotiation exchange or release-inferred support is introduced.
+The [complete core reference](core-v1.md) specifies framing, types,
+[capabilities](../../../GLOSSARY.md#sessions), errors, metadata, passive succession,
+[viewing](../../../GLOSSARY.md#status-and-attention)/acknowledgement, command results,
+kill confirmation, source normalization and bounds obligations.
+Every new type has a [message page](../README.md#daemon-client-agreed-wire-revision-1-not-implemented).
 
-The implemented [hello request](hello-request.md) and [reply](hello-reply.md)
-remain the documented frozen discovery exchange.
+This wire format is not the in-process
+[monitor](../../../GLOSSARY.md#sessions)-client
+[contract](../README.md#shared-in-process-communication-contract).
+Map wire records and IDs into that contract; complete native declarations remain
+[#71](https://github.com/jackgeek/climon2/issues/71).
+[#63](https://github.com/jackgeek/climon2/issues/63) owns rendering/application/
+resize bounds, [#69](https://github.com/jackgeek/climon2/issues/69) numerical
+limits/deadlines/policy, and [#61](https://github.com/jackgeek/climon2/issues/61)
+lifecycle/recovery/headless behavior.
 
-## Pending specification
+Portable core traffic does not depend on Unix sockets. Future monitor
+forwarding and browser consumption are planned, not implemented; routing,
+multiplexing, discovery and remote security remain unresolved. No initial
+checksum, plugin [API](../TERMS.md#api), native-library-in-browser model or new crash-survival
+guarantee is implied.
 
-[Freeze daemon-client communication contract](https://github.com/jackgeek/climon2/issues/67)
-owns post-hello framing and message schemas, [capabilities](../../../GLOSSARY.md), validation,
-readiness/control semantics, compatible [extensions](../../../GLOSSARY.md), and rejection behavior.
-
-It must provide support discovery before [control acquisition](../../../GLOSSARY.md),
-passive [monitor](../../../GLOSSARY.md#sessions) connections without automatic takeover, and bidirectional plugin
-extension relay regardless of control. Negotiated plugin data must reach the
-monitor for background and [revoked](../../../GLOSSARY.md#attachment-and-control)
-[clients](../../../GLOSSARY.md#sessions) without permitting core screen
-mirroring, application input, or resize. The exact passive connection/attachment
-model and wire schemas are not yet assigned.
-
-The [startup/discovery resolution](https://github.com/jackgeek/climon2/issues/59)
-also requires [daemon](../../../GLOSSARY.md#sessions)-core
-[title state and changes](../monitor-client/event-title.md) and
-[effective session status/time](../monitor-client/event-session-status.md)
-for passive, background, and revoked clients, without taking control or
-implementing plugins. The [mechanics and diagrams](../../session-status.md)
-supersede the earlier plugin release requirement. Older daemons lacking title
-support remain usable with command/arguments fallback.
-
-Specify [viewing](../../../GLOSSARY.md#status-and-attention)
-[reports](../monitor-client/request-viewing.md) independently
-of retained control, and distinguish command completion from uncertain
-disconnection/passive reconnect. Current hello's optional `state` describes
-lifecycle/attachments/control, not these new
-[activity/attention](../../../GLOSSARY.md#status-and-attention) machines.
-Do not silently repurpose that existing shape. Frozen hello required fields
-remain unchanged; exact core status/title/viewing schemas and compatibility
-remain unresolved.
-
-The in-process [monitor-client contract](https://github.com/jackgeek/climon2/issues/66)
-selects [bounded queues and tagged C-compatible records](../README.md#shared-in-process-communication-contract),
-not this daemon transport's framing or encoding. Its explicit no-checksum
-decision is in-process only; wire integrity remains for #67. The monitor
-requires gap-free initial core metadata synchronization and changes per
-[connection generation](../TERMS.md#connection-generation); exact daemon mapping,
-capability tokens, timestamp/episode identities, and [event](../TERMS.md#event) forms remain
-unresolved here.
-
-Numerical cross-interface bounds belong to
-[operational limits](https://github.com/jackgeek/climon2/issues/69).
-[Session](../../../GLOSSARY.md) survival/recovery belongs to
-[lifecycle](https://github.com/jackgeek/climon2/issues/61).
-
-Once the frozen schemas are decided, add one linked page per daemon message or
-operation, with valid examples. Until then, no future post-hello wire example,
-extension advertisement shape, or plugin interface is assigned here.
-
-**Sources:** [current handshake/private-protocol ADR](../../adr/0001-version-matched-client-and-frozen-hello.md)
-and [monitor ownership resolution](https://github.com/jackgeek/climon2/issues/58#issuecomment-6597610447).
+**Sources:** [current implementation](../../../crates/climon2-core/src/protocol.rs),
+[architecture boundary](../../adr/0001-version-matched-client-and-frozen-hello.md),
+[approved wire decision](https://github.com/jackgeek/climon2/issues/67).

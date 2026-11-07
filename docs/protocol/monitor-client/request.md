@@ -35,6 +35,12 @@ or an indeterminate outcome if execution is unknown. Never move stale work to a
 new [connection generation](../TERMS.md#connection-generation) or silently drop it.
 IDs do not supply a retry/idempotency mechanism.
 
+The [wire contract](../daemon-client/core-v1.md#correlation-and-context) uses a
+separate request-ID domain per logical connection. A well-formed received wire
+request consumes its wire ID even if its operation is rejected.
+The library maps public IDs to wire IDs; reconnect never makes them identical
+by assumption. The public local-rejection rule above remains unchanged.
+
 [Define monitor-client communication contract](https://github.com/jackgeek/climon2/issues/66)
 owns these agreed rules. See the [response page](response.md) for outcomes.
 [Complete monitor-client interface schemas](https://github.com/jackgeek/climon2/issues/71)

@@ -35,3 +35,13 @@ control period; old authority never transfers across reconnect.
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) must define
 exact event tags, identity fields, error codes, and executable examples.
 Essential control changes cannot silently disappear through plugin filtering.
+
+[Wire grant](../daemon-client/event-control-granted.md) and
+[revocation](../daemon-client/event-control-revoked.md) assign exact authority
+fields and reasons, not native tags. Old authority is invalid immediately,
+without waiting for revocation receipt before a new grant.
+On [controller](../../../GLOSSARY.md#attachment-and-control) departure,
+existing most-recent-control [attachment](../../../GLOSSARY.md#attachment-and-control) hand-back
+precedes newest accepted passive successor promotion. Inheritance does not
+select, resize, send input or acknowledge; promoted attachment membership
+persists after switching/revocation. Committed termination overrides succession.

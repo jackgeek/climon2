@@ -32,6 +32,10 @@ ownership, and bounded progress.
 [Define monitor-client communication contract](https://github.com/jackgeek/climon2/issues/66)
 owns these agreed rules. See [request admission](request.md).
 [Complete monitor-client interface schemas](https://github.com/jackgeek/climon2/issues/71)
-must assign exact result/error types and executable examples; no error-code
-catalog is currently frozen. There is no serialized
+must assign exact native result/error types and executable examples.
+The [wire Response](../daemon-client/response.md) separately assigns
+ok/rejected/failed/indeterminate, operation result variants and an explicit
+[error catalog](../daemon-client/core-v1.md#errors-and-bounded-delivery).
+Do not assume these are C record tags or native error declarations.
+There is no serialized
 [envelope](../TERMS.md#envelope).

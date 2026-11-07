@@ -58,14 +58,14 @@ flowchart TB
 ```
 
 The launcher has no workspace crate dependencies. Cycles through
-`climon2-test-term` are test-only: CLI and client tests consume the harness,
+`climon2-test-term` are test-only: CLI and [client](../GLOSSARY.md#sessions) tests consume the harness,
 which consumes their libraries and other runtime libraries.
 
 **Planned:** a separate discovery crate will share session discovery between
-the CLI and monitor, retained in
+the CLI and [monitor](../GLOSSARY.md#sessions), retained in
 [Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59).
 The monitor will consume discovery continuously and load version-matched client
-libraries in-process, with one client thread per live session. Its crate
+libraries in-process, with one client thread per [live session](../GLOSSARY.md#sessions). Its crate
 placement and the discovery crate's dependencies are not yet specified, so no
 additional crate names or edges are implied. Dynamic loading is shown in the
 artifact diagram, not as a Cargo dependency. The client library's planned
@@ -77,10 +77,17 @@ The [status/activity revision](session-status.md) also requires the monitor role
 to consume `climon2-vt`, keeping one terminal model per session across uncertain
 disconnections. Its crate placement remains undecided, so this is not an
 invented Cargo edge or a new workspace crate. Daemon-core title detection and
-activity/attention machines, terminal-signal interpretation, and structured
+activity/[attention](../GLOSSARY.md#status-and-attention) machines, terminal-signal interpretation, and structured
 notification/progress relay do not require a plugin crate; plugin
 implementation is deferred. The agreed detection modes and fallback policy
 do not assign another workspace crate or change the current dependency edges.
+
+The agreed [daemon wire revision 1](protocol/daemon-client/core-v1.md) also
+anticipates source-monitor session consumption and browser terminal consumption
+over future forwarding boundaries, shown in the artifact diagram. Their crate
+placement is unassigned; no new crate or Cargo edge is implied. The wire
+specification does not implement these relationships or a native library in a
+browser. All workspace crates above remain unchanged.
 
 Current edges come from workspace `Cargo.toml` files. This is a consumption
 index, not a replacement for the architecture decisions or their permitted

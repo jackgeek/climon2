@@ -92,8 +92,16 @@ _Avoid_: Global log, main log
 
 **Attachment**:
 One client's accepted connection to a session for interactive use, whether or not that client currently controls it.
-Probes and kill requests are not attachments.
+Probes, passive monitor connections and kill requests are not attachments.
 _Avoid_: Session, control
+
+**Passive monitor connection**:
+A monitor's connection that receives session metadata and is eligible to inherit control, but has not yet become an attachment.
+_Avoid_: Observer-only attachment, read-only viewer
+
+**Successor**:
+A passive monitor connection eligible to become an attachment when control has no remaining attached recipient.
+_Avoid_: Backup controller, observer
 
 **Controller**:
 The attached client whose input and terminal size drive the session; at most one client is the controller at a time.
@@ -104,7 +112,7 @@ The session daemon's act of making an attachment the controller, which starts a 
 _Avoid_: Handover, switch
 
 **Revocation**:
-The end of an attachment's control when another attachment receives a grant.
+The end of an attachment's current control, distinct from ending the attachment itself.
 _Avoid_: Detach, session end, read-only mode
 
 **Control period**:
@@ -132,7 +140,7 @@ The five seconds a terminating session waits, after hanging up its terminal, bef
 _Avoid_: Kill timeout, reconnection grace
 
 **Leave policy**:
-What a session daemon does when an attachment leaves: hand back control while another client remains, keep running after the final client detaches, and terminate after the final client leaves any other way.
+What a session daemon does after a participant departs and any control succession is resolved.
 _Avoid_: Disconnect handler, kill policy
 
 **Client escape prefix**:
@@ -157,12 +165,16 @@ _Avoid_: Connection state, viewing state
 A session's record of pending or acknowledged user attention and its final command outcome.
 _Avoid_: Monitor state, activity state
 
+**Attention episode**:
+One request for user attention, including further requests coalesced while it remains pending.
+_Avoid_: Notification payload, timestamp, task
+
 **Session status**:
 The effective state reported by a session, combining its activity and attention states.
 _Avoid_: Lifecycle, connection status
 
 **Viewing**:
-A connected controller's active presentation of a session to the user, distinct from retaining control in the background.
+A connected controller's unobstructed, ready presentation of its selected session to the user, distinct from retaining control in the background or under a menu.
 _Avoid_: Attachment, control ownership
 
 **Connection status**:

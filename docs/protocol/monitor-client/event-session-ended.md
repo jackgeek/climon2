@@ -30,9 +30,19 @@ identity and causal ordering with [responses](../TERMS.md#response) and other
 reason remains observable outside ordinary queue capacity, with queued records
 ahead of the terminal indication. A recoverable daemon connection loss is not
 instance-stream closure or command completion.
-[Interface schemas](https://github.com/jackgeek/climon2/issues/71) and the
-[daemon contract](https://github.com/jackgeek/climon2/issues/67) must specify
-exact termination/status types, identities, error codes, and executable examples.
+[Command final](../daemon-client/event-command-final.md), agreed in
+[the daemon contract](https://github.com/jackgeek/climon2/issues/67), preserves
+raw unsigned 32-bit exits separately from source-host signal number/nullable
+name; exit 143 is not SIGTERM. It carries selected terminal status, not a
+duplicate Status changed. Final deduplication identity is session
+[GUID](../TERMS.md#guid) plus
+fixed category `final outcome`, not exit-versus-signal kind.
+Terminal status/result must agree; no later event revives attention/activity.
+[Wire Kill](../daemon-client/request-kill.md) additionally requires confirmed
+result and complete daemon cleanup; command exit alone is insufficient.
+Repeated kills join termination without restarting grace.
+[Interface schemas](https://github.com/jackgeek/climon2/issues/71) still owns
+native termination/status declarations and executable examples.
 On communication failure unfinished outcomes remain
 [indeterminate](../TERMS.md#indeterminate-outcome).
 

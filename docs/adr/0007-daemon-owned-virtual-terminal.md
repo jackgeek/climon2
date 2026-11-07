@@ -1,6 +1,6 @@
 # Daemon-owned virtual terminal
 
-Detach, reattach and takeover need the session's screen, history, modes and title without asking any host terminal. The session daemon therefore owns one virtual terminal per session and is the sole authority for terminal state and terminal-query replies. Clients keep no emulator and no transcript. The virtual terminal lives in the shipped library `climon2-vt` (ADR 0004): pure, platform-neutral, infallible, and exposing only climon2-owned types.
+[Detach](../../GLOSSARY.md#attachment-and-control), reattach and takeover need the [session](../../GLOSSARY.md#sessions)'s screen, history, modes and title without asking any [host](../../GLOSSARY.md#sessions) terminal. The [session daemon](../../GLOSSARY.md#sessions) therefore owns one [virtual terminal](../../GLOSSARY.md#sessions) per session and is the sole authority for terminal state and terminal-query replies. Current [clients](../../GLOSSARY.md#sessions) keep no emulator and no transcript. The virtual terminal lives in the shipped library `climon2-vt` (ADR 0004): pure, platform-neutral, infallible, and exposing only climon2-owned types.
 
 ## Engine: unchanged Alacritty 0.26.0
 
@@ -32,8 +32,17 @@ Raw sequences remain stripped from host output. Clients/monitors instead
 receive structured notification/progress metadata, including while background
 or noncontrolling. This extends local interpretation and daemon-owned replies,
 not the permission to send host-dependent requests to an outer terminal.
-Exact structured schemas remain unresolved; the current filter and query
+The [agreed daemon wire](../protocol/daemon-client/core-v1.md) now specifies
+structured schemas and source normalization; native declarations remain #71.
+The current filter and query
 implementation above are not evidence that these planned signals are supported.
+
+The [monitor](../../GLOSSARY.md#sessions)'s planned per-session `climon2-vt` copy for retained disconnected
+inspection is an explicit exception to the current no-client-emulator rule,
+not a competing terminal-query authority. Forwarding to other monitors and
+xterm.js browsers is a future consumer boundary, not permission for revoked
+core screen mirroring or a native library in a browser. Rendering/application
+and resize policy remain #63; no new workspace crate is selected.
 
 ## Restoration: three phases, produced incrementally
 

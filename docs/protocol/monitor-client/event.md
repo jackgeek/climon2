@@ -11,7 +11,8 @@ changes must retain their ordering and cannot silently disappear through
 [plugin](../../../GLOSSARY.md#protocol-and-plugin-concepts) filtering.
 
 [Plugin](../../../GLOSSARY.md) status must flow to the [monitor](../../../GLOSSARY.md) even for passive,
-background, or [revoked](../../../GLOSSARY.md) clients. It does not grant screen
+background, or [revoked](../../../GLOSSARY.md) clients. It does not
+[grant](../../../GLOSSARY.md#attachment-and-control) screen
 access, application input, or resize permission.
 
 [Title state and changes](event-title.md) use [daemon](../../../GLOSSARY.md#sessions) core, not plugin traffic
@@ -19,7 +20,8 @@ or screen mirroring. When supported,
 supply authoritative current daemon title state and ordered updates without a
 subscription gap, regardless of control, menu visibility, or
 [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts).
-Exact fields and text encodings remain unresolved.
+The [agreed daemon wire](../daemon-client/core-v1.md) assigns exact source
+fields/encodings; native declarations remain unresolved.
 
 [Session status](event-session-status.md) is also daemon-owned core data, with
 its stored change timestamp. Reports support passive startup ordering and

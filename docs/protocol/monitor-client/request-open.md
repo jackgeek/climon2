@@ -1,7 +1,7 @@
 # Open connection
 
-**Status:** agreed communication requirements, not implemented; exact interface
-and passive connection model unresolved.
+**Status:** agreed communication requirements, not implemented; exact native
+declarations unresolved; the [daemon](../../../GLOSSARY.md#sessions) wire model is agreed.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
@@ -25,8 +25,11 @@ and [effective session status/time](event-session-status.md), without a
 subscription gap and independently of control/readiness. Plugin implementation
 is deferred. Older daemons without title support remain usable with
 command/arguments fallback; missing title support must not block control
-acquisition. Unknown status remains explicit uncertainty; exact capability
-tokens, daemon support discovery, and [schemas](../TERMS.md#schema) remain unresolved.
+acquisition. Unknown status remains explicit uncertainty.
+[Wire Open](../daemon-client/request-open.md) assigns revision 1 and capability
+selection; [Initial metadata](../daemon-client/event-initial-metadata.md)
+provides explicit availability and an atomic barrier. Native
+[schemas](../TERMS.md#schema) remain #71.
 
 Automatic reconnect uses this passive role even for the selected session;
 resuming control requires an explicit user action. Preserve the monitor's
@@ -44,7 +47,12 @@ delivery stream.
 
 The [ownership decision](https://github.com/jackgeek/climon2/issues/58) owns these
 requirements. The [daemon contract](https://github.com/jackgeek/climon2/issues/67)
-must define passive connection/attachment and negotiation semantics.
+defines passive connection/[attachment](../../../GLOSSARY.md#attachment-and-control)
+and negotiation semantics in the
+[core reference](../daemon-client/core-v1.md).
+Monitor mode is always an eligible successor, outside attachment counts until
+explicit acquisition or promotion; registration alone never takes over a
+detached session. This is not an observer-only option.
 The agreed [communication contract](../README.md#shared-in-process-communication-contract)
 and [semantic examples](../README.md#semantic-examples), owned by
 [#66](https://github.com/jackgeek/climon2/issues/66), apply here.

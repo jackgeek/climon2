@@ -1,6 +1,6 @@
 # Report viewing
 
-**Status:** agreed semantics, not implemented; exact declarations and wire
+**Status:** agreed semantics and wire mapping, not implemented; native
 [schemas](../TERMS.md#schema) unresolved. See the [overview](../README.md),
 [domain glossary](../../../GLOSSARY.md), and
 [technical terms](../TERMS.md).
@@ -17,13 +17,17 @@ is established. Retaining background control is insufficient.
 
 Switching away, exiting, disconnecting, or
 [revocation](../../../GLOSSARY.md#attachment-and-control) clears viewing.
-Opening the selector overlay preserves viewing of the selected session;
-highlighting another row does not acknowledge it. Ordinary interactive attach
-counts as viewing while it controls the session.
+Opening any menu clears this monitor's viewing without releasing control or
+restoration; this supersedes the earlier selector-overlay example.
+Highlighting/browsing never acknowledges. Ordinary interactive attach may
+report viewing once ready and unobstructed.
 
-Explicit selection/takeover acknowledges pending
+Explicit ordinary attach, focus/selection and menu close/cancel may separately
+acknowledge currently pending
 [attention](../../../GLOSSARY.md#status-and-attention), including
-selection of a session whose client already controls it. Merely reporting
+selection of a session whose client already controls it, once ready and
+unobstructed. Cancel deferred acknowledgement if local target context changes
+before submission. Opening/browsing menus never acknowledges. Merely reporting
 continued visibility must not automatically acknowledge a new request.
 The [mechanics](../../session-status.md#viewing-is-not-merely-control) separate
 viewing facts from the exact attention-triggering actions.
@@ -41,9 +45,17 @@ change. Recheck current
 execution; reject known unexecuted stale claims asynchronously rather than
 discarding or assigning them to a new connection.
 
-The [daemon contract](https://github.com/jackgeek/climon2/issues/67) and
-[interface schemas](https://github.com/jackgeek/climon2/issues/71) must define
-the exact operation/acknowledgement forms, fields, identities, error codes,
-capability tokens, and executable examples, preserving
+The [daemon contract](https://github.com/jackgeek/climon2/issues/67) assigns
+[Set viewing](../daemon-client/request-viewing.md) and distinct
+[Acknowledge](../daemon-client/request-acknowledge.md), with no observed episode
+ID. The latter requires current controller, matching period/restoration,
+readiness and latest reported viewing true; no pending episode is explicit
+no-change success.
+
+No aggregate viewing field/broadcast exists. Only this monitor's own
+unobstructed presentation suppresses its toasts; another viewer never does.
+Attention in a menu toasts immediately over it, without waiting for close or a
+daemon round trip. See [local notification rules](../daemon-client/core-v1.md#viewing-acknowledgement-and-local-notifications).
+[Interface schemas](https://github.com/jackgeek/climon2/issues/71) still owns
+native declarations and executable examples, preserving
 [#66's communication rules](https://github.com/jackgeek/climon2/issues/66).
-No exact call, message type, or wire example is assigned here.

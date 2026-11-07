@@ -42,6 +42,8 @@ owns non-key input representation; the
 [communication decision](https://github.com/jackgeek/climon2/issues/66) owns the
 shared rules above.
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) must define
-exact types, error codes, and executable examples. No binary [frame](../TERMS.md#frame) format or maximum is
-assigned here; numerical bounds belong to
+exact native types, error codes, and executable examples.
+[Wire Input](../daemon-client/request-input.md) assigns the binary
+[frame](../TERMS.md#frame) with request/period/restoration header and full-payload
+acceptance; it is not the native layout. Numerical bounds belong to
 [operational limits](https://github.com/jackgeek/climon2/issues/69).

@@ -2,9 +2,15 @@
 
 **Status: agreed specification, not implemented.** The developer confirmed this
 revision on 2026-11-06. It supersedes the earlier two-state activity heuristic,
-title-plugin requirement, creation-time monitor ordering, and attention rules in
+title-plugin requirement, creation-time monitor ordering, and
+[attention](../GLOSSARY.md#status-and-attention) rules in
 [startup/discovery](https://github.com/jackgeek/climon2/issues/59).
 No executable implementation or automated acceptance evidence is claimed here.
+The approved [wire revision 1](protocol/daemon-client/core-v1.md), recorded for
+[#67](https://github.com/jackgeek/climon2/issues/67), subsequently amends
+[viewing](../GLOSSARY.md#status-and-attention),
+explicit acknowledgement and local notification behavior below, without
+changing activity detectors, deadlines or either state machine.
 
 The [session daemon](../GLOSSARY.md#sessions) owns both
 [activity state and attention state](../GLOSSARY.md#status-and-attention).
@@ -116,13 +122,22 @@ Requests are not restricted to `cleared`: an acknowledged session can need
 attention again. A repeated request while already `needs_attention` leaves it
 unchanged, rather than starting another attention episode.
 
-`session_takeover` here denotes explicit selection/takeover acknowledgement,
-including selecting a session whose monitor client already retains
-[control](../GLOSSARY.md#attachment-and-control). That case need not request a
-new control grant. Merely being visible does **not** acknowledge a new request.
+`session_takeover` here denotes accepted explicit acknowledgement, not a control
+[grant](../GLOSSARY.md#attachment-and-control). Explicit ordinary attach, focus/selection and menu close/cancel may
+acknowledge current pending attention once ready and unobstructed, including a
+session whose monitor [client](../GLOSSARY.md#sessions) already retains
+[control](../GLOSSARY.md#attachment-and-control).
+The [distinct request](protocol/daemon-client/request-acknowledge.md) carries no
+observed episode ID and validates the current
+[controller](../GLOSSARY.md#attachment-and-control), matching period/
+[restoration](../GLOSSARY.md#restoration-and-presentation),
+[readiness](../GLOSSARY.md#protocol-and-plugin-concepts) and latest reported viewing true. No pending episode
+gives explicit no-change success. Cancel deferred acknowledgement if local
+target context changes before submission. Opening/browsing menus never
+acknowledges; merely being visible does **not** acknowledge a new request.
 If attention arrives while the user is already viewing the session, it remains
-`needs_attention` until actual user input clears it or an explicit selection/
-takeover acknowledges it.
+`needs_attention` until actual user input clears it or an accepted explicit
+action above acknowledges it.
 
 `user_input` is actual user-originated application
 [bytes](protocol/TERMS.md#byte), including paste, accepted from the current
@@ -317,7 +332,7 @@ mode, or imply task/session completion.
 |---|---|---|
 | [OSC 9](https://iterm2.com/documentation-escape-codes.html) | Text notification form | [Progress and other control operations](https://conemu.github.io/en/AnsiEscapeCodes.html#ConEmu_specific_OSC), including OSC 9;4. |
 | [OSC 99](https://sw.kovidgoyal.net/kitty/desktop-notifications/) | A complete logical notification | Incomplete chunks, capability/liveness queries, close operations, and auxiliary/control data on their own. |
-| [OSC 777](https://sw.kovidgoyal.net/kitty/desktop-notifications/) | The `notify` subcommand | Other extension subcommands. |
+| [OSC 777](https://codeberg.org/dnkl/foot/src/branch/master/doc/foot-ctlseqs.7.scd) | The `notify` subcommand, with [climon2 normalization](protocol/daemon-client/core-v1.md#source-normalization) | Other extension subcommands. |
 
 Accumulate OSC 99 notification chunks according to its protocol, requesting
 attention only when the logical notification is complete, not once per chunk.
@@ -333,9 +348,11 @@ noncontrolling, and revoked subscribers. Progress operations such as OSC 9;4
 can support future progress bars/spinners without requesting attention.
 This metadata is not live terminal-content mirroring and never grants control.
 Do not forward raw OSC sequences into outer terminals for interpretation.
-Exact structured schemas, capabilities, ordering/correlation, queue limits,
-retention of current progress, and compatibility remain interface work.
-Implementing progress UI is not part of this revision.
+The [agreed wire reference](protocol/daemon-client/core-v1.md) specifies
+structured schemas, capabilities, ordering/correlation, source normalization
+and retention of current progress. Native declarations remain #71 and
+numeric queue/assembly limits #69.
+Implementing progress [UI](protocol/TERMS.md#ui) is not part of this revision.
 
 ## Viewing is not merely control
 
@@ -347,14 +364,18 @@ A background client may retain control without viewing.
 
 Switching away, exiting, disconnecting, or
 [revocation](../GLOSSARY.md#attachment-and-control) clears that attachment's
-viewing status. Opening the overlaid selector preserves viewing of the selected
-session; merely highlighting a different row does not acknowledge it. An
-ordinary interactive attach counts as viewing while it controls the session.
+viewing status. **Opening any menu clears this monitor's viewing** without
+releasing control or restoration; this supersedes the earlier selector-overlay
+rule. Highlighting/browsing never acknowledges. Ordinary interactive attach
+can report viewing only once ready and unobstructed.
 
-Viewing suppresses a monitor's [toast](protocol/TERMS.md#toast) notification;
-it does not automatically change the attention [FSM](protocol/TERMS.md#fsm).
-Explicit selection/takeover and accepted real input are the acknowledgement/
-clearing events.
+Only this monitor's own unobstructed viewing suppresses its
+[toast](protocol/TERMS.md#toast) notification; another client's or monitor's
+viewing never suppresses it. No aggregate viewing broadcast/schema is added.
+Per-attachment reports to the daemon still validate acknowledgement.
+Viewing does not automatically change the attention [FSM](protocol/TERMS.md#fsm).
+Explicit accepted acknowledgement and accepted real input are the
+acknowledgement/clearing events.
 
 ## Reporting, ordering, and initial selection
 
@@ -366,9 +387,15 @@ state and subsequent ordered changes without a subscription gap.
 Only effective-status changes update its timestamp. Hidden activity changes
 under `needs_attention`, transitions between the two working states, and
 detection-mode changes alone do not reorder the row. A new monitor receives the
-stored timestamp, not its own connection time. Exact timestamp encoding,
-initial timestamp representation, and reliable attention-episode identity
-remain schema decisions; a wall-clock timestamp is not an implicit unique ID.
+stored timestamp, not its own connection time.
+The [wire Status](protocol/daemon-client/core-v1.md#shared-types) has required
+state, UTC `YYYY-MM-DDTHH:MM:SS.mmmZ` changed time and nullable episode counter.
+Episodes increase per session, are nonzero, coalesce while pending, survive
+acknowledgement and clear to null; timestamps are not identities.
+Atomic [Initial metadata](protocol/daemon-client/event-initial-metadata.md)
+follows Open response, then changes are gap-free. Final transition is carried by
+[Command final](protocol/daemon-client/event-command-final.md), not duplicated
+as Status changed. Native representations remain #71.
 
 Order session rows by:
 
@@ -427,9 +454,14 @@ This does not permit live read-only mirroring after revocation, recover output
 that was never received, or record every alternate-screen update. Per-session/
 aggregate retention limits and exhaustion behavior belong to
 [operational limits](https://github.com/jackgeek/climon2/issues/69).
-Reconnect does not change the existing
-[leave policy](../GLOSSARY.md#attachment-and-control): unexpected loss of the
-final attachment can end the session. No new survival guarantee is implied.
+The approved [succession rules](protocol/daemon-client/core-v1.md#membership-and-succession)
+amend final-attachment assumptions: controller departure by detach or loss
+first hands back to the most recently controlling attachment, otherwise promotes
+the newest accepted passive registration, before final-participant
+[leave policy](../GLOSSARY.md#attachment-and-control). Registration alone does
+not take over a detached session. Committed termination overrides succession.
+No new native-crash survival guarantee is implied; future headless zero-client
+lifetime belongs to #61, not today's interactive leave policy.
 
 ## Titles and notifications
 
@@ -451,11 +483,25 @@ episode's notification. `acknowledged -> needs_attention` is a new episode; a
 new monitor may notify once about an existing pending episode. Cached
 disconnected state alone cannot manufacture a new episode.
 
+Attention arriving while a menu is open toasts immediately **over the menu**,
+without waiting for close or a daemon round trip. Still-pending attention
+previously suppressed and never toasted becomes eligible when the menu opens.
+Acknowledged/cleared attention is not pending. Deduplicate per episode across
+this monitor's whole lifetime, including reconnects.
+
+A final result first learned while viewing stays suppressed forever in this
+monitor; later menu opening never resurrects its toast. First learned unviewed
+notifies once. Its deduplication identity is session GUID plus the fixed
+category `final outcome`, not exit-versus-signal kind, with no second counter.
+Inconsistent repeats cannot authorize another toast. Terminal status/result
+must agree: completed is normal exit zero, failed nonzero exit or signal.
+
 ## Remaining work and required evidence
 
-The owning tickets must complete exact schemas, compatibility/rejection,
-terminal-signal validation and budgets, structured notification/progress relay,
-viewing validation, notification identity and rate limits, reconnect intervals/
+The daemon wire schemas, compatibility/rejection, source normalization, viewing
+validation and notification identities are now agreed in #67, not implemented.
+The remaining owning tickets must complete native declarations, terminal
+application, budgets/rate limits, reconnect intervals/
 backoff, retention budgets, terminal integration, and orderly shutdown. These
 mechanics do not settle every question in those tickets.
 

@@ -48,3 +48,8 @@ exact types, encodings, error codes, and executable examples. Chunking remains
 with terminal integration and operational limits.
 [Operational limits](https://github.com/jackgeek/climon2/issues/69) owns numerical
 budgets; no binary [frame](../TERMS.md#frame) maximum is assigned.
+
+[Wire Display](../daemon-client/event-display.md) is now specified separately:
+a 16-byte period/restoration header followed by nonempty exact binary bytes.
+This does not choose the native monitor rendering representation or its applied
+barrier. No old-authority Display crosses a newer begin or revocation.
