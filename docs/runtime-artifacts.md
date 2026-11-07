@@ -12,12 +12,14 @@ flowchart TB
         installer["install<br/>built as climon2-install"]
         subgraph version["Installed version v; versions coexist"]
             cli["climon2-cli<br/>CLI executable"]
-            client["climon2-client<br/>client executable / planned helper"]
+            client["climon2-client<br/>client executable"]
             daemon["climon2-daemon<br/>session daemon executable"]
-            library[["Client dynamic library<br/>planned Rust cdylib; filename undecided"]]
+            library[["libclimon2_client.dylib<br/>planned Rust cdylib on macOS"]]
         end
         command(["Session command<br/>external executable"])
-        monitor(["Monitor runtime: monitor / mon<br/>planned; executable placement undecided"])
+        monitor(["Monitor runtime: monitor / mon<br/>planned Ratatui TUI; executable placement undecided"])
+        source_monitor(["Source monitor runtime<br/>future forwarding provider"])
+        browser(["Browser with xterm.js<br/>future external consumer"])
 
         launcher -->|"execs current version"| cli
         cli -->|"starts for exec"| daemon
@@ -26,9 +28,11 @@ flowchart TB
         client -->|"daemon-client communication; current"| daemon
         daemon -->|"runs on session PTY"| command
         cli -.->|"monitor / mon; planned"| monitor
-        monitor -.->|"starts and communicates with one session-version helper per visited session"| client
-        client -.->|"loads same-version library through C-compatible interface"| library
+        monitor -.->|"loads session-version library; one client thread per live session"| library
+        client -.->|"loads same-release library; versioned C interface planned"| library
         library -.->|"daemon-client communication; planned"| daemon
+        monitor -.->|"consumes forwarded sessions over TCP/IP; future"| source_monitor
+        browser -.->|"consumes forwarded terminal traffic over WebSocket; future"| monitor
     end
 
     subgraph development["Development and test-only executables"]
@@ -51,11 +55,13 @@ flowchart TB
 
     style library stroke-dasharray: 5 5
     style monitor stroke-dasharray: 5 5
+    style source_monitor stroke-dasharray: 5 5
+    style browser stroke-dasharray: 5 5
 ```
 
-`v` represents a session's installed version, not necessarily the current
+`v` represents a [session](../GLOSSARY.md#sessions)'s installed version, not necessarily the current
 version selected by the launcher. The CLI starts a new session using its own
-version; attachment and termination use the existing session's version.
+version; [attachment](../GLOSSARY.md#attachment-and-control) and termination use the existing session's version.
 The installer is a release-payload executable, not a `climon2 install` command.
 Installation relationships are outside this consumption diagram.
 
@@ -66,12 +72,71 @@ For workspace crate consumption, see the [crate diagram](crate-relationships.md)
 are not separately loaded dynamic libraries. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
 
-**Planned:** the client executable hosts its same-version dynamic library in
-one isolated helper process per visited session. The monitor does not load
-session client libraries itself. Its node represents a runtime role, not a
-decision to ship an executable named `climon2-monitor`. Library filenames,
-loading/lifetime details, monitor-helper communication, and the frozen
-daemon-client contract remain specification work.
+**Planned:** the [monitor](../GLOSSARY.md#sessions) loads version-matched
+[client libraries](../GLOSSARY.md#sessions) directly into
+its own process, sharing a loaded library for sessions on the same release.
+Each live session has its own client thread. Clients start eagerly, newest
+first, with bounded concurrent progress; continuous discovery adds clients for
+new sessions. Background clients relay negotiated plugin data without taking
+control. Native client crashes can terminate the entire monitor. Ratatui powers
+the planned monitor's rendering; its terminal integration is agreed, unimplemented.
+The [agreed terminal contract](protocol/terminal-integration.md), not implemented,
+selects exact ordered terminal bytes/control/restoration through existing
+in-process record queues and monitor-owned `climon2-vt` models, with planned
+read-only Rust views for Ratatui. Session bytes never go directly to the host;
+daemon query authority stays unique. Monitor-mode daemon presentation uses
+effective session geometry, not host/requested dimensions, including background
+promotion. Optional core Focus is not a plugin/artifact addition. No executable
+placement or new dynamic library is chosen by this amendment.
+
+The [status/activity revision](session-status.md) puts title detection and both
+state machines and terminal-signal interpretation in
+[daemon](../GLOSSARY.md#sessions) core, not plugins.
+The client library carries core title/status reports, structured notification/
+progress metadata, and explicit [viewing](../GLOSSARY.md#status-and-attention) information. Metadata is available
+without control, not raw [OSC](protocol/TERMS.md#osc) passthrough to host terminals. Root program status
+and shell lifecycle choose explicit detection or heuristic fallback.
+Plugin implementation, configuration, and interface examples are deferred; the earlier title-plugin
+release prerequisite is superseded. No new plugin executable or dynamic library
+is specified. These are planned mechanics, not shipped behavior.
+
+The monitor retains a `climon2-vt` model per session for disconnected terminal/
+scrollback inspection and reconnects passively without automatic takeover.
+Known completion stops retries. These relationships do not introduce a session
+survival guarantee or a persisted archive of completed sessions.
+
+The client executable will also load its same-release library for ordinary
+operations. The monitor node represents a runtime role, not a decision to ship
+an executable named `climon2-monitor`.
+
+The agreed [embedding design](protocol/library-embedding.md) loads
+`<executable home>/<session version>/libclimon2_client.dylib` on macOS with no
+release fallback. It uses a versioned C interface, per-instance client threads,
+release-private dependency resolution, and explicit memory ownership.
+Every successfully opened library handle stays loaded until monitor exit,
+including handles rejected by later validation. Such releases remain in use
+until process exit; completed instance cleanup and joins do not unload them.
+These are planned relationships, not shipped artifacts. Complete interface
+declarations remain #71. Monitor-client communication and the
+[daemon wire revision 1](protocol/daemon-client/core-v1.md) are agreed
+specifications, not implemented.
+
+The planned wire core is independent of the current private Unix socket carrier.
+The main/downstream monitor consumes source-monitor sessions over
+[TCP/IP](protocol/TERMS.md#tcpip) and presents them as local sessions.
+A browser consumes that monitor's forwarded terminal traffic over
+[WebSocket](protocol/TERMS.md#websocket) into xterm.js. Dashed arrows above point
+from consumer to provider, not in the direction [bytes](protocol/TERMS.md#byte) happen to flow.
+No native client library is assumed inside a browser. Routing, multiplexing,
+discovery and remote authentication/security remain deliberately unresolved;
+same-[UID](protocol/TERMS.md#uid)/private-directory local checks do not define
+future transport security. No forwarding implementation is claimed.
+
+Future headless exec returns immediately and may launch several sessions without
+initial clients. Its zero-client lifetime belongs to
+[#61](https://github.com/jackgeek/climon2/issues/61); command spelling and
+implementation are unresolved. It neither makes every session persistent nor
+universalizes today's interactive leave policy.
 
 The planned relationships are indexed by
 [Chart the interactive monitor specification](https://github.com/jackgeek/climon2/issues/57);

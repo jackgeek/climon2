@@ -1,5 +1,16 @@
 # Crate layout and dependency direction
 
+**Monitor planning:** the [monitor ownership decision](https://github.com/jackgeek/climon2/issues/58)
+requires directly loaded client libraries and client threads in the monitor.
+The [discovery decision](https://github.com/jackgeek/climon2/issues/59) retains a
+planned discovery crate shared by CLI and monitor. Monitor crate placement and
+the library artifact layout remain open; the table below describes the current
+workspace, not a prohibition on those planned relationships.
+The [#63 terminal contract](../protocol/terminal-integration.md) also plans
+monitor reuse of `climon2-vt` with read-only Rust views. This is an explicit
+future exception to the current daemon-only dependency rule below, not a
+changed current Cargo edge, new crate placement, or cross-release cell schema.
+
 The workspace has one package per shipped binary. The CLI, daemon and client never link each other; they reach each other only by path at runtime (the CLI starts the daemon and execs into the version-matched client). Shared code lives in two libraries: `climon2-core`, which is platform-neutral and has no `cfg(target_os)`, and `climon2-platform`, which holds the shared seam modules (ADR 0003). The crate boundary keeps neutral code out of the seams, so `core` builds and runs its tests on Linux and Windows without the rest of the workspace.
 
 ## Packages (`crates/`, plus `xtask/` at the root)
@@ -20,7 +31,7 @@ Shipped crates may use test-only crates only as dev-dependencies. A workspace te
 
 ## Considered options
 
-- **One `climon2` package with three bins:** rejected. Each binary keeps its own dependencies, and the client library mustn't grow code that only the daemon needs. A future monitor reaches clients by path, never by linking them: it runs each session's version-matched `climon2-client` on a PTY of its own, through the frozen client command line (ADR 0001).
+- **One `climon2` package with three bins:** rejected. Each binary keeps its own dependencies, and the client library mustn't grow code that only the daemon needs. A future monitor loads version-matched client libraries by path, using a separately specified embedding interface rather than a Cargo dependency on another release.
 - **One shared library containing both the core and platform modules:** rejected. `compile_error!` would stop the neutral code building on Linux and Windows.
 - **Building the CLI as `climon2` and renaming the launcher:** rejected. The CLI is `climon2-cli` everywhere, so the launcher alone is `climon2`, and Cargo binary names don't collide.
 

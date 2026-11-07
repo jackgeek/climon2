@@ -28,10 +28,6 @@ _Avoid_: Client library, monitor
 The reusable form of a client hosted by another program.
 _Avoid_: Client executable, daemon library
 
-**Client helper**:
-A client executable running on behalf of a monitor for one session.
-_Avoid_: Session daemon, monitor
-
 **Monitor**:
 A program that lets the user interact with one session at a time and switch between sessions through clients it owns.
 _Avoid_: Dashboard, multiplexer, switcher
@@ -65,11 +61,11 @@ A live session with no attached clients that continues after deliberate detach.
 _Avoid_: Disconnected session, completed session
 
 **Capabilities**:
-The operations a session daemon advertises in its hello reply, such as `attach`, `kill` and `state-v1`; support is never inferred from versions.
+The operations or extensions a climon2 participant explicitly advertises as supported; support is never inferred from release versions.
 _Avoid_: Features, protocol version
 
 **Startup envelope**:
-The internal schema-1 JSON in `CLIMON2_CLIENT_STARTUP` that tells a version-matched client its operation (attach or kill) and validated settings.
+The internal schema-1 JSON in `CLIMON2_CLIENT_STARTUP` that tells a version-matched client its operation and validated settings.
 _Avoid_: Client config, startup arguments
 
 **Stale metadata**:
@@ -96,8 +92,16 @@ _Avoid_: Global log, main log
 
 **Attachment**:
 One client's accepted connection to a session for interactive use, whether or not that client currently controls it.
-Probes and kill requests are not attachments.
+Probes, passive monitor connections and kill requests are not attachments.
 _Avoid_: Session, control
+
+**Passive monitor connection**:
+A monitor's connection that receives session metadata and is eligible to inherit control, but has not yet become an attachment.
+_Avoid_: Observer-only attachment, read-only viewer
+
+**Successor**:
+A passive monitor connection eligible to become an attachment when control has no remaining attached recipient.
+_Avoid_: Backup controller, observer
 
 **Controller**:
 The attached client whose input and terminal size drive the session; at most one client is the controller at a time.
@@ -106,6 +110,10 @@ _Avoid_: Controlling client, primary client, owner
 **Grant**:
 The session daemon's act of making an attachment the controller, which starts a new control period and sends a restoration.
 _Avoid_: Handover, switch
+
+**Revocation**:
+The end of an attachment's current control, distinct from ending the attachment itself.
+_Avoid_: Detach, session end, read-only mode
 
 **Control period**:
 One uninterrupted period in which a particular client controls a session, numbered in increasing order; every grant begins a new period, and input from an earlier period is discarded.
@@ -132,7 +140,7 @@ The five seconds a terminating session waits, after hanging up its terminal, bef
 _Avoid_: Kill timeout, reconnection grace
 
 **Leave policy**:
-What a session daemon does when an attachment leaves: hand back control while another client remains, keep running after the final client detaches, and terminate after the final client leaves any other way.
+What a session daemon does after a participant departs and any control succession is resolved.
 _Avoid_: Disconnect handler, kill policy
 
 **Client escape prefix**:
@@ -146,6 +154,32 @@ _Avoid_: Space-to-control, hotkey
 **Placeholder**:
 The screen a non-controlling client shows instead of session content, saying the session is being viewed elsewhere.
 _Avoid_: Viewer mode, read-only view
+
+## Status and attention
+
+**Activity state**:
+A session's record of being idle, working on its own, or responding to recent user input.
+_Avoid_: Connection state, viewing state
+
+**Attention state**:
+A session's record of pending or acknowledged user attention and its final command outcome.
+_Avoid_: Monitor state, activity state
+
+**Attention episode**:
+One request for user attention, including further requests coalesced while it remains pending.
+_Avoid_: Notification payload, timestamp, task
+
+**Session status**:
+The effective state reported by a session, combining its activity and attention states.
+_Avoid_: Lifecycle, connection status
+
+**Viewing**:
+A connected controller's unobstructed, ready presentation of its selected session to the user, distinct from retaining control in the background or under a menu.
+_Avoid_: Attachment, control ownership
+
+**Connection status**:
+A monitor's record of whether its client is connected to a session daemon, distinct from the session's last reported status.
+_Avoid_: Session status, daemon outcome
 
 ## Restoration and presentation
 
@@ -189,6 +223,29 @@ _Avoid_: Emulated mode, redraw mode
 **Release**:
 The bytes that return a terminal to the normal-shell baseline when an attachment's presentation ends.
 _Avoid_: Reset, cleanup
+
+## Protocol and plugin concepts
+
+**Session ID**:
+The globally unique identifier (GUID) naming one climon2 session.
+_Avoid_: Process ID, session number
+
+**Restoration ID**:
+The identifier distinguishing one restoration from others, including restorations in the same control period.
+_Avoid_: Control period, snapshot point
+
+**Readiness**:
+The state in which a controlling client has completed restoration and may accept application input.
+For a monitor, the current restoration must also have been applied to its presentation.
+_Avoid_: Connected, granted, attached
+
+**Protocol extension**:
+An explicitly negotiated family of additional climon2 messages, identified by a namespaced name and revision.
+_Avoid_: Unknown core message, capability
+
+**Plugin**:
+A future extension hosted by a session daemon or monitor that observes or transforms traffic or provides additional behavior.
+_Avoid_: Client, protocol extension
 
 ## Installation
 

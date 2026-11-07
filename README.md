@@ -18,6 +18,12 @@ becomes the exit status of every client attached when it finishes. Nested
 sessions are supported. Session data defaults to `~/.climon2`; set
 `CLIMON2_HOME` to override it.
 
+The [protocol reference](docs/protocol/README.md) explains the current daemon
+handshake and the planned in-process monitor-client interface for future plugin authors.
+It distinguishes implemented behavior from agreed plans and unresolved details.
+The planned [session status, attention, and activity mechanics](docs/session-status.md)
+include both daemon state machines and the monitor's ordering/recovery behavior.
+
 ## Sessions
 
 `exec` starts the command and attaches to it. There is no start-detached option.
@@ -101,7 +107,8 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
 ```jsonc
 {
   "client": {
-    "escape_prefix": "Ctrl+]",     // null disables escape interception
+    // Ctrl+[ is Escape: delays bare Escape; planned monitor Alt+s/Alt+x/Alt+j may trigger s/x/j.
+    "escape_prefix": "Ctrl+]",     // null disables escape interception in ordinary attach
     "take_control_key": "Ctrl+T"   // null disables keyboard takeover
   },
   "scrollback": {
@@ -129,6 +136,45 @@ only `client`, and `list` and `kill` do not read it. Any error, including
 malformed JSONC, duplicate keys, wrong types, invalid keys, conflicting bindings
 and out-of-range values, exits 125 before anything starts. The file is read once
 per command; there is no environment override, auto-creation or live reload.
+
+### Planned monitor settings (not implemented)
+
+The [agreed terminal integration](docs/protocol/terminal-integration.md) provides
+interactive terminal input/rendering, internal normal-screen history, one top
+status row, and explicit control/restoration gates. There is no monitor command
+or automated monitor implementation evidence yet.
+The future monitor reads one startup snapshot, reusing `client` bindings; it
+rejects a null escape prefix before changing terminal state. Null takeover is
+allowed because selector confirmation can acquire control. Lowercase prefix+s
+opens the selector, prefix+x exits, and **prefix+j** jumps to the most recent
+currently connected session needing attention, not necessarily a toast's session.
+Uppercase J is unknown literal input; bracketed pasted shortcuts remain data.
+
+Full future startup example (the current parser does **not** implement the
+`monitor` field):
+
+```jsonc
+{
+  "client": {
+    // Ctrl+[ is Escape: delays bare Escape; Alt+s/Alt+x/Alt+j may trigger monitor s/x/j.
+    "escape_prefix": "Ctrl+]",
+    "take_control_key": "Ctrl+T"
+  },
+  "scrollback": {
+    "max_rows": 10000
+  },
+  "monitor": {
+    "show_key_hints": true // planned: all implicit toast/chrome/selector/empty hints
+  },
+}
+```
+
+Planned `monitor.show_key_hints` is boolean, default true when missing. It hides
+implicit monitor hints, never bindings or application text. Needs-attention toast
+hints use the actual configured prefix plus lowercase j and describe a dynamic
+most-recent jump. Wrong types and duplicate known fields are explicit startup
+errors before terminal changes; unknown/unrelated settings remain ignored.
+All monitor settings above are future behavior, with no live reload.
 
 ## Listing
 

@@ -1,6 +1,6 @@
 # Daemon-owned virtual terminal
 
-Detach, reattach and takeover need the session's screen, history, modes and title without asking any host terminal. The session daemon therefore owns one virtual terminal per session and is the sole authority for terminal state and terminal-query replies. Clients keep no emulator and no transcript. The virtual terminal lives in the shipped library `climon2-vt` (ADR 0004): pure, platform-neutral, infallible, and exposing only climon2-owned types.
+[Detach](../../GLOSSARY.md#attachment-and-control), reattach and takeover need the [session](../../GLOSSARY.md#sessions)'s screen, history, modes and title without asking any [host](../../GLOSSARY.md#sessions) terminal. The [session daemon](../../GLOSSARY.md#sessions) therefore owns one [virtual terminal](../../GLOSSARY.md#sessions) per session and is the sole authority for terminal state and terminal-query replies. Current [clients](../../GLOSSARY.md#sessions) keep no emulator and no transcript. The virtual terminal lives in the shipped library `climon2-vt` (ADR 0004): pure, platform-neutral, infallible, and exposing only climon2-owned types.
 
 ## Engine: unchanged Alacritty 0.26.0
 
@@ -19,6 +19,45 @@ A front filter that mirrors vte 0.15.0's state machine splits PTY output into co
 - everything else is forwarded unchanged.
 
 The engine is fed in steps of at most 64 bytes of text and C0 controls; every escape sequence is its own step(s).
+
+### Agreed terminal-status extension, not implemented
+
+The [session-status revision](../session-status.md) adds daemon-core observation
+of OSC 7501, OSC 133, and OSC 9/99/777 before host-output filtering. The daemon
+will answer OSC 7501 capability queries locally. Root program reports and
+shell lifecycle select explicit or heuristic activity detection; recognized
+notifications request attention, while progress alone does not.
+
+Raw sequences remain stripped from host output. Clients/monitors instead
+receive structured notification/progress metadata, including while background
+or noncontrolling. This extends local interpretation and daemon-owned replies,
+not the permission to send host-dependent requests to an outer terminal.
+The [agreed daemon wire](../protocol/daemon-client/core-v1.md) now specifies
+structured schemas and source normalization; native declarations remain #71.
+The current filter and query
+implementation above are not evidence that these planned signals are supported.
+
+The [monitor](../../GLOSSARY.md#sessions)'s planned per-session `climon2-vt` copy for retained disconnected
+inspection is an explicit exception to the current no-client-emulator rule,
+not a competing terminal-query authority. Forwarding to other monitors and
+xterm.js browsers is a future consumer boundary, not permission for revoked
+core screen mirroring or a native library in a browser. The [agreed #63 terminal contract](../protocol/terminal-integration.md) now selects
+ordered exact daemon terminal bytes, reparsed into monitor-owned `climon2-vt`
+models and painted by Ratatui. This deliberately reopens the rejected
+client-side-emulator option for the monitor role, not ordinary clients or query
+authority. Planned read-only Rust cell/mode/cursor/history views keep engine
+types private; current `climon2-vt` has no public cells and remains daemon-only.
+No native cross-release cell schema or new workspace crate is selected.
+
+Monitor-mode display/restoration will use effective session geometry canonically,
+not host/requested dimensions, including passive promotion and background grants.
+Current host-coordinate restoration cannot safely be reparsed at a smaller
+effective size. This is an agreed unimplemented presentation-policy amendment;
+ordinary direct/derived attach, native history and release below are unchanged.
+The monitor uses its own alternate screen and internal normal history, replaces
+whole models/history transactionally, and never writes session bytes directly
+to the host or emits duplicate query replies. Selected input also waits for
+coherent paint, while applied background models can report Ready without paint.
 
 ## Restoration: three phases, produced incrementally
 

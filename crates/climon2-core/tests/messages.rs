@@ -495,3 +495,44 @@ fn a_connection_chooses_attach_or_kill_once_and_attachment_requests_need_attach(
         .unwrap();
     assert_eq!(stopped, ConnectionState::Closed);
 }
+
+fn documented_json_examples(document: &str) -> Vec<&str> {
+    document
+        .split("```json\n")
+        .skip(1)
+        .map(|block| block.split_once("\n```").expect("closed JSON example").0)
+        .collect()
+}
+
+#[test]
+fn protocol_reference_hello_examples_use_the_public_wire_contract() {
+    let requests = documented_json_examples(include_str!(
+        "../../../docs/protocol/daemon-client/hello-request.md"
+    ));
+    assert!(!requests.is_empty(), "document at least one hello request");
+    for body in requests {
+        let frame = Frame::new(0x01, body.as_bytes().to_vec()).unwrap();
+        let request = ClientMessage::from_frame(frame).unwrap();
+        assert!(matches!(request, ClientMessage::Hello { .. }));
+        let mut state = ConnectionState::default();
+        state.receive(&request).unwrap();
+        assert_eq!(state, ConnectionState::Probing);
+    }
+
+    let replies = documented_json_examples(include_str!(
+        "../../../docs/protocol/daemon-client/hello-reply.md"
+    ));
+    assert!(!replies.is_empty(), "document at least one hello reply");
+    for body in replies {
+        let frame = Frame::new(0x01, body.as_bytes().to_vec()).unwrap();
+        let ServerMessage::Hello(reply) = ServerMessage::from_frame(frame).unwrap() else {
+            panic!("expected a hello reply");
+        };
+        reply
+            .validate_client(&reply.session_id, &reply.climon2_version)
+            .unwrap();
+        let extensions = climon2_core::hello::HelloExtensions::from_body(body.as_bytes());
+        assert!(!extensions.capabilities.is_malformed());
+        assert!(!extensions.state.is_malformed());
+    }
+}
