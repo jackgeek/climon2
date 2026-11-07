@@ -49,6 +49,11 @@ A byte count is not a character count.
 The C application binary interface: the calling convention and binary data
 layout used to call functions across a native-library seam.
 
+## C0
+
+The control-byte range `00` through `1f`. Several key chords can have the same
+encoding in a legacy terminal; their spelling does not make them distinguishable.
+
 ## Canonical decimal string
 
 An [unsigned integer](#unsigned-integer) written as decimal digits in one unambiguous form:
@@ -74,6 +79,11 @@ and attention-episode identities.
 ## Discriminator
 
 A field or code identifying which message variant is being sent.
+
+## Display cell
+
+One column position in a terminal grid. Wide characters span cells; combining
+characters can share a cell. Byte or character offsets are not cell offsets.
 
 ## Counter
 
@@ -227,6 +237,11 @@ See [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000.html#section-2).
 
 A message asking another participant to perform an operation.
 
+## RDP
+
+Remote Desktop Protocol. “RDP-like” describes interactive remote presentation
+and input, not use of that protocol or a compatibility claim.
+
 ## Request ID
 
 An identifier matching a [request](#request) with its response in a conversation.
@@ -261,6 +276,12 @@ when notifications occur; exact visual presentation remains unresolved.
 Transmission Control Protocol / Internet Protocol: networking protocols that
 can carry an ordered byte stream between hosts. Selecting this carrier alone
 does not specify routing, authentication, or application multiplexing.
+
+## TUI
+
+A terminal user interface, drawn as terminal text and cells rather than native
+graphical widgets. A [TUI fixture](../../GLOSSARY.md#testing) is a test program,
+not the monitor itself.
 
 ## UID
 

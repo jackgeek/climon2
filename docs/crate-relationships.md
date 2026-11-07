@@ -81,6 +81,13 @@ activity/[attention](../GLOSSARY.md#status-and-attention) machines, terminal-sig
 notification/progress relay do not require a plugin crate; plugin
 implementation is deferred. The agreed detection modes and fallback policy
 do not assign another workspace crate or change the current dependency edges.
+The [agreed terminal contract](protocol/terminal-integration.md) specifies planned
+read-only Rust cell/mode/cursor/history views for this monitor reuse. Current
+`climon2-vt` remains daemon-only with no public cells; the future monitor
+exception does not change current edges or select monitor crate placement.
+Exact-release libraries carry terminal bytes, not a native cross-release cell
+schema; the monitor parses at effective daemon geometry and paints locally.
+Canonical monitor presentation and optional core Focus introduce no new crate.
 
 The agreed [daemon wire revision 1](protocol/daemon-client/core-v1.md) also
 anticipates source-monitor session consumption and browser terminal consumption

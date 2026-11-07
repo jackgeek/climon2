@@ -25,7 +25,13 @@ Live output follows using matching authority.
 
 Receipt is not applied [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts).
 The client must apply the complete current restoration before reporting
-[Ready](request-ready.md). A newer begin or
+[Ready](request-ready.md).
+For monitor models this means transactionally replacing the whole model/history
+at effective session geometry, not union/dedup. Background models apply/report
+Ready without selection or paint; selected application input additionally waits
+for a coherent painted current target. See the
+[terminal barriers](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness).
+A newer begin or
 [revocation](../../../GLOSSARY.md#attachment-and-control) invalidates old barriers;
 superseded restoration receives no fabricated completion. Completion does not
 select, acknowledge [attention](../../../GLOSSARY.md#status-and-attention)

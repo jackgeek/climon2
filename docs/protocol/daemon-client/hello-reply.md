@@ -87,7 +87,7 @@ These example numbers are **illustrative advertisements, not agreed defaults**;
 [#69](https://github.com/jackgeek/climon2/issues/69) chooses actual values.
 
 ```json
-{"session_id":"550e8400-e29b-41d4-a716-446655440000","climon2_version":"1.2.3","protocol":1,"capabilities":["daemon-wire-v1","monitor-v1","title-v1","status-v1","notification-v1","progress-v1"],"daemon_wire_v1":{"max_request_frame_bytes":1048576,"max_server_frame_bytes":1048576}}
+{"session_id":"550e8400-e29b-41d4-a716-446655440000","climon2_version":"1.2.3","protocol":1,"capabilities":["daemon-wire-v1","monitor-v1","title-v1","status-v1","notification-v1","progress-v1","focus-v1"],"daemon_wire_v1":{"max_request_frame_bytes":1048576,"max_server_frame_bytes":1048576}}
 ```
 
 Missing/malformed advertisement makes revision 1 unavailable, not the session
@@ -99,3 +99,8 @@ dependency. Existing `attach`/`kill` tokens do not promise these new schemas.
 [Open](request-open.md) or standalone [Kill](request-kill.md) selects revision
 and validates required support before effects, without another exchange.
 Exact-release matching remains mandatory and separate.
+The [#63 amendment](../terminal-integration.md) adds optional core `focus-v1`
+in the same capability array, selecting [Focus](request-focus.md) through Open.
+Missing support is a visible application-focus limitation without blocking an
+otherwise usable session; it is not a plugin extension or release-number claim.
+No new hello field, required field change, or frozen limit change is introduced.

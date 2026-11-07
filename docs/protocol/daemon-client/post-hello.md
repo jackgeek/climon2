@@ -31,10 +31,12 @@ This wire format is not the in-process
 [contract](../README.md#shared-in-process-communication-contract).
 Map wire records and IDs into that contract; complete native declarations remain
 [#71](https://github.com/jackgeek/climon2/issues/71).
-[#63](https://github.com/jackgeek/climon2/issues/63) owns rendering/application/
-resize bounds, [#69](https://github.com/jackgeek/climon2/issues/69) numerical
+The [agreed #63 terminal contract](../terminal-integration.md) owns rendering/
+application/resize semantics, canonical monitor geometry and optional non-user
+[Focus `0x39`](request-focus.md), negotiated as `focus-v1`.
+[#69](https://github.com/jackgeek/climon2/issues/69) owns numerical
 limits/deadlines/policy, and [#61](https://github.com/jackgeek/climon2/issues/61)
-lifecycle/recovery/headless behavior.
+owns lifecycle/recovery/headless behavior.
 
 Portable core traffic does not depend on Unix sockets. Future monitor
 forwarding and browser consumption are planned, not implemented; routing,

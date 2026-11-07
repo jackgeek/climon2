@@ -17,7 +17,13 @@ is insufficient. A newer begin or
 [revocation](../../../GLOSSARY.md#attachment-and-control) invalidates
 [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts).
 Local queue acceptance is not daemon acceptance; no application input is enabled
-by a stale barrier. Readiness alone does not set
+by a stale barrier.
+Application means transactionally replacing the current model and history.
+It permits wire Ready/resize progress without selection or paint, including
+background grants; selected application input additionally requires a coherent
+current frame painted in usable space. See the
+[terminal barriers](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness).
+Readiness alone does not set
 [viewing](../../../GLOSSARY.md#status-and-attention) or acknowledge
 [attention](../../../GLOSSARY.md#status-and-attention).
 

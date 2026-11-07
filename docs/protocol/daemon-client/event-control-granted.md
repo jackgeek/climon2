@@ -34,6 +34,11 @@ passive successor. Promotion creates ordinary attachment membership, retained
 through switching/[revocation](../../../GLOSSARY.md#attachment-and-control).
 Inheritance does not select, resize, send input
 or acknowledge. See [succession](core-v1.md#membership-and-succession).
+For monitor-mode connections the supplied geometry also defines canonical
+display/restoration serialization, even for passive successor/background grants.
+Apply a complete replacement model/history before Ready, without selection or
+paint; selected application input additionally requires coherent paint. See the
+[terminal contract](../terminal-integration.md).
 
 Old authority is invalid immediately; the old reader need not receive
 [Control revoked](event-control-revoked.md) before this grant.

@@ -6,6 +6,10 @@ The [discovery decision](https://github.com/jackgeek/climon2/issues/59) retains 
 planned discovery crate shared by CLI and monitor. Monitor crate placement and
 the library artifact layout remain open; the table below describes the current
 workspace, not a prohibition on those planned relationships.
+The [#63 terminal contract](../protocol/terminal-integration.md) also plans
+monitor reuse of `climon2-vt` with read-only Rust views. This is an explicit
+future exception to the current daemon-only dependency rule below, not a
+changed current Cargo edge, new crate placement, or cross-release cell schema.
 
 The workspace has one package per shipped binary. The CLI, daemon and client never link each other; they reach each other only by path at runtime (the CLI starts the daemon and execs into the version-matched client). Shared code lives in two libraries: `climon2-core`, which is platform-neutral and has no `cfg(target_os)`, and `climon2-platform`, which holds the shared seam modules (ADR 0003). The crate boundary keeps neutral code out of the seams, so `core` builds and runs its tests on Linux and Windows without the rest of the workspace.
 

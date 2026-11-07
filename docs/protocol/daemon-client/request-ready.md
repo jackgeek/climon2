@@ -21,9 +21,13 @@ One [JSON](../TERMS.md#json) [frame](../TERMS.md#frame) with required
 
 Core support is required. The matching complete restoration must have been
 sent and applied by the client; for a [monitor](../../../GLOSSARY.md#sessions)
-this includes application to its
-presentation. Receipt of [Restoration complete](event-restoration-complete.md)
-alone is insufficient.
+this includes application to its presentation.
+Applied means transactionally replacing the complete current model/history,
+not painting it. It permits Ready/resize progress for background grants or before
+selected paint; selected application input additionally requires a coherent
+current frame painted in usable space under the
+[terminal barriers](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness).
+Receipt of [Restoration complete](event-restoration-complete.md) alone is insufficient.
 Success [Response](response.md) result is
 `{"kind":"ready","changed":<bool>,"period":<Counter>,"restoration_id":<Counter>}`.
 This barrier does not itself select, report

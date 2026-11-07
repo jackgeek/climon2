@@ -45,6 +45,12 @@ Episode identity is separate from source ID and [UTC](../TERMS.md#utc) time.
 deduplicate per [monitor](../../../GLOSSARY.md#sessions) lifetime,
 including reconnects; no screen mirroring,
 takeover or consumption follows delivery.
+The [#63 terminal rules](../terminal-integration.md#mouse-gestures-and-notifications)
+allow nonmodal toast coverage without stealing ready keyboard input or an existing
+application drag; new toast clicks dismiss without takeover. Coverage clears
+viewing, disappearance never auto-acknowledges. Needs-attention hints use the
+actual prefix plus lowercase j for a dynamic most-recent jump, not a fixed toast
+target; planned show_key_hints hides all implicit monitor hints.
 No [request ID](../TERMS.md#request-id)/defaults/unknown members. Invalid records/families follow
 [validation](core-v1.md#framing-and-validation); required records must be
 preserved or the affected connection explicitly failed under #69.

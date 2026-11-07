@@ -41,8 +41,23 @@ The [monitor](../../GLOSSARY.md#sessions)'s planned per-session `climon2-vt` cop
 inspection is an explicit exception to the current no-client-emulator rule,
 not a competing terminal-query authority. Forwarding to other monitors and
 xterm.js browsers is a future consumer boundary, not permission for revoked
-core screen mirroring or a native library in a browser. Rendering/application
-and resize policy remain #63; no new workspace crate is selected.
+core screen mirroring or a native library in a browser. The [agreed #63 terminal contract](../protocol/terminal-integration.md) now selects
+ordered exact daemon terminal bytes, reparsed into monitor-owned `climon2-vt`
+models and painted by Ratatui. This deliberately reopens the rejected
+client-side-emulator option for the monitor role, not ordinary clients or query
+authority. Planned read-only Rust cell/mode/cursor/history views keep engine
+types private; current `climon2-vt` has no public cells and remains daemon-only.
+No native cross-release cell schema or new workspace crate is selected.
+
+Monitor-mode display/restoration will use effective session geometry canonically,
+not host/requested dimensions, including passive promotion and background grants.
+Current host-coordinate restoration cannot safely be reparsed at a smaller
+effective size. This is an agreed unimplemented presentation-policy amendment;
+ordinary direct/derived attach, native history and release below are unchanged.
+The monitor uses its own alternate screen and internal normal history, replaces
+whole models/history transactionally, and never writes session bytes directly
+to the host or emits duplicate query replies. Selected input also waits for
+coherent paint, while applied background models can report Ready without paint.
 
 ## Restoration: three phases, produced incrementally
 

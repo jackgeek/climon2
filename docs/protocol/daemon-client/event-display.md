@@ -38,6 +38,13 @@ Metadata may interleave; terminal bytes remain ordered.
 No old-authority Display follows a newer begin or
 [revocation](../../../GLOSSARY.md#attachment-and-control) invalidating it.
 Revoked clients receive metadata, not core live mirroring.
+For monitor-mode connections all display/restoration bytes use effective session
+geometry, including background grants, never outer-host/requested dimensions.
+The [canonical #63 policy](../terminal-integration.md#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1)
+needs no extra geometry field and leaves ordinary direct/derived attach unchanged.
+The monitor parses exact bytes into its own model and paints read-only Rust views
+with Ratatui; no session bytes go directly to the host and no duplicate query
+replies are emitted. Native cell serialization is not introduced.
 
 Delivery is not applied [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts),
 application consumption or command completion.

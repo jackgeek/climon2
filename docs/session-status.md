@@ -11,6 +11,10 @@ The approved [wire revision 1](protocol/daemon-client/core-v1.md), recorded for
 [viewing](../GLOSSARY.md#status-and-attention),
 explicit acknowledgement and local notification behavior below, without
 changing activity detectors, deadlines or either state machine.
+The subsequent agreed [#63 terminal contract](protocol/terminal-integration.md)
+adds [host](../GLOSSARY.md#sessions)/application focus, terminal-style history, canonical monitor
+presentation, and #64/#59 lowercase-j/configuration amendments. It is also
+unimplemented; neither diagram below changes.
 
 The [session daemon](../GLOSSARY.md#sessions) owns both
 [activity state and attention state](../GLOSSARY.md#status-and-attention).
@@ -138,6 +142,11 @@ acknowledges; merely being visible does **not** acknowledge a new request.
 If attention arrives while the user is already viewing the session, it remains
 `needs_attention` until actual user input clears it or an accepted explicit
 action above acknowledges it.
+Here focus/selection is an explicit user action, not host focus-in or the
+non-user [application Focus operation](protocol/daemon-client/request-focus.md).
+The global lowercase j attention jump may select/acquire only if needed, then
+acknowledge once applied, painted, ready and unobstructed. Focus never clears
+attention or counts as user input.
 
 `user_input` is actual user-originated application
 [bytes](protocol/TERMS.md#byte), including paste, accepted from the current
@@ -369,6 +378,25 @@ releasing control or restoration; this supersedes the earlier selector-overlay
 rule. Highlighting/browsing never acknowledges. Ordinary interactive attach
 can report viewing only once ready and unobstructed.
 
+For the monitor this also requires a live viewport in usable space and host focus
+when reportable. Host focus loss, scrolled history, stale inspection,
+too-small/unavailable canvas, and nonmodal notification coverage clear viewing
+without releasing control or applied readiness. Host focus-in or a disappearing
+notification alone never acknowledges attention. Without host focus reports,
+assumed focus is explicitly best-effort, not an invented detector.
+
+Application keyboard focus is distinct: a selected ready host-focused target
+without modal UI is focused; normal scrollback and nonmodal
+[toasts](protocol/TERMS.md#toast) retain it,
+while switching/menu opening sends focus-out when valid. Optional core
+`focus-v1` reports desired focus with current authority, even when application
+reporting is disabled, and truthfully distinguishes state acceptance from bytes
+accepted for forwarding. Newly enabled reporting emits current known state once;
+new readiness synchronizes latest local state without replaying old requests.
+Missing library/daemon focus support keeps the session usable with an explicit
+limitation. These are [terminal focus semantics](protocol/terminal-integration.md#host-focus-and-application-focus),
+not another attention detector.
+
 Only this monitor's own unobstructed viewing suppresses its
 [toast](protocol/TERMS.md#toast) notification; another client's or monitor's
 viewing never suppresses it. No aggregate viewing broadcast/schema is added.
@@ -431,6 +459,30 @@ do not create a persisted startup archive. Eager all-session client creation
 and its existing bounded newest-first scheduling remain distinct from the
 revised status-based row ordering and initial selection.
 
+### Global attention jump and hints
+
+Configured prefix + **lowercase `j`** chooses the most recent **currently
+connected** `needs_attention` row at keypress time, by newest daemon status-change/
+attention time and the existing ascending GUID tie-breaker.
+Exclude acknowledged, completed/failed, and stale/disconnected rows.
+Choose dynamically, never from an old toast target; ordinary sorting still
+preserves selected/highlighted identity.
+The command works in selector, stale cache inspection, placeholder, or empty UI.
+Close overlays, explicitly select/acquire only if needed, then apply/paint and
+acknowledge once unobstructed/ready, cancelling deferred acknowledgement if target
+context changes. With none eligible keep selection and visibly report
+`No sessions need attention`. Uppercase J remains unknown literal input; pasted
+prefix+j stays data and s/x stay unchanged.
+
+Needs-attention toasts hint the actual configured prefix plus lowercase j,
+describing the dynamic most-recent jump rather than guaranteeing their own session.
+Planned `monitor.show_key_hints` is boolean, default true; it controls all implicit
+toast/chrome/selector/empty hints, not bindings or application text. Validate the
+startup snapshot before terminal changes; wrong type/duplicate known fields fail,
+missing fields default, no live reload, and no new monitor bindings.
+See the [canonical amendments](protocol/terminal-integration.md#attention-jump-and-configurable-hints)
+and [future configuration example](../README.md#planned-monitor-settings-not-implemented).
+
 ## Connection loss and retained terminal views
 
 [Connection status](../GLOSSARY.md#status-and-attention) is monitor-owned,
@@ -438,6 +490,15 @@ separate from the two daemon FSMs. Keep one `climon2-vt` model per monitor-owned
 session, not per short-lived socket. Retain received terminal content and
 bounded local scrollback after disconnection for read-only inspection. Mark it
 disconnected/stale; never forward application input while disconnected.
+During live normal-screen use this is internal terminal-style history, not host
+[native scrollback](../GLOSSARY.md#restoration-and-presentation).
+Wheel without application capture scrolls it; typing returns
+live and forwards when selected/controlling/ready, not consumed by an inspection
+mode. Anchor a scrolled viewport through output; eviction moves to oldest retained
+with an explicit [truncation notice](../GLOSSARY.md#restoration-and-presentation), never pins unbounded rows or jumps to live.
+Alternate-screen wheel never exposes normal history; without application capture
+it becomes arrows only when alternate-scroll is enabled. Returning normal
+restores normal buffer/history. Never-controlled passive clients have no history.
 
 Preserve a definitively received `completed` or `failed` status after the
 connection closes. Otherwise use the `disconnected` ordering group and the
@@ -449,6 +510,13 @@ Reconnect passively and refresh status/title without automatically taking
 control, even if the session remains selected. Explicit user action resumes
 control; apply a fresh valid restoration before presenting content as current
 or enabling input. Stop retrying definitively completed sessions.
+Every fresh authoritative restoration replaces the whole model/history
+transactionally, not union/dedup; absent older local history may be discarded.
+Partial/superseded models never become current. Revoked/disconnected cache
+requires explicit stale read-only inspection, never Acquire. Ordinary revoked
+selection shows the takeover placeholder; completed/failed content may display
+retained output directly read-only. Passive without a cache says none available.
+See the [history and replacement contract](protocol/terminal-integration.md#normal-history-alternate-screen-and-stale-inspection).
 
 This does not permit live read-only mirroring after revocation, recover output
 that was never received, or record every alternate-screen update. Per-session/
@@ -470,6 +538,11 @@ requiring control or scraping a monitor's screen. Use the latest non-empty
 title in the menu; otherwise use command plus arguments. Unsupported title
 delivery on older daemons does not block takeover. Render titles literally and
 mark cached data stale when delivery becomes uncertain.
+The monitor's permanent top row shows the title/fallback as a label only,
+marqueeing only overflowing label text with
+[display-cell](protocol/TERMS.md#display-cell)-safe clipping and
+restart on label changes; status/control/error remain stationary. Full details
+stay in the selector. Never change the host title.
 
 Users do not set terminal titles through climon2. Future user-assigned,
 persisted session names are separate and will appear alongside a non-empty
@@ -496,14 +569,25 @@ category `final outcome`, not exit-versus-signal kind, with no second counter.
 Inconsistent repeats cannot authorize another toast. Terminal status/result
 must agree: completed is normal exit zero, failed nonzero exit or signal.
 
+Nonmodal toasts may cover application cells: clear viewing but retain keyboard
+focus, applied restoration and ready key forwarding. Disappearance restores
+viewing only when live/ready/focused/unobstructed, never auto-acknowledgement.
+Existing application drags retain their initial target under toast appearance;
+new toast clicks are monitor-owned dismissals without takeover. Invalid target/
+authority discards gesture remainder through end, just as stale paste is drained,
+never routed to another/background session. Modal menus also clear keyboard focus.
+
 ## Remaining work and required evidence
 
 The daemon wire schemas, compatibility/rejection, source normalization, viewing
 validation and notification identities are now agreed in #67, not implemented.
-The remaining owning tickets must complete native declarations, terminal
-application, budgets/rate limits, reconnect intervals/
-backoff, retention budgets, terminal integration, and orderly shutdown. These
+The remaining owning tickets must complete native declarations, budgets/rate
+limits, reconnect intervals/backoff, retention budgets, and orderly shutdown. These
 mechanics do not settle every question in those tickets.
+Terminal application is now agreed in the [#63 contract](protocol/terminal-integration.md),
+not implemented; its required real-monitor-host evidence includes history
+replacement, coherent resize, supported keys/mouse/paste, host/application focus,
+dynamic j/hints, gesture/notification routing, query authority and failure isolation.
 
 [Automated acceptance](https://github.com/jackgeek/climon2/issues/62) must cover
 the following, with no claim that this documentation supplies that evidence:

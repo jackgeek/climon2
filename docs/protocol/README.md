@@ -68,12 +68,19 @@ zero-client lifetime; CLI spelling and implementation remain open. Today's
 interactive leave policy is not universal headless policy and does not make all
 sessions persistent.
 
-Ratatui powers the planned monitor's rendering. The
-[terminal integration decision](https://github.com/jackgeek/climon2/issues/63)
-must define how [session](../../GLOSSARY.md#sessions) state reaches that renderer,
-including [restoration](../../GLOSSARY.md#restoration-and-presentation),
-overlays, resize, and fidelity. Choosing Ratatui does not choose the client
-interface or display [payload](TERMS.md#payload) representation.
+Ratatui powers the planned monitor's rendering. The agreed
+[terminal integration contract](terminal-integration.md) selects exact ordered
+terminal bytes through client-library records, parsed into the monitor's own
+per-[session](../../GLOSSARY.md#sessions) `climon2-vt`, with planned read-only Rust
+views for painting. Session bytes never go directly to the host. Monitor-mode
+daemon presentation is canonically serialized at effective session
+[geometry](TERMS.md#geometry),
+not outer-host dimensions; ordinary attach is unchanged.
+[Restoration](../../GLOSSARY.md#restoration-and-presentation) replaces
+the whole model/history transactionally. Applied
+[readiness](../../GLOSSARY.md#protocol-and-plugin-concepts) permits wire progress;
+selected input additionally waits for a coherent current frame to be painted.
+These #63 amendments are agreed, not implemented.
 
 Each client has its own connection and per-session state. The
 [embedding reference](library-embedding.md) specifies exact-release lookup,
@@ -178,7 +185,9 @@ metadata through clients to subscribers, including background/noncontrolling
 ones. They are distinct from terminal display updates and do not authorize
 screen mirroring. Their exact daemon wire
 [schemas and capabilities](daemon-client/core-v1.md) are agreed, not implemented;
-native declarations remain #71 and future [UI](TERMS.md#ui) remains unresolved.
+native declarations remain #71. [UI](TERMS.md#ui) terminal behavior is now
+specified in the [terminal contract](terminal-integration.md); selector layout
+and lifecycle policy remain #60/#61.
 
 [Viewing](../../GLOSSARY.md#status-and-attention) is reported per
 [attachment](../../GLOSSARY.md#attachment-and-control);
@@ -188,6 +197,10 @@ and [status reports](monitor-client/event-session-status.md) map the agreed wire
 without assigning native declarations. Menus clear this monitor's viewing
 without releasing control/restoration. Only this monitor's own unobstructed
 presentation suppresses its toasts; another viewer does not.
+The [terminal rules](terminal-integration.md) also gate viewing on a live
+viewport, usable painted canvas and reportable host focus. Nonmodal coverage
+clears viewing but retains ready keyboard input; host focus-in/toast disappearance
+never acknowledges. Application focus uses optional non-user core Focus.
 
 The monitor retains a per-session `climon2-vt` model and bounded local scrollback
 for disconnected inspection, and retries uncertain connections passively.
@@ -211,6 +224,10 @@ the authoritative current title and gap-free ordered updates regardless of
 control, menu visibility, or input readiness, without screen mirroring.
 Cached titles must be marked stale/unavailable when delivery becomes uncertain.
 An empty title restores the command/arguments fallback.
+The permanent top row uses title/fallback as a label only, with
+[display-cell](TERMS.md#display-cell)-safe
+marquee solely for overflowing label text; status/control/error stay stationary
+and full details remain in the selector. No host-title change is made.
 
 Plugin implementation, configuration, and interface examples are deferred;
 the earlier title-plugin release requirement is superseded. Older daemons
@@ -261,7 +278,8 @@ and length-delimited buffers across the C ABI, never Rust layouts or unbounded
 C strings. Binary fields preserve every [byte](TERMS.md#byte), including
 [NUL](TERMS.md#nul) and invalid [UTF-8](TERMS.md#unicode-and-utf-8).
 [Native path](TERMS.md#native-path) and text encodings
-remain for #71; terminal representation/chunking remains for #63 and #69.
+remain for #71; [terminal representation/application](terminal-integration.md)
+is agreed, while numeric chunk/transfer budgets remain #69.
 Exact tags, widths, required/optional fields, defaults, unknown-field handling,
 result codes, and declarations remain for #71. Unknown-field handling must not
 silently convert invalid or unsupported core tags into extensions.
@@ -355,7 +373,11 @@ and daemon. Required support is checked before control acquisition and operation
 submission. Unsupported operations fail explicitly. Optional title/status
 support is reported unavailable/unknown, never fabricated as an empty title or
 cleared attention. A supported empty title remains valid and selects the
-command-name fallback. Exact required capabilities depend on #67, #63, and #61.
+command-name fallback. Optional core `focus-v1` enables
+[application focus](monitor-client/request-focus.md); missing library/daemon
+support is a visible focus limitation, not a reason to block an otherwise usable
+session. It is not a plugin extension or release-number inference.
+Remaining lifecycle-required capabilities belong to #61.
 
 Unknown core operation/event tags are invalid, not implicit extensions.
 Future [namespaced](TERMS.md#namespaced-name) extensions require explicit name/revision negotiation of the
@@ -394,11 +416,14 @@ fixtures cannot be published before #71 completes the declarations.
 |---|---|
 | Library compatibility | A library supports the requested revision but reports the wrong session release. Reject it before creating an instance or daemon connection; retain the opened library until monitor exit. Supporting the revision does not waive exact-release validation. |
 | Local admission | ID 10 is accepted and copied. ID 11 is rejected as full: no ownership or later outcome. Retrying local admission with ID 11 can succeed; submitting ID 10 again cannot. |
-| Literal binary data | A supported binary submission contains hexadecimal `00 ff 41`; its accepted copy preserves all three bytes. A binary delivery containing those bytes drains unchanged too. Neither NUL nor invalid UTF-8 truncates or changes them. This does not imply input echo or choose a display encoding. |
-| Control and restoration | A [grant](../../GLOSSARY.md#attachment-and-control) precedes its restoration start, ordered updates, and completion in the single stream. Until the monitor applies the complete current restoration, completion alone cannot enable input. A revocation invalidates that readiness. |
+| Literal binary data | A supported binary submission contains hexadecimal `00 ff 41`; its accepted copy preserves all three bytes. Display deliveries preserve exact ordered terminal bytes too. Neither NUL nor invalid UTF-8 truncates or changes them. This does not imply input echo or direct host output. |
+| Control and restoration | A [grant](../../GLOSSARY.md#attachment-and-control) precedes its restoration start, ordered updates, and completion in the single stream. The complete current restoration replaces the model/history; application permits Ready without selection/paint, while selected input additionally waits for coherent paint. Revocation invalidates readiness. |
 | Passive metadata | A generation's initial title/status synchronization is delimited, then changes follow gap-free while unselected or revoked. Unchanged status retains its stored UTC time; a new attention episode uses its own identity, not timestamp uniqueness. |
 | Resize and viewing | Only the selected [controller](../../GLOSSARY.md#attachment-and-control) receives monitor resize requests; local acceptance is not actual geometry. Report viewing once ready and unobstructed. Switching away or opening menus clears viewing without releasing control/restoration. Explicit selection/focus or menu close/cancel may separately acknowledge current pending attention once ready and viewing; opening/browsing never acknowledges. Cancel deferred acknowledgement if target context changes. Visibility alone never acknowledges a new request. |
 | Menu notifications | Attention arriving while a menu is open toasts immediately over it without a daemon round trip. Still-pending attention never toasted becomes eligible on menu opening. Deduplicate per episode over this monitor lifetime, including reconnects. A final first learned viewed stays suppressed forever here; another client's viewing never suppresses this monitor. |
+| Canonical geometry | Outer host 600x251 gives desire 600x250; daemon effective size 500x200 is used for every monitor-mode display/restoration byte. Paint that rectangle below the top row with blank margins; ordinary attach still uses its own direct/derived host policy. |
+| Focus | Host focus loss clears viewing, not control/readiness. Dedicated non-user Focus stores current desired application focus even with reporting off; enabled reporting emits matching bytes once, never attention acknowledgement. Nonmodal toasts/scrollback retain keyboard focus; modal menus do not. |
+| Attention jump/hints | Configured prefix + lowercase j chooses the newest currently connected needs_attention row at keypress, not a toast's saved target. Close overlays, acquire only if needed, apply/paint, then acknowledge when unobstructed/ready. No eligible row keeps selection and reports it. Planned show_key_hints hides implicit hints, not bindings or application text. |
 | Succession | On any controller departure, most-recent-control existing attachment wins first; otherwise newest accepted passive registration is promoted before final-participant policy. Inheritance does not select, resize, send input or acknowledge. Promoted membership persists through switching/revocation. Committed termination overrides succession. |
 | Core notification/progress | A recognized logical notification requests attention; repeated requests while pending are not new episodes. Progress metadata alone does not request attention or confirm command completion. Delivery remains independent of control and does not permit screen mirroring. |
 | Deliberate detach | Local acceptance queues detach. Only daemon acceptance confirms deliberate detach; neither that outcome nor stream closure proves instance cleanup or a joined thread. No timeout or shutdown fabricates success. |
@@ -432,10 +457,10 @@ decisions are still open:
 | Owner | Unresolved details |
 |---|---|
 | [Daemon wire #67](https://github.com/jackgeek/climon2/issues/67) | Agreed [wire revision 1](daemon-client/core-v1.md), not implemented. No remaining schema decision is delegated back to #67. |
-| [Terminal integration #63](https://github.com/jackgeek/climon2/issues/63) | Display/input representation, geometry, restoration application, and terminal transfer/chunking with #69. |
+| [Terminal integration #63](https://github.com/jackgeek/climon2/issues/63) | Agreed [terminal contract](terminal-integration.md), including canonical monitor geometry and optional core Focus; not implemented. Numeric transfer budgets remain #69 and complete native declarations #71. |
 | [Lifecycle #61](https://github.com/jackgeek/climon2/issues/61) | Recovery/recreation, cleanup coordination and incomplete-cleanup policy, retry schedules with #69, visible lifecycle behavior, and future headless zero-client lifetime. No additional survival guarantee is implied. |
 | [Operational limits #69](https://github.com/jackgeek/climon2/issues/69) | Numeric byte/record/object and aggregate bounds, progress/stall deadlines, scheduling/admission/exhaustion policy, transfer budgets, and measurement thresholds. |
-| [Interface schemas #71](https://github.com/jackgeek/climon2/issues/71) | Exact declarations, record fields/tags/widths, handle and release operations, descriptor exposure, capability tokens, timestamp/identity encodings, error catalog, schema fixtures, and valid executable examples after the above decisions. It remains blocked. |
+| [Interface schemas #71](https://github.com/jackgeek/climon2/issues/71) | Exact native declarations, record fields/tags/widths, handle and release operations, descriptor exposure, native capability reporting, timestamp/identity encodings, native error catalog, schema fixtures, and valid executable examples after the remaining decisions. It remains blocked; agreed wire focus-v1 and terminal semantics are not delegated back for redesign. |
 
 ## Compatibility, errors, and limits
 
@@ -527,6 +552,7 @@ schemas and executable examples when #71 completes the interface.
 | [Viewing](monitor-client/request-viewing.md) | Monitor -> client -> daemon | Report selected presentation independently of retained control. |
 | [Readiness](monitor-client/request-ready.md) | Monitor -> client -> daemon | Report current complete restoration applied. |
 | [Acknowledge attention](monitor-client/request-acknowledge.md) | Monitor -> client -> daemon | Explicitly acknowledge current pending attention. |
+| [Application focus](monitor-client/request-focus.md) | Monitor -> client -> daemon | Optional non-user core focus state/forwarding report. |
 | [Detach](monitor-client/request-detach.md) | Monitor -> client | Request deliberate detach. |
 | [Kill](monitor-client/request-kill.md) | Monitor -> client | Confirm command termination and daemon cleanup through a standalone role. |
 | [Extension request](monitor-client/request-extension.md) | Either endpoint, through client | Request negotiated plugin work regardless of control. |
@@ -559,7 +585,7 @@ Every page inherits the [complete shared wire rules](daemon-client/core-v1.md):
 portable framing, strict JSON/binary types, IDs, capabilities, ordering,
 acceptance/errors, bounded delivery and unresolved owners. Hello advertises
 support; first Open/Kill validates before effects without a separate exchange.
-There are nine request types and fourteen server types, including Response.
+There are ten request types and fourteen server types, including Response.
 Examples are wire bodies, not native declarations or conformance evidence.
 
 | Code | Message | Direction | Purpose |
@@ -573,6 +599,7 @@ Examples are wire bodies, not native declarations or conformance evidence.
 | `0x36` | [Acknowledge attention](daemon-client/request-acknowledge.md) | Client -> daemon | Acknowledge currently pending attention without observed episode ID. |
 | `0x37` | [Leave](daemon-client/request-leave.md) | Client -> daemon | Remove membership/registration and accept departure. |
 | `0x38` | [Kill](daemon-client/request-kill.md) | Client -> daemon | Standalone termination with daemon-cleanup confirmation. |
+| `0x39` | [Focus](daemon-client/request-focus.md) | Client -> daemon | Optional non-user core application focus (#63 amendment). |
 | `0x40` | [Response](daemon-client/response.md) | Daemon -> client | Correlated explicit outcome/result/error. |
 | `0x41` | [Initial metadata](daemon-client/event-initial-metadata.md) | Daemon -> client | Atomic current availability/state before gap-free changes. |
 | `0x42` | [Title changed](daemon-client/event-title-changed.md) | Daemon -> client | Inert [Unicode](TERMS.md#unicode-and-utf-8) title. |
@@ -604,13 +631,14 @@ Examples are wire bodies, not native declarations or conformance evidence.
   correlation/order, validation, compatibility, bounded progress, core metadata,
   and future evidence requirements above; plugin implementation remains deferred.
 - [Complete monitor-client interface schemas](https://github.com/jackgeek/climon2/issues/71):
-  still blocked on the remaining terminal, lifecycle, and numeric
+  still blocked on the remaining lifecycle and numeric
   limit decisions; owns exact fields, calls/events, results, errors, and examples.
 - [Freeze daemon-client communication contract](https://github.com/jackgeek/climon2/issues/67):
   agreed [revision-1 post-hello wire](daemon-client/core-v1.md), passive
   succession, metadata, outcomes and validation; no implementation claim.
 - [Choose the monitor terminal integration contract](https://github.com/jackgeek/climon2/issues/63):
-  display/input representation, geometry, and restoration.
+  agreed [terminal/input/geometry/restoration contract](terminal-integration.md),
+  optional core Focus and #64/#59 input/config amendments; not implemented.
 - [Define monitor exit and failure behavior](https://github.com/jackgeek/climon2/issues/61):
   client cleanup, monitor failure, session survival, and recovery.
 - [Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69):

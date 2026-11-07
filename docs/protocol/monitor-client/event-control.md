@@ -10,11 +10,19 @@ identifying the applicable [control period](../../../GLOSSARY.md).
 A grant starts [restoration](../../../GLOSSARY.md), not input [readiness](../../../GLOSSARY.md).
 Revocation invalidates readiness and pending restoration; show the
 [placeholder](../../../GLOSSARY.md), not cached content as current.
+Any cached revoked output requires explicit stale read-only inspection, never
+implicit takeover or live core mirroring.
 
 [Hand-back](../../../GLOSSARY.md) may restore background control without
 changing selection. That client resumes screen maintenance but receives no
-monitor application input or resize. Core title/status reports continue even
-without control; [plugin](../../../GLOSSARY.md) implementation is deferred.
+monitor application input or resize.
+Grant supplies effective daemon geometry; canonical monitor display/restoration
+uses it even for passive promotion or background hand-back. Apply the complete
+replacement model/history without selection or paint, then report Ready.
+Selected application input additionally waits for coherent paint. See the
+[terminal contract](../terminal-integration.md).
+Core title/status reports continue even without control;
+[plugin](../../../GLOSSARY.md) implementation is deferred.
 
 [Viewing](../../../GLOSSARY.md#status-and-attention) is separate from retained control.
 See [viewing reports](request-viewing.md). A grant or

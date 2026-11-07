@@ -24,8 +24,13 @@ rejection; uncertain execution is
 [indeterminate](../TERMS.md#indeterminate-outcome). Never carry old-generation
 resize into a reconnected [controller](../../../GLOSSARY.md#attachment-and-control).
 
-[Terminal integration](https://github.com/jackgeek/climon2/issues/63) owns
-columns/rows, clamping, available area, and restoration effects.
+The [terminal geometry contract](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness)
+sets desire to host width by (height minus one top row), with effective daemon
+geometry authoritative and blank right/bottom margins. Overlay open/close never
+resizes; actual host resize still updates selected control under an overlay.
+Too-small space reports an explicit unavailable canvas without invalid resize
+or application input. Retain last coherent frame clipped/padded until replacement
+is applied/painted. Coalesce only unsent intent, never submitted outcomes.
 The [communication decision](https://github.com/jackgeek/climon2/issues/66) owns
 the shared rules.
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign

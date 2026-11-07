@@ -32,6 +32,13 @@ input, resize or consumption.
 Menus clear this [monitor](../../../GLOSSARY.md#sessions)'s viewing without releasing control/restoration;
 switching away, disconnect and
 [revocation](../../../GLOSSARY.md#attachment-and-control) also clear it.
+The [terminal contract](../terminal-integration.md) adds live viewport,
+reportable host focus, and unobstructed painted usable space. Scrolled history,
+too-small/unavailable canvas, stale inspection, or notification coverage clears
+viewing. Nonmodal toasts and scrollback retain keyboard focus; modal menus do not.
+Host focus loss retains control/readiness; focus-in or hiding a notification
+never automatically acknowledges. Without reports, host focus is best-effort
+assumed, not detected. Application [Focus](request-focus.md) is separate.
 No aggregate viewing field/broadcast exists. Another monitor's viewing never
 suppresses this monitor's notifications. See
 [local notification rules](core-v1.md#viewing-acknowledgement-and-local-notifications).

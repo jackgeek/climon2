@@ -27,6 +27,10 @@ at the text boundary. Render literally; no display scraping or control
 Null/empty title selects command/arguments menu fallback; unavailable remains
 a distinct initial availability state. Changes do not acknowledge
 [attention](../../../GLOSSARY.md#status-and-attention).
+The [#63 chrome contract](../terminal-integration.md#chrome-cursor-and-host-copy)
+uses title/fallback only as a label, never a host-title change. Only overflowing
+label text marquees with [display-cell](../TERMS.md#display-cell)-safe clipping; status/control/error stay
+stationary and full details remain in the selector.
 
 No response/[request ID](../TERMS.md#request-id) or defaults/unknown members.
 Malformed/unsupported events follow the fatal

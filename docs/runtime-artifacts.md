@@ -79,7 +79,15 @@ Each live session has its own client thread. Clients start eagerly, newest
 first, with bounded concurrent progress; continuous discovery adds clients for
 new sessions. Background clients relay negotiated plugin data without taking
 control. Native client crashes can terminate the entire monitor. Ratatui powers
-the planned monitor's rendering; terminal integration remains specification work.
+the planned monitor's rendering; its terminal integration is agreed, unimplemented.
+The [agreed terminal contract](protocol/terminal-integration.md), not implemented,
+selects exact ordered terminal bytes/control/restoration through existing
+in-process record queues and monitor-owned `climon2-vt` models, with planned
+read-only Rust views for Ratatui. Session bytes never go directly to the host;
+daemon query authority stays unique. Monitor-mode daemon presentation uses
+effective session geometry, not host/requested dimensions, including background
+promotion. Optional core Focus is not a plugin/artifact addition. No executable
+placement or new dynamic library is chosen by this amendment.
 
 The [status/activity revision](session-status.md) puts title detection and both
 state machines and terminal-signal interpretation in

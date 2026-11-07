@@ -5,7 +5,11 @@ See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
 Initial selection, selector confirmation, and explicit
-[take control](../../../GLOSSARY.md) acquire control when needed. Confirming a
+[take control](../../../GLOSSARY.md) acquire control when needed.
+The [global lowercase j attention jump](../terminal-integration.md#attention-jump-and-configurable-hints)
+is also explicit selection/acquisition when needed. Stale cache inspection is a
+separate read-only action and must never acquire.
+Confirming a
 [revoked](../../../GLOSSARY.md) selected [session](../../../GLOSSARY.md#sessions) can reclaim it; confirming an
 already-controlled session retains it. Last-request-wins semantics remain.
 Discovery, eager background connections, [plugin](../../../GLOSSARY.md) traffic, and browsing/cancelling
@@ -14,6 +18,8 @@ the selector must not request takeover.
 Success means [daemon](../../../GLOSSARY.md#sessions) acceptance, not [readiness](../../../GLOSSARY.md).
 Observe [control](event-control.md), [restoration](../../../GLOSSARY.md#restoration-and-presentation),
 and monitor-side application before enabling input.
+Selected input additionally waits for coherent paint; a background grant may
+apply restoration/report Ready without selection, resize, paint, or input.
 See [restoration start](event-restoration-start.md).
 
 The [shared contract](../README.md#shared-in-process-communication-contract)

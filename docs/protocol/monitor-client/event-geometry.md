@@ -10,9 +10,14 @@ The [client](../../../GLOSSARY.md) reports actual geometry separately from
 [monitor](../../../GLOSSARY.md)'s available size. Background sessions retain
 their last size until selected; [hand-back](../../../GLOSSARY.md) alone does not trigger monitor resize.
 
-[Terminal integration](https://github.com/jackgeek/climon2/issues/63) owns
-columns/rows, clamping, available area, and
-[restoration](../../../GLOSSARY.md#restoration-and-presentation) effects.
+The [agreed geometry contract](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness)
+uses effective daemon dimensions for parsing every monitor presentation,
+independent of outer-host/desired size, including background grants. The selected
+desire is host width by (height minus the permanent top row), subject to supported
+limits. Place the effective rectangle top-left below chrome with blank margins;
+never fake [PTY](../TERMS.md#pseudo-terminal-pty) reflow. Observe
+[restoration](../../../GLOSSARY.md#restoration-and-presentation) application and
+selected coherent paint separately from actual geometry.
 The [shared communication contract](../README.md#shared-in-process-communication-contract)
 and [semantic examples](../README.md#semantic-examples), agreed in
 [#66](https://github.com/jackgeek/climon2/issues/66), preserve causal geometry,

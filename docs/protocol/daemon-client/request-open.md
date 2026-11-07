@@ -21,7 +21,7 @@ One [JSON](../TERMS.md#json) [frame](../TERMS.md#frame); all fields required:
 | `geometry` | Null for [monitor](../../../GLOSSARY.md#sessions); Geometry for interactive. |
 
 ```json
-{"request_id":"1","revision":1,"required_capabilities":["status-v1"],"optional_capabilities":["title-v1","notification-v1","progress-v1"],"mode":"monitor","geometry":null}
+{"request_id":"1","revision":1,"required_capabilities":["status-v1"],"optional_capabilities":["title-v1","notification-v1","progress-v1","focus-v1"],"mode":"monitor","geometry":null}
 ```
 
 ## Acceptance, order and failures
@@ -32,6 +32,9 @@ Validate advertised revision/support and
 Unknown optional families are not selected; unknown required ones reject.
 No release-number inference or extra negotiation exchange is allowed.
 Exact-release validation is separate and mandatory.
+Optional `focus-v1` selects dedicated non-user [Focus](request-focus.md);
+if absent, expose the limitation without blocking otherwise supported work.
+This #63 amendment adds no frozen-hello field or plugin negotiation.
 
 Monitor mode registers an eligible
 [passive monitor connection](../../../GLOSSARY.md#attachment-and-control),
@@ -40,6 +43,10 @@ geometry or takeover. Interactive mode attaches and
 [grants](../../../GLOSSARY.md#attachment-and-control)
 [control](../../../GLOSSARY.md#attachment-and-control) using requested geometry
 under daemon policy. See [succession](core-v1.md#membership-and-succession).
+Monitor-mode display/restoration after acquisition or promotion uses effective
+session geometry regardless of outer host or requested size under the
+[canonical terminal contract](../terminal-integration.md#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1).
+Ordinary interactive direct/derived/native-history behavior is unchanged.
 
 Success [Response](response.md) result is
 `{"kind":"opened","connection_id":<Guid>,"selected_capabilities":<string array>}`.

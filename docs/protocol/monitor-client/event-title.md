@@ -41,6 +41,12 @@ daemon cannot supply one. Keep otherwise live sessions visible. An empty title
 returns to the fallback. Render all text literally, never as terminal commands.
 Unsupported/unknown title state is not a fabricated supported empty title,
 even though both use the same menu fallback.
+The [terminal chrome contract](../terminal-integration.md#chrome-cursor-and-host-copy)
+also uses this as a label in one permanent top row, never a host-title change.
+Only overflowing label text marquees, with
+[display-cell](../TERMS.md#display-cell)-safe clipping and restart
+on label changes; short labels and status/control/error remain static. Full
+details stay in the selector.
 
 The [shared contract](../README.md#shared-in-process-communication-contract)
 and [semantic examples](../README.md#semantic-examples) require explicit

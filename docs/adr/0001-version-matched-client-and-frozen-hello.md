@@ -17,6 +17,15 @@ first role request validate support before effects, without another exchange.
 There is no initial checksum. This does not implement forwarding or settle
 remote routing, multiplexing, discovery or security.
 
+The [#63 terminal amendment](../protocol/terminal-integration.md) adds optional
+core [Focus `0x39`](../protocol/daemon-client/request-focus.md), negotiated as
+`focus-v1` through existing additive capability advertisement and Open selection.
+It is not a plugin extension, release-number inference, or change to frozen
+hello required fields. Missing library/daemon focus support leaves sessions
+usable with an explicit limitation. Monitor-mode presentation is canonically
+serialized at effective session geometry; ordinary attach remains unchanged.
+These additions are agreed, not implemented.
+
 A [session daemon](../../GLOSSARY.md#sessions) is only ever reached by the client from its own version. Session metadata records the daemon's version folder, and the CLI runs `<climon2 executable home>/<version>/climon2-client`, even when a different version is current. This keeps the protocol after hello version-specific, with no backward compatibility to maintain, and lets upgrades install alongside running sessions without breaking them. For the same reason, the hello handshake (framing and fields) is frozen forever: it is the one exchange that crosses versions, so any version of `climon2 list` can tell whether any daemon is live.
 
 ## Frozen layout

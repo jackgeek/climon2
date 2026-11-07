@@ -10,7 +10,10 @@ The [monitor](../../../GLOSSARY.md) sends literal application
 Preserve arbitrary bytes without lossy text conversion. Identify the current
 [control period](../../../GLOSSARY.md); reject stale, revoked, or not-ready input
 explicitly. The monitor must also have applied the complete current
-[restoration](../../../GLOSSARY.md).
+[restoration](../../../GLOSSARY.md) and painted a coherent ready current target.
+Modal [UI](../TERMS.md#ui), stale inspection and too-small targets exclude application input;
+nonmodal [toast](../TERMS.md#toast) coverage may clear
+[viewing](../../../GLOSSARY.md#status-and-attention) while retaining ready keyboard input.
 
 Never queue input for a future [controller](../../../GLOSSARY.md#attachment-and-control)
 or send it to a background client.
@@ -37,8 +40,11 @@ Uncertain execution after loss is
 [indeterminate](../TERMS.md#indeterminate-outcome), with no replay on reconnect.
 
 [Input routing](https://github.com/jackgeek/climon2/issues/64) owns literal prefix
-and paste behavior. [Terminal integration](https://github.com/jackgeek/climon2/issues/63)
-owns non-key input representation; the
+and paste behavior. The [terminal integration contract](../terminal-integration.md#transparent-keyboard-and-exact-paste)
+owns supported cursor/keypad encoding, exact paste payload with application
+markers only when its bracketed-paste mode is enabled, translated mouse input,
+and stale gesture/paste draining. Host replies remain monitor-local, never Input;
+application focus uses dedicated non-user [Focus](request-focus.md). The
 [communication decision](https://github.com/jackgeek/climon2/issues/66) owns the
 shared rules above.
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) must define

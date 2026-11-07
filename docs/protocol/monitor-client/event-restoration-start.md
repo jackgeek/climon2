@@ -15,10 +15,14 @@ Ordered [display updates](event-display.md) follow.
 [Completion](event-restoration-complete.md) identifies the same restoration.
 [Revocation](../../../GLOSSARY.md) invalidates it. [Plugins](../../../GLOSSARY.md) cannot hide these essential state changes.
 
-[Terminal integration](https://github.com/jackgeek/climon2/issues/63) and
-[interface schemas](https://github.com/jackgeek/climon2/issues/71) must define
-exact terminal representation, identity fields, application rules, and
-executable examples.
+The [terminal contract](../terminal-integration.md) selects exact ordered bytes
+serialized at effective session geometry. Build a new model/history separately;
+the completed restoration replaces both transactionally, never union/dedup.
+Partial/superseded models never become current. Retain the last coherent
+transition frame clipped/padded, without enabling input; old cache inspection
+requires an explicit stale action.
+[Interface schemas](https://github.com/jackgeek/climon2/issues/71) still owns
+exact native declarations, identity fields, errors, and executable examples.
 The [shared contract](../README.md#shared-in-process-communication-contract)
 and [semantic examples](../README.md#semantic-examples), agreed in
 [#66](https://github.com/jackgeek/climon2/issues/66), require one causal
@@ -30,4 +34,5 @@ from both restoration and control identities.
 [Operational limits](https://github.com/jackgeek/climon2/issues/69) owns transfer
 budgets, deadlines, and counter exhaustion.
 [Wire Restoration begin](../daemon-client/event-restoration-begin.md) assigns
-period, restoration ID and geometry; native layout/application remain #71/#63.
+period, restoration ID and geometry. Application semantics are agreed above,
+not deferred for redesign; native layout remains #71 and numerical budgets #69.

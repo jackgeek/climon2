@@ -43,6 +43,7 @@ Shared types are in [core wire types](core-v1.md#shared-types).
 | [Acknowledge](request-acknowledge.md) | `kind:"acknowledgement"`, `changed:bool`. |
 | [Leave](request-leave.md) | `kind:"left"`, `attachment_detached:bool`. |
 | [Kill](request-kill.md) | `kind:"termination"`, `command_result:CommandResult`, `cleanup:"complete"`. |
+| [Focus](request-focus.md) (#63 amendment) | `kind:"focus"`, `changed:bool`, `focused:bool`, `accepted_bytes:u32` (0 or 3). |
 
 Initial role rejection may carry
 `{"kind":"known_final","command_result":<CommandResult>}`.
@@ -56,6 +57,9 @@ result plus complete daemon cleanup.
 Core family supplies responses. Responses consume no [request IDs](../TERMS.md#request-id).
 Open success precedes initial metadata; later immediate causal events precede
 their success response. Deferred resize acceptance proves no final geometry.
+Focus distinguishes desired-state acceptance from complete non-user sequence
+acceptance for forwarding, never command consumption or a
+[PTY](../TERMS.md#pseudo-terminal-pty) read.
 Each operation page specifies its acceptance boundary and errors; all inherit
 the [operational/fatal catalog](core-v1.md#errors-and-bounded-delivery).
 Malformed/unknown fields, invalid correlation and wrong direction cannot

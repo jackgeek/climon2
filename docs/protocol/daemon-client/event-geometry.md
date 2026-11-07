@@ -31,6 +31,12 @@ is not applied [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts),
 [viewing](../../../GLOSSARY.md#status-and-attention) or consumption.
 Inherited/background control does not originate
 [monitor](../../../GLOSSARY.md#sessions) resize.
+Monitor-mode presentation uses these effective dimensions, not outer-host/
+requested dimensions. The monitor positions the session rectangle top-left
+below its permanent top row and blanks unused margins, without local
+[PTY](../TERMS.md#pseudo-terminal-pty) reflow.
+The [#63 geometry contract](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness)
+keeps host-relative overlay layout independent of this acknowledgement.
 
 Invalid records/wrong directions follow
 [fatal validation](core-v1.md#framing-and-validation).

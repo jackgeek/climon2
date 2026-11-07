@@ -17,7 +17,14 @@ empty title or cleared [attention](../../../GLOSSARY.md#status-and-attention).
 Background connections receive supported core title/status data without taking
 control. [Plugin](../../../GLOSSARY.md) implementation is deferred.
 Current ordinary attach immediately requests control; it is not the
-passive connection mechanism. Initial selection or explicit user actions acquire
+passive connection mechanism.
+Optional core `focus-v1` requires explicit support through both library and
+daemon. Missing support is a visible focus limitation, not an unusable session;
+see [Focus](request-focus.md). Monitor-mode terminal presentation uses effective
+session geometry even when a passive connection is later promoted; the
+[canonical terminal contract](../terminal-integration.md) does not alter ordinary
+interactive attach.
+Initial selection or explicit user actions acquire
 control separately. Open success alone is not [readiness](../../../GLOSSARY.md).
 
 Opening establishes supported core [title state and ongoing changes](event-title.md)

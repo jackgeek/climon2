@@ -2,6 +2,9 @@
 
 **Status: developer-agreed specification in [#67](https://github.com/jackgeek/climon2/issues/67), not implemented.**
 This is the maintained contract, not evidence that any release conforms.
+The [#63 terminal contract](../terminal-integration.md) adds optional core
+[Focus](request-focus.md) and canonical monitor-mode presentation below;
+these amendments are also agreed, unimplemented.
 The [current private protocol](post-hello.md) is not this revision.
 Use the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md) alongside each message page.
@@ -60,8 +63,9 @@ The hello advertisement separately bounds request and server frame lengths,
 including type and body. Actual numeric values, queue budgets, deadlines, and
 exhaustion policy belong to [#69](https://github.com/jackgeek/climon2/issues/69).
 No illustrative advertisement is a default. Representable geometry is not an
-operational size limit; application, clamping, rendering and resize policy
-remain [#63](https://github.com/jackgeek/climon2/issues/63)/#69.
+operational size limit; application, clamping, rendering and resize semantics
+are in the [terminal contract](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness),
+with numeric supported limits/policy remaining #69.
 
 Unknown types, wrong directions, malformed/unidentifiable records, invalid
 lengths and bad IDs are connection-fatal. An otherwise identifiable but
@@ -116,9 +120,10 @@ claim it now preserves it.
 | `daemon-wire-v1` | Common revision, interactive control, [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts)/[viewing](../../../GLOSSARY.md#status-and-attention), leave, final results and kill. |
 | `monitor-v1` | Passive monitor entry, successor registration and promotion. |
 | `title-v1` | Current title and ordered changes. |
-| `status-v1` | Effective status/time/episodes and focus acknowledgement. |
+| `status-v1` | Effective status/time/episodes and explicit attention acknowledgement, distinct from application Focus. |
 | `notification-v1` | Normalized notification events; requires `status-v1`. |
 | `progress-v1` | Retained normalized progress and changes. |
+| `focus-v1` | Optional non-user core [application Focus](request-focus.md), with truthful state/forwarding outcomes; #63 amendment. |
 
 Core support is implicit in a revision-1 request; monitor support is implicit
 in monitor mode. Unknown optional requested families are not selected.
@@ -126,6 +131,9 @@ Unknown required families reject before effects. Required and selected
 families must satisfy dependencies. Events from unselected optional families
 must not be sent. Initial metadata explicitly reports unavailable families;
 unsupported title is not a fabricated supported empty title.
+Missing `focus-v1` keeps a session usable with an explicit focus limitation.
+It is advertised in the existing optional hello capability array and selected
+by Open; no new frozen-hello field or plugin negotiation is introduced.
 
 ## Correlation and context
 
@@ -210,6 +218,17 @@ restoration. Later immediate causal changes precede their correlated success
 response. Deferred resize acceptance does not pretend actual geometry has
 already been reported.
 
+Monitor-mode Display/restoration is always serialized at effective session
+geometry, including promotion/background grants, not host/requested geometry.
+The existing Grant/Restoration begin/Geometry fields suffice with this new
+[canonical policy](../terminal-integration.md#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1);
+no presentation-size field is added. Ordinary interactive direct/derived/
+native-history behavior is unchanged.
+Applied model readiness permits Ready and resize progress without selection or
+paint; selected application input additionally waits for a coherent painted
+current target. Focus validates current authority and readiness, but focus-out
+may come from a retained background controller.
+
 [Command final](event-command-final.md) is authoritative, distinct from
 [EOF](../TERMS.md#eof). It carries terminal Status when selected, not a second
 Status changed event. Zero normal exit is completed; all other exits/signals
@@ -223,8 +242,14 @@ revives terminal activity/attention.
 ## Viewing, acknowledgement and local notifications
 
 [Viewing](../../../GLOSSARY.md#status-and-attention) means this monitor's own
-unobstructed selected ready presentation. Menus clear viewing without releasing
-control/restoration. No aggregate viewing broadcast/schema exists.
+unobstructed selected ready live presentation, with host focus when reportable.
+Menus clear viewing and application keyboard focus without releasing
+control/restoration. Nonmodal notifications covering application cells clear
+viewing but retain keyboard focus and ready key input; scrollback does not
+change keyboard focus. Host focus loss clears viewing, not control/readiness;
+focus-in and notification disappearance never automatically acknowledge.
+Without host focus reports, assumed focus is explicitly best-effort.
+No aggregate viewing broadcast/schema exists.
 Another client/monitor viewing never suppresses this monitor's
 [toasts](../TERMS.md#toast). Per-attachment viewing is still reported to the
 daemon to validate acknowledgement.
@@ -233,10 +258,11 @@ daemon to validate acknowledgement.
 It requires the current controller, matching period/restoration, ready state,
 and latest reported viewing true; it affects the currently pending episode.
 No pending episode gives explicit no-change success.
-Explicit ordinary attach, focus/selection, or menu close/cancel may acknowledge
+Explicit ordinary attach, user focus/selection, or menu close/cancel may acknowledge
 current pending attention once ready and unobstructed. Opening/browsing menus
 never acknowledges. Cancel deferred acknowledgement if local target context
 changes before submission. Visibility alone never auto-acknowledges new requests.
+Host focus-in and non-user Focus are not these explicit selection actions.
 
 Attention arriving in a menu toasts immediately over it, without waiting for
 menu close or a daemon round trip. Still-pending previously suppressed attention
@@ -245,6 +271,9 @@ monitor lifetime, including reconnects. Acknowledged/cleared is not pending.
 A final result first learned while viewing stays suppressed forever in that
 monitor; first learned unviewed notifies once. Later menu opening cannot
 resurrect a suppressed completion toast. UTC timestamps are not episode IDs.
+The [global lowercase j jump and hint configuration](../terminal-integration.md#attention-jump-and-configurable-hints)
+amend #64/#59, without changing status or notification identities.
+Dedicated [Focus](request-focus.md) never clears or acknowledges attention.
 
 ## Source normalization
 
@@ -324,7 +353,8 @@ must progress independently. No required-record loss is excused by congestion.
 [#71](https://github.com/jackgeek/climon2/issues/71) owns complete native
 declarations, tags/layouts, calls, native errors and executable examples.
 Map the wire to the public interface; do not copy JSON or wire IDs as an ABI.
-#63 owns rendering/application/resize bounds; #69 numeric limits, deadlines
+The [#63 terminal contract](../terminal-integration.md) owns rendering/application/
+resize semantics and optional Focus; #69 numeric limits, deadlines
 and policy; #61 lifecycle, recovery, cleanup and headless behavior.
 
 Future namespaced/revisioned opaque plugin relay must preserve IDs, truthful

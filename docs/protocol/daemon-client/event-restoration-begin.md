@@ -22,6 +22,12 @@ Core support is required. [Grant](event-control-granted.md) precedes initial
 begin; a later restoration may occur in the same period, such as after resize.
 New begin invalidates previous/incomplete
 [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts). Identities are not reused.
+For monitor-mode connections geometry is the effective serialization size,
+including passive promotion/background grants, not the outer host. Build a new
+model/history separately; completion/application replaces both transactionally,
+never union/dedup. Partial/superseded models never become current. The
+[terminal contract](../terminal-integration.md) retains a coherent transition
+frame and permits old cache only through explicit stale inspection.
 Zero or more matching [Display](event-display.md) chunks precede matching
 [Restoration complete](event-restoration-complete.md).
 An empty restoration has no Display frames. Metadata may interleave without

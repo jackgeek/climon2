@@ -11,13 +11,18 @@ for the [restoration](../../../GLOSSARY.md) identified at
 
 Receiving completion is not enough: the [monitor](../../../GLOSSARY.md) must
 apply the complete current restoration before enabling application input.
+Transactionally replace the complete model/history; apply before wire Ready,
+without needing selection or paint for background models. Selected application
+input additionally waits for a coherent current painted target in usable space.
+There is no union/dedup with older history, which may be discarded on replacement.
+See the [terminal barriers](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness).
 Open or [takeover](../../../GLOSSARY.md) acceptance cannot substitute for this barrier. [Revocation](../../../GLOSSARY.md) or
 a newer restoration invalidates earlier [readiness](../../../GLOSSARY.md);
 obsolete completion must not enable input.
 
-[Terminal integration](https://github.com/jackgeek/climon2/issues/63) and
-[interface schemas](https://github.com/jackgeek/climon2/issues/71) must define
-exact identity fields, application mechanics, errors, and executable examples.
+[Terminal integration](../terminal-integration.md) owns agreed application
+mechanics; [interface schemas](https://github.com/jackgeek/climon2/issues/71) still
+owns exact native identity fields, errors, and executable examples.
 The [shared contract](../README.md#shared-in-process-communication-contract)
 and [semantic examples](../README.md#semantic-examples), agreed in
 [#66](https://github.com/jackgeek/climon2/issues/66), preserve causal

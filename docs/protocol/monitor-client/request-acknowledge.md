@@ -18,7 +18,13 @@ with **no observed episode ID**. Validate current
 true. No pending episode yields explicit no-change success.
 
 Explicit ordinary attach, focus/selection and menu close/cancel may submit once
-ready and unobstructed. Cancel deferred submission if the local target context
+ready and unobstructed.
+Here focus means an explicit user selection action, not host focus-in or the
+non-user [Focus](request-focus.md) operation. The
+[global lowercase j attention jump](../terminal-integration.md#attention-jump-and-configurable-hints)
+also selects/acquires only if needed, then acknowledges once applied, painted,
+ready and unobstructed. Toast disappearance/continued visibility never auto-acks.
+Cancel deferred submission if the local target context
 changes. Opening/browsing menus never acknowledges; continuous visibility does
 not auto-acknowledge new attention.
 Local queue acceptance is not [daemon](../../../GLOSSARY.md#sessions)

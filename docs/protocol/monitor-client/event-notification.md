@@ -28,6 +28,13 @@ pending do not create a new episode. Metadata delivery alone must not bypass
 the status-based [toast](../TERMS.md#toast) rules in the
 [notification policy](../../session-status.md#titles-and-notifications)
 and generate a second notification for the same episode.
+The [terminal presentation rules](../terminal-integration.md#mouse-gestures-and-notifications)
+permit nonmodal toast coverage while retaining ready keyboard focus/input and an
+existing application's drag target. New toast clicks dismiss without takeover.
+Coverage clears viewing; disappearance never auto-acknowledges.
+Needs-attention hints show the actual configured prefix plus lowercase j for the
+dynamic most-recent jump, not necessarily that toast's session. Planned
+`monitor.show_key_hints` hides all implicit monitor hints, not bindings/app text.
 
 Metadata is untrusted application data, not terminal instructions or markup.
 Do not forward raw sequences to the [host](../../../GLOSSARY.md#sessions), execute external actions, or infer

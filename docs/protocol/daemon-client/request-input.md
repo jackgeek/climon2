@@ -54,3 +54,11 @@ text conversion or defaults. Core [capability](../../../GLOSSARY.md#sessions)
 is required; bounds/policy #69
 and [monitor](../../../GLOSSARY.md#sessions) routing/application #63 remain separate.
 Related: [Ready](request-ready.md), [Display](event-display.md).
+
+The [#63 input contract](../terminal-integration.md#transparent-keyboard-and-exact-paste)
+requires supported cursor/keypad encoding, exact paste payload with markers only
+when application paste mode is on, and translated application-rectangle mouse
+events. Monitor input additionally waits for coherent selected paint, excluding
+modal UI/stale/too-small targets, not nonmodal toast coverage. Host replies stay
+monitor-local and application focus uses non-user [Focus](request-focus.md);
+neither enters real-user Input or clears attention.

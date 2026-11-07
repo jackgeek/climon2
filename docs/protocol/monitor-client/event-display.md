@@ -1,6 +1,6 @@
 # Display update
 
-**Status:** agreed communication requirements; terminal representation unresolved, not implemented.
+**Status:** agreed exact-terminal-byte representation and communication requirements, not implemented; native declarations pending #71.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
@@ -22,16 +22,21 @@ for [disconnected inspection](../../session-status.md#connection-loss-and-retain
 Cached content is explicitly stale/read-only, not a continuation of live
 mirroring; reconnection alone does not make it current.
 
-Ratatui is the required monitor renderer; its session-state integration remains
-with the terminal decision.
+Ratatui paints read-only Rust views of the monitor's own per-session `climon2-vt`.
+These views are planned: current `climon2-vt` exposes no public cells and is
+daemon-only. Never write session bytes directly to the host or emit duplicate
+parser query replies. The daemon remains the sole query authority.
 
 Never infer control, [readiness](../../../GLOSSARY.md), or daemon acceptance by scraping terminal [bytes](../TERMS.md#byte).
-Preserve arbitrary display bytes when the chosen representation requires them.
+Preserve arbitrary exact ordered display bytes, including invalid
+[UTF-8](../TERMS.md#unicode-and-utf-8).
 Use bounded transfers and [backpressure](../TERMS.md#backpressure), not silent
 loss of required updates or unbounded snapshot allocation.
 
-[Terminal integration](https://github.com/jackgeek/climon2/issues/63) must choose
-cells/state, terminal-output bytes, or another explicit representation.
+The [agreed terminal contract](../terminal-integration.md) selects exact terminal
+bytes, not native cross-release cells. Monitor-mode daemon bytes are canonically
+serialized at effective session geometry, including background grants; parse at
+those dimensions and paint local margins. Ordinary attach is unchanged.
 The [shared communication contract](../README.md#shared-in-process-communication-contract)
 and [semantic examples](../README.md#semantic-examples), agreed in
 [#66](https://github.com/jackgeek/climon2/issues/66), require tagged [C-compatible](../TERMS.md#c-abi)
@@ -44,12 +49,14 @@ Connection loss does not refresh the retained monitor-owned
 [virtual terminal](../../../GLOSSARY.md#sessions); input still needs fresh
 control/restoration/application after reconnect.
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) must specify
-exact types, encodings, error codes, and executable examples. Chunking remains
-with terminal integration and operational limits.
+exact native types, encodings, error codes, and executable examples. Chunk
+boundaries never change byte order; numerical transfer budgets remain #69.
 [Operational limits](https://github.com/jackgeek/climon2/issues/69) owns numerical
 budgets; no binary [frame](../TERMS.md#frame) maximum is assigned.
 
 [Wire Display](../daemon-client/event-display.md) is now specified separately:
 a 16-byte period/restoration header followed by nonempty exact binary bytes.
-This does not choose the native monitor rendering representation or its applied
-barrier. No old-authority Display crosses a newer begin or revocation.
+The native record carries the exact bytes with mapped authority, not that wire
+header as its C layout. Complete restoration replaces the model/history
+transactionally; apply before Ready and coherently paint before selected input.
+No old-authority Display crosses a newer begin or revocation.

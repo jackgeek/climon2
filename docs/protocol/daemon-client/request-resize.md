@@ -35,7 +35,12 @@ termination and resource/I/O failures use the shared
 [error catalog](core-v1.md#errors-and-bounded-delivery).
 Malformed records/IDs are fatal. No unknown fields/defaults; use the advertised
 request limit. Core support is required.
-[#63](https://github.com/jackgeek/climon2/issues/63)/#69 own actual sizing,
-clamping, application and resize policy. A background
+The [#63 geometry contract](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness)
+sets selected monitor desire to host width by (height minus one status row),
+with effective daemon geometry authoritative and blank local margins.
+Opening/closing overlays never resizes; actual host resize still applies under
+overlays. Too-small targets retain control/models but send no invalid resize or
+application input. Coalesce unsent intent only; preserve all submitted outcomes.
+#69 owns numeric limits/clamping bounds and progress budgets. A background
 [monitor](../../../GLOSSARY.md#sessions) must not
 originate resize just because it inherits control.

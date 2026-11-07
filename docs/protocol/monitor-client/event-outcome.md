@@ -9,6 +9,13 @@ an explicit completion or failure to the [monitor](../../../GLOSSARY.md).
 A final notification alone proves neither daemon-accepted
 [detach](../../../GLOSSARY.md) nor completed worker/resource cleanup.
 Observe client thread completion and resource lifetime separately.
+Presentation/parser/render incompatibility explicitly makes the target
+unavailable, application input/viewing off. Allow stale cache inspection and
+other clients/selector/exit where possible; invalid
+[UTF-8](../TERMS.md#unicode-and-utf-8) application
+[bytes](../TERMS.md#byte) alone
+are not a protocol error. See the [terminal failure contract](../terminal-integration.md#required-implementation-evidence);
+cleanup/retry/release policy still belongs to #61.
 
 Native crashes or aborts can terminate the monitor and every hosted client.
 Ordinary errors and recoverable panics should remain local where possible,

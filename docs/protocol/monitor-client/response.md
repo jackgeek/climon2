@@ -17,7 +17,12 @@ Known unexecuted stale work is explicitly rejected; uncertain execution remains
 
 Input acceptance is not application consumption; takeover acceptance is not
 [readiness](../../../GLOSSARY.md); [detach](../../../GLOSSARY.md) acceptance is
-not completed [client](../../../GLOSSARY.md#sessions) cleanup. Unknown or already-completed correlation must
+not completed [client](../../../GLOSSARY.md#sessions) cleanup.
+Optional non-user [Focus](request-focus.md) success distinguishes desired-state
+acceptance from complete focus [bytes](../TERMS.md#byte) accepted for forwarding,
+not a [PTY](../TERMS.md#pseudo-terminal-pty) read
+or command consumption. Application focus does not clear attention.
+Unknown or already-completed correlation must
 not create success. Communication failure leaves outstanding outcomes
 [indeterminate](../TERMS.md#indeterminate-outcome).
 

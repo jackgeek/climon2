@@ -35,6 +35,11 @@ Explicit ordinary attach, focus/selection and menu close/cancel may submit once
 ready and unobstructed. Cancel deferred submission if local target context
 changes. Opening/browsing menus never acknowledges; visibility alone never
 auto-acknowledges later attention.
+Here focus means an explicit user selection action, not host focus-in or
+non-user [Focus](request-focus.md). The
+[global lowercase j jump](../terminal-integration.md#attention-jump-and-configurable-hints)
+may select/acquire only if needed and then acknowledge once applied, painted,
+ready and unobstructed. Hiding a toast does not auto-acknowledge.
 
 Unsupported family, no [attachment](../../../GLOSSARY.md#attachment-and-control)/
 control/readiness/viewing, stale authority,

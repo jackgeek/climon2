@@ -22,6 +22,15 @@ restoration; this supersedes the earlier selector-overlay example.
 Highlighting/browsing never acknowledges. Ordinary interactive attach may
 report viewing once ready and unobstructed.
 
+The [terminal contract](../terminal-integration.md) additionally requires a live
+viewport and reportable host focus. Lost host focus, too-small/unavailable canvas,
+stale inspection, scrolled history, or notification coverage clears viewing
+without discarding applied restoration/control. Nonmodal toasts and normal
+scrollback retain application keyboard focus; modal UI does not.
+Hiding a notification or host focus-in alone never acknowledges attention.
+Host focus without reports is an explicit best-effort assumption.
+Application [Focus](request-focus.md) is a separate optional non-user core path.
+
 Explicit ordinary attach, focus/selection and menu close/cancel may separately
 acknowledge currently pending
 [attention](../../../GLOSSARY.md#status-and-attention), including
