@@ -1,5 +1,6 @@
 pub mod input;
 pub mod ui;
+use std::collections::VecDeque;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Status {
@@ -42,11 +43,15 @@ impl Session {
     }
 
     pub fn effective_status(&self) -> Status {
-        if !self.connected && !matches!(self.status, Status::Failed | Status::Completed) {
+        if !self.connected && !self.final_outcome() {
             Status::Disconnected
         } else {
             self.status
         }
+    }
+
+    pub fn final_outcome(&self) -> bool {
+        matches!(self.status, Status::Failed | Status::Completed)
     }
 
     pub fn status_text(&self) -> String {
@@ -55,7 +60,7 @@ impl Session {
             Status::Acknowledged => "Acknowledged".into(),
             Status::Running => "Running".into(),
             Status::Idle => "Idle".into(),
-            Status::Completed => "Completed".into(),
+            Status::Completed => "Succeeded".into(),
             Status::Disconnected => "Disconnected".into(),
             Status::Failed => match self.outcome {
                 Some(Outcome::Exit(code)) => format!("Failed - exit {code}"),
@@ -64,26 +69,81 @@ impl Session {
             },
         }
     }
+}
 
-    pub fn final_outcome(&self) -> bool {
-        matches!(self.status, Status::Failed | Status::Completed)
+#[derive(Clone, Copy, Debug)]
+pub struct ToastFrame {
+    pub drawn: f64,
+    pub erased: f64,
+    pub alpha: f64,
+}
+
+#[derive(Debug)]
+pub struct Toast {
+    pub title: String,
+    started: u64,
+    dismissed: Option<(u64, ToastFrame)>,
+}
+
+impl Toast {
+    fn new(title: String, started: u64) -> Self {
+        Self {
+            title,
+            started,
+            dismissed: None,
+        }
     }
-}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Focus {
-    Search,
-    Select,
-    Inspect,
-    Details,
-    Cancel,
-}
+    pub fn frame(&self, now: u64) -> Option<ToastFrame> {
+        if let Some((at, snapshot)) = self.dismissed {
+            let elapsed = now.saturating_sub(at) as f64;
+            let fade = if snapshot.alpha > 0.0 { 300.0 } else { 0.0 };
+            if elapsed < fade {
+                return Some(ToastFrame {
+                    alpha: snapshot.alpha * (1.0 - elapsed / fade),
+                    ..snapshot
+                });
+            }
+            if elapsed < fade + 400.0 {
+                return Some(ToastFrame {
+                    drawn: snapshot.drawn,
+                    alpha: 0.0,
+                    erased: snapshot.erased + (1.0 - snapshot.erased) * (elapsed - fade) / 400.0,
+                });
+            }
+            return None;
+        }
+        let elapsed = now.saturating_sub(self.started) as f64;
+        match elapsed {
+            age if age < 400.0 => Some(ToastFrame {
+                drawn: age / 400.0,
+                erased: 0.0,
+                alpha: 0.0,
+            }),
+            age if age < 2400.0 => Some(ToastFrame {
+                drawn: 1.0,
+                erased: 0.0,
+                alpha: 1.0,
+            }),
+            age if age < 2700.0 => Some(ToastFrame {
+                drawn: 1.0,
+                erased: 0.0,
+                alpha: 1.0 - (age - 2400.0) / 300.0,
+            }),
+            age if age < 3100.0 => Some(ToastFrame {
+                drawn: 1.0,
+                erased: (age - 2700.0) / 400.0,
+                alpha: 0.0,
+            }),
+            _ => None,
+        }
+    }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Variant {
-    A,
-    B,
-    C,
+    fn dismiss(&mut self, now: u64) {
+        if self.dismissed.is_none() {
+            self.dismissed = self.frame(now).map(|snapshot| (now, snapshot));
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -92,12 +152,9 @@ pub struct State {
     pub selected: Option<u128>,
     pub highlight: Option<u128>,
     pub menu: bool,
-    pub details: bool,
     pub inspecting: bool,
     pub query: Vec<char>,
     pub cursor: usize,
-    pub focus: Focus,
-    pub variant: Variant,
     pub hints: bool,
     pub message: String,
     pub input: Vec<String>,
@@ -108,22 +165,21 @@ pub struct State {
     pub list_offset: usize,
     pub manual_scroll: bool,
     pub prefix_label: String,
-    pub details_offset: u16,
+    pub now_ms: u64,
+    pub toast: Option<Toast>,
+    pub toast_queue: VecDeque<String>,
 }
 
 impl State {
     pub fn new(sessions: Vec<Session>) -> Self {
-        Self {
+        let mut state = Self {
             selected: sessions.first().map(|session| session.id),
             sessions,
             highlight: None,
             menu: false,
-            details: false,
             inspecting: false,
             query: Vec::new(),
             cursor: 0,
-            focus: Focus::Search,
-            variant: Variant::A,
             hints: true,
             message: String::new(),
             input: Vec::new(),
@@ -134,8 +190,16 @@ impl State {
             list_offset: 0,
             manual_scroll: false,
             prefix_label: "Ctrl+]".into(),
-            details_offset: 0,
-        }
+            now_ms: 0,
+            toast: None,
+            toast_queue: VecDeque::new(),
+        };
+        state.initial_toasts();
+        state
+    }
+
+    pub fn session(&self, id: u128) -> Option<&Session> {
+        self.sessions.iter().find(|session| session.id == id)
     }
 
     pub fn visible_ids(&self) -> Vec<u128> {
@@ -163,12 +227,9 @@ impl State {
             return;
         }
         self.menu = true;
-        self.details = false;
-        self.details_offset = 0;
         self.pending_prefix = false;
         self.query.clear();
         self.cursor = 0;
-        self.focus = Focus::Search;
         self.list_offset = 0;
         self.manual_scroll = false;
         let ids = self.visible_ids();
@@ -181,22 +242,14 @@ impl State {
 
     pub fn cancel(&mut self) {
         self.pending_prefix = false;
-        if self.details {
-            self.details = false;
-            self.focus = Focus::Search;
-        } else if self.menu {
+        if self.menu {
             self.menu = false;
             self.message = "Cancelled - selected session and control unchanged".into();
-        } else if self.inspecting {
-            self.inspecting = false;
-            self.history_offset = 0;
-            self.focus = Focus::Search;
-            self.message = "Left read-only inspection - no control acquired".into();
         }
     }
 
     pub fn insert_search(&mut self, text: &str) {
-        if !self.menu || self.details || self.focus != Focus::Search {
+        if !self.menu {
             return;
         }
         for ch in text.chars() {
@@ -209,6 +262,15 @@ impl State {
             self.cursor += 1;
         }
         self.search_changed();
+    }
+
+    pub fn search_changed(&mut self) {
+        let ids = self.visible_ids();
+        self.highlight = self
+            .highlight
+            .filter(|id| ids.contains(id))
+            .or_else(|| ids.first().copied());
+        self.manual_scroll = false;
     }
 
     pub fn move_highlight(&mut self, delta: isize) {
@@ -249,22 +311,28 @@ impl State {
         self.select(id);
     }
 
-    pub fn inspect(&mut self) {
-        let Some(session) = self.highlight.and_then(|id| self.session(id)) else {
-            self.message = "Choose a session before inspecting".into();
+    fn select(&mut self, id: u128) {
+        let Some(session) = self.sessions.iter_mut().find(|session| session.id == id) else {
+            self.message = "Selected session is unavailable".into();
             return;
         };
-        if session.cache.is_empty() {
-            self.message = "No cached terminal content is available".into();
-            return;
-        }
-        self.selected = Some(session.id);
-        self.inspecting = true;
-        self.history_offset = 0;
+        self.selected = Some(id);
         self.menu = false;
-        self.details = false;
+        self.inspecting = !session.connected || session.final_outcome();
         self.pending_prefix = false;
-        self.message = "READ-ONLY cached inspection - no control acquired".into();
+        self.history_offset = 0;
+        if self.inspecting {
+            self.message = "Read-only retained history - no control acquired".into();
+        } else {
+            session.controlled = true;
+            if session.status == Status::NeedsAttention {
+                session.status = Status::Acknowledged;
+                self.tick += 1;
+                session.changed = self.tick;
+            }
+            self.message =
+                "Selected explicitly; synthetic control/restoration/paint completed".into();
+        }
     }
 
     pub fn application_input(&mut self, text: &str) {
@@ -296,46 +364,6 @@ impl State {
         } else {
             self.message = "No sessions need attention".into();
         }
-    }
-
-    pub fn session(&self, id: u128) -> Option<&Session> {
-        self.sessions.iter().find(|session| session.id == id)
-    }
-
-    fn select(&mut self, id: u128) {
-        let Some(session) = self.sessions.iter_mut().find(|session| session.id == id) else {
-            self.message = "Selected session is unavailable".into();
-            return;
-        };
-        self.selected = Some(id);
-        self.menu = false;
-        self.details = false;
-        self.inspecting = false;
-        self.pending_prefix = false;
-        self.history_offset = 0;
-        if session.final_outcome() {
-            self.message = "Retained final terminal - read-only".into();
-        } else if !session.connected {
-            self.message = "Selected session is disconnected - no automatic takeover".into();
-        } else {
-            session.controlled = true;
-            if session.status == Status::NeedsAttention {
-                session.status = Status::Acknowledged;
-                self.tick += 1;
-                session.changed = self.tick;
-            }
-            self.message =
-                "Selected explicitly; synthetic control/restoration/paint completed".into();
-        }
-    }
-
-    pub fn search_changed(&mut self) {
-        let ids = self.visible_ids();
-        self.highlight = self
-            .highlight
-            .filter(|id| ids.contains(id))
-            .or_else(|| ids.first().copied());
-        self.manual_scroll = false;
     }
 
     pub fn page_start(&self, height: usize) -> usize {
@@ -370,18 +398,69 @@ impl State {
         }
     }
 
+    fn queue_toast(&mut self, title: String) {
+        if self.toast.is_none() {
+            self.toast = Some(Toast::new(title, self.now_ms));
+        } else {
+            self.toast_queue.push_back(title);
+        }
+    }
+
+    fn initial_toasts(&mut self) {
+        let titles: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|s| s.connected && s.status == Status::NeedsAttention)
+            .map(|s| s.label().to_owned())
+            .collect();
+        for title in titles {
+            self.queue_toast(title);
+        }
+    }
+
+    pub fn tick_toast(&mut self, now: u64) {
+        self.now_ms = now;
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.frame(now).is_none())
+        {
+            self.toast = None;
+        }
+        if self.toast.is_none()
+            && let Some(title) = self.toast_queue.pop_front()
+        {
+            self.toast = Some(Toast::new(title, now));
+        }
+    }
+
+    pub fn dismiss_toast(&mut self) {
+        if let Some(toast) = &mut self.toast {
+            toast.dismiss(self.now_ms);
+        }
+    }
+
     pub fn scenario(&mut self, number: u8) {
         self.tick += 1;
         let id = self.highlight.or(self.selected);
         match number {
             4 => {
+                let mut title = None;
                 if let Some(session) =
                     id.and_then(|id| self.sessions.iter_mut().find(|s| s.id == id))
+                    && session.connected
+                    && !session.final_outcome()
+                    && session.status != Status::NeedsAttention
                 {
                     session.status = Status::NeedsAttention;
                     session.changed = self.tick;
-                    self.message =
-                        "Scenario: highlighted session requests attention and reorders".into();
+                    title = Some(session.label().to_owned());
+                }
+                if let Some(title) = title {
+                    self.queue_toast(title);
+                    self.message = "Scenario: new attention episode queued a title toast".into();
+                } else {
+                    self.message = "Scenario: no new attention episode; no duplicate toast".into();
                 }
             }
             5 => {
@@ -411,6 +490,9 @@ impl State {
                 self.selected = Some(1);
                 self.highlight = None;
                 self.inspecting = false;
+                self.toast = None;
+                self.toast_queue.clear();
+                self.initial_toasts();
                 self.message = "Scenario: fixtures reset; choose a row explicitly".into();
             }
             _ => {}
@@ -421,57 +503,31 @@ impl State {
 
 pub fn samples() -> Vec<Session> {
     let rows = [
-        ("Shell", "/work/climon2", Status::Idle, None),
-        ("Build", "/work/climon2", Status::Running, None),
-        (
-            "Review needed",
-            "/work/service",
-            Status::NeedsAttention,
-            None,
-        ),
-        (
-            "Build",
-            "/work/other-project",
-            Status::Failed,
-            Some(Outcome::Exit(2)),
-        ),
+        ("Shell", Status::Idle, None),
+        ("Build", Status::Running, None),
+        ("Review needed", Status::NeedsAttention, None),
+        ("Build", Status::Failed, Some(Outcome::Exit(2))),
         (
             "Interrupted tests",
-            "/work/service",
             Status::Failed,
             Some(Outcome::Signal(9)),
         ),
-        (
-            "Finished",
-            "/work/docs",
-            Status::Completed,
-            Some(Outcome::Exit(0)),
-        ),
-        ("Lost connection", "/work/archive", Status::Running, None),
-        (
-            "Passive - never controlled",
-            "/work/passive",
-            Status::Idle,
-            None,
-        ),
+        ("Finished", Status::Completed, Some(Outcome::Exit(0))),
+        ("Lost connection", Status::Running, None),
+        ("Passive - never controlled", Status::Idle, None),
         (
             "界 wide title / cafe\u{301} / a deliberately very long literal title",
-            "/work/unicode",
             Status::Acknowledged,
             None,
         ),
     ];
     rows.into_iter()
         .enumerate()
-        .map(|(index, (title, cwd, status, outcome))| Session {
+        .map(|(index, (title, status, outcome))| Session {
             id: index as u128 + 1,
             title: title.into(),
-            command: if index == 0 {
-                "bash --noprofile --norc".into()
-            } else {
-                "cargo test --workspace".into()
-            },
-            cwd: cwd.into(),
+            command: "cargo test --workspace".into(),
+            cwd: "/work/climon2".into(),
             status,
             changed: 100 + index as u64,
             connected: index != 6 && !matches!(status, Status::Failed | Status::Completed),

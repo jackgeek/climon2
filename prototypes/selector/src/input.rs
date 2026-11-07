@@ -1,4 +1,4 @@
-use crate::{Focus, State, Variant, ui::Hits};
+use crate::{State, ui::Hits};
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
@@ -50,44 +50,17 @@ pub fn handle(state: &mut State, event: Event, hits: &Hits, prefix: Prefix, usab
         }
         Event::Mouse(mouse) => {
             let point = ratatui::layout::Position::new(mouse.column, mouse.row);
-            if state.inspecting
-                && !state.menu
-                && mouse.kind == MouseEventKind::Down(MouseButton::Left)
-                && hits.buttons.iter().any(|(_, rect)| rect.contains(point))
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                && hits.toast.is_some_and(|rect| rect.contains(point))
             {
-                state.cancel();
-                return;
-            }
-            if state.menu && state.details {
-                match mouse.kind {
-                    MouseEventKind::ScrollDown => {
-                        state.details_offset = state.details_offset.saturating_add(3)
-                    }
-                    MouseEventKind::ScrollUp => {
-                        state.details_offset = state.details_offset.saturating_sub(3)
-                    }
-                    MouseEventKind::Down(MouseButton::Left)
-                        if hits.buttons.iter().any(|(_, rect)| rect.contains(point)) =>
-                    {
-                        state.cancel()
-                    }
-                    _ => {}
-                }
+                state.dismiss_toast();
                 return;
             }
             if state.menu {
-                if mouse.kind == MouseEventKind::Down(crossterm::event::MouseButton::Left) {
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
                     if let Some((id, _)) = hits.rows.iter().find(|(_, rect)| rect.contains(point)) {
                         state.highlight = Some(*id);
-                        state.focus = Focus::Search;
                         state.manual_scroll = false;
-                    } else if let Some((focus, _)) =
-                        hits.buttons.iter().find(|(_, rect)| rect.contains(point))
-                    {
-                        state.focus = *focus;
-                        activate(state);
-                    } else if hits.search.contains(point) {
-                        state.focus = Focus::Search;
                     }
                 } else if hits.list.contains(point) {
                     let maximum = state.visible_ids().len().saturating_sub(hits.page_size);
@@ -103,13 +76,13 @@ pub fn handle(state: &mut State, event: Event, hits: &Hits, prefix: Prefix, usab
                     state.manual_scroll = true;
                 }
             } else if usable {
+                let maximum = state
+                    .selected
+                    .and_then(|id| state.session(id))
+                    .map_or(0, |s| s.cache.len().saturating_sub(1));
                 match mouse.kind {
                     MouseEventKind::ScrollUp => {
-                        let maximum = state
-                            .selected
-                            .and_then(|id| state.session(id))
-                            .map_or(0, |s| s.cache.len().saturating_sub(1));
-                        state.history_offset = (state.history_offset + 3).min(maximum);
+                        state.history_offset = (state.history_offset + 3).min(maximum)
                     }
                     MouseEventKind::ScrollDown => {
                         state.history_offset = state.history_offset.saturating_sub(3)
@@ -125,8 +98,13 @@ pub fn handle(state: &mut State, event: Event, hits: &Hits, prefix: Prefix, usab
 fn key_input(state: &mut State, key: KeyEvent, hits: &Hits, prefix: Prefix, usable: bool) {
     if prefix == Prefix::Escape && key.modifiers == KeyModifiers::ALT {
         state.pending_prefix = true;
-        let key = KeyEvent::new(key.code, KeyModifiers::NONE);
-        key_input(state, key, hits, prefix, usable);
+        key_input(
+            state,
+            KeyEvent::new(key.code, KeyModifiers::NONE),
+            hits,
+            prefix,
+            usable,
+        );
         return;
     }
     if state.pending_prefix {
@@ -167,27 +145,11 @@ fn key_input(state: &mut State, key: KeyEvent, hits: &Hits, prefix: Prefix, usab
         return;
     }
     match key.code {
-        KeyCode::F(2) => {
-            state.variant = match state.variant {
-                Variant::A => Variant::B,
-                Variant::B => Variant::C,
-                Variant::C => Variant::A,
-            }
-        }
         KeyCode::F(3) => state.hints = !state.hints,
         KeyCode::F(number @ 4..=8) => state.scenario(number),
-        KeyCode::Esc => state.cancel(),
+        KeyCode::Esc if state.menu => state.cancel(),
         _ if !usable => {}
-        _ if state.menu && !state.details => menu_key(state, key, hits),
-        _ if state.menu => match key.code {
-            KeyCode::Tab | KeyCode::BackTab => state.focus = Focus::Cancel,
-            KeyCode::Enter if state.focus == Focus::Cancel => state.cancel(),
-            KeyCode::Up => state.details_offset = state.details_offset.saturating_sub(1),
-            KeyCode::Down => state.details_offset = state.details_offset.saturating_add(1),
-            _ => {}
-        },
-        KeyCode::Tab | KeyCode::BackTab if state.inspecting => state.focus = Focus::Cancel,
-        KeyCode::Enter if state.inspecting && state.focus == Focus::Cancel => state.cancel(),
+        _ if state.menu => menu_key(state, key, hits),
         KeyCode::Char('t')
             if key.modifiers.contains(KeyModifiers::CONTROL) && !state.inspecting =>
         {
@@ -210,22 +172,7 @@ fn menu_key(state: &mut State, key: KeyEvent, hits: &Hits) {
         KeyCode::Down => state.move_highlight(1),
         KeyCode::PageUp => state.move_highlight(-(hits.page_size as isize)),
         KeyCode::PageDown => state.move_highlight(hits.page_size as isize),
-        KeyCode::Tab | KeyCode::BackTab => {
-            let mut actions = vec![Focus::Search];
-            actions.extend(hits.buttons.iter().map(|(focus, _)| *focus));
-            let current = actions
-                .iter()
-                .position(|focus| *focus == state.focus)
-                .unwrap_or(0);
-            let next = if key.code == KeyCode::BackTab {
-                (current + actions.len() - 1) % actions.len()
-            } else {
-                (current + 1) % actions.len()
-            };
-            state.focus = actions[next];
-        }
-        KeyCode::Enter => activate(state),
-        _ if state.focus != Focus::Search => {}
+        KeyCode::Enter => state.confirm(),
         KeyCode::Backspace if state.cursor > 0 => {
             state.cursor -= 1;
             state.query.remove(state.cursor);
@@ -247,21 +194,6 @@ fn menu_key(state: &mut State, key: KeyEvent, hits: &Hits) {
             state.insert_search(&ch.to_string())
         }
         _ => {}
-    }
-}
-
-fn activate(state: &mut State) {
-    match state.focus {
-        Focus::Search | Focus::Select => state.confirm(),
-        Focus::Inspect => state.inspect(),
-        Focus::Details => {
-            if state.highlight.is_some() {
-                state.details = true;
-                state.details_offset = 0;
-                state.pending_prefix = false;
-            }
-        }
-        Focus::Cancel => state.cancel(),
     }
 }
 

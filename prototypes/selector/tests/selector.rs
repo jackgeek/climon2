@@ -2,11 +2,15 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use monitor_selector_prototype::{
-    Focus,
+    Outcome, Session, State, Status,
     input::{self, Prefix},
+    ui,
 };
-use monitor_selector_prototype::{Outcome, Session, State, Status, Variant, ui};
-use ratatui::{Terminal, backend::TestBackend};
+use ratatui::{
+    Terminal,
+    backend::{Backend, TestBackend},
+    style::Color,
+};
 
 fn session(id: u128, title: &str, status: Status, changed: u64) -> Session {
     Session {
@@ -31,6 +35,36 @@ fn state() -> State {
     ])
 }
 
+fn frame(state: &State, width: u16, height: u16) -> (Terminal<TestBackend>, ui::Hits) {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    let mut hits = ui::Hits::default();
+    terminal
+        .draw(|frame| hits = ui::paint(frame, state))
+        .unwrap();
+    (terminal, hits)
+}
+
+fn text(terminal: &Terminal<TestBackend>) -> String {
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect()
+}
+
+fn key(state: &mut State, code: KeyCode, modifiers: KeyModifiers, prefix: Prefix) {
+    let (_, hits) = frame(state, 100, 32);
+    input::handle(
+        state,
+        Event::Key(KeyEvent::new(code, modifiers)),
+        &hits,
+        prefix,
+        true,
+    );
+}
+
 #[test]
 fn opening_navigation_and_cancel_never_select_or_take_control() {
     let mut state = state();
@@ -48,7 +82,7 @@ fn opening_navigation_and_cancel_never_select_or_take_control() {
 }
 
 #[test]
-fn filtering_is_literal_case_insensitive_and_paste_is_not_a_command() {
+fn literal_filtering_and_paste_never_execute_monitor_actions() {
     let mut state = state();
     state.open();
     state.insert_search("bUiLd");
@@ -68,7 +102,7 @@ fn filtering_is_literal_case_insensitive_and_paste_is_not_a_command() {
 }
 
 #[test]
-fn asynchronous_reordering_preserves_identity_but_removal_cannot_redirect_enter() {
+fn asynchronous_changes_preserve_identity_and_cannot_redirect_enter() {
     let mut state = state();
     state.open();
     state.highlight = Some(2);
@@ -84,29 +118,51 @@ fn asynchronous_reordering_preserves_identity_but_removal_cannot_redirect_enter(
     assert_eq!(state.selected, Some(1));
     assert!(state.menu);
     state.move_highlight(1);
-    assert_eq!(state.highlight, Some(3));
     state.confirm();
     assert_eq!(state.selected, Some(3));
     assert!(!state.menu);
 }
 
 #[test]
-fn updated_title_losing_match_requires_new_explicit_highlight() {
+fn title_losing_search_match_requires_new_explicit_highlight() {
     let mut state = state();
     state.open();
     state.insert_search("build");
     state.sessions[1].title = "Other".into();
     state.reconcile();
-    assert_eq!(state.highlight, None);
     state.confirm();
+    assert_eq!(state.highlight, None);
     assert_eq!(state.selected, Some(1));
     assert!(state.menu);
 }
 
 #[test]
-fn navigation_does_not_wrap_and_search_editing_preserves_unicode() {
+fn always_focused_search_ignores_tab_and_arrows_navigate_without_wrapping() {
     let mut state = state();
     state.open();
+    key(
+        &mut state,
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+        Prefix::CtrlBracket,
+    );
+    key(
+        &mut state,
+        KeyCode::Char('b'),
+        KeyModifiers::NONE,
+        Prefix::CtrlBracket,
+    );
+    assert_eq!(state.query, ['b']);
+    key(
+        &mut state,
+        KeyCode::Down,
+        KeyModifiers::NONE,
+        Prefix::CtrlBracket,
+    );
+    assert_eq!(state.highlight, Some(2));
+    state.query.clear();
+    state.cursor = 0;
+    state.search_changed();
     state.move_highlight(100);
     assert_eq!(state.highlight, Some(1));
     state.move_highlight(-100);
@@ -118,146 +174,47 @@ fn navigation_does_not_wrap_and_search_editing_preserves_unicode() {
 }
 
 #[test]
-fn inspection_never_acquires_and_disconnected_confirmation_never_falls_back() {
-    let mut state = state();
-    state.open();
-    state.highlight = Some(2);
-    state.inspect();
-    assert_eq!(state.selected, Some(2));
-    assert!(state.inspecting);
-    assert!(!state.sessions[1].controlled);
-    state.application_input("blocked");
-    assert!(state.input.is_empty());
-    state.cancel();
-    assert!(!state.inspecting);
-    assert!(!state.sessions[1].controlled);
-    state.open();
-    state.sessions[1].connected = false;
-    state.confirm();
-    assert_eq!(state.selected, Some(2));
-    assert!(!state.sessions[1].controlled);
-    assert!(!state.menu);
-    assert!(state.message.contains("disconnected"));
-}
-
-#[test]
-fn passive_session_without_cache_cannot_be_inspected() {
-    let mut state = state();
-    state.sessions[1].cache.clear();
-    state.open();
-    state.highlight = Some(2);
-    state.inspect();
-    assert!(state.menu);
-    assert_eq!(state.selected, Some(1));
-    assert!(state.message.contains("No cached"));
-}
-
-#[test]
-fn attention_jump_uses_current_connected_state_not_old_menu_highlight() {
-    let mut state = state();
-    state.sessions[1].status = Status::NeedsAttention;
-    state.sessions[1].changed = 40;
-    state.sessions[1].connected = false;
-    state.open();
-    state.highlight = Some(1);
-    state.jump_attention();
-    assert_eq!(state.selected, Some(3));
-    assert!(!state.menu);
-    assert_eq!(state.sessions[2].status, Status::Acknowledged);
-    state.jump_attention();
-    assert_eq!(state.selected, Some(3));
-    assert_eq!(state.message, "No sessions need attention");
-}
-
-#[test]
-fn selector_variants_render_minimal_details_and_truthful_signal_failure() {
-    for variant in [Variant::A, Variant::B, Variant::C] {
+fn enter_opens_disconnected_or_final_history_and_chrome_is_truthful() {
+    for (status, connected, expected) in [
+        (Status::Running, false, "Disconnected"),
+        (Status::Failed, false, "Failed - signal 9"),
+        (Status::Completed, false, "Succeeded"),
+    ] {
         let mut state = state();
-        state.variant = variant;
-        state.sessions[1].status = Status::Failed;
+        state.sessions[1].status = status;
+        state.sessions[1].connected = connected;
         state.sessions[1].outcome = Some(Outcome::Signal(9));
         state.open();
         state.highlight = Some(2);
-        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
-        terminal.draw(|frame| ui::render(frame, &state)).unwrap();
-        let text: String = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(text.contains("Build"));
-        assert!(text.contains("/work/project"));
-        assert!(text.contains("signal 9"));
-        assert!(!text.contains("00000000-"));
+        state.confirm();
+        assert_eq!(state.selected, Some(2));
+        assert!(state.inspecting);
+        assert!(!state.sessions[1].controlled);
+        state.application_input("blocked");
+        assert!(state.input.is_empty());
+        let (terminal, _) = frame(&state, 100, 32);
+        let text = text(&terminal);
+        assert!(text.contains(expected));
+        assert!(text.contains("retained output"));
+        assert!(text.contains("READ-ONLY"));
     }
 }
 
 #[test]
-fn compact_details_no_matches_too_small_and_hidden_hints_are_visible_behaviors() {
+fn missing_disconnected_cache_is_explicit_and_connected_enter_takes_control() {
     let mut state = state();
+    state.sessions[1].connected = false;
+    state.sessions[1].cache.clear();
     state.open();
     state.highlight = Some(2);
-    state.details = true;
-    let mut terminal = Terminal::new(TestBackend::new(35, 10)).unwrap();
-    terminal.draw(|frame| ui::render(frame, &state)).unwrap();
-    let text: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect();
-    assert!(text.contains("/work/project"));
-    state.details = false;
-    state.insert_search("no match");
-    terminal.draw(|frame| ui::render(frame, &state)).unwrap();
-    let text: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect();
-    assert!(text.contains("No matching sessions"));
-    state.hints = false;
-    let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
-    terminal.draw(|frame| ui::render(frame, &state)).unwrap();
-    let text: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect();
-    assert!(!text.contains("Enter selects"));
-    assert!(text.contains("Cancel"));
-    let mut terminal = Terminal::new(TestBackend::new(12, 3)).unwrap();
-    terminal.draw(|frame| ui::render(frame, &state)).unwrap();
-    let text: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect();
-    assert!(text.contains("too small"));
-}
-
-fn key(state: &mut State, code: KeyCode, modifiers: KeyModifiers, prefix: Prefix) {
-    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-    let mut hits = ui::Hits::default();
-    terminal
-        .draw(|frame| hits = ui::paint(frame, state))
-        .unwrap();
-    input::handle(
-        state,
-        Event::Key(KeyEvent::new(code, modifiers)),
-        &hits,
-        prefix,
-        true,
-    );
+    state.confirm();
+    let (terminal, _) = frame(&state, 100, 32);
+    assert!(text(&terminal).contains("No cached terminal content"));
+    state.sessions[1].connected = true;
+    state.open();
+    state.confirm();
+    assert!(state.sessions[1].controlled);
+    assert!(!state.inspecting);
 }
 
 #[test]
@@ -338,83 +295,169 @@ fn keyboard_prefix_paste_and_menu_editing_are_isolated() {
 }
 
 #[test]
-fn single_click_only_highlights_and_explicit_select_button_acquires() {
+fn single_click_only_highlights_and_enter_acquires() {
     let mut state = state();
     state.open();
-    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-    let mut hits = ui::Hits::default();
-    terminal
-        .draw(|frame| hits = ui::paint(frame, &state))
-        .unwrap();
+    let (_, hits) = frame(&state, 100, 32);
     let row = hits.rows.iter().find(|(id, _)| *id == 2).unwrap().1;
-    let click = |rect: ratatui::layout::Rect| {
+    input::handle(
+        &mut state,
         Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: rect.x,
-            row: rect.y,
+            column: row.x,
+            row: row.y,
             modifiers: KeyModifiers::NONE,
-        })
-    };
-    input::handle(&mut state, click(row), &hits, Prefix::CtrlBracket, true);
+        }),
+        &hits,
+        Prefix::CtrlBracket,
+        true,
+    );
     assert_eq!(state.highlight, Some(2));
     assert_eq!(state.selected, Some(1));
     assert!(!state.sessions[1].controlled);
-    let button = hits
-        .buttons
-        .iter()
-        .find(|(focus, _)| *focus == Focus::Select)
-        .unwrap()
-        .1;
-    input::handle(&mut state, click(button), &hits, Prefix::CtrlBracket, true);
+    key(
+        &mut state,
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+        Prefix::CtrlBracket,
+    );
     assert_eq!(state.selected, Some(2));
     assert!(state.sessions[1].controlled);
 }
 
 #[test]
-fn compact_actions_and_escape_prefix_details_have_an_accessible_cancel() {
+fn double_selector_border_mixed_search_junctions_and_status_title_columns() {
     let mut state = state();
     state.open();
-    let mut terminal = Terminal::new(TestBackend::new(26, 14)).unwrap();
-    let mut hits = ui::Hits::default();
-    terminal
-        .draw(|frame| hits = ui::paint(frame, &state))
-        .unwrap();
-    let text: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect();
-    assert!(text.contains("[Cancel]"), "{text}");
-    assert!(text.contains("[Details]"), "{text}");
-    state.details = true;
-    key(&mut state, KeyCode::Tab, KeyModifiers::NONE, Prefix::Escape);
-    key(
-        &mut state,
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-        Prefix::Escape,
+    let (terminal, hits) = frame(&state, 100, 32);
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(hits.overlay.x, hits.overlay.y)].symbol(), "╔");
+    assert_eq!(buffer[(hits.overlay.x, hits.search.y + 1)].symbol(), "╟");
+    assert_eq!(
+        buffer[(hits.overlay.right() - 1, hits.search.y + 1)].symbol(),
+        "╢"
     );
-    assert!(!state.details);
-    assert!(state.menu);
+    let text = text(&terminal);
+    assert!(text.contains("Needs attention"));
+    assert!(text.contains("Review"));
+    assert!(!text.contains("Highlighted session"));
+    assert!(!text.contains("control elsewhere"));
+    assert!(!text.contains("[Select]"));
+    assert!(!text.contains("Enter selects"));
+    assert!(!text.contains("* current"));
+    assert!(!text.contains("Directory:"));
 }
 
 #[test]
-fn hidden_hints_do_not_leak_takeover_shortcuts_in_placeholder() {
+fn toast_size_hint_row_animation_and_clockwise_erasure() {
     let mut state = state();
+    state.open();
+    state.tick_toast(200);
+    let (terminal, hits) = frame(&state, 100, 32);
+    let toast = hits.toast.unwrap();
+    assert!(toast.width <= 40);
+    assert_eq!(toast.height, 4);
+    assert_eq!(
+        terminal.backend().buffer()[(toast.x, toast.y)].symbol(),
+        "┌"
+    );
+    assert_eq!(
+        terminal.backend().buffer()[(toast.x, toast.y)].fg,
+        Color::Yellow
+    );
+    assert_eq!(
+        terminal.backend().buffer()[(toast.right() - 1, toast.y)].symbol(),
+        "┐"
+    );
+    assert_eq!(
+        terminal.backend().buffer()[(toast.x, toast.bottom() - 1)].symbol(),
+        " "
+    );
+    assert!(!text(&terminal).contains("Ctrl+]+j"));
+    state.tick_toast(500);
+    let (terminal, _) = frame(&state, 100, 32);
+    assert!(text(&terminal).contains("Ctrl+]+j"));
+    state.tick_toast(2500);
+    let (terminal, _) = frame(&state, 100, 32);
+    let title_color = terminal.backend().buffer()[(toast.x + 1, toast.y + 1)].fg;
+    assert!(matches!(title_color, Color::Rgb(value, _, _) if value > 0 && value < 245));
+    state.tick_toast(2800);
+    let (terminal, _) = frame(&state, 100, 32);
+    assert_eq!(
+        terminal.backend().buffer()[(toast.x, toast.y)].symbol(),
+        " "
+    );
+    assert_eq!(
+        terminal.backend().buffer()[(toast.x, toast.bottom() - 1)].symbol(),
+        "└"
+    );
     state.hints = false;
-    state.selected = Some(2);
-    let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
-    terminal.draw(|frame| ui::render(frame, &state)).unwrap();
-    let text: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect();
-    assert!(text.contains("being viewed elsewhere"));
-    assert!(!text.contains("Ctrl+T"));
-    assert!(!text.contains("Ctrl+]+s"));
+    let (_, hits) = frame(&state, 100, 32);
+    assert_eq!(hits.toast.unwrap().height, 3);
+    state.tick_toast(3200);
+    assert!(frame(&state, 100, 32).1.toast.is_none());
+}
+
+#[test]
+fn toast_click_dismisses_without_takeover_and_episodes_do_not_duplicate() {
+    let mut state = state();
+    state.open();
+    state.highlight = Some(3);
+    state.scenario(4);
+    assert_eq!(state.toast_queue.len(), 0);
+    state.highlight = Some(2);
+    state.scenario(4);
+    assert_eq!(state.toast_queue.len(), 1);
+    state.scenario(4);
+    assert_eq!(state.toast_queue.len(), 1);
+    state.tick_toast(100);
+    let (_, hits) = frame(&state, 100, 32);
+    let toast = hits.toast.unwrap();
+    input::handle(
+        &mut state,
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: toast.x + 1,
+            row: toast.y + 1,
+            modifiers: KeyModifiers::NONE,
+        }),
+        &hits,
+        Prefix::CtrlBracket,
+        true,
+    );
+    assert_eq!(state.selected, Some(1));
+    assert!(!state.sessions[1].controlled);
+    assert_eq!(state.sessions[2].status, Status::NeedsAttention);
+    state.tick_toast(600);
+    assert_eq!(state.toast.as_ref().unwrap().title, "Build");
+}
+
+#[test]
+fn attention_jump_uses_current_connected_state_not_old_highlight() {
+    let mut state = state();
+    state.sessions[1].status = Status::NeedsAttention;
+    state.sessions[1].changed = 40;
+    state.sessions[1].connected = false;
+    state.open();
+    state.highlight = Some(1);
+    state.jump_attention();
+    assert_eq!(state.selected, Some(3));
+    assert_eq!(state.sessions[2].status, Status::Acknowledged);
+    state.jump_attention();
+    assert_eq!(state.message, "No sessions need attention");
+}
+
+#[test]
+fn no_matches_small_terminal_and_unicode_search_cursor_remain_usable() {
+    let mut state = state();
+    state.open();
+    state.insert_search("no match");
+    assert!(text(&frame(&state, 26, 14).0).contains("No matching sessions"));
+    assert!(text(&frame(&state, 12, 3).0).contains("too small"));
+    state.query.clear();
+    state.cursor = 0;
+    state.insert_search(&"界".repeat(80));
+    let (mut terminal, hits) = frame(&state, 26, 14);
+    let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+    assert!(hits.search.contains(cursor));
 }

@@ -7,7 +7,7 @@ use crossterm::{
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use monitor_selector_prototype::{
-    State, Variant,
+    State,
     input::{self, Prefix},
     samples, ui,
 };
@@ -58,14 +58,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--variant" => {
-                state.variant = match args.next().as_deref() {
-                    Some("A") => Variant::A,
-                    Some("B") => Variant::B,
-                    Some("C") => Variant::C,
-                    _ => return Err("--variant requires A, B or C".into()),
-                }
-            }
             "--no-hints" => state.hints = false,
             "--escape-prefix" => {
                 prefix = match args.next().as_deref() {
@@ -81,9 +73,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--help" => {
                 println!(
                     "Throwaway Ratatui selector. No real sessions or daemon/client integration.\n\
-                    cargo run --manifest-path prototypes/selector/Cargo.toml -- [--variant A|B|C] [--no-hints] [--escape-prefix 'Ctrl+[']\n\
-                    Ctrl+], then s: selector; x: exit; j: newest attention. F2: layouts; F3: hints.\n\
-                    F4: attention; F5: title; F6: connection; F7: remove highlighted row; F8: reset."
+                    cargo run --manifest-path prototypes/selector/Cargo.toml -- [--no-hints] [--escape-prefix 'Ctrl+[']\n\
+                    Ctrl+], then s: selector; x: exit; j: newest attention. F3: hints.\n\
+                    F4: attention/toast; F5: title; F6: connection; F7: remove highlighted row; F8: reset."
                 );
                 return Ok(());
             }
@@ -95,12 +87,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let host = Host::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut last_tick = Instant::now();
+    let started = Instant::now();
     let mut hits = ui::Hits::default();
     while !state.exiting {
+        state.tick_toast(started.elapsed().as_millis() as u64);
         terminal.draw(|frame| hits = ui::paint(frame, &state))?;
         let size = terminal.size()?;
-        let usable = size.width >= 24 && size.height >= 10;
-        if event::poll(Duration::from_millis(80))? {
+        let usable = size.width >= 24 && size.height >= 13;
+        if event::poll(Duration::from_millis(16))? {
             input::handle(&mut state, event::read()?, &hits, prefix, usable);
         }
         if last_tick.elapsed() >= Duration::from_secs(1) {

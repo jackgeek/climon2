@@ -133,15 +133,15 @@ impl Host {
     }
 
     fn expect(&mut self, text: &str) {
+        self.wait_until(|host| host.text().contains(text), text);
+    }
+
+    fn wait_until(&mut self, predicate: impl Fn(&Self) -> bool, description: &str) {
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !self.text().contains(text) && Instant::now() < deadline {
+        while !predicate(self) && Instant::now() < deadline {
             self.read();
         }
-        assert!(
-            self.text().contains(text),
-            "Missing {text:?}\n{}",
-            self.text()
-        );
+        assert!(predicate(self), "Missing {description:?}\n{}", self.text());
     }
 
     fn resize(&mut self, rows: u16, cols: u16) {
@@ -206,9 +206,9 @@ impl Drop for Host {
 
 #[test]
 fn actual_host_launch_paste_fragmentation_resize_alt_and_cleanup() {
-    for variant in ["A", "B", "C"] {
-        let mut host = Host::spawn(&["--variant", variant]);
-        host.expect("Sessions");
+    {
+        let mut host = Host::spawn(&[]);
+        host.expect("Needs attention");
         host.send(b"\x1b[200~\x1dx\nno matching label\x1b[201~");
         host.expect("No matching sessions");
         host.send(b"\x1b");
@@ -220,7 +220,7 @@ fn actual_host_launch_paste_fragmentation_resize_alt_and_cleanup() {
         host.send(b"s");
         host.expect("Highlighting does not select");
         host.resize(14, 26);
-        host.expect("[Cancel]");
+        host.expect("PROTOTYPE");
         host.resize(32, 100);
         host.expect("Highlighting does not select");
         host.send(b"\x1d");
@@ -228,8 +228,37 @@ fn actual_host_launch_paste_fragmentation_resize_alt_and_cleanup() {
         host.send(b"x");
         host.finish(1);
     }
+    {
+        let mut host = Host::spawn(&["--no-hints"]);
+        host.wait_until(
+            |host| {
+                host.text()
+                    .lines()
+                    .nth(27)
+                    .unwrap()
+                    .contains("Review needed")
+            },
+            "title-only toast",
+        );
+        host.send(b"\x1b[13~");
+        host.wait_until(
+            |host| host.text().lines().nth(27).unwrap().contains("Ctrl+]+j"),
+            "toast hint row",
+        );
+        host.send(b"Build");
+        host.wait_until(
+            |host| host.text().lines().nth(2).unwrap().contains("Build"),
+            "search stays responsive during animation",
+        );
+        host.wait_until(
+            |host| !host.text().lines().nth(27).unwrap().contains("Ctrl+]+j"),
+            "toast naturally fades and disappears",
+        );
+        host.send(b"\x1dx");
+        host.finish(0);
+    }
     let mut host = Host::spawn(&["--escape-prefix", "Ctrl+["]);
-    host.expect("Sessions");
+    host.expect("Needs attention");
     host.send(b"\x1bx");
     host.finish(0);
 }

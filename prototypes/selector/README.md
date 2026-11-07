@@ -2,8 +2,8 @@
 
 Interactive primary source for [Shape the overlaid session selector](https://github.com/jackgeek/climon2/issues/60).
 This branch is **not for merging into main**. Everything is synthetic and
-in-memory; there is no shipped monitor, real session discovery, daemon/client
-integration, configuration parser, VT renderer or library interface here.
+in-memory: no shipped monitor, real session discovery, daemon/client integration,
+configuration parser, VT renderer or library interface.
 
 From this worktree:
 
@@ -11,64 +11,72 @@ From this worktree:
 cargo run --manifest-path prototypes/selector/Cargo.toml
 ```
 
-It opens the selector over a changing synthetic terminal. Compare layouts with
-**F2**: **A** list above details, **B** list beside details, **C** details above
-two-line session cards. All retain the confirmed centered-overlay interaction.
-Start directly with `-- --variant B` or `-- --variant C`.
-Narrow terminals collapse to a list with an explicit Details action. Visual
-proportions and compact breakpoints are experimental, not final release budgets.
+The original A/B/C comparison is preserved in commit `1aa0124`. The developer
+chose B as the starting point and requested this replacement: double outer
+border without captions, search on the first interior line, a single separator
+joined by U+255F/U+2562, and borderless status/title columns. There is no details
+pane/view, buttons, current-session marker or bottom monitor hints.
+Search always owns keyboard focus. Tab does nothing. Arrows/PageUp/PageDown
+change the highlight; Enter explicitly selects it; Escape cancels.
+Mouse clicks highlight only; wheel scrolls the list.
 
 **Ctrl+] then s** opens the selector; **Ctrl+] then x** exits;
 **Ctrl+] then j** selects the newest connected attention request.
-Use arrows/PageUp/PageDown to navigate, typing or paste to search, Enter to
-select, Escape to cancel, and Tab/Shift+Tab to reach explicit actions.
-Clicking a row only highlights; clicking Select confirms. Wheel scrolls the
-list without changing the highlighted identity. The `*` marker is the currently
-selected session, cyan is the highlight. Repeated selector-open is a no-op.
 Search resets on opening and matches case-insensitive literal title or command
-arguments without changing status/time ordering. Paste normalizes whitespace
-and drops controls; it never runs shortcuts.
+arguments while preserving status/time order. Paste normalizes whitespace and
+drops controls without running shortcuts. Reordering preserves highlighted
+identity; asynchronous removal/nonmatching titles clear the highlight rather
+than redirecting Enter to another session.
 
-Details show only title/command fallback, working directory and status, including
-known exit code or signal for failed sessions. The explicit Details view supports
-Up/Down or wheel scrolling for long text. Back returns to the list.
-Identical titles are distinguished by their directories in details, not GUIDs.
-Future user-assigned names will augment title display/search when naming ships;
-this prototype adds no naming or persistence.
+Enter on a connected nonfinal session acquires control if needed and shows the
+synthetic live terminal. Enter on a disconnected/final session opens its retained
+history read-only without acquisition. Chrome explicitly shows Disconnected,
+Succeeded or Failed (with the known exit code/signal). Missing cache is explicit,
+never an empty pretend terminal. Wheel browses retained rows; read-only input
+never reaches the synthetic application.
 
-Inspect opens cached content read-only without acquiring control. Escape or
-Tab then Enter on Return to session leaves inspection without takeover.
-Disconnected normal selection stays disconnected; final sessions display
-retained output directly read-only. A passive session without cache cannot be
-inspected. Control retained by background synthetic sessions keeps their output
-changing under the selector.
+Future user-assigned names will augment titles and search when naming ships;
+this prototype adds no naming or persistence. Removing details means duplicate
+titles are no longer distinguished by working-directory information here.
+Visual review and final specification confirmation remain open.
 
-Developer-only scenario controls always remain visible, separate from monitor hints:
+An initial synthetic attention toast appears bottom-right. Its yellow border
+draws clockwise from the top-left over 400 ms, then the title appears for 2 s,
+fades to the black background over 300 ms, and the border erases clockwise over
+400 ms. Click to dismiss without takeover/acknowledgement. Distinct episodes
+queue; repeated attention while already pending does not duplicate a toast.
+Toast width is at most 40% of host width; overflow ellipsizes in display cells.
+It has 3 rows without hints or 4 rows with its configured-prefix+j hint.
+On narrow hosts the hint uses `^]+j` / `^[+j` control-key notation.
+The selector reserves a stable toast lane even while no toast is present.
+These timings and dimensions are prototype trials, not final release budgets.
+
+Developer controls, outside the selector and toast:
 
 | Key | Scenario |
 | --- | --- |
-| F3 | Toggle all implicit monitor hints |
-| F4 | Highlighted/selected session requests attention and reorders |
+| F3 | Toggle the toast hint row |
+| F4 | Request attention for highlighted/selected session; queue a toast for a new episode |
 | F5 | Change its daemon title; try this while filtering |
-| F6 | Toggle its connection, revoking synthetic control |
+| F6 | Toggle connection, revoking synthetic control |
 | F7 | Remove the row; Enter cannot select a replacement automatically |
-| F8 | Reset synthetic fixtures |
+| F8 | Reset fixtures and initial attention toast |
 
-Launch with `-- --no-hints` to start without implicit hints. The prototype offers
-only two escape-prefix presets, default Ctrl+] and
+Launch with `-- --no-hints` to start without the toast hint row.
+The two escape-prefix presets are default Ctrl+] and
 `-- --escape-prefix 'Ctrl+['`. Ctrl+[ is Escape: bare Escape waits and legacy
-Alt+s/x/j is indistinguishable from the corresponding monitor shortcut. Use
-explicit Cancel/Back/Return actions via Tab/Enter or mouse instead of Escape.
+Alt+s/x/j is indistinguishable from the corresponding shortcut.
+The developer explicitly accepted that bare Escape cannot cancel the selector
+with this preset; prefix+x still exits and prefix+j navigates attention.
+No alternate Cancel action is supplied.
 
-No real application input is sent. A yellow developer panel reports selection,
-highlight, menu/cache state, synthetic input count and the last action.
-Synthetic acquisition/restoration/paint completes immediately; it does not
-validate real readiness, Focus, attention protocol delivery or takeover races.
-The removal/disconnect scenarios validate selector identity handling only.
-The prototype does not implement native terminal-crash isolation, monitor-wide
-lifecycle fallback, signal handling, notification presentation, marquee, exact
-VT/history fidelity, production memory/input budgets or config validation.
-These remain with the existing contracts and owning decision tickets.
+The yellow developer panel reports selection, highlight, menu/history state,
+synthetic input count and last action. Synthetic acquisition/restoration/paint
+completes immediately: this does not validate real readiness, Focus, attention
+delivery or takeover races. The prototype omits native crash isolation,
+monitor-wide lifecycle fallback, signal handling, marquee, exact VT/history
+fidelity, production budgets and configuration validation. Synthetic toasts
+demonstrate presentation/coalescing, not real daemon notification delivery.
 
 Automated checks:
 
@@ -77,10 +85,10 @@ cargo test --manifest-path prototypes/selector/Cargo.toml
 cargo clippy --manifest-path prototypes/selector/Cargo.toml --all-targets -- -D warnings
 ```
 
-Rust tests exercise selector decisions, keyboard/mouse isolation and Ratatui
-frames. Host PTY tests use the same Alacritty 0.26.0 engine and portable-pty
-components as the repository's real-terminal harness, checking the displayed
-screen rather than searching differential repaint bytes.
-The PTY checks drive the actual executable's launch, paste, cancellation,
-fragmented shortcuts, resize, legacy Alt exit and normal terminal cleanup.
-They are prototype evidence, not automated acceptance of a real monitor.
+Behavior tests exercise selector identities, input isolation, read-only
+selection, exact Ratatui borders/columns and deterministic toast animation.
+Host PTY tests use the repository harness's Alacritty 0.26.0 / portable-pty
+components and inspect displayed screens, not raw differential repaint text.
+They drive launch, paste, cancellation, fragmented shortcuts, resize, legacy
+Alt exit and normal terminal cleanup. This is prototype evidence, not automated
+acceptance of a real monitor.
