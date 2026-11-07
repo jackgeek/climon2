@@ -23,6 +23,7 @@ agreed codes and schemas, separately from current implementation.
 | Client to session daemon: after hello | Current private protocol implemented; separate wire revision 1 agreed, not implemented | [Decision boundary](daemon-client/post-hello.md), [complete wire rules](daemon-client/core-v1.md). |
 | Monitor to [client library](../../GLOSSARY.md#sessions) | Embedding and communication design agreed, not implemented; complete declarations unresolved | [Library embedding](library-embedding.md), [shared communication contract](#shared-in-process-communication-contract), and [interface schemas](https://github.com/jackgeek/climon2/issues/71). |
 | [Client executable](../../GLOSSARY.md#sessions) to same-release library | Same-release loading agreed, not implemented | [Library embedding](library-embedding.md). |
+| Monitor to [host](../../GLOSSARY.md#sessions) | Program-status advertising and toast bell agreed, not implemented | [Reports and bell](#monitor-to-host-status-and-bell). |
 
 The embedding design selects a versioned [C ABI](TERMS.md#c-abi), but its
 complete declarations and valid call examples are not yet published.
@@ -100,6 +101,40 @@ a session that unexpectedly loses its final
 [succession rules](daemon-client/core-v1.md#membership-and-succession) try
 remaining attachments, then eligible passive registrations, before
 final-participant policy; they do not guarantee survival of losing every client.
+
+## Monitor-to-host status and bell
+
+The [selector specification](../monitor-selector.md) adds monitor-generated
+[OSC](TERMS.md#osc) 7501 reports and a separate [BEL](TERMS.md#bel).
+Session sequences are never forwarded for this purpose.
+Reports use the upstream
+[Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status):
+[ASCII](TERMS.md#ascii) key/value pairs after `ESC ] 7501;`, colon-separated, terminated by
+`ESC \`. Omit `id` to address its
+[root record](https://www.superlogical.com/rex/docs/build/program-status#records-and-ids).
+Every replacement repeats `app=climon2-monitor`; no session IDs, titles,
+messages, progress or child records are exported.
+
+Send initial aggregate state and changes only, without heartbeat or capability
+query. Any connected `needs_attention` session means pending attention,
+independent of toast visibility. Acknowledged, disconnected and final reports
+do not qualify. These are not per-session messages or new daemon-wire operations.
+
+| Monitor -> host operation | When | Reference |
+|---|---|---|
+| Root `blocked`, `kind=question` | Connected pending attention exists | [Attention report](monitor-host/report-attention.md). |
+| Root `working` | Monitoring continues without pending attention | [Monitoring report](monitor-host/report-monitoring.md). |
+| Root `clear` | Orderly exit cleanup | [Clear report](monitor-host/report-clear.md). |
+| Bell | Each toast first begins drawing, if configured on | [Bell](monitor-host/bell.md). |
+
+Upstream framing/field/record limits and unknown-key behavior apply.
+These fixed reports fit the existing supported states; no new negotiation,
+acknowledgement, [request IDs](TERMS.md#request-id),
+[control periods](../../GLOSSARY.md#attachment-and-control) or retry/replay policy is added.
+Unsupported hosts may ignore them. Writing does not prove host interpretation,
+sound or user acknowledgement. Host-output/abnormal cleanup policy remains
+[lifecycle work](https://github.com/jackgeek/climon2/issues/61).
+These signals do not amend daemon activity/attention [FSMs](TERMS.md#fsm) or acknowledge sessions.
 
 ## Startup and control
 

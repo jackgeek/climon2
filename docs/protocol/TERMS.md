@@ -17,6 +17,10 @@ the alternatives considered.
 An application programming interface: the operations and data contract exposed
 to a caller. A public native API also requires an agreed binary interface.
 
+## ASCII
+
+American Standard Code for Information Interchange, a seven-bit character encoding.
+
 ## Backpressure
 
 Slowing a sender when the receiver cannot keep up, so pending data stays bounded.
@@ -33,6 +37,8 @@ add behavior without redefining that common contract.
 The terminal bell control [byte](#byte), hexadecimal `07`. A future
 [attention](../../GLOSSARY.md#status-and-attention) [plugin](../../GLOSSARY.md#protocol-and-plugin-concepts)
 could observe it; that plugin strategy is not specified by this reference.
+The planned monitor emits its own [toast bell](monitor-host/bell.md),
+independently of session-output forwarding.
 
 ## Big endian
 
@@ -170,6 +176,11 @@ Input/output: reading or writing data to another resource, such as a socket.
 JavaScript Object Notation, a text format for objects, arrays, strings, numbers,
 booleans, and null. JSON wire examples in this reference show message bodies,
 not their length prefixes.
+
+## JSONC
+
+JSON with `//` and `/* */` comments and trailing commas. Comments separate tokens
+but never join them. It is used for local startup configuration, not daemon wire bodies.
 
 ## MiB
 

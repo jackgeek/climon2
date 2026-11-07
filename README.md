@@ -164,7 +164,8 @@ Full future startup example (the current parser does **not** implement the
     "max_rows": 10000
   },
   "monitor": {
-    "show_key_hints": true // planned: all implicit toast/chrome/selector/empty hints
+    "show_key_hints": true, // planned: implicit monitor hints, including the toast hint row
+    "bell": true           // planned: one host bell when each toast starts drawing
   },
 }
 ```
@@ -175,6 +176,15 @@ hints use the actual configured prefix plus lowercase j and describe a dynamic
 most-recent jump. Wrong types and duplicate known fields are explicit startup
 errors before terminal changes; unknown/unrelated settings remain ignored.
 All monitor settings above are future behavior, with no live reload.
+
+Planned `monitor.bell` is boolean, default true, with the same pre-terminal
+startup validation and no live reload. False suppresses the explicit host bell,
+not toasts or OSC 7501 reports; host settings govern actual audibility.
+The [selector specification](docs/monitor-selector.md) records the accepted
+layout, read-only disconnected/final history selection and animated toasts.
+The monitor also generates its own
+[OSC 7501 aggregate attention reports](docs/protocol/README.md#monitor-to-host-status-and-bell),
+never raw session-sequence passthrough.
 
 ## Listing
 

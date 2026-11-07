@@ -6,6 +6,14 @@ This also records the confirmed input/configuration amendments to
 [#59](https://github.com/jackgeek/climon2/issues/59). No executable changes or
 automated implementation evidence are supplied by this document.
 
+The later [selector and attention-presentation decision](../monitor-selector.md)
+confirms the captionless double-bordered selector, always-focused search,
+explicit read-only disconnected/final history selection and animated toasts.
+It also adds the monitor's own
+[host program-status reports and configurable bell](README.md#monitor-to-host-status-and-bell).
+These are planned presentation/host signals, not session-byte passthrough, changed daemon
+[FSMs](TERMS.md#fsm) or a shipped monitor.
+
 The [monitor](../../GLOSSARY.md#sessions) provides an
 [RDP-like](TERMS.md#rdp) remote terminal experience, not a read-only viewer.
 Use the [overview](README.md), [domain glossary](../../GLOSSARY.md), and
@@ -302,6 +310,13 @@ must be an object and `show_key_hints` a boolean; missing means default,
 wrong type or duplicate known field is an explicit error, unknown/unrelated
 settings remain ignored, and there is no live reload.
 No new monitor-specific binding settings are introduced.
+Planned `monitor.bell` is independently boolean and defaults to true.
+It emits one [host bell](monitor-host/bell.md) when each eligible toast first
+begins drawing, not per animation frame. Validate it in the same startup
+snapshot; wrong types/null or duplicate known fields fail before terminal setup.
+Disabling it does not hide toasts or suppress monitor-generated OSC 7501 reports.
+The [selector reference](../monitor-selector.md#toasts-and-bell) defines the
+three-row title toast/four-row hinted toast and clockwise draw/fade/erase order.
 The [README configuration example](../../README.md#configuration) distinguishes
 these planned fields from the current parser.
 
@@ -327,6 +342,9 @@ Automated end-to-end tests must drive the real monitor host and shell/
 - Dynamic lowercase j ordering, no eligible target, uppercase/pasted literal
   behavior, actual-prefix hints, hiding every implicit hint, startup defaults/
   validation before terminal changes, and no live reload.
+- Selector borders/search/columns, identity-safe confirmation and cached history,
+  nonblocking toast animation/coalescing/dismissal, configured once-per-toast
+  bell, and initial/transition-only monitor OSC 7501 advertising/exit clearing.
 - Parser/presentation/render failures, exact invalid-UTF-8 binary handling,
   bounded backpressure, and independent selector/exit/other-client progress.
 
