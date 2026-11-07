@@ -1,0 +1,15 @@
+[package]
+name = "monitor-selector-prototype"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+crossterm = "0.28"
+ratatui = "0.29"
+
+[dev-dependencies]
+alacritty_terminal = { version = "=0.26.0", default-features = false }
+portable-pty = { version = "0.9.0", default-features = false }
