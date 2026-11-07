@@ -461,3 +461,26 @@ fn no_matches_small_terminal_and_unicode_search_cursor_remain_usable() {
     let cursor = terminal.backend_mut().get_cursor_position().unwrap();
     assert!(hits.search.contains(cursor));
 }
+
+#[test]
+fn monitor_program_status_tracks_connected_pending_attention_not_toast_visibility() {
+    let mut state = state();
+    assert!(
+        state
+            .program_status()
+            .contains("state=blocked:kind=question:app=climon2-monitor")
+    );
+    state.dismiss_toast();
+    state.tick_toast(4000);
+    assert!(state.program_status().contains("state=blocked"));
+    state.sessions[2].connected = false;
+    assert!(state.program_status().contains("state=working"));
+    state.sessions[2].connected = true;
+    state.sessions[2].status = Status::Acknowledged;
+    assert!(state.program_status().contains("state=working"));
+    state.sessions[2].status = Status::Failed;
+    assert!(state.program_status().contains("state=working"));
+    state.sessions[2].status = Status::NeedsAttention;
+    state.jump_attention();
+    assert!(state.program_status().contains("state=working"));
+}

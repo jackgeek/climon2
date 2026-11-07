@@ -183,6 +183,7 @@ impl Host {
             b"\x1b[?25h",
             b"\x1b[?2004l",
             b"\x1b[?1006l",
+            b"\x1b]7501;state=clear\x1b\\",
         ] {
             assert!(
                 self.bytes
@@ -250,9 +251,84 @@ fn actual_host_launch_paste_fragmentation_resize_alt_and_cleanup() {
             |host| host.text().lines().nth(2).unwrap().contains("Build"),
             "search stays responsive during animation",
         );
+        host.send(b"\x1b[14~\x1b[14~");
+        host.wait_until(
+            |host| host.text().lines().nth(26).unwrap().contains("Build"),
+            "queued attention toast",
+        );
+        assert_eq!(
+            host.bytes.iter().filter(|byte| **byte == 7).count(),
+            2,
+            "one bell per presented episode, not per frame or repeated F4"
+        );
         host.wait_until(
             |host| !host.text().lines().nth(27).unwrap().contains("Ctrl+]+j"),
             "toast naturally fades and disappears",
+        );
+        host.send(b"\x1dj\x1dj");
+        host.wait_until(
+            |host| {
+                host.bytes
+                    .windows(b"7501;state=working".len())
+                    .any(|bytes| bytes == b"7501;state=working")
+            },
+            "monitor returns to working after all pending attention is acknowledged",
+        );
+        assert_eq!(
+            host.bytes
+                .windows(b"7501;state=blocked".len())
+                .filter(|bytes| *bytes == b"7501;state=blocked")
+                .count(),
+            1
+        );
+        assert_eq!(
+            host.bytes
+                .windows(b"7501;state=working".len())
+                .filter(|bytes| *bytes == b"7501;state=working")
+                .count(),
+            1
+        );
+        host.send(b"\x1dx");
+        host.finish(0);
+    }
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join("config.jsonc");
+        std::fs::write(
+            &config,
+            r#"{"monitor":{"bell":false,"show_key_hints":false}}"#,
+        )
+        .unwrap();
+        let mut host = Host::spawn(&["--config", config.to_str().unwrap()]);
+        host.wait_until(
+            |host| {
+                host.text()
+                    .lines()
+                    .nth(27)
+                    .unwrap()
+                    .trim_end()
+                    .ends_with("│Review needed│")
+            },
+            "configured silent initial toast",
+        );
+        std::fs::write(&config, r#"{"monitor":{"bell":true}}"#).unwrap();
+        host.send(b"\x1b[14~");
+        host.wait_until(
+            |host| {
+                host.text()
+                    .lines()
+                    .nth(27)
+                    .unwrap()
+                    .trim_end()
+                    .ends_with("│Shell│")
+            },
+            "silent queued toast uses startup snapshot",
+        );
+        assert_eq!(host.bytes.iter().filter(|byte| **byte == 7).count(), 0);
+        assert!(
+            host.bytes
+                .windows(b"7501;state=blocked".len())
+                .any(|bytes| bytes == b"7501;state=blocked")
         );
         host.send(b"\x1dx");
         host.finish(0);

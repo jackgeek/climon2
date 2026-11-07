@@ -9,7 +9,10 @@ publish = false
 [dependencies]
 crossterm = "0.28"
 ratatui = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json_lenient = "0.2"
 
 [dev-dependencies]
 alacritty_terminal = { version = "=0.26.0", default-features = false }
 portable-pty = { version = "0.9.0", default-features = false }
+tempfile = "3"

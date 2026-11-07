@@ -1,3 +1,4 @@
+pub mod config;
 pub mod input;
 pub mod ui;
 use std::collections::VecDeque;
@@ -168,9 +169,22 @@ pub struct State {
     pub now_ms: u64,
     pub toast: Option<Toast>,
     pub toast_queue: VecDeque<String>,
+    pub bell: bool,
+    bell_pending: bool,
 }
 
 impl State {
+    pub fn program_status(&self) -> &'static str {
+        if self
+            .sessions
+            .iter()
+            .any(|session| session.connected && session.status == Status::NeedsAttention)
+        {
+            "\x1b]7501;state=blocked:kind=question:app=climon2-monitor\x1b\\"
+        } else {
+            "\x1b]7501;state=working:app=climon2-monitor\x1b\\"
+        }
+    }
     pub fn new(sessions: Vec<Session>) -> Self {
         let mut state = Self {
             selected: sessions.first().map(|session| session.id),
@@ -193,6 +207,8 @@ impl State {
             now_ms: 0,
             toast: None,
             toast_queue: VecDeque::new(),
+            bell: true,
+            bell_pending: false,
         };
         state.initial_toasts();
         state
@@ -401,6 +417,7 @@ impl State {
     fn queue_toast(&mut self, title: String) {
         if self.toast.is_none() {
             self.toast = Some(Toast::new(title, self.now_ms));
+            self.bell_pending = true;
         } else {
             self.toast_queue.push_back(title);
         }
@@ -431,12 +448,29 @@ impl State {
             && let Some(title) = self.toast_queue.pop_front()
         {
             self.toast = Some(Toast::new(title, now));
+            self.bell_pending = true;
         }
     }
 
     pub fn dismiss_toast(&mut self) {
         if let Some(toast) = &mut self.toast {
             toast.dismiss(self.now_ms);
+        }
+    }
+
+    pub fn take_toast_bell(&mut self, visible: bool) -> bool {
+        if visible
+            && self.bell_pending
+            && self.toast.as_ref().is_some_and(|toast| {
+                toast
+                    .frame(self.now_ms)
+                    .is_some_and(|frame| frame.drawn > 0.0)
+            })
+        {
+            self.bell_pending = false;
+            self.bell
+        } else {
+            false
         }
     }
 
