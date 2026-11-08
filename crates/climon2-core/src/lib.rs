@@ -10,6 +10,7 @@ mod json;
 pub mod keys;
 pub mod layout;
 pub mod metadata;
+pub mod native;
 pub mod protocol;
 pub mod selector;
 pub mod session;

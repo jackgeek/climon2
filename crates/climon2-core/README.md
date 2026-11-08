@@ -100,6 +100,13 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
 - `exit::{ExitStatus,LaunchFailure}::code`: neutral platform-exit input,
   preserving raw command u32 codes, checked `128+signal`, and classifications
   for own failure 125, usage 2, launch 127/126 and terminal gone 129.
+- `native`: the `#[repr(C)]` declarations of native client interface revision 1
+  ([`client-v1.h`](../../docs/protocol/monitor-client/client-v1.h)), shared by
+  the client library, the client executable and the monitor without new crate
+  edges. Names map mechanically (`cm1_optional_text` is `OptionalText`,
+  `CM1_SUCCESS` is `SUCCESS`, `final` is `r#final`); `BOOTSTRAP` names the
+  frozen `climon2_client_get_interface` symbol and `Bootstrap` is its type.
+  They are plain data: core never dereferences or validates a native record.
 
 ## Specification tests
 
@@ -116,6 +123,7 @@ Integration tests call only these public boundaries:
 | #29 recovered argv/environment/depth/ordinal rules | `issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors`, `issue29_help_and_version_flags_take_no_arguments`, `issue29_top_level_ignores_stray_depth_and_sets_session_vars_and_terminal_identity`, `projected_environment_replaces_term_and_colorterm_and_drops_startup_envelope`, `issue29_nested_depth_defaults_malformed_enclosing_to_one_and_replaces_empty_term`, `issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow` |
 | Continuity messages and connection choice | `continuity_messages_have_exact_wire_codes_and_json`, `continuity_bodies_are_typed_objects_and_each_code_has_one_direction`, `a_connection_chooses_attach_or_kill_once_and_attachment_requests_need_attach` |
 | #17 / #20 exit mapping | `issue17_failures_remain_distinct_from_command_status_and_signal_mapping` |
+| DOC-01 layout case: Rust native declarations equal `client-v1.h` sizes, alignments, field offsets and sizes, tags and result codes (macOS only; clang checks the host architecture, CI runs arm64 and x86_64) | `rust_native_declarations_match_the_published_header`, `a_layout_difference_is_reported_against_the_header` |
 
 `tests/config.rs`, `tests/hello.rs`, `tests/keys.rs`, `tests/selector.rs`,
 `tests/startup_envelope.rs` and `tests/title.rs` specify those modules one rule
