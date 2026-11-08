@@ -1,6 +1,7 @@
 //! `u32be length | u8 type | body`, where the length counts the type byte and
 //! body but not the four-byte prefix.
 use super::FatalCode;
+use serde::{Deserialize, Serialize};
 use std::{
     io::{self, Read, Write},
     num::NonZeroU32,
@@ -33,7 +34,8 @@ impl Frame {
 }
 
 /// A positive ceiling on frame length, counting the type byte and body.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct FrameLimit(NonZeroU32);
 
 impl FrameLimit {

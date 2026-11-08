@@ -17,7 +17,7 @@ mod server;
 mod types;
 
 pub use catalogue::{Error, ErrorCode, FatalCode, OperationalCode};
-pub use families::{Families, Requested};
+pub use families::{Advertisement, Families, Family, FrameLimits, Requested};
 pub use frame::{Frame, FrameLimit, WireError, read_frame, write_frame};
 pub use metadata::{
     Available, CommandResult, Percent, Progress, ProgressState, Status, StatusState,

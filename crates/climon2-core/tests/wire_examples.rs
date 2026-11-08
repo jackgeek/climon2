@@ -8,22 +8,35 @@ use climon2_core::wire::{
     Outcome, Progress, ProgressChanged, ProgressState, Request, Requested, Response, ServerMessage,
     Status, StatusChanged, StatusState, Success, TitleChanged,
 };
+use climon2_core::{
+    hello::{
+        Advertised, Capabilities, Capability, HelloExtensions, Lifecycle, SessionState, advertise,
+        advertise_with,
+    },
+    protocol::{self, HelloReply},
+    wire::{Advertisement, Family, FrameLimit, FrameLimits},
+};
 use std::num::NonZeroU32;
 use std::{fs, path::Path};
 
-/// The single JSON example on one daemon wire page.
-fn example(page: &str) -> String {
+/// Every JSON example on one daemon wire page, in page order.
+fn examples(page: &str) -> Vec<String> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/protocol/daemon-client")
         .join(page);
     let text = fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
-    let blocks: Vec<_> = text
-        .split("```json\n")
+    text.split("```json\n")
         .skip(1)
         .map(|block| block.split_once("\n```").expect("closed JSON example").0)
-        .collect();
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The single JSON example on one daemon wire page.
+fn example(page: &str) -> String {
+    let mut blocks = examples(page);
     assert_eq!(blocks.len(), 1, "{page} publishes one JSON example");
-    blocks[0].to_owned()
+    blocks.remove(0)
 }
 
 fn counter(value: u64) -> Counter {
@@ -171,4 +184,83 @@ fn published_session_metadata_examples_round_trip_byte_identically() {
     .unwrap();
     assert_eq!(command_final, ServerMessage::CommandFinal(expected.clone()));
     assert_eq!(expected.to_frame(), frame);
+}
+
+fn hello(body: &str) -> (HelloReply, HelloExtensions) {
+    let frame = protocol::Frame::new(0x01, body.as_bytes().to_vec()).unwrap();
+    let protocol::ServerMessage::Hello(reply) = protocol::ServerMessage::from_frame(frame).unwrap()
+    else {
+        panic!("{body} is a hello reply");
+    };
+    (reply, HelloExtensions::from_body(body.as_bytes()))
+}
+
+/// DOC-01 / COM-01: the frozen reply, the current advertisement and the
+/// revision-1 advertisement each decode to their documented values and
+/// re-encode byte-identically.
+#[test]
+fn published_hello_advertisement_examples_round_trip_byte_identically() {
+    let [frozen, current, revision1]: [String; 3] = examples("hello-reply.md").try_into().unwrap();
+    let expected = HelloReply {
+        session_id: "550e8400-e29b-41d4-a716-446655440000".parse().unwrap(),
+        climon2_version: "1.2.3".parse().unwrap(),
+        protocol: 1,
+    };
+
+    let (reply, extensions) = hello(&frozen);
+    assert_eq!(reply, expected);
+    assert_eq!(
+        extensions,
+        HelloExtensions {
+            capabilities: Advertised::Absent,
+            state: Advertised::Absent,
+            daemon_wire_v1: Advertised::Absent,
+        }
+    );
+    let encoded = protocol::ServerMessage::Hello(reply).to_frame().unwrap();
+    assert_eq!(encoded.body(), frozen.as_bytes());
+
+    let (reply, extensions) = hello(&current);
+    let state = SessionState::new(Lifecycle::Attached, 2, true).unwrap();
+    assert_eq!(reply, expected);
+    let capabilities = extensions.capabilities.valid().unwrap();
+    assert!(capabilities.supports_attach() && capabilities.supports_kill());
+    assert!(capabilities.supports_state());
+    assert_eq!(extensions.state, Advertised::Valid(state));
+    assert_eq!(extensions.daemon_wire_v1, Advertised::Absent);
+    assert_eq!(advertise(&reply, state).unwrap().body(), current.as_bytes());
+
+    let (reply, extensions) = hello(&revision1);
+    let limit = FrameLimit::new(1_048_576).unwrap();
+    let advertisement = Advertisement::new(
+        [
+            Family::MonitorV1,
+            Family::TitleV1,
+            Family::StatusV1,
+            Family::NotificationV1,
+            Family::ProgressV1,
+            Family::FocusV1,
+        ],
+        FrameLimits {
+            max_request_frame_bytes: limit,
+            max_server_frame_bytes: limit,
+        },
+    );
+    assert_eq!(reply, expected);
+    assert_eq!(
+        extensions.capabilities,
+        Advertised::Valid(Capabilities::default())
+    );
+    assert_eq!(extensions.state, Advertised::Absent);
+    assert_eq!(
+        extensions.daemon_wire_v1,
+        Advertised::Valid(advertisement.clone())
+    );
+    let encoded: &[Capability] = &[];
+    assert_eq!(
+        advertise_with(&reply, encoded, None, Some(&advertisement))
+            .unwrap()
+            .body(),
+        revision1.as_bytes()
+    );
 }

@@ -5,6 +5,7 @@
 use crate::{
     json::Object,
     protocol::{self, Frame, HelloReply},
+    wire::{Advertisement, FrameLimits},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -165,6 +166,8 @@ impl<T> Advertised<T> {
 pub struct HelloExtensions {
     pub capabilities: Advertised<Capabilities>,
     pub state: Advertised<SessionState>,
+    /// Daemon wire revision 1, available only when valid.
+    pub daemon_wire_v1: Advertised<Advertisement>,
 }
 
 impl HelloExtensions {
@@ -177,6 +180,7 @@ impl HelloExtensions {
         Self {
             capabilities: advertised(reply, "capabilities", capabilities),
             state: advertised(reply, "state", state),
+            daemon_wire_v1: Advertisement::advertised(reply),
         }
     }
 }
@@ -216,8 +220,11 @@ fn state(value: &Value) -> Option<SessionState> {
 struct AdvertisedHello<'a> {
     #[serde(flatten)]
     reply: &'a HelloReply,
-    capabilities: [&'static str; 4],
-    state: StateBody,
+    capabilities: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<StateBody>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    daemon_wire_v1: Option<FrameLimits>,
 }
 
 #[derive(Serialize)]
@@ -230,16 +237,30 @@ struct StateBody {
 /// The daemon's hello reply: the frozen mandatory fields plus every advertised
 /// capability and the current state snapshot.
 pub fn advertise(reply: &HelloReply, state: SessionState) -> io::Result<Frame> {
+    advertise_with(reply, &Capability::ADVERTISED, Some(state), None)
+}
+
+/// A hello reply with chosen optional advertisements. Revision-1 families
+/// follow the frozen tokens; a daemon adds them only once it speaks revision 1.
+pub fn advertise_with(
+    reply: &HelloReply,
+    capabilities: &[Capability],
+    state: Option<SessionState>,
+    daemon_wire_v1: Option<&Advertisement>,
+) -> io::Result<Frame> {
+    let frozen = capabilities.iter().map(|capability| capability.token());
+    let revision1 = daemon_wire_v1.into_iter().flat_map(Advertisement::tokens);
     protocol::control(
         protocol::HELLO,
         &AdvertisedHello {
             reply,
-            capabilities: Capability::ADVERTISED.map(Capability::token),
-            state: StateBody {
+            capabilities: frozen.chain(revision1).collect(),
+            state: state.map(|state| StateBody {
                 lifecycle: state.lifecycle.name(),
                 attachments: state.attachments,
                 controlled: state.controlled,
-            },
+            }),
+            daemon_wire_v1: daemon_wire_v1.map(Advertisement::limits),
         },
     )
 }
