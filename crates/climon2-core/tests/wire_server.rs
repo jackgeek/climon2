@@ -4,9 +4,9 @@
 //! come with their own tickets.
 use climon2_core::wire::{
     Available, Cleanup, CommandFinal, CommandResult, ControlRecord, Counter, Error, ErrorCode,
-    Failure, Families, FatalCode, FocusBytes, Frame, Guid, InitialMetadata, Known, OperationalCode,
-    Outcome, PartialCleanup, Percent, Progress, ProgressState, Response, ServerMessage, Status,
-    StatusChanged, StatusState, Success, Utc,
+    Failure, Families, FatalCode, FocusBytes, Frame, Guid, InitialMetadata, OperationalCode,
+    Outcome, PartialCleanup, PartialTermination, Percent, Progress, ProgressState, Rejection,
+    Response, ServerMessage, Status, StatusChanged, StatusState, Success, Utc,
 };
 use std::num::NonZeroU32;
 
@@ -281,8 +281,9 @@ fn connection_ids_are_lowercase_canonical_guids() {
 }
 
 /// COM-03 / COM-06 (codec case): `ok` has a success result and no error; every
-/// other outcome has an error and at most a known result, never a successful
-/// confirmation.
+/// other outcome has an error. Only a rejection may carry a known final
+/// result, and only a failed or indeterminate outcome partial termination;
+/// neither is ever a successful confirmation.
 #[test]
 fn responses_pair_each_outcome_with_its_result_and_error() {
     let left = r#"{"kind":"left","attachment_detached":true}"#;
@@ -291,67 +292,60 @@ fn responses_pair_each_outcome_with_its_result_and_error() {
         code: OperationalCode::InvalidState.into(),
         message: "not now".into(),
     };
+    let failure = Failure {
+        error: error.clone(),
+        termination: None,
+    };
     for (outcome, result, expected) in [
-        ("rejected", "null", Outcome::Rejected as fn(_) -> _),
-        ("failed", "null", Outcome::Failed),
-        ("indeterminate", "null", Outcome::Indeterminate),
+        (
+            "rejected",
+            "null",
+            Outcome::Rejected(Rejection {
+                error: error.clone(),
+                known_final: None,
+            }),
+        ),
+        (
+            "rejected",
+            known_final,
+            Outcome::Rejected(Rejection {
+                error: error.clone(),
+                known_final: Some(exit(3)),
+            }),
+        ),
+        ("failed", "null", Outcome::Failed(failure.clone())),
+        ("indeterminate", "null", Outcome::Indeterminate(failure)),
     ] {
         let body = response(outcome, result, ERROR);
         let ServerMessage::Response(decoded) = round_trip(RESPONSE, &body) else {
             panic!("{body} is a response");
         };
-        assert_eq!(
-            decoded.outcome,
-            expected(Failure {
-                error: error.clone(),
-                known: None,
-            })
-        );
+        assert_eq!(decoded.outcome, expected, "{body}");
     }
-    for outcome in ["rejected", "failed", "indeterminate"] {
-        let body = response(outcome, known_final, ERROR);
-        let ServerMessage::Response(decoded) = round_trip(RESPONSE, &body) else {
-            panic!("{body} is a response");
-        };
-        let (Outcome::Rejected(failure)
-        | Outcome::Failed(failure)
-        | Outcome::Indeterminate(failure)) = decoded.outcome
-        else {
-            panic!("{outcome} is not a success");
-        };
-        assert_eq!(
-            failure.known,
-            Some(Known::KnownFinal {
-                command_result: exit(3)
-            })
-        );
-    }
-    for (result, cleanup, command_result) in [
+    for (outcome, result, cleanup, command_result) in [
         (
+            "failed",
             r#"{"kind":"termination","command_result":null,"cleanup":"incomplete"}"#,
             PartialCleanup::Incomplete,
             None,
         ),
         (
+            "indeterminate",
             r#"{"kind":"termination","command_result":{"kind":"exit","code":0},"cleanup":"unknown"}"#,
             PartialCleanup::Unknown,
             Some(exit(0)),
         ),
     ] {
-        let body = response(
-            "failed",
-            result,
-            r#"{"code":"cleanup_failed","message":""}"#,
-        );
+        let body = response(outcome, result, r#"{"code":"cleanup_failed","message":""}"#);
         let ServerMessage::Response(decoded) = round_trip(RESPONSE, &body) else {
             panic!("{body} is a response");
         };
-        let Outcome::Failed(failure) = decoded.outcome else {
-            panic!("{body} failed");
+        let (Outcome::Failed(failure) | Outcome::Indeterminate(failure)) = decoded.outcome else {
+            panic!("{body} is neither failed nor indeterminate");
         };
         assert_eq!(
-            failure.known,
-            Some(Known::Termination {
+            failure.termination,
+            Some(PartialTermination {
                 command_result,
                 cleanup
             })
@@ -387,6 +381,13 @@ fn responses_pair_each_outcome_with_its_result_and_error() {
             ERROR,
         ),
         response("failed", known_final, "null"),
+        response("failed", known_final, ERROR),
+        response("indeterminate", known_final, ERROR),
+        response(
+            "rejected",
+            r#"{"kind":"termination","command_result":null,"cleanup":"incomplete"}"#,
+            ERROR,
+        ),
         response("OK", left, "null"),
         response("unknown", "null", ERROR),
         format!(r#"{{"request_id":"7","outcome":"ok","result":{left}}}"#),

@@ -19,17 +19,25 @@ pub struct Response {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Outcome {
     Ok(Success),
-    Rejected(Failure),
+    Rejected(Rejection),
     Failed(Failure),
     Indeterminate(Failure),
 }
 
-/// A non-success always has an error and at most a known result, never a
-/// successful confirmation.
+/// The operation did not run. An initial role rejection may carry the
+/// command result the session daemon already knows.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Rejection {
+    pub error: Error,
+    pub known_final: Option<CommandResult>,
+}
+
+/// The operation failed, or whether it ran is unknown. A Kill may expose what
+/// it knows of termination, never a successful confirmation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Failure {
     pub error: Error,
-    pub known: Option<Known>,
+    pub termination: Option<PartialTermination>,
 }
 
 /// The success result of each operation, named by its `kind`.
@@ -114,18 +122,14 @@ impl From<FocusBytes> for u32 {
     }
 }
 
-/// A result a non-success may expose instead of hiding known effects.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Known {
-    /// An initial role rejection with an already known command result.
-    KnownFinal { command_result: CommandResult },
-    /// A failed or indeterminate Kill: never a successful confirmation.
-    Termination {
-        #[serde(deserialize_with = "nullable")]
-        command_result: Option<CommandResult>,
-        cleanup: PartialCleanup,
-    },
+/// A Kill that did not confirm termination: any command result it knows, and
+/// cleanup that is incomplete or unknown.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartialTermination {
+    #[serde(deserialize_with = "nullable")]
+    pub command_result: Option<CommandResult>,
+    pub cleanup: PartialCleanup,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -133,6 +137,16 @@ pub enum Known {
 pub enum PartialCleanup {
     Incomplete,
     Unknown,
+}
+
+/// The results a non-success may carry, as written on the wire. Only a
+/// rejection carries `known_final`; only a failed or indeterminate outcome
+/// carries partial `termination`.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum Known {
+    KnownFinal { command_result: CommandResult },
+    Termination(PartialTermination),
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -145,13 +159,35 @@ enum OutcomeName {
 }
 
 impl OutcomeName {
-    fn failure(self, failure: Failure) -> Option<Outcome> {
+    fn failure(self, error: Error, known: Option<Known>) -> Option<Outcome> {
         match self {
             Self::Ok => None,
-            Self::Rejected => Some(Outcome::Rejected(failure)),
-            Self::Failed => Some(Outcome::Failed(failure)),
-            Self::Indeterminate => Some(Outcome::Indeterminate(failure)),
+            Self::Rejected => Rejection::decoded(error, known).map(Outcome::Rejected),
+            Self::Failed => Failure::decoded(error, known).map(Outcome::Failed),
+            Self::Indeterminate => Failure::decoded(error, known).map(Outcome::Indeterminate),
         }
+    }
+}
+
+impl Rejection {
+    fn decoded(error: Error, known: Option<Known>) -> Option<Self> {
+        let known_final = match known {
+            None => None,
+            Some(Known::KnownFinal { command_result }) => Some(command_result),
+            Some(Known::Termination(_)) => return None,
+        };
+        Some(Self { error, known_final })
+    }
+}
+
+impl Failure {
+    fn decoded(error: Error, known: Option<Known>) -> Option<Self> {
+        let termination = match known {
+            None => None,
+            Some(Known::Termination(termination)) => Some(termination),
+            Some(Known::KnownFinal { .. }) => return None,
+        };
+        Some(Self { error, termination })
     }
 }
 
@@ -205,14 +241,14 @@ fn failure(name: OutcomeName, error: Error, result: Option<ResultBody>) -> Optio
         Some(ResultBody::Known(Object(known))) => Some(known),
         Some(ResultBody::Success(_)) => return None,
     };
-    name.failure(Failure { error, known })
+    name.failure(error, known)
 }
 
 #[derive(Serialize)]
 #[serde(untagged)]
 enum ResultMember<'a> {
     Success(&'a Success),
-    Known(&'a Known),
+    Known(Known),
 }
 
 #[derive(Serialize)]
@@ -229,17 +265,27 @@ impl Outcome {
     fn members(&self) -> Members<'_> {
         match self {
             Self::Ok(success) => (OutcomeName::Ok, Some(ResultMember::Success(success)), None),
-            Self::Rejected(failure) => failure.members(OutcomeName::Rejected),
+            Self::Rejected(rejection) => rejection.members(),
             Self::Failed(failure) => failure.members(OutcomeName::Failed),
             Self::Indeterminate(failure) => failure.members(OutcomeName::Indeterminate),
         }
     }
 }
 
+impl Rejection {
+    fn members(&self) -> Members<'_> {
+        let known = self
+            .known_final
+            .clone()
+            .map(|command_result| ResultMember::Known(Known::KnownFinal { command_result }));
+        (OutcomeName::Rejected, known, Some(&self.error))
+    }
+}
+
 impl Failure {
     fn members(&self, name: OutcomeName) -> Members<'_> {
-        let known = self.known.as_ref().map(ResultMember::Known);
-        (name, known, Some(&self.error))
+        let known = self.termination.clone().map(Known::Termination);
+        (name, known.map(ResultMember::Known), Some(&self.error))
     }
 }
 

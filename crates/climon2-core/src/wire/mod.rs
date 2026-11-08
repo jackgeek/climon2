@@ -25,7 +25,8 @@ pub use metadata::{
 pub use record::ControlRecord;
 pub use request::{Kill, Leave, Mode, Open, Request};
 pub use response::{
-    Cleanup, Failure, FocusBytes, Known, Outcome, PartialCleanup, Response, Success,
+    Cleanup, Failure, FocusBytes, Outcome, PartialCleanup, PartialTermination, Rejection, Response,
+    Success,
 };
 pub use server::{
     CommandFinal, FatalError, InitialMetadata, Notification, NotificationSource, ProgressChanged,
