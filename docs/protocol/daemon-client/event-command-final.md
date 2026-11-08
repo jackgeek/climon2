@@ -52,4 +52,5 @@ completion to satisfy confirmed selector removal intent, but still requires
 local delivery/handle release, instance cleanup and thread join before run-local
 dismissal. A final event never proves successful Leave. #69 owns numerical
 bounds/deadlines; [native declarations](../monitor-client/core-v1.md) are agreed
-in #71; final acceptance #62 remains open.
+in #71; the [acceptance matrix](../../monitor-acceptance.md) is agreed in #62,
+not executed conformance evidence.

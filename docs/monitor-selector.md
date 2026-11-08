@@ -249,5 +249,5 @@ releases, explicit save errors, and prefix+? despite either suppression.
 Cover repeated help, Enter/Escape/prefix handling, underlying selector
 search/highlight preservation, background progress, and modal input isolation
 without implicit acquisition or attention acknowledgement.
-Final scenarios remain with
-[automated acceptance criteria](https://github.com/jackgeek/climon2/issues/62).
+The agreed [acceptance matrix](monitor-acceptance.md) assigns final scenarios
+and evidence layers for #62; executable monitor conformance remains future work.

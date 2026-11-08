@@ -462,4 +462,5 @@ Later implementation must exercise actual packaged libraries through this header
 [Declaration checks](check.py) compile C examples/layout assertions for both
 targets and validate reference reachability. They deliberately do not use a mock
 library as production compatibility evidence. [Final acceptance #62](https://github.com/jackgeek/climon2/issues/62)
-remains the actual-monitor conformance gate.
+assigns the agreed [acceptance matrix](../../monitor-acceptance.md).
+Actual-monitor conformance remains an unexecuted release gate.

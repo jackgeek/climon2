@@ -450,9 +450,11 @@ select the first row in this order. Unknown/unavailable status is not
 result. Compatibility and placement of unsupported/unknown rows still require
 the discovery/interface decisions.
 
-Initial choice remains pinned while it starts. Definitive loss before readiness
-permits reranking remaining eligible candidates; other startup failures remain
-visible rather than silently skipping the candidate. At most one attempt per
+Initial choice remains pinned while it starts. The later
+[lifecycle amendment](monitor-lifecycle.md#monitor-and-selection-lifetime)
+supersedes earlier pre-readiness reranking: loss or startup failure preserves
+the chosen identity without automatically acquiring a replacement.
+At most one attempt per
 candidate per discovery pass remains the rule. Subsequent reports re-sort rows
 without changing selected/highlighted identity or redirecting confirmation.
 
@@ -620,7 +622,8 @@ bounded whole-process fail-stop and headless lifetime, all unimplemented.
 The [operational specification](monitor-operational-limits.md) now agrees
 numerical budgets/rate limits/retry intervals/retention (#69), not implemented.
 [Native declarations](protocol/monitor-client/core-v1.md) are agreed in #71;
-real-library runtime evidence and final automated acceptance (#62) remain future work.
+the [acceptance matrix](monitor-acceptance.md) is agreed in #62, while
+real-library runtime evidence and automated monitor conformance remain future work.
 Terminal application is now agreed in the [#63 contract](protocol/terminal-integration.md),
 not implemented; its required real-monitor-host evidence includes history
 replacement, coherent resize, supported keys/mouse/paste, host/application focus,

@@ -49,4 +49,5 @@ A lost response stays unconfirmed/indeterminate and is not replayed.
 Stalled cleanup uses bounded whole-process failure, not false Leave/join success.
 [Numerical limits/deadlines](../../monitor-operational-limits.md) and
 [native declarations](../monitor-client/core-v1.md) are agreed, unimplemented;
-final acceptance #62 remains open. Related: [Kill](request-kill.md).
+the [acceptance matrix](../../monitor-acceptance.md) is agreed in #62,
+not executed conformance evidence. Related: [Kill](request-kill.md).

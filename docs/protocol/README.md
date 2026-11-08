@@ -35,6 +35,10 @@ There is no in-process [framing](TERMS.md#frame) or frame limit.
 Revision layouts/semantics are frozen independently of release identity.
 The existing daemon hello exchange is unaffected.
 
+The agreed [monitor acceptance matrix](../monitor-acceptance.md) assigns
+source-linked scenarios and required contract, packaged-library, real-monitor,
+fault and measured evidence. It is a specification, not executed conformance.
+
 The [operational-limits specification](../monitor-operational-limits.md) supplies
 agreed configurable queue/transfer/payload budgets, admission, deadlines, retry
 and required measurements. The native contract maps library-applicable limits
@@ -743,7 +747,7 @@ Examples are wire bodies, not native declarations or conformance evidence.
   later core-status mechanics defer plugin implementation.
 - [Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59):
   agreed startup/discovery integration, revised status/time ordering and core
-  title/status reporting; not implemented, exact schemas still pending.
+  title/status reporting; not implemented, exact schemas are now agreed.
 - [Define version-matched client library loading and lifetime](https://github.com/jackgeek/climon2/issues/65):
   agreed [multi-instance embedding, compatibility, and lifetime](library-embedding.md);
   not implemented; [complete native declarations](monitor-client/client-v1.h) are agreed.
@@ -769,7 +773,9 @@ Examples are wire bodies, not native declarations or conformance evidence.
   agreed [numerical bounds, progress, admission and exhaustion](../monitor-operational-limits.md);
   unimplemented, with boundary/stall/cleanup and measurement obligations.
 - [Final automated monitor acceptance](https://github.com/jackgeek/climon2/issues/62):
-  remains open; executable evidence must include the lifecycle obligations.
+  agreed [acceptance matrix](../monitor-acceptance.md), not executed evidence:
+  real-monitor/library conformance, lifecycle, boundary/fault coverage and
+  measured qualification remain required before release.
 
 The implemented hello remains specified by
 [current framing/messages](../../crates/climon2-core/src/protocol.rs),

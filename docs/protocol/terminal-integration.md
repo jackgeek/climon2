@@ -401,7 +401,9 @@ Restore host modes/terminal settings and emit root
 Stalls use bounded whole-process failure, never thread killing/unloading or a
 false cleanup claim. Broken output permits only best-effort restoration/clear;
 report failure. [Numeric budgets](../monitor-operational-limits.md) and
-[native calls](monitor-client/core-v1.md) are agreed; final acceptance #62 remains open.
+[native calls](monitor-client/core-v1.md) and the
+[acceptance matrix](../monitor-acceptance.md) are agreed; executable
+conformance remains future work.
 No session-survival promise or containment of a native client crash is added.
 Native selection/copy limitations are manually verified where automation cannot
 honestly establish host-specific behavior. Documentation checks prove none of

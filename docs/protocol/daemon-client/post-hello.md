@@ -39,7 +39,9 @@ limits/deadlines/policy. The
 [agreed lifecycle contract](../../monitor-lifecycle.md) owns recovery,
 concurrent truthful shutdown, run-local selector removal and future headless
 zero-client lifetime. These amendments are unimplemented and change no wire
-schemas. Native declarations are agreed in #71; final acceptance #62 remains open.
+schemas. Native declarations are agreed in #71; the
+[acceptance matrix](../../monitor-acceptance.md) is agreed in #62,
+not executed conformance evidence.
 
 Portable core traffic does not depend on Unix sockets. Future monitor
 forwarding and browser consumption are planned, not implemented; routing,

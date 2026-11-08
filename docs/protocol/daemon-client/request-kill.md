@@ -56,5 +56,6 @@ Existing `climon2 kill <session>` must also terminate future
 survives later attachment loss until completion or Kill. These amendments are
 unimplemented; operation fields/results are unchanged.
 #69 owns agreed deadlines/bounds; [native declarations](../monitor-client/core-v1.md)
-are agreed in #71; final acceptance #62 remains open.
+are agreed in #71; the [acceptance matrix](../../monitor-acceptance.md)
+is agreed in #62, not executed conformance evidence.
 Related: [Command final](event-command-final.md).

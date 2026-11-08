@@ -390,7 +390,8 @@ Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent
 cleanup/fail-stop, passive recovery and existing CLI kill of future headless
-sessions. These are future tests, not conformance/performance claims. Final
-acceptance #62 remains open; native declarations are agreed in #71. Numerical budgets are
+sessions. These are future tests, not conformance/performance claims.
+The [acceptance matrix](../../monitor-acceptance.md) is agreed in #62;
+native declarations are agreed in #71. Numerical budgets are
 agreed in [operational limits](../../monitor-operational-limits.md), not implemented.
 Forwarding/security implementation remains deferred.

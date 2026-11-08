@@ -23,6 +23,9 @@ handshake and the planned in-process monitor-client interface for future plugin 
 It distinguishes implemented behavior from agreed plans and unresolved details.
 The planned [session status, attention, and activity mechanics](docs/session-status.md)
 include both daemon state machines and the monitor's ordering/recovery behavior.
+The agreed [monitor acceptance criteria](docs/monitor-acceptance.md) define
+required real-monitor, packaged-library and measured evidence, not tests
+already delivered.
 
 ## Sessions
 
