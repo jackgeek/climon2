@@ -15,6 +15,7 @@ pub mod selector;
 pub mod session;
 pub mod startup_envelope;
 pub mod title;
+pub mod wire;
 pub use identity::{ContractError, SessionId, Timestamp, VersionName};
 
 /// Keep hook instrumentation local to each binary's own feature selection (ADR 0004).
