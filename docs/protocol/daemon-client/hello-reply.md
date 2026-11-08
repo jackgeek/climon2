@@ -95,7 +95,8 @@ Missing/malformed advertisement makes revision 1 unavailable, not the session
 stale. The [hello parser](../../../crates/climon2-core/src/hello.rs) already
 reports this advertisement as valid, absent or malformed, and
 [its tests](../../../crates/climon2-core/tests/hello.rs) cover each case; the
-current daemon still advertises only the implemented tokens and `state`. Existing optional-field behavior and required fields remain frozen;
+current daemon still advertises only the implemented tokens and `state`.
+Existing optional-field behavior and required fields remain frozen;
 this is not permission to apply post-hello strict unknown-field rejection to
 hello. Optional family meanings are in the
 [core reference](core-v1.md#capability-families), including notification's status
