@@ -29,5 +29,7 @@ sound: host settings may suppress it or display a visual bell.
 The host may independently sound on program-status changes.
 This is the monitor's own [UI](../TERMS.md#ui) signal, never session BEL passthrough.
 It cannot acquire control, acknowledge attention or change a session [FSM](../TERMS.md#fsm).
-Host-output failures remain with
-[lifecycle](https://github.com/jackgeek/climon2/issues/61), not silent success.
+Host-output failure initiates
+[coordinated shutdown](../../monitor-lifecycle.md#coordinated-shutdown).
+Restoration/root clear and diagnostics are best-effort when output is broken;
+report failure, not silent success.

@@ -20,8 +20,14 @@ Unconfirmed loss remains disconnected/uncertain, not a fabricated final result.
 Status notification does not prove client cleanup or a completed thread join.
 See the [final-status rules](../../session-status.md#attention).
 
-[Lifecycle](https://github.com/jackgeek/climon2/issues/61) owns survival, recovery,
-and visible behavior.
+The [agreed lifecycle](../../monitor-lifecycle.md) owns survival, recovery,
+and visible behavior, all unimplemented. A final event does not prove accepted
+[Leave](../daemon-client/request-leave.md) or local cleanup/join. Confirmed
+selector removal may use definitive completion instead of
+[Kill](../../../GLOSSARY.md#attachment-and-control), but must still release deliveries/handles and finish
+instance cleanup/thread join before run-local dismissal. Discovery disappearance
+alone is not definitive completion. No same-run rediscovery or fallback
+acquisition is allowed.
 The [shared communication contract](../README.md#shared-in-process-communication-contract)
 and [semantic examples](../README.md#semantic-examples), agreed in
 [#66](https://github.com/jackgeek/climon2/issues/66), require reliable final-outcome

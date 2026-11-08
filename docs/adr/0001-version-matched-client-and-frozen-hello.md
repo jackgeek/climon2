@@ -26,6 +26,19 @@ usable with an explicit limitation. Monitor-mode presentation is canonically
 serialized at effective session geometry; ordinary attach remains unchanged.
 These additions are agreed, not implemented.
 
+The later [lifecycle contract](../monitor-lifecycle.md) agrees automatic
+exponential passive recovery, prior-instance cleanup/join before replacement,
+concurrent shutdown and bounded whole-process fail-stop. Accepted Leave,
+closure, final outcome and local cleanup/join remain separate evidence; no
+indeterminate work, including Kill, is replayed. Future
+`climon2 exec --headless <command> [args...]` returns after daemon-confirmed
+creation and permits zero clients for the session's entire lifetime, including
+after later attachment loss, until completion or Kill. Existing CLI kill must
+be preserved and tested with headless sessions. These planned lifetime policies
+do not change frozen hello or wire schemas, ordinary leave policy or native
+crash exposure. Numerical budgets #69, native declarations #71 and final
+automated acceptance #62 remain open; no implementation is claimed.
+
 A [session daemon](../../GLOSSARY.md#sessions) is only ever reached by the client from its own version. Session metadata records the daemon's version folder, and the CLI runs `<climon2 executable home>/<version>/climon2-client`, even when a different version is current. This keeps the protocol after hello version-specific, with no backward compatibility to maintain, and lets upgrades install alongside running sessions without breaking them. For the same reason, the hello handshake (framing and fields) is frozen forever: it is the one exchange that crosses versions, so any version of `climon2 list` can tell whether any daemon is live.
 
 ## Frozen layout

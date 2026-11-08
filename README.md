@@ -27,6 +27,14 @@ include both daemon state machines and the monitor's ordering/recovery behavior.
 ## Sessions
 
 `exec` starts the command and attaches to it. There is no start-detached option.
+Future `climon2 exec --headless <command> [args...]` is agreed but **not
+implemented**. It will return success only after daemon-confirmed creation,
+without an interactive client. A headless session will survive zero clients
+throughout its lifetime, including after later attachment loss, until command
+completion or explicit Kill. Ordinary leave policy below remains unchanged.
+The [lifecycle specification](docs/monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill)
+requires preserving existing `climon2 kill <session>` and automated headless
+termination tests, not adding another kill command.
 
 **Detach** with the escape prefix, Ctrl+], then `d`. The session keeps running
 with no idle timeout, and the client exits 0 after printing
@@ -182,6 +190,32 @@ startup validation and no live reload. False suppresses the explicit host bell,
 not toasts or OSC 7501 reports; host settings govern actual audibility.
 The [selector specification](docs/monitor-selector.md) records the accepted
 layout, read-only disconnected/final history selection and animated toasts.
+The later [lifecycle specification](docs/monitor-lifecycle.md) adds planned
+default-Cancel Delete confirmation pinned to immutable session identity.
+Removal waits for definitive termination and local instance cleanup/join,
+dismisses only for this run, and never acquires a fallback session or re-adds
+the dismissed GUID in the same run. No connected revoked-cache inspection route
+or prefix+h/prefix+r binding is added. Disconnected read-only cache overlays
+exactly `Reconnecting...` during scheduled/active automatic passive recovery.
+Recoverable transport/startup failures (including missing libraries) and safe
+worker panics use exponential backoff; permanent rejection/invalid configuration
+stop it. Replacement instances wait for old cleanup/join; no indeterminate
+input/request/Kill is replayed. The monitor remains open through empty/all-final
+states and preserves selection identity without automatic replacement takeover.
+
+Planned prefix+x and catchable signals coordinate concurrent shutdown of every
+owned instance. Accepted Leave, connection closure, final outcome, cleanup and
+join are separate evidence. Restore host state and clear root attention before
+diagnostics; stalled cleanup uses bounded whole-process failure, never a false
+detach/join claim or thread kill. Numerical budgets (#69), complete native
+declarations (#71) and final automated acceptance (#62) remain open. All of this
+is unimplemented; no general session-survival or native-crash isolation is added.
+Planned explicit exit succeeds only after required Leave outcomes, local cleanup/
+joins and host restoration succeed, never with the selected command's status.
+Fatal monitor errors, required Leave failure/uncertainty, incomplete cleanup or
+restoration failure use 125; a catchable signal uses signal-style status only
+after successful cleanup. Session-local command/client failures alone do not
+poison a later clean monitor exit.
 The monitor also generates its own
 [OSC 7501 aggregate attention reports](docs/protocol/README.md#monitor-to-host-status-and-bell),
 never raw session-sequence passthrough.

@@ -505,17 +505,31 @@ connection closes. Otherwise use the `disconnected` ordering group and the
 monitor's recorded UTC disconnection time; retain the last daemon status/time
 as stale detail rather than overwriting them.
 
-Periodically retry uncertain disconnections with bounded scheduling/backoff.
+Use automatic exponential passive backoff for uncertain transport loss,
+recoverable startup failure (including missing libraries), and safely contained
+worker panics. Permanent protocol/interface rejection and invalid configuration
+stop retries with explicit errors. Definitive completion also stops retries.
+Wait for previous-instance deliveries/handles, workers and thread cleanup/join
+before any fresh attempt; never overlap replacement instances.
+The [agreed, unimplemented lifecycle contract](monitor-lifecycle.md) owns these
+rules; numerical delays/caps/jitter remain with operational limits.
 Reconnect passively and refresh status/title without automatically taking
 control, even if the session remains selected. Explicit user action resumes
 control; apply a fresh valid restoration before presenting content as current
-or enabling input. Stop retrying definitively completed sessions.
+or enabling input. Never replay indeterminate work, including Kill. Stop new
+retry scheduling during shutdown or confirmed pending termination/removal;
+passive recovery may still establish an indeterminate Kill's outcome.
 Every fresh authoritative restoration replaces the whole model/history
 transactionally, not union/dedup; absent older local history may be discarded.
-Partial/superseded models never become current. Revoked/disconnected cache
-requires explicit stale read-only inspection, never Acquire. Ordinary revoked
-selection shows the takeover placeholder; completed/failed content may display
-retained output directly read-only. Passive without a cache says none available.
+Partial/superseded models never become current. Disconnected cache is read-only;
+selector Enter explicitly opens it without Acquire or acknowledgement. Overlay
+exactly `Reconnecting...` while recovery is scheduled or active, or an explicit
+disconnected/error overlay when permanent rejection stops recovery. Connected
+revoked selection shows the takeover placeholder: no revoked-cache inspection
+route exists. Remove the reconnect overlay on recovery; a non-controller still
+shows the placeholder until explicit acquisition. Completed/failed content may
+display retained output directly read-only. Passive without a cache says none
+available. No prefix+h/prefix+r or extra history/retry binding is added.
 See the [history and replacement contract](protocol/terminal-integration.md#normal-history-alternate-screen-and-stale-inspection).
 
 This does not permit live read-only mirroring after revocation, recover output
@@ -528,8 +542,21 @@ first hands back to the most recently controlling attachment, otherwise promotes
 the newest accepted passive registration, before final-participant
 [leave policy](../GLOSSARY.md#attachment-and-control). Registration alone does
 not take over a detached session. Committed termination overrides succession.
-No new native-crash survival guarantee is implied; future headless zero-client
-lifetime belongs to #61, not today's interactive leave policy.
+No new native-crash survival guarantee is implied. Future
+[headless sessions](../GLOSSARY.md#sessions) explicitly survive zero clients for
+their entire lifetime, including later attachment loss, until command completion
+or Kill; ordinary sessions retain leave policy. Future
+`climon2 exec --headless <command> [args...]` returns only after daemon-confirmed
+creation. This CLI spelling and lifetime are agreed in
+[lifecycle](monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill),
+not implemented; preserve existing CLI kill and test it with headless sessions.
+
+Keep selection identity through loss/completion/revocation/failed acquisition;
+never automatically acquire a replacement. Retain rows and metadata for this
+run unless explicitly removed, and continue discovery through empty/all-final
+states. [Selector Delete](monitor-selector.md#delete-terminate-and-remove) waits
+for definitive termination and local cleanup/join before run-local dismissal,
+with no same-run rediscovery or acquiring fallback.
 
 ## Titles and notifications
 
@@ -581,9 +608,11 @@ never routed to another/background session. Modal menus also clear keyboard focu
 
 The daemon wire schemas, compatibility/rejection, source normalization, viewing
 validation and notification identities are now agreed in #67, not implemented.
-The remaining owning tickets must complete native declarations, budgets/rate
-limits, reconnect intervals/backoff, retention budgets, and orderly shutdown. These
-mechanics do not settle every question in those tickets.
+The [lifecycle specification](monitor-lifecycle.md) now agrees recovery,
+concurrent shutdown, truthful Leave/closure/outcome/cleanup/join evidence,
+bounded whole-process fail-stop and headless lifetime, all unimplemented.
+Native declarations (#71), numerical budgets/rate limits/retry intervals/
+retention (#69), and final automated acceptance (#62) remain open.
 Terminal application is now agreed in the [#63 contract](protocol/terminal-integration.md),
 not implemented; its required real-monitor-host evidence includes history
 replacement, coherent resize, supported keys/mouse/paste, host/application focus,

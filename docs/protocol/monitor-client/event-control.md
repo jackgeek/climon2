@@ -10,8 +10,14 @@ identifying the applicable [control period](../../../GLOSSARY.md).
 A grant starts [restoration](../../../GLOSSARY.md), not input [readiness](../../../GLOSSARY.md).
 Revocation invalidates readiness and pending restoration; show the
 [placeholder](../../../GLOSSARY.md), not cached content as current.
-Any cached revoked output requires explicit stale read-only inspection, never
-implicit takeover or live core mirroring.
+There is no connected revoked-cache inspection route, implicit takeover or live
+core mirroring. Disconnected cache is explicitly read-only, overlaying exactly
+`Reconnecting...` while passive recovery is scheduled or active; permanent
+rejection instead shows a disconnected/error overlay. Reconnect removes that
+overlay but leaves the non-controller placeholder until explicit acquisition.
+No prefix+h/prefix+r binding is added. These later
+[lifecycle amendments](../../monitor-lifecycle.md#history-and-passive-recovery)
+are agreed, unimplemented.
 
 [Hand-back](../../../GLOSSARY.md) may restore background control without
 changing selection. That client resumes screen maintenance but receives no

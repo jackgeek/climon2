@@ -40,5 +40,12 @@ resize, send input or acknowledge.
 Invalid state and resource/I/O/internal failures use the shared
 [error catalog](core-v1.md#errors-and-bounded-delivery).
 No optional fields/defaults/unknown members; malformed records or IDs are fatal.
-Limits #69 and lifecycle/cleanup #61 remain unresolved owners, not success
-guarantees. Related: [Kill](request-kill.md).
+The [agreed, unimplemented lifecycle](../../monitor-lifecycle.md#coordinated-shutdown)
+uses atomic Leave during concurrent shutdown of passive, attached, partially
+started and failing owned clients. Promotion racing with shutdown cannot leave
+membership registered. Record accepted passive deregistration/deliberate detach
+separately from closure, final client outcome, worker cleanup and thread join.
+A lost response stays unconfirmed/indeterminate and is not replayed.
+Stalled cleanup uses bounded whole-process failure, not false Leave/join success.
+Numerical limits/deadlines remain #69; native declarations #71 and final
+acceptance #62 remain open. Related: [Kill](request-kill.md).

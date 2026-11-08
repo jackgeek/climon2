@@ -63,11 +63,17 @@ and remote security remain unresolved. The
 There is no initial application checksum; only a future negotiated integrity
 revision could add one if chosen.
 
-Future headless exec returns immediately and can launch several sessions without
-initial clients. [#61](https://github.com/jackgeek/climon2/issues/61) must define
-zero-client lifetime; CLI spelling and implementation remain open. Today's
-interactive leave policy is not universal headless policy and does not make all
-sessions persistent.
+Future `climon2 exec --headless <command> [args...]` creates a
+[headless session](../../GLOSSARY.md#sessions) without an interactive client and
+returns success only after daemon-confirmed creation. Its zero-client survival
+policy lasts until command completion or explicit
+[Kill](../../GLOSSARY.md#attachment-and-control), including after later
+[attachment](../../GLOSSARY.md#attachment-and-control) loss. CLI spelling and lifetime are
+[agreed, unimplemented](../monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill).
+Preserve existing `climon2 kill <session>` and require automated headless
+termination tests; no duplicate command is added. Ordinary sessions retain
+[leave policy](../../GLOSSARY.md#attachment-and-control), and this exception does
+not make all sessions persistent.
 
 Ratatui powers the planned monitor's rendering. The agreed
 [terminal integration contract](terminal-integration.md) selects exact ordered
@@ -132,8 +138,10 @@ These fixed reports fit the existing supported states; no new negotiation,
 acknowledgement, [request IDs](TERMS.md#request-id),
 [control periods](../../GLOSSARY.md#attachment-and-control) or retry/replay policy is added.
 Unsupported hosts may ignore them. Writing does not prove host interpretation,
-sound or user acknowledgement. Host-output/abnormal cleanup policy remains
-[lifecycle work](https://github.com/jackgeek/climon2/issues/61).
+sound or user acknowledgement. The
+[agreed lifecycle](../monitor-lifecycle.md#coordinated-shutdown) requires
+restoration and root clear before final diagnostics; broken output makes these
+best-effort with explicit failure, not a successful cleanup promise.
 These signals do not amend daemon activity/attention [FSMs](TERMS.md#fsm) or acknowledge sessions.
 
 ## Startup and control
@@ -168,15 +176,18 @@ reusing starting and retained clients; discovery uncertainty never overrides an
 established client's state or tears it down.
 
 Pin the chosen initial candidate while it starts. New arrivals
-receive passive clients without displacing it. Only definitive loss permits
-automatic progression, at most once per candidate per pass. Other startup
-failures stay visible on that candidate without silent fallback. Startup
+receive passive clients without displacing it. The later
+[lifecycle amendment](../monitor-lifecycle.md#monitor-and-selection-lifetime)
+preserves chosen identity through loss, completion and failed acquisition,
+without automatically acquiring a replacement. Startup failures stay visible
+on that candidate without silent fallback. Startup
 selection succeeds only after control and the current complete restoration
 have been applied. [Revocation](../../GLOSSARY.md#attachment-and-control) before
 [readiness](../../GLOSSARY.md#protocol-and-plugin-concepts) leaves a non-controlling
 [placeholder](../../GLOSSARY.md#attachment-and-control) requiring explicit user action, not repeated automatic takeover.
-After the first successful startup, selected-session loss and recovery belong
-to the lifecycle decision.
+The monitor remains open on empty startup, all-unavailable or all-final states
+and continues discovery. Explicit selection is never redirected because its
+target fails.
 
 ## Session status and monitor recovery
 
@@ -222,7 +233,8 @@ screen mirroring. Their exact daemon wire
 [schemas and capabilities](daemon-client/core-v1.md) are agreed, not implemented;
 native declarations remain #71. [UI](TERMS.md#ui) terminal behavior is now
 specified in the [terminal contract](terminal-integration.md); selector layout
-and lifecycle policy remain #60/#61.
+is in the [selector specification](../monitor-selector.md), and lifecycle policy
+in the [lifecycle specification](../monitor-lifecycle.md). All are unimplemented.
 
 [Viewing](../../GLOSSARY.md#status-and-attention) is reported per
 [attachment](../../GLOSSARY.md#attachment-and-control);
@@ -238,11 +250,27 @@ clears viewing but retains ready keyboard input; host focus-in/toast disappearan
 never acknowledges. Application focus uses optional non-user core Focus.
 
 The monitor retains a per-session `climon2-vt` model and bounded local scrollback
-for disconnected inspection, and retries uncertain connections passively.
-Reconnect never automatically takes control. Definitive completion stops
-retrying; cached output/status is not proof of a live or completed session.
+for disconnected read-only inspection. Overlay exactly `Reconnecting...` while
+automatic passive recovery is scheduled or active. Permanent rejection instead
+shows an explicit disconnected/error overlay. Connected revoked cache has no
+inspection route; reconnect removes the overlay but leaves a non-controller
+placeholder until explicit acquisition. No prefix+h/prefix+r binding is added.
+Automatic exponential backoff covers uncertain transport loss, recoverable
+startup failure (including missing libraries), and safe worker panics.
+Permanent protocol/interface rejection, invalid configuration and definitive
+completion stop retry. Each fresh attempt waits for prior instance cleanup/
+join; never overlap replacement instances or replay indeterminate work.
+Reconnect never automatically takes control; cached output/status is not proof
+of a live or completed session.
 Detailed [connection/retention rules](../session-status.md#connection-loss-and-retained-terminal-views)
 preserve the existing leave policy and native-crash failure boundary.
+The [selector Delete amendment](../monitor-selector.md#delete-terminate-and-remove)
+reopens the map's prior killing/removal exclusion. A default-Cancel modal pins
+immutable GUID identity. Confirmed removal waits for definitive termination and
+local instance cleanup/join, then dismisses that GUID/cache for this run only.
+Lost Kill responses keep the row and permit only passive outcome recovery, never
+Kill replay. Discovery cannot re-add dismissed GUIDs in the same run. Selection/
+highlight fallback after removal does not acquire control.
 
 ## Session menu titles
 
@@ -341,7 +369,26 @@ data. Thread-safe handles do not permit concurrent destruction: stop new calls
 and release deliveries before dedicated-thread cleanup completes. A closed
 stream or final session event does not prove that the instance is cleaned up,
 the thread returned, or the monitor joined it. Exact destruction/release
-declarations remain for #71 and safe shutdown coordination/policy for #61.
+declarations remain for #71; shutdown coordination follows the
+[agreed lifecycle](../monitor-lifecycle.md#coordinated-shutdown).
+Prefix+x and catchable signals stop new input/acquisition/discovery/retries and
+request every owned instance's shutdown concurrently through independent control
+handles. Include passive, attached, partially started and failing instances.
+Each attempts required atomic [Leave](daemon-client/request-leave.md), closes
+and cleans workers on its owner thread. Drain/release objects, end concurrent
+handle use and join every owned
+thread before clean exit. Lost Leave remains unconfirmed; closure or a final
+event cannot substitute. Deadline stalls fail-stop the whole process after
+best-effort host restoration/root clear and diagnostics, never an individual
+thread kill or running-code unload. Numerical deadlines remain #69.
+Explicit exit succeeds only after required current Leave outcomes, local
+cleanup/joins and host restoration succeed; it never inherits selected command
+status. Fatal monitor error, required Leave failure/uncertainty, incomplete
+cleanup or restoration failure uses the
+[climon2 error code](../../GLOSSARY.md#installation). Catchable-signal exit uses
+signal-style status after successful cleanup, otherwise that error code.
+Previously resolved session-local failures alone do not poison a later clean
+exit; prior transport loss remains recorded as unconfirmed, not accepted detach.
 
 Each instance supplies a library-owned
 [pollable notification descriptor](TERMS.md#pollable-notification-descriptor),
@@ -412,7 +459,8 @@ command-name fallback. Optional core `focus-v1` enables
 [application focus](monitor-client/request-focus.md); missing library/daemon
 support is a visible focus limitation, not a reason to block an otherwise usable
 session. It is not a plugin extension or release-number inference.
-Remaining lifecycle-required capabilities belong to #61.
+Lifecycle uses the existing agreed Leave/Kill/control contract; this amendment
+assigns no new capability or operation schema.
 
 Unknown core operation/event tags are invalid, not implicit extensions.
 Future [namespaced](TERMS.md#namespaced-name) extensions require explicit name/revision negotiation of the
@@ -438,8 +486,11 @@ This gap-free metadata barrier is independent of control, readiness, and
 selection, and never makes stale terminal content fresh. Exact event forms,
 timestamps, identities, and daemon mapping are specified by
 [wire revision 1](daemon-client/core-v1.md); native representation remains #71.
-Retry schedules,
-recreation, cleanup, and budgets remain for #61/#69.
+The [lifecycle contract](../monitor-lifecycle.md#history-and-passive-recovery)
+owns exponential passive recovery, recreation and cleanup. Numerical schedules
+and budgets remain #69. Pause new retry scheduling during shutdown or confirmed
+termination/removal; passive outcome recovery may establish an indeterminate
+Kill result without replay.
 
 ### Semantic examples
 
@@ -486,14 +537,14 @@ These are specification requirements, not checks passed by current code:
 ### Remaining decision boundaries
 
 The queue, ownership, notification, admission, ordering, and generation rules
-above are agreed; they are not placeholders for #71 to redesign. These remaining
-decisions are still open:
+above are agreed; they are not placeholders for #71 to redesign. Agreed
+contracts and remaining open decisions are distinguished below:
 
-| Owner | Unresolved details |
+| Owner | Agreed contract or unresolved details |
 |---|---|
 | [Daemon wire #67](https://github.com/jackgeek/climon2/issues/67) | Agreed [wire revision 1](daemon-client/core-v1.md), not implemented. No remaining schema decision is delegated back to #67. |
 | [Terminal integration #63](https://github.com/jackgeek/climon2/issues/63) | Agreed [terminal contract](terminal-integration.md), including canonical monitor geometry and optional core Focus; not implemented. Numeric transfer budgets remain #69 and complete native declarations #71. |
-| [Lifecycle #61](https://github.com/jackgeek/climon2/issues/61) | Recovery/recreation, cleanup coordination and incomplete-cleanup policy, retry schedules with #69, visible lifecycle behavior, and future headless zero-client lifetime. No additional survival guarantee is implied. |
+| [Lifecycle #61](https://github.com/jackgeek/climon2/issues/61) | Agreed [lifecycle contract](../monitor-lifecycle.md), not implemented: exponential passive recovery, concurrent truthful shutdown, bounded whole-process fail-stop, Delete/removal and headless lifetime. Numerical schedules remain #69; no general native-crash survival guarantee. |
 | [Operational limits #69](https://github.com/jackgeek/climon2/issues/69) | Numeric byte/record/object and aggregate bounds, progress/stall deadlines, scheduling/admission/exhaustion policy, transfer budgets, and measurement thresholds. |
 | [Interface schemas #71](https://github.com/jackgeek/climon2/issues/71) | Exact native declarations, record fields/tags/widths, handle and release operations, descriptor exposure, native capability reporting, timestamp/identity encodings, native error catalog, schema fixtures, and valid executable examples after the remaining decisions. It remains blocked; agreed wire focus-v1 and terminal semantics are not delegated back for redesign. |
 
@@ -666,8 +717,8 @@ Examples are wire bodies, not native declarations or conformance evidence.
   correlation/order, validation, compatibility, bounded progress, core metadata,
   and future evidence requirements above; plugin implementation remains deferred.
 - [Complete monitor-client interface schemas](https://github.com/jackgeek/climon2/issues/71):
-  still blocked on the remaining lifecycle and numeric
-  limit decisions; owns exact fields, calls/events, results, errors, and examples.
+  remains open, with numerical limits still unresolved; owns exact fields,
+  calls/events, results, errors, and examples against the agreed lifecycle.
 - [Freeze daemon-client communication contract](https://github.com/jackgeek/climon2/issues/67):
   agreed [revision-1 post-hello wire](daemon-client/core-v1.md), passive
   succession, metadata, outcomes and validation; no implementation claim.
@@ -675,9 +726,13 @@ Examples are wire bodies, not native declarations or conformance evidence.
   agreed [terminal/input/geometry/restoration contract](terminal-integration.md),
   optional core Focus and #64/#59 input/config amendments; not implemented.
 - [Define monitor exit and failure behavior](https://github.com/jackgeek/climon2/issues/61):
-  client cleanup, monitor failure, session survival, and recovery.
+  agreed [lifecycle](../monitor-lifecycle.md), not implemented: recovery,
+  concurrent shutdown/fail-stop, truthful outcomes, selector removal and
+  headless zero-client lifetime.
 - [Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69):
   numerical bounds, progress, admission, and exhaustion.
+- [Final automated monitor acceptance](https://github.com/jackgeek/climon2/issues/62):
+  remains open; executable evidence must include the lifecycle obligations.
 
 The implemented hello remains specified by
 [current framing/messages](../../crates/climon2-core/src/protocol.rs),

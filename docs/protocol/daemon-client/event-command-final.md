@@ -47,4 +47,8 @@ does not suppress it; see [local rules](core-v1.md#viewing-acknowledgement-and-l
 No [request ID](../TERMS.md#request-id)/defaults/unknown members. Invalid records follow
 [fatal validation](core-v1.md#framing-and-validation).
 Required final delivery cannot be silently lost or fabricated on broken
-transport. #69 owns bounds/deadlines; #61 lifecycle/cleanup.
+transport. The [agreed lifecycle](../../monitor-lifecycle.md) permits definitive
+completion to satisfy confirmed selector removal intent, but still requires
+local delivery/handle release, instance cleanup and thread join before run-local
+dismissal. A final event never proves successful Leave. #69 owns numerical
+bounds/deadlines; native declarations #71 and final acceptance #62 remain open.

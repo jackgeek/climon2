@@ -60,6 +60,11 @@ _Avoid_: Running session, active session
 A live session with no attached clients that continues after deliberate detach.
 _Avoid_: Disconnected session, completed session
 
+**Headless session**:
+A session explicitly created to run without an initial interactive client and to
+remain alive with zero clients, including after later clients leave.
+_Avoid_: Detached session, persistent session
+
 **Capabilities**:
 The operations or extensions a climon2 participant explicitly advertises as supported; support is never inferred from release versions.
 _Avoid_: Features, protocol version

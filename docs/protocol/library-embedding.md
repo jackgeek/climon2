@@ -96,9 +96,19 @@ validity and release operations belong to the completed [schemas](TERMS.md#schem
 [detach](../../GLOSSARY.md#attachment-and-control) is not proof of cleanup or
 thread completion. Cleanup failure must be reported, not called success.
 
-Never forcibly terminate a stalled thread or unload running code. The policy
-when cleanup cannot finish belongs to the
-[lifecycle decision](https://github.com/jackgeek/climon2/issues/61).
+Never forcibly terminate a stalled thread or unload running code. The agreed,
+unimplemented [lifecycle contract](../monitor-lifecycle.md#coordinated-shutdown)
+requests shutdown concurrently for every owned instance, including passive,
+attached, partially started and failing ones. Keep draining/releasing deliveries;
+required atomic [Leave](daemon-client/request-leave.md) removes registration and
+membership even if promotion races with shutdown. Daemon acceptance, closure,
+final outcome, worker cleanup and thread join remain distinct evidence.
+If cleanup exceeds its eventual budget, attempt
+[host](../../GLOSSARY.md#sessions) restoration/root
+[attention](../../GLOSSARY.md#status-and-attention)
+[clear](monitor-host/report-clear.md), report unconfirmed work, then fail-stop
+the whole monitor process. Never
+claim a stalled thread joined or a lost Leave response succeeded.
 Load/start concurrency, progress deadlines, and admission/exhaustion policies
 belong to [operational limits](https://github.com/jackgeek/climon2/issues/69).
 This document assigns no numerical budgets.
@@ -144,11 +154,26 @@ Catch recoverable Rust panics inside every exported library entry and report an
 explicit failure. For an instance failure, stop ordinary work on that instance;
 permit only cleanup declared safe by its lifecycle. Other instances continue
 where safe. No unwinding crosses the public interface in either direction.
+Automatic exponential passive recovery covers recoverable startup failures
+(including missing libraries), transport loss and safely contained worker
+panics. Permanent protocol/interface rejection and invalid configuration stop
+retries with explicit errors. A repaired installation can recover automatically.
+Each fresh attempt waits for prior deliveries/handles, workers and instance
+thread cleanup/join; no replacement overlaps old running code. Failure to prove
+cleanup uses whole-process fail-stop, not another attempt. Keep opened library
+handles loaded until process exit. Recovery never requests takeover or replays
+indeterminate work; final outcomes stop retry. The
+[lifecycle contract](../monitor-lifecycle.md#history-and-passive-recovery) owns
+policy; #69 owns numerical initial delay, cap and any jitter.
 
 This is not native-crash isolation. Abort, native faults, and panic-abort builds
 can terminate the monitor and every hosted client. No new session-survival
-guarantee exists: the daemon's existing
-[leave policy](../../GLOSSARY.md#attachment-and-control) still applies.
+guarantee exists: ordinary sessions retain the daemon's existing
+[leave policy](../../GLOSSARY.md#attachment-and-control) and agreed succession.
+Future [headless sessions](../../GLOSSARY.md#sessions) explicitly survive zero
+clients even after later attachment loss, until completion or
+[Kill](../../GLOSSARY.md#attachment-and-control); that lifetime
+exception is agreed, not implemented, and adds no native-crash isolation.
 
 ## Required automated evidence
 
@@ -165,13 +190,18 @@ These are obligations for later implementation, not tests already run:
 - Check copying, borrowing and transferred-buffer lifetimes, allocator pairing,
   internal-worker cleanup, control-handle lifetime and actual thread joins,
   including partial startup and recoverable panics.
+- Cover concurrent shutdown and promotion racing with Leave, lost response
+  versus closure/outcome/join, outstanding deliveries and stalled workers/
+  threads with bounded whole-process failure, plus automatic passive recovery
+  after safe failures and no overlapping replacement instances.
 - Exercise native crash/abort in a disposable monitor process. Report
   whole-monitor failure exposure; do not assert process-isolated client
   survival or guaranteed session survival.
 
 The agreed [communication decision](https://github.com/jackgeek/climon2/issues/66)
 owns [operation delivery and representation, ordering and correlation](README.md#shared-in-process-communication-contract).
-Lifecycle owns recovery and incomplete cleanup; operational limits own budgets;
+The [agreed lifecycle](../monitor-lifecycle.md) owns recovery and incomplete
+cleanup; operational limits own budgets;
 interface schemas own exact declarations and valid call examples. These
 decisions must preserve this embedding contract without inventing
 [readiness](../../GLOSSARY.md#protocol-and-plugin-concepts) or successful cleanup

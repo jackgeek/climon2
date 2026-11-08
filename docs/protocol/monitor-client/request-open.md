@@ -64,7 +64,13 @@ The agreed [communication contract](../README.md#shared-in-process-communication
 and [semantic examples](../README.md#semantic-examples), owned by
 [#66](https://github.com/jackgeek/climon2/issues/66), apply here.
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign
-exact arguments, outcomes, errors, and executable examples. Retry schedules,
-recreation, cleanup, and budgets remain with
-[lifecycle](https://github.com/jackgeek/climon2/issues/61) and
+exact arguments, outcomes, errors, and executable examples. The
+[agreed lifecycle](../../monitor-lifecycle.md#history-and-passive-recovery)
+requires automatic exponential passive recovery for transport loss, recoverable
+startup failure (including missing libraries) and safe worker panics. Permanent
+rejection/invalid configuration and final outcomes stop retries. Fresh attempts
+wait for old instance cleanup/join; never overlap running replacement instances,
+request automatic takeover or replay indeterminate work. The selected identity
+is retained through failure, without acquiring another session.
+Numerical retry schedules and budgets remain with
 [operational limits](https://github.com/jackgeek/climon2/issues/69).

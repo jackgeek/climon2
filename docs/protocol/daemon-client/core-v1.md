@@ -184,11 +184,25 @@ interactive work; Leave and repeated standalone Kill remain possible.
 This intentionally amends #58's final-attachment assumptions; it does not
 guarantee survival of a native monitor crash.
 
-Future headless exec returns immediately to its caller and can launch multiple
-sessions without an initial client. Lifetime must support zero clients; policy
-belongs to [#61](https://github.com/jackgeek/climon2/issues/61).
-CLI spelling and implementation are unresolved. Today's interactive leave
-policy is not universal future headless policy, nor are all sessions persistent.
+Future `climon2 exec --headless <command> [args...]` starts a
+[headless session](../../../GLOSSARY.md#sessions) without an interactive client
+and returns success only after daemon-confirmed creation. Zero-client survival
+lasts for that session's lifetime, even after later attachments disappear,
+until command completion or explicit Kill. CLI spelling/lifetime are
+[agreed, unimplemented](../../monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill);
+creation encoding is not assigned by this amendment. Preserve existing
+`climon2 kill <session>` and test its future headless support. Ordinary leave
+policy and succession remain unchanged; not every session becomes persistent.
+
+The [lifecycle amendment](../../monitor-lifecycle.md) also agrees concurrent
+shutdown and automatic exponential passive recovery. It does not change any
+wire code, field, control/readiness rule or status state machine.
+Required atomic [Leave](request-leave.md) proves daemon departure only, not
+connection closure, final client outcome, worker cleanup or thread join.
+Lost responses remain indeterminate and are never replayed, including Kill.
+Monitor removal waits for definitive termination then local cleanup/join,
+not merely discovery disappearance or a queued request. Cleanup stalls use
+bounded whole-monitor fail-stop; numerical budgets remain #69.
 
 ## Ordering and authority
 
@@ -355,7 +369,8 @@ declarations, tags/layouts, calls, native errors and executable examples.
 Map the wire to the public interface; do not copy JSON or wire IDs as an ABI.
 The [#63 terminal contract](../terminal-integration.md) owns rendering/application/
 resize semantics and optional Focus; #69 numeric limits, deadlines
-and policy; #61 lifecycle, recovery, cleanup and headless behavior.
+and policy; [agreed lifecycle](../../monitor-lifecycle.md) recovery, concurrent
+shutdown, cleanup/fail-stop, selector removal and headless lifetime.
 
 Future namespaced/revisioned opaque plugin relay must preserve IDs, truthful
 outcomes, authority/readiness and required records, including while revoked;
@@ -370,5 +385,9 @@ arbitrary bytes; atomic metadata/status/episode/time and source normalization;
 menus/focus/local toast scope/deduplication; exit/signal versus disconnect;
 kill cleanup failures; bounded stalled consumers and independent control.
 Native same/mixed-release evidence remains required by #65/#66/#71.
-These are future tests, not conformance/performance claims. Forwarding/security
-and headless implementation are not new release prerequisites.
+The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
+add Leave/promotion races, lost response versus closure/outcome/join, concurrent
+cleanup/fail-stop, passive recovery and existing CLI kill of future headless
+sessions. These are future tests, not conformance/performance claims. Final
+acceptance #62, numerical budgets #69 and native declarations #71 remain open.
+Forwarding/security implementation remains deferred.

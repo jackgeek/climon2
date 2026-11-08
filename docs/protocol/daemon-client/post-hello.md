@@ -35,8 +35,11 @@ The [agreed #63 terminal contract](../terminal-integration.md) owns rendering/
 application/resize semantics, canonical monitor geometry and optional non-user
 [Focus `0x39`](request-focus.md), negotiated as `focus-v1`.
 [#69](https://github.com/jackgeek/climon2/issues/69) owns numerical
-limits/deadlines/policy, and [#61](https://github.com/jackgeek/climon2/issues/61)
-owns lifecycle/recovery/headless behavior.
+limits/deadlines/policy. The
+[agreed lifecycle contract](../../monitor-lifecycle.md) owns recovery,
+concurrent truthful shutdown, run-local selector removal and future headless
+zero-client lifetime. These amendments are unimplemented and change no wire
+schemas; native declarations #71 and final acceptance #62 remain open.
 
 Portable core traffic does not depend on Unix sockets. Future monitor
 forwarding and browser consumption are planned, not implemented; routing,

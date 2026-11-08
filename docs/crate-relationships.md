@@ -96,6 +96,13 @@ placement is unassigned; no new crate or Cargo edge is implied. The wire
 specification does not implement these relationships or a native library in a
 browser. All workspace crates above remain unchanged.
 
+The [agreed lifecycle](monitor-lifecycle.md), not implemented, specifies
+concurrent per-instance shutdown/joins and exponential passive recovery. Selector
+Delete reuses Kill and dismisses a row/cache only after definitive termination
+and local cleanup. Future headless creation changes only an explicitly headless
+session's zero-client lifetime; it does not select another crate or alter a
+current Cargo edge. No new crate or consumption arrow is introduced here.
+
 Current edges come from workspace `Cargo.toml` files. This is a consumption
 index, not a replacement for the architecture decisions or their permitted
 dependency rules.

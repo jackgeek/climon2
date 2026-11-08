@@ -58,6 +58,16 @@ The monitor uses its own alternate screen and internal normal history, replaces
 whole models/history transactionally, and never writes session bytes directly
 to the host or emits duplicate query replies. Selected input also waits for
 coherent paint, while applied background models can report Ready without paint.
+The later [lifecycle amendment](../monitor-lifecycle.md) limits stale inspection
+to disconnected/final retained history: connected revoked clients show only
+the placeholder, with no revoked-cache inspection route. Disconnected history
+overlays exactly `Reconnecting...` while passive recovery is scheduled or active;
+permanent rejection instead shows a disconnected/error overlay. Recovery removes
+the overlay but requires explicit acquisition for a non-controller's live
+presentation. No history/retry binding is added. Selector removal discards cache
+only after definitive termination and local instance cleanup/join, for this
+monitor run only. All are unimplemented and leave daemon query authority and
+ordinary presentation unchanged.
 
 ## Restoration: three phases, produced incrementally
 

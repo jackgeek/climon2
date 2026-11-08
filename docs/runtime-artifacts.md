@@ -104,6 +104,13 @@ The monitor retains a `climon2-vt` model per session for disconnected terminal/
 scrollback inspection and reconnects passively without automatic takeover.
 Known completion stops retries. These relationships do not introduce a session
 survival guarantee or a persisted archive of completed sessions.
+The [agreed lifecycle](monitor-lifecycle.md), not implemented, adds exponential
+passive recovery, read-only disconnected history with a `Reconnecting...` overlay,
+and coordinated concurrent shutdown. Local instance cleanup and joins precede
+run-local selector dismissal; stalled cleanup ends the whole monitor process,
+never an individual thread or loaded library. Connected revoked sessions show
+their placeholder, not cached history. Selector Delete uses the existing Kill
+semantics and adds confirmed termination/removal, not another runtime artifact.
 
 The client executable will also load its same-release library for ordinary
 operations. The monitor node represents a runtime role, not a decision to ship
@@ -132,11 +139,13 @@ discovery and remote authentication/security remain deliberately unresolved;
 same-[UID](protocol/TERMS.md#uid)/private-directory local checks do not define
 future transport security. No forwarding implementation is claimed.
 
-Future headless exec returns immediately and may launch several sessions without
-initial clients. Its zero-client lifetime belongs to
-[#61](https://github.com/jackgeek/climon2/issues/61); command spelling and
-implementation are unresolved. It neither makes every session persistent nor
-universalizes today's interactive leave policy.
+Future `climon2 exec --headless` returns after daemon-confirmed creation without
+starting an interactive client. A [headless session](../GLOSSARY.md#sessions)
+keeps its explicit zero-client survival policy throughout its lifetime, including
+after later clients unexpectedly leave; command completion or existing CLI Kill
+ends it. The [lifecycle decision](monitor-lifecycle.md) agrees this narrow
+exception, not universal persistence or a new executable/library. Implementation
+remains unshipped; the current execution arrows above are unchanged.
 
 The planned relationships are indexed by
 [Chart the interactive monitor specification](https://github.com/jackgeek/climon2/issues/57);

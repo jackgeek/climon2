@@ -24,7 +24,12 @@ or terminate any session, and does not acknowledge pending session attention.
 An enclosing climon2 daemon follows its existing root-clear fallback rules,
 which do not clear its attention [FSM](../TERMS.md#fsm).
 No acknowledgement or retry/replay policy is introduced. Unwritable/lost hosts
-and abnormal cleanup remain with
-[lifecycle](https://github.com/jackgeek/climon2/issues/61); no successful cleanup
-or session-survival guarantee is inferred from sending this sequence.
+and abnormal cleanup follow the
+[agreed lifecycle](../../monitor-lifecycle.md#coordinated-shutdown).
+Restore the host terminal and send root clear before final shell diagnostics.
+On bounded cleanup fail-stop, attempt both before whole-process termination.
+Broken output makes restoration/clear and diagnostics best-effort; report
+failure, never successful host restoration. Native crashes, abort and
+uncatchable signals have no cleanup promise. Sending this sequence proves
+neither successful local cleanup nor session survival.
 See [attention](report-attention.md) and [monitoring](report-monitoring.md).

@@ -1,6 +1,6 @@
 # Detach
 
-**Status:** agreed communication requirements, not implemented; interface and lifecycle details unresolved.
+**Status:** agreed communication/lifecycle requirements, not implemented; native declarations unresolved.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 
@@ -23,8 +23,18 @@ remain ahead of the terminal indication. Release delivered objects and stop
 concurrent handle calls/polling before dedicated-thread cleanup completes.
 Outstanding objects explicitly prevent successful destruction.
 
-[Lifecycle](https://github.com/jackgeek/climon2/issues/61) must specify shutdown
-of passive connections as well as attachments, session survival, and recovery.
+The [agreed lifecycle](../../monitor-lifecycle.md#coordinated-shutdown) requests
+shutdown concurrently for every owned passive, attached, partially started and
+failing instance. Each attempts required atomic Leave, closes its connection
+and cleans up workers on its owner thread. Drain/release deliveries, end handle
+use and join all client threads before clean exit. A lost Leave response stays
+unconfirmed; closure, final events or join never convert it to accepted detach.
+Repeated exit/signals do not restart the deadline. Stalls use bounded
+whole-process fail-stop after best-effort [host](../../../GLOSSARY.md#sessions)
+restoration/root [attention](../../../GLOSSARY.md#status-and-attention)
+[clear](../monitor-host/report-clear.md),
+not thread killing, code unloading or false cleanup success.
+These rules add no native operation fields; #71 still owns declarations.
 [Library lifetime](https://github.com/jackgeek/climon2/issues/65) owns workers,
 borrowed storage, and loaded-library safety.
 The [communication decision](https://github.com/jackgeek/climon2/issues/66) owns
@@ -39,4 +49,8 @@ distinguishes passive departure from accepted detach. Any
 [controller](../../../GLOSSARY.md#attachment-and-control) departure,
 deliberate or lost, can promote a passive successor after existing attachment
 hand-back and before final-participant policy; committed termination overrides
-succession. Native declarations remain #71.
+succession. Future
+[headless sessions](../../../GLOSSARY.md#sessions) survive zero clients even
+after later attachment loss, until completion or
+[Kill](../../../GLOSSARY.md#attachment-and-control); ordinary leave policy is
+unchanged and no native-crash isolation is added. Native declarations remain #71.

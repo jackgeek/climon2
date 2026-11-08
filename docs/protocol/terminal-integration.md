@@ -20,7 +20,7 @@ Use the [overview](README.md), [domain glossary](../../GLOSSARY.md), and
 [technical terms](TERMS.md) with this contract. The
 [session-status mechanics](../session-status.md) and their state machines remain
 unchanged. Selector layout belongs to [#60](https://github.com/jackgeek/climon2/issues/60),
-lifecycle/cleanup/selection fallback to [#61](https://github.com/jackgeek/climon2/issues/61),
+lifecycle/cleanup/selection fallback to the [agreed lifecycle contract](../monitor-lifecycle.md),
 numerical limits to [#69](https://github.com/jackgeek/climon2/issues/69), native
 declarations to [#71](https://github.com/jackgeek/climon2/issues/71), and the final
 acceptance matrix to [#62](https://github.com/jackgeek/climon2/issues/62).
@@ -118,9 +118,9 @@ current area; do not repeatedly blank or flash a restoring screen. Construct the
 replacement model separately and swap one new coherent frame when ready.
 [Restoration](../../GLOSSARY.md#restoration-and-presentation) transactionally
 replaces the complete model/history; never union or deduplicate old and new rows.
-Partial or superseded models never become current. An old model is only
-inspectable through explicit stale inspection while rebuilding; a held transition
-frame is not a current/input-ready model. Replacement can discard older local
+Partial or superseded models never become current. A held transition
+frame is not a current/input-ready model and adds no connected revoked-cache
+inspection route. Replacement can discard older local
 history absent from the authoritative restoration.
 
 There are distinct barriers:
@@ -162,14 +162,22 @@ Returning to normal restores that buffer/history. Without application mouse
 capture, alternate wheel becomes arrows only when alternate-scroll mode is on;
 otherwise it does not scroll normal history.
 
-Cached revoked/disconnected output requires an **explicit stale-inspection
-action**, visibly read-only, never Acquire. This is separate from normal live
-selection of a revoked placeholder, which uses explicit takeover.
+Disconnected retained output is read-only; selector Enter explicitly opens it
+without Acquire or acknowledgement. Overlay exactly `Reconnecting...` while
+automatic passive recovery is scheduled or active. Permanent rejection instead
+shows an explicit disconnected/error overlay. Connected revoked selection shows
+the placeholder, with no separate revoked-cache inspection route.
 Completed/failed sessions may show retained terminal content directly read-only.
 Passive clients with no cache say no terminal content is available.
-Returning from stale inspection cannot turn a cache into a live model.
-Empty-screen behavior, automatic selection fallback, retry and cleanup policies
-remain #61; this contract does not choose their shortcuts or layouts.
+On reconnect remove the overlay; a non-controller shows its placeholder until
+explicit acquisition. Cache alone cannot become a live model.
+The [lifecycle contract](../monitor-lifecycle.md) keeps the monitor open through
+empty/all-final states, preserves selected identity and forbids automatic
+replacement acquisition. Recovery is automatic exponential passive backoff for
+transport loss, recoverable startup failure (including missing libraries), and
+safe worker panics; permanent rejection/invalid configuration and final outcomes
+stop it. Fresh instances wait for prior cleanup/join. No indeterminate work is
+replayed. Numerical backoff/budgets remain #69; all behavior is unimplemented.
 
 ## Chrome, cursor, and host copy
 
@@ -208,6 +216,7 @@ The monitor rejects a null prefix before entering the terminal; null takeover is
 allowed. Ordinary attach semantics are unchanged.
 Lowercase prefix+s opens the selector (no-op if already open);
 prefix+x requests exit. Prefix+d has no monitor detach meaning.
+No prefix+h/prefix+r or additional history/retry binding is added.
 Prefix twice emits one literal prefix; unknown suffixes emit prefix+suffix without
 second interpretation, including a prefixed take-control key.
 A lone prefix waits indefinitely; Escape is not cancellation.
@@ -224,6 +233,11 @@ shortcut detection. Unbracketed paste remains indistinguishable from typing.
 Behavior must be independent of read fragmentation/coalescing; process subsequent
 input against the screen/state then in force, not discard an arbitrary read tail.
 Once exit starts, accept no further application input.
+Selector Delete is modal, default-Cancel and tied to the captured immutable
+[session ID](../../GLOSSARY.md#protocol-and-plugin-concepts); it never retargets
+or leaks input. [Termination/removal](../monitor-selector.md#delete-terminate-and-remove)
+requires definitive termination followed by owned-instance cleanup/join before
+run-local dismissal; fallback selection never acquires another session.
 
 Host bracketed-paste detection is on. Preserve the payload exactly; send
 application start/end markers **only if the application's bracketed-paste mode
@@ -334,7 +348,8 @@ Automated end-to-end tests must drive the real monitor host and shell/
 - Capped/rapid resize, stable host-relative overlays, retained transition frames,
   applied-versus-painted gates, too-small recovery and responsive global commands.
 - Background promotion/restoration, passive absence of history, revoked
-  placeholders, stale inspection, superseded restorations and late authority.
+  placeholders without a cache-inspection route, disconnected read-only cache/
+  exact reconnect overlay, superseded restorations and late authority.
 - Host/application focus, disabled/newly enabled reporting, truthful Focus
   outcomes, focus-in not acknowledging, scrollback/toast focus retention.
 - Gesture ownership under toast appearance, new toast clicks without takeover,
@@ -348,10 +363,23 @@ Automated end-to-end tests must drive the real monitor host and shell/
 - Parser/presentation/render failures, exact invalid-UTF-8 binary handling,
   bounded backpressure, and independent selector/exit/other-client progress.
 
-Presentation/parser/render incompatibility makes the target explicitly
-unavailable, app input/viewing off, with stale cache inspection and other clients/
-selector/exit usable where possible. It is not evidence of command completion.
-Cleanup, retry, and host release remain #61; numeric budgets #69; native calls #71.
+Containable per-target presentation/parser incompatibility makes that target
+explicitly unavailable, with app input/viewing off and disconnected retained
+cache read-only where safe; other clients/selector/exit remain usable. It is not
+evidence of command completion. Rendering, host-output or shared-infrastructure
+failure initiates coordinated shutdown, not merely a row error.
+The [shutdown contract](../monitor-lifecycle.md#coordinated-shutdown) concurrently
+requests all owned instances, drains/releases deliveries, attempts required
+atomic [Leave](daemon-client/request-leave.md), closes connections and joins
+cleaned-up workers/client threads.
+Leave acceptance, closure, final outcome and join are separate evidence.
+Prefix+x and catchable signals share this path; Ctrl+C remains application input.
+Restore host modes/terminal settings and emit root
+[attention](../../GLOSSARY.md#status-and-attention)
+[clear](monitor-host/report-clear.md) before diagnostics.
+Stalls use bounded whole-process failure, never thread killing/unloading or a
+false cleanup claim. Broken output permits only best-effort restoration/clear;
+report failure. Numeric budgets remain #69; native calls #71; final acceptance #62.
 No session-survival promise or containment of a native client crash is added.
 Native selection/copy limitations are manually verified where automation cannot
 honestly establish host-specific behavior. Documentation checks prove none of
