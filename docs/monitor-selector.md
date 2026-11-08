@@ -32,8 +32,12 @@ Left/Right/Home/End edit it. Up/Down and PageUp/PageDown navigate the highlight,
 without wrapping, and keep it visible. Enter confirms the highlight from search.
 Clicking a row only highlights it; wheel scrolls the list without selecting.
 
-Search is case-insensitive literal substring matching against title, command
-arguments or displayed status, including failure details, not fuzzy ranking.
+Search is case-insensitive against title, command arguments or displayed status,
+including failure details. Exact substring matches always qualify. Queries of
+at least three characters also qualify when `rust_fuzzy_search` reports trigram
+similarity of at least 0.5 against any field. Shorter queries use exact
+substrings only. Similarity never changes the status/time/internal-GUID order.
+Query length counts Unicode characters before lowercasing.
 Status matching uses the effective display state (for example Disconnected),
 not a stale underlying activity status. Search changes retain a still-matching
 highlight, otherwise highlight the first match. Clearing search does not resurrect an old
@@ -136,7 +140,8 @@ These reports neither acknowledge sessions nor amend the enclosing daemon
 
 Later implementation must test real monitor input/terminal behavior, not just
 the prototype's synthetic state: exact borders/columns and search cursor,
-literal labels and Unicode clipping, filtering/editing/paste isolation,
+literal labels and Unicode clipping, exact and fuzzy filtering (including
+Unicode, short queries and unchanged ordering), editing/paste isolation,
 identity-preserving reorder/removal, explicit confirmation and switch races,
 readiness-gated acknowledgement, disconnected/final read-only history,
 truthful result/no-cache display, resize/too-small/global progress,
