@@ -400,6 +400,11 @@ fn install_instrumented_probe(workspace: &Path, build: &Path) -> io::Result<Path
     for binary in ["climon2", "climon2-cli", "climon2-daemon", "climon2-client"] {
         fs::copy(build.join("debug/isolation-cli"), payload.join(binary))?;
     }
+    fs::create_dir(payload.join("deps"))?;
+    fs::copy(
+        build.join("debug/isolation-cli"),
+        payload.join("deps/libclimon2_client.dylib"),
+    )?;
     let payload = climon2_install::Payload::from_siblings(&payload, env!("CARGO_PKG_VERSION"))?;
     let destination = workspace.join("installed");
     climon2_install::install(&payload, &destination)?;

@@ -2,14 +2,16 @@ use climon2_core::VersionName;
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub(crate) const COMPANIONS: [&str; 3] = ["climon2-cli", "climon2-daemon", "climon2-client"];
+const LIBRARY: &str = "libclimon2_client.dylib";
+pub(crate) const COMPANIONS: [&str; 4] =
+    ["climon2-cli", "climon2-daemon", "climon2-client", LIBRARY];
 
 /// Sources are read in place, preserving instrumented binaries without Cargo builds.
 #[derive(Debug)]
 pub struct Payload {
     version: VersionName,
     pub(crate) launcher: PathBuf,
-    pub(crate) companions: [PathBuf; 3],
+    pub(crate) companions: [PathBuf; COMPANIONS.len()],
 }
 
 impl Payload {
@@ -39,11 +41,15 @@ impl Payload {
         Self::from_paths(
             version,
             directory.join("climon2"),
-            COMPANIONS.map(|name| directory.join(name)),
+            COMPANIONS.map(|name| sibling(directory, name)),
         )
     }
 
-    fn from_paths(version: &str, launcher: PathBuf, companions: [PathBuf; 3]) -> io::Result<Self> {
+    fn from_paths(
+        version: &str,
+        launcher: PathBuf,
+        companions: [PathBuf; COMPANIONS.len()],
+    ) -> io::Result<Self> {
         let version = version
             .parse()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -66,6 +72,16 @@ impl Payload {
             validate_file(path)?;
         }
         Ok(())
+    }
+}
+
+/// Cargo uplifts binaries, but leaves a dependency's cdylib in `deps/`, beside
+/// the test executables.
+fn sibling(directory: &Path, name: &str) -> PathBuf {
+    if name == LIBRARY {
+        directory.join("deps").join(name)
+    } else {
+        directory.join(name)
     }
 }
 

@@ -5,6 +5,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+const LIBRARY: &str = "libclimon2_client.dylib";
 
 trait IsolatedCommand {
     fn isolated(&mut self) -> &mut Self;
@@ -40,6 +41,10 @@ impl Workspace {
         for binary in ["climon2-cli", "climon2-daemon", "climon2-client"] {
             script(&root.join(version).join(binary), &format!("exit {status}"));
         }
+        script(
+            &root.join(version).join(LIBRARY),
+            &format!("library {status}"),
+        );
         script(&root.join("climon2"), "exit 11");
         root
     }
@@ -78,6 +83,10 @@ fn fresh_install_publishes_complete_version_launcher_and_current() {
             .unwrap()
             .code(),
         Some(11)
+    );
+    assert_eq!(
+        fs::read(destination.join("1.2.3").join(LIBRARY)).unwrap(),
+        fs::read(source.join("1.2.3").join(LIBRARY)).unwrap()
     );
     assert_eq!(fs::read_dir(destination).unwrap().count(), 3);
 }
@@ -171,6 +180,10 @@ fn reinstall_repairs_same_version_with_missing_or_irregular_companions() {
     climon2_install::install(&payload, &destination).unwrap();
     assert!(fs::symlink_metadata(&daemon).unwrap().is_file());
     assert_eq!(Command::new(&daemon).status().unwrap().code(), Some(23));
+    let library = destination.join("1.2.3").join(LIBRARY);
+    fs::remove_file(&library).unwrap();
+    climon2_install::install(&payload, &destination).unwrap();
+    assert_eq!(fs::read(&library).unwrap(), b"#!/bin/sh\nlibrary 23\n");
     assert_eq!(fs::read(destination.join("current")).unwrap(), b"1.2.3\n");
 }
 
@@ -318,7 +331,7 @@ fn interruption_cleans_only_own_staging_and_rerun_recovers() {
             if ["copy-cli", "version-staged"].contains(&boundary) {
                 assert!(!version.exists());
             } else {
-                assert_eq!(fs::read_dir(&version).unwrap().count(), 3);
+                assert_eq!(fs::read_dir(&version).unwrap().count(), 4);
                 assert_eq!(
                     Command::new(version.join("climon2-cli"))
                         .status()
@@ -374,6 +387,12 @@ fn sibling_payload_runs_real_installed_launcher_with_literal_arguments() {
     for binary in ["climon2-cli", "climon2-daemon", "climon2-client"] {
         fs::copy(source.join("3.2.1").join(binary), source.join(binary)).unwrap();
     }
+    fs::create_dir(source.join("deps")).unwrap();
+    fs::copy(
+        source.join("3.2.1").join(LIBRARY),
+        source.join("deps").join(LIBRARY),
+    )
+    .unwrap();
     let launcher = std::env::current_exe()
         .unwrap()
         .parent()
@@ -394,6 +413,10 @@ fn sibling_payload_runs_real_installed_launcher_with_literal_arguments() {
     assert_eq!(payload.version().to_string(), "3.2.1");
     let destination = workspace.0.join("exe home 雪");
     climon2_install::install(&payload, &destination).unwrap();
+    assert_eq!(
+        fs::read(destination.join("3.2.1").join(LIBRARY)).unwrap(),
+        b"#!/bin/sh\nlibrary 0\n"
+    );
     let output = Command::new(destination.join("climon2"))
         .args(["exec", "space 雪", "", "--option"])
         .isolated()
@@ -428,7 +451,7 @@ fn publication_failures_do_not_advance_current_and_keep_unrelated_files() {
             b"untouched"
         );
         assert!(!destination.join(".climon2-install-stage").exists());
-        assert_eq!(fs::read_dir(destination.join("1.2.3")).unwrap().count(), 3);
+        assert_eq!(fs::read_dir(destination.join("1.2.3")).unwrap().count(), 4);
         if blocked == "climon2" {
             assert_eq!(fs::read(destination.join("current")).unwrap(), b"0.0.1\n");
         }
@@ -504,6 +527,10 @@ fn invalid_payloads_and_version_targets_never_escape_their_layout() {
     for version in ["", "../escape", "/absolute", "1.2.3\n", "v1.2.3"] {
         assert!(climon2_install::Payload::from_directory(&source, version).is_err());
     }
+    let library = source.join("1.2.3").join(LIBRARY);
+    fs::rename(&library, workspace.0.join(LIBRARY)).unwrap();
+    assert!(climon2_install::Payload::from_directory(&source, "1.2.3").is_err());
+    fs::rename(workspace.0.join(LIBRARY), &library).unwrap();
     let cli = source.join("1.2.3/climon2-cli");
     fs::remove_file(&cli).unwrap();
     symlink(source.join("1.2.3/climon2-client"), &cli).unwrap();
