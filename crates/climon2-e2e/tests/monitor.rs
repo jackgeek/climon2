@@ -8,7 +8,11 @@
 mod support;
 
 use climon2_test_term::{Modes, Terminal, bin_path};
-use std::{fs, path::Path};
+use nix::{
+    sys::signal::{Signal, kill},
+    unistd::Pid,
+};
+use std::{env, fs, path::Path, process::Command};
 use support::{Package, TIMEOUT, quote};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -19,6 +23,8 @@ const BEFORE: &[u8] = b"BEFORE-MONITOR\r\n";
 const DONE: &[u8] = b"OUTER-DONE=";
 const USAGE: &str = "climon2: error: usage: climon2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon\r\n";
 const NO_TERMINAL: &str = "climon2: error: climon2 monitor needs a terminal\r\n";
+const TOP_ROW: &str = "No session selected";
+const EMPTY: &str = "No sessions to show.";
 
 /// An outer non-interactive shell that titles its host, records termios around
 /// `command`, reports its status, then echoes one ordinary typed line.
@@ -34,13 +40,15 @@ fn outer(package: &Package, command: &str) -> Terminal {
 }
 
 /// After `command` returned `status`: the documented normal-shell baseline,
-/// exact termios, the outer title untouched and ordinary shell input.
+/// exact termios, the outer title untouched, no OSC output beyond the outer
+/// shell's own title, the host's earlier content and ordinary shell input.
 fn assert_released(package: &Package, terminal: &mut Terminal, status: i32) {
     terminal
         .wait_for_text(&format!("OUTER-DONE={status}"), TIMEOUT)
         .unwrap();
     assert_eq!(terminal.modes(), Modes::BASELINE, "{}", terminal.screen());
-    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    assert_title_untouched(terminal);
+    assert!(terminal.screen().contains("BEFORE-MONITOR"));
     let home = package.isolation.home();
     assert_eq!(
         termios(&home.join("after")),
@@ -52,6 +60,19 @@ fn assert_released(package: &Package, terminal: &mut Terminal, status: i32) {
         .wait_for_text("TYPED=plain words", TIMEOUT)
         .unwrap();
     assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+}
+
+/// The outer shell titled the host once; nothing else ever sent an OSC.
+fn assert_title_untouched(terminal: &Terminal) {
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    let received = terminal.received();
+    assert_eq!(
+        received
+            .windows(2)
+            .filter(|window| window == b"\x1b]")
+            .count(),
+        1
+    );
 }
 
 /// `stty -g` settings without macOS's transient `PENDIN`, which the kernel
@@ -200,5 +221,211 @@ fn a_monitor_outside_a_version_folder_refuses_to_start() {
         "{diagnostic:?}"
     );
     assert_released(&package, &mut terminal, 125);
+    package.assert_clean();
+}
+
+/// The empty monitor as specified: the permanent top row, then the empty state
+/// centred in the rows below it; an odd spare row falls above the text and an
+/// odd spare column after it.
+fn expected_screen(rows: u16, cols: u16, prefix: &str) -> String {
+    let (rows, cols) = (usize::from(rows), usize::from(cols));
+    let hint = format!("Press {prefix} then x to exit.");
+    let first = 1 + (rows - 2) / 2;
+    (0..rows)
+        .map(|row| match row {
+            0 => format!("{TOP_ROW:<cols$}"),
+            _ if row == first => format!("{EMPTY:^cols$}"),
+            _ if row == first + 1 => format!("{hint:^cols$}"),
+            _ => " ".repeat(cols),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The monitor owns the host: its own alternate screen showing the top row and
+/// the empty state, raw input, bracketed paste, SGR mouse and focus reporting,
+/// no cursor, and the host's title untouched.
+fn opened(terminal: &mut Terminal) {
+    terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    let modes = terminal.modes();
+    assert!(modes.alternate_screen, "{modes:?}");
+    assert!(
+        modes.bracketed_paste && modes.mouse && modes.focus,
+        "{modes:?}"
+    );
+    assert!(!modes.cursor_visible, "{modes:?}");
+    assert_title_untouched(terminal);
+}
+
+/// The executable of the one running monitor process this test owns.
+fn monitor_process(package: &Package) -> (i32, String) {
+    let processes: Vec<_> = package
+        .isolation
+        .owned_pids()
+        .into_iter()
+        .map(|pid| {
+            let output = Command::new("/bin/ps")
+                .args(["-p", &pid.to_string(), "-o", "comm="])
+                .output()
+                .unwrap();
+            (
+                pid,
+                String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+            )
+        })
+        .filter(|(_, command)| command.ends_with("/climon2-monitor"))
+        .collect();
+    assert_eq!(processes.len(), 1, "{processes:?}");
+    processes.into_iter().next().unwrap()
+}
+
+/// ENT-01 (Monitor): from an installed release, `climon2 monitor` and its alias
+/// `climon2 mon` open the same monitor through the launcher, the CLI and the
+/// version's installed `climon2-monitor`: one permanent top row above the
+/// explicit empty state, whose hint names the default prefix. Prefix+x, even
+/// split across reads, exits 0 and releases the host.
+#[test]
+fn installed_monitor_and_mon_open_the_same_monitor() {
+    let package = Package::new();
+    let installed = package
+        .executable_home()
+        .canonicalize()
+        .unwrap()
+        .join(VERSION)
+        .join("climon2-monitor");
+    let mut screens = Vec::new();
+    for command in ["climon2 monitor", "climon2 mon"] {
+        let mut terminal = outer(&package, command);
+        opened(&mut terminal);
+        assert_eq!(monitor_process(&package).1, installed.to_str().unwrap());
+        screens.push(terminal.screen());
+        terminal.send(b"\x1d").unwrap();
+        terminal.send(b"x").unwrap();
+        assert_released(&package, &mut terminal, 0);
+    }
+    assert_eq!(screens[0], expected_screen(ROWS, COLS, "Ctrl+]"));
+    assert_eq!(screens[1], screens[0]);
+    package.assert_clean();
+}
+
+/// INP-01 (Monitor): the monitor reuses the configured client escape prefix:
+/// the empty state's hint names it and prefix+x exits. A null take-control key
+/// is accepted, and Ctrl+C, the default prefix and its x are not exits.
+#[test]
+fn installed_monitor_hints_and_exits_with_the_configured_prefix() {
+    let package = Package::new();
+    fs::write(
+        package.isolation.climon2_home().join("config.jsonc"),
+        r#"{"client": {"escape_prefix": "Ctrl+B", "take_control_key": null}}"#,
+    )
+    .unwrap();
+    let mut terminal = outer(&package, "climon2 monitor");
+    opened(&mut terminal);
+    assert_eq!(terminal.screen(), expected_screen(ROWS, COLS, "Ctrl+B"));
+    terminal.send(b"\x03\x1dx").unwrap();
+    terminal.send(b"\x02x").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    package.assert_clean();
+}
+
+/// EXT-03 (Monitor, empty monitor): catchable SIGINT, SIGTERM and SIGHUP leave
+/// through the same clean path as prefix+x with signal-style status: the
+/// baseline and exact termios are restored and nothing is printed.
+#[test]
+fn signals_release_the_host_with_signal_style_status() {
+    let package = Package::new();
+    for (signal, status) in [
+        (Signal::SIGINT, 130),
+        (Signal::SIGTERM, 143),
+        (Signal::SIGHUP, 129),
+    ] {
+        let mut terminal = outer(&package, "climon2 monitor");
+        opened(&mut terminal);
+        kill(Pid::from_raw(monitor_process(&package).0), signal).unwrap();
+        terminal
+            .wait_for_text(&format!("OUTER-DONE={status}"), TIMEOUT)
+            .unwrap();
+        assert!(!written(&mut terminal).contains("climon2: error"));
+        assert_released(&package, &mut terminal, status);
+    }
+    package.assert_clean();
+}
+
+/// Spec #73 Host terminal: SIGWINCH redraws the top row and the empty state at
+/// the new size, leaving nothing of the old frame behind.
+#[test]
+fn resizing_the_host_redraws_the_monitor_at_the_new_size() {
+    let package = Package::new();
+    let mut terminal = outer(&package, "climon2 monitor");
+    opened(&mut terminal);
+    for (rows, cols) in [(12, 50), (40, 160)] {
+        terminal.resize(rows, cols).unwrap();
+        let expected = expected_screen(rows, cols, "Ctrl+]");
+        terminal
+            .wait_for_screen(TIMEOUT, |screen| screen == expected)
+            .unwrap();
+    }
+    terminal.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    package.assert_clean();
+}
+
+/// EXT-03 (empty monitor, Fault): a failure while the monitor owns the host
+/// first leaves its alternate screen and restores the baseline and exact
+/// termios, then prints one diagnostic, and exits with the climon2 error
+/// code. Only hook-enabled debug siblings inject it.
+#[test]
+fn debug_hook_render_failure_restores_the_host_before_its_diagnostic() {
+    if env::var_os("CLIMON2_E2E_ARCHIVE").is_some() {
+        return;
+    }
+    let package = Package::new();
+    let mut terminal = outer(&package, "CLIMON2_MONITOR_FAULT=draw climon2 monitor");
+    let written = written(&mut terminal);
+    let entered = written.find("\x1b[?1049h").unwrap();
+    let left = written.rfind("\x1b[?1049l").unwrap();
+    let diagnostic = written
+        .find("climon2: error: injected draw failure (logs: ")
+        .unwrap();
+    assert!(entered < left && left < diagnostic, "{written:?}");
+    assert!(written.ends_with(")\r\n"), "{written:?}");
+    assert_eq!(written.matches("climon2: error:").count(), 1);
+    assert_released(&package, &mut terminal, 125);
+    package.assert_clean();
+}
+
+/// Spec #73 Exit (diagnostics): the monitor writes content-free records to its
+/// own general log in the climon2 home; typed input reaches no log.
+#[test]
+fn installed_monitor_logs_content_free_records_to_its_general_log() {
+    let package = Package::new();
+    let mut terminal = outer(&package, "CLIMON2_LOG=trace climon2 monitor");
+    opened(&mut terminal);
+    terminal.send("typed-secret-not-for-logs-5e1").unwrap();
+    terminal.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    let logs = package.logs();
+    let monitor: Vec<_> = logs
+        .iter()
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("monitor-")
+        })
+        .collect();
+    assert_eq!(monitor.len(), 1, "{logs:?}");
+    let log = fs::read_to_string(monitor[0]).unwrap();
+    assert!(log.contains(" role=monitor "), "{log}");
+    assert!(
+        log.contains(&format!("monitor started version={VERSION}")),
+        "{log}"
+    );
+    assert!(log.contains("monitor stopped status=0"), "{log}");
+    for path in &logs {
+        assert!(!fs::read_to_string(path).unwrap().contains("typed-secret"));
+    }
     package.assert_clean();
 }

@@ -1,11 +1,23 @@
 //! The interactive monitor (spec #73): one terminal that tracks every live
 //! session. This walking skeleton validates its start before touching the
-//! host terminal; nothing is discovered yet.
+//! host terminal, then owns the host with one permanent top row above an
+//! explicit empty state until prefix+x or a catchable termination signal.
+//! Nothing is discovered yet.
 
+#[cfg(feature = "test-hooks")]
+mod hooks;
+mod host;
+mod keys;
+mod screen;
 mod startup;
 
+use climon2_core::{keys::ControlKey, protocol::TerminalSize};
+use host::{Ending, Event, Host};
+use keys::Keys;
+use screen::Screen;
+use startup::Startup;
 use std::{
-    fmt,
+    fmt, io,
     path::{Path, PathBuf},
 };
 
@@ -56,17 +68,61 @@ fn one_line(text: &str) -> String {
 }
 
 /// The CLI execs the monitor with no arguments. Returns the exit status of an
-/// orderly exit.
+/// orderly exit: 0 for prefix+x, 128 + signal for a termination signal.
 pub fn run() -> Result<u32, Error> {
-    let startup = startup::Startup::read()?;
+    let startup = Startup::read()?;
     let log = startup.log.path().to_owned();
     let filter = std::env::var("CLIMON2_LOG").ok();
     let dispatch = startup
         .log
         .dispatch(filter.as_deref())
         .map_err(|error| Error::new(error).logged(&log))?;
-    tracing::dispatcher::with_default(&dispatch, || {
-        tracing::info!(version = %startup.version, prefix = %startup.prefix, "monitor started");
-    });
-    Ok(0)
+    tracing::dispatcher::with_default(&dispatch, || monitor(&startup))
+        .map_err(|error| Error::new(error).logged(&log))
+}
+
+/// Owns the host until an ending, and releases it before any diagnostic.
+fn monitor(startup: &Startup) -> io::Result<u32> {
+    tracing::info!(version = %startup.version, "monitor started");
+    let (mut host, size) = Host::enter()?;
+    let served = Monitor::start(size, startup.prefix).and_then(|monitor| monitor.serve(&mut host));
+    let released = host.release();
+    let status = served.and_then(|ending| released.map(|()| ending.status()))?;
+    tracing::info!(status, "monitor stopped");
+    Ok(status)
+}
+
+/// The empty monitor: what it draws and the keys that act on it.
+struct Monitor {
+    screen: Screen,
+    keys: Keys,
+}
+
+impl Monitor {
+    fn start(size: TerminalSize, prefix: ControlKey) -> io::Result<Self> {
+        Ok(Self {
+            screen: Screen::new(size, prefix)?,
+            keys: Keys::new(prefix),
+        })
+    }
+
+    /// Acts on host events until an ending. Consuming the monitor drops its
+    /// screen before the host is released.
+    fn serve(mut self, host: &mut Host) -> io::Result<Ending> {
+        loop {
+            let event = host.next()?;
+            if let Some(ending) = self.handle(event)? {
+                return Ok(ending);
+            }
+        }
+    }
+
+    fn handle(&mut self, event: Event<'_>) -> io::Result<Option<Ending>> {
+        match event {
+            Event::End(ending) => Ok(Some(ending)),
+            Event::Resize(size) => self.screen.resize(size).map(|()| None),
+            Event::Input(bytes) => Ok(self.keys.exit(bytes).then_some(Ending::Exit)),
+            Event::Idle => Ok(None),
+        }
+    }
 }
