@@ -40,6 +40,9 @@ pub fn run(root: &Path) -> io::Result<()> {
                 .arg(&destination),
         )?;
         verify_binary(&destination)?;
+        if *binary == release::LIBRARY {
+            crate::library::verify(&destination, version)?;
+        }
     }
     for file in ["LICENSE", "README.md"] {
         fs::copy(root.join(file), payload.join(file))?;
@@ -120,7 +123,7 @@ fn validate_tag(tag: &str, expected: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn verify_binary(path: &Path) -> io::Result<()> {
+pub(crate) fn verify_binary(path: &Path) -> io::Result<()> {
     quality::run(
         Command::new("codesign")
             .args(["--verify", "--strict"])

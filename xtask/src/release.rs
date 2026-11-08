@@ -1,10 +1,17 @@
-use std::{env, fs, io, path::Path, process::Command};
+use std::{
+    env, fs, io,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
+/// The client library: a cdylib artifact of `climon2-client`.
+pub(crate) const LIBRARY: &str = "libclimon2_client.dylib";
 const BINARIES: &[&str] = &[
     "climon2-cli",
     "climon2-daemon",
     "climon2-client",
     "climon2-install",
+    LIBRARY,
 ];
 const MARKER: &[u8] = b"CLIMON2_TEST_HOOKS_ENABLED";
 pub(crate) const PACKAGES: &[(&str, &str)] = &[
@@ -13,6 +20,7 @@ pub(crate) const PACKAGES: &[(&str, &str)] = &[
     ("climon2-daemon", "climon2-daemon"),
     ("climon2-client", "climon2-client"),
     ("climon2-install", "climon2-install"),
+    ("climon2-client", LIBRARY),
 ];
 
 pub(crate) fn build(
@@ -53,7 +61,7 @@ pub fn check(root: &Path) -> io::Result<()> {
     let siblings = executable.parent().expect("xtask binary directory");
     let snapshots: Vec<_> = BINARIES
         .iter()
-        .map(|name| fs::read(siblings.join(name)))
+        .map(|name| fs::read(test_artifact(siblings, name)))
         .collect::<io::Result<_>>()?;
     for (name, bytes) in BINARIES.iter().zip(&snapshots) {
         if !has_marker(bytes) {
@@ -68,14 +76,18 @@ pub fn check(root: &Path) -> io::Result<()> {
         .tempdir_in(root.join("target"))?;
     for (package, name) in PACKAGES {
         build(root, target.path(), package, None)?;
-        if has_marker(&fs::read(target.path().join("release").join(name))?) {
+        let artifact = target.path().join("release").join(name);
+        if has_marker(&fs::read(&artifact)?) {
             return Err(io::Error::other(format!(
                 "release binary {name} contains test hooks"
             )));
         }
+        if *name == LIBRARY {
+            crate::library::verify(&artifact, env!("CARGO_PKG_VERSION"))?;
+        }
     }
     for (name, before) in BINARIES.iter().zip(snapshots) {
-        if fs::read(siblings.join(name))? != before {
+        if fs::read(test_artifact(siblings, name))? != before {
             return Err(io::Error::other(format!(
                 "release build overwrote test binary {name}"
             )));
@@ -83,6 +95,15 @@ pub fn check(root: &Path) -> io::Result<()> {
     }
     eprintln!("Verified release markers absent; test binaries unchanged.");
     Ok(())
+}
+
+/// Cargo uplifts binaries but leaves a dependency's cdylib in `deps/`.
+fn test_artifact(siblings: &Path, name: &str) -> PathBuf {
+    if name == LIBRARY {
+        siblings.join("deps").join(name)
+    } else {
+        siblings.join(name)
+    }
 }
 
 pub(crate) fn has_marker(bytes: &[u8]) -> bool {

@@ -1224,7 +1224,9 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "climon2-core",
  "climon2-install",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
