@@ -18,9 +18,26 @@ becomes the exit status of every client attached when it finishes. Nested
 sessions are supported. Session data defaults to `~/.climon2`; set
 `CLIMON2_HOME` to override it.
 
+The [protocol reference](docs/protocol/README.md) explains the current daemon
+handshake and the planned in-process monitor-client interface for future plugin authors.
+It distinguishes implemented behavior from agreed plans and unresolved details.
+The planned [session status, attention, and activity mechanics](docs/session-status.md)
+include both daemon state machines and the monitor's ordering/recovery behavior.
+The agreed [monitor acceptance criteria](docs/monitor-acceptance.md) define
+required real-monitor, packaged-library and measured evidence, not tests
+already delivered.
+
 ## Sessions
 
 `exec` starts the command and attaches to it. There is no start-detached option.
+Future `climon2 exec --headless <command> [args...]` is agreed but **not
+implemented**. It will return success only after daemon-confirmed creation,
+without an interactive client. A headless session will survive zero clients
+throughout its lifetime, including after later attachment loss, until command
+completion or explicit Kill. Ordinary leave policy below remains unchanged.
+The [lifecycle specification](docs/monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill)
+requires preserving existing `climon2 kill <session>` and automated headless
+termination tests, not adding another kill command.
 
 **Detach** with the escape prefix, Ctrl+], then `d`. The session keeps running
 with no idle timeout, and the client exits 0 after printing
@@ -101,7 +118,8 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
 ```jsonc
 {
   "client": {
-    "escape_prefix": "Ctrl+]",     // null disables escape interception
+    // Ctrl+[ is Escape: delays bare Escape; planned monitor Alt+s/Alt+x/Alt+j may trigger s/x/j.
+    "escape_prefix": "Ctrl+]",     // null disables escape interception in ordinary attach
     "take_control_key": "Ctrl+T"   // null disables keyboard takeover
   },
   "scrollback": {
@@ -129,6 +147,94 @@ only `client`, and `list` and `kill` do not read it. Any error, including
 malformed JSONC, duplicate keys, wrong types, invalid keys, conflicting bindings
 and out-of-range values, exits 125 before anything starts. The file is read once
 per command; there is no environment override, auto-creation or live reload.
+
+### Planned monitor settings (not implemented)
+
+The [agreed terminal integration](docs/protocol/terminal-integration.md) provides
+interactive terminal input/rendering, internal normal-screen history, one top
+status row, and explicit control/restoration gates. There is no monitor command
+or automated monitor implementation evidence yet.
+The future monitor reads one startup snapshot, reusing `client` bindings; it
+rejects a null escape prefix before changing terminal state. Null takeover is
+allowed because selector confirmation can acquire control. Lowercase prefix+s
+opens the selector, prefix+x exits, and **prefix+j** jumps to the most recent
+currently connected session needing attention, not necessarily a toast's session.
+Prefix+? opens the [key introduction/help dialog](docs/monitor-selector.md#key-introduction-and-help).
+Uppercase J is unknown literal input; bracketed pasted shortcuts remain data.
+
+Full future startup example (the current parser does **not** implement the
+`monitor` field):
+
+```jsonc
+{
+  "client": {
+    // Ctrl+[ is Escape: delays bare Escape; Alt+s/Alt+x/Alt+j/Alt+? may trigger s/x/j/?.
+    "escape_prefix": "Ctrl+]",
+    "take_control_key": "Ctrl+T"
+  },
+  "scrollback": {
+    "max_rows": 10000
+  },
+  "monitor": {
+    "show_key_hints": true, // planned: implicit monitor hints, including the toast hint row
+    "bell": true           // planned: one host bell when each toast starts drawing
+  },
+}
+```
+
+Planned `monitor.show_key_hints` is boolean, default true when missing. It hides
+implicit monitor hints, never bindings or application text. Needs-attention toast
+hints use the actual configured prefix plus lowercase j and describe a dynamic
+most-recent jump. Wrong types and duplicate known fields are explicit startup
+errors before terminal changes; unknown/unrelated settings remain ignored.
+All monitor settings above are future behavior, with no live reload.
+
+The planned modal introduction opens automatically on startup when key hints
+are enabled and **Don't show again** has not been saved. It initially introduces
+the configured prefix followed by x (exit), s (session list), and ? (help).
+The checkbox stores a reversible preference separately from configuration,
+per climon2 home across restarts/releases; save failures are explicit.
+Prefix+? always opens the dialog, even with hints disabled or startup display
+suppressed. Enter closes it; Escape follows configured-prefix handling.
+
+Planned `monitor.bell` is boolean, default true, with the same pre-terminal
+startup validation and no live reload. False suppresses the explicit host bell,
+not toasts or OSC 7501 reports; host settings govern actual audibility.
+The [selector specification](docs/monitor-selector.md) records the accepted
+layout, read-only disconnected/final history selection and animated toasts.
+The later [lifecycle specification](docs/monitor-lifecycle.md) adds planned
+default-Cancel Delete confirmation pinned to immutable session identity.
+Removal waits for definitive termination and local instance cleanup/join,
+dismisses only for this run, and never acquires a fallback session or re-adds
+the dismissed GUID in the same run. No connected revoked-cache inspection route
+or prefix+h/prefix+r binding is added. Disconnected read-only cache overlays
+exactly `Reconnecting...` during scheduled/active automatic passive recovery.
+Recoverable transport/startup failures (including missing libraries) and safe
+worker panics use exponential backoff; permanent rejection/invalid configuration
+stop it. Replacement instances wait for old cleanup/join; no indeterminate
+input/request/Kill is replayed. The monitor remains open through empty/all-final
+states and preserves selection identity without automatic replacement takeover.
+
+Planned prefix+x and catchable signals coordinate concurrent shutdown of every
+owned instance. Accepted Leave, connection closure, final outcome, cleanup and
+join are separate evidence. Restore host state and clear root attention before
+diagnostics; stalled cleanup uses bounded whole-process failure, never a false
+detach/join claim or thread kill. The agreed
+[operational limits](docs/monitor-operational-limits.md) define planned
+`monitor.limits` configuration, numerical budgets, deadlines and evidence.
+Under pressure, local history shrinks to its newest captured page, never
+disappears entirely; resource-blocked sessions remain visible. Complete native
+declarations (#71) and final automated acceptance (#62) remain open. All of this
+is unimplemented; no general session-survival or native-crash isolation is added.
+Planned explicit exit succeeds only after required Leave outcomes, local cleanup/
+joins and host restoration succeed, never with the selected command's status.
+Fatal monitor errors, required Leave failure/uncertainty, incomplete cleanup or
+restoration failure use 125; a catchable signal uses signal-style status only
+after successful cleanup. Session-local command/client failures alone do not
+poison a later clean monitor exit.
+The monitor also generates its own
+[OSC 7501 aggregate attention reports](docs/protocol/README.md#monitor-to-host-status-and-bell),
+never raw session-sequence passthrough.
 
 ## Listing
 

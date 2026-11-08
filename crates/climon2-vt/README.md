@@ -5,6 +5,15 @@ infallible adapter around unchanged `alacritty_terminal` 0.26.0. No I/O, no
 `cfg(target_os)`, and no Alacritty type in the public API. Only
 `climon2-daemon` may depend on it (ADR 0004).
 
+**Agreed, not implemented:** the
+[#63 terminal contract](../../docs/protocol/terminal-integration.md) plans
+monitor-owned models and read-only Rust cell/mode/cursor/history views for Ratatui.
+This is a future exception to daemon-only use, not a current public cell API or
+native cross-release cell schema. Monitor-mode daemon presentation must be
+serialized at effective session geometry; ordinary host direct/derived
+presentation below is unchanged. The daemon remains the sole query authority;
+the monitor never forwards parser replies or session bytes directly to its host.
+
 ## Public boundaries
 
 - `Geometry::for_host(cols, rows)`: the controller's host size clamped to

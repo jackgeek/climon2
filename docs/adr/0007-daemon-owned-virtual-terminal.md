@@ -1,12 +1,22 @@
 # Daemon-owned virtual terminal
 
-Detach, reattach and takeover need the session's screen, history, modes and title without asking any host terminal. The session daemon therefore owns one virtual terminal per session and is the sole authority for terminal state and terminal-query replies. Clients keep no emulator and no transcript. The virtual terminal lives in the shipped library `climon2-vt` (ADR 0004): pure, platform-neutral, infallible, and exposing only climon2-owned types.
+[Detach](../../GLOSSARY.md#attachment-and-control), reattach and takeover need the [session](../../GLOSSARY.md#sessions)'s screen, history, modes and title without asking any [host](../../GLOSSARY.md#sessions) terminal. The [session daemon](../../GLOSSARY.md#sessions) therefore owns one [virtual terminal](../../GLOSSARY.md#sessions) per session and is the sole authority for terminal state and terminal-query replies. Current [clients](../../GLOSSARY.md#sessions) keep no emulator and no transcript. The virtual terminal lives in the shipped library `climon2-vt` (ADR 0004): pure, platform-neutral, infallible, and exposing only climon2-owned types.
 
 ## Engine: unchanged Alacritty 0.26.0
 
 `climon2-vt` is the only crate that depends on `alacritty_terminal = "=0.26.0"` (default features off), the published crates.io release locked by checksum `bda177466b9524d59f1b12f0dd30b68696788e9992a7e959021c4a0ed96fcf59` (upstream commit `94e7c8874e526b1e67b349d9ba30ddf81669119e`, parser vte 0.15.0). It is unpatched and not a git dependency: an immutable, reproducible registry release, and the same engine the test harness already uses. The adapter uses only public API: grid and cursor access, `swap_alt`, `set_options`, and `Processor` with a climon2 `Timeout` and `EventListener`.
 
 Evidence limits: earlier qualification ran against revision `bbb2cbf9470a6707b1205fbddbdb25109b14e2fd` (0.26.1-dev) and does not carry over. In 0.26.0 the combining marks of one cell are stored without a bound. Only the seams this choice touches are validated (front filter, sync timing, the alternate-screen swap, history accounting, serialization and derived rendering), including one cell carrying many zero-width marks. Alacritty 0.26.0 implements only `CSI ? 1049 h/l` for the alternate screen; modes 47 and 1047 are unknown to it.
+
+**Future monitor qualification amendment:** the agreed
+[operational limits](../monitor-operational-limits.md#allocation-aware-terminal-prerequisite)
+require allocation-aware bounded parser/model updates, including combining and
+auxiliary data, resize and restoration staging. This explicitly reopens the
+unchanged-engine/infallible-interface assumptions where necessary for monitor
+conformance. Row limits or a size check after allocation do not prove the bound.
+Reject unsafe growth explicitly while preserving the last safe recent page;
+never silently truncate accepted characters. No engine change is delivered by
+this specification, and current daemon behavior remains as described above.
 
 ## Live output policy and query authority
 
@@ -19,6 +29,56 @@ A front filter that mirrors vte 0.15.0's state machine splits PTY output into co
 - everything else is forwarded unchanged.
 
 The engine is fed in steps of at most 64 bytes of text and C0 controls; every escape sequence is its own step(s).
+
+### Agreed terminal-status extension, not implemented
+
+The [session-status revision](../session-status.md) adds daemon-core observation
+of OSC 7501, OSC 133, and OSC 9/99/777 before host-output filtering. The daemon
+will answer OSC 7501 capability queries locally. Root program reports and
+shell lifecycle select explicit or heuristic activity detection; recognized
+notifications request attention, while progress alone does not.
+
+Raw sequences remain stripped from host output. Clients/monitors instead
+receive structured notification/progress metadata, including while background
+or noncontrolling. This extends local interpretation and daemon-owned replies,
+not the permission to send host-dependent requests to an outer terminal.
+The [agreed daemon wire](../protocol/daemon-client/core-v1.md) now specifies
+structured schemas and source normalization;
+[native declarations](../protocol/monitor-client/core-v1.md) are also agreed.
+The current filter and query
+implementation above are not evidence that these planned signals are supported.
+
+The [monitor](../../GLOSSARY.md#sessions)'s planned per-session `climon2-vt` copy for retained disconnected
+inspection is an explicit exception to the current no-client-emulator rule,
+not a competing terminal-query authority. Forwarding to other monitors and
+xterm.js browsers is a future consumer boundary, not permission for revoked
+core screen mirroring or a native library in a browser. The [agreed #63 terminal contract](../protocol/terminal-integration.md) now selects
+ordered exact daemon terminal bytes, reparsed into monitor-owned `climon2-vt`
+models and painted by Ratatui. This deliberately reopens the rejected
+client-side-emulator option for the monitor role, not ordinary clients or query
+authority. Planned read-only Rust cell/mode/cursor/history views keep engine
+types private; current `climon2-vt` has no public cells and remains daemon-only.
+No native cross-release cell schema or new workspace crate is selected.
+
+Monitor-mode display/restoration will use effective session geometry canonically,
+not host/requested dimensions, including passive promotion and background grants.
+Current host-coordinate restoration cannot safely be reparsed at a smaller
+effective size. This is an agreed unimplemented presentation-policy amendment;
+ordinary direct/derived attach, native history and release below are unchanged.
+The monitor uses its own alternate screen and internal normal history, replaces
+whole models/history transactionally, and never writes session bytes directly
+to the host or emits duplicate query replies. Selected input also waits for
+coherent paint, while applied background models can report Ready without paint.
+The later [lifecycle amendment](../monitor-lifecycle.md) limits stale inspection
+to disconnected/final retained history: connected revoked clients show only
+the placeholder, with no revoked-cache inspection route. Disconnected history
+overlays exactly `Reconnecting...` while passive recovery is scheduled or active;
+permanent rejection instead shows a disconnected/error overlay. Recovery removes
+the overlay but requires explicit acquisition for a non-controller's live
+presentation. No history/retry binding is added. Selector removal discards cache
+only after definitive termination and local instance cleanup/join, for this
+monitor run only. All are unimplemented and leave daemon query authority and
+ordinary presentation unchanged.
 
 ## Restoration: three phases, produced incrementally
 
