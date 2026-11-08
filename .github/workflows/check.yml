@@ -13,6 +13,12 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same pull request supersedes its in-progress checks.
+# Main pushes and release calls get a group of their own and are never cancelled.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('checks-pr-{0}', github.event.pull_request.number) || format('checks-run-{0}', github.run_id) }}
+  cancel-in-progress: true
+
 jobs:
   macos:
     name: ${{ matrix.runner }} / bash 5
