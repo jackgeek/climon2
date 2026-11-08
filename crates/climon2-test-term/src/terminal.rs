@@ -1,3 +1,4 @@
+use crate::cell::{Cell, Cursor};
 use alacritty_terminal::{
     Term,
     event::{Event, EventListener},
@@ -141,6 +142,13 @@ impl Screen {
         let grid = self.term.grid();
         (0..grid.columns())
             .map(|col| grid[Line(line)][Column(col)].c)
+            .collect()
+    }
+
+    fn cells(&self, line: i32) -> Vec<Cell> {
+        let grid = self.term.grid();
+        (0..grid.columns())
+            .map(|col| Cell::of(&grid[Line(line)][Column(col)]))
             .collect()
     }
 
@@ -330,6 +338,11 @@ impl Terminal {
         self.screen.0.lock().expect("screen lock").row(row as i32)
     }
 
+    /// The visible screen row `row` (0-based), cell by cell with every column.
+    pub fn cells(&self, row: usize) -> Vec<Cell> {
+        self.screen.0.lock().expect("screen lock").cells(row as i32)
+    }
+
     pub fn history(&self) -> Vec<String> {
         self.screen.0.lock().expect("screen lock").history()
     }
@@ -355,6 +368,11 @@ impl Terminal {
             .cursor
             .point;
         (point.line.0 as usize, point.column.0)
+    }
+
+    /// The cursor's position, visibility, shape and blink, read together.
+    pub fn cursor_state(&self) -> Cursor {
+        Cursor::of(&self.screen.0.lock().expect("screen lock").term)
     }
 
     /// Every query and clipboard operation the host was asked to perform.
