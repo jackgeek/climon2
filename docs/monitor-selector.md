@@ -17,8 +17,17 @@ without captions. Search occupies the first interior line; a single horizontal
 separator joins the edges with U+255F and U+2562. Below it are two borderless
 columns: effective status on the left and literal title/command fallback on the
 right. There is no details pane/view, working-directory display, control-elsewhere
-suffix, current-session marker, buttons or bottom hints. A distinct highlight
+suffix, current-session marker or buttons. A distinct highlight
 identifies the candidate, not a newly selected session.
+
+When `monitor.show_key_hints` is enabled, show a key-hint footer at the bottom
+inside the selector, below the session list. Keep it visible while the list
+scrolls or search has no matches. Show the available selector actions using
+their actual bindings; configured-prefix actions use the configured prefix.
+Do not advertise Escape as cancellation when the prefix consumes it.
+Clip hints safely to the available display cells without wrapping into the list
+or changing application geometry. When hints are disabled, omit the footer
+and its reserved space; bindings and selector behavior remain unchanged.
 
 Use the latest nonempty daemon title, otherwise command plus arguments.
 No menu [GUIDs](protocol/TERMS.md#guid) are displayed. Future user-assigned names must appear alongside
@@ -186,6 +195,8 @@ These reports neither acknowledge sessions nor amend the enclosing daemon
 
 Later implementation must test real monitor input/terminal behavior, not just
 the prototype's synthetic state: exact borders/columns and search cursor,
+bottom key hints enabled/disabled (including reclaimed list space, scrolling,
+empty search results, configured bindings and narrow-screen clipping),
 literal labels and Unicode clipping, exact and fuzzy filtering (including
 Unicode, short queries and unchanged ordering), editing/paste isolation,
 identity-preserving reorder/removal, explicit confirmation and switch races,

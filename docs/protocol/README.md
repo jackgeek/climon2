@@ -34,6 +34,13 @@ native [schemas](TERMS.md#schema) remain pending. No in-process
 are assigned by these pages.
 The existing daemon hello exchange is unaffected.
 
+The [operational-limits specification](../monitor-operational-limits.md) supplies
+agreed configurable queue/transfer/payload budgets, admission, deadlines, retry
+and required measurements. It adds no native framing or completed declarations.
+Resource-blocked sessions stay visible; pressure shortens captured history to a
+protected recent page, never silently evicts clients or erases that page.
+These requirements remain unimplemented.
+
 ## Who communicates?
 
 ```text
@@ -509,7 +516,7 @@ fixtures cannot be published before #71 completes the declarations.
 | Menu notifications | Attention arriving while a menu is open toasts immediately over it without a daemon round trip. Still-pending attention never toasted becomes eligible on menu opening. Deduplicate per episode over this monitor lifetime, including reconnects. A final first learned viewed stays suppressed forever here; another client's viewing never suppresses this monitor. |
 | Canonical geometry | Outer host 600x251 gives desire 600x250; daemon effective size 500x200 is used for every monitor-mode display/restoration byte. Paint that rectangle below the top row with blank margins; ordinary attach still uses its own direct/derived host policy. |
 | Focus | Host focus loss clears viewing, not control/readiness. Dedicated non-user Focus stores current desired application focus even with reporting off; enabled reporting emits matching bytes once, never attention acknowledgement. Nonmodal toasts/scrollback retain keyboard focus; modal menus do not. |
-| Attention jump/hints | Configured prefix + lowercase j chooses the newest currently connected needs_attention row at keypress, not a toast's saved target. Close overlays, acquire only if needed, apply/paint, then acknowledge when unobstructed/ready. No eligible row keeps selection and reports it. Planned show_key_hints hides implicit hints, not bindings or application text. |
+| Attention jump/hints | Configured prefix + lowercase j chooses the newest currently connected needs_attention row at keypress, not a toast's saved target. Close overlays, acquire only if needed, apply/paint, then acknowledge when unobstructed/ready. No eligible row keeps selection and reports it. Planned show_key_hints hides implicit hints, not bindings or application text. Enabled selector hints appear in a bottom footer inside the menu; disabling them reclaims that space. |
 | Succession | On any controller departure, most-recent-control existing attachment wins first; otherwise newest accepted passive registration is promoted before final-participant policy. Inheritance does not select, resize, send input or acknowledge. Promoted membership persists through switching/revocation. Committed termination overrides succession. |
 | Core notification/progress | A recognized logical notification requests attention; repeated requests while pending are not new episodes. Progress metadata alone does not request attention or confirm command completion. Delivery remains independent of control and does not permit screen mirroring. |
 | Deliberate detach | Local acceptance queues detach. Only daemon acceptance confirms deliberate detach; neither that outcome nor stream closure proves instance cleanup or a joined thread. No timeout or shutdown fabricates success. |

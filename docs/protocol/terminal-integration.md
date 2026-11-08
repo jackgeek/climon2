@@ -319,6 +319,9 @@ The hint describes a dynamic jump to the most recent attention, not necessarily
 the toast's own session. `monitor.show_key_hints` is a planned boolean setting,
 default `true`, controlling **all implicit monitor hints** in toast, chrome,
 selector, and empty UI. It changes neither bindings nor application text.
+The [selector](../monitor-selector.md#selector) shows its enabled hints in a
+footer below the session list, inside the menu. Disabling hints removes the
+footer and its reserved space without changing selector actions.
 Validate one startup snapshot before terminal changes. If present, `monitor`
 must be an object and `show_key_hints` a boolean; missing means default,
 wrong type or duplicate known field is an explicit error, unknown/unrelated
