@@ -32,12 +32,15 @@ Left/Right/Home/End edit it. Up/Down and PageUp/PageDown navigate the highlight,
 without wrapping, and keep it visible. Enter confirms the highlight from search.
 Clicking a row only highlights it; wheel scrolls the list without selecting.
 
-Search is case-insensitive against title, command arguments or displayed status,
-including failure details. Exact substring matches always qualify. Queries of
-at least three characters also qualify when `rust_fuzzy_search` reports trigram
-similarity of at least 0.5 against any field. Shorter queries use exact
-substrings only. Similarity never changes the status/time/internal-GUID order.
-Query length counts Unicode characters before lowercasing.
+Search is case-insensitive ordered-subsequence matching against title, command
+arguments or displayed status, including failure details. All query characters
+must occur in order within any one field; gaps are allowed. For example, `bld`
+or `bd` matches `Build`, and `na` matches `Needs attention`. Exact substrings
+also match. Characters cannot be reordered, substituted or absent.
+Use `fuzzy-matcher`'s `SkimMatcherV2` for this ordered-subsequence matching, not
+trigram similarity or edit-distance typo matching. There is no similarity
+cutoff or special short-query rule. Match scores never change the
+status/time/internal-GUID order.
 Status matching uses the effective display state (for example Disconnected),
 not a stale underlying activity status. Search changes retain a still-matching
 highlight, otherwise highlight the first match. Clearing search does not resurrect an old
