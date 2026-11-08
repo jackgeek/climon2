@@ -34,13 +34,6 @@ native [schemas](TERMS.md#schema) remain pending. No in-process
 are assigned by these pages.
 The existing daemon hello exchange is unaffected.
 
-The [operational-limits specification](../monitor-operational-limits.md) supplies
-agreed configurable queue/transfer/payload budgets, admission, deadlines, retry
-and required measurements. It adds no native framing or completed declarations.
-Resource-blocked sessions stay visible; pressure shortens captured history to a
-protected recent page, never silently evicts clients or erases that page.
-These requirements remain unimplemented.
-
 ## Who communicates?
 
 ```text
