@@ -104,11 +104,13 @@ fn filtering_and_paste_never_execute_monitor_actions() {
 #[test]
 fn fuzzy_search_matches_title_command_and_status() {
     for (query, expected) in [
-        ("bUidL", vec![2]),
+        ("bLd", vec![2]),
+        ("bd", vec![2]),
+        ("ctw", vec![3, 2, 1]),
         ("cargo test --workspce", vec![3, 2, 1]),
-        ("needs atention", vec![3]),
+        ("na", vec![3]),
         ("work", vec![3, 2, 1]),
-        ("bl", vec![]),
+        ("bUidL", vec![]),
         ("unrelated xyz", vec![]),
     ] {
         let mut state = state();
@@ -122,10 +124,10 @@ fn fuzzy_search_matches_title_command_and_status() {
 fn fuzzy_search_keeps_status_time_order_instead_of_similarity_order() {
     let mut state = state();
     state.sessions[0].title = "Build".into();
-    state.sessions[1].title = "Buidl".into();
+    state.sessions[1].title = "Bld".into();
     state.sessions[2].title = "Build deploy".into();
     state.open();
-    state.insert_search("buidl");
+    state.insert_search("bld");
     assert_eq!(state.visible_ids(), [3, 2, 1]);
     assert_eq!(state.highlight, Some(1));
 }
@@ -134,7 +136,9 @@ fn fuzzy_search_keeps_status_time_order_instead_of_similarity_order() {
 fn fuzzy_search_handles_unicode_titles_and_queries() {
     for (title, query, expected) in [
         ("Déploiement", "DÉPLOIMENT", vec![2]),
-        ("部署测试", "部署测验", vec![2]),
+        ("部署测试", "部试", vec![2]),
+        ("部署测试", "部署测验", vec![]),
+        ("RunDeployTests", "rdt", vec![2]),
         ("İy", "İx", vec![]),
     ] {
         let mut state = state();

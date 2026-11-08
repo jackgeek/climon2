@@ -1,6 +1,7 @@
 pub mod config;
 pub mod input;
 pub mod ui;
+use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 use std::collections::VecDeque;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -220,19 +221,14 @@ impl State {
 
     pub fn visible_ids(&self) -> Vec<u128> {
         let query = self.query.iter().collect::<String>().to_lowercase();
-        let allow_fuzzy = self.query.len() >= 3;
+        let matcher = SkimMatcherV2::default();
         let mut sessions: Vec<_> = self
             .sessions
             .iter()
             .filter(|session| {
                 [session.label(), &session.command, &session.status_text()]
                     .into_iter()
-                    .any(|field| {
-                        let field = field.to_lowercase();
-                        field.contains(&query)
-                            || (allow_fuzzy
-                                && rust_fuzzy_search::fuzzy_compare(&query, &field) >= 0.5)
-                    })
+                    .any(|field| matcher.fuzzy_match(&field.to_lowercase(), &query).is_some())
             })
             .collect();
         sessions.sort_by_key(|session| {

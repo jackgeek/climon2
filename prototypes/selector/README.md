@@ -22,12 +22,13 @@ Mouse clicks highlight only; wheel scrolls the list.
 
 **Ctrl+] then s** opens the selector; **Ctrl+] then x** exits;
 **Ctrl+] then j** selects the newest connected attention request.
-Search resets on opening and matches title, command arguments or displayed
-status (including failure details) case-insensitively. Exact substring matches
-always qualify. Queries of at least three characters also qualify when
-`rust_fuzzy_search` reports trigram similarity of at least 0.5 against any field.
-Shorter queries use exact substrings only. Similarity does not change
-status/time order. Query length counts Unicode characters before lowercasing.
+Search resets on opening and uses case-insensitive ordered-subsequence matching
+against title, command arguments or displayed status (including failure details)
+via `fuzzy-matcher`'s `SkimMatcherV2`: `bld` or `bd` matches `Build`, and `na`
+matches `Needs attention`. All query characters must occur in order within one
+field; gaps are allowed. Exact substrings also match.
+The same rule applies to short queries, with no similarity cutoff.
+Match scores do not change status/time order.
 Paste normalizes whitespace and drops controls without
 running shortcuts. Reordering preserves highlighted identity; asynchronous
 removal/loss of a search match clears the highlight rather than redirecting
