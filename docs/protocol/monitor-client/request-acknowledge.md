@@ -1,39 +1,41 @@
 # Acknowledge attention
 
-**Status: agreed semantics/wire mapping, not implemented; native declarations pending #71.**
-The [monitor](../../../GLOSSARY.md#sessions) requests explicit acknowledgement of
-current pending [attention](../../../GLOSSARY.md#status-and-attention) through its
-[client](../../../GLOSSARY.md#sessions).
-See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
-[terms](../TERMS.md) and inherited
-[communication contract](../README.md#shared-in-process-communication-contract).
+**Status: agreed revision-1 specification, not implemented.**
+The [monitor](../../../GLOSSARY.md#sessions) explicitly acknowledges
+[attention](../../../GLOSSARY.md#status-and-attention) through its
+[client](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),
+[glossary](../../../GLOSSARY.md) and [terms](../TERMS.md).
 
-[Wire Acknowledge](../daemon-client/request-acknowledge.md) is separate from
-acquisition and [viewing](../../../GLOSSARY.md#status-and-attention),
-with **no observed episode ID**. Validate current
-[controller](../../../GLOSSARY.md#attachment-and-control), matching period/
-[restoration](../../../GLOSSARY.md#restoration-and-presentation),
-[readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts) and latest reported
-[viewing](../../../GLOSSARY.md#status-and-attention)
-true. No pending episode yields explicit no-change success.
+## Schema and example
 
-Explicit ordinary attach, focus/selection and menu close/cancel may submit once
-ready and unobstructed.
-Here focus means an explicit user selection action, not host focus-in or the
-non-user [Focus](request-focus.md) operation. The
-[global lowercase j attention jump](../terminal-integration.md#attention-jump-and-configurable-hints)
-also selects/acquires only if needed, then acknowledges once applied, painted,
-ready and unobstructed. Toast disappearance/continued visibility never auto-acks.
-Cancel deferred submission if the local target context
-changes. Opening/browsing menus never acknowledges; continuous visibility does
-not auto-acknowledge new attention.
-Local queue acceptance is not [daemon](../../../GLOSSARY.md#sessions)
-acknowledgement; stale execution is
-explicitly rejected, unknown execution remains
-[indeterminate](../TERMS.md#indeterminate-outcome).
+`CM1_ACKNOWLEDGE` uses `args.authority`: current [generation](../TERMS.md#connection-generation)/
+[period](../../../GLOSSARY.md#attachment-and-control)/
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts).
+No observed [episode](../../../GLOSSARY.md#status-and-attention) field. See [header](client-v1.h),
+[values](core-v1.md#shared-values) and [mapping](core-v1.md#requests-and-result-mapping).
 
-The wire page supplies exact fields, result/errors and a valid wire example,
-not native layouts/calls. [#71](https://github.com/jackgeek/climon2/issues/71)
-owns native declarations and executable examples; bounds remain
-[operational limits](../../monitor-operational-limits.md#queues-and-transfers).
-Related: [viewing](request-viewing.md), [status](event-session-status.md).
+```c
+cm1_request request = {0};
+request.tag = CM1_ACKNOWLEDGE;
+request.request_id = 5;
+request.args.authority = (cm1_authority){generation, period, restoration_id};
+return api->submit(communication, &request);
+```
+
+Require current [controller](../../../GLOSSARY.md#attachment-and-control),
+applied [Ready](../../../GLOSSARY.md#protocol-and-plugin-concepts) and latest daemon
+[viewing](../../../GLOSSARY.md#status-and-attention) true.
+Explicit ordinary attach/selection or menu-close/cancel may acknowledge current
+pending attention; opening/browsing, visibility or host focus-in never does.
+Cancel deferred intent if local target context changes before submission.
+No pending episode gives explicit no-change success.
+
+Local admission queues only; execution rechecks authority/readiness/viewing.
+Success `CM1_ACKNOWLEDGEMENT` carries changed. Stale unexecuted work rejects;
+uncertain effects remain indeterminate with no replay. Acknowledgement keeps
+episode identity; accepted real Input clears it separately. Focus never clears it.
+See [wire Acknowledge](../daemon-client/request-acknowledge.md),
+[status](event-session-status.md), [terminal rules](../terminal-integration.md)
+and [ownership/errors](core-v1.md#function-calls-and-ownership).
+[#67](https://github.com/jackgeek/climon2/issues/67) owns attention;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

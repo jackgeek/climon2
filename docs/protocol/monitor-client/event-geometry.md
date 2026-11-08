@@ -1,33 +1,38 @@
-# Geometry event
+# Geometry
 
-**Status:** agreed communication requirements; interface [schema](../TERMS.md#schema) unresolved, not implemented.
-See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
-and [technical terms](../TERMS.md).
+**Status: agreed revision-1 specification, not implemented.**
+The [client](../../../GLOSSARY.md#sessions) reports effective daemon
+[geometry](../TERMS.md#geometry) to the [monitor](../../../GLOSSARY.md#sessions).
+Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and
+[terms](../TERMS.md).
 
-The [client](../../../GLOSSARY.md) reports actual geometry separately from
-[resize](request-resize.md) acceptance. Only the selected
-[controlling](../../../GLOSSARY.md) [session](../../../GLOSSARY.md) follows the
-[monitor](../../../GLOSSARY.md)'s available size. Background sessions retain
-their last size until selected; [hand-back](../../../GLOSSARY.md) alone does not trigger monitor resize.
+## Schema and example
 
-The [agreed geometry contract](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness)
-uses effective daemon dimensions for parsing every monitor presentation,
-independent of outer-host/desired size, including background grants. The selected
-desire is host width by (height minus the permanent top row), subject to supported
-limits. Place the effective rectangle top-left below chrome with blank margins;
-never fake [PTY](../TERMS.md#pseudo-terminal-pty) reflow. Observe
-[restoration](../../../GLOSSARY.md#restoration-and-presentation) application and
-selected coherent paint separately from actual geometry.
-The [shared communication contract](../README.md#shared-in-process-communication-contract)
-and [semantic examples](../README.md#semantic-examples), agreed in
-[#66](https://github.com/jackgeek/climon2/issues/66), preserve causal geometry,
-restoration, and result order in one per-instance
-[response](../TERMS.md#response)/[event](../TERMS.md#event) stream.
-[Interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign
-exact native types, error codes, and executable examples.
-[Wire Geometry](../daemon-client/event-geometry.md) reports actual positive
-unsigned 32-bit columns/rows with period. This is separate from the current
-private [daemon](../../../GLOSSARY.md#sessions) schema and does not choose
-operational bounds or native layout.
-[Operational limits](../../monitor-operational-limits.md#memory-history-and-admission) specifies numerical
-bounds not intrinsic to the chosen geometry contract.
+`CM1_GEOMETRY` / `data.geometry` has nonzero
+[period](../../../GLOSSARY.md#attachment-and-control) and positive columns/rows,
+scoped by record [generation](../TERMS.md#connection-generation).
+No [restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts) field. See [header](client-v1.h),
+[values](core-v1.md#shared-values) and [mapping](core-v1.md#events-and-ordering).
+
+```c
+cm1_record example = {0};
+example.tag = CM1_GEOMETRY;
+example.generation = 1;
+example.data.geometry = (cm1_geometry_event){2, {100, 30}};
+(void)example;
+return (cm1_call){0};
+```
+
+Core support; actual geometry is distinct from Resize acceptance and
+restoration/application/paint. Immediate causal changes precede their success;
+deferred resize need not have a geometry event yet.
+Canonical monitor display/restoration uses effective geometry even for passive
+promotion/background grants. Only selected control receives monitor resize.
+Host layout remains independent of daemon acknowledgement, with blank margins;
+never fake PTY reflow. Geometry alone establishes no Ready/viewing/acknowledgement.
+
+See [wire Geometry](../daemon-client/event-geometry.md),
+[Resize](request-resize.md), [terminal sizing](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness)
+and [ownership/errors](core-v1.md#function-calls-and-ownership).
+[#63](https://github.com/jackgeek/climon2/issues/63) owns sizing;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

@@ -1,76 +1,43 @@
 # Open connection
 
-**Status:** agreed communication requirements, not implemented; exact native
-declarations unresolved; the [daemon](../../../GLOSSARY.md#sessions) wire model is agreed.
-See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
-and [technical terms](../TERMS.md).
+**Status: agreed revision-1 specification, not implemented.**
+The [monitor](../../../GLOSSARY.md#sessions) asks its
+[client](../../../GLOSSARY.md#sessions) to establish a role with the
+[session daemon](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),
+[glossary](../../../GLOSSARY.md) and [terms](../TERMS.md).
 
-The [monitor](../../../GLOSSARY.md) creates a [client](../../../GLOSSARY.md)
-for each discovered live [session](../../../GLOSSARY.md), newest first, with
-bounded concurrent progress. Verify [daemon](../../../GLOSSARY.md#sessions) identity and required
-[capabilities](../../../GLOSSARY.md)/[extensions](../../../GLOSSARY.md) before
-control acquisition or operation submission. Report the support actually
-available through both library and daemon. Missing required support fails
-explicitly; missing optional support is unavailable/unknown, not a fabricated
-empty title or cleared [attention](../../../GLOSSARY.md#status-and-attention).
+## Schema and example
 
-Background connections receive supported core title/status data without taking
-control. [Plugin](../../../GLOSSARY.md) implementation is deferred.
-Current ordinary attach immediately requests control; it is not the
-passive connection mechanism.
-Optional core `focus-v1` requires explicit support through both library and
-daemon. Missing support is a visible focus limitation, not an unusable session;
-see [Focus](request-focus.md). Monitor-mode terminal presentation uses effective
-session geometry even when a passive connection is later promoted; the
-[canonical terminal contract](../terminal-integration.md) does not alter ordinary
-interactive attach.
-Initial selection or explicit user actions acquire
-control separately. Open success alone is not [readiness](../../../GLOSSARY.md).
+`CM1_OPEN` uses `cm1_request.args.open`: mode, [geometry](../TERMS.md#geometry),
+required/optional [capability](../../../GLOSSARY.md#sessions) lists.
+Monitor mode requires zero geometry; interactive requires
+positive columns/rows. Reserved values are zero. Exact
+[startup inputs](core-v1.md#startup-limits-and-resources) are copied separately
+by create. See [header](client-v1.h) and [Open mapping](core-v1.md#requests-and-result-mapping).
 
-Opening establishes supported core [title state and ongoing changes](event-title.md)
-and [effective session status/time](event-session-status.md), without a
-subscription gap and independently of control/readiness. Plugin implementation
-is deferred. Older daemons without title support remain usable with
-command/arguments fallback; missing title support must not block control
-acquisition. Unknown status remains explicit uncertainty.
-[Wire Open](../daemon-client/request-open.md) assigns revision 1 and capability
-selection; [Initial metadata](../daemon-client/event-initial-metadata.md)
-provides explicit availability and an atomic barrier. Native
-[schemas](../TERMS.md#schema) remain #71.
+```c
+cm1_request request = {0};
+request.tag = CM1_OPEN;
+request.request_id = 1;
+request.args.open.mode = CM1_MONITOR;
+return api->submit(communication, &request);
+```
 
-Automatic reconnect uses this passive role even for the selected session;
-resuming control requires an explicit user action. Preserve the monitor's
-retained terminal model without presenting it as current merely because open
-succeeded. See the [recovery mechanics](../../session-status.md#connection-loss-and-retained-terminal-views).
+One Open attempt per instance; never replace an established role. Validate exact
+daemon identity/release, wire revision, peer frame budgets and effective
+capability intersection before effects. Unsupported required support rejects;
+unknown optional support is unselected. Missing optional title/status/focus is
+explicit, not fabricated supported empty/clear state.
 
-Each connection has a distinct
-[generation](../TERMS.md#connection-generation). Delimit initial core metadata
-synchronization, then deliver gap-free changes. This metadata barrier does not
-make the retained terminal current. Unfinished old-connection work is
-[indeterminate](../TERMS.md#indeterminate-outcome); do not replay it or execute
-queued authority-sensitive work on a new connection. Confirmed final outcomes
-stop reconnecting. Recoverable connection loss need not close the instance's
-delivery stream.
-
-The [ownership decision](https://github.com/jackgeek/climon2/issues/58) owns these
-requirements. The [daemon contract](https://github.com/jackgeek/climon2/issues/67)
-defines passive connection/[attachment](../../../GLOSSARY.md#attachment-and-control)
-and negotiation semantics in the
-[core reference](../daemon-client/core-v1.md).
-Monitor mode is always an eligible successor, outside attachment counts until
-explicit acquisition or promotion; registration alone never takes over a
-detached session. This is not an observer-only option.
-The agreed [communication contract](../README.md#shared-in-process-communication-contract)
-and [semantic examples](../README.md#semantic-examples), owned by
-[#66](https://github.com/jackgeek/climon2/issues/66), apply here.
-[Interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign
-exact arguments, outcomes, errors, and executable examples. The
-[agreed lifecycle](../../monitor-lifecycle.md#history-and-passive-recovery)
-requires automatic exponential passive recovery for transport loss, recoverable
-startup failure (including missing libraries) and safe worker panics. Permanent
-rejection/invalid configuration and final outcomes stop retries. Fresh attempts
-wait for old instance cleanup/join; never overlap running replacement instances,
-request automatic takeover or replay indeterminate work. The selected identity
-is retained through failure, without acquiring another session.
-Numerical retry schedules and budgets remain with
-[operational limits](../../monitor-operational-limits.md#discovery-loading-and-start-scheduling).
+Success returns `CM1_OPENED`, logical connection [GUID](../TERMS.md#guid)
+and selected tokens, then
+exactly one [Initial metadata](event-initial-metadata.md) barrier before gap-free
+changes. Monitor Open registers an eligible passive successor without attachment,
+geometry or takeover; interactive Open attaches/grants after metadata.
+Open is not Ready or current cached presentation.
+Passive recovery creates a fresh [generation](../TERMS.md#connection-generation)/instance after prior cleanup/join,
+without takeover or replay. See [wire Open](../daemon-client/request-open.md),
+[admission/ownership](core-v1.md#function-calls-and-ownership), and
+[lifecycle](../../monitor-lifecycle.md).
+[#67](https://github.com/jackgeek/climon2/issues/67) owns roles;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

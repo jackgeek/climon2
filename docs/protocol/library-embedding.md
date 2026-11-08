@@ -2,11 +2,10 @@
 
 **Status:** agreed design, not implemented. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
-requirements. Complete declarations, data layouts, result codes,
-[native-path](TERMS.md#native-path)
-encoding, and executable examples remain with
-[interface schemas](https://github.com/jackgeek/climon2/issues/71).
-Revision 1 is planned, not a published interface.
+requirements. [Native revision 1](monitor-client/core-v1.md), confirmed in
+[#71](https://github.com/jackgeek/climon2/issues/71), publishes complete declarations,
+[native-path](TERMS.md#native-path) encoding, result codes and compilable examples
+as a specification, not a shipped library.
 
 Use the [domain glossary](../../GLOSSARY.md), [technical terms](TERMS.md),
 and [protocol overview](README.md) with this reference.
@@ -23,9 +22,9 @@ errors. Rust data layouts and unwinding are never part of this interface.
 One stable exported entry point, `climon2_client_get_interface`, takes a
 requested interface revision. It returns that revision's
 [function table](TERMS.md#function-table) and release identity, or an explicit
-unsupported result. This describes the operation, not a complete C declaration.
-Its exact arguments, ownership representation, and failure results must be
-specified before implementation.
+unsupported result. The [header](monitor-client/client-v1.h) fixes its signature;
+[bootstrap rules](monitor-client/core-v1.md#representation-and-compatibility)
+fix output ownership, failure results and resource qualification.
 
 Freeze the bootstrap calling convention and each published revision's layout
 and semantics. Incompatible changes require a new revision. A different release
@@ -91,7 +90,7 @@ ordinary queue capacity; connection work remains on the dedicated client thread.
 Complete instance and internal-worker cleanup before the client thread returns.
 The monitor joins the thread before reporting completed shutdown. Release the
 control handle only after its permitted concurrent uses end; exact handle
-validity and release operations belong to the completed [schemas](TERMS.md#schema). A final
+validity and release operations follow the [native calls](monitor-client/core-v1.md#function-calls-and-ownership). A final
 [event](TERMS.md#event), connection closure, or daemon-accepted
 [detach](../../GLOSSARY.md#attachment-and-control) is not proof of cleanup or
 thread completion. Cleanup failure must be reported, not called success.
@@ -120,8 +119,10 @@ Supply explicit per-instance paths, validated settings snapshots, session
 identity, and operation. Copy startup inputs before creation returns. Resolve
 relative paths before creation and preserve
 [native paths](TERMS.md#native-path) losslessly using length-delimited native
-data, not [UTF-8](TERMS.md#unicode-and-utf-8)-only strings. Exact encoding
-belongs to the completed schemas.
+data, not [UTF-8](TERMS.md#unicode-and-utf-8)-only strings.
+[Native shared values](monitor-client/core-v1.md#shared-values) specify absolute
+Unix bytes and counted text/binary buffers. Create performs only atomic local
+setup and returns all three handles or none; Open/Kill are explicit queued work.
 
 Do not treat process-global arguments, environment, settings, current directory,
 signals, or [standard streams](TERMS.md#standard-streams) as private instance

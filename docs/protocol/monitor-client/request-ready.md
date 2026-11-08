@@ -1,36 +1,42 @@
 # Report readiness
 
-**Status: agreed semantics/wire mapping, not implemented; native declarations pending #71.**
+**Status: agreed revision-1 specification, not implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) reports applied
 [restoration](../../../GLOSSARY.md#restoration-and-presentation) through its
-[client](../../../GLOSSARY.md#sessions) to the
-[session daemon](../../../GLOSSARY.md#sessions).
-See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
-[terms](../TERMS.md) and inherited
-[communication contract](../README.md#shared-in-process-communication-contract).
+[client](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),
+[glossary](../../../GLOSSARY.md) and [terms](../TERMS.md).
 
-[Wire Ready](../daemon-client/request-ready.md) validates current
-[control period](../../../GLOSSARY.md#attachment-and-control),
-[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts),
-and matching complete restoration sent and applied. Receipt of completion alone
-is insufficient. A newer begin or
-[revocation](../../../GLOSSARY.md#attachment-and-control) invalidates
+## Schema and example
+
+`CM1_READY` uses `args.authority`: nonzero current
+[generation](../TERMS.md#connection-generation)/
+[period](../../../GLOSSARY.md#attachment-and-control)/
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts).
+No paint/selection boolean is sent. See [header](client-v1.h),
+[values](core-v1.md#shared-values) and [mapping](core-v1.md#requests-and-result-mapping).
+
+```c
+cm1_request request = {0};
+request.tag = CM1_READY;
+request.request_id = 3;
+request.args.authority = (cm1_authority){generation, period, restoration_id};
+return api->submit(communication, &request);
+```
+
+Submit after matching restoration completion and transactional whole-model/
+history application, including background grants without paint or selection.
+Completion receipt alone is insufficient. New begin/revocation invalidates
 [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts).
-Local queue acceptance is not daemon acceptance; no application input is enabled
-by a stale barrier.
-Application means transactionally replacing the current model and history.
-It permits wire Ready/resize progress without selection or paint, including
-background grants; selected application input additionally requires a coherent
-current frame painted in usable space. See the
-[terminal barriers](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness).
-Readiness alone does not set
-[viewing](../../../GLOSSARY.md#status-and-attention) or acknowledge
-[attention](../../../GLOSSARY.md#status-and-attention).
+Selected Input additionally waits for coherent painted current target;
+Ready never establishes [viewing](../../../GLOSSARY.md#status-and-attention) or
+[attention](../../../GLOSSARY.md#status-and-attention) acknowledgement.
 
-The wire page supplies exact fields, success/no-change result, errors and a
-valid wire example. Those are not native layouts/calls.
-[#71](https://github.com/jackgeek/climon2/issues/71) owns native declarations,
-[#63](https://github.com/jackgeek/climon2/issues/63) owns application mechanics.
-[Operational limits](../../monitor-operational-limits.md#deadlines-and-progress)
-specifies numeric bounds/deadlines.
-Related: [completion](event-restoration-complete.md), [viewing](request-viewing.md).
+Local admission is queuing only. Execution rechecks authority; stale unexecuted
+work rejects and uncertain work is indeterminate without replay.
+Success `CM1_READY_RESULT` carries changed and matching period/restoration.
+See [wire Ready](../daemon-client/request-ready.md),
+[terminal barriers](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness),
+[ownership/errors](core-v1.md#function-calls-and-ownership) and
+[Restoration completion](event-restoration-complete.md).
+[#63](https://github.com/jackgeek/climon2/issues/63) owns application;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

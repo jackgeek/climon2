@@ -3,7 +3,9 @@
 **Status:** future relay requirements only;
 [plugin](../../../GLOSSARY.md#protocol-and-plugin-concepts) [APIs](../TERMS.md#api), configuration,
 implementation, and examples are deferred, not release prerequisites.
-Interface [schemas](../TERMS.md#schema) are unresolved.
+Revision 1 deliberately publishes no extension [schemas](../TERMS.md#schema).
+The [native compatibility rules](core-v1.md#representation-and-compatibility)
+require a separately specified revision for these future events.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
 

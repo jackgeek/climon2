@@ -1,70 +1,42 @@
 # Report viewing
 
-**Status:** agreed semantics and wire mapping, not implemented; native
-[schemas](../TERMS.md#schema) unresolved. See the [overview](../README.md),
-[domain glossary](../../../GLOSSARY.md), and
-[technical terms](../TERMS.md).
-
+**Status: agreed revision-1 specification, not implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) reports
 [viewing](../../../GLOSSARY.md#status-and-attention) through its
-[client](../../../GLOSSARY.md#sessions) to the
-[session daemon](../../../GLOSSARY.md#sessions), per
-[attachment](../../../GLOSSARY.md#attachment-and-control). A connected selected
-[controller](../../../GLOSSARY.md#attachment-and-control) becomes viewing only after current
-[restoration](../../../GLOSSARY.md#restoration-and-presentation) has been applied
-and displayed [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts)
-is established. Retaining background control is insufficient.
+[client](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),
+[glossary](../../../GLOSSARY.md) and [terms](../TERMS.md).
 
-Switching away, exiting, disconnecting, or
-[revocation](../../../GLOSSARY.md#attachment-and-control) clears viewing.
-Opening any menu clears this monitor's viewing without releasing control or
-restoration; this supersedes the earlier selector-overlay example.
-Highlighting/browsing never acknowledges. Ordinary interactive attach may
-report viewing once ready and unobstructed.
+## Schema and example
 
-The [terminal contract](../terminal-integration.md) additionally requires a live
-viewport and reportable host focus. Lost host focus, too-small/unavailable canvas,
-stale inspection, scrolled history, or notification coverage clears viewing
-without discarding applied restoration/control. Nonmodal toasts and normal
-scrollback retain application keyboard focus; modal UI does not.
-Hiding a notification or host focus-in alone never acknowledges attention.
-Host focus without reports is an explicit best-effort assumption.
-Application [Focus](request-focus.md) is a separate optional non-user core path.
+`CM1_VIEWING` uses `args.flag`: current [generation](../TERMS.md#connection-generation)/
+[period](../../../GLOSSARY.md#attachment-and-control)/
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts), 0/1
+`value`, zero reserved bytes. See [header](client-v1.h) and
+[mapping](core-v1.md#requests-and-result-mapping).
 
-Explicit ordinary attach, focus/selection and menu close/cancel may separately
-acknowledge currently pending
-[attention](../../../GLOSSARY.md#status-and-attention), including
-selection of a session whose client already controls it, once ready and
-unobstructed. Cancel deferred acknowledgement if local target context changes
-before submission. Opening/browsing menus never acknowledges. Merely reporting
-continued visibility must not automatically acknowledge a new request.
-The [mechanics](../../session-status.md#viewing-is-not-merely-control) separate
-viewing facts from the exact attention-triggering actions.
+```c
+cm1_request request = {0};
+request.tag = CM1_VIEWING;
+request.request_id = 4;
+request.args.flag.authority = (cm1_authority){generation, period, restoration_id};
+request.args.flag.value = 1;
+return api->submit(communication, &request);
+```
 
-Viewing cannot authorize takeover, input, or resize, and is not proof of
-application consumption. Passive reconnect does not restore control/viewing
-automatically. Validate reports against current attachment, control and
-restoration/readiness state; do not accept stale or unauthorized claims.
+True requires selected unobstructed [ready](../../../GLOSSARY.md#protocol-and-plugin-concepts)
+live presentation, coherent usable canvas and [host](../../../GLOSSARY.md#sessions)
+focus when reportable. False can clear during [restoration](../../../GLOSSARY.md#restoration-and-presentation).
+Menus/coverage/focus loss clear viewing without releasing control; nonmodal
+coverage need not block ready keyboard input. Visibility/focus-in never
+acknowledges [attention](../../../GLOSSARY.md#status-and-attention).
+Only this monitor's viewing suppresses its local [toasts](../TERMS.md#toast).
+See [terminal rules](../terminal-integration.md) and [Acknowledge](request-acknowledge.md).
 
-The [shared contract](../README.md#shared-in-process-communication-contract)
-and [semantic examples](../README.md#semantic-examples) apply. Local acceptance
-only queues copied data, not a daemon-confirmed viewing or acknowledgement
-change. Recheck current
-[connection generation](../TERMS.md#connection-generation) and authority at
-execution; reject known unexecuted stale claims asynchronously rather than
-discarding or assigning them to a new connection.
-
-The [daemon contract](https://github.com/jackgeek/climon2/issues/67) assigns
-[Set viewing](../daemon-client/request-viewing.md) and distinct
-[Acknowledge](../daemon-client/request-acknowledge.md), with no observed episode
-ID. The latter requires current controller, matching period/restoration,
-readiness and latest reported viewing true; no pending episode is explicit
-no-change success.
-
-No aggregate viewing field/broadcast exists. Only this monitor's own
-unobstructed presentation suppresses its toasts; another viewer never does.
-Attention in a menu toasts immediately over it, without waiting for close or a
-daemon round trip. See [local notification rules](../daemon-client/core-v1.md#viewing-acknowledgement-and-local-notifications).
-[Interface schemas](https://github.com/jackgeek/climon2/issues/71) still owns
-native declarations and executable examples, preserving
-[#66's communication rules](https://github.com/jackgeek/climon2/issues/66).
+Local admission is not daemon acceptance; execution rechecks authority.
+Success `CM1_VIEWING_RESULT` carries changed/value and zero accepted_bytes.
+Stale unexecuted work rejects explicitly; uncertain effects are indeterminate,
+never replayed. No aggregate viewing event is invented.
+See [wire Viewing](../daemon-client/request-viewing.md) and
+[ownership/errors](core-v1.md#function-calls-and-ownership).
+[#67](https://github.com/jackgeek/climon2/issues/67) owns viewing/acknowledgement;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

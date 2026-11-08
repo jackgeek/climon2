@@ -1,42 +1,39 @@
 # Kill
 
-**Status: agreed semantics/wire mapping, not implemented; native declarations pending #71.**
+**Status: agreed revision-1 specification, not implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) requests
-[kill](../../../GLOSSARY.md#attachment-and-control) through a
-[client](../../../GLOSSARY.md#sessions).
-See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
-[terms](../TERMS.md) and inherited
-[communication contract](../README.md#shared-in-process-communication-contract).
+[Kill](../../../GLOSSARY.md#attachment-and-control) through its
+[client](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),
+[glossary](../../../GLOSSARY.md) and [terms](../TERMS.md).
 
-[Wire Kill](../daemon-client/request-kill.md) is a standalone first-role request,
-not an [attachment](../../../GLOSSARY.md#attachment-and-control) or repurposed opened stream. The library must map native work
-to that path without inventing success. Validate revision/required support
-before effects. Confirmation requires known command result and complete
-[daemon](../../../GLOSSARY.md#sessions)
-cleanup, not command exit zero, monitor cleanup or thread join.
+## Schema and example
 
-Repeated kills join committed termination without restarting grace. Termination
-overrides succession. Failed/[indeterminate](../TERMS.md#indeterminate-outcome)
-cleanup may expose a known result,
-never successful confirmation; loss does not prove rejection or completion.
-The wire page supplies exact fields, result/errors and a valid wire example,
-not native layouts/calls.
+`CM1_KILL` uses `args.required`, a unique list of required
+[capability](../../../GLOSSARY.md#sessions) tokens.
+Target is this instance's immutable session ID; no alternate target or authority.
+See [header](client-v1.h) and [mapping](core-v1.md#requests-and-result-mapping).
 
-[#71](https://github.com/jackgeek/climon2/issues/71) owns native declarations.
-The [agreed lifecycle](../../monitor-lifecycle.md) owns recovery/cleanup policy;
-[Operational limits](../../monitor-operational-limits.md#deadlines-and-progress) specifies numeric bounds/deadlines.
-Related: [session end](event-session-ended.md), [detach](request-detach.md).
+```c
+cm1_request request = {0};
+request.tag = CM1_KILL;
+request.request_id = 8;
+return api->submit(communication, &request);
+```
 
-Planned [selector Delete](../../monitor-selector.md#delete-terminate-and-remove)
-is a default-Cancel modal tied to an immutable
-[session ID](../../../GLOSSARY.md#protocol-and-plugin-concepts), not a new Kill
-operation. Suppress duplicate pending work. Dismiss only after authoritative
-termination and local delivery/handle release, instance cleanup and thread join.
-Rejection/failure keeps the row; lost responses permit passive outcome recovery
-but no automatic Kill replay. Dismissal discards cache for this run only and
-blocks same-run rediscovery. Fallback selection does not acquire control.
-Existing `climon2 kill <session>` must preserve authoritative termination for
-future [headless sessions](../../../GLOSSARY.md#sessions), tested through the
-existing command rather than a duplicate CLI. All these amendments are
-unimplemented; native declarations #71, numerical limits #69 and acceptance #62
-remain open.
+Use a separately hello-validated first-role connection, never repurpose an opened
+passive/attached stream. A kill-only instance needs no Open. Verify exact daemon
+identity/release/revision/required support before effects. At most one pending
+Kill per immutable target; repeated daemon Kill joins termination without
+restarting grace. Committed termination overrides succession.
+
+Success `CM1_TERMINATION` requires a present authoritative command result and
+complete daemon cleanup, not exit zero or local thread join. Failed/indeterminate
+termination may expose a known command and incomplete/unknown cleanup;
+initial rejection may expose `CM1_KNOWN_FINAL`. Loss never authorizes replay.
+Default-Cancel selector Delete pins GUID identity, retains failed/uncertain rows
+and removes only after definitive termination plus local cleanup/join.
+See [wire Kill](../daemon-client/request-kill.md),
+[results/errors](core-v1.md#requests-and-result-mapping) and
+[lifecycle](../../monitor-lifecycle.md#selector-delete-terminate-and-remove).
+[#67](https://github.com/jackgeek/climon2/issues/67) owns termination;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

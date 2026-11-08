@@ -1,50 +1,33 @@
-# Request
+# Request admission
 
-**Status:** communication design agreed, not implemented; exact declarations unresolved.
-See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
-and [technical terms](../TERMS.md).
+**Status: agreed revision-1 specification, not implemented.**
+The [monitor](../../../GLOSSARY.md#sessions) submits a
+[request](../TERMS.md#request) through the [client library](../../../GLOSSARY.md#sessions).
+Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and
+[terms](../TERMS.md).
 
-Core [requests](../TERMS.md#request) originate at the [monitor](../../../GLOSSARY.md).
-Negotiated [extension](../../../GLOSSARY.md) requests may originate at either
-endpoint through a [client](../../../GLOSSARY.md).
+## Schema and example
 
-The [shared contract](../README.md#shared-in-process-communication-contract)
-specifies nonblocking submit/drain, tagged [C-compatible](../TERMS.md#c-abi) records, ownership,
-ordering, and validation; its [semantic examples](../README.md#semantic-examples)
-apply here. Local acceptance proves validation and queuing only. Submit copies
-accepted arguments before returning; rejection retains no ownership.
+[`cm1_request`](client-v1.h) has a native tag, reserved zero, positive
+`uint64_t` [request ID](../TERMS.md#request-id) and the tag's argument union member. The
+[complete request mapping](core-v1.md#requests-and-result-mapping) fixes every
+variant, required field, capability and result. No extension variant is published.
 
-Each accepted request needs one explicit [response](../TERMS.md#response) while
-communication remains healthy. Injected [plugin](../../../GLOSSARY.md) work participates in the same
-correlation and outcome rules. Failure leaves unfinished outcomes
-[indeterminate](../TERMS.md#indeterminate-outcome); retry is not implied.
-Malformed or impermissible work must fail explicitly, not fabricate success.
+```c
+cm1_request request = {0};
+request.tag = CM1_ACQUIRE;
+request.request_id = 10;
+request.args.generation = generation;
+return api->submit(communication, &request);
+```
 
-Accepted [request IDs](../TERMS.md#request-id) strictly increase over the instance
-lifetime without wrap. Reject IDs at or below the last accepted ID; locally
-rejected submissions do not consume them. The monitor serializes per-instance
-submissions when allocating IDs. Exhaustion requires a new instance.
-Malformed records, invalid length/null-buffer descriptions, unsupported tags,
-full queues, and closed handles are synchronous rejections, with no later outcome.
-Invalid native pointers are not made safe by length validation.
-
-Execution follows accepted submission order except independent shutdown.
-Recheck authority at execution: stale connection, generation, control, or
-[restoration](../../../GLOSSARY.md#restoration-and-presentation) state requires explicit asynchronous rejection if known unexecuted,
-or an indeterminate outcome if execution is unknown. Never move stale work to a
-new [connection generation](../TERMS.md#connection-generation) or silently drop it.
-IDs do not supply a retry/idempotency mechanism.
-
-The [wire contract](../daemon-client/core-v1.md#correlation-and-context) uses a
-separate request-ID domain per logical connection. A well-formed received wire
-request consumes its wire ID even if its operation is rejected.
-The library maps public IDs to wire IDs; reconnect never makes them identical
-by assumption. The public local-rejection rule above remains unchanged.
-
-[Define monitor-client communication contract](https://github.com/jackgeek/climon2/issues/66)
-owns these agreed rules. See the [response page](response.md) for outcomes.
-[Complete monitor-client interface schemas](https://github.com/jackgeek/climon2/issues/71)
-must assign exact identifier widths, argument types, result codes, and executable
-examples; [operational limits](../../monitor-operational-limits.md)
-owns numerical bounds. No serialized [envelope](../TERMS.md#envelope) is used.
-Executable C call examples cannot be validly published before #71.
+IDs increase strictly per instance's accepted submissions. Local rejection
+does not consume an ID, retain buffers or produce a later response. Acceptance
+copies all data and proves only queuing. Full/closed/malformed/unsupported/ID
+errors are synchronous; see [errors](core-v1.md#errors-terminal-evidence-and-cleanup).
+Accepted work executes [FIFO](../TERMS.md#fifo) except independent shutdown;
+stale unexecuted work is explicitly rejected, uncertain effects are
+[indeterminate](../TERMS.md#indeterminate-outcome) and never replayed.
+Public IDs are mapped separately from daemon IDs. See [ownership](core-v1.md#function-calls-and-ownership)
+and [Response](response.md). [#66](https://github.com/jackgeek/climon2/issues/66)
+owns admission/order; [#71](https://github.com/jackgeek/climon2/issues/71) owns these declarations.

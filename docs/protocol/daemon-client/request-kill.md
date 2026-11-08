@@ -55,5 +55,6 @@ Existing `climon2 kill <session>` must also terminate future
 [headless sessions](../../../GLOSSARY.md#sessions), whose zero-client lifetime
 survives later attachment loss until completion or Kill. These amendments are
 unimplemented; operation fields/results are unchanged.
-#69 owns deadlines/bounds; native declarations #71 and final acceptance #62
-remain open. Related: [Command final](event-command-final.md).
+#69 owns agreed deadlines/bounds; [native declarations](../monitor-client/core-v1.md)
+are agreed in #71; final acceptance #62 remains open.
+Related: [Command final](event-command-final.md).

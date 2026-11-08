@@ -1,42 +1,42 @@
 # Resize
 
-**Status:** agreed communication requirements; interface [schema](../TERMS.md#schema) unresolved, not implemented.
-See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
-and [technical terms](../TERMS.md).
+**Status: agreed revision-1 specification, not implemented.**
+The [monitor](../../../GLOSSARY.md#sessions) requests
+[geometry](../TERMS.md#geometry) through its [client](../../../GLOSSARY.md#sessions).
+Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and
+[terms](../TERMS.md).
 
-The [monitor](../../../GLOSSARY.md) requests geometry only for the selected
-[controlling](../../../GLOSSARY.md) [session](../../../GLOSSARY.md), identifying
-its [control period](../../../GLOSSARY.md). A controlling resize may establish
-initial geometry before [restoration](../../../GLOSSARY.md) is ready; this does
-not enable application input. Reject stale-period or revoked resize explicitly.
+## Schema and example
 
-Background [clients](../../../GLOSSARY.md#sessions) receive no monitor resize requests.
-[Daemon](../../../GLOSSARY.md#sessions) acceptance does
-not prove final geometry or applied restoration; observe
-[geometry](event-geometry.md) and restoration separately.
+`CM1_RESIZE` uses `args.resize`: current [generation](../TERMS.md#connection-generation)/
+[period](../../../GLOSSARY.md#attachment-and-control)/
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts) and
+positive columns/rows. See [header](client-v1.h),
+[values](core-v1.md#shared-values) and [mapping](core-v1.md#requests-and-result-mapping).
 
-The [shared contract](../README.md#shared-in-process-communication-contract)
-and [semantic examples](../README.md#semantic-examples) apply. Local acceptance
-only queues a copied record. Recheck
-[connection generation](../TERMS.md#connection-generation) and current authority
-at execution: known unexecuted stale work gets an explicit asynchronous
-rejection; uncertain execution is
-[indeterminate](../TERMS.md#indeterminate-outcome). Never carry old-generation
-resize into a reconnected [controller](../../../GLOSSARY.md#attachment-and-control).
+```c
+cm1_request request = {0};
+request.tag = CM1_RESIZE;
+request.request_id = 11;
+request.args.resize = (cm1_resize){
+    {generation, period, restoration_id}, {100, 30}};
+return api->submit(communication, &request);
+```
 
-The [terminal geometry contract](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness)
-sets desire to host width by (height minus one top row), with effective daemon
-geometry authoritative and blank right/bottom margins. Overlay open/close never
-resizes; actual host resize still updates selected control under an overlay.
-Too-small space reports an explicit unavailable canvas without invalid resize
-or application input. Retain last coherent frame clipped/padded until replacement
-is applied/painted. Coalesce only unsent intent, never submitted outcomes.
-The [communication decision](https://github.com/jackgeek/climon2/issues/66) owns
-the shared rules.
-[Interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign
-exact types, results, errors, and executable examples. Numerical budgets belong to
-[operational limits](../../monitor-operational-limits.md#queues-and-transfers).
+Only the selected [controller](../../../GLOSSARY.md#attachment-and-control)
+receives monitor resize, including before [restoration](../../../GLOSSARY.md#restoration-and-presentation)
+[readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts).
+[Host](../../../GLOSSARY.md#sessions) desire excludes the top row; effective daemon dimensions remain
+authoritative. Background grants/menu opening never imply resize; a real host
+resize still updates selected control under overlays. Too-small space sends no
+invalid geometry. See [terminal geometry](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness).
 
-The [agreed wire Resize](../daemon-client/request-resize.md) uses current period
-and [restoration IDs](../../../GLOSSARY.md#protocol-and-plugin-concepts) with requested geometry. Its acceptance result is distinct
-from actual Geometry/restoration events; no native layout is implied.
+Local admission copies/queues only; recheck current authority at execution.
+Known stale work rejects explicitly; uncertain effects are indeterminate, never
+replayed. `CM1_RESIZE_ACCEPTED` has no payload and proves neither final geometry
+nor applied/painted restoration. Observe [Geometry](event-geometry.md) and
+restoration separately. See [wire Resize](../daemon-client/request-resize.md),
+[ownership/errors](core-v1.md#function-calls-and-ownership) and
+[limits](../../monitor-operational-limits.md).
+[#63](https://github.com/jackgeek/climon2/issues/63) owns geometry/application;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

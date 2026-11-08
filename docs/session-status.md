@@ -30,8 +30,8 @@ Use the [domain glossary](../GLOSSARY.md), [technical terms](protocol/TERMS.md),
 and [protocol reference](protocol/README.md) with this document. The
 [daemon contract](https://github.com/jackgeek/climon2/issues/67),
 [monitor-client communication](https://github.com/jackgeek/climon2/issues/66),
-and [interface schemas](https://github.com/jackgeek/climon2/issues/71) still own
-exact messages, fields, compatibility, validation, and examples.
+and [native revision 1](protocol/monitor-client/core-v1.md) own
+the agreed exact messages, fields, compatibility, validation and examples.
 
 ## Events and two FSMs
 
@@ -359,8 +359,9 @@ This metadata is not live terminal-content mirroring and never grants control.
 Do not forward raw OSC sequences into outer terminals for interpretation.
 The [agreed wire reference](protocol/daemon-client/core-v1.md) specifies
 structured schemas, capabilities, ordering/correlation, source normalization
-and retention of current progress. Native declarations remain #71 and
-numeric queue/assembly limits #69.
+and retention of current progress. [Native declarations](protocol/monitor-client/client-v1.h)
+and [numeric queue/assembly limits](monitor-operational-limits.md) are also
+agreed, not implemented.
 Implementing progress [UI](protocol/TERMS.md#ui) is not part of this revision.
 
 ## Viewing is not merely control
@@ -423,7 +424,8 @@ acknowledgement and clear to null; timestamps are not identities.
 Atomic [Initial metadata](protocol/daemon-client/event-initial-metadata.md)
 follows Open response, then changes are gap-free. Final transition is carried by
 [Command final](protocol/daemon-client/event-command-final.md), not duplicated
-as Status changed. Native representations remain #71.
+as Status changed. [Native shared values](protocol/monitor-client/core-v1.md#shared-values)
+map these without competing timestamp/episode identities.
 
 Order session rows by:
 
@@ -617,7 +619,8 @@ concurrent shutdown, truthful Leave/closure/outcome/cleanup/join evidence,
 bounded whole-process fail-stop and headless lifetime, all unimplemented.
 The [operational specification](monitor-operational-limits.md) now agrees
 numerical budgets/rate limits/retry intervals/retention (#69), not implemented.
-Native declarations (#71) and final automated acceptance (#62) remain open.
+[Native declarations](protocol/monitor-client/core-v1.md) are agreed in #71;
+real-library runtime evidence and final automated acceptance (#62) remain future work.
 Terminal application is now agreed in the [#63 contract](protocol/terminal-integration.md),
 not implemented; its required real-monitor-host evidence includes history
 replacement, coherent resize, supported keys/mouse/paste, host/application focus,

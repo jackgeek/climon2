@@ -1,62 +1,46 @@
-# Display update
+# Display
 
-**Status:** agreed exact-terminal-byte representation and communication requirements, not implemented; native declarations pending #71.
-See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
-and [technical terms](../TERMS.md).
+**Status: agreed revision-1 specification, not implemented.**
+The [client](../../../GLOSSARY.md#sessions) delivers ordered terminal
+[bytes](../TERMS.md#byte) to the [monitor](../../../GLOSSARY.md#sessions).
+Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and
+[terms](../TERMS.md).
 
-The [client](../../../GLOSSARY.md) delivers ordered updates to the
-[monitor](../../../GLOSSARY.md), identifying their
-[control period](../../../GLOSSARY.md) and any [restoration](../../../GLOSSARY.md).
-[Controlling](../../../GLOSSARY.md) clients maintain screens even in the background. [Revoked](../../../GLOSSARY.md) clients
-do not provide live core read-only mirroring; restoration brings the view
-current on regaining control. [Plugin](../../../GLOSSARY.md) status is independent of screen access.
+## Schema and example
 
-[Daemon title updates](event-title.md) and
-[session status](../../../GLOSSARY.md#status-and-attention) reports are core data independent of
-screen access. Supported updates reach passive/background/revoked clients
-without display scraping or implementing plugins.
-See [status delivery](event-session-status.md).
+`CM1_DISPLAY` / `data.display` carries [period](../../../GLOSSARY.md#attachment-and-control)/
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts) and nonempty
+exact bytes, scoped by record [generation](../TERMS.md#connection-generation). This is not the wire binary header or
+cross-release terminal cells. See [header](client-v1.h),
+[values](core-v1.md#shared-values) and [mapping](core-v1.md#events-and-ordering).
 
-The monitor retains a per-session `climon2-vt` model and bounded local scrollback
-for [disconnected inspection](../../session-status.md#connection-loss-and-retained-terminal-views).
-Cached content is explicitly stale/read-only, not a continuation of live
-mirroring; reconnection alone does not make it current.
+```c
+static const uint8_t bytes[] = {0x00, 0xff, 0x41};
+cm1_record example = {0};
+example.tag = CM1_DISPLAY;
+example.generation = 1;
+example.data.display = (cm1_display){{2, 3}, {bytes, sizeof bytes}};
+(void)example;
+return (cm1_call){0};
+```
 
-Ratatui paints read-only Rust views of the monitor's own per-session `climon2-vt`.
-These views are planned: current `climon2-vt` exposes no public cells and is
-daemon-only. Never write session bytes directly to the host or emit duplicate
-parser query replies. The daemon remains the sole query authority.
+Core support; only controllers receive live bytes, including background
+controllers. Passive/revoked metadata is not screen mirroring.
+Restoration chunks occur between matching begin/complete; live chunks use current
+authority afterward. No old-authority Display follows invalidation.
+Preserve arbitrary bytes and order, including [NUL](../TERMS.md#nul)/invalid
+[UTF-8](../TERMS.md#unicode-and-utf-8); bounded chunks
+cannot silently alter/drop data.
 
-Never infer control, [readiness](../../../GLOSSARY.md), or daemon acceptance by scraping terminal [bytes](../TERMS.md#byte).
-Preserve arbitrary exact ordered display bytes, including invalid
-[UTF-8](../TERMS.md#unicode-and-utf-8).
-Use bounded transfers and [backpressure](../TERMS.md#backpressure), not silent
-loss of required updates or unbounded snapshot allocation.
-
-The [agreed terminal contract](../terminal-integration.md) selects exact terminal
-bytes, not native cross-release cells. Monitor-mode daemon bytes are canonically
-serialized at effective session geometry, including background grants; parse at
-those dimensions and paint local margins. Ordinary attach is unchanged.
-The [shared communication contract](../README.md#shared-in-process-communication-contract)
-and [semantic examples](../README.md#semantic-examples), agreed in
-[#66](https://github.com/jackgeek/climon2/issues/66), require tagged [C-compatible](../TERMS.md#c-abi)
-records, literal binary preservation, and immutable library-owned drain objects
-released through the same library. There is one causal
-[response](../TERMS.md#response)/[event](../TERMS.md#event) stream;
-full queues backpressure ordinary production and socket reading rather than
-lose required updates. Bounds include bytes, records, and unreleased deliveries.
-Connection loss does not refresh the retained monitor-owned
-[virtual terminal](../../../GLOSSARY.md#sessions); input still needs fresh
-control/restoration/application after reconnect.
-[Interface schemas](https://github.com/jackgeek/climon2/issues/71) must specify
-exact native types, encodings, error codes, and executable examples. Chunk
-boundaries never change byte order; numerical transfer budgets remain #69.
-[Operational limits](../../monitor-operational-limits.md#queues-and-transfers) specifies numerical
-budgets; no binary [frame](../TERMS.md#frame) maximum is assigned.
-
-[Wire Display](../daemon-client/event-display.md) is now specified separately:
-a 16-byte period/restoration header followed by nonempty exact binary bytes.
-The native record carries the exact bytes with mapped authority, not that wire
-header as its C layout. Complete restoration replaces the model/history
-transactionally; apply before Ready and coherently paint before selected input.
-No old-authority Display crosses a newer begin or revocation.
+Parse canonical monitor bytes at effective session dimensions into monitor-owned
+[virtual terminal](../../../GLOSSARY.md#sessions), never write them directly to
+[host](../../../GLOSSARY.md#sessions) or emit duplicate terminal-query replies.
+The daemon is application-query authority. Stage/replace whole model/history
+transactionally; apply before Ready and paint before selected Input.
+Disconnected retained cache stays explicitly stale/read-only.
+See [wire Display](../daemon-client/event-display.md),
+[terminal contract](../terminal-integration.md),
+[limits](../../monitor-operational-limits.md#queues-and-transfers) and
+[immutable ownership](core-v1.md#function-calls-and-ownership).
+[#63](https://github.com/jackgeek/climon2/issues/63) owns terminal application;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

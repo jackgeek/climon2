@@ -47,5 +47,6 @@ membership registered. Record accepted passive deregistration/deliberate detach
 separately from closure, final client outcome, worker cleanup and thread join.
 A lost response stays unconfirmed/indeterminate and is not replayed.
 Stalled cleanup uses bounded whole-process failure, not false Leave/join success.
-Numerical limits/deadlines remain #69; native declarations #71 and final
-acceptance #62 remain open. Related: [Kill](request-kill.md).
+[Numerical limits/deadlines](../../monitor-operational-limits.md) and
+[native declarations](../monitor-client/core-v1.md) are agreed, unimplemented;
+final acceptance #62 remains open. Related: [Kill](request-kill.md).

@@ -366,8 +366,8 @@ must progress independently. No required-record loss is excused by congestion.
 
 ## Remaining owners and evidence
 
-[#71](https://github.com/jackgeek/climon2/issues/71) owns complete native
-declarations, tags/layouts, calls, native errors and executable examples.
+[#71](https://github.com/jackgeek/climon2/issues/71) publishes complete
+[native declarations, calls, errors and examples](../monitor-client/core-v1.md).
 Map the wire to the public interface; do not copy JSON or wire IDs as an ABI.
 The [#63 terminal contract](../terminal-integration.md) owns rendering/application/
 resize semantics and optional Focus; [operational limits](../../monitor-operational-limits.md) supplies numeric limits, deadlines
@@ -391,6 +391,6 @@ The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automat
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent
 cleanup/fail-stop, passive recovery and existing CLI kill of future headless
 sessions. These are future tests, not conformance/performance claims. Final
-acceptance #62 and native declarations #71 remain open. Numerical budgets are
+acceptance #62 remains open; native declarations are agreed in #71. Numerical budgets are
 agreed in [operational limits](../../monitor-operational-limits.md), not implemented.
 Forwarding/security implementation remains deferred.

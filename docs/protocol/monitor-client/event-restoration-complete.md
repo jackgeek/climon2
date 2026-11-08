@@ -1,40 +1,41 @@
 # Restoration completion
 
-**Status:** agreed communication requirements; interface [schema](../TERMS.md#schema) unresolved, not implemented.
-See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
-and [technical terms](../TERMS.md).
+**Status: agreed revision-1 specification, not implemented.**
+The [client](../../../GLOSSARY.md#sessions) reports complete
+[restoration](../../../GLOSSARY.md#restoration-and-presentation) delivery to the
+[monitor](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),
+[glossary](../../../GLOSSARY.md) and [terms](../TERMS.md).
 
-The [client](../../../GLOSSARY.md) reports completion after the ordered updates
-for the [restoration](../../../GLOSSARY.md) identified at
-[start](event-restoration-start.md), in the same
-[control period](../../../GLOSSARY.md).
+## Schema and example
 
-Receiving completion is not enough: the [monitor](../../../GLOSSARY.md) must
-apply the complete current restoration before enabling application input.
-Transactionally replace the complete model/history; apply before wire Ready,
-without needing selection or paint for background models. Selected application
-input additionally waits for a coherent current painted target in usable space.
-There is no union/dedup with older history, which may be discarded on replacement.
-See the [terminal barriers](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness).
-Open or [takeover](../../../GLOSSARY.md) acceptance cannot substitute for this barrier. [Revocation](../../../GLOSSARY.md) or
-a newer restoration invalidates earlier [readiness](../../../GLOSSARY.md);
-obsolete completion must not enable input.
+`CM1_RESTORATION_COMPLETE` / `data.barrier` has nonzero
+[period](../../../GLOSSARY.md#attachment-and-control)/
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts), scoped by
+record [generation](../TERMS.md#connection-generation).
+No [geometry](../TERMS.md#geometry) or applied flag.
+See [header](client-v1.h), [values](core-v1.md#shared-values) and
+[mapping](core-v1.md#events-and-ordering).
 
-[Terminal integration](../terminal-integration.md) owns agreed application
-mechanics; [interface schemas](https://github.com/jackgeek/climon2/issues/71) still
-owns exact native identity fields, errors, and executable examples.
-The [shared contract](../README.md#shared-in-process-communication-contract)
-and [semantic examples](../README.md#semantic-examples), agreed in
-[#66](https://github.com/jackgeek/climon2/issues/66), preserve causal
-[grant](../../../GLOSSARY.md#attachment-and-control)/start/update/completion order in one
-[response](../TERMS.md#response)/[event](../TERMS.md#event) stream. Completion
-is a receipt barrier, not the monitor's applied barrier. Neither may be reused
-after a changed [connection generation](../TERMS.md#connection-generation).
-Required restoration boundaries cannot be dropped or lossily coalesced.
-[Operational limits](../../monitor-operational-limits.md#deadlines-and-progress) specifies remaining
-deadlines and transfer budgets.
+```c
+cm1_record example = {0};
+example.tag = CM1_RESTORATION_COMPLETE;
+example.generation = 1;
+example.data.barrier = (cm1_barrier){2, 3};
+(void)example;
+return (cm1_call){0};
+```
 
-[Wire Restoration complete](../daemon-client/event-restoration-complete.md)
-identifies period/restoration; matching complete sent and applied is required
-before [Ready](../daemon-client/request-ready.md). A superseded restoration
-gets no fabricated completion. Native declarations remain #71.
+Core support; follows matching begin and all restoration bytes, including empty
+restoration. Superseded/revoked restoration gets no fabricated complete.
+Receipt proves delivery, not monitor application, coherent paint or input Ready.
+Replace whole staged model/history transactionally, then submit
+[Ready](request-ready.md). Background application needs no selection/paint;
+selected Input additionally waits for coherent painted current target.
+No viewing/acknowledgement follows automatically.
+
+See [wire Complete](../daemon-client/event-restoration-complete.md),
+[terminal barriers](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness),
+[ownership/order/errors](core-v1.md#function-calls-and-ownership) and
+[limits](../../monitor-operational-limits.md).
+[#63](https://github.com/jackgeek/climon2/issues/63) owns application;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

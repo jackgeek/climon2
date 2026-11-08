@@ -1,55 +1,45 @@
 # Input
 
-**Status:** agreed semantics; interface [schema](../TERMS.md#schema) unresolved, not implemented.
-See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
-and [technical terms](../TERMS.md).
+**Status: agreed revision-1 specification, not implemented.**
+The [monitor](../../../GLOSSARY.md#sessions) sends real user application
+[bytes](../TERMS.md#byte) through the [client](../../../GLOSSARY.md#sessions).
+Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and
+[terms](../TERMS.md).
 
-The [monitor](../../../GLOSSARY.md) sends literal application
-[bytes](../TERMS.md#byte) only to the selected, [controlling](../../../GLOSSARY.md),
-[ready](../../../GLOSSARY.md) [client](../../../GLOSSARY.md).
-Preserve arbitrary bytes without lossy text conversion. Identify the current
-[control period](../../../GLOSSARY.md); reject stale, revoked, or not-ready input
-explicitly. The monitor must also have applied the complete current
-[restoration](../../../GLOSSARY.md) and painted a coherent ready current target.
-Modal [UI](../TERMS.md#ui), stale inspection and too-small targets exclude application input;
-nonmodal [toast](../TERMS.md#toast) coverage may clear
-[viewing](../../../GLOSSARY.md#status-and-attention) while retaining ready keyboard input.
+## Schema and example
 
-Never queue input for a future [controller](../../../GLOSSARY.md#attachment-and-control)
-or send it to a background client.
-Do not interpret monitor-routed bytes a second time as client shortcuts.
-Success means accepted for forwarding, not consumed by the application.
-[Take control](request-take-control.md) is a separate operation.
+`CM1_INPUT` uses `args.input`: current [generation](../TERMS.md#connection-generation)/
+[period](../../../GLOSSARY.md#attachment-and-control)/
+[restoration](../../../GLOSSARY.md#restoration-and-presentation) and
+nonempty exact binary bytes. See [header](client-v1.h),
+[values](core-v1.md#shared-values) and [Input mapping](core-v1.md#requests-and-result-mapping).
 
-Accepted real user application input, including paste, clears either
-`needs_attention` or `acknowledged` under the
-[daemon](../../../GLOSSARY.md#sessions)
-[attention](../../../GLOSSARY.md#status-and-attention)
-[FSM](../TERMS.md#fsm). Monitor navigation, terminal-query replies, and injected
-work do not count as that user [event](../TERMS.md#event).
-See the [attention rules](../../session-status.md#attention).
+```c
+const uint8_t bytes[] = {0x00, 0xff, 0x41};
+cm1_request request = {0};
+request.tag = CM1_INPUT;
+request.request_id = 10;
+request.args.input = (cm1_input){
+    {generation, period, restoration_id}, {bytes, sizeof bytes}};
+return api->submit(communication, &request);
+```
 
-The [shared contract](../README.md#shared-in-process-communication-contract)
-and [semantic examples](../README.md#semantic-examples) apply: local acceptance
-only validates and queues a copied record. It does not itself clear attention.
-Recheck current [connection generation](../TERMS.md#connection-generation),
-control, restoration, and applied [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts)
-at execution. Known unexecuted
-stale input gets an asynchronous rejection, not silent discard or reassignment.
-Uncertain execution after loss is
-[indeterminate](../TERMS.md#indeterminate-outcome), with no replay on reconnect.
+Submit only for the selected [controller](../../../GLOSSARY.md#attachment-and-control)
+after current restoration application and coherent paint. Preserve arbitrary
+bytes including [NUL](../TERMS.md#nul)/invalid [UTF-8](../TERMS.md#unicode-and-utf-8); no
+second shortcut parser, [host](../../../GLOSSARY.md#sessions) replies or injected work.
+Modal [UI](../TERMS.md#ui)/stale inspection/
+too-small canvas blocks input; nonmodal coverage may retain ready keyboard input.
+The [terminal contract](../terminal-integration.md#transparent-keyboard-and-exact-paste)
+owns key/mouse/paste encoding and stale-gesture draining.
 
-[Input routing](https://github.com/jackgeek/climon2/issues/64) owns literal prefix
-and paste behavior. The [terminal integration contract](../terminal-integration.md#transparent-keyboard-and-exact-paste)
-owns supported cursor/keypad encoding, exact paste payload with application
-markers only when its bracketed-paste mode is enabled, translated mouse input,
-and stale gesture/paste draining. Host replies remain monitor-local, never Input;
-application focus uses dedicated non-user [Focus](request-focus.md). The
-[communication decision](https://github.com/jackgeek/climon2/issues/66) owns the
-shared rules above.
-[Interface schemas](https://github.com/jackgeek/climon2/issues/71) must define
-exact native types, error codes, and executable examples.
-[Wire Input](../daemon-client/request-input.md) assigns the binary
-[frame](../TERMS.md#frame) with request/period/restoration header and full-payload
-acceptance; it is not the native layout. Numerical bounds belong to
-[operational limits](../../monitor-operational-limits.md#queues-and-transfers).
+Local acceptance copies bytes but does not clear [attention](../../../GLOSSARY.md#status-and-attention).
+Recheck authority at execution; explicit rejection for known stale work,
+[indeterminate](../TERMS.md#indeterminate-outcome) for uncertain
+effects, never replay/retarget. `CM1_INPUT_ACCEPTED` reports full accepted byte
+count, not command consumption. Accepted real input clears daemon pending or
+acknowledged attention; Focus/navigation never does.
+See [wire Input](../daemon-client/request-input.md) and
+[admission/errors/ownership](core-v1.md#function-calls-and-ownership).
+[#63](https://github.com/jackgeek/climon2/issues/63) owns routing/application;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

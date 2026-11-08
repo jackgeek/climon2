@@ -6,7 +6,7 @@ within [the monitor planning map](https://github.com/jackgeek/climon2/issues/57)
 It amends the earlier selector/history and session-management scope decisions.
 Numerical deadlines, retry intervals and retention budgets are specified in
 [operational limits](monitor-operational-limits.md); complete native
-declarations belong to [interface schemas](https://github.com/jackgeek/climon2/issues/71).
+declarations are agreed in [revision 1](protocol/monitor-client/core-v1.md).
 
 Read the [domain glossary](../GLOSSARY.md), [status mechanics](session-status.md),
 [selector](monitor-selector.md), [terminal contract](protocol/terminal-integration.md),
@@ -237,5 +237,5 @@ manual screenshots or assertions about this documentation:
 
 These obligations supplement [final monitor acceptance](https://github.com/jackgeek/climon2/issues/62).
 Exact budgets are in [operational limits](monitor-operational-limits.md);
-complete native schemas remain in their owning ticket. No
+complete native schemas are published in [revision 1](protocol/monitor-client/core-v1.md). No
 production test conformance is claimed by this specification.

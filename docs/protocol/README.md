@@ -11,9 +11,9 @@ behavior.
 
 Use the [domain glossary](../../GLOSSARY.md) for climon2 concepts and the
 [technical terms](TERMS.md) for protocol vocabulary. Each operation page links
-to its owning specification. Descriptive filenames do not assign
-native function names or layouts. The daemon wire pages do assign exact
-agreed codes and schemas, separately from current implementation.
+to its owning specification. The [native header](monitor-client/client-v1.h)
+assigns complete revision-1 declarations; the [native contract](monitor-client/core-v1.md)
+and daemon wire pages assign exact agreed schemas, separately from implementation.
 
 ## Status and scope
 
@@ -21,22 +21,24 @@ agreed codes and schemas, separately from current implementation.
 |---|---|---|
 | [Client](../../GLOSSARY.md#sessions) to session daemon: [hello handshake](../../GLOSSARY.md#sessions) | Implemented and frozen | [Request](daemon-client/hello-request.md) and [reply](daemon-client/hello-reply.md). |
 | Client to session daemon: after hello | Current private protocol implemented; separate wire revision 1 agreed, not implemented | [Decision boundary](daemon-client/post-hello.md), [complete wire rules](daemon-client/core-v1.md). |
-| Monitor to [client library](../../GLOSSARY.md#sessions) | Embedding and communication design agreed, not implemented; complete declarations unresolved | [Library embedding](library-embedding.md), [shared communication contract](#shared-in-process-communication-contract), and [interface schemas](https://github.com/jackgeek/climon2/issues/71). |
+| Monitor to [client library](../../GLOSSARY.md#sessions) | Complete native revision-1 specification agreed, not implemented | [Library embedding](library-embedding.md), [native contract/header/examples](monitor-client/core-v1.md), and [shared communication contract](#shared-in-process-communication-contract). |
 | [Client executable](../../GLOSSARY.md#sessions) to same-release library | Same-release loading agreed, not implemented | [Library embedding](library-embedding.md). |
 | Monitor to [host](../../GLOSSARY.md#sessions) | Program-status advertising and toast bell agreed, not implemented | [Reports and bell](#monitor-to-host-status-and-bell). |
 
-The embedding design selects a versioned [C ABI](TERMS.md#c-abi), but its
-complete declarations and valid call examples are not yet published.
+The embedding design selects a versioned [C ABI](TERMS.md#c-abi).
+Complete [declarations](monitor-client/client-v1.h) and
+[compilable examples](monitor-client/examples.c) are published as a specification.
 Communication uses tagged C-compatible records, not [JSON](TERMS.md#json),
-a pipe protocol, or serialized [envelopes](TERMS.md#envelope). Complete
-native [schemas](TERMS.md#schema) remain pending. No in-process
-[framing](TERMS.md#frame), [frame](TERMS.md#frame) limit, or complete cross-release declarations
-are assigned by these pages.
+a pipe protocol, or serialized [envelopes](TERMS.md#envelope).
+Native [schemas](TERMS.md#schema) have fixed tags, fields, ownership and lifetimes.
+There is no in-process [framing](TERMS.md#frame) or frame limit.
+Revision layouts/semantics are frozen independently of release identity.
 The existing daemon hello exchange is unaffected.
 
 The [operational-limits specification](../monitor-operational-limits.md) supplies
 agreed configurable queue/transfer/payload budgets, admission, deadlines, retry
-and required measurements. It adds no native framing or completed declarations.
+and required measurements. The native contract maps library-applicable limits
+to explicit startup fields, without adding framing.
 Resource-blocked sessions stay visible; pressure shortens captured history to a
 protected recent page, never silently evicts clients or erases that page.
 These requirements remain unimplemented.
@@ -101,7 +103,8 @@ Each client has its own connection and per-session state. The
 revision negotiation, thread ownership, memory rules, and library lifetime.
 The [shared communication contract](#shared-in-process-communication-contract)
 selects bounded per-instance queues and explicit ownership, without callbacks
-into monitor application code. Exact declarations remain open.
+into monitor application code. [Exact declarations](monitor-client/client-v1.h)
+and [lifetime calls](monitor-client/core-v1.md#function-calls-and-ownership) are agreed.
 No client may repurpose process-global arguments, signals, or
 [standard streams](TERMS.md#standard-streams) as though it owned the monitor.
 
@@ -238,7 +241,7 @@ metadata through clients to subscribers, including background/noncontrolling
 ones. They are distinct from terminal display updates and do not authorize
 screen mirroring. Their exact daemon wire
 [schemas and capabilities](daemon-client/core-v1.md) are agreed, not implemented;
-native declarations remain #71. [UI](TERMS.md#ui) terminal behavior is now
+native declarations are in [revision 1](monitor-client/core-v1.md). [UI](TERMS.md#ui) terminal behavior is now
 specified in the [terminal contract](terminal-integration.md); selector layout
 is in the [selector specification](../monitor-selector.md), and lifecycle policy
 in the [lifecycle specification](../monitor-lifecycle.md). All are unimplemented.
@@ -248,7 +251,7 @@ in the [lifecycle specification](../monitor-lifecycle.md). All are unimplemented
 retained control alone is not viewing. Merely being visible does not
 acknowledge attention. The planned [viewing operation](monitor-client/request-viewing.md)
 and [status reports](monitor-client/event-session-status.md) map the agreed wire
-without assigning native declarations. Menus clear this monitor's viewing
+through the [native declarations](monitor-client/client-v1.h). Menus clear this monitor's viewing
 without releasing control/restoration. Only this monitor's own unobstructed
 presentation suppresses its toasts; another viewer does not.
 The [terminal rules](terminal-integration.md) also gate viewing on a live
@@ -324,7 +327,8 @@ metadata; future plugin implementation remains deferred.
 **Status:** [communication design agreed in #66](https://github.com/jackgeek/climon2/issues/66),
 not implemented. This section owns the common rules for every monitor-client
 operation and delivery. The [embedding contract](library-embedding.md) remains
-authoritative for loading and lifetime. Revision 1 is not published.
+authoritative for loading and lifetime. [Native revision 1](monitor-client/core-v1.md)
+publishes complete declarations without claiming an implementation.
 
 ### Execution and representation
 
@@ -347,12 +351,12 @@ Records use a [discriminator](TERMS.md#discriminator), fixed-width values,
 and length-delimited buffers across the C ABI, never Rust layouts or unbounded
 C strings. Binary fields preserve every [byte](TERMS.md#byte), including
 [NUL](TERMS.md#nul) and invalid [UTF-8](TERMS.md#unicode-and-utf-8).
-[Native path](TERMS.md#native-path) and text encodings
-remain for #71; [terminal representation/application](terminal-integration.md)
-is agreed, while numeric chunk/transfer budgets remain #69.
-Exact tags, widths, required/optional fields, defaults, unknown-field handling,
-result codes, and declarations remain for #71. Unknown-field handling must not
-silently convert invalid or unsupported core tags into extensions.
+[Native paths](TERMS.md#native-path) use absolute Unix bytes; text uses validated
+UTF-8. [Native shared values](monitor-client/core-v1.md#shared-values) fix widths,
+presence and identity representations; [terminal representation/application](terminal-integration.md)
+and [numerical budgets](../monitor-operational-limits.md) retain their owners.
+Exact tags, fields and results are in the header. Invalid/unsupported core tags
+reject explicitly, never become extensions.
 
 This in-process contract uses no checksum. Copies, immutable
 deliveries, explicit lengths, and ownership address its relevant data-lifetime
@@ -375,8 +379,9 @@ objects explicitly prevent successful destruction rather than leaving dangling
 data. Thread-safe handles do not permit concurrent destruction: stop new calls
 and release deliveries before dedicated-thread cleanup completes. A closed
 stream or final session event does not prove that the instance is cleaned up,
-the thread returned, or the monitor joined it. Exact destruction/release
-declarations remain for #71; shutdown coordination follows the
+the thread returned, or the monitor joined it. Exact [destruction/release
+calls](monitor-client/core-v1.md#function-calls-and-ownership) keep these stages distinct;
+shutdown coordination follows the
 [agreed lifecycle](../monitor-lifecycle.md#coordinated-shutdown).
 Prefix+x and catchable signals stop new input/acquisition/discovery/retries and
 request every owned instance's shutdown concurrently through independent control
@@ -421,7 +426,8 @@ Locally rejected submissions do not consume an ID. The monitor serializes
 per-instance submissions when allocating IDs; instances are independent.
 A [high-water mark](TERMS.md#high-water-mark), not an unbounded used-ID set,
 is sufficient. Exhaustion explicitly requires a new instance; exact width
-remains for #71. IDs are not [idempotency keys](TERMS.md#idempotency-key) and
+is nonzero `uint64_t` in [revision 1](monitor-client/core-v1.md#shared-values).
+IDs are not [idempotency keys](TERMS.md#idempotency-key) and
 provide no retry mechanism.
 
 Every accepted [request](TERMS.md#request) has one correlated eventual success/failure outcome
@@ -492,7 +498,10 @@ episode and final-outcome identities; UTC timestamps are not unique identities.
 This gap-free metadata barrier is independent of control, readiness, and
 selection, and never makes stale terminal content fresh. Exact event forms,
 timestamps, identities, and daemon mapping are specified by
-[wire revision 1](daemon-client/core-v1.md); native representation remains #71.
+[wire revision 1](daemon-client/core-v1.md) and
+[native revision 1](monitor-client/core-v1.md).
+Native recovery uses a fresh caller-assigned generation/instance only after prior
+cleanup/join, never an implicit reconnect inside an existing instance.
 The [lifecycle contract](../monitor-lifecycle.md#history-and-passive-recovery)
 owns exponential passive recovery, recreation and cleanup. Numerical schedules
 and budgets remain #69. Pause new retry scheduling during shutdown or confirmed
@@ -502,8 +511,8 @@ Kill result without replay.
 ### Semantic examples
 
 These are valid behavioral timelines, not assigned calls or serialized records.
-Every operation page inherits them. Executable C call examples and schema
-fixtures cannot be published before #71 completes the declarations.
+Every operation page inherits them. [C examples](monitor-client/examples.c)
+and each core message page now show valid native records/calls.
 
 | Situation | Required observations |
 |---|---|
@@ -537,9 +546,10 @@ These are specification requirements, not checks passed by current code:
 - Representative input/display latency, event throughput, memory use, and
   global responsiveness measurements under normal operation, load, and stalls.
   Numerical thresholds are in the [agreed operational limits](../monitor-operational-limits.md).
-- Exact valid executable examples and schema fixtures in #71 after #67, #63,
-  #61, and #69's agreed contracts. Documentation-only checks are not
-  evidence of a working ABI.
+- Compile the [native examples and layout assertions](monitor-client/check.py)
+  for both macOS ABIs. These declaration checks are automated here, not evidence
+  of working libraries. [Required runtime evidence](monitor-client/core-v1.md#required-runtime-evidence)
+  must use real packaged libraries.
 
 ### Remaining decision boundaries
 
@@ -550,16 +560,16 @@ contracts and remaining open decisions are distinguished below:
 | Owner | Agreed contract or unresolved details |
 |---|---|
 | [Daemon wire #67](https://github.com/jackgeek/climon2/issues/67) | Agreed [wire revision 1](daemon-client/core-v1.md), not implemented. No remaining schema decision is delegated back to #67. |
-| [Terminal integration #63](https://github.com/jackgeek/climon2/issues/63) | Agreed [terminal contract](terminal-integration.md), including canonical monitor geometry and optional core Focus; not implemented. Numeric transfer budgets remain #69 and complete native declarations #71. |
+| [Terminal integration #63](https://github.com/jackgeek/climon2/issues/63) | Agreed [terminal contract](terminal-integration.md), including canonical monitor geometry and optional core Focus; not implemented. Numeric transfer budgets and native declarations are agreed in #69/#71. |
 | [Lifecycle #61](https://github.com/jackgeek/climon2/issues/61) | Agreed [lifecycle contract](../monitor-lifecycle.md), not implemented: exponential passive recovery, concurrent truthful shutdown, bounded whole-process fail-stop, Delete/removal and headless lifetime. Numerical schedules remain #69; no general native-crash survival guarantee. |
 | [Operational limits #69](https://github.com/jackgeek/climon2/issues/69) | Agreed [numerical specification](../monitor-operational-limits.md), not implemented: configurable byte/record/object and aggregate budgets, progress/stall deadlines, fair admission, protected recent history, payload/transfer limits and measurement thresholds. |
-| [Interface schemas #71](https://github.com/jackgeek/climon2/issues/71) | Exact native declarations, record fields/tags/widths, handle and release operations, descriptor exposure, native capability reporting, timestamp/identity encodings, native error catalog, schema fixtures, and valid executable examples after the remaining decisions. It remains blocked; agreed wire focus-v1 and terminal semantics are not delegated back for redesign. |
+| [Interface schemas #71](https://github.com/jackgeek/climon2/issues/71) | Agreed [native revision 1](monitor-client/core-v1.md), header, operation/event schemas, ownership/cleanup calls, errors, limits/measurements and C examples. Declaration checks do not replace future real same/mixed-release compatibility/rejection evidence. |
 
 ## Compatibility, errors, and limits
 
 The agreed library design uses a multi-instance, cross-release-safe embedding
-interface and the communication contract above; complete declarations remain
-to be specified.
+interface and the communication contract above;
+[complete revision-1 declarations](monitor-client/client-v1.h) are specified.
 Exact-release executable/library matching alone is not sufficient when a monitor
 loads libraries from several releases simultaneously. Never substitute a
 different installed release or
@@ -578,7 +588,9 @@ Use bounded per-client and monitor-wide queues with
 monitor actions. Numerical budgets, startup concurrency, deadlines, and
 admission/exhaustion policies are specified in
 [Monitor operational limits](../monitor-operational-limits.md).
-No monitor-client frame maximum or request-ID width is currently assigned.
+There is no monitor-client frame maximum. Request IDs are nonzero `uint64_t`;
+lengths/identities, errors, rejection and incompatible-revision rules are in the
+[native contract](monitor-client/core-v1.md).
 
 ## Future plugin authors
 
@@ -588,7 +600,9 @@ without interpreting plugin-owned [payloads](TERMS.md#payload) as core commands.
 Support must be explicitly negotiated by
 [namespaced name](TERMS.md#namespaced-name) and revision, including relay support.
 Required support must be checked before control acquisition; missing optional
-support disables that extension. Exact negotiation schemas remain unresolved.
+support disables that extension. Exact plugin negotiation schemas remain deferred;
+revision 1 publishes no extension calls/tags. A separately specified revision
+must add them explicitly, without delaying core implementation.
 These future extension requirements do not require implementing plugins now.
 Core title/status and structured notification/progress delivery do not use
 plugin negotiation.
@@ -625,19 +639,25 @@ alone do not provide retry safety or exactly-once execution.
 
 ## Operation and event index
 
-### Monitor-client: semantic requirements; interface schemas unresolved
+### Monitor-client: agreed native revision 1, not implemented
 
 All entries inherit the [shared communication contract](#shared-in-process-communication-contract)
-and its semantic examples. They describe agreed but unimplemented in-process
-interactions, not assigned calls or wire messages. Pages must gain complete
-schemas and executable examples when #71 completes the interface.
+and its semantic examples. The [header](monitor-client/client-v1.h),
+[complete native rules](monitor-client/core-v1.md) and per-page C examples
+assign calls/records, not serialized messages. Helpers for create/run/destroy,
+shutdown/handle release, notification and measurements are indexed in
+[function calls and ownership](monitor-client/core-v1.md#function-calls-and-ownership).
 
 | Operation or event | Direction | Purpose |
 |---|---|---|
 | [Request](monitor-client/request.md) | Monitor -> client; extensions either way | Identify and correlate work. |
 | [Response](monitor-client/response.md) | Opposite its request | Report one explicit outcome. |
 | [Event](monitor-client/event.md) | Client -> monitor; extensions either way | Report unsolicited changes. |
+| [Initial metadata](monitor-client/event-initial-metadata.md) | Client -> monitor | Atomic availability/status barrier before gap-free changes. |
 | [Compatibility check](monitor-client/request-hello.md) | Monitor <-> library | Validate release identity and embedding support. |
+| [Create](monitor-client/request-create.md) | Monitor owner thread -> library | Copy validated startup/limits and create local instance handles. |
+| [Shutdown](monitor-client/request-shutdown.md) | Monitor -> library control handle | Independent nonblocking shutdown intent. |
+| [Resource/progress snapshot](monitor-client/request-snapshot.md) | Monitor <-> library | Observe allocation/queue/resource and progress measurements. |
 | [Open](monitor-client/request-open.md) | Monitor -> client | Verify daemon support and establish the intended connection role. |
 | [Input](monitor-client/request-input.md) | Monitor -> client | Forward literal application bytes. |
 | [Resize](monitor-client/request-resize.md) | Monitor -> client | Request controlling geometry. |
@@ -660,6 +680,7 @@ schemas and executable examples when #71 completes the interface.
 | [Progress metadata](monitor-client/event-progress.md) | Daemon core -> client -> subscriber | Relay progress information without implying attention or control. |
 | [Session end](monitor-client/event-session-ended.md) | Client -> monitor | Report command/session completion. |
 | [Client outcome](monitor-client/event-outcome.md) | Client -> monitor, when possible | Report client completion or failure. |
+| [Diagnostic](monitor-client/event-diagnostic.md) | Client -> monitor | Explicit inert native/daemon/transport error metadata. |
 | [Extension event](monitor-client/event-extension.md) | Either endpoint, through client | Report negotiated plugin information regardless of control. |
 
 ### Daemon-client: current frozen hello
@@ -718,14 +739,15 @@ Examples are wire bodies, not native declarations or conformance evidence.
   title/status reporting; not implemented, exact schemas still pending.
 - [Define version-matched client library loading and lifetime](https://github.com/jackgeek/climon2/issues/65):
   agreed [multi-instance embedding, compatibility, and lifetime](library-embedding.md);
-  not implemented, complete declarations still pending.
+  not implemented; [complete native declarations](monitor-client/client-v1.h) are agreed.
 - [Define monitor-client communication contract](https://github.com/jackgeek/climon2/issues/66):
   agreed, unimplemented queues, tagged records, ownership, notification,
   correlation/order, validation, compatibility, bounded progress, core metadata,
   and future evidence requirements above; plugin implementation remains deferred.
 - [Complete monitor-client interface schemas](https://github.com/jackgeek/climon2/issues/71):
-  remains open against the agreed numerical limits; owns exact fields,
-  calls/events, results, errors, and examples against the agreed lifecycle.
+  agreed [native revision 1](monitor-client/core-v1.md), exact fields/calls/events,
+  results/errors, ownership/cleanup/measurements and examples. Actual runtime
+  interoperability and final monitor acceptance remain future evidence.
 - [Freeze daemon-client communication contract](https://github.com/jackgeek/climon2/issues/67):
   agreed [revision-1 post-hello wire](daemon-client/core-v1.md), passive
   succession, metadata, outcomes and validation; no implementation claim.

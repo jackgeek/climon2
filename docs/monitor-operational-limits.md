@@ -15,8 +15,8 @@ Read the [glossary](../GLOSSARY.md), [protocol overview](protocol/README.md),
 [daemon wire](protocol/daemon-client/core-v1.md),
 [terminal integration](protocol/terminal-integration.md),
 [status mechanics](session-status.md), [selector](monitor-selector.md), and
-[lifecycle](monitor-lifecycle.md) together. Complete native declarations remain
-with [interface schemas](https://github.com/jackgeek/climon2/issues/71);
+[lifecycle](monitor-lifecycle.md) together. Complete native declarations are
+specified in [native revision 1](protocol/monitor-client/core-v1.md);
 [final acceptance](https://github.com/jackgeek/climon2/issues/62) incorporates
 the implementation obligations below.
 
@@ -57,7 +57,7 @@ diagnostics explicitly. Classification and peer visibility are:
 |---|---|---|
 | Fixed existing contract | Hello deadline; discovery cadence; activity timing; [counter](protocol/TERMS.md#counter) ranges; supported session geometry | Published frozen/agreed contracts; configuration cannot override them. |
 | Configurable local ceiling on daemon wire | Request/receive frame ceiling, text/parser budgets | Read the local snapshot. Honor the daemon's advertised request/server frame limits in hello; do not add unagreed hello fields. |
-| Configurable native instance contract | Queue bytes/records, payloads, outstanding operations/deliveries | Monitor supplies validated limits at creation; the library reports accepted/effective limits before ordinary work. #71 assigns declarations and failure codes. |
+| Configurable native instance contract | Queue bytes/records, payloads, outstanding operations/deliveries | Monitor supplies validated limits at creation; the library reports accepted/effective limits before ordinary work. [Revision 1](protocol/monitor-client/core-v1.md#startup-limits-and-resources) assigns declarations, qualified resources and failure codes. |
 | Configurable monitor-local budget | Aggregate memory, local history, rendering, discovery, admission, retry and deadlines | Startup configuration and explicit local diagnostics, not daemon negotiation. |
 | Qualified resource requirement | Stacks, workers, descriptors, shared release resources, engine allocations | Release/engine qualification plus measured requirements; reserve before admitting work. |
 
@@ -421,8 +421,10 @@ Budgeting does not invent plugin configuration or alter the detector machines.
 
 Preserve wire [counter](protocol/TERMS.md#counter) values 1 through
 18,446,744,073,709,551,615, without wrap/reuse.
-Native request IDs strictly increase over the instance lifetime; #71 assigns
-matching representations. A rejected local submission consumes no ID.
+Native request IDs strictly increase over the instance lifetime;
+[revision 1](protocol/monitor-client/core-v1.md#shared-values) assigns matching
+`uint64_t` representations and fresh-attempt generation scopes.
+A rejected local submission consumes no ID.
 Before effects, reject work that requires an exhausted new counter.
 
 Retire/replace the relevant correlation connection/instance only after safe
@@ -436,8 +438,9 @@ Use existing wire operational/fatal codes as appropriate: `resource_limit` for
 exhausted resources, `invalid_argument` for invalid arguments, `frame_too_large`
 for oversized frames, `io_error` for transport failure and `cleanup_failed` for
 failed daemon cleanup. Fatal error delivery on broken transport is best effort.
-#71 must assign distinct native/local timeout, queue-full, unsupported-limit,
-cleanup and indeterminate results, rather than pretending all are success.
+[Native errors](protocol/monitor-client/core-v1.md#errors-terminal-evidence-and-cleanup)
+assign distinct local timeout, queue-full, unsupported-limit, cleanup and
+indeterminate results, never success-shaped fallbacks.
 Report affected GUID/release, exhausted budget, effective values and the evidence
 known: rejection, acceptance, daemon response, closure, final outcome, delivery/
 handle release, worker completion and thread join. Do not log session content.

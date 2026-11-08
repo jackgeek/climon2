@@ -1,61 +1,53 @@
-# Control event
+# Control grant and revocation
 
-**Status:** agreed ownership behavior; interface [schema](../TERMS.md#schema) unresolved, not implemented.
-See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
-and [technical terms](../TERMS.md).
+**Status: agreed revision-1 specification, not implemented.**
+The [client](../../../GLOSSARY.md#sessions) reports daemon
+[grants](../../../GLOSSARY.md#attachment-and-control) and
+[revocations](../../../GLOSSARY.md#attachment-and-control) to the
+[monitor](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),
+[glossary](../../../GLOSSARY.md) and [terms](../TERMS.md).
 
-The [client](../../../GLOSSARY.md) reports [grants](../../../GLOSSARY.md) and
-[revocations](../../../GLOSSARY.md) to the [monitor](../../../GLOSSARY.md),
-identifying the applicable [control period](../../../GLOSSARY.md).
-A grant starts [restoration](../../../GLOSSARY.md), not input [readiness](../../../GLOSSARY.md).
-Revocation invalidates readiness and pending restoration; show the
-[placeholder](../../../GLOSSARY.md), not cached content as current.
-There is no connected revoked-cache inspection route, implicit takeover or live
-core mirroring. Disconnected cache is explicitly read-only, overlaying exactly
-`Reconnecting...` while passive recovery is scheduled or active; permanent
-rejection instead shows a disconnected/error overlay. Reconnect removes that
-overlay but leaves the non-controller placeholder until explicit acquisition.
-No prefix+h/prefix+r binding is added. These later
-[lifecycle amendments](../../monitor-lifecycle.md#history-and-passive-recovery)
-are agreed, unimplemented.
+## Schemas and examples
 
-[Hand-back](../../../GLOSSARY.md) may restore background control without
-changing selection. That client resumes screen maintenance but receives no
-monitor application input or resize.
-Grant supplies effective daemon geometry; canonical monitor display/restoration
-uses it even for passive promotion or background hand-back. Apply the complete
-replacement model/history without selection or paint, then report Ready.
-Selected application input additionally waits for coherent paint. See the
-[terminal contract](../terminal-integration.md).
-Core title/status reports continue even without control;
-[plugin](../../../GLOSSARY.md) implementation is deferred.
+`CM1_GRANTED` / `data.granted` has [period](../../../GLOSSARY.md#attachment-and-control)/
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts), effective
+[geometry](../TERMS.md#geometry) and
+reason attach/take-control/hand-back/successor. `CM1_REVOKED` / `data.revoked`
+has period/restoration and takeover/session-ending reason. All IDs are nonzero;
+record [generation](../TERMS.md#connection-generation) scopes them. See [header](client-v1.h),
+[values](core-v1.md#shared-values) and [mapping](core-v1.md#events-and-ordering).
 
-[Viewing](../../../GLOSSARY.md#status-and-attention) is separate from retained control.
-See [viewing reports](request-viewing.md). A grant or
-hand-back alone does not establish a selected, displayed presentation.
-Revocation clears viewing. Explicit selection/takeover can acknowledge
-[attention](../../../GLOSSARY.md#status-and-attention), but merely being visible must
-not automatically acknowledge a new attention request.
+```c
+cm1_record example = {0};
+example.tag = CM1_GRANTED;
+example.generation = 1;
+example.data.granted = (cm1_granted){2, 3, {80, 24}, CM1_SUCCESSOR, 0};
+(void)example;
+return (cm1_call){0};
+```
 
-The [ownership decision](https://github.com/jackgeek/climon2/issues/58) owns these
-rules. The [communication decision](https://github.com/jackgeek/climon2/issues/66)
-owns the agreed [shared contract](../README.md#shared-in-process-communication-contract)
-and [semantic examples](../README.md#semantic-examples). One per-instance
-[FIFO](../TERMS.md#fifo) [response](../TERMS.md#response)/[event](../TERMS.md#event) stream preserves causal grant,
-restoration, revocation, and result order. Deliveries cannot be dropped,
-overwritten, or lossily coalesced under [backpressure](../TERMS.md#backpressure). Identify the current
-[connection generation](../TERMS.md#connection-generation) separately from the
-control period; old authority never transfers across reconnect.
-[Interface schemas](https://github.com/jackgeek/climon2/issues/71) must define
-exact event tags, identity fields, error codes, and executable examples.
-Essential control changes cannot silently disappear through plugin filtering.
+```c
+cm1_record example = {0};
+example.tag = CM1_REVOKED;
+example.generation = 1;
+example.data.revoked = (cm1_revoked){2, 3, CM1_TAKEOVER, 0};
+(void)example;
+return (cm1_call){0};
+```
 
-[Wire grant](../daemon-client/event-control-granted.md) and
-[revocation](../daemon-client/event-control-revoked.md) assign exact authority
-fields and reasons, not native tags. Old authority is invalid immediately,
-without waiting for revocation receipt before a new grant.
-On [controller](../../../GLOSSARY.md#attachment-and-control) departure,
-existing most-recent-control [attachment](../../../GLOSSARY.md#attachment-and-control) hand-back
-precedes newest accepted passive successor promotion. Inheritance does not
-select, resize, send input or acknowledge; promoted attachment membership
-persists after switching/revocation. Committed termination overrides succession.
+Core control [capability](../../../GLOSSARY.md#sessions) is required.
+Grant precedes matching [restoration](../../../GLOSSARY.md#restoration-and-presentation)
+and is not [Ready](../../../GLOSSARY.md#protocol-and-plugin-concepts), selection,
+resize, [viewing](../../../GLOSSARY.md#status-and-attention) or acknowledgement. Passive promotion/
+background hand-back uses canonical effective geometry and may apply/Ready
+without paint. Revocation invalidates readiness/viewing/incomplete restoration;
+membership remains, no live mirroring or connected revoked-cache inspection.
+Old authority is invalid regardless of when the old reader receives revocation.
+
+Required events cannot be lost/coalesced; same-library delivery release owns
+buffers. See [ownership/order](core-v1.md#function-calls-and-ownership),
+[wire Grant](../daemon-client/event-control-granted.md),
+[wire Revocation](../daemon-client/event-control-revoked.md) and
+[terminal/lifecycle rules](../../monitor-lifecycle.md).
+[#67](https://github.com/jackgeek/climon2/issues/67) owns succession;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native schemas.

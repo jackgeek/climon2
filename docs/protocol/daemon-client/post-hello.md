@@ -29,8 +29,8 @@ Every new type has a [message page](../README.md#daemon-client-agreed-wire-revis
 This wire format is not the in-process
 [monitor](../../../GLOSSARY.md#sessions)-client
 [contract](../README.md#shared-in-process-communication-contract).
-Map wire records and IDs into that contract; complete native declarations remain
-[#71](https://github.com/jackgeek/climon2/issues/71).
+Map wire records and IDs through the
+[complete native revision-1 declarations](../monitor-client/core-v1.md).
 The [agreed #63 terminal contract](../terminal-integration.md) owns rendering/
 application/resize semantics, canonical monitor geometry and optional non-user
 [Focus `0x39`](request-focus.md), negotiated as `focus-v1`.
@@ -39,7 +39,7 @@ limits/deadlines/policy. The
 [agreed lifecycle contract](../../monitor-lifecycle.md) owns recovery,
 concurrent truthful shutdown, run-local selector removal and future headless
 zero-client lifetime. These amendments are unimplemented and change no wire
-schemas; native declarations #71 and final acceptance #62 remain open.
+schemas. Native declarations are agreed in #71; final acceptance #62 remains open.
 
 Portable core traffic does not depend on Unix sockets. Future monitor
 forwarding and browser consumption are planned, not implemented; routing,

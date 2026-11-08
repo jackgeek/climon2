@@ -43,7 +43,8 @@ receive structured notification/progress metadata, including while background
 or noncontrolling. This extends local interpretation and daemon-owned replies,
 not the permission to send host-dependent requests to an outer terminal.
 The [agreed daemon wire](../protocol/daemon-client/core-v1.md) now specifies
-structured schemas and source normalization; native declarations remain #71.
+structured schemas and source normalization;
+[native declarations](../protocol/monitor-client/core-v1.md) are also agreed.
 The current filter and query
 implementation above are not evidence that these planned signals are supported.
 

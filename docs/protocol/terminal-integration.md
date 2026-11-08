@@ -22,7 +22,7 @@ Use the [overview](README.md), [domain glossary](../../GLOSSARY.md), and
 unchanged. Selector layout belongs to [#60](https://github.com/jackgeek/climon2/issues/60),
 lifecycle/cleanup/selection fallback to the [agreed lifecycle contract](../monitor-lifecycle.md),
 numerical limits to the [agreed operational specification](../monitor-operational-limits.md), native
-declarations to [#71](https://github.com/jackgeek/climon2/issues/71), and the final
+declarations to the agreed [native revision 1](monitor-client/core-v1.md), and the final
 acceptance matrix to [#62](https://github.com/jackgeek/climon2/issues/62).
 
 ## Ownership, representation, and fidelity
@@ -389,7 +389,8 @@ Restore host modes/terminal settings and emit root
 [clear](monitor-host/report-clear.md) before diagnostics.
 Stalls use bounded whole-process failure, never thread killing/unloading or a
 false cleanup claim. Broken output permits only best-effort restoration/clear;
-report failure. Numeric budgets remain #69; native calls #71; final acceptance #62.
+report failure. [Numeric budgets](../monitor-operational-limits.md) and
+[native calls](monitor-client/core-v1.md) are agreed; final acceptance #62 remains open.
 No session-survival promise or containment of a native client crash is added.
 Native selection/copy limitations are manually verified where automation cannot
 honestly establish host-specific behavior. Documentation checks prove none of

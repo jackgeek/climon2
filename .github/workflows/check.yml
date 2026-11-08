@@ -37,6 +37,8 @@ jobs:
       - name: Install ShellCheck
         run: brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
       - uses: ./.github/actions/controlled-bash
+      - name: Check native interface specification declarations and examples
+        run: python3 docs/protocol/monitor-client/check.py
       - name: Run formatting, lint and real-terminal tests
         run: cargo xtask test
   neutral:

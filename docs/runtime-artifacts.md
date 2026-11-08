@@ -132,7 +132,9 @@ Every successfully opened library handle stays loaded until monitor exit,
 including handles rejected by later validation. Such releases remain in use
 until process exit; completed instance cleanup and joins do not unload them.
 These are planned relationships, not shipped artifacts. Complete interface
-declarations remain #71. Monitor-client communication and the
+declarations are specified in [native revision 1](protocol/monitor-client/core-v1.md),
+with explicit startup/role, ownership, cleanup and fresh-instance recovery calls.
+No new artifact or consumption arrow is added. Monitor-client communication and the
 [daemon wire revision 1](protocol/daemon-client/core-v1.md) are agreed
 specifications, not implemented.
 

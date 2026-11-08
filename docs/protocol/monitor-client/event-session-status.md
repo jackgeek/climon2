@@ -1,70 +1,47 @@
 # Session status
 
-**Status:** agreed semantics and wire mapping, not implemented; native
-[schemas](../TERMS.md#schema) unresolved. See the [overview](../README.md),
-[domain glossary](../../../GLOSSARY.md), and
-[technical terms](../TERMS.md).
+**Status: agreed revision-1 specification, not implemented.**
+The [session daemon](../../../GLOSSARY.md#sessions) supplies effective
+[session status](../../../GLOSSARY.md#status-and-attention) through its
+[client](../../../GLOSSARY.md#sessions) to the [monitor](../../../GLOSSARY.md#sessions).
+Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and
+[terms](../TERMS.md).
 
-The [session daemon](../../../GLOSSARY.md#sessions) owns
-[activity state, attention state, and effective session status](../../../GLOSSARY.md#status-and-attention).
-The [client](../../../GLOSSARY.md#sessions) reports current status and its stored
-[UTC](../TERMS.md#utc) change timestamp to the
-[monitor](../../../GLOSSARY.md#sessions) on connection, followed by ordered
-changes without a subscription gap. This is core data, not a
-[plugin](../../../GLOSSARY.md#protocol-and-plugin-concepts) extension.
-Plugin implementation is deferred.
+## Schema and example
 
-Reports work before control/input [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts) and while background or
-[revoked](../../../GLOSSARY.md#attachment-and-control), independently of
-menu visibility. They neither [grant](../../../GLOSSARY.md#attachment-and-control)
-control nor permit screen mirroring,
-application input, or resize.
+Initial `cm1_metadata.status` has explicit availability.
+`CM1_STATUS` / `data.status` contains state, episode presence/ID and exact
+24-byte millisecond [UTC](../TERMS.md#utc) change time, scoped by
+[generation](../TERMS.md#connection-generation).
+See [header](client-v1.h), [values](core-v1.md#shared-values) and
+[mapping](core-v1.md#events-and-ordering).
 
-Use the [canonical mechanics and diagrams](../../session-status.md) for all
-transitions, effective-state timestamp semantics, status/time ordering,
-initial selection, and notification behavior. Internal `agent_working` and
-`user_working` both project to `running` when attention is `cleared`; changes
-between them or between detection modes alone do not update the effective
-timestamp. Root terminal-status reports, heuristic inactivity, and recognized
-notifications can request attention, but child program-status records cannot.
-Structured [notification](event-notification.md) and
-[progress](event-progress.md) metadata are separate interactions, not raw
-terminal sequences embedded in status reports.
+```c
+cm1_record example = {0};
+example.tag = CM1_STATUS;
+example.generation = 1;
+example.data.status.state = CM1_NEEDS_ATTENTION;
+example.data.status.episode_present = 1;
+example.data.status.episode_id = 2;
+memcpy(example.data.status.changed_at.bytes, "2026-11-08T10:00:00.000Z", 24);
+(void)example;
+return (cm1_call){0};
+```
 
-The [shared contract](../README.md#shared-in-process-communication-contract)
-and [semantic examples](../README.md#semantic-examples) require explicit
-initial core metadata synchronization boundaries per
-[connection generation](../TERMS.md#connection-generation), then gap-free
-changes. Report supported current status and its stored change time, or
-explicit unsupported/unknown state. Keep reliable attention-episode and final
-outcome identities separate from request, control,
-[restoration](../../../GLOSSARY.md#restoration-and-presentation), and generation
-identities. Episode deduplication never relies on UTC uniqueness.
-Status transitions and attention episodes cannot be dropped, overwritten,
-reordered, or lossily coalesced under [backpressure](../TERMS.md#backpressure). Metadata synchronization
-does not make the retained terminal current.
+Require selected `status-v1`. States map to idle/running/needs_attention/
+acknowledged/completed/failed; final transition belongs to Final, not a duplicated
+Status change. Only pending/acknowledged attention has a nonzero episode.
+Episode identity survives acknowledgement/reconnect and coalesces while pending.
+Time is daemon-stored effective-change time, not receipt/reconnect time or unique ID.
+Hidden detector changes do not replace unchanged effective-state time.
 
-Do not assign a connection-time
-timestamp to unchanged cached daemon state, silently map unsupported status to
-`cleared`, or treat a timestamp as an implicit unique attention-episode ID.
-
-Disconnection without a confirmed command result is a separate monitor-owned
-fact, not a daemon `failed` result. Preserve definitively reported final
-statuses after closure. Reports do not prove application consumption, accepted
-detach, or completed thread/resource cleanup.
-
-The [daemon contract](https://github.com/jackgeek/climon2/issues/67) assigns
-`status-v1`, [Initial metadata](../daemon-client/event-initial-metadata.md),
-[Status changed](../daemon-client/event-status-changed.md), and
-[Command final](../daemon-client/event-command-final.md).
-Final carries the terminal transition with no duplicate status-change event.
-Wire Status has required state, exact UTC time and nullable episode counter;
-pending coalesces, acknowledgement preserves identity, clear removes it.
-Final deduplication uses session [GUID](../TERMS.md#guid) plus fixed category `final outcome`,
-not exit/signal variant. Terminal status/result must agree: completed is normal
-exit zero; failed is nonzero exit or signal.
-[Interface schemas](https://github.com/jackgeek/climon2/issues/71) still owns
-native representation and executable examples, preserving
-[#66's agreed communication rules](https://github.com/jackgeek/climon2/issues/66).
-Unknown core tags are invalid, not implicitly negotiated extensions or
-silent successes.
+Initial state/changes are gap-free and independent of control/readiness.
+Unknown/unsupported status remains unavailable with explicit capability
+information; invalid core values fail, never normalize to cleared/idle.
+Visibility/Focus does not acknowledge; explicit Acknowledge and accepted real
+Input have distinct effects. Loss preserves stale status, not fabricated final.
+See [wire Status](../daemon-client/event-status-changed.md),
+[mechanics](../../session-status.md), [Final](event-session-ended.md)
+and [ownership/errors](core-v1.md#function-calls-and-ownership).
+[#67](https://github.com/jackgeek/climon2/issues/67) owns status;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

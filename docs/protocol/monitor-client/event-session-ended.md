@@ -1,56 +1,46 @@
-# Session end
+# Final command result
 
-**Status:** agreed communication requirements; interface [schema](../TERMS.md#schema) unresolved, not implemented.
-See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
-and [technical terms](../TERMS.md).
+**Status: agreed revision-1 specification, not implemented.**
+The [session daemon](../../../GLOSSARY.md#sessions) reports an authoritative final
+command result through its [client](../../../GLOSSARY.md#sessions) to the
+[monitor](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),
+[glossary](../../../GLOSSARY.md) and [terms](../TERMS.md).
 
-The [client](../../../GLOSSARY.md) reports command/[session](../../../GLOSSARY.md)
-completion explicitly. Terminal output is not an exit-status interface.
-Session end, accepted [detach](../../../GLOSSARY.md), and client thread
-completion are distinct observations. Missing output or a client failure
-does not prove an accepted session-end result.
+## Schema and example
 
-A confirmed zero exit produces `completed`; confirmed nonzero exit or signal
-termination produces `failed` in the
-[daemon](../../../GLOSSARY.md#sessions)
-[attention](../../../GLOSSARY.md#status-and-attention)
-[FSM](../TERMS.md#fsm). Preserve that known
-final status and retained terminal after connection closure; stop reconnecting.
-Unconfirmed loss remains disconnected/uncertain, not a fabricated final result.
-Status notification does not prove client cleanup or a completed thread join.
-See the [final-status rules](../../session-status.md#attention).
+`CM1_FINAL` / `data.final` has command result and terminal status availability,
+scoped by [generation](../TERMS.md#connection-generation).
+Command kind is exit/raw u32 code or signal/positive
+source-host number and optional name. See [header](client-v1.h),
+[values](core-v1.md#shared-values) and [mapping](core-v1.md#events-and-ordering).
 
-The [agreed lifecycle](../../monitor-lifecycle.md) owns survival, recovery,
-and visible behavior, all unimplemented. A final event does not prove accepted
-[Leave](../daemon-client/request-leave.md) or local cleanup/join. Confirmed
-selector removal may use definitive completion instead of
-[Kill](../../../GLOSSARY.md#attachment-and-control), but must still release deliveries/handles and finish
-instance cleanup/thread join before run-local dismissal. Discovery disappearance
-alone is not definitive completion. No same-run rediscovery or fallback
-acquisition is allowed.
-The [shared communication contract](../README.md#shared-in-process-communication-contract)
-and [semantic examples](../README.md#semantic-examples), agreed in
-[#66](https://github.com/jackgeek/climon2/issues/66), require reliable final-outcome
-identity and causal ordering with [responses](../TERMS.md#response) and other
-[events](../TERMS.md#event). Closure/failure
-reason remains observable outside ordinary queue capacity, with queued records
-ahead of the terminal indication. A recoverable daemon connection loss is not
-instance-stream closure or command completion.
-[Command final](../daemon-client/event-command-final.md), agreed in
-[the daemon contract](https://github.com/jackgeek/climon2/issues/67), preserves
-raw unsigned 32-bit exits separately from source-host signal number/nullable
-name; exit 143 is not SIGTERM. It carries selected terminal status, not a
-duplicate Status changed. Final deduplication identity is session
-[GUID](../TERMS.md#guid) plus
-fixed category `final outcome`, not exit-versus-signal kind.
-Terminal status/result must agree; no later event revives attention/activity.
-[Wire Kill](../daemon-client/request-kill.md) additionally requires confirmed
-result and complete daemon cleanup; command exit alone is insufficient.
-Repeated kills join termination without restarting grace.
-[Interface schemas](https://github.com/jackgeek/climon2/issues/71) still owns
-native termination/status declarations and executable examples.
-On communication failure unfinished outcomes remain
-[indeterminate](../TERMS.md#indeterminate-outcome).
+```c
+cm1_record example = {0};
+example.tag = CM1_FINAL;
+example.generation = 1;
+example.data.final.command_result.kind = CM1_SIGNAL;
+example.data.final.command_result.value = 15;
+(void)example;
+return (cm1_call){0};
+```
 
-See [client outcome](event-outcome.md) for client completion and cleanup, which
-do not themselves establish session end.
+This example has no selected status support and no signal name.
+Core support supplies final result regardless of optional status. When status
+is selected it must be terminal and agree: completed is exit zero; failed is
+nonzero exit/signal. Exit 143 differs from signal 15.
+Final transition is not duplicated as Status change. Final identity is session
+GUID plus fixed final-outcome category, not result kind or another counter.
+Inconsistent repeats fail and never authorize another toast.
+
+Final stops passive recovery and remains retained after closure;
+[EOF](../TERMS.md#eof)/discovery
+loss is not final. First learned viewed stays toast-suppressed forever here;
+first learned unviewed notifies once. Final does not prove Leave, Kill daemon
+cleanup, local worker cleanup, destruction or thread join. Confirmed removal
+still waits for local cleanup/join.
+See [wire Final](../daemon-client/event-command-final.md),
+[Kill](request-kill.md), [client outcome](event-outcome.md),
+[ownership/errors](core-v1.md#function-calls-and-ownership) and
+[lifecycle](../../monitor-lifecycle.md).
+[#67](https://github.com/jackgeek/climon2/issues/67) owns final results;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

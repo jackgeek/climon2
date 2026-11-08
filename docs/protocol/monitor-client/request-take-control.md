@@ -1,45 +1,40 @@
 # Take control
 
-**Status:** agreed ownership behavior; interface [schema](../TERMS.md#schema) unresolved, not implemented.
-See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
-and [technical terms](../TERMS.md).
+**Status: agreed revision-1 specification, not implemented.**
+The [monitor](../../../GLOSSARY.md#sessions) explicitly asks its
+[client](../../../GLOSSARY.md#sessions) to [take control](../../../GLOSSARY.md#attachment-and-control).
+Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and
+[terms](../TERMS.md).
 
-Initial selection, selector confirmation, and explicit
-[take control](../../../GLOSSARY.md) acquire control when needed.
-The [global lowercase j attention jump](../terminal-integration.md#attention-jump-and-configurable-hints)
-is also explicit selection/acquisition when needed. Stale cache inspection is a
-separate read-only action and must never acquire.
-Confirming a
-[revoked](../../../GLOSSARY.md) selected [session](../../../GLOSSARY.md#sessions) can reclaim it; confirming an
-already-controlled session retains it. Last-request-wins semantics remain.
-Discovery, eager background connections, [plugin](../../../GLOSSARY.md) traffic, and browsing/cancelling
-the selector must not request takeover.
+## Schema and example
 
-Success means [daemon](../../../GLOSSARY.md#sessions) acceptance, not [readiness](../../../GLOSSARY.md).
-Observe [control](event-control.md), [restoration](../../../GLOSSARY.md#restoration-and-presentation),
-and monitor-side application before enabling input.
-Selected input additionally waits for coherent paint; a background grant may
-apply restoration/report Ready without selection, resize, paint, or input.
-See [restoration start](event-restoration-start.md).
+`CM1_ACQUIRE` uses `args.generation`, a nonzero current opened
+[generation](../TERMS.md#connection-generation).
+There is no [geometry](../TERMS.md#geometry), old authority or observed
+[episode](../../../GLOSSARY.md#status-and-attention) field.
+See [header](client-v1.h) and [mapping](core-v1.md#requests-and-result-mapping).
 
-The [shared contract](../README.md#shared-in-process-communication-contract)
-and [semantic examples](../README.md#semantic-examples) apply. Local submission
-acceptance is only validated queuing, not takeover acceptance. Check required
-[capabilities](../../../GLOSSARY.md#sessions) through both library and daemon
-before acquisition; unsupported work fails explicitly. Do not silently execute
-an old [connection generation](../TERMS.md#connection-generation)'s queued
-takeover against a new connection.
+```c
+cm1_request request = {0};
+request.tag = CM1_ACQUIRE;
+request.request_id = 2;
+request.args.generation = generation;
+return api->submit(communication, &request);
+```
 
-The [ownership decision](https://github.com/jackgeek/climon2/issues/58) owns these
-rules. The [daemon contract](https://github.com/jackgeek/climon2/issues/67)
-distinguishes passive connections from control acquisition in
-[wire Acquire](../daemon-client/request-acquire.md). Acquisition has no implicit
-resize or [attention](../../../GLOSSARY.md#status-and-attention) acknowledgement. Already controlling returns no-change
-without another [grant](../../../GLOSSARY.md#attachment-and-control)/restoration. [Succession](../daemon-client/core-v1.md#membership-and-succession)
-may promote a passive [client](../../../GLOSSARY.md#sessions)
-without selecting, resizing, sending input or
-acknowledging; promoted membership persists on switch/revocation.
-The [communication decision](https://github.com/jackgeek/climon2/issues/66) owns
-the shared rules.
-[Interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign
-exact calls, arguments, outcomes, errors, and executable examples.
+Initial selection/explicit selection/takeover may acquire; discovery, browsing,
+passive recovery and stale inspection never do. Already controlling returns
+no-change without new [restoration](../../../GLOSSARY.md#restoration-and-presentation).
+Success is `CM1_ACQUIRED` with changed, [period](../../../GLOSSARY.md#attachment-and-control)
+and [restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts), not
+[readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts), resize or acknowledgement.
+Observe grant/restoration/application separately; selected input also waits for
+coherent paint. Background succession grants can apply/Ready without selection.
+
+Admission copies/queues and execution rechecks generation/support.
+Known-unexecuted stale work rejects; uncertain effects remain indeterminate,
+never replayed on a new connection. See [wire Acquire](../daemon-client/request-acquire.md),
+[Control](event-control.md), [ownership/errors](core-v1.md#function-calls-and-ownership)
+and [terminal contract](../terminal-integration.md).
+[#58](https://github.com/jackgeek/climon2/issues/58) owns control;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

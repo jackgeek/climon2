@@ -76,8 +76,9 @@ handle; thread safety does not allow concurrent instance destruction.
 ## Connection generation
 
 The identity distinguishing successive [daemon](../../GLOSSARY.md#sessions)
-connections within one [client](../../GLOSSARY.md#sessions)
-instance. It is separate from [request IDs](#request-id),
+connection attempts for a [session](../../GLOSSARY.md#sessions), including fresh
+[client](../../GLOSSARY.md#sessions) instances during passive recovery.
+It is separate from [request IDs](#request-id),
 [control periods](../../GLOSSARY.md#attachment-and-control),
 [restoration IDs](../../GLOSSARY.md#protocol-and-plugin-concepts),
 and attention-episode identities.

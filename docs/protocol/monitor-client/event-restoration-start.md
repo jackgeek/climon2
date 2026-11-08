@@ -1,38 +1,42 @@
 # Restoration start
 
-**Status:** agreed communication requirements; interface [schema](../TERMS.md#schema) unresolved, not implemented.
-See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
-and [technical terms](../TERMS.md).
+**Status: agreed revision-1 specification, not implemented.**
+The [client](../../../GLOSSARY.md#sessions) begins a
+[restoration](../../../GLOSSARY.md#restoration-and-presentation) for the
+[monitor](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),
+[glossary](../../../GLOSSARY.md) and [terms](../TERMS.md).
 
-The [client](../../../GLOSSARY.md) reports a distinct
-[restoration](../../../GLOSSARY.md) beginning to the [monitor](../../../GLOSSARY.md).
-Identify its [control period](../../../GLOSSARY.md) and a separate
-[restoration ID](../../../GLOSSARY.md). Several restorations can occur in one
-control period, including after resize. A new one must not reuse an applied
-restoration's identity or leave application input enabled prematurely.
+## Schema and example
 
-Ordered [display updates](event-display.md) follow.
-[Completion](event-restoration-complete.md) identifies the same restoration.
-[Revocation](../../../GLOSSARY.md) invalidates it. [Plugins](../../../GLOSSARY.md) cannot hide these essential state changes.
+`CM1_RESTORATION_BEGIN` / `data.restoration` contains nonzero
+[period](../../../GLOSSARY.md#attachment-and-control)/
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts) and positive
+effective [geometry](../TERMS.md#geometry), scoped by record
+[generation](../TERMS.md#connection-generation).
+See [header](client-v1.h), [values](core-v1.md#shared-values) and
+[mapping](core-v1.md#events-and-ordering).
 
-The [terminal contract](../terminal-integration.md) selects exact ordered bytes
-serialized at effective session geometry. Build a new model/history separately;
-the completed restoration replaces both transactionally, never union/dedup.
-Partial/superseded models never become current. Retain the last coherent
-transition frame clipped/padded, without enabling input; old cache inspection
-requires an explicit stale action.
-[Interface schemas](https://github.com/jackgeek/climon2/issues/71) still owns
-exact native declarations, identity fields, errors, and executable examples.
-The [shared contract](../README.md#shared-in-process-communication-contract)
-and [semantic examples](../README.md#semantic-examples), agreed in
-[#66](https://github.com/jackgeek/climon2/issues/66), require one causal
-[response](../TERMS.md#response)/[event](../TERMS.md#event) stream.
-The [grant](../../../GLOSSARY.md#attachment-and-control) precedes this start and its ordered updates
-and completion. No lossy coalescing or dropped boundaries is permitted.
-The [connection generation](../TERMS.md#connection-generation) remains distinct
-from both restoration and control identities.
-[Operational limits](../../monitor-operational-limits.md#deadlines-and-progress) specifies transfer
-budgets, deadlines, and counter exhaustion.
-[Wire Restoration begin](../daemon-client/event-restoration-begin.md) assigns
-period, restoration ID and geometry. Application semantics are agreed above,
-not deferred for redesign; native layout remains #71 and numerical budgets #69.
+```c
+cm1_record example = {0};
+example.tag = CM1_RESTORATION_BEGIN;
+example.generation = 1;
+example.data.restoration = (cm1_restoration){2, 3, {80, 24}};
+(void)example;
+return (cm1_call){0};
+```
+
+Core support; grant precedes first begin, later begin may occur in the same
+period. New begin invalidates prior readiness/incomplete model. Canonical
+monitor bytes use effective geometry, never host desire, including background
+grants. Stage a separate whole model/history, apply transactionally after
+matching completion; no merging/dedup of old history.
+Zero or more matching Display chunks follow, then complete. Superseded
+restoration gets no fabricated completion. Metadata may interleave without
+changing terminal-byte order. Begin is not input readiness or viewing.
+
+See [wire Begin](../daemon-client/event-restoration-begin.md),
+[Display](event-display.md), [completion](event-restoration-complete.md),
+[terminal application](../terminal-integration.md) and
+[ownership/errors](core-v1.md#function-calls-and-ownership).
+[#63](https://github.com/jackgeek/climon2/issues/63) owns application;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

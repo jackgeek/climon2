@@ -1,34 +1,37 @@
 # Library compatibility check
 
-**Status:** embedding design agreed; complete declarations pending, not implemented.
-See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
-and [technical terms](../TERMS.md).
+**Status: agreed revision-1 specification, not implemented.**
+The [monitor](../../../GLOSSARY.md#sessions) checks a loaded
+[client library](../../../GLOSSARY.md#sessions) before creating an instance.
+Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and
+[terms](../TERMS.md).
 
-Before creating a [client](../../../GLOSSARY.md) instance or
-[daemon](../../../GLOSSARY.md#sessions) connection,
-the [monitor](../../../GLOSSARY.md) must validate the loaded
-[client library](../../../GLOSSARY.md)'s exact release identity and required
-embedding support. Loading a library does not establish an
-[attachment](../../../GLOSSARY.md) or [readiness](../../../GLOSSARY.md).
-Missing artifacts, release mismatch, and unsupported interfaces fail explicitly.
+## Schema and example
 
-The [embedding reference](../library-embedding.md), owned by
-[Define version-matched client library loading and lifetime](https://github.com/jackgeek/climon2/issues/65),
-selects a versioned [C ABI](../TERMS.md#c-abi) and the stable
-`climon2_client_get_interface` entry point. It requests an interface revision
-and returns the supported revision's [function table](../TERMS.md#function-table)
-and release identity, or an explicit unsupported result. Release identity and
-interface compatibility are separate checks. Exact declarations and result
-representations remain pending; revision 1 is planned, not published.
-[Define monitor-client communication contract](https://github.com/jackgeek/climon2/issues/66)
-owns the agreed [subsequent communication](../README.md#shared-in-process-communication-contract).
-After these checks, the instance reports [capabilities](../../../GLOSSARY.md#sessions) available through both
-library and daemon; revision support alone does not establish operation support.
-Required support is checked before control acquisition or operation submission.
-The [semantic examples](../README.md#semantic-examples) describe subsequent
-admission and delivery without inventing calls. This filename does not prescribe a hello
-message or daemon protocol number. A complete call example awaits the
-[interface schemas](https://github.com/jackgeek/climon2/issues/71).
+The frozen [C ABI](../TERMS.md#c-abi) bootstrap is declared in the
+[header](client-v1.h). Request revision 1; success returns its immutable
+description/table, exact release, capability tokens and qualified resource
+requirements. Unsupported revision returns explicit status and null.
 
-This is separate from the implemented
-[daemon hello](../daemon-client/hello-request.md).
+```c
+const cm1_description *description = 0;
+uint32_t status = climon2_client_get_interface(CM1_REVISION, &description);
+if (status != CM1_SUCCESS)
+    return (cm1_call){.code = status,
+        .error = {CM1_ORIGIN_LIBRARY, 0,
+            {(const uint8_t *)"bootstrap_failed", 16},
+            {(const uint8_t *)"Interface lookup failed", 23}}};
+return (cm1_call){0};
+```
+
+After lookup, compare exact release against immutable session metadata before
+create, and reserve qualified resources. Revision compatibility never waives
+release matching. Loading/lookup does not open a daemon connection or grant
+control. Bootstrap metadata lives until process exit; rejected opened libraries
+are retained too. Ordinary call diagnostics have a different, call-borrowed
+lifetime. See [bootstrap rules](core-v1.md#representation-and-compatibility),
+[startup](core-v1.md#startup-limits-and-resources), and
+[embedding](../library-embedding.md).
+This is not another daemon hello or serialized message.
+[#65](https://github.com/jackgeek/climon2/issues/65) owns embedding;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns the declarations.

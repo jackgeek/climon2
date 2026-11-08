@@ -1,46 +1,39 @@
 # Response
 
-**Status:** communication design agreed, not implemented; exact declarations unresolved.
-See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
-and [technical terms](../TERMS.md).
+**Status: agreed revision-1 specification, not implemented.**
+The [client](../../../GLOSSARY.md#sessions) delivers a correlated
+[response](../TERMS.md#response) to its caller. Use the [overview](../README.md),
+[glossary](../../../GLOSSARY.md) and [terms](../TERMS.md).
 
-A [response](../TERMS.md#response) travels opposite its [request](../TERMS.md#request)
-and reports one explicit success or failure, including for
-[plugin](../../../GLOSSARY.md)-injected work. Success and failure are distinct;
-diagnostic prose is not a substitute for a machine-readable outcome.
+## Schema and example
 
-Local submission acceptance is only validated queuing, not this eventual
-operation outcome or [daemon](../../../GLOSSARY.md#sessions) acceptance. Local rejection produces no later
-response. Each accepted request receives one correlated outcome while healthy.
-Known unexecuted stale work is explicitly rejected; uncertain execution remains
-[indeterminate](../TERMS.md#indeterminate-outcome) and must not be automatically retried.
+`CM1_RESPONSE` uses `cm1_record.data.response`: public request ID, outcome,
+result tag, error and active result in the [header](client-v1.h).
+The [complete result mapping](core-v1.md#requests-and-result-mapping) fixes
+success, partial effects and known-final variants.
 
-Input acceptance is not application consumption; takeover acceptance is not
-[readiness](../../../GLOSSARY.md); [detach](../../../GLOSSARY.md) acceptance is
-not completed [client](../../../GLOSSARY.md#sessions) cleanup.
-Optional non-user [Focus](request-focus.md) success distinguishes desired-state
-acceptance from complete focus [bytes](../TERMS.md#byte) accepted for forwarding,
-not a [PTY](../TERMS.md#pseudo-terminal-pty) read
-or command consumption. Application focus does not clear attention.
-Unknown or already-completed correlation must
-not create success. Communication failure leaves outstanding outcomes
-[indeterminate](../TERMS.md#indeterminate-outcome).
+```c
+cm1_record example = {0};
+example.tag = CM1_RESPONSE;
+example.generation = 1;
+example.data.response.request_id = 7;
+example.data.response.outcome = CM1_OK;
+example.data.response.result_tag = CM1_ACKNOWLEDGEMENT;
+example.data.response.result.changed = 0;
+(void)example;
+return (cm1_call){0};
+```
 
-Responses share one per-instance [FIFO](../TERMS.md#fifo) stream with
-[events](../TERMS.md#event), preserving causal control/[restoration](../../../GLOSSARY.md#restoration-and-presentation)/result order.
-Draining transfers immutable library-owned objects released through the same
-library; outstanding deliveries prevent successful instance destruction.
-The [shared contract](../README.md#shared-in-process-communication-contract)
-and [semantic examples](../README.md#semantic-examples) specify admission,
-ownership, and bounded progress.
+Success has the operation's matching result and no error. Rejected guarantees no
+execution; failed does not; indeterminate is neither success nor proof of no
+effects. Non-success requires explicit origin/code/text and may preserve known
+partial results. Unknown codes stay non-success; unknown/mismatched result tags
+fail explicitly. There is no response for local admission rejection.
 
-[Define monitor-client communication contract](https://github.com/jackgeek/climon2/issues/66)
-owns these agreed rules. See [request admission](request.md).
-[Complete monitor-client interface schemas](https://github.com/jackgeek/climon2/issues/71)
-must assign exact native result/error types and executable examples.
-The [wire Response](../daemon-client/response.md) separately assigns
-ok/rejected/failed/indeterminate, operation result variants and an explicit
-[error catalog](../daemon-client/core-v1.md#errors-and-bounded-delivery).
-Do not assume these are C record tags or native error declarations.
-There is no serialized
-[envelope](../TERMS.md#envelope).
+Responses share the causal event stream. Immediate daemon effects precede their
+success; queue acceptance, Input forwarding, Focus state, geometry, Ready, Leave,
+Kill daemon cleanup and local joins prove different things. See
+[ordering](core-v1.md#events-and-ordering), [ownership](core-v1.md#function-calls-and-ownership)
+and [wire Response](../daemon-client/response.md).
+[#66](https://github.com/jackgeek/climon2/issues/66) owns correlation;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native results.
