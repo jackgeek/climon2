@@ -89,12 +89,23 @@ impl LogFile {
     }
 
     pub fn general(home: &Path) -> io::Result<Self> {
+        Self::general_as(home, "", Role::Cli.name())
+    }
+
+    /// The monitor's general log. The CLI that exec'd the monitor wrote its own
+    /// general log under the same pid, possibly in the same second, so the
+    /// monitor's is named apart.
+    pub fn monitor(home: &Path) -> io::Result<Self> {
+        Self::general_as(home, "monitor-", "monitor")
+    }
+
+    fn general_as(home: &Path, prefix: &str, role: &str) -> io::Result<Self> {
         crate::runtime::private_directory(&home.join("logs"))?;
         let stamp = file_stamp(SystemTime::now())?;
         Self::open(
             &home.join("logs/general"),
-            &format!("{stamp}-{}.log", std::process::id()),
-            "cli",
+            &format!("{prefix}{stamp}-{}.log", std::process::id()),
+            role,
         )
     }
 

@@ -203,6 +203,8 @@ name = "climon2-monitor"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-platform",
+ "tracing",
 ]
 
 [[package]]
