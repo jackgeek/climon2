@@ -8,6 +8,8 @@ use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::ops::RangeInclusive;
 
+/// Request types, sent only by the client.
+pub(crate) const REQUEST_TYPES: RangeInclusive<u8> = 0x30..=0x39;
 /// Server types, sent only by the session daemon.
 pub(crate) const SERVER_TYPES: RangeInclusive<u8> = 0x40..=0x4d;
 

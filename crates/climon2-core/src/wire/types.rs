@@ -6,6 +6,7 @@ use std::{
     num::{NonZeroU32, NonZeroU64},
     str::FromStr,
 };
+use time::{PrimitiveDateTime, format_description};
 
 /// A canonical decimal string from 1 through 18446744073709551615, with no
 /// sign or leading zero. It never wraps or repeats.
@@ -78,5 +79,87 @@ impl From<Object<GeometryFields>> for Geometry {
             cols: fields.cols,
             rows: fields.rows,
         }
+    }
+}
+
+/// A lowercase canonical hyphenated GUID. It is used by new revision-1
+/// fields; the frozen hello keeps its own accepted syntax.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Guid(String);
+
+impl Guid {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for Guid {
+    type Err = ContractError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        uuid::Uuid::parse_str(text)
+            .ok()
+            .filter(|guid| guid.hyphenated().to_string() == text)
+            .map(|_| Self(text.to_owned()))
+            .ok_or_else(|| ContractError("invalid GUID".into()))
+    }
+}
+
+impl TryFrom<String> for Guid {
+    type Error = ContractError;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        text.parse()
+    }
+}
+
+impl From<Guid> for String {
+    fn from(guid: Guid) -> Self {
+        guid.0
+    }
+}
+
+/// `YYYY-MM-DDTHH:MM:SS.mmmZ` on a real calendar date, with seconds 00
+/// through 59. It records when; it is not an ordering or an identity.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Utc(String);
+
+const UTC: &str = "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z";
+
+impl Utc {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for Utc {
+    type Err = ContractError;
+
+    /// The exact format rejects other separators, precisions and leap seconds,
+    /// which RFC 3339 parsing would accept; `[year]` alone would accept a sign.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let format = format_description::parse_borrowed::<2>(UTC).expect("a valid format");
+        let unsigned = text.starts_with(|first: char| first.is_ascii_digit());
+        PrimitiveDateTime::parse(text, &format)
+            .ok()
+            .filter(|_| unsigned)
+            .map(|_| Self(text.to_owned()))
+            .ok_or_else(|| ContractError("invalid UTC time".into()))
+    }
+}
+
+impl TryFrom<String> for Utc {
+    type Error = ContractError;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        text.parse()
+    }
+}
+
+impl From<Utc> for String {
+    fn from(utc: Utc) -> Self {
+        utc.0
     }
 }

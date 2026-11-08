@@ -9,13 +9,26 @@
 mod catalogue;
 mod families;
 mod frame;
+mod metadata;
 mod record;
 mod request;
+mod response;
+mod server;
 mod types;
 
-pub use catalogue::FatalCode;
+pub use catalogue::{Error, ErrorCode, FatalCode, OperationalCode};
 pub use families::{Families, Requested};
 pub use frame::{Frame, FrameLimit, WireError, read_frame, write_frame};
+pub use metadata::{
+    Available, CommandResult, Percent, Progress, ProgressState, Status, StatusState,
+};
 pub use record::ControlRecord;
 pub use request::{Kill, Leave, Mode, Open, Request};
-pub use types::{Counter, Geometry};
+pub use response::{
+    Cleanup, Failure, FocusBytes, Known, Outcome, PartialCleanup, Response, Success,
+};
+pub use server::{
+    CommandFinal, FatalError, InitialMetadata, Notification, NotificationSource, ProgressChanged,
+    ServerMessage, StatusChanged, TitleChanged,
+};
+pub use types::{Counter, Geometry, Guid, Utc};
