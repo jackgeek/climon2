@@ -536,6 +536,7 @@ fn utc_times_are_exact_calendar_milliseconds() {
         "2024-02-29T00:00:00.000Z",
         "2026-02-28T00:00:00.000Z",
         "0000-01-01T00:00:00.000Z",
+        "9999-12-31T23:59:59.999Z",
     ] {
         let ServerMessage::StatusChanged(changed) = round_trip(STATUS_CHANGED, &status_changed(at))
         else {
@@ -563,6 +564,8 @@ fn utc_times_are_exact_calendar_milliseconds() {
         "+2026-11-06T12:00:00.000Z",
         "-2026-11-06T12:00:00.000Z",
         "+026-11-06T12:00:00.000Z",
+        "026-11-06T12:00:00.000Z",
+        "10000-01-01T00:00:00.000Z",
         "2026-11-06T12:00:00.000Z ",
         "",
     ] {
