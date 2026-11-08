@@ -120,8 +120,9 @@ fn refusal(terminal: &mut Terminal) -> String {
     written
 }
 
-/// INP-01 (Monitor, derived refusal): any argument after `monitor` or its alias
-/// `mon` exits 2 with the usage line before a monitor starts.
+/// Derived scenario: monitor argument refusal (INP-01 refusals, Monitor layer).
+/// Any argument after `monitor` or its alias `mon` exits 2 with the usage line
+/// before a monitor starts.
 #[test]
 fn installed_monitor_arguments_are_a_usage_error() {
     let package = Package::new();
@@ -158,9 +159,10 @@ fn missing_installed_monitor_fails_naming_its_version() {
     package.assert_clean();
 }
 
-/// INP-01 (Monitor, derived refusal): without a terminal on stdin or on stdout
-/// the monitor prints one diagnostic and exits with the climon2 error code
-/// before any terminal mode change or OSC output.
+/// Derived scenario: monitor non-TTY refusal (INP-01 refusals, Monitor layer).
+/// Without a terminal on stdin or on stdout the monitor prints one diagnostic
+/// and exits with the climon2 error code before any terminal mode change or
+/// OSC output.
 #[test]
 fn installed_monitor_refuses_a_non_terminal_stdin_or_stdout() {
     let package = Package::new();
@@ -177,9 +179,9 @@ fn installed_monitor_refuses_a_non_terminal_stdin_or_stdout() {
     package.assert_clean();
 }
 
-/// INP-01 (Monitor): a null `client.escape_prefix`, like any invalid client
-/// setting, is refused with one diagnostic line and the climon2 error code
-/// before any terminal change.
+/// INP-01 (Monitor layer): a null `client.escape_prefix`, like any invalid
+/// client setting, is refused with one diagnostic line and the climon2 error
+/// code before any terminal change.
 #[test]
 fn installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys() {
     let package = Package::new();
@@ -280,11 +282,11 @@ fn monitor_process(package: &Package) -> (i32, String) {
     processes.into_iter().next().unwrap()
 }
 
-/// ENT-01 (Monitor): from an installed release, `climon2 monitor` and its alias
-/// `climon2 mon` open the same monitor through the launcher, the CLI and the
-/// version's installed `climon2-monitor`: one permanent top row above the
-/// explicit empty state, whose hint names the default prefix. Prefix+x, even
-/// split across reads, exits 0 and releases the host.
+/// ENT-01 (Monitor layer): from an installed release, `climon2 monitor` and
+/// its alias `climon2 mon` open the same monitor through the launcher, the CLI
+/// and the version's installed `climon2-monitor`: one permanent top row above
+/// the explicit empty state, whose hint names the default prefix. Prefix+x,
+/// even split across reads, exits 0 and releases the host.
 #[test]
 fn installed_monitor_and_mon_open_the_same_monitor() {
     let package = Package::new();
@@ -309,9 +311,10 @@ fn installed_monitor_and_mon_open_the_same_monitor() {
     package.assert_clean();
 }
 
-/// INP-01 (Monitor): the monitor reuses the configured client escape prefix:
-/// the empty state's hint names it and prefix+x exits. A null take-control key
-/// is accepted, and Ctrl+C, the default prefix and its x are not exits.
+/// INP-01 (Monitor layer): the monitor reuses the configured client escape
+/// prefix: the empty state's hint names it and prefix+x exits. A null
+/// take-control key is accepted, and Ctrl+C, the default prefix and its x are
+/// not exits.
 #[test]
 fn installed_monitor_hints_and_exits_with_the_configured_prefix() {
     let package = Package::new();
@@ -329,8 +332,8 @@ fn installed_monitor_hints_and_exits_with_the_configured_prefix() {
     package.assert_clean();
 }
 
-/// EXT-03 (Monitor, empty monitor): catchable SIGINT, SIGTERM and SIGHUP leave
-/// through the same clean path as prefix+x with signal-style status: the
+/// EXT-03 (Monitor layer, empty monitor): catchable SIGINT, SIGTERM and SIGHUP
+/// leave through the same clean path as prefix+x with signal-style status: the
 /// baseline and exact termios are restored and nothing is printed.
 #[test]
 fn signals_release_the_host_with_signal_style_status() {
@@ -371,9 +374,9 @@ fn resizing_the_host_redraws_the_monitor_at_the_new_size() {
     package.assert_clean();
 }
 
-/// EXT-03 (empty monitor, Fault): a failure while the monitor owns the host
-/// first leaves its alternate screen and restores the baseline and exact
-/// termios, then prints one diagnostic, and exits with the climon2 error
+/// EXT-03 (Fault layer, empty monitor): a render failure while the monitor owns
+/// the host first leaves its alternate screen and restores the baseline and
+/// exact termios, then prints one diagnostic, and exits with the climon2 error
 /// code. Only hook-enabled debug siblings inject it.
 #[test]
 fn debug_hook_render_failure_restores_the_host_before_its_diagnostic() {
