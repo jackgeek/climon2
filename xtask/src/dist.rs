@@ -99,6 +99,11 @@ fn validate_versions(root: &Path, version: &str) -> io::Result<()> {
     let packages = metadata["packages"]
         .as_array()
         .ok_or_else(|| io::Error::other("Cargo metadata omitted packages"))?;
+    shipped_versions(packages, version)
+}
+
+/// Every shipped package exists at exactly the release version.
+fn shipped_versions(packages: &[serde_json::Value], version: &str) -> io::Result<()> {
     for (name, _) in release::PACKAGES {
         let package = packages
             .iter()
@@ -161,4 +166,61 @@ fn stamped_script(template: &str, version: &str) -> io::Result<String> {
         ));
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn packages(monitor: Option<&str>) -> Vec<Value> {
+        let mut packages: Vec<_> = release::PACKAGES
+            .iter()
+            .filter(|(name, _)| *name != "climon2-monitor")
+            .map(|(name, _)| json!({"name": name, "version": "1.2.3"}))
+            .collect();
+        if let Some(version) = monitor {
+            packages.push(json!({"name": "climon2-monitor", "version": version}));
+        }
+        packages
+    }
+
+    /// #74: the release version check covers the shipped monitor package, so a
+    /// missing or differently versioned monitor fails before any build.
+    #[test]
+    fn version_check_rejects_a_missing_or_wrong_version_monitor() {
+        assert!(shipped_versions(&packages(Some("1.2.3")), "1.2.3").is_ok());
+        let wrong = shipped_versions(&packages(Some("1.2.4")), "1.2.3").unwrap_err();
+        assert_eq!(wrong.to_string(), "climon2-monitor version is not 1.2.3");
+        let missing = shipped_versions(&packages(None), "1.2.3").unwrap_err();
+        assert_eq!(
+            missing.to_string(),
+            "missing shipped package climon2-monitor"
+        );
+    }
+
+    /// #74: the universal-binary check rejects a monitor that is not exactly
+    /// arm64 plus x86_64, such as this host's single-architecture test build.
+    #[test]
+    fn binary_check_rejects_a_single_architecture_monitor() {
+        let built = env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("climon2-monitor");
+        assert!(built.is_file(), "run cargo test --workspace first");
+        let scratch = tempfile::tempdir_in(built.parent().unwrap()).unwrap();
+        let thin = scratch.path().join("climon2-monitor");
+        fs::copy(&built, &thin).unwrap();
+        quality::run(
+            Command::new("codesign")
+                .args(["--force", "-s", "-"])
+                .arg(&thin),
+        )
+        .unwrap();
+        let error = verify_binary(&thin).unwrap_err().to_string();
+        assert!(error.contains("is not exactly arm64 + x86_64"), "{error}");
+    }
 }
