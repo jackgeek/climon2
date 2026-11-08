@@ -156,6 +156,13 @@ These signals do not amend daemon activity/attention [FSMs](TERMS.md#fsm) or ack
 
 ## Startup and control
 
+The [key introduction](../monitor-selector.md#key-introduction-and-help) opens
+automatically when key hints are enabled and its separate saved suppression
+preference is unset. It introduces configured-prefix+x, +s and +?.
+Prefix+? always opens it, including with hints disabled or startup suppression
+saved. The modal gates application input without blocking background startup
+or changing control/selection.
+
 1. Discover live sessions in deterministic newest-first order.
 2. Load each required session-version library and validate identity and interface
    support before instance creation or a daemon connection.

@@ -222,7 +222,10 @@ defaults and [C0](TERMS.md#c0)-key vocabulary from
 The monitor rejects a null prefix before entering the terminal; null takeover is
 allowed. Ordinary attach semantics are unchanged.
 Lowercase prefix+s opens the selector (no-op if already open);
-prefix+x requests exit. Prefix+d has no monitor detach meaning.
+prefix+x requests exit; prefix+? opens the
+[key introduction/help dialog](../monitor-selector.md#key-introduction-and-help),
+even when startup help or implicit hints are disabled (no-op if already open).
+Prefix+d has no monitor detach meaning.
 No prefix+h/prefix+r or additional history/retry binding is added.
 Prefix twice emits one literal prefix; unknown suffixes emit prefix+suffix without
 second interpretation, including a prefixed take-control key.
@@ -233,8 +236,9 @@ Selector/modal UI owns nonglobal keys/paste and never takes over via that key.
 Empty, revoked, restoring, stale-inspection, and too-small targets do not buffer
 application input for later.
 
-Ctrl+[ remains allowed as prefix: bare Escape waits, and legacy Alt+s/Alt+x/Alt+j
-can be identical to prefix+s/x/j. Identical encodings receive identical treatment.
+Ctrl+[ remains allowed as prefix: bare Escape waits, and legacy
+Alt+s/Alt+x/Alt+j/Alt+? can be identical to prefix+s/x/j/?.
+Identical encodings receive identical treatment.
 Recognized mouse reports, host replies, and non-key terminal events bypass
 shortcut detection. Unbracketed paste remains indistinguishable from typing.
 Behavior must be independent of read fragmentation/coalescing; process subsequent
@@ -329,6 +333,10 @@ selector, and empty UI. It changes neither bindings nor application text.
 The [selector](../monitor-selector.md#selector) shows its enabled hints in a
 footer below the session list, inside the menu. Disabling hints removes the
 footer and its reserved space without changing selector actions.
+Automatic startup introduction also requires enabled key hints and no saved
+suppression preference. Explicit prefix+? remains available regardless of
+either condition. The [dialog reference](../monitor-selector.md#key-introduction-and-help)
+owns its content, reversible persistence and modal behavior.
 Validate one startup snapshot before terminal changes. If present, `monitor`
 must be an object and `show_key_hints` a boolean; missing means default,
 wrong type or duplicate known field is an explicit error, unknown/unrelated
@@ -367,6 +375,9 @@ Automated end-to-end tests must drive the real monitor host and shell/
 - Dynamic lowercase j ordering, no eligible target, uppercase/pasted literal
   behavior, actual-prefix hints, hiding every implicit hint, startup defaults/
   validation before terminal changes, and no live reload.
+- Startup introduction gated by hints and saved suppression, always-available
+  prefix+?, actual-prefix content, persistent/reversible suppression and save
+  errors, repeated help, modal isolation and return to the underlying selector.
 - Selector borders/search/columns, identity-safe confirmation and cached history,
   nonblocking toast animation/coalescing/dismissal, configured once-per-toast
   bell, and initial/transition-only monitor OSC 7501 advertising/exit clearing.

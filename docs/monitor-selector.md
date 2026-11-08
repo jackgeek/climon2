@@ -9,6 +9,37 @@ Use the [terminal contract](protocol/terminal-integration.md) and
 The later [lifecycle specification](monitor-lifecycle.md) amends history,
 recovery, exit and selector termination/removal. All remain unimplemented.
 
+## Key introduction and help
+
+On monitor startup, automatically open a modal key introduction only when
+`monitor.show_key_hints` is enabled and the user has not saved **Don't show
+again**. Its initial content lists these actions using the actual configured
+prefix:
+
+| Binding | Action |
+|---|---|
+| prefix+x | Exit the monitor |
+| prefix+s | Open the session list |
+| prefix+? | Show this dialog |
+
+Provide an initially unchecked **Don't show again** checkbox. Persist the
+selected preference separately from the user's configuration, per climon2 home
+across monitor restarts and releases. Closing without checking it keeps automatic
+startup display enabled. Report save failures explicitly; never claim the choice
+was saved when it was not. Reopening the dialog shows the saved choice and lets
+the user reverse it. This preference does not change `monitor.show_key_hints`.
+
+Prefix+? opens this dialog even when key hints are disabled or automatic display
+is suppressed. Repeating it while the dialog is open is a no-op.
+Provide an explicit Continue/Close action usable with Enter. Escape closes only
+when the configured prefix does not consume it; prefix+x still exits.
+The dialog owns application input, retains selection/control and leaves
+background clients and terminal models updating. It does not resize the
+application. Opening over the selector preserves its search/highlight and
+returns to it on close. Showing or closing help does not itself acquire a
+session or acknowledge attention. Existing modal focus/viewing and stale-input
+rules apply.
+
 ## Selector
 
 The selector overlays the [host](../GLOSSARY.md#sessions) without resizing the
@@ -77,7 +108,8 @@ attention merely through highlighting.
 Ordinary Escape cancels without changing selection or held control. Configured
 prefix handling runs first. When Ctrl+[ is the prefix, bare Escape waits and
 cannot cancel: the developer accepted this limitation, with no alternate
-selector-cancel action. Prefix+x remains exit and prefix+j remains dynamic attention navigation.
+selector-cancel action. Prefix+x remains exit, prefix+j remains dynamic attention
+navigation, and prefix+? opens the key introduction/help dialog.
 Keep the existing literal-prefix, paste, fragmented-input and stale-input rules.
 
 ## Confirmed selection and history
@@ -211,5 +243,11 @@ Include default-Cancel immutable-GUID Delete, completion/reordering races,
 duplicate suppression, rejection/lost response without Kill replay, definitive
 termination and local cleanup/join before dismissal, no same-run rediscovery,
 non-acquiring fallback, and prohibited connected revoked-cache inspection.
+Include startup help with hints enabled/disabled and suppression saved/unsaved,
+the three actual-prefix bindings, reversible suppression across restarts and
+releases, explicit save errors, and prefix+? despite either suppression.
+Cover repeated help, Enter/Escape/prefix handling, underlying selector
+search/highlight preservation, background progress, and modal input isolation
+without implicit acquisition or attention acknowledgement.
 Final scenarios remain with
 [automated acceptance criteria](https://github.com/jackgeek/climon2/issues/62).

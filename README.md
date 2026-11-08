@@ -156,6 +156,7 @@ rejects a null escape prefix before changing terminal state. Null takeover is
 allowed because selector confirmation can acquire control. Lowercase prefix+s
 opens the selector, prefix+x exits, and **prefix+j** jumps to the most recent
 currently connected session needing attention, not necessarily a toast's session.
+Prefix+? opens the [key introduction/help dialog](docs/monitor-selector.md#key-introduction-and-help).
 Uppercase J is unknown literal input; bracketed pasted shortcuts remain data.
 
 Full future startup example (the current parser does **not** implement the
@@ -164,7 +165,7 @@ Full future startup example (the current parser does **not** implement the
 ```jsonc
 {
   "client": {
-    // Ctrl+[ is Escape: delays bare Escape; Alt+s/Alt+x/Alt+j may trigger monitor s/x/j.
+    // Ctrl+[ is Escape: delays bare Escape; Alt+s/Alt+x/Alt+j/Alt+? may trigger s/x/j/?.
     "escape_prefix": "Ctrl+]",
     "take_control_key": "Ctrl+T"
   },
@@ -184,6 +185,14 @@ hints use the actual configured prefix plus lowercase j and describe a dynamic
 most-recent jump. Wrong types and duplicate known fields are explicit startup
 errors before terminal changes; unknown/unrelated settings remain ignored.
 All monitor settings above are future behavior, with no live reload.
+
+The planned modal introduction opens automatically on startup when key hints
+are enabled and **Don't show again** has not been saved. It initially introduces
+the configured prefix followed by x (exit), s (session list), and ? (help).
+The checkbox stores a reversible preference separately from configuration,
+per climon2 home across restarts/releases; save failures are explicit.
+Prefix+? always opens the dialog, even with hints disabled or startup display
+suppressed. Enter closes it; Escape follows configured-prefix handling.
 
 Planned `monitor.bell` is boolean, default true, with the same pre-terminal
 startup validation and no live reload. False suppresses the explicit host bell,
