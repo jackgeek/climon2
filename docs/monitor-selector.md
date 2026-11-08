@@ -32,11 +32,14 @@ Left/Right/Home/End edit it. Up/Down and PageUp/PageDown navigate the highlight,
 without wrapping, and keep it visible. Enter confirms the highlight from search.
 Clicking a row only highlights it; wheel scrolls the list without selecting.
 
-Search is case-insensitive ordered-subsequence matching against title, command
-arguments or displayed status, including failure details. All query characters
-must occur in order within any one field; nonmatching characters in the field
-are skipped. For example, `bld` matches `Build`, `blr` matches `Build Replica`,
-and `Fo Br` matches `foo bar`. Spaces in the query participate in matching.
+Search is case-insensitive ordered-subsequence matching against one string:
+displayed status (including failure details), one space, then the displayed
+title/command fallback. Hidden command arguments are not searched separately.
+All query characters must occur in order across that text; nonmatching
+characters are skipped. For example, `bld` matches `Build`, `blr` matches
+`Build Replica`, and `Fo Br` matches `foo bar`. Matches may span the status/title
+boundary: `rgb` matches a `Running` session titled `Build`. Spaces in the query
+participate in matching.
 Exact substrings also match. Query characters cannot be reordered, substituted
 or absent.
 Use `fuzzy-matcher`'s `SkimMatcherV2` for this ordered-subsequence matching, not
