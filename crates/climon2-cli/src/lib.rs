@@ -8,6 +8,7 @@ pub mod list;
 use climon2_core::{
     cli::{CliArgs, CommandArgs},
     layout::HomeLayout,
+    lifetime::Lifetime,
     selector::Selector,
 };
 use climon2_platform::{
@@ -83,8 +84,8 @@ fn home() -> io::Result<PathBuf> {
     runtime::canonical_home(layout.root())
 }
 
-/// Arguments exclude argv[0]. Success is a final status, except successful exec,
-/// which replaces this process with the metadata version's client.
+/// Arguments exclude argv[0]. Success is a final status, except successful
+/// ordinary exec, which replaces this process with the metadata version's client.
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> {
     let arguments =
         CliArgs::parse(arguments).map_err(|error| Error::new(error.exit_code(), error))?;
@@ -99,7 +100,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> 
 
 /// The subcommands that need a home; help and version are answered here.
 enum Work {
-    Exec(CommandArgs),
+    Exec(Lifetime, CommandArgs),
     List { json: bool },
     Attach(Selector),
     Kill(Selector),
@@ -107,7 +108,7 @@ enum Work {
 
 fn work(arguments: CliArgs) -> Result<Work, String> {
     match arguments {
-        CliArgs::Exec(command) => Ok(Work::Exec(command)),
+        CliArgs::Exec { lifetime, command } => Ok(Work::Exec(lifetime, command)),
         CliArgs::List { json } => Ok(Work::List { json }),
         other => session_work(other),
     }
@@ -144,7 +145,7 @@ fn logged_run(work: Work) -> Result<u32, Error> {
 
 fn command(work: Work, home: &Path, general: &LogFile, filter: Option<&str>) -> Result<u32, Error> {
     match work {
-        Work::Exec(command) => exec::run(home, command, general, filter),
+        Work::Exec(lifetime, command) => exec::run(home, lifetime, command, general, filter),
         Work::List { json } => list::run(home, json).map(|()| 0).map_err(Error::from),
         Work::Attach(selector) => attach::run(home, selector),
         Work::Kill(selector) => kill::run(home, &selector),

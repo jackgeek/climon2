@@ -4,6 +4,7 @@ use climon2_core::{
     cli::CommandArgs,
     config::{ConfigSource, ExecConfig},
     layout::{ExecutableLayout, HomeLayout, VersionBinary},
+    lifetime::Lifetime,
     metadata::SessionMetadata,
     protocol::TerminalSize,
     session::SessionEnvironment,
@@ -28,6 +29,7 @@ use std::{
 
 pub fn run(
     home: &Path,
+    _lifetime: Lifetime,
     command: CommandArgs,
     general: &LogFile,
     filter: Option<&str>,

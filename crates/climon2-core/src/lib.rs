@@ -9,6 +9,7 @@ mod identity;
 mod json;
 pub mod keys;
 pub mod layout;
+pub mod lifetime;
 pub mod metadata;
 pub mod protocol;
 pub mod selector;

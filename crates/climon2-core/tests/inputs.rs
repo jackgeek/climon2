@@ -1,5 +1,10 @@
 //! #29 recovered baseline / #17: exact argv and inherited session environment.
-use climon2_core::{cli::CliArgs, selector::Selector, session::*};
+use climon2_core::{
+    cli::{CliArgs, CommandArgs},
+    lifetime::Lifetime,
+    selector::Selector,
+    session::*,
+};
 use std::ffi::{OsStr, OsString};
 
 fn environment(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
@@ -16,7 +21,11 @@ fn value<'a>(env: &'a SessionEnvironment, name: &str) -> &'a OsStr {
 #[test]
 fn issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors() {
     let args = ["exec", "some command", "--flag", "", "a b", "日本語", "--"];
-    let CliArgs::Exec(command) = CliArgs::parse(args.map(OsString::from)).unwrap() else {
+    let CliArgs::Exec {
+        lifetime: Lifetime::Ordinary,
+        command,
+    } = CliArgs::parse(args.map(OsString::from)).unwrap()
+    else {
         panic!("exec")
     };
     assert_eq!(command.command, "some command");
@@ -24,8 +33,10 @@ fn issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors() {
         command.args,
         args[2..].iter().map(OsString::from).collect::<Vec<_>>()
     );
-    let CliArgs::Exec(literal) =
-        CliArgs::parse(["exec", "--", "-command", ""].map(OsString::from)).unwrap()
+    let CliArgs::Exec {
+        lifetime: Lifetime::Ordinary,
+        command: literal,
+    } = CliArgs::parse(["exec", "--", "-command", ""].map(OsString::from)).unwrap()
     else {
         panic!("exec")
     };
@@ -69,6 +80,56 @@ fn issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors() {
                 .exit_code(),
             2
         );
+    }
+}
+
+/// Confirmed scenario (headless sessions, #73/#78): `exec --headless [--]
+/// <command>` creates a headless session. `--` still ends climon2's options,
+/// so `exec -- --headless` runs a command literally named `--headless`, and
+/// nothing after the command is interpreted.
+#[test]
+fn exec_headless_selects_the_headless_lifetime_and_double_dash_keeps_it_literal() {
+    let parse = |args: &[&str]| CliArgs::parse(args.iter().map(OsString::from));
+    let exec = |lifetime, command: &str, args: &[&str]| CliArgs::Exec {
+        lifetime,
+        command: CommandArgs {
+            command: command.into(),
+            args: args.iter().map(OsString::from).collect(),
+        },
+    };
+    let headless = Lifetime::Headless;
+    let ordinary = Lifetime::Ordinary;
+    for (args, expected) in [
+        (
+            &["exec", "--headless", "cmd", "--headless", ""][..],
+            exec(headless, "cmd", &["--headless", ""]),
+        ),
+        (
+            &["exec", "--headless", "--", "--headless"],
+            exec(headless, "--headless", &[]),
+        ),
+        (
+            &["exec", "--headless", "--", "cmd", "--"],
+            exec(headless, "cmd", &["--"]),
+        ),
+        (
+            &["exec", "--", "--headless", "cmd"],
+            exec(ordinary, "--headless", &["cmd"]),
+        ),
+        (
+            &["exec", "cmd", "--headless"],
+            exec(ordinary, "cmd", &["--headless"]),
+        ),
+    ] {
+        assert_eq!(parse(args).unwrap(), expected, "{args:?}");
+    }
+    for bad in [
+        &["exec", "--headless"][..],
+        &["exec", "--headless", "--"],
+        &["exec", "--headless", ""],
+        &["exec", "--headless", "--", ""],
+    ] {
+        assert_eq!(parse(bad).unwrap_err().exit_code(), 2, "{bad:?}");
     }
 }
 
