@@ -1,7 +1,8 @@
 //! DOC-01 (Contract case for the part-1 daemon wire pages): every published
 //! example decodes to the values its page documents and re-encodes to the
 //! same bytes. The examples are read from the pages themselves, so the
-//! published text and the codec cannot drift apart.
+//! published text and the codec cannot drift apart. The same examples seed
+//! the member strictness sweep (COM-02).
 use climon2_core::wire::{
     Available, CommandFinal, CommandResult, ControlRecord, Counter, Error, Families, FatalCode,
     FatalError, Frame, InitialMetadata, Kill, Leave, Mode, Notification, NotificationSource, Open,
@@ -16,6 +17,7 @@ use climon2_core::{
     protocol::{self, HelloReply},
     wire::{Advertisement, Family, FrameLimit, FrameLimits},
 };
+use serde_json::{Map, Value};
 use std::num::NonZeroU32;
 use std::{fs, path::Path};
 
@@ -263,4 +265,173 @@ fn published_hello_advertisement_examples_round_trip_byte_identically() {
             .body(),
         revision1.as_bytes()
     );
+}
+
+/// The direction that receives `code` decodes it: request types go to the
+/// session daemon, all others to the client.
+fn decode(code: u8, body: &str) -> Result<(), FatalCode> {
+    let frame = Frame::new(code, body.as_bytes().to_vec());
+    match code {
+        0x30..=0x39 => Request::from_frame(&frame).map(drop),
+        _ => ServerMessage::from_frame(&frame).map(drop),
+    }
+}
+
+fn ok(result: &str) -> String {
+    format!(r#"{{"request_id":"1","outcome":"ok","result":{result},"error":null}}"#)
+}
+
+/// Valid part-1 records: every published example, then each documented shape
+/// that no page shows.
+fn part1_records() -> Vec<(u8, String)> {
+    let published = [
+        (0x30, "request-open.md"),
+        (0x37, "request-leave.md"),
+        (0x38, "request-kill.md"),
+        (0x40, "response.md"),
+        (0x41, "event-initial-metadata.md"),
+        (0x42, "event-title-changed.md"),
+        (0x43, "event-status-changed.md"),
+        (0x44, "event-notification.md"),
+        (0x45, "event-progress-changed.md"),
+        (0x4c, "event-command-final.md"),
+        (0x4d, "event-fatal-error.md"),
+    ];
+    let exit = r#"{"kind":"exit","code":0}"#;
+    let unpublished = [
+        (
+            0x30,
+            r#"{"request_id":"2","revision":1,"required_capabilities":["status-v1"],"optional_capabilities":[],"mode":"interactive","geometry":{"cols":80,"rows":24}}"#.to_owned(),
+        ),
+        (
+            0x40,
+            ok(
+                r#"{"kind":"opened","connection_id":"550e8400-e29b-41d4-a716-446655440000","selected_capabilities":["status-v1"]}"#,
+            ),
+        ),
+        (0x40, ok(r#"{"kind":"input_accepted","accepted_bytes":3}"#)),
+        (0x40, ok(r#"{"kind":"resize_accepted"}"#)),
+        (
+            0x40,
+            ok(r#"{"kind":"acquired","changed":true,"period":"2","restoration_id":"3"}"#),
+        ),
+        (
+            0x40,
+            ok(r#"{"kind":"ready","changed":true,"period":"2","restoration_id":"3"}"#),
+        ),
+        (0x40, ok(r#"{"kind":"viewing","changed":true,"viewing":true}"#)),
+        (0x40, ok(r#"{"kind":"left","attachment_detached":true}"#)),
+        (
+            0x40,
+            ok(&format!(
+                r#"{{"kind":"termination","command_result":{exit},"cleanup":"complete"}}"#
+            )),
+        ),
+        (
+            0x40,
+            ok(r#"{"kind":"focus","changed":true,"focused":true,"accepted_bytes":3}"#),
+        ),
+        (
+            0x40,
+            format!(
+                r#"{{"request_id":"1","outcome":"rejected","result":{{"kind":"known_final","command_result":{exit}}},"error":{{"code":"session_terminating","message":"ended"}}}}"#
+            ),
+        ),
+        (
+            0x40,
+            r#"{"request_id":"1","outcome":"failed","result":{"kind":"termination","command_result":{"kind":"signal","number":9,"name":null},"cleanup":"incomplete"},"error":{"code":"cleanup_failed","message":"busy"}}"#.to_owned(),
+        ),
+        (
+            0x41,
+            format!(
+                r#"{{"title":{{"available":true,"value":"vim"}},"status":{{"available":true,"value":{{"state":"completed","changed_at":"2026-11-06T12:00:00.000Z","episode_id":null}}}},"progress":{{"available":true,"value":{{"state":"normal","percent":50}}}},"command_result":{exit}}}"#
+            ),
+        ),
+        (
+            0x4c,
+            format!(r#"{{"command_result":{exit},"status":null}}"#),
+        ),
+    ];
+    published
+        .into_iter()
+        .map(|(code, page)| (code, example(page)))
+        .chain(unpublished)
+        .collect()
+}
+
+/// JSON pointers to `value` and every object nested inside it.
+fn objects(value: &Value, pointer: String) -> Vec<String> {
+    let children: Vec<(String, &Value)> = match value {
+        Value::Object(members) => members
+            .iter()
+            .map(|(key, member)| (format!("{pointer}/{key}"), member))
+            .collect(),
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (format!("{pointer}/{index}"), item))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let own = value.is_object().then_some(pointer);
+    own.into_iter()
+        .chain(
+            children
+                .into_iter()
+                .flat_map(|(pointer, child)| objects(child, pointer)),
+        )
+        .collect()
+}
+
+/// `record` as JSON text after `edit` changes the object at `pointer`.
+fn edited(record: &Value, pointer: &str, edit: impl FnOnce(&mut Map<String, Value>)) -> String {
+    let mut copy = record.clone();
+    edit(copy.pointer_mut(pointer).unwrap().as_object_mut().unwrap());
+    serde_json::to_string(&copy).unwrap()
+}
+
+/// `record` with the member `key` of the object at `pointer` written twice.
+/// JSON values cannot hold a repeated member, so a placeholder key is renamed
+/// in the text.
+fn repeated(record: &Value, pointer: &str, key: &str) -> String {
+    edited(record, pointer, |object| {
+        let twin = object[key].clone();
+        object.insert("\u{1}".into(), twin);
+    })
+    .replace(r#""\u0001""#, &format!(r#""{key}""#))
+}
+
+/// COM-02 (codec case): every member of every part-1 record, at every depth,
+/// is required even when null, appears once and is documented. Removing or
+/// repeating any member, or adding one to any object, is `invalid_record`.
+#[test]
+fn every_member_of_every_part1_record_is_required_unique_and_documented() {
+    for (code, body) in part1_records() {
+        assert_eq!(decode(code, &body), Ok(()), "{body}");
+        let record: Value = serde_json::from_str(&body).unwrap();
+        for pointer in objects(&record, String::new()) {
+            let mut variants = vec![edited(&record, &pointer, |object| {
+                object.insert("undocumented".into(), Value::Null);
+            })];
+            let keys = record
+                .pointer(&pointer)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .keys();
+            for key in keys {
+                variants.push(edited(&record, &pointer, |object| {
+                    object.remove(key);
+                }));
+                variants.push(repeated(&record, &pointer, key));
+            }
+            for variant in variants {
+                assert_eq!(
+                    decode(code, &variant),
+                    Err(FatalCode::InvalidRecord),
+                    "{variant}"
+                );
+            }
+        }
+    }
 }
