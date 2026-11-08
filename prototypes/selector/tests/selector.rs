@@ -82,7 +82,7 @@ fn opening_navigation_and_cancel_never_select_or_take_control() {
 }
 
 #[test]
-fn literal_filtering_and_paste_never_execute_monitor_actions() {
+fn filtering_and_paste_never_execute_monitor_actions() {
     let mut state = state();
     state.open();
     state.insert_search("bUiLd");
@@ -99,6 +99,51 @@ fn literal_filtering_and_paste_never_execute_monitor_actions() {
     assert!(!state.exiting);
     assert_eq!(state.selected, Some(1));
     assert!(state.input.is_empty());
+}
+
+#[test]
+fn fuzzy_search_matches_title_command_and_status() {
+    for (query, expected) in [
+        ("bUidL", vec![2]),
+        ("cargo test --workspce", vec![3, 2, 1]),
+        ("needs atention", vec![3]),
+        ("work", vec![3, 2, 1]),
+        ("bl", vec![]),
+        ("unrelated xyz", vec![]),
+    ] {
+        let mut state = state();
+        state.open();
+        state.insert_search(query);
+        assert_eq!(state.visible_ids(), expected, "{query}");
+    }
+}
+
+#[test]
+fn fuzzy_search_keeps_status_time_order_instead_of_similarity_order() {
+    let mut state = state();
+    state.sessions[0].title = "Build".into();
+    state.sessions[1].title = "Buidl".into();
+    state.sessions[2].title = "Build deploy".into();
+    state.open();
+    state.insert_search("buidl");
+    assert_eq!(state.visible_ids(), [3, 2, 1]);
+    assert_eq!(state.highlight, Some(1));
+}
+
+#[test]
+fn fuzzy_search_handles_unicode_titles_and_queries() {
+    for (title, query, expected) in [
+        ("Déploiement", "DÉPLOIMENT", vec![2]),
+        ("部署测试", "部署测验", vec![2]),
+        ("İy", "İx", vec![]),
+    ] {
+        let mut state = state();
+        state.sessions[1].title = title.into();
+        state.open();
+        state.insert_search(query);
+        assert_eq!(state.visible_ids(), expected, "{query}");
+        assert_eq!(state.highlight, expected.first().copied());
+    }
 }
 
 #[test]

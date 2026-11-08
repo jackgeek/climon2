@@ -424,6 +424,7 @@ dependencies = [
  "crossterm",
  "portable-pty",
  "ratatui",
+ "rust-fuzzy-search",
  "serde",
  "serde_json_lenient",
  "tempfile",
@@ -598,6 +599,12 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "rust-fuzzy-search"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a157657054ffe556d8858504af8a672a054a6e0bd9e8ee531059100c0fa11bb2"
 
 [[package]]
 name = "rustix"

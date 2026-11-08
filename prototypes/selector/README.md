@@ -22,9 +22,13 @@ Mouse clicks highlight only; wheel scrolls the list.
 
 **Ctrl+] then s** opens the selector; **Ctrl+] then x** exits;
 **Ctrl+] then j** selects the newest connected attention request.
-Search resets on opening and matches case-insensitive literal title, command
-arguments or displayed status (including failure details) while preserving
-status/time order. Paste normalizes whitespace and drops controls without
+Search resets on opening and matches title, command arguments or displayed
+status (including failure details) case-insensitively. Exact substring matches
+always qualify. Queries of at least three characters also qualify when
+`rust_fuzzy_search` reports trigram similarity of at least 0.5 against any field.
+Shorter queries use exact substrings only. Similarity does not change
+status/time order. Query length counts Unicode characters before lowercasing.
+Paste normalizes whitespace and drops controls without
 running shortcuts. Reordering preserves highlighted identity; asynchronous
 removal/loss of a search match clears the highlight rather than redirecting
 Enter to another session.

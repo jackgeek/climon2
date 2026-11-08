@@ -220,13 +220,19 @@ impl State {
 
     pub fn visible_ids(&self) -> Vec<u128> {
         let query = self.query.iter().collect::<String>().to_lowercase();
+        let allow_fuzzy = self.query.len() >= 3;
         let mut sessions: Vec<_> = self
             .sessions
             .iter()
             .filter(|session| {
-                session.label().to_lowercase().contains(&query)
-                    || session.command.to_lowercase().contains(&query)
-                    || session.status_text().to_lowercase().contains(&query)
+                [session.label(), &session.command, &session.status_text()]
+                    .into_iter()
+                    .any(|field| {
+                        let field = field.to_lowercase();
+                        field.contains(&query)
+                            || (allow_fuzzy
+                                && rust_fuzzy_search::fuzzy_compare(&query, &field) >= 0.5)
+                    })
             })
             .collect();
         sessions.sort_by_key(|session| {
