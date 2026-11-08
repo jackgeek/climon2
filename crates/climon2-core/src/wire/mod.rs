@@ -3,8 +3,19 @@
 //! share. It is platform-neutral and stateless. It frames, encodes and strictly
 //! validates records. Roles, ordering, authority and request-ID sequencing
 //! belong to the connection that owns them.
+//!
+//! Extend a direction by adding its record type, a `ControlRecord` impl and
+//! one decoder-table entry; binary records implement `to_frame` themselves.
 mod catalogue;
+mod families;
 mod frame;
+mod record;
+mod request;
+mod types;
 
 pub use catalogue::FatalCode;
+pub use families::{Families, Requested};
 pub use frame::{Frame, FrameLimit, WireError, read_frame, write_frame};
+pub use record::ControlRecord;
+pub use request::{Kill, Leave, Mode, Open, Request};
+pub use types::{Counter, Geometry};
