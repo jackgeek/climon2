@@ -271,7 +271,8 @@ No session selected
 ```
 
 The escape prefix followed by `x` exits with status 0; any other key is
-discarded, and Ctrl+C is a key, not an exit. SIGINT, SIGTERM and SIGHUP leave
+discarded, and Ctrl+C is a key, not an exit. Pastes are not yet exempt, so a
+pasted prefix and `x` also exit. SIGINT, SIGTERM and SIGHUP leave
 the same way with status 128 + signal. Resizing redraws the screen. On every
 exit the monitor returns your terminal to the normal shell state described for
 clients above, restores its settings (termios) exactly and never changes its
