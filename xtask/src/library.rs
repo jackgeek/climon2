@@ -29,18 +29,35 @@ fn verify_exports(path: &Path) -> io::Result<()> {
     let symbols =
         crate::quality::output(Command::new("nm").args(["-gUj", "-arch", "all"]).arg(path))?;
     let bootstrap = format!("_{}", native::BOOTSTRAP.to_string_lossy());
-    let text = String::from_utf8_lossy(&symbols.stdout);
-    let exported: Vec<_> = text
-        .lines()
-        .filter(|line| !line.is_empty() && !line.ends_with("):"))
-        .collect();
-    if exported.is_empty() || exported.iter().any(|symbol| *symbol != bootstrap) {
+    let listing = String::from_utf8_lossy(&symbols.stdout);
+    let slices = slices(&listing);
+    if slices.is_empty()
+        || slices
+            .iter()
+            .any(|symbols| *symbols != [bootstrap.as_str()])
+    {
         return Err(io::Error::other(format!(
-            "{} must export only {bootstrap}: {exported:?}",
+            "{} must export only {bootstrap} from every slice: {slices:?}",
             path.display()
         )));
     }
     Ok(())
+}
+
+/// Symbol names per architecture; a thin file has one unlabelled slice.
+fn slices(listing: &str) -> Vec<Vec<&str>> {
+    let mut slices: Vec<Vec<&str>> = Vec::new();
+    for line in listing.lines() {
+        if line.ends_with("):") && line.contains(" (for architecture ") {
+            slices.push(Vec::new());
+        } else if !line.is_empty() {
+            if slices.is_empty() {
+                slices.push(Vec::new());
+            }
+            slices.last_mut().unwrap().push(line);
+        }
+    }
+    slices
 }
 
 fn dlerror() -> io::Error {
