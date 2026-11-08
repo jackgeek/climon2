@@ -226,6 +226,7 @@ impl State {
             .filter(|session| {
                 session.label().to_lowercase().contains(&query)
                     || session.command.to_lowercase().contains(&query)
+                    || session.status_text().to_lowercase().contains(&query)
             })
             .collect();
         sessions.sort_by_key(|session| {

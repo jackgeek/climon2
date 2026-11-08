@@ -102,6 +102,41 @@ fn literal_filtering_and_paste_never_execute_monitor_actions() {
 }
 
 #[test]
+fn status_search_matches_displayed_status_and_failure_details_case_insensitively() {
+    for (query, expected) in [("SUCCEEDED", 1), ("signal 9", 2), ("NEEDS ATTENTION", 3)] {
+        let mut state = state();
+        state.sessions[0].status = Status::Completed;
+        state.sessions[0].outcome = Some(Outcome::Exit(0));
+        state.sessions[1].status = Status::Failed;
+        state.sessions[1].outcome = Some(Outcome::Signal(9));
+        state.open();
+        state.insert_search(query);
+        assert_eq!(state.visible_ids(), [expected], "{query}");
+        assert_eq!(state.highlight, Some(expected));
+    }
+}
+
+#[test]
+fn status_search_uses_effective_disconnection_and_invalidates_changed_matches() {
+    let mut state = state();
+    state.sessions[1].connected = false;
+    state.open();
+    state.insert_search("running");
+    assert!(state.visible_ids().is_empty());
+    state.query.clear();
+    state.cursor = 0;
+    state.insert_search("disconnected");
+    assert_eq!(state.visible_ids(), [2]);
+    assert_eq!(state.highlight, Some(2));
+    state.sessions[1].connected = true;
+    state.reconcile();
+    assert_eq!(state.highlight, None);
+    state.confirm();
+    assert_eq!(state.selected, Some(1));
+    assert!(state.menu);
+}
+
+#[test]
 fn asynchronous_changes_preserve_identity_and_cannot_redirect_enter() {
     let mut state = state();
     state.open();

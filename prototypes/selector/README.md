@@ -22,11 +22,12 @@ Mouse clicks highlight only; wheel scrolls the list.
 
 **Ctrl+] then s** opens the selector; **Ctrl+] then x** exits;
 **Ctrl+] then j** selects the newest connected attention request.
-Search resets on opening and matches case-insensitive literal title or command
-arguments while preserving status/time order. Paste normalizes whitespace and
-drops controls without running shortcuts. Reordering preserves highlighted
-identity; asynchronous removal/nonmatching titles clear the highlight rather
-than redirecting Enter to another session.
+Search resets on opening and matches case-insensitive literal title, command
+arguments or displayed status (including failure details) while preserving
+status/time order. Paste normalizes whitespace and drops controls without
+running shortcuts. Reordering preserves highlighted identity; asynchronous
+removal/loss of a search match clears the highlight rather than redirecting
+Enter to another session.
 
 Enter on a connected nonfinal session acquires control if needed and shows the
 synthetic live terminal. Enter on a disconnected/final session opens its retained
