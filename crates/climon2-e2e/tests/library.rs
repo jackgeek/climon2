@@ -10,6 +10,7 @@ mod support;
 use climon2_test_term::bin_path;
 use serde_json::{Value, json};
 use std::{
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -198,5 +199,44 @@ fn installed_library_table_reports_every_instance_call_unsupported() {
             "snapshot": UNSUPPORTED_OPERATION,
         })
     );
+    package.assert_clean();
+}
+
+/// LIB-01 Library case: the library loads from its absolute version path
+/// whatever `current`, the working directory and ambient fallback search
+/// paths name. Valid decoy copies sit in another version folder named by
+/// `current`, in the working directory and on `DYLD_FALLBACK_LIBRARY_PATH`
+/// (and `LD_LIBRARY_PATH`); the loaded image is still the requested file.
+/// LIB-02 Library case (wrong release): the identity is compiled in, not
+/// derived from the location, so the copy in the other version folder still
+/// reports its own release and an exact-version check can reject it.
+#[test]
+fn installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths() {
+    let package = Package::private();
+    let library = installed_library(&package);
+    let home = package.executable_home();
+    let misplaced = home.join("0.0.1").join(LIBRARY);
+    let private = home.parent().unwrap();
+    let directory = private.join("working directory");
+    let search = private.join("search path");
+    for decoy in [&misplaced, &directory.join(LIBRARY), &search.join(LIBRARY)] {
+        fs::create_dir_all(decoy.parent().unwrap()).unwrap();
+        fs::copy(&library, decoy).unwrap();
+    }
+    fs::write(home.join("current"), "0.0.1\n").unwrap();
+    let mut ambient = host(&library, &directory);
+    ambient
+        .env("DYLD_FALLBACK_LIBRARY_PATH", &search)
+        .env("LD_LIBRARY_PATH", &search);
+    let report = observe(ambient);
+    assert_eq!(report["status"], SUCCESS, "{report:#}");
+    assert_eq!(report["image"], library.to_str().unwrap());
+    assert_eq!(report["description_image"], library.to_str().unwrap());
+    assert_eq!(report["description"]["release"], version_folder(&library));
+    let misplaced = misplaced.canonicalize().unwrap();
+    let report = observe(host(&misplaced, &directory));
+    assert_eq!(report["image"], misplaced.to_str().unwrap());
+    assert_eq!(version_folder(&misplaced), "0.0.1");
+    assert_eq!(report["description"]["release"], version_folder(&library));
     package.assert_clean();
 }
