@@ -240,3 +240,39 @@ fn installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_sea
     assert_eq!(report["description"]["release"], version_folder(&library));
     package.assert_clean();
 }
+
+/// Defined external symbols of every architecture slice, from `nm`.
+fn exported_symbols(library: &Path) -> Vec<Vec<String>> {
+    let output = Command::new("nm")
+        .args(["-gUj", "-arch", "all"])
+        .arg(library)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let mut slices: Vec<Vec<String>> = Vec::new();
+    for line in String::from_utf8(output.stdout).unwrap().lines() {
+        if line.ends_with("):") && line.contains(" (for architecture ") {
+            slices.push(Vec::new());
+        } else if !line.is_empty() {
+            if slices.is_empty() {
+                slices.push(Vec::new());
+            }
+            slices.last_mut().unwrap().push(line.to_owned());
+        }
+    }
+    slices
+}
+
+/// DOC-01 named case (exported interface): every architecture slice of the
+/// installed library exports exactly the frozen bootstrap symbol, so Rust
+/// symbols, unwinding and allocators never cross the interface by name.
+#[test]
+fn installed_library_exports_only_the_frozen_bootstrap() {
+    let package = Package::new();
+    let slices = exported_symbols(&installed_library(&package));
+    assert!(!slices.is_empty());
+    for symbols in slices {
+        assert_eq!(symbols, ["_climon2_client_get_interface"]);
+    }
+    package.assert_clean();
+}
