@@ -21,7 +21,7 @@ and daemon wire pages assign exact agreed schemas, separately from implementatio
 |---|---|---|
 | [Client](../../GLOSSARY.md#sessions) to session daemon: [hello handshake](../../GLOSSARY.md#sessions) | Implemented and frozen | [Request](daemon-client/hello-request.md) and [reply](daemon-client/hello-reply.md). |
 | Client to session daemon: after hello | Current private protocol implemented; separate wire revision 1 agreed, not implemented | [Decision boundary](daemon-client/post-hello.md), [complete wire rules](daemon-client/core-v1.md). |
-| Monitor to [client library](../../GLOSSARY.md#sessions) | Complete native revision-1 specification agreed, not implemented | [Library embedding](library-embedding.md), [native contract/header/examples](monitor-client/core-v1.md), and [shared communication contract](#shared-in-process-communication-contract). |
+| Monitor to [client library](../../GLOSSARY.md#sessions) | Complete native revision-1 specification agreed. Only the library's [compatibility check](monitor-client/request-hello.md) bootstrap and description are implemented; every [function-table](TERMS.md#function-table) call reports `CM1_UNSUPPORTED_OPERATION`. The monitor side is not implemented. | [Library embedding](library-embedding.md), [native contract/header/examples](monitor-client/core-v1.md), and [shared communication contract](#shared-in-process-communication-contract). |
 | [Client executable](../../GLOSSARY.md#sessions) to same-release library | Same-release loading agreed, not implemented | [Library embedding](library-embedding.md). |
 | Monitor to [host](../../GLOSSARY.md#sessions) | Program-status advertising and toast bell agreed, not implemented | [Reports and bell](#monitor-to-host-status-and-bell). |
 
@@ -650,8 +650,11 @@ alone do not provide retry safety or exactly-once execution.
 
 ## Operation and event index
 
-### Monitor-client: agreed native revision 1, not implemented
+### Monitor-client: agreed native revision 1, bootstrap implemented
 
+Every release ships `libclimon2_client.dylib`, whose
+[compatibility check](monitor-client/request-hello.md) bootstrap and
+description are implemented. Every other entry below is agreed, not implemented.
 All entries inherit the [shared communication contract](#shared-in-process-communication-contract)
 and its semantic examples. The [header](monitor-client/client-v1.h),
 [complete native rules](monitor-client/core-v1.md) and per-page C examples
@@ -757,7 +760,9 @@ Examples are wire bodies, not native declarations or conformance evidence.
   and future evidence requirements above; plugin implementation remains deferred.
 - [Complete monitor-client interface schemas](https://github.com/jackgeek/climon2/issues/71):
   agreed [native revision 1](monitor-client/core-v1.md), exact fields/calls/events,
-  results/errors, ownership/cleanup/measurements and examples. Actual runtime
+  results/errors, ownership/cleanup/measurements and examples. The shipped
+  library implements the bootstrap and description
+  ([#75](https://github.com/jackgeek/climon2/issues/75)); other runtime
   interoperability and final monitor acceptance remain future evidence.
 - [Freeze daemon-client communication contract](https://github.com/jackgeek/climon2/issues/67):
   agreed [revision-1 post-hello wire](daemon-client/core-v1.md), passive

@@ -47,7 +47,9 @@ flowchart TB
     e2e -.->|"dev"| core
     e2e -.->|"dev"| install
     e2e -.->|"dev"| test_term
+    fixtures --> core
     fixtures -.->|"dev"| test_term
+    xtask --> core
     xtask --> install
 
     subgraph planned["Planned crate; not implemented"]
@@ -68,8 +70,12 @@ The monitor will consume discovery continuously and load version-matched client
 libraries in-process, with one client thread per [live session](../GLOSSARY.md#sessions). Its crate
 placement and the discovery crate's dependencies are not yet specified, so no
 additional crate names or edges are implied. Dynamic loading is shown in the
-artifact diagram, not as a Cargo dependency. The client library's planned
-`cdylib` form is an artifact decision, not a decision to add another crate.
+artifact diagram, not as a Cargo dependency. The client library's `cdylib`,
+`libclimon2_client.dylib`, is an artifact of `climon2-client`, not another
+crate. The `#[repr(C)]` declarations of its native interface live in
+`climon2-core`, so the client library, the client executable and the planned
+monitor share them without new edges; the library host fixture and xtask's
+release checks consume them to load the library.
 Ratatui is required for monitor rendering; third-party crates are deliberately
 excluded from this workspace-only diagram.
 

@@ -74,6 +74,73 @@ alternate screen blindly, so alternate-screen and other unknown state (for
 example the title) cannot be restored without a daemon response. On expiry
 pending output is discarded and the reset gets one non-blocking attempt.
 
+## Client library (`libclimon2_client.dylib`)
+
+This package's library target is also a cdylib (`crate-type = ["lib",
+"cdylib"]`), so every release ships `libclimon2_client.dylib` in its version
+folder, published atomically by the installer. It is an artifact, not another
+crate. It exports only the frozen `climon2_client_get_interface` bootstrap of
+[native client interface revision 1](../../docs/protocol/monitor-client/core-v1.md),
+using the shared `#[repr(C)]` declarations in `climon2_core::native`; Rust
+layouts, unwinding and allocators never cross it. The bootstrap and the table
+entries do no fallible work and allocate nothing, so this build never reports
+`CM1_INTERNAL_ERROR`; contained-panic reporting at every entry arrives with the
+instance lifecycle (#85).
+
+Requesting revision 1 returns one static, immutable description that lives
+until process exit, and the same pointer on every call:
+
+- `release`: the version folder name, compiled in (`CARGO_PKG_VERSION`). A copy
+  placed in another version's folder still reports its own release.
+- `capabilities`: empty (null, zero). No instance behaviour exists yet, so no
+  token is advertised.
+- `requirements`: provisional bounded values until the measurement job (#121)
+  records qualified ones. Each equals its default `monitor.limits` reservation
+  where one exists, plus 1 MiB of instance-local allocation, so a
+  default-configured monitor admits the release without raising a reservation:
+
+  | Field | Value | Bound |
+  |---|---:|---|
+  | `release_bytes` | 67,108,864 | `resources.release_bytes` |
+  | `instance_bytes` | 1,048,576 | nonzero, within `memory.client_bytes` |
+  | `owner_stack_bytes` / `worker_stack_bytes` | 2,097,152 each | nonzero, within `resources.stack_bytes` |
+  | `workers` | 2 | `resources.max_workers_per_client` |
+  | `instance_descriptors` | 8 | nonzero, within `resources.descriptors_per_client` |
+  | `load_descriptors` | 4 | `resources.descriptors_per_load` |
+
+- `functions`: all eleven entries. Until #85 and #93 implement them, each
+  fails with `CM1_UNSUPPORTED_OPERATION`, library origin and the stable error
+  code `unsupported_operation`; failed calls zero their nonnull output structs,
+  `notification` writes -1, and null outputs are never written.
+
+Any other revision returns `CM1_UNSUPPORTED_REVISION` and writes a null
+description; null output storage returns `CM1_INVALID_ARGUMENT`. The bootstrap
+carries the `test_hook_marker!`, so hooked and release builds stay
+distinguishable.
+
+Loaders open the absolute `<executable home>/<version>/libclimon2_client.dylib`
+with eager, local resolution; `current`, the working directory and
+`DYLD_FALLBACK_LIBRARY_PATH` do not change which file loads. dyld does,
+however, search `DYLD_LIBRARY_PATH` for the leaf name before an absolute
+`dlopen` path, so the shared loader (#84) must confirm which image it loaded.
+The library's install name is its build path; nothing links against it.
+
+`cargo test` builds the hooked dylib beside the test executables in
+`target/debug/deps/` (Cargo uplifts only binaries), where tests and the
+installer's `Payload::from_siblings` find it without nested builds. Release
+builds (`cargo build --release -p climon2-client`) uplift the unhooked dylib.
+
+| Scenario | Named test |
+|---|---|
+| LIB-01 Library: absolute exact-release load, one shared load | `installed_library_describes_revision_one_with_its_version_identity` (`climon2-e2e/tests/library.rs`) |
+| LIB-01 Library: `current`, working directory and fallback search paths; LIB-02 Library: misplaced copy reports its own release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` (`climon2-e2e`) |
+| LIB-02 Library: unsupported revisions and null output storage | `installed_library_rejects_other_revisions_without_a_description` (`climon2-e2e`) |
+| DOC-01: unsupported table calls follow the frozen call rules | `installed_library_table_reports_every_instance_call_unsupported` (`climon2-e2e`) |
+| DOC-01: exported symbol set is only the bootstrap | `installed_library_exports_only_the_frozen_bootstrap` (`climon2-e2e`) |
+| DOC-01 layout case | `rust_native_declarations_match_the_published_header` (`climon2-core/tests/native_layout.rs`) |
+| Hooked sibling dylib under `cargo test` | `workspace_client_library_is_a_hooked_sibling_of_the_test_executables` (`climon2-fixtures/tests/hooks.rs`) |
+| Release checks: architecture, exact version, hook markers, exported symbols | `release_checks_*` (`xtask/src/library.rs`), `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`) |
+
 ## Behavioral evidence
 
 `tests/bridge.rs` drives the real binary on real PTYs with local protocol peers:

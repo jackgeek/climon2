@@ -386,7 +386,10 @@ worker-isolation proofs, coverage-backed CRAP <= 5 and zero-survivor mutation.
 
 `xtask dist` requires an **arm64 macOS host** and both Rust macOS targets. It
 builds isolated, unhooked packages with deployment target 15.0, merges and
-ad-hoc signs each executable, and checks signatures, architectures and versions.
+ad-hoc signs each executable and the client library `libclimon2_client.dylib`,
+and checks signatures, architectures and versions. The library must also export
+only its bootstrap and describe exactly the archive's version; `release-check`
+applies those two checks to the local per-package release build too.
 It writes the universal archive, version-stamped `install.sh` and `SHA256SUMS`
 to `target/dist/`. Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
 

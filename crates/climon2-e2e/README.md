@@ -54,6 +54,16 @@ home, then both CLIs list both versions and both clients deliver command exit
 statuses. With no prior archive, the first-release gate explicitly reports that
 no compatibility evidence was fabricated.
 
+## Library layer
+
+`tests/library.rs` loads the installed `<executable home>/<version>/libclimon2_client.dylib`
+through the test-only `climon2-library-host` fixture, which uses only `dlopen`
+(`RTLD_NOW | RTLD_LOCAL`), `dlsym` of `climon2_client_get_interface` and the
+returned function table, never Rust calls, static linking or a mock table. The
+host prints its observations as JSON; the tests decide what is correct. In
+archive mode the same tests load the exact archive's universal library, so the
+CI archive job exercises both architectures' slices.
+
 ## Session continuity scenarios
 
 Detach and reattach, takeover and hand-back, the placeholder, kill, listing
@@ -88,6 +98,16 @@ session continuity (plan section 6.1), `tests/continuity.rs`.
 | ADRs 0001/0002/0005/#26/#39 actual previous/current archive compatibility, no fabricated previous release | `actual_previous_release_remains_live_across_current_archive_install` |
 | #19/#25 client panic after exec, diagnostic/log suffix, actual daemon leave policy | `debug_hook_client_panic_after_exec_logs_and_uses_daemon_leave_policy` |
 | #25/#39 actual release default INFO-or-above | smoke's `assert_archive_default_levels` in archive mode |
+
+### Library layer (`tests/library.rs`, #75)
+
+| Scenario | Named test |
+|---|---|
+| LIB-01 Library: absolute exact-release load; release text is the version folder name; one shared load and description; bounded requirements; no unimplemented capability | `installed_library_describes_revision_one_with_its_version_identity` |
+| LIB-01 Library: `current`, working directory and fallback search paths never change the loaded file; LIB-02 Library: a misplaced copy reports its own compiled-in release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
+| LIB-02 Library: unsupported revisions rejected with a null description; null output storage | `installed_library_rejects_other_revisions_without_a_description` |
+| DOC-01: all eleven table entries report unsupported operation by the frozen call rules | `installed_library_table_reports_every_instance_call_unsupported` |
+| DOC-01: every slice exports only the frozen bootstrap | `installed_library_exports_only_the_frozen_bootstrap` |
 
 ### Session continuity (plan section 6.1)
 

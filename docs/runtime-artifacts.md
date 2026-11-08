@@ -14,7 +14,7 @@ flowchart TB
             cli["climon2-cli<br/>CLI executable"]
             client["climon2-client<br/>client executable"]
             daemon["climon2-daemon<br/>session daemon executable"]
-            library[["libclimon2_client.dylib<br/>planned Rust cdylib on macOS"]]
+            library[["libclimon2_client.dylib<br/>Rust cdylib on macOS; C ABI bootstrap"]]
         end
         command(["Session command<br/>external executable"])
         monitor(["Monitor runtime: monitor / mon<br/>planned Ratatui TUI; executable placement undecided"])
@@ -29,7 +29,7 @@ flowchart TB
         daemon -->|"runs on session PTY"| command
         cli -.->|"monitor / mon; planned"| monitor
         monitor -.->|"loads session-version library; one client thread per live session"| library
-        client -.->|"loads same-release library; versioned C interface planned"| library
+        client -.->|"loads same-release library; planned"| library
         library -.->|"daemon-client communication; planned"| daemon
         monitor -.->|"consumes forwarded sessions over TCP/IP; future"| source_monitor
         browser -.->|"consumes forwarded terminal traffic over WebSocket; future"| monitor
@@ -43,17 +43,20 @@ flowchart TB
         daemon_fixture["climon2-daemon-fixture"]
         terminal_fixture["climon2-fixture"]
         tui_fixture["climon2-tui-fixture"]
+        library_host["climon2-library-host"]
 
         xtask -->|"runs builds and tests"| cargo
         xtask -->|"runs runtime probes"| cli
+        xtask -->|"loads in release checks"| library
         cargo -->|"runs"| tests
         tests -->|"uses directly or as a session command"| cli_fixture
         tests -->|"uses directly or as a session command"| daemon_fixture
         tests -->|"uses directly or as a session command"| terminal_fixture
         tests -->|"uses directly or as a session command"| tui_fixture
+        tests -->|"runs as the Library-layer host"| library_host
+        library_host -->|"loads through the C ABI"| library
     end
 
-    style library stroke-dasharray: 5 5
     style monitor stroke-dasharray: 5 5
     style source_monitor stroke-dasharray: 5 5
     style browser stroke-dasharray: 5 5
@@ -67,7 +70,13 @@ Installation relationships are outside this consumption diagram.
 
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
 
-**Current:** no climon2 dynamic library is built or shipped. Cargo's ordinary
+**Current:** every release builds and ships `libclimon2_client.dylib` in its
+version folder: a Rust cdylib artifact of `climon2-client` that exports only
+the frozen `climon2_client_get_interface` bootstrap. It implements the
+bootstrap and description of [native revision 1](protocol/monitor-client/core-v1.md);
+its instance calls report unsupported operation. Only test tooling loads it
+today, the library host fixture and xtask's release checks; the monitor's and
+client executable's loading remain planned. Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,
 are not separately loaded dynamic libraries. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
@@ -131,7 +140,7 @@ release-private dependency resolution, and explicit memory ownership.
 Every successfully opened library handle stays loaded until monitor exit,
 including handles rejected by later validation. Such releases remain in use
 until process exit; completed instance cleanup and joins do not unload them.
-These are planned relationships, not shipped artifacts. Complete interface
+These loading relationships are planned; only the artifact ships today. Complete interface
 declarations are specified in [native revision 1](protocol/monitor-client/core-v1.md),
 with explicit startup/role, ownership, cleanup and fresh-instance recovery calls.
 No new artifact or consumption arrow is added. Monitor-client communication and the

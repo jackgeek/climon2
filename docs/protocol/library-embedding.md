@@ -1,6 +1,11 @@
 # Client library embedding and lifetime
 
-**Status:** agreed design, not implemented. The
+**Status:** agreed design. Only the library side of the bootstrap is
+implemented: every installed version ships `libclimon2_client.dylib`, exporting
+only `climon2_client_get_interface`
+([#75](https://github.com/jackgeek/climon2/issues/75)). Loading by the
+[monitor](../../GLOSSARY.md#sessions) and the
+[client executable](../../GLOSSARY.md#sessions) is not implemented. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
 requirements. [Native revision 1](monitor-client/core-v1.md), confirmed in
 [#71](https://github.com/jackgeek/climon2/issues/71), publishes complete declarations,
