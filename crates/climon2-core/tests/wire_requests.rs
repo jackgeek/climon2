@@ -29,9 +29,9 @@ fn open_body(capabilities: &str, mode: &str) -> String {
 const NO_CAPABILITIES: &str = r#""required_capabilities":[],"optional_capabilities":[]"#;
 const MONITOR: &str = r#""mode":"monitor","geometry":null"#;
 
-/// COM-02: request IDs are canonical decimal strings from 1 through
-/// 18446744073709551615. A malformed ID is `invalid_request_id`; a missing one
-/// is a missing member.
+/// COM-02 (codec case): request IDs are canonical decimal strings from 1
+/// through 18446744073709551615. A malformed ID is `invalid_request_id`; a
+/// missing one is a missing member.
 #[test]
 fn request_ids_are_canonical_decimal_counters() {
     for (id, value) in [("1", 1), ("8", 8), ("18446744073709551615", u64::MAX)] {
@@ -74,8 +74,8 @@ fn request_ids_are_canonical_decimal_counters() {
     assert_eq!(request(LEAVE, "{}"), Err(FatalCode::InvalidRecord));
 }
 
-/// COM-02: no unknown, duplicate or undocumented members, and every listed
-/// field is required, including nullable fields that are null.
+/// COM-02 (codec case): no unknown, duplicate or undocumented members, and
+/// every listed field is required, including nullable fields that are null.
 #[test]
 fn requests_reject_unknown_duplicate_and_missing_members() {
     for body in [
@@ -112,8 +112,9 @@ fn requests_reject_unknown_duplicate_and_missing_members() {
     }
 }
 
-/// COM-02: bodies are complete UTF-8 JSON objects. Broken JSON or text is
-/// `invalid_json`; well-formed JSON of the wrong shape is `invalid_record`.
+/// COM-02 (codec case): bodies are complete UTF-8 JSON objects. Broken JSON or
+/// text is `invalid_json`; well-formed JSON of the wrong shape is
+/// `invalid_record`.
 #[test]
 fn requests_must_be_complete_utf8_json_objects() {
     for body in [
@@ -142,9 +143,9 @@ fn requests_must_be_complete_utf8_json_objects() {
     assert!(request(LEAVE, " {\n\"request_id\" : \"8\" } ").is_ok());
 }
 
-/// COM-02: unsigned fields are plain decimal integer tokens: no strings,
-/// signs, fractions or exponents. An unsupported but well-formed revision is
-/// the daemon's to reject.
+/// COM-02 (codec case): unsigned fields are plain decimal integer tokens: no
+/// strings, signs, fractions or exponents. An unsupported but well-formed
+/// revision is the daemon's to reject.
 #[test]
 fn unsigned_fields_are_plain_integer_tokens() {
     for (revision, value) in [("0", 0), ("1", 1), ("4294967295", u32::MAX)] {
@@ -167,9 +168,9 @@ fn unsigned_fields_are_plain_integer_tokens() {
     }
 }
 
-/// COM-01 / COM-02: capability arrays hold unique, case-sensitive strings;
-/// unknown families are preserved for the daemon to judge, and an Open's
-/// required and optional arrays never overlap.
+/// COM-01 / COM-02 (codec case): capability arrays hold unique, case-sensitive
+/// strings; unknown families are preserved for the daemon to judge, and an
+/// Open's required and optional arrays never overlap.
 #[test]
 fn capability_arrays_are_unique_case_sensitive_and_disjoint() {
     for (tokens, expected) in [
@@ -227,8 +228,8 @@ fn capability_arrays_are_unique_case_sensitive_and_disjoint() {
     );
 }
 
-/// COM-02: monitor mode has null geometry and interactive mode has a
-/// geometry of positive unsigned 32-bit columns and rows.
+/// COM-02 (codec case): monitor mode has null geometry and interactive mode has
+/// a geometry of positive unsigned 32-bit columns and rows.
 #[test]
 fn open_geometry_is_null_for_monitor_and_positive_for_interactive() {
     let geometry = |cols: u32, rows: u32| Geometry {
@@ -276,7 +277,8 @@ fn open_geometry_is_null_for_monitor_and_positive_for_interactive() {
     }
 }
 
-/// COM-02: an interactive Open encodes its documented members in order.
+/// COM-02 (codec case): an interactive Open encodes its documented members in
+/// order.
 #[test]
 fn an_interactive_open_encodes_its_documented_members_in_order() {
     let open = Open {
@@ -297,7 +299,7 @@ fn an_interactive_open_encodes_its_documented_members_in_order() {
     );
 }
 
-/// COM-02: the daemon decodes only request types; a server type is
+/// COM-02 (codec case): the daemon decodes only request types; a server type is
 /// `wrong_direction` and a type outside both ranges is `unknown_message_type`.
 #[test]
 fn requests_are_identified_by_type_and_direction() {

@@ -599,6 +599,10 @@ fn status_episodes_belong_only_to_attention_states() {
         };
         assert_eq!(changed.status(), &expected);
         assert_eq!(
+            changed.status().episode().map(Counter::get),
+            episode.trim_matches('"').parse().ok()
+        );
+        assert_eq!(
             StatusChanged::new(expected.clone()).unwrap().status(),
             &expected
         );
@@ -1025,8 +1029,8 @@ fn title_changes_distinguish_unset_from_empty() {
     }
 }
 
-/// COM-02 / STA-06 (codec case): notifications are normalized inert records
-/// from OSC 9, 99 or 777 with nullable source ID, title, body and episode.
+/// COM-02 (codec case): notifications are normalized inert records from
+/// OSC 9, 99 or 777 with nullable source ID, title, body and episode.
 #[test]
 fn notifications_are_normalized_records_from_known_sources() {
     for source in ["osc9", "osc99", "osc777"] {

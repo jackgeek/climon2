@@ -40,6 +40,8 @@ fn state(lifecycle: Lifecycle, attachments: u32, controlled: bool) -> Option<Ses
     SessionState::new(lifecycle, attachments, controlled)
 }
 
+/// COM-01 (codec case): the daemon still advertises exactly the frozen tokens
+/// and state; revision 1 is absent until the daemon speaks it.
 #[test]
 fn the_daemon_advertises_the_frozen_tokens_and_a_state_beside_the_mandatory_reply() {
     let snapshot = state(Lifecycle::Attached, 2, true).unwrap();

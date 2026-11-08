@@ -51,8 +51,8 @@ fn fatal(result: Result<Option<Frame>, WireError>) -> FatalCode {
     }
 }
 
-/// COM-02: partial reads and writes do not define messages; the length counts
-/// the type byte and body but not the four-byte prefix.
+/// COM-02 (codec case): partial reads and writes do not define messages; the
+/// length counts the type byte and body but not the four-byte prefix.
 #[test]
 fn revision1_frames_survive_partial_io_and_end_cleanly_at_a_frame_boundary() {
     let frame = Frame::new(0x37, br#"{"request_id":"8"}"#.to_vec());
@@ -72,8 +72,9 @@ fn revision1_frames_survive_partial_io_and_end_cleanly_at_a_frame_boundary() {
     assert!(read_frame(&mut reader, limit(19)).unwrap().is_none());
 }
 
-/// COM-02 / LIM-01: a frame exactly at the local ceiling is accepted; one byte
-/// more is `frame_too_large`, decided from the prefix before any body arrives.
+/// COM-02 / LIM-01 (codec case): a frame exactly at the local ceiling is
+/// accepted; one byte more is `frame_too_large`, decided from the prefix before
+/// any body arrives.
 #[test]
 fn the_local_frame_ceiling_admits_its_limit_and_rejects_one_byte_more() {
     let at_limit = Frame::new(0x40, vec![b'x'; 15]);
@@ -108,7 +109,8 @@ fn the_local_frame_ceiling_admits_its_limit_and_rejects_one_byte_more() {
     assert_eq!(unwritten.len(), 4 + 17);
 }
 
-/// COM-02: length zero cannot hold the type byte; length one is a type-only frame.
+/// COM-02 (codec case): length zero cannot hold the type byte; length one is a
+/// type-only frame.
 #[test]
 fn zero_length_is_invalid_and_a_type_only_frame_has_an_empty_body() {
     assert_eq!(
@@ -124,8 +126,9 @@ fn zero_length_is_invalid_and_a_type_only_frame_has_an_empty_body() {
     assert_eq!(limit(u32::MAX).get(), u32::MAX);
 }
 
-/// COM-02: a stream ending inside a prefix, type or body is `truncated_frame`;
-/// ending exactly between frames is closure, not an error or a final result.
+/// COM-02 (codec case): a stream ending inside a prefix, type or body is
+/// `truncated_frame`; ending exactly between frames is closure, not an error or
+/// a final result.
 #[test]
 fn a_stream_ending_inside_a_frame_is_truncated() {
     assert!(read_frame(&mut [].as_slice(), limit(16)).unwrap().is_none());
@@ -144,7 +147,8 @@ fn a_stream_ending_inside_a_frame_is_truncated() {
     }
 }
 
-/// COM-02: transport failures stay I/O errors; they are never wire validation codes.
+/// COM-02 (codec case): transport failures stay I/O errors; they are never wire
+/// validation codes.
 #[test]
 fn transport_failures_are_reported_as_io_errors() {
     match read_frame(&mut Broken, limit(16)) {
