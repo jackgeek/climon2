@@ -52,4 +52,4 @@ exact native types, error codes, and executable examples.
 [Wire Input](../daemon-client/request-input.md) assigns the binary
 [frame](../TERMS.md#frame) with request/period/restoration header and full-payload
 acceptance; it is not the native layout. Numerical bounds belong to
-[operational limits](https://github.com/jackgeek/climon2/issues/69).
+[operational limits](../../monitor-operational-limits.md#queues-and-transfers).

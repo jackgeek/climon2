@@ -21,7 +21,7 @@ Use the [overview](README.md), [domain glossary](../../GLOSSARY.md), and
 [session-status mechanics](../session-status.md) and their state machines remain
 unchanged. Selector layout belongs to [#60](https://github.com/jackgeek/climon2/issues/60),
 lifecycle/cleanup/selection fallback to the [agreed lifecycle contract](../monitor-lifecycle.md),
-numerical limits to [#69](https://github.com/jackgeek/climon2/issues/69), native
+numerical limits to the [agreed operational specification](../monitor-operational-limits.md), native
 declarations to [#71](https://github.com/jackgeek/climon2/issues/71), and the final
 acceptance matrix to [#62](https://github.com/jackgeek/climon2/issues/62).
 
@@ -43,6 +43,9 @@ The monitor parses those bytes into its own per-[session](../../GLOSSARY.md#sess
 paints its read-only Rust views. These views of cells, modes, cursor, and history
 are a planned addition; current `climon2-vt` is daemon-only and exposes no public
 cell views. No new workspace crate or executable placement is chosen.
+The [allocation-aware prerequisite](../monitor-operational-limits.md#allocation-aware-terminal-prerequisite)
+explicitly reopens the unbounded combining-data/infallible-interface assumptions
+for future monitor qualification. Current engine behavior is unchanged.
 Never write session bytes directly to the [host](../../GLOSSARY.md#sessions).
 The monitor parser must not send duplicate query replies; host replies remain
 monitor-local and bypass shortcut detection and real-user application input.
@@ -141,7 +144,7 @@ correlated outcome; never replay an
 revocation, disconnect, and invalid target gate input immediately.
 Respect supported synchronized updates for coherent frames, but do not stall
 required UI, selector, or exit progress. Numerical scheduling/rendering budgets
-remain #69.
+are in [operational limits](../monitor-operational-limits.md#ui-sampling-and-responsiveness).
 
 ## Normal history, alternate screen, and stale inspection
 
@@ -157,6 +160,9 @@ Scrolling alone changes neither application keyboard focus nor attention.
 On eviction, move an invalidated anchor to the oldest retained row and show an
 explicit [truncation notice](../../GLOSSARY.md#restoration-and-presentation).
 Do not pin unbounded history or jump automatically to live.
+Under memory pressure, [operational limits](../monitor-operational-limits.md#memory-history-and-admission)
+preserves the newest captured page and current screen state; never erase that
+page to admit another client.
 The alternate screen displays its own buffer; wheel never reveals normal history.
 Returning to normal restores that buffer/history. Without application mouse
 capture, alternate wheel becomes arrows only when alternate-scroll mode is on;
@@ -177,7 +183,8 @@ replacement acquisition. Recovery is automatic exponential passive backoff for
 transport loss, recoverable startup failure (including missing libraries), and
 safe worker panics; permanent rejection/invalid configuration and final outcomes
 stop it. Fresh instances wait for prior cleanup/join. No indeterminate work is
-replayed. Numerical backoff/budgets remain #69; all behavior is unimplemented.
+replayed. Numerical backoff/budgets are in
+[operational limits](../monitor-operational-limits.md); all behavior is unimplemented.
 
 ## Chrome, cursor, and host copy
 

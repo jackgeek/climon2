@@ -73,4 +73,4 @@ wait for old instance cleanup/join; never overlap running replacement instances,
 request automatic takeover or replay indeterminate work. The selected identity
 is retained through failure, without acquiring another session.
 Numerical retry schedules and budgets remain with
-[operational limits](https://github.com/jackgeek/climon2/issues/69).
+[operational limits](../../monitor-operational-limits.md#discovery-loading-and-start-scheduling).

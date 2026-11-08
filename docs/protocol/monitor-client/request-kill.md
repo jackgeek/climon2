@@ -24,7 +24,7 @@ not native layouts/calls.
 
 [#71](https://github.com/jackgeek/climon2/issues/71) owns native declarations.
 The [agreed lifecycle](../../monitor-lifecycle.md) owns recovery/cleanup policy;
-[#69](https://github.com/jackgeek/climon2/issues/69) owns numeric bounds/deadlines.
+[Operational limits](../../monitor-operational-limits.md#deadlines-and-progress) specifies numeric bounds/deadlines.
 Related: [session end](event-session-ended.md), [detach](request-detach.md).
 
 Planned [selector Delete](../../monitor-selector.md#delete-terminate-and-remove)

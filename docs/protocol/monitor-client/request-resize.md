@@ -35,7 +35,7 @@ The [communication decision](https://github.com/jackgeek/climon2/issues/66) owns
 the shared rules.
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign
 exact types, results, errors, and executable examples. Numerical budgets belong to
-[operational limits](https://github.com/jackgeek/climon2/issues/69).
+[operational limits](../../monitor-operational-limits.md#queues-and-transfers).
 
 The [agreed wire Resize](../daemon-client/request-resize.md) uses current period
 and [restoration IDs](../../../GLOSSARY.md#protocol-and-plugin-concepts) with requested geometry. Its acceptance result is distinct

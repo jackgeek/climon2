@@ -31,7 +31,7 @@ and [semantic examples](../README.md#semantic-examples), agreed in
 is a receipt barrier, not the monitor's applied barrier. Neither may be reused
 after a changed [connection generation](../TERMS.md#connection-generation).
 Required restoration boundaries cannot be dropped or lossily coalesced.
-[Operational limits](https://github.com/jackgeek/climon2/issues/69) owns remaining
+[Operational limits](../../monitor-operational-limits.md#deadlines-and-progress) specifies remaining
 deadlines and transfer budgets.
 
 [Wire Restoration complete](../daemon-client/event-restoration-complete.md)

@@ -61,8 +61,9 @@ must not overlap; selected ordering has no meaning.
 
 The hello advertisement separately bounds request and server frame lengths,
 including type and body. Actual numeric values, queue budgets, deadlines, and
-exhaustion policy belong to [#69](https://github.com/jackgeek/climon2/issues/69).
-No illustrative advertisement is a default. Representable geometry is not an
+exhaustion policy are in [operational limits](../../monitor-operational-limits.md).
+Illustrative advertisements do not assign defaults; the operational specification
+separately assigns configurable local frame ceilings. Representable geometry is not an
 operational size limit; application, clamping, rendering and resize semantics
 are in the [terminal contract](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness),
 with numeric supported limits/policy remaining #69.
@@ -358,7 +359,8 @@ message or fabricate successful confirmation.
 
 Queues are bounded by bytes, records and outstanding deliveries.
 [Backpressure](../TERMS.md#backpressure) must preserve required healthy-stream
-records, or explicitly fail the affected connection under #69 policy.
+records, or explicitly fail the affected connection under the
+[agreed operational policy](../../monitor-operational-limits.md#queues-and-transfers).
 Draining without releasing cannot bypass bounds. Other connections/control
 must progress independently. No required-record loss is excused by congestion.
 
@@ -368,7 +370,7 @@ must progress independently. No required-record loss is excused by congestion.
 declarations, tags/layouts, calls, native errors and executable examples.
 Map the wire to the public interface; do not copy JSON or wire IDs as an ABI.
 The [#63 terminal contract](../terminal-integration.md) owns rendering/application/
-resize semantics and optional Focus; #69 numeric limits, deadlines
+resize semantics and optional Focus; [operational limits](../../monitor-operational-limits.md) supplies numeric limits, deadlines
 and policy; [agreed lifecycle](../../monitor-lifecycle.md) recovery, concurrent
 shutdown, cleanup/fail-stop, selector removal and headless lifetime.
 
@@ -389,5 +391,6 @@ The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automat
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent
 cleanup/fail-stop, passive recovery and existing CLI kill of future headless
 sessions. These are future tests, not conformance/performance claims. Final
-acceptance #62, numerical budgets #69 and native declarations #71 remain open.
+acceptance #62 and native declarations #71 remain open. Numerical budgets are
+agreed in [operational limits](../../monitor-operational-limits.md), not implemented.
 Forwarding/security implementation remains deferred.

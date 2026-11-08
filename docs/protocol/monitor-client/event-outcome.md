@@ -55,5 +55,5 @@ even after closure/outcome/join. Cleanup stalls use bounded whole-process
 fail-stop, not thread termination, unloading or a false join/detach claim.
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign
 exact outcome types, reporting/cleanup declarations, and executable examples.
-[Operational limits](https://github.com/jackgeek/climon2/issues/69) owns
+[Operational limits](../../monitor-operational-limits.md#deadlines-and-progress) specifies
 startup/stall/shutdown deadlines, including clients that cannot join cleanly.

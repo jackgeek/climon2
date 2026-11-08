@@ -32,4 +32,4 @@ owns exact core declarations. Plugin schemas, API examples, and implementation
 remain deferred; no serialized [envelope](../TERMS.md#envelope) is used by this
 in-process contract. Plugin payload schemas belong to their extensions.
 See [extension requests](request-extension.md) and
-[operational limits](https://github.com/jackgeek/climon2/issues/69).
+[operational limits](../../monitor-operational-limits.md#payloads-and-parser-state).

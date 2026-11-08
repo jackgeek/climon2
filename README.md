@@ -207,7 +207,11 @@ Planned prefix+x and catchable signals coordinate concurrent shutdown of every
 owned instance. Accepted Leave, connection closure, final outcome, cleanup and
 join are separate evidence. Restore host state and clear root attention before
 diagnostics; stalled cleanup uses bounded whole-process failure, never a false
-detach/join claim or thread kill. Numerical budgets (#69), complete native
+detach/join claim or thread kill. The agreed
+[operational limits](docs/monitor-operational-limits.md) define planned
+`monitor.limits` configuration, numerical budgets, deadlines and evidence.
+Under pressure, local history shrinks to its newest captured page, never
+disappears entirely; resource-blocked sessions remain visible. Complete native
 declarations (#71) and final automated acceptance (#62) remain open. All of this
 is unimplemented; no general session-survival or native-crash isolation is added.
 Planned explicit exit succeeds only after required Leave outcomes, local cleanup/

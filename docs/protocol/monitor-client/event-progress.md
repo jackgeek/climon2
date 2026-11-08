@@ -50,8 +50,8 @@ Invalid application sequences leave the indicator unchanged; invalid wire
 records are not silently ignored.
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) still owns
 native representation, error codes, declarations and executable examples. The
-[operational limits](https://github.com/jackgeek/climon2/issues/69) own queue,
-rate, retention, and exhaustion budgets.
+[operational limits](../../monitor-operational-limits.md#payloads-and-parser-state) specify queue,
+retention and exhaustion budgets.
 
 No native event identifier, function or layout is assigned here.
 No [plugin](../../../GLOSSARY.md#protocol-and-plugin-concepts) implementation

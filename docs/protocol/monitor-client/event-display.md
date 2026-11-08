@@ -51,7 +51,7 @@ control/restoration/application after reconnect.
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) must specify
 exact native types, encodings, error codes, and executable examples. Chunk
 boundaries never change byte order; numerical transfer budgets remain #69.
-[Operational limits](https://github.com/jackgeek/climon2/issues/69) owns numerical
+[Operational limits](../../monitor-operational-limits.md#queues-and-transfers) specifies numerical
 budgets; no binary [frame](../TERMS.md#frame) maximum is assigned.
 
 [Wire Display](../daemon-client/event-display.md) is now specified separately:

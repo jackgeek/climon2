@@ -103,6 +103,13 @@ and local cleanup. Future headless creation changes only an explicitly headless
 session's zero-client lifetime; it does not select another crate or alter a
 current Cargo edge. No new crate or consumption arrow is introduced here.
 
+The agreed [operational limits](monitor-operational-limits.md), unimplemented,
+require allocation-aware terminal/parser updates and bounded discovery/queues/
+thread resources. Monitor reuse of `climon2-vt` must qualify its combining and
+auxiliary allocations; the narrow unchanged-engine/infallible-interface
+assumptions are reopened, not silently treated as bounded. No replacement
+engine, additional workspace crate or dependency edge is selected.
+
 Current edges come from workspace `Cargo.toml` files. This is a consumption
 index, not a replacement for the architecture decisions or their permitted
 dependency rules.

@@ -34,6 +34,13 @@ native [schemas](TERMS.md#schema) remain pending. No in-process
 are assigned by these pages.
 The existing daemon hello exchange is unaffected.
 
+The [operational-limits specification](../monitor-operational-limits.md) supplies
+agreed configurable queue/transfer/payload budgets, admission, deadlines, retry
+and required measurements. It adds no native framing or completed declarations.
+Resource-blocked sessions stay visible; pressure shortens captured history to a
+protected recent page, never silently evicts clients or erases that page.
+These requirements remain unimplemented.
+
 ## Who communicates?
 
 ```text
@@ -529,9 +536,9 @@ These are specification requirements, not checks passed by current code:
   detach, cleanup, and thread-completion reporting.
 - Representative input/display latency, event throughput, memory use, and
   global responsiveness measurements under normal operation, load, and stalls.
-  Numerical thresholds belong to #69.
+  Numerical thresholds are in the [agreed operational limits](../monitor-operational-limits.md).
 - Exact valid executable examples and schema fixtures in #71 after #67, #63,
-  #61, and #69 settle their contracts. Documentation-only checks are not
+  #61, and #69's agreed contracts. Documentation-only checks are not
   evidence of a working ABI.
 
 ### Remaining decision boundaries
@@ -545,7 +552,7 @@ contracts and remaining open decisions are distinguished below:
 | [Daemon wire #67](https://github.com/jackgeek/climon2/issues/67) | Agreed [wire revision 1](daemon-client/core-v1.md), not implemented. No remaining schema decision is delegated back to #67. |
 | [Terminal integration #63](https://github.com/jackgeek/climon2/issues/63) | Agreed [terminal contract](terminal-integration.md), including canonical monitor geometry and optional core Focus; not implemented. Numeric transfer budgets remain #69 and complete native declarations #71. |
 | [Lifecycle #61](https://github.com/jackgeek/climon2/issues/61) | Agreed [lifecycle contract](../monitor-lifecycle.md), not implemented: exponential passive recovery, concurrent truthful shutdown, bounded whole-process fail-stop, Delete/removal and headless lifetime. Numerical schedules remain #69; no general native-crash survival guarantee. |
-| [Operational limits #69](https://github.com/jackgeek/climon2/issues/69) | Numeric byte/record/object and aggregate bounds, progress/stall deadlines, scheduling/admission/exhaustion policy, transfer budgets, and measurement thresholds. |
+| [Operational limits #69](https://github.com/jackgeek/climon2/issues/69) | Agreed [numerical specification](../monitor-operational-limits.md), not implemented: configurable byte/record/object and aggregate budgets, progress/stall deadlines, fair admission, protected recent history, payload/transfer limits and measurement thresholds. |
 | [Interface schemas #71](https://github.com/jackgeek/climon2/issues/71) | Exact native declarations, record fields/tags/widths, handle and release operations, descriptor exposure, native capability reporting, timestamp/identity encodings, native error catalog, schema fixtures, and valid executable examples after the remaining decisions. It remains blocked; agreed wire focus-v1 and terminal semantics are not delegated back for redesign. |
 
 ## Compatibility, errors, and limits
@@ -569,8 +576,8 @@ or fabricated success.
 Use bounded per-client and monitor-wide queues with
 [backpressure](TERMS.md#backpressure), explicit failure reporting, and responsive
 monitor actions. Numerical budgets, startup concurrency, deadlines, and
-admission/exhaustion policies belong to
-[Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69).
+admission/exhaustion policies are specified in
+[Monitor operational limits](../monitor-operational-limits.md).
 No monitor-client frame maximum or request-ID width is currently assigned.
 
 ## Future plugin authors
@@ -717,7 +724,7 @@ Examples are wire bodies, not native declarations or conformance evidence.
   correlation/order, validation, compatibility, bounded progress, core metadata,
   and future evidence requirements above; plugin implementation remains deferred.
 - [Complete monitor-client interface schemas](https://github.com/jackgeek/climon2/issues/71):
-  remains open, with numerical limits still unresolved; owns exact fields,
+  remains open against the agreed numerical limits; owns exact fields,
   calls/events, results, errors, and examples against the agreed lifecycle.
 - [Freeze daemon-client communication contract](https://github.com/jackgeek/climon2/issues/67):
   agreed [revision-1 post-hello wire](daemon-client/core-v1.md), passive
@@ -730,7 +737,8 @@ Examples are wire bodies, not native declarations or conformance evidence.
   concurrent shutdown/fail-stop, truthful outcomes, selector removal and
   headless zero-client lifetime.
 - [Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69):
-  numerical bounds, progress, admission, and exhaustion.
+  agreed [numerical bounds, progress, admission and exhaustion](../monitor-operational-limits.md);
+  unimplemented, with boundary/stall/cleanup and measurement obligations.
 - [Final automated monitor acceptance](https://github.com/jackgeek/climon2/issues/62):
   remains open; executable evidence must include the lifecycle obligations.
 

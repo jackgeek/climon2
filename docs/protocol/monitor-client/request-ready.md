@@ -30,6 +30,7 @@ Readiness alone does not set
 The wire page supplies exact fields, success/no-change result, errors and a
 valid wire example. Those are not native layouts/calls.
 [#71](https://github.com/jackgeek/climon2/issues/71) owns native declarations,
-[#63](https://github.com/jackgeek/climon2/issues/63) application mechanics and
-[#69](https://github.com/jackgeek/climon2/issues/69) numeric bounds/deadlines.
+[#63](https://github.com/jackgeek/climon2/issues/63) owns application mechanics.
+[Operational limits](../../monitor-operational-limits.md#deadlines-and-progress)
+specifies numeric bounds/deadlines.
 Related: [completion](event-restoration-complete.md), [viewing](request-viewing.md).

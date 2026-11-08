@@ -110,8 +110,9 @@ If cleanup exceeds its eventual budget, attempt
 the whole monitor process. Never
 claim a stalled thread joined or a lost Leave response succeeded.
 Load/start concurrency, progress deadlines, and admission/exhaustion policies
-belong to [operational limits](https://github.com/jackgeek/climon2/issues/69).
-This document assigns no numerical budgets.
+are specified in [operational limits](../monitor-operational-limits.md).
+That agreed, unimplemented specification accounts for thread/worker/descriptor
+reservations and retained per-release resources, not just ordinary queue bytes.
 
 ## Per-instance inputs and memory
 
@@ -164,7 +165,8 @@ cleanup uses whole-process fail-stop, not another attempt. Keep opened library
 handles loaded until process exit. Recovery never requests takeover or replays
 indeterminate work; final outcomes stop retry. The
 [lifecycle contract](../monitor-lifecycle.md#history-and-passive-recovery) owns
-policy; #69 owns numerical initial delay, cap and any jitter.
+policy; [operational limits](../monitor-operational-limits.md#passive-retry)
+supplies configurable delay, cap and jitter.
 
 This is not native-crash isolation. Abort, native faults, and panic-abort builds
 can terminate the monitor and every hosted client. No new session-survival

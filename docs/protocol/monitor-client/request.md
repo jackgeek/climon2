@@ -45,6 +45,6 @@ by assumption. The public local-rejection rule above remains unchanged.
 owns these agreed rules. See the [response page](response.md) for outcomes.
 [Complete monitor-client interface schemas](https://github.com/jackgeek/climon2/issues/71)
 must assign exact identifier widths, argument types, result codes, and executable
-examples; [operational limits](https://github.com/jackgeek/climon2/issues/69)
+examples; [operational limits](../../monitor-operational-limits.md)
 owns numerical bounds. No serialized [envelope](../TERMS.md#envelope) is used.
 Executable C call examples cannot be validly published before #71.

@@ -31,7 +31,7 @@ The [grant](../../../GLOSSARY.md#attachment-and-control) precedes this start and
 and completion. No lossy coalescing or dropped boundaries is permitted.
 The [connection generation](../TERMS.md#connection-generation) remains distinct
 from both restoration and control identities.
-[Operational limits](https://github.com/jackgeek/climon2/issues/69) owns transfer
+[Operational limits](../../monitor-operational-limits.md#deadlines-and-progress) specifies transfer
 budgets, deadlines, and counter exhaustion.
 [Wire Restoration begin](../daemon-client/event-restoration-begin.md) assigns
 period, restoration ID and geometry. Application semantics are agreed above,

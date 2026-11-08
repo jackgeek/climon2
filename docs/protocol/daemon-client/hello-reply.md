@@ -84,7 +84,8 @@ The [approved contract](https://github.com/jackgeek/climon2/issues/67) adds
 32-bit integer limits counting type plus body, not the four-byte prefix.
 The entire advertisement must fit inside frozen hello's existing limit.
 These example numbers are **illustrative advertisements, not agreed defaults**;
-[#69](https://github.com/jackgeek/climon2/issues/69) chooses actual values.
+[Operational limits](../../monitor-operational-limits.md#configuration-and-communication-of-limits)
+assigns configurable local ceilings and how they interact with this advertisement.
 
 ```json
 {"session_id":"550e8400-e29b-41d4-a716-446655440000","climon2_version":"1.2.3","protocol":1,"capabilities":["daemon-wire-v1","monitor-v1","title-v1","status-v1","notification-v1","progress-v1","focus-v1"],"daemon_wire_v1":{"max_request_frame_bytes":1048576,"max_server_frame_bytes":1048576}}

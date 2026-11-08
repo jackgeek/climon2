@@ -4,8 +4,8 @@
 [Define monitor exit and failure behavior](https://github.com/jackgeek/climon2/issues/61)
 within [the monitor planning map](https://github.com/jackgeek/climon2/issues/57).
 It amends the earlier selector/history and session-management scope decisions.
-Numerical deadlines, retry intervals and retention budgets belong to
-[operational limits](https://github.com/jackgeek/climon2/issues/69); complete native
+Numerical deadlines, retry intervals and retention budgets are specified in
+[operational limits](monitor-operational-limits.md); complete native
 declarations belong to [interface schemas](https://github.com/jackgeek/climon2/issues/71).
 
 Read the [domain glossary](../GLOSSARY.md), [status mechanics](session-status.md),
@@ -29,8 +29,12 @@ affected row unavailable; successful clients remain usable.
 Keep known completed/failed outcomes after closure. Otherwise show disconnected
 with stale cached metadata, not a fabricated final outcome. Keep session identity
 and metadata for this monitor run unless explicitly removed. Terminal models and
-local scrollback are bounded by the operational-limits decision; unavailable or
-evicted history is labelled truthfully. No persisted startup archive is implied.
+local scrollback are bounded by the operational-limits decision. Memory pressure
+shortens captured history to its newest page, never completely erases that page
+or silently evicts a live client. Sessions with no received cache say so
+truthfully. Resource-blocked live rows remain visible and retry admission;
+failure to retain required identities is an explicit coordinated monitor failure.
+No persisted startup archive is implied.
 
 ## History and passive recovery
 
@@ -232,5 +236,6 @@ manual screenshots or assertions about this documentation:
   attachment loss; command completion and existing CLI kill of headless sessions.
 
 These obligations supplement [final monitor acceptance](https://github.com/jackgeek/climon2/issues/62).
-Exact budgets and complete native schemas remain in their owning tickets; no
+Exact budgets are in [operational limits](monitor-operational-limits.md);
+complete native schemas remain in their owning ticket. No
 production test conformance is claimed by this specification.

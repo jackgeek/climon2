@@ -35,5 +35,5 @@ explicitly rejected, unknown execution remains
 The wire page supplies exact fields, result/errors and a valid wire example,
 not native layouts/calls. [#71](https://github.com/jackgeek/climon2/issues/71)
 owns native declarations and executable examples; bounds remain
-[#69](https://github.com/jackgeek/climon2/issues/69).
+[operational limits](../../monitor-operational-limits.md#queues-and-transfers).
 Related: [viewing](request-viewing.md), [status](event-session-status.md).

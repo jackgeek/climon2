@@ -112,6 +112,14 @@ never an individual thread or loaded library. Connected revoked sessions show
 their placeholder, not cached history. Selector Delete uses the existing Kill
 semantics and adds confirmed termination/removal, not another runtime artifact.
 
+The agreed [operational limits](monitor-operational-limits.md), unimplemented,
+bound admission, queues, client threads/workers/descriptors and retained shared
+release resources. Resource-blocked rows remain visible; history pressure
+preserves a recent page. Unsafe growth/cleanup is explicit failure, not client
+eviction or unloading. Allocation-aware terminal qualification reopens the
+narrow unbounded-engine assumption; it chooses no new executable/library or
+consumption arrow, and does not sandbox trusted native code.
+
 The client executable will also load its same-release library for ordinary
 operations. The monitor node represents a runtime role, not a decision to ship
 an executable named `climon2-monitor`.

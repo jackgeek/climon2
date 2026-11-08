@@ -93,6 +93,9 @@ history read-only, without acquisition. Chrome says Disconnected, Succeeded or
 Failed, including the actual known exit code or signal for failure.
 Succeeded is a display label for existing `completed`, not a new daemon status.
 Missing cache is explicit; never invent terminal content or a final result.
+The agreed [operational limits](monitor-operational-limits.md) shorten already-
+captured history to its newest page under pressure, never erase that page
+entirely or silently evict live clients. Resource-blocked sessions stay visible.
 History inspection cannot accept application input or acknowledge attention.
 Disconnected history overlays exactly `Reconnecting...` while passive recovery
 is scheduled or active; permanent rejection instead shows a disconnected/error
@@ -162,8 +165,8 @@ Animation never blocks session switching, selector input, resize or exit.
 
 Accepted prototype timings are 400 ms drawing, 2 seconds title hold,
 300 ms text fade, then 400 ms erasure. These are visual trials;
-final operational/rendering/queue budgets belong to
-[operational limits](https://github.com/jackgeek/climon2/issues/69).
+final operational/rendering/queue budgets are specified in
+[operational limits](monitor-operational-limits.md#ui-sampling-and-responsiveness).
 Too-small screens remain explicit, retain clients/control/models and global
 commands, and never send invalid application geometry or buffer input.
 

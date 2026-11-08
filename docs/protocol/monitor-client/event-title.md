@@ -76,7 +76,7 @@ percent-encoded [OSC](../TERMS.md#osc); source invalid
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) still owns
 native fields/tags, declarations and executable examples, preserving
 [#66's agreed communication rules](https://github.com/jackgeek/climon2/issues/66).
-[Operational limits](https://github.com/jackgeek/climon2/issues/69) owns numerical
+[Operational limits](../../monitor-operational-limits.md#payloads-and-parser-state) specifies numerical
 bounds and progress.
 
 Users do not set terminal titles through climon2. Future user-assigned session

@@ -36,6 +36,8 @@ No response/[request ID](../TERMS.md#request-id) or defaults/unknown members.
 Malformed/unsupported events follow the fatal
 [validation rules](core-v1.md#framing-and-validation).
 Required healthy-stream updates cannot silently disappear under congestion;
-bounds/exhaustion policy #69 remain open. No archive or naming
+bounds/exhaustion policy are in
+[operational limits](../../monitor-operational-limits.md#payloads-and-parser-state).
+No archive or naming
 [API](../TERMS.md#api) is added.
 Related: [public title mapping](../monitor-client/event-title.md).

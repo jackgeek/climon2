@@ -41,7 +41,7 @@ The [communication decision](https://github.com/jackgeek/climon2/issues/66) owns
 the shared rules.
 [Interface schemas](https://github.com/jackgeek/climon2/issues/71) must assign
 exact arguments, results, errors, and executable examples.
-[Operational limits](https://github.com/jackgeek/climon2/issues/69) owns deadlines.
+[Operational limits](../../monitor-operational-limits.md#deadlines-and-progress) specifies deadlines.
 
 [Wire Leave](../daemon-client/request-leave.md) removes registration/membership
 before succession and closes after its response. Its `attachment_detached`

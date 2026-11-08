@@ -512,7 +512,8 @@ stop retries with explicit errors. Definitive completion also stops retries.
 Wait for previous-instance deliveries/handles, workers and thread cleanup/join
 before any fresh attempt; never overlap replacement instances.
 The [agreed, unimplemented lifecycle contract](monitor-lifecycle.md) owns these
-rules; numerical delays/caps/jitter remain with operational limits.
+rules; [operational limits](monitor-operational-limits.md#passive-retry)
+specifies numerical delays/caps/jitter.
 Reconnect passively and refresh status/title without automatically taking
 control, even if the session remains selected. Explicit user action resumes
 control; apply a fresh valid restoration before presenting content as current
@@ -534,8 +535,11 @@ See the [history and replacement contract](protocol/terminal-integration.md#norm
 
 This does not permit live read-only mirroring after revocation, recover output
 that was never received, or record every alternate-screen update. Per-session/
-aggregate retention limits and exhaustion behavior belong to
-[operational limits](https://github.com/jackgeek/climon2/issues/69).
+aggregate retention limits and exhaustion behavior are specified in
+[operational limits](monitor-operational-limits.md#memory-history-and-admission).
+Memory pressure shortens captured history to its newest page, never erases that
+page to admit another client. Preserve the last safely captured page if a new
+model update is explicitly rejected for exceeding allocation limits.
 The approved [succession rules](protocol/daemon-client/core-v1.md#membership-and-succession)
 amend final-attachment assumptions: controller departure by detach or loss
 first hands back to the most recently controlling attachment, otherwise promotes
@@ -611,8 +615,9 @@ validation and notification identities are now agreed in #67, not implemented.
 The [lifecycle specification](monitor-lifecycle.md) now agrees recovery,
 concurrent shutdown, truthful Leave/closure/outcome/cleanup/join evidence,
 bounded whole-process fail-stop and headless lifetime, all unimplemented.
-Native declarations (#71), numerical budgets/rate limits/retry intervals/
-retention (#69), and final automated acceptance (#62) remain open.
+The [operational specification](monitor-operational-limits.md) now agrees
+numerical budgets/rate limits/retry intervals/retention (#69), not implemented.
+Native declarations (#71) and final automated acceptance (#62) remain open.
 Terminal application is now agreed in the [#63 contract](protocol/terminal-integration.md),
 not implemented; its required real-monitor-host evidence includes history
 replacement, coherent resize, supported keys/mouse/paste, host/application focus,

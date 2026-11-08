@@ -29,5 +29,5 @@ exact native types, error codes, and executable examples.
 unsigned 32-bit columns/rows with period. This is separate from the current
 private [daemon](../../../GLOSSARY.md#sessions) schema and does not choose
 operational bounds or native layout.
-[Operational limits](https://github.com/jackgeek/climon2/issues/69) owns numerical
+[Operational limits](../../monitor-operational-limits.md#memory-history-and-admission) specifies numerical
 bounds not intrinsic to the chosen geometry contract.

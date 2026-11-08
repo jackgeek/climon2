@@ -63,8 +63,8 @@ retained separately. Local menu/episode/final deduplication follows
 [this monitor's own viewing](../daemon-client/core-v1.md#viewing-acknowledgement-and-local-notifications),
 never aggregate viewing. [Interface schemas](https://github.com/jackgeek/climon2/issues/71)
 still owns native fields/tags, declarations, errors and executable examples. The
-[operational limits](https://github.com/jackgeek/climon2/issues/69) own queue,
-assembly, rate, and exhaustion budgets.
+[operational limits](../../monitor-operational-limits.md#payloads-and-parser-state) specify queue,
+assembly and exhaustion budgets.
 
 No native identifier, function or layout is assigned here.
 Unknown traffic must follow the agreed wire and eventual native contracts, not an invented

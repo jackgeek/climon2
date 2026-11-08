@@ -8,6 +8,16 @@
 
 Evidence limits: earlier qualification ran against revision `bbb2cbf9470a6707b1205fbddbdb25109b14e2fd` (0.26.1-dev) and does not carry over. In 0.26.0 the combining marks of one cell are stored without a bound. Only the seams this choice touches are validated (front filter, sync timing, the alternate-screen swap, history accounting, serialization and derived rendering), including one cell carrying many zero-width marks. Alacritty 0.26.0 implements only `CSI ? 1049 h/l` for the alternate screen; modes 47 and 1047 are unknown to it.
 
+**Future monitor qualification amendment:** the agreed
+[operational limits](../monitor-operational-limits.md#allocation-aware-terminal-prerequisite)
+require allocation-aware bounded parser/model updates, including combining and
+auxiliary data, resize and restoration staging. This explicitly reopens the
+unchanged-engine/infallible-interface assumptions where necessary for monitor
+conformance. Row limits or a size check after allocation do not prove the bound.
+Reject unsafe growth explicitly while preserving the last safe recent page;
+never silently truncate accepted characters. No engine change is delivered by
+this specification, and current daemon behavior remains as described above.
+
 ## Live output policy and query authority
 
 A front filter that mirrors vte 0.15.0's state machine splits PTY output into complete tokens (text never split inside a UTF-8 sequence; partial tokens held across reads up to a 4096-byte body, oversized tokens dropped from engine and output). Every token updates the engine; one policy decides what reaches the controller's host:
