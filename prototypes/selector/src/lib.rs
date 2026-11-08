@@ -226,9 +226,8 @@ impl State {
             .sessions
             .iter()
             .filter(|session| {
-                [session.label(), &session.command, &session.status_text()]
-                    .into_iter()
-                    .any(|field| matcher.fuzzy_match(&field.to_lowercase(), &query).is_some())
+                let text = format!("{} {}", session.status_text(), session.label()).to_lowercase();
+                matcher.fuzzy_match(&text, &query).is_some()
             })
             .collect();
         sessions.sort_by_key(|session| {

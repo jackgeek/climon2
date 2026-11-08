@@ -91,7 +91,7 @@ fn filtering_and_paste_never_execute_monitor_actions() {
     state.query.clear();
     state.cursor = 0;
     state.insert_search("cargo");
-    assert_eq!(state.visible_ids(), [3, 2, 1]);
+    assert!(state.visible_ids().is_empty());
     state.query.clear();
     state.cursor = 0;
     state.insert_search("A\tB\n\u{1d}x\u{1b}");
@@ -102,14 +102,16 @@ fn filtering_and_paste_never_execute_monitor_actions() {
 }
 
 #[test]
-fn fuzzy_search_matches_title_command_and_status() {
+fn fuzzy_search_matches_only_displayed_status_and_title() {
     for (query, expected) in [
         ("bLd", vec![2]),
         ("bd", vec![2]),
-        ("ctw", vec![3, 2, 1]),
-        ("cargo test --workspce", vec![3, 2, 1]),
+        ("rGb", vec![2]),
+        ("brg", vec![]),
+        ("ctw", vec![]),
+        ("cargo test --workspce", vec![]),
         ("na", vec![3]),
-        ("work", vec![3, 2, 1]),
+        ("work", vec![]),
         ("bUidL", vec![]),
         ("unrelated xyz", vec![]),
     ] {
@@ -134,6 +136,27 @@ fn search_skips_nonmatching_session_characters_in_the_requested_examples() {
         assert_eq!(state.visible_ids(), [2], "{query} -> {title}");
         assert_eq!(state.highlight, Some(2));
     }
+}
+
+#[test]
+fn search_matches_across_status_and_title() {
+    let mut state = State::new(vec![session(1, "Build", Status::Running, 0)]);
+    state.open();
+    state.insert_search("rGb");
+    assert_eq!(state.visible_ids(), [1]);
+    assert_eq!(state.highlight, Some(1));
+}
+
+#[test]
+fn command_is_searchable_only_when_it_is_the_displayed_title_fallback() {
+    let mut state = State::new(vec![session(1, "Build", Status::Running, 0)]);
+    state.open();
+    state.insert_search("cargo");
+    assert!(state.visible_ids().is_empty());
+    state.sessions[0].title.clear();
+    state.reconcile();
+    assert_eq!(state.visible_ids(), [1]);
+    assert_eq!(state.highlight, None);
 }
 
 #[test]

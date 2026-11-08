@@ -23,10 +23,12 @@ Mouse clicks highlight only; wheel scrolls the list.
 **Ctrl+] then s** opens the selector; **Ctrl+] then x** exits;
 **Ctrl+] then j** selects the newest connected attention request.
 Search resets on opening and uses case-insensitive ordered-subsequence matching
-against title, command arguments or displayed status (including failure details)
-via `fuzzy-matcher`'s `SkimMatcherV2`: `bld` or `bd` matches `Build`, and `na`
-matches `Needs attention`. All query characters must occur in order within one
-field; gaps are allowed. Exact substrings also match.
+against one string: displayed status (including failure details), one space,
+then the displayed title/command fallback. Hidden command arguments are not
+searched separately. `fuzzy-matcher`'s `SkimMatcherV2` accepts `bld` or `bd`
+for `Build`, `na` for `Needs attention`, and `rgb` across `Running Build`.
+All query characters must occur in order across that text; gaps are allowed.
+Exact substrings also match.
 The same rule applies to short queries, with no similarity cutoff.
 Match scores do not change status/time order.
 Paste normalizes whitespace and drops controls without
