@@ -34,9 +34,11 @@ Clicking a row only highlights it; wheel scrolls the list without selecting.
 
 Search is case-insensitive ordered-subsequence matching against title, command
 arguments or displayed status, including failure details. All query characters
-must occur in order within any one field; gaps are allowed. For example, `bld`
-or `bd` matches `Build`, and `na` matches `Needs attention`. Exact substrings
-also match. Characters cannot be reordered, substituted or absent.
+must occur in order within any one field; nonmatching characters in the field
+are skipped. For example, `bld` matches `Build`, `blr` matches `Build Replica`,
+and `Fo Br` matches `foo bar`. Spaces in the query participate in matching.
+Exact substrings also match. Query characters cannot be reordered, substituted
+or absent.
 Use `fuzzy-matcher`'s `SkimMatcherV2` for this ordered-subsequence matching, not
 trigram similarity or edit-distance typo matching. There is no similarity
 cutoff or special short-query rule. Match scores never change the
