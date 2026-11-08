@@ -32,9 +32,11 @@ Left/Right/Home/End edit it. Up/Down and PageUp/PageDown navigate the highlight,
 without wrapping, and keep it visible. Enter confirms the highlight from search.
 Clicking a row only highlights it; wheel scrolls the list without selecting.
 
-Search is case-insensitive literal substring matching against title or command
-arguments, not fuzzy ranking. Search changes retain a still-matching highlight,
-otherwise highlight the first match. Clearing search does not resurrect an old
+Search is case-insensitive literal substring matching against title, command
+arguments or displayed status, including failure details, not fuzzy ranking.
+Status matching uses the effective display state (for example Disconnected),
+not a stale underlying activity status. Search changes retain a still-matching
+highlight, otherwise highlight the first match. Clearing search does not resurrect an old
 highlight. Bracketed paste inserts search data only: line breaks/tabs become
 spaces, other controls are discarded, and pasted commands never execute.
 Session-provided text remains inert, with
