@@ -121,6 +121,22 @@ fn fuzzy_search_matches_title_command_and_status() {
 }
 
 #[test]
+fn search_skips_nonmatching_session_characters_in_the_requested_examples() {
+    for (query, title) in [
+        ("bld", "Build"),
+        ("blr", "Build Replica"),
+        ("Fo Br", "foo bar"),
+    ] {
+        let mut state = state();
+        state.sessions[1].title = title.into();
+        state.open();
+        state.insert_search(query);
+        assert_eq!(state.visible_ids(), [2], "{query} -> {title}");
+        assert_eq!(state.highlight, Some(2));
+    }
+}
+
+#[test]
 fn fuzzy_search_keeps_status_time_order_instead_of_similarity_order() {
     let mut state = state();
     state.sessions[0].title = "Build".into();
