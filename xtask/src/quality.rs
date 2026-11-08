@@ -398,7 +398,7 @@ pub fn tooling_probe(root: &Path) -> io::Result<()> {
 fn install_instrumented_probe(workspace: &Path, build: &Path) -> io::Result<PathBuf> {
     let payload = workspace.join("payload");
     fs::create_dir(&payload)?;
-    for binary in ["climon2", "climon2-cli", "climon2-daemon", "climon2-client"] {
+    for binary in std::iter::once("climon2").chain(climon2_install::COMPANIONS) {
         fs::copy(build.join("debug/isolation-cli"), payload.join(binary))?;
     }
     let payload = climon2_install::Payload::from_siblings(&payload, env!("CARGO_PKG_VERSION"))?;

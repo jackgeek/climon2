@@ -1,7 +1,7 @@
 # climon2-install
 
 The macOS installer is shipped as `install` beside `climon2` and the release's
-`<version>/{climon2-cli,climon2-daemon,climon2-client}` directory.
+`<version>/{climon2-cli,climon2-daemon,climon2-client,climon2-monitor}` directory.
 
 `install [--dir <directory>]` defaults to `$HOME/.local/share/climon2`.
 It prints a shell-quoted `export PATH=…` hint only when the canonical destination
@@ -15,9 +15,12 @@ changes signing/quarantine attributes. Errors produce one
 - `Payload::beside_installer()` resolves the running installer's canonical path
   and uses the compiled package version.
 - `Payload::from_siblings(directory, version)` reads `climon2`, `climon2-cli`,
-  `climon2-daemon` and `climon2-client` directly from one Cargo output directory.
-  Packaged tests can therefore install the exact instrumented sibling binaries,
-  without nested Cargo invocations or uninstrumented substitutes.
+  `climon2-daemon`, `climon2-client` and `climon2-monitor` directly from one
+  Cargo output directory. Packaged tests can therefore install the exact
+  instrumented sibling binaries, without nested Cargo invocations or
+  uninstrumented substitutes.
+- `COMPANIONS` names the executables of a version folder, in installation
+  order; xtask's tooling probe and install-script test build payloads from it.
 - `Payload::version()` returns the validated core `VersionName`.
 - `install(&payload, destination)` returns `InstallReport { executable_home }`,
   with a canonical destination. It does not print or inspect environment.

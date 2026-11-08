@@ -313,6 +313,7 @@ fn extract_payload(archive: &std::ffi::OsStr, directory: &Path) -> (PathBuf, Str
         format!("{root}/{version}/climon2-cli"),
         format!("{root}/{version}/climon2-daemon"),
         format!("{root}/{version}/climon2-client"),
+        format!("{root}/{version}/climon2-monitor"),
         format!("{root}/LICENSE"),
         format!("{root}/README.md"),
     ];

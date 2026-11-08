@@ -27,7 +27,7 @@ impl Release {
         let siblings = Path::new(env!("CARGO_BIN_EXE_xtask")).parent().unwrap();
         fs::copy(siblings.join("climon2-install"), payload.join("install")).unwrap();
         fs::copy(siblings.join("climon2"), payload.join("climon2")).unwrap();
-        for binary in ["climon2-cli", "climon2-daemon", "climon2-client"] {
+        for binary in climon2_install::COMPANIONS {
             let path = payload.join(version).join(binary);
             fs::write(&path, "#!/bin/sh\nprintf 'script-payload-ok\\n'\n").unwrap();
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
