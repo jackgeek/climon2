@@ -13,6 +13,8 @@ fn value<'a>(env: &'a SessionEnvironment, name: &str) -> &'a OsStr {
     &env.values.iter().find(|(key, _)| key == name).unwrap().1
 }
 
+/// #29, #74 (INP-01 derived refusal): `monitor` and its alias `mon` take no
+/// arguments; anything after either word is a usage error.
 #[test]
 fn issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors() {
     let args = ["exec", "some command", "--flag", "", "a b", "日本語", "--"];
@@ -47,6 +49,12 @@ fn issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors() {
         CliArgs::parse(["kill", "01234567"].map(OsString::from)).unwrap(),
         CliArgs::Kill(Selector::parse(OsStr::new("01234567")).unwrap())
     );
+    for monitor in ["monitor", "mon"] {
+        assert_eq!(
+            CliArgs::parse([monitor].map(OsString::from)).unwrap(),
+            CliArgs::Monitor
+        );
+    }
     for bad in [
         vec![],
         vec!["exec"],
@@ -62,6 +70,9 @@ fn issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors() {
         vec!["kill"],
         vec!["kill", "short"],
         vec!["kill", "01234567", "extra"],
+        vec!["monitor", "extra"],
+        vec!["mon", ""],
+        vec!["mon", "--help"],
     ] {
         assert_eq!(
             CliArgs::parse(bad.into_iter().map(OsString::from))

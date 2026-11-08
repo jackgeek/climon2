@@ -1,13 +1,14 @@
 # climon2-cli
 
 CLI orchestration for `exec COMMAND [ARG...]`, `attach SESSION-ID`,
-`kill SESSION-ID` and `list [--json]`. The usage string is
-`usage: climon2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json]`.
+`kill SESSION-ID`, `list [--json]` and `monitor` (alias `mon`). The usage string is
+`usage: climon2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.
 A successful exec or attach replaces the CLI process with the metadata
-version's client. Usage errors (including a malformed session selector) are 2;
+version's client; a successful monitor replaces it with the CLI's own version's
+`climon2-monitor`. Usage errors (including a malformed session selector) are 2;
 climon2 failures are 125; daemon startup preserves 126/127.
 
 Home is resolved, created and canonicalized once. Common dispatch opens the
@@ -44,6 +45,14 @@ Attach discovers live sessions and resolves an exact ID or unique prefix (8 to
 (`climon2 attach needs a terminal`), validates only the `client` configuration,
 and replaces the CLI with the version-matched client carrying an `attach`
 envelope, overwriting any inherited one.
+
+Monitor takes no arguments (any is a usage error, 2). After the common general
+log is opened, it finds `<executable home>/<own version>/climon2-monitor` with
+the same layout code used for the client and daemon, then replaces the CLI with
+it, passing no arguments or envelope: the handoff is between executables of one
+release and is not frozen. If that fails it reports
+`cannot start the climon2 <version> monitor: …` with 125. The monitor resolves
+the home and reads its configuration itself.
 
 Kill never reads configuration. It selects one live session the same way,
 requires the `kill` and `client-startup-v1` capabilities, and spawns that
