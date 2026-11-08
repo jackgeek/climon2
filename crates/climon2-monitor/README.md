@@ -80,7 +80,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | Spec #73 exit: content-free general log | `installed_monitor_logs_content_free_records_to_its_general_log` (e2e) |
 | INP-01 (pure input-router supplement): prefix+x across reads; everything else discarded; only the configured prefix | `prefix_then_x_exits_across_read_boundaries`, `every_other_key_is_discarded`, `only_the_configured_prefix_begins_the_action` (`src/keys.rs`) |
 | #74 risk proof: plain and hooked sibling binaries without nested builds | `cargo_builds_the_plain_or_hooked_monitor_binary_for_its_tests` (`tests/build.rs`); fixtures `workspace_binaries_contain_test_hooks`; xtask `release_check_builds_unhooked_binaries_in_a_private_target` |
-| #74 release checks: version and architecture | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`, `binary_check_rejects_a_single_architecture_monitor` |
+| #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`, `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
 
 Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), application input such
 as Ctrl+C (#109) and the universal archive's runtime on both architectures,

@@ -139,6 +139,11 @@ fn verify_binary(path: &Path) -> io::Result<()> {
             path.display()
         )));
     }
+    unhooked(path)
+}
+
+/// Release builds never enable `test-hooks`, so no shipped binary carries the marker.
+fn unhooked(path: &Path) -> io::Result<()> {
     if release::has_marker(&fs::read(path)?) {
         return Err(io::Error::other(format!(
             "{} contains test hooks",
@@ -172,6 +177,7 @@ fn stamped_script(template: &str, version: &str) -> io::Result<String> {
 mod tests {
     use super::*;
     use serde_json::{Value, json};
+    use std::path::PathBuf;
 
     fn packages(monitor: Option<&str>) -> Vec<Value> {
         let mut packages: Vec<_> = release::PACKAGES
@@ -199,10 +205,8 @@ mod tests {
         );
     }
 
-    /// #74: the universal-binary check rejects a monitor that is not exactly
-    /// arm64 plus x86_64, such as this host's single-architecture test build.
-    #[test]
-    fn binary_check_rejects_a_single_architecture_monitor() {
+    /// This workspace's monitor test build: one architecture, with test hooks.
+    fn built_monitor() -> PathBuf {
         let built = env::current_exe()
             .unwrap()
             .parent()
@@ -211,6 +215,14 @@ mod tests {
             .unwrap()
             .join("climon2-monitor");
         assert!(built.is_file(), "run cargo test --workspace first");
+        built
+    }
+
+    /// #74: the universal-binary check rejects a monitor that is not exactly
+    /// arm64 plus x86_64, such as this host's single-architecture test build.
+    #[test]
+    fn binary_check_rejects_a_single_architecture_monitor() {
+        let built = built_monitor();
         let scratch = tempfile::tempdir_in(built.parent().unwrap()).unwrap();
         let thin = scratch.path().join("climon2-monitor");
         fs::copy(&built, &thin).unwrap();
@@ -222,5 +234,14 @@ mod tests {
         .unwrap();
         let error = verify_binary(&thin).unwrap_err().to_string();
         assert!(error.contains("is not exactly arm64 + x86_64"), "{error}");
+    }
+
+    /// #74: the release binary check rejects a monitor that carries the
+    /// test-hook marker, such as this workspace's hook-enabled test build.
+    #[test]
+    fn binary_check_rejects_a_hooked_monitor() {
+        let built = built_monitor();
+        let error = unhooked(&built).unwrap_err().to_string();
+        assert_eq!(error, format!("{} contains test hooks", built.display()));
     }
 }
