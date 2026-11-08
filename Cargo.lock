@@ -199,6 +199,13 @@ name = "climon2-launcher"
 version = "0.1.0"
 
 [[package]]
+name = "climon2-monitor"
+version = "0.1.0"
+dependencies = [
+ "climon2-core",
+]
+
+[[package]]
 name = "climon2-platform"
 version = "0.1.0"
 dependencies = [
@@ -221,6 +228,7 @@ dependencies = [
  "climon2-client",
  "climon2-daemon",
  "climon2-install",
+ "climon2-monitor",
  "climon2-platform",
  "nix 0.31.3",
  "portable-pty",
