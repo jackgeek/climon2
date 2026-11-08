@@ -614,7 +614,8 @@ fn rust_native_declarations_match_the_published_header() {
     );
 }
 
-/// The comparison is not vacuous: clang reports a single wrong value by name.
+/// DOC-01 layout case (oracle self-check): the comparison is not vacuous, so
+/// clang reports a single wrong value by name.
 #[test]
 fn a_layout_difference_is_reported_against_the_header() {
     let diagnostics = compile("_Static_assert(sizeof(cm1_bytes) == 24, \"cm1_bytes size\");")
