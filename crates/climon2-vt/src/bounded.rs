@@ -29,18 +29,18 @@ pub(crate) struct Bounded {
     processor: Processor<Unbuffered>,
     tokenizer: Tokenizer,
     geometry: Geometry,
-    /// The normal screen's admitted history limit.
-    limit: usize,
-    /// The most history rows the model may keep.
+    /// The normal screen's history rows the model shows.
     rows: usize,
-    /// The normal screen's history rows when last observed.
+    /// The engine's admitted history limit, in whole chunks: the engine
+    /// adds storage a chunk at a time, so it never holds more rows than the
+    /// limit and, once history is full, no row beyond it.
+    limit: usize,
+    /// The normal screen's history when last observed.
     seen: usize,
     /// Upper bounds on the cell extra data each screen holds: normal, then
     /// alternate. The inactive screen's bound stays as it was while the
     /// engine cannot change that screen.
     extras: [usize; 2],
-    /// Some growth was charged since the active screen was last measured.
-    dirty: bool,
 }
 
 /// The bytes other parts of the model hold, and the model's limit.
@@ -52,23 +52,23 @@ pub(crate) struct Room {
 
 impl Bounded {
     /// What a fresh instance holds and may grow to before any output: the
-    /// engine, both screens and the protected newest page of history.
-    pub(crate) fn mandatory(geometry: Geometry, history_rows: usize) -> usize {
-        cost::fixed(geometry) + cost::history(geometry, page(geometry, history_rows))
+    /// engine, both screens and the first chunk of history, which holds the
+    /// protected newest page.
+    pub(crate) fn mandatory(geometry: Geometry, rows: usize) -> usize {
+        cost::fixed(geometry) + cost::history(geometry, first(rows))
     }
 
-    pub(crate) fn new(geometry: Geometry, history_rows: usize) -> Self {
-        let limit = page(geometry, history_rows);
+    pub(crate) fn new(geometry: Geometry, rows: usize) -> Self {
+        let limit = first(rows);
         Self {
             term: Term::new(config(limit), &Size(geometry), VoidListener),
             processor: Processor::new(),
             tokenizer: Tokenizer::new(),
             geometry,
+            rows,
             limit,
-            rows: history_rows,
             seen: 0,
             extras: [0; 2],
-            dirty: false,
         }
     }
 
@@ -108,31 +108,52 @@ impl Bounded {
         Ok(())
     }
 
+    /// Charge `growth` if it fits, measuring the active screen first when
+    /// the running charge alone does not leave room.
+    fn admit(&mut self, growth: usize, room: Room) -> Result<(), Rejected> {
+        if self.fits(growth, room) {
+            self.extras[self.active()] += growth;
+            return Ok(());
+        }
+        self.measure();
+        if self.fits(growth, room) {
+            self.extras[self.active()] += growth;
+            return Ok(());
+        }
+        Err(Rejected {
+            needed: self.needed(growth, room),
+            limit: room.limit,
+        })
+    }
+
     /// At full history, admit the engine's next chunk of rows if it fits;
     /// otherwise the engine discards its oldest row for each new one.
     fn grow(&mut self, room: Room) {
-        if self.normal_history() != Some(self.limit) || self.limit == self.rows {
+        let Some(next) = self.next_limit() else {
             return;
-        }
-        let next = self.rows.min(self.limit + cost::CHUNK);
+        };
         let growth = cost::history(self.geometry, next) - cost::history(self.geometry, self.limit);
-        if self.dirty && !self.fits(growth, room) {
-            self.measure();
-        }
         if self.fits(growth, room) {
             self.limit = next;
             self.term.set_options(config(next));
         }
     }
 
-    /// Drop storage rows the engine keeps beyond its history once history
-    /// first fills or is cleared, so no row it can no longer show holds
-    /// cell data that measuring would miss.
+    /// The next history limit, once history has filled the current one and
+    /// the model may show more.
+    fn next_limit(&self) -> Option<usize> {
+        let full = self.normal_history() == Some(self.limit) && self.limit < self.rows;
+        full.then_some(self.limit + cost::CHUNK)
+    }
+
+    /// After history is cleared the engine keeps its storage rows, cell data
+    /// and all, beyond the history it shows; drop them, so measuring sees
+    /// every row that holds cell data.
     fn settle(&mut self) {
         let Some(now) = self.normal_history() else {
             return;
         };
-        if now < self.seen || (now == self.limit && self.seen < self.limit) {
+        if now < self.seen {
             self.term.grid_mut().truncate();
         }
         self.seen = now;
@@ -141,24 +162,6 @@ impl Bounded {
     /// The normal screen's history rows, while it is the active screen.
     fn normal_history(&self) -> Option<usize> {
         (self.active() == 0).then(|| self.term.grid().history_size())
-    }
-
-    /// Charge `growth` if it fits, measuring the active screen first when
-    /// the running charge alone does not leave room.
-    fn admit(&mut self, growth: usize, room: Room) -> Result<(), Rejected> {
-        if !self.fits(growth, room) {
-            self.measure();
-        }
-        let needed = self.needed(growth, room);
-        if needed > room.limit {
-            return Err(Rejected {
-                needed,
-                limit: room.limit,
-            });
-        }
-        self.extras[self.active()] += growth;
-        self.dirty |= growth > 0;
-        Ok(())
     }
 
     fn fits(&self, growth: usize, room: Room) -> bool {
@@ -178,7 +181,6 @@ impl Bounded {
             .map(cost::cell)
             .sum();
         self.extras[self.active()] = held;
-        self.dirty = false;
     }
 
     /// The most one token can make the engine allocate.
@@ -199,12 +201,12 @@ impl Bounded {
         self.geometry
     }
 
-    /// The normal screen's history rows as text, oldest first; empty while
-    /// the alternate screen is active.
+    /// The normal screen's newest history rows the model shows, as text,
+    /// oldest first; empty while the alternate screen is active.
     pub(crate) fn history(&self) -> Vec<String> {
         let grid = self.term.grid();
-        let rows = self.normal_history().unwrap_or(0);
-        (1..=rows)
+        let shown = self.normal_history().unwrap_or(0).min(self.rows);
+        (1..=shown)
             .rev()
             .map(|age| text(cells(grid, -(age as i32))))
             .collect()
@@ -230,8 +232,8 @@ fn text(cells: &[Cell]) -> String {
     text.trim_end().to_owned()
 }
 
-/// The protected newest page: the screen's height in rows, or fewer if the
-/// history limit is smaller.
-fn page(geometry: Geometry, history_rows: usize) -> usize {
-    usize::from(geometry.rows()).min(history_rows)
+/// The first chunk of history, which holds the protected newest page; none
+/// when the model keeps no history.
+fn first(rows: usize) -> usize {
+    cost::CHUNK.min(rows.next_multiple_of(cost::CHUNK))
 }

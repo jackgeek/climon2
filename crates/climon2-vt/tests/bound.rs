@@ -15,6 +15,7 @@ struct Counting;
 thread_local! {
     static LIVE: Cell<isize> = const { Cell::new(0) };
     static PEAK: Cell<isize> = const { Cell::new(0) };
+    static TOTAL: Cell<usize> = const { Cell::new(0) };
 }
 
 fn record(delta: isize) {
@@ -23,6 +24,8 @@ fn record(delta: isize) {
         live.set(now);
         let _ = PEAK.try_with(|peak| peak.set(peak.get().max(now)));
     });
+    let _ =
+        TOTAL.try_with(|total| total.set(total.get().wrapping_add(delta.max(0).cast_unsigned())));
 }
 
 // SAFETY: every call is forwarded unchanged to the system allocator; the
@@ -44,17 +47,25 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static COUNTING: Counting = Counting;
 
-/// Bytes this thread allocated and has not freed since `watch` started, and
-/// the most it held at once.
+/// Bytes this thread allocated and has not freed since `watch` started, the
+/// most it held at once, and every byte it allocated.
 struct Meter {
     start: isize,
+    total: usize,
 }
 
 impl Meter {
     fn watch() -> Self {
         let start = LIVE.with(Cell::get);
         PEAK.with(|peak| peak.set(start));
-        Self { start }
+        Self {
+            start,
+            total: TOTAL.with(Cell::get),
+        }
+    }
+
+    fn total(&self) -> usize {
+        TOTAL.with(Cell::get) - self.total
     }
 
     fn live(&self) -> usize {
@@ -216,32 +227,35 @@ fn wide_characters_are_accepted_at_the_bound_and_rejected_one_byte_past_it() {
 /// is accepted with the newest page and every character intact.
 #[test]
 fn history_grows_at_the_bound_and_discards_its_oldest_row_one_byte_past_it() {
-    let at = geometry(6, 2);
-    let page = b"row0\r\nrow1\r\nrow2\r\nrow3";
-    let mut roomy = Model::new(at, limits(ROOMY, ROWS)).unwrap();
-    roomy.feed(page).unwrap();
-    assert_eq!(roomy.history(), ["row0", "row1"]);
+    let at = geometry(8, 2);
+    let rows = |range: std::ops::Range<usize>| -> Vec<String> {
+        range.map(|row| format!("row{row}")).collect()
+    };
+    let full = rows(0..1002).join("\r\n");
+    let mut roomy = Model::new(at, limits(ROOMY, 2000)).unwrap();
+    roomy.feed(full.as_bytes()).unwrap();
+    assert_eq!(roomy.history(), rows(0..1000));
     let before = roomy.footprint();
-    roomy.feed(b"\r\nrow4").unwrap();
+    roomy.feed(b"\r\nrow1002").unwrap();
     let bound = roomy.footprint();
     assert!(bound > before);
 
     let meter = Meter::watch();
-    let mut model = Model::new(at, limits(bound, ROWS)).unwrap();
-    model.feed(page).unwrap();
-    model.feed(b"\r\nrow4").unwrap();
+    let mut model = Model::new(at, limits(bound, 2000)).unwrap();
+    model.feed(full.as_bytes()).unwrap();
+    model.feed(b"\r\nrow1002").unwrap();
     assert!(meter.peak() <= bound, "{} > {bound}", meter.peak());
-    assert_eq!(model.history(), ["row0", "row1", "row2"]);
-    assert_eq!(model.screen(), ["row3", "row4"]);
+    assert_eq!(model.history(), rows(0..1001));
+    assert_eq!(model.screen(), rows(1001..1003));
 
     let meter = Meter::watch();
-    let mut model = Model::new(at, limits(bound - 1, ROWS)).unwrap();
-    model.feed(page).unwrap();
-    model.feed(b"\r\nrow4").unwrap();
+    let mut model = Model::new(at, limits(bound - 1, 2000)).unwrap();
+    model.feed(full.as_bytes()).unwrap();
+    model.feed(b"\r\nrow1002").unwrap();
     assert!(meter.peak() < bound, "{} >= {bound}", meter.peak());
     assert_eq!(model.footprint(), before);
-    assert_eq!(model.history(), ["row1", "row2"]);
-    assert_eq!(model.screen(), ["row3", "row4"]);
+    assert_eq!(model.history(), rows(1..1001));
+    assert_eq!(model.screen(), rows(1001..1003));
 }
 
 /// LIM-03 Contract: erased screens and cleared history release their marks.
@@ -443,13 +457,13 @@ fn alternate_screen_marks_stay_charged_until_that_screen_is_cleared() {
     let at = geometry(10, 3);
     let alternate = format!("\x1b[?1049h\x1b[H{}", marked(at, 20));
     let (mut model, limit) = fitted(at, alternate.as_bytes());
-    let meter = Meter::watch();
-
     model.feed(b"\x1b[?1049l").unwrap();
     let normal = marked(at, 20);
     assert!(model.feed(normal.as_bytes()).is_err());
     assert_eq!(model.screen(), ["", "", ""]);
+    drop(model);
 
+    let meter = Meter::watch();
     let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
     for _ in 0..3 {
         model.feed(alternate.as_bytes()).unwrap();
@@ -553,8 +567,10 @@ fn a_cancelled_sequence_releasing_held_controls_stays_within_the_limit() {
 fn a_full_reset_releases_marks_and_history() {
     let at = geometry(10, 3);
     let heavy = format!("{}\r\n{}", marked(at, 20), marked(at, 20));
-    let (mut model, limit) = fitted(at, heavy.as_bytes());
+    let limit = fitted(at, heavy.as_bytes()).1;
     let meter = Meter::watch();
+    let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+    model.feed(heavy.as_bytes()).unwrap();
 
     for _ in 0..3 {
         model.feed(b"\x1bc").unwrap();
@@ -563,4 +579,48 @@ fn a_full_reset_releases_marks_and_history() {
 
     assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
     assert_eq!(model.history().len(), 3);
+}
+
+/// LIM-03 Contract: history storage is added a chunk at a time and kept: a
+/// model printing thousands of lines, with sequences between them that push
+/// nothing, allocates less in total than its footprint.
+#[test]
+fn history_storage_is_allocated_a_chunk_at_a_time() {
+    let at = geometry(10, 2);
+    let output = "\x1b[1mline\x1b[0m\r\n".repeat(2500);
+    let mut model = Model::new(at, limits(ROOMY, 3000)).unwrap();
+    let meter = Meter::watch();
+
+    model.feed(output.as_bytes()).unwrap();
+
+    assert!(
+        meter.total() <= model.footprint(),
+        "{} > {}",
+        meter.total(),
+        model.footprint()
+    );
+    assert_eq!(model.history().len(), 2499);
+}
+
+/// LIM-03 Contract: clearing history leaves the engine's storage rows, and
+/// the marks on them, beyond the history it shows. The model drops those rows
+/// at once, so measuring sees every mark still held: screenful after
+/// screenful of marked cells pushed into history and cleared never takes the
+/// allocator past the limit that fits one.
+#[test]
+fn cleared_history_releases_its_marks() {
+    let at = geometry(100, 40);
+    let screenful = format!("\x1b[H{}", marked(at, 1));
+    let limit = fitted(at, screenful.as_bytes()).1;
+    let meter = Meter::watch();
+    let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+    model.feed(screenful.as_bytes()).unwrap();
+
+    for _ in 0..8 {
+        model.feed(b"\x1b[2J\x1b[3J").unwrap();
+        model.feed(screenful.as_bytes()).unwrap();
+    }
+
+    assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+    assert_eq!(model.history(), Vec::<String>::new());
 }

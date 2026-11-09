@@ -39,16 +39,16 @@ pub(crate) fn fixed(geometry: Geometry) -> usize {
     PROCESSOR + RESERVE + terminal(geometry)
 }
 
-/// Normal-screen history storage for a history limit: the limit plus one
-/// chunk of rows (a cleared history regrows a whole chunk), and the row
-/// vector, which can double and briefly holds its old buffer while it grows.
+/// Normal-screen history storage for a history limit in whole chunks:
+/// the rows, and the row vector, which can double and briefly holds its old
+/// buffer while it grows.
 pub(crate) fn history(geometry: Geometry, limit: usize) -> usize {
     if limit == 0 {
         return 0;
     }
     let cols = usize::from(geometry.cols());
-    let rows = usize::from(geometry.rows()) + limit + CHUNK;
-    (limit + CHUNK) * cols * size_of::<Cell>() + 3 * rows * size_of::<Row<Cell>>()
+    let rows = usize::from(geometry.rows()) + limit;
+    limit * cols * size_of::<Cell>() + 3 * rows * size_of::<Row<Cell>>()
 }
 
 /// One cell's shared extra data (`Arc<CellExtra>`).
