@@ -261,4 +261,4 @@ Each test's doc comment cites its ID and case.
 | HDL-01 survives the unexpected loss of its last attachment, then accepts another | `a_headless_session_survives_the_unexpected_loss_of_its_last_attachment` |
 | HDL-01 Kill with zero clients, confirmed after cleanup | `kill_ends_a_headless_session_with_zero_clients` |
 | HDL-01 ordinary leave policy unchanged | `every_controlling_leave_hangs_up_then_kills_after_real_grace`, `an_unattached_session_ends_after_the_initial_deadline` |
-| Startup policy: a missing or unknown `--lifetime` is an invalid invocation | `repeated_unknown_zero_pid_and_relative_options_are_invalid_invocations` |
+| Startup policy: a missing or unknown `--lifetime` is an invalid invocation | `repeated_unknown_zero_pid_and_relative_options_are_invalid_invocations`; `args::tests::daemon_requires_a_known_lifetime` (unit) |

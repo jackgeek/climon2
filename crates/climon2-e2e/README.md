@@ -129,7 +129,7 @@ noted. The Contract-layer cases are mapped in the daemon README.
 | Confirmed scenario: from a script with no terminal, exactly the GUID and a newline, status 0 only once the session is listed `detached` with no client, 80x24 start; HDL-01 command completion with zero clients | `installed_headless_exec_from_a_script_prints_only_the_guid_and_starts_at_80x24` |
 | Confirmed scenario: a terminal on stdin sets the initial size; HDL-01 existing `climon2 kill` ends a headless session | `installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it` |
 | HDL-01 failed creation: 127, 126 and 125 with exec's diagnostics, nothing on stdout, nothing left | `installed_headless_creation_failures_keep_exec_statuses_and_diagnostics` |
-| HDL-01 failed creation: an unwritable stdout ends the session and fails with 125 | `installed_headless_exec_that_cannot_print_the_guid_ends_the_session_and_fails` |
+| HDL-01 failed creation: an unwritable stdout ends the session, jobs that ignore the hang-up included, and fails with 125 | `installed_headless_exec_that_cannot_print_the_guid_ends_the_session_and_fails` |
 | HDL-01 zero clients past the initial attach window and after a killed client, then Kill | `installed_headless_session_survives_zero_clients_and_a_killed_client` |
 | HDL-01 ordinary leave policy unchanged | `killed_installed_client_uses_daemon_leave_policy_and_leaves_nothing` (`tests/packaged.rs`) |
 

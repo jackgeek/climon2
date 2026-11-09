@@ -241,4 +241,30 @@ mod tests {
             100_000
         );
     }
+
+    fn with_lifetime(lifetime: &str) -> Vec<OsString> {
+        let mut values = arguments(Some("10000"));
+        let key = values
+            .iter()
+            .position(|value| value == "--lifetime")
+            .unwrap();
+        values[key + 1] = lifetime.into();
+        values
+    }
+
+    /// `--lifetime` spells the startup policy exactly as the CLI writes it.
+    #[test]
+    fn daemon_requires_a_known_lifetime() {
+        assert_eq!(
+            Options::parse(with_lifetime("ordinary")).unwrap().lifetime,
+            Lifetime::Ordinary
+        );
+        assert_eq!(
+            Options::parse(with_lifetime("headless")).unwrap().lifetime,
+            Lifetime::Headless
+        );
+        for value in ["", "Headless", "persistent"] {
+            assert!(Options::parse(with_lifetime(value)).is_err(), "{value:?}");
+        }
+    }
 }

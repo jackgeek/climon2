@@ -23,6 +23,11 @@ const SIZE_THEN_HOLD: &str = r#"stty size > "$HOME/size.tmp" && mv "$HOME/size.t
 until [ -e "$HOME/finish" ]; do sleep 0.05; done
 exit 3"#;
 
+/// Ignores the terminal's hang-up, so only the session killing its jobs at
+/// its end stops it.
+const IGNORE_HANGUP_AND_HOLD: &str = r#"trap '' HUP
+until [ -e "$HOME/finish" ]; do sleep 0.05; done"#;
+
 /// Waits for `go`, outlives the five-second initial attach window, announces
 /// it and runs until `finish` exists. A session ended by that window hangs up
 /// its terminal, which kills this script before it writes `survived`.
@@ -207,13 +212,18 @@ fn installed_headless_creation_failures_keep_exec_statuses_and_diagnostics() {
 
 /// HDL-01 (Monitor layer), failed creation: a script that cannot read the
 /// session ID could not target the session, so when stdout cannot be written,
-/// headless exec ends the session it started and fails with 125.
+/// headless exec ends the session it started, including jobs that ignore the
+/// hang-up, and fails with 125.
 #[test]
 fn installed_headless_exec_that_cannot_print_the_guid_ends_the_session_and_fails() {
     let package = Package::new();
     let (reader, writer) = std::io::pipe().unwrap();
     drop(reader);
-    let output = scripted_to(&package, &headless_args(SIZE_THEN_HOLD), writer.into());
+    let output = scripted_to(
+        &package,
+        &headless_args(IGNORE_HANGUP_AND_HOLD),
+        writer.into(),
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(125), "{stderr}");
     assert!(stderr.starts_with("climon2: error: "), "{stderr}");

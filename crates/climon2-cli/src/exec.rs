@@ -345,7 +345,7 @@ impl Started<'_> {
     fn stop(&self) {
         let _ = process::signal_group(self.pid, Signal::Terminate);
         let deadline = Instant::now() + Duration::from_secs(6);
-        while Instant::now() < deadline {
+        while deadline.checked_duration_since(Instant::now()).is_some() {
             match process::try_wait(self.pid) {
                 Ok(None) => thread::sleep(Duration::from_millis(10)),
                 _ => return,
