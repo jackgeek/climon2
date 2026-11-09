@@ -1,4 +1,4 @@
-use climon2_core::{SessionId, VersionName, protocol::TerminalSize};
+use climon2_core::{SessionId, VersionName, lifetime::Lifetime, protocol::TerminalSize};
 use std::{collections::BTreeMap, ffi::OsString, io, path::PathBuf};
 
 pub(crate) struct Options {
@@ -11,6 +11,7 @@ pub(crate) struct Options {
     pub readiness_fd: u32,
     pub size: TerminalSize,
     pub max_history_rows: u32,
+    pub lifetime: Lifetime,
     pub command: OsString,
     pub arguments: Vec<OsString>,
     pub log: Option<String>,
@@ -30,7 +31,7 @@ impl Options {
         let (id, version, cli_pid) = identity(&mut fields)?;
         let (home, socket, cwd) = locations(&mut fields)?;
         let (readiness_fd, size, max_history_rows) = transport(&mut fields)?;
-        let log = only_log(fields)?;
+        let (lifetime, log) = policy(fields)?;
         Ok(Self {
             id,
             version,
@@ -41,6 +42,7 @@ impl Options {
             readiness_fd,
             size,
             max_history_rows,
+            lifetime,
             command,
             arguments,
             log,
@@ -90,6 +92,12 @@ fn insert_unique(
         return Err(invalid());
     }
     Ok(())
+}
+
+/// The session's lifetime policy, then the optional log filter.
+fn policy(mut fields: BTreeMap<OsString, OsString>) -> io::Result<(Lifetime, Option<String>)> {
+    let lifetime = number(&mut fields, "--lifetime")?;
+    Ok((lifetime, only_log(fields)?))
 }
 
 /// `--log` is the only optional field; anything else left over is invalid.
@@ -196,6 +204,8 @@ mod tests {
             "80",
             "--cwd",
             "/home/test",
+            "--lifetime",
+            "ordinary",
         ];
         let mut values: Vec<_> = args.drain(..).map(OsString::from).collect();
         if let Some(rows) = max_rows {

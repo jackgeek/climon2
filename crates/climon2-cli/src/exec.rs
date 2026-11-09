@@ -29,7 +29,7 @@ use std::{
 
 pub fn run(
     home: &Path,
-    _lifetime: Lifetime,
+    lifetime: Lifetime,
     command: CommandArgs,
     general: &LogFile,
     filter: Option<&str>,
@@ -38,7 +38,7 @@ pub fn run(
     let (id, session) = new_session(home, general)?;
     let dispatch = session.dispatch(filter)?;
     tracing::dispatcher::with_default(&dispatch, || {
-        launch(home, command, &layout, &id, filter, config)
+        launch(home, lifetime, command, &layout, &id, filter, config)
             .map_err(|error| error.logged(session.path().parent().expect("session log directory")))
     })
 }
@@ -95,6 +95,7 @@ struct Startup<'a> {
     home: &'a Path,
     layout: &'a ExecutableLayout,
     id: &'a SessionId,
+    lifetime: Lifetime,
     max_history_rows: u32,
     metadata: PathBuf,
     socket: PathBuf,
@@ -104,13 +105,14 @@ struct Startup<'a> {
 
 fn launch(
     home: &Path,
+    lifetime: Lifetime,
     command: CommandArgs,
     layout: &ExecutableLayout,
     id: &SessionId,
     filter: Option<&str>,
     config: ExecConfig,
 ) -> Result<u32, Error> {
-    let startup = Startup::new(home, layout, id, config.scrollback.max_rows.get())?;
+    let startup = Startup::new(home, layout, id, lifetime, config.scrollback.max_rows.get())?;
     let inherited = std::env::vars_os().collect::<Vec<_>>();
     let environment =
         SessionEnvironment::for_session(id, &inherited).map_err(|error| Error::new(125, error))?;
@@ -130,6 +132,7 @@ impl Startup<'_> {
         home: &'a Path,
         layout: &'a ExecutableLayout,
         id: &'a SessionId,
+        lifetime: Lifetime,
         max_history_rows: u32,
     ) -> Result<Startup<'a>, Error> {
         let socket = RuntimeDirectory::prepare(home)?.socket_path(id)?;
@@ -140,6 +143,7 @@ impl Startup<'_> {
             home,
             layout,
             id,
+            lifetime,
             metadata,
             socket,
             size,
@@ -193,6 +197,8 @@ impl Startup<'_> {
             .arg(self.layout.version().as_str())
             .arg("--cli-pid")
             .arg(std::process::id().to_string())
+            .arg("--lifetime")
+            .arg(self.lifetime.name())
             .arg("--rows")
             .arg(self.size.rows.to_string())
             .arg("--cols")

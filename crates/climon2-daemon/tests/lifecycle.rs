@@ -281,6 +281,7 @@ impl Prepared {
         };
         let mut command = Command::new(executable);
         command.args(["--session-id", ID, "--version", "0.1.0", "--cli-pid", "1"]);
+        command.args(["--lifetime", "ordinary"]);
         command
             .arg("--home")
             .arg(&home)
@@ -747,6 +748,8 @@ fn attached_client_restores_a_waiting_alternate_screen_before_input_is_ready() {
 }
 
 /// #19/#27: all controlling leave causes share the real five-second policy.
+/// HDL-01 (Contract layer), ordinary case: an ordinary session's final
+/// unexpected departure still ends it.
 #[test]
 fn every_controlling_leave_hangs_up_then_kills_after_real_grace() {
     for cause in [
@@ -1291,6 +1294,7 @@ fn a_pty_write_failure_releases_then_reports_error() {
 
 /// Initial deadline: a command that ends before anyone attaches keeps the
 /// session for the five-second initial attach window, then it ends.
+/// HDL-01 (Contract layer), ordinary case: an ordinary session keeps this rule.
 #[test]
 fn an_unattached_session_ends_after_the_initial_deadline() {
     let mut session = Session::start("early");
@@ -1300,6 +1304,91 @@ fn an_unattached_session_ends_after_the_initial_deadline() {
     session.finish();
     assert!(started.elapsed() >= Duration::from_millis(4500));
     assert!(started.elapsed() < Duration::from_secs(7));
+}
+
+/// A session started like `climon2 exec --headless` would start it.
+fn headless(mode: &str) -> Session {
+    Session::configured(mode, |command, _| {
+        *command = replace_option(command, "--lifetime", "headless");
+    })
+}
+
+/// HDL-01 (Contract layer), zero clients from startup: a headless session
+/// advertises `detached` from startup on and outlives the five-second initial
+/// attach window. The reference ordinary session starts after it, so its end at
+/// its own initial deadline shows that window has passed for the headless one,
+/// whose command still runs and reports its exit to a later attachment.
+#[test]
+fn a_headless_session_advertises_detached_and_outlives_the_initial_attach_window() {
+    let mut headless = headless("exit");
+    assert_eq!(advertised_state(&headless), (Lifecycle::Detached, 0, false));
+    let mut ordinary = Session::start("early");
+    assert_eq!(advertised_state(&ordinary), (Lifecycle::Starting, 0, false));
+    ordinary.finish();
+    assert_eq!(advertised_state(&headless), (Lifecycle::Detached, 0, false));
+
+    let mut stream = headless.attach();
+    headless.wait_marker(&mut stream);
+    assert_eq!(advertised_state(&headless), (Lifecycle::Attached, 1, true));
+    send(&mut stream, ClientMessage::Input(b"go\n".to_vec()));
+    let (output, result) = until_terminal(&mut stream);
+    assert_eq!(result, ServerMessage::Exit { code: 42 });
+    assert_eq!(count(&output, b"final-bytes"), 1);
+    headless.finish();
+}
+
+/// HDL-01 (Contract layer), command completion with zero clients: a headless
+/// session whose command ends before anything attaches ends with it, cleaned
+/// up. Unlike an ordinary session
+/// (`an_unattached_session_ends_after_the_initial_deadline`), it does not hold
+/// the exit for the five-second initial attach window.
+#[test]
+fn a_headless_session_ends_with_its_command_without_the_initial_attach_hold() {
+    let mut session = headless("early");
+    let started = Instant::now();
+    session.finish();
+    assert!(
+        started.elapsed() < Duration::from_millis(4500),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// HDL-01 (Contract layer), unexpected loss: a headless session survives the
+/// loss of its last attachment, which ends an ordinary session
+/// (`every_controlling_leave_hangs_up_then_kills_after_real_grace`). It is
+/// detached again, accepts a new attachment, and its command still runs and
+/// reports its exit.
+#[test]
+fn a_headless_session_survives_the_unexpected_loss_of_its_last_attachment() {
+    let mut session = headless("exit");
+    let mut first = session.attach();
+    session.wait_marker(&mut first);
+    assert_eq!(advertised_state(&session), (Lifecycle::Attached, 1, true));
+    // The closed connection's EOF is readable before the probe connects, and
+    // the daemon services connections in acceptance order, so the probe's
+    // hello is answered after the loss.
+    drop(first);
+    assert_eq!(advertised_state(&session), (Lifecycle::Detached, 0, false));
+
+    let mut second = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
+    let (period, restored) = restoration(&mut second);
+    assert_eq!(count(&restored, b"fixture-ready"), 1);
+    send(&mut second, ClientMessage::Ready { period });
+    send(&mut second, ClientMessage::Input(b"go\n".to_vec()));
+    let (output, result) = until_terminal(&mut second);
+    assert_eq!(result, ServerMessage::Exit { code: 42 });
+    assert_eq!(count(&output, b"final-bytes"), 1);
+    session.finish();
+}
+
+/// HDL-01 (Contract layer), Kill: a headless session with zero clients ends
+/// on Kill, confirmed only after cleanup.
+#[test]
+fn kill_ends_a_headless_session_with_zero_clients() {
+    let session = headless("exit");
+    assert_eq!(advertised_state(&session), (Lifecycle::Detached, 0, false));
+    kill(session);
 }
 
 /// Kill after the command already ended, before anyone attached: the command
@@ -1845,28 +1934,45 @@ fn startup_failure_reports_cleans_up_and_exits_with_the_reported_code() {
 /// The same daemon command with one option's value replaced (Command args are append-only).
 fn replace_option(command: &Command, key: &str, value: &str) -> Command {
     let mut arguments: Vec<_> = command.get_args().map(ToOwned::to_owned).collect();
-    let index = arguments
-        .iter()
-        .position(|argument| argument == key)
-        .unwrap();
+    let index = option_index(&arguments, key);
     arguments[index + 1] = value.into();
-    let mut replaced = Command::new(command.get_program());
-    replaced.args(arguments);
-    for (name, value) in command.get_envs() {
-        match value {
-            Some(value) => replaced.env(name, value),
-            None => replaced.env_remove(name),
-        };
-    }
-    replaced
+    rebuilt(command, arguments)
 }
 
-/// #17: otherwise valid invocations with a repeated, unknown, zero-PID or relative option are
-/// invalid daemon invocations: no readiness reply, no session files, exit 125.
+/// The same daemon command without one option and its value.
+fn remove_option(command: &Command, key: &str) -> Command {
+    let mut arguments: Vec<_> = command.get_args().map(ToOwned::to_owned).collect();
+    let index = option_index(&arguments, key);
+    arguments.drain(index..=index + 1);
+    rebuilt(command, arguments)
+}
+
+fn option_index(arguments: &[std::ffi::OsString], key: &str) -> usize {
+    arguments
+        .iter()
+        .position(|argument| argument == key)
+        .unwrap()
+}
+
+fn rebuilt(command: &Command, arguments: Vec<std::ffi::OsString>) -> Command {
+    let mut rebuilt = Command::new(command.get_program());
+    rebuilt.args(arguments);
+    for (name, value) in command.get_envs() {
+        match value {
+            Some(value) => rebuilt.env(name, value),
+            None => rebuilt.env_remove(name),
+        };
+    }
+    rebuilt
+}
+
+/// #17: otherwise valid invocations with a repeated, unknown, zero-PID or relative option, or
+/// a missing or unknown `--lifetime`, are invalid daemon invocations: no readiness reply, no
+/// session files, exit 125.
 #[test]
 fn repeated_unknown_zero_pid_and_relative_options_are_invalid_invocations() {
     type Configure = fn(&mut Command, &Path);
-    let cases: [Configure; 4] = [
+    let cases: [Configure; 6] = [
         |command, _| {
             command.args(["--version", "0.1.0"]);
         },
@@ -1875,6 +1981,8 @@ fn repeated_unknown_zero_pid_and_relative_options_are_invalid_invocations() {
         },
         |command, _| *command = replace_option(command, "--cli-pid", "0"),
         |command, _| *command = replace_option(command, "--cwd", "."),
+        |command, _| *command = replace_option(command, "--lifetime", "persistent"),
+        |command, _| *command = remove_option(command, "--lifetime"),
     ];
     for configure in cases {
         let (prepared, readiness, status) = unsupervised("early", configure, false);

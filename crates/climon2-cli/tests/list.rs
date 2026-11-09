@@ -268,6 +268,7 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
         .arg(&socket)
         .args(["--version", env!("CARGO_PKG_VERSION"), "--cli-pid"])
         .arg(std::process::id().to_string())
+        .args(["--lifetime", "ordinary"])
         .args(["--rows", "24", "--cols", "80", "--cwd"])
         .arg(isolation.home());
     let pending = daemon::spawn(command, |command, fd| {

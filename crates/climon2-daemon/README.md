@@ -9,13 +9,16 @@ scrollback, terminal restoration and live presentation.
 ```text
 climon2-daemon --session-id GUID --home CANONICAL_ABSOLUTE_HOME \
   --socket ABSOLUTE_SOCKET --version SEMVER --cli-pid PID \
-  --readiness-fd FD --rows ROWS --cols COLS \
+  --lifetime ordinary|headless --readiness-fd FD --rows ROWS --cols COLS \
   --scrollback-max-rows ROWS --cwd ABSOLUTE_CWD \
   [--log FILTER] -- COMMAND [ARG...]
 ```
 
 Options are private, order-independent, unique and required except `--log`.
 `--scrollback-max-rows` sets the VT engine's retained normal-screen history.
+`--lifetime` is the session's startup policy: `ordinary` for `climon2 exec`,
+`headless` for `climon2 exec --headless` (see the leave policy below). Any other
+value is an invalid invocation. Core's `lifetime::Lifetime` owns both spellings.
 All tokens after `--` are untouched OS-string command arguments. The CLI
 resolves home/socket/version, computes the session environment, and supplies
 initial terminal dimensions. The daemon does not reconstruct runtime values
@@ -101,9 +104,11 @@ present. Only the controller's size drives the PTY and VT; the session geometry
 is its host size clamped to 2..=500 columns and 1..=200 rows, and a host larger
 than that gets Derived presentation. Resizes are coalesced to one per iteration.
 
-Early exits and PTY output remain available for the first attachment: the exit
-of a command that ends first is reported once that attachment's restoration is
-confirmed, or after the five-second initial attach window. Final status comes
+Early exits and PTY output remain available for the first attachment of an
+ordinary session: the exit of a command that ends first is reported once that
+attachment's restoration is confirmed, or after the five-second initial attach
+window. A headless session has no initial attach window, so its exit is reported
+at once unless an attachment is restoring. Final status comes
 exclusively from shared exact `waitpid`, never portable-pty waiting. After
 reaping, drain ends at EOF/EIO, 100 ms of actual PTY idle, or one second.
 Metadata and the socket are then removed while connections stay open, the
@@ -114,7 +119,12 @@ never reads cannot be guaranteed delivery after this bound.
 The leave policy: while another attachment remains, the session continues;
 after an accepted final detach it keeps running with no idle timeout; a final
 unexpected departure, `Kill`, daemon TERM, an authoritative failure or no
-attachment within five seconds of readiness begins shutdown. Shutdown closes
+attachment within five seconds of readiness begins shutdown. The headless
+startup policy (`--lifetime headless`) changes only the zero-attachment cases:
+the session advertises `detached` whenever it has no attachment, from readiness
+on (never `starting`), has no initial attach window, and stays `detached` after
+a final unexpected departure. It therefore ends only on command completion,
+`Kill`, daemon TERM or an authoritative failure. Shutdown closes
 every master handle, then runs a real five-second hang-up grace as a loop
 deadline: probes see `terminating`, attaches are refused, repeated kills join
 without restarting it, and the grace is not shortened if the command exits
@@ -237,3 +247,18 @@ branches and the extra generic fixture binary are absent from ordinary release
 builds. The ignored libtest function is a subprocess fixture, not a skipped
 requirement. Every controlled final path checks owned process/socket/metadata
 cleanup; logs intentionally survive.
+
+### Monitor acceptance scenarios
+
+Contract-layer cases of the [acceptance matrix](../../docs/monitor-acceptance.md),
+through the real daemon binary and raw-socket peers in `tests/lifecycle.rs`.
+Each test's doc comment cites its ID and case.
+
+| Scenario | Named test |
+|---|---|
+| HDL-01 zero clients from startup: `detached` from readiness, outlives the initial attach window that ends an ordinary session started after it, exit reported to a later attachment | `a_headless_session_advertises_detached_and_outlives_the_initial_attach_window` |
+| HDL-01 command completion with zero clients, without the initial attach hold | `a_headless_session_ends_with_its_command_without_the_initial_attach_hold` |
+| HDL-01 survives the unexpected loss of its last attachment, then accepts another | `a_headless_session_survives_the_unexpected_loss_of_its_last_attachment` |
+| HDL-01 Kill with zero clients, confirmed after cleanup | `kill_ends_a_headless_session_with_zero_clients` |
+| HDL-01 ordinary leave policy unchanged | `every_controlling_leave_hangs_up_then_kills_after_real_grace`, `an_unattached_session_ends_after_the_initial_deadline` |
+| Startup policy: a missing or unknown `--lifetime` is an invalid invocation | `repeated_unknown_zero_pid_and_relative_options_are_invalid_invocations` |

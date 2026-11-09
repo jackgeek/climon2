@@ -84,7 +84,7 @@ pub(crate) fn serve(
         cleanup,
         connections: BTreeMap::new(),
         deliveries: BTreeMap::new(),
-        control: Control::new(options.size),
+        control: Control::new(options.size, options.lifetime),
         vt,
         next_id: 0,
         controller: None,
