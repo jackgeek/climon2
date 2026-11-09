@@ -10,7 +10,8 @@ use climon2_core::{
     },
 };
 use climon2_discovery::{
-    Cleanup, InvalidReason, Options, Outcome, Pass, StaleMetadata, Uncertainty, discover,
+    Cleanup, InvalidReason, MetadataLimits, Options, Outcome, Pass, StaleMetadata, Uncertainty,
+    discover,
 };
 use climon2_platform::{
     daemon::{self, Readiness},
@@ -27,10 +28,12 @@ use std::{
 };
 
 const RETAIN: Options = Options {
+    limits: MetadataLimits::UNBOUNDED,
     stale: StaleMetadata::Retain,
 };
 const REMOVE: Options = Options {
     stale: StaleMetadata::Remove,
+    ..RETAIN
 };
 const OUTER: &str = "0d5c0000-0000-4000-8000-000000000001";
 const NESTED: &str = "0d5c0000-0000-4000-8000-000000000002";
@@ -471,4 +474,102 @@ fn every_outcome_is_structured_and_no_pass_prints() {
     assert!(output.status.success(), "{stdout}\n{stderr}");
     assert!(stdout.contains("<passes>\n</passes>\n"), "{stdout}");
     assert!(stderr.contains("<passes>\n</passes>\n"), "{stderr}");
+}
+
+const CREATED: &str = "2026-10-28T07:21:02.930Z";
+
+fn write(home: &Path, metadata: &SessionMetadata, contents: &[u8]) -> PathBuf {
+    let path = path(home, metadata);
+    fs::write(&path, contents).unwrap();
+    path
+}
+
+/// Valid metadata padded with trailing whitespace to exactly `bytes` bytes.
+fn sized(home: &Path, suffix: u8, bytes: usize) -> PathBuf {
+    let metadata = record(home, suffix, CREATED);
+    let mut json = metadata.to_json().unwrap();
+    json.resize(bytes, b' ');
+    write(home, &metadata, &json)
+}
+
+/// Valid metadata whose first, unknown member nests `nesting` objects and arrays in all,
+/// followed by strings that hide brackets, quotes and backslashes.
+fn nested(home: &Path, suffix: u8, nesting: usize) -> PathBuf {
+    let metadata = record(home, suffix, CREATED);
+    let json = String::from_utf8(metadata.to_json().unwrap()).unwrap();
+    let strings = [
+        "[[[[[[[[{{{{{{{{",
+        "\"[[[[[[[[{{{{{{{{",
+        "\\",
+        "x\\",
+        "]]]]}}}}",
+    ];
+    let text = format!(
+        "{{\"future\":{}{},\"tricky\":{},{}",
+        "[".repeat(nesting - 1),
+        "]".repeat(nesting - 1),
+        serde_json::to_string(&strings).unwrap(),
+        &json[1..]
+    );
+    write(home, &metadata, text.as_bytes())
+}
+
+fn reasons(pass: &Pass) -> Vec<(&Path, &'static str)> {
+    let mut reasons: Vec<_> = pass
+        .invalid
+        .iter()
+        .map(|entry| {
+            let reason = match entry.reason {
+                InvalidReason::TooLarge => "too large",
+                InvalidReason::TooDeep => "too deep",
+                _ => "other",
+            };
+            (entry.path.as_path(), reason)
+        })
+        .collect();
+    reasons.sort();
+    reasons
+}
+
+/// #77 and DSC-04 Contract case (oversized metadata): a caller's limits accept a file of
+/// exactly the size limit and JSON nested exactly to the depth limit, while one byte or
+/// one level more is invalid metadata, never deleted. Brackets inside strings never count.
+/// Without limits a pass reads whole files nested to any depth, as the CLI always has.
+#[test]
+fn metadata_limits_accept_their_bound_and_reject_one_past_it() {
+    let (_directory, home) = home();
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    let at_size = sized(&home, 0x41, 4096);
+    let past_size = sized(&home, 0x42, 4097);
+    let at_depth = nested(&home, 0x43, 8);
+    let past_depth = nested(&home, 0x44, 9);
+    let deepest = nested(&home, 0x45, 600);
+    let limits = MetadataLimits {
+        file_bytes: Some(4096),
+        json_depth: Some(8),
+    };
+
+    let pass = discover(&home, Options { limits, ..RETAIN }).unwrap();
+    let id = |suffix: u8| format!("12345678-1234-4234-8234-123456789a{suffix:02x}");
+    assert_eq!(ids(&pass.sessions), [id(0x41), id(0x43)]);
+    assert!(
+        pass.sessions
+            .iter()
+            .all(|outcome| matches!(outcome, Outcome::Stale(_, Cleanup::Retained)))
+    );
+    assert_eq!(
+        reasons(&pass),
+        [
+            (past_size.as_path(), "too large"),
+            (past_depth.as_path(), "too deep"),
+            (deepest.as_path(), "too deep"),
+        ]
+    );
+
+    let pass = discover(&home, RETAIN).unwrap();
+    assert!(pass.invalid.is_empty(), "{pass:?}");
+    assert_eq!(ids(&pass.sessions), [0x41, 0x42, 0x43, 0x44, 0x45].map(id));
+    for file in [at_size, past_size, at_depth, past_depth, deepest] {
+        assert!(file.exists());
+    }
 }

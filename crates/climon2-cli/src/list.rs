@@ -1,5 +1,5 @@
 use climon2_core::metadata::SessionMetadata;
-use climon2_discovery::{Options, Outcome, StaleMetadata};
+use climon2_discovery::{MetadataLimits, Options, Outcome, StaleMetadata};
 use climon2_platform::presentation;
 use std::{io, io::Write, path::Path};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -47,8 +47,10 @@ pub fn discover(home: &Path) -> io::Result<Vec<SessionMetadata>> {
     })
 }
 
-/// Only CLI callers remove stale metadata.
+/// The CLI reads metadata as it always has, whole and as deeply nested as the parser
+/// accepts, and only CLI callers remove stale metadata.
 const DISCOVERY: Options = Options {
+    limits: MetadataLimits::UNBOUNDED,
     stale: StaleMetadata::Remove,
 };
 

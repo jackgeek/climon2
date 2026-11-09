@@ -7,14 +7,15 @@ mod hello;
 mod metadata;
 mod outcome;
 
-pub use metadata::{InvalidMetadata, InvalidReason};
+pub use metadata::{InvalidMetadata, InvalidReason, MetadataLimits};
 pub use outcome::{Cleanup, LiveSession, Outcome, Uncertainty};
 
 use std::{cmp::Ordering, io, path::Path};
 
-/// What a pass may do besides observing.
+/// How a pass reads metadata, and what it may do besides observing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Options {
+    pub limits: MetadataLimits,
     pub stale: StaleMetadata,
 }
 
@@ -32,14 +33,15 @@ pub enum StaleMetadata {
 pub struct Pass {
     /// Sessions with valid metadata: newest created first, then ascending full session ID.
     pub sessions: Vec<Outcome>,
-    /// Entries that failed the frozen metadata validation, in no particular order. Never deleted.
+    /// Entries that failed the limits or the frozen metadata validation, in no particular
+    /// order. Never deleted.
     pub invalid: Vec<InvalidMetadata>,
 }
 
 /// Probes every valid entry concurrently, each under the frozen two-second hello deadline.
 /// Fails only when the sessions directory cannot be listed or a probe panics.
 pub fn discover(home: &Path, options: Options) -> io::Result<Pass> {
-    let entries = metadata::entries(home)?;
+    let entries = metadata::entries(home, options.limits)?;
     let mut sessions = outcome::probe_all(home, entries.valid, options.stale)?;
     sessions.sort_by(newest_first);
     Ok(Pass {

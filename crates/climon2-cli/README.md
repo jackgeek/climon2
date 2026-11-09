@@ -33,9 +33,10 @@ environment, and the validated client settings through the
 
 `list`, `attach` and `kill` share one discovery pass from
 [`climon2-discovery`](../climon2-discovery/README.md), through
-`list::discover_live(home)`. It reads whole metadata files, removes stale
-metadata (`StaleMetadata::Remove`), and keeps only live sessions, newest
-created first with ascending session ID breaking ties. On its own thread the CLI logs
+`list::discover_live(home)`. It reads whole metadata files
+(`MetadataLimits::UNBOUNDED`), removes stale metadata
+(`StaleMetadata::Remove`), and keeps only live sessions, newest created first
+with ascending session ID breaking ties. On its own thread the CLI logs
 `invalid session metadata` once per invalid entry, then
 `malformed hello extensions` for each live session whose capabilities or state
 are malformed. `list::LiveSession` is the library's type.
