@@ -128,7 +128,9 @@ fn plain_text_fills_held_cells_without_growth() {
     let mut model = Model::new(geometry(10, 3), limits(ROOMY, 100)).unwrap();
     let footprint = model.footprint();
 
-    model.feed(b"hello\r\nworld\r\n\xe4\xb8\x80x").unwrap();
+    model
+        .feed(b"\x1b7hel\x1b[1mlo\x1b[0m\x1b8\r\nworld\r\n\xe4\xb8\x80x\x07")
+        .unwrap();
 
     assert!(meter.peak() <= footprint);
     assert_eq!(model.footprint(), footprint);
@@ -506,7 +508,7 @@ fn a_fresh_model_charges_exactly_what_its_engine_allocated() {
     let built = |cols, rows| {
         let meter = Meter::watch();
         let model = Model::new(geometry(cols, rows), limits(ROOMY, 0)).unwrap();
-        assert!(meter.peak() <= model.footprint());
+        assert_eq!(model.footprint(), meter.peak() + Model::RESERVE);
         (meter.peak(), model.footprint())
     };
     let (small, small_charge) = built(2, 1);
@@ -623,4 +625,106 @@ fn cleared_history_releases_its_marks() {
 
     assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
     assert_eq!(model.history(), Vec::<String>::new());
+}
+
+/// LIM-03 Contract: history configured as whole chunks never grows past
+/// them, however much output scrolls by; the oldest rows go instead.
+#[test]
+fn history_never_grows_past_its_configured_rows() {
+    let at = geometry(8, 2);
+    let mut model = Model::new(at, limits(ROOMY, 1000)).unwrap();
+    let footprint = model.footprint();
+
+    model.feed("line\r\n".repeat(1500).as_bytes()).unwrap();
+
+    assert_eq!(model.footprint(), footprint);
+    assert_eq!(model.history().len(), 1000);
+}
+
+/// LIM-03 Contract: the alternate screen has no history of its own, and the
+/// normal screen's history is not shown over it.
+#[test]
+fn the_alternate_screen_shows_no_history() {
+    let mut model = Model::new(geometry(8, 2), limits(ROOMY, ROWS)).unwrap();
+    model.feed(b"one\r\ntwo\r\nthree\x1b[?1049h").unwrap();
+    assert_eq!(model.history(), Vec::<String>::new());
+    model.feed(b"\x1b[?1049l").unwrap();
+    assert_eq!(model.history(), ["one"]);
+}
+
+/// The bytes charged for feeding `update` after `before` into a roomy model.
+fn charged(before: &[u8], update: &[u8]) -> usize {
+    let mut model = Model::new(geometry(80, 3), limits(ROOMY, ROWS)).unwrap();
+    model.feed(before).unwrap();
+    let footprint = model.footprint();
+    model.feed(update).unwrap();
+    model.footprint() - footprint
+}
+
+const TINT: &[u8] = b"\x1b[58;5;1m";
+
+/// LIM-03 Contract: what printing can grow depends on what it prints. Under
+/// an underline colour, an invalid byte prints one replacement cell like any
+/// narrow character and a wide character up to three cells; a combining mark
+/// costs the same with or without one, and `CSI n b` costs `n` repetitions of
+/// the worst character it could repeat, one when `n` is absent or zero.
+#[test]
+fn growth_is_charged_by_what_printing_can_hold() {
+    let narrow = charged(TINT, b"x");
+    assert!(narrow > 0);
+    assert_eq!(charged(TINT, b"\xff"), narrow);
+    assert_eq!(charged(TINT, b"x\xffx"), 3 * narrow);
+    assert_eq!(charged(TINT, "\u{4e00}".as_bytes()), 3 * narrow);
+    assert_eq!(charged(b"", b"x\xff\x07"), 0);
+
+    let mark = charged(b"a", "\u{301}".as_bytes());
+    assert_eq!(charged(&[TINT, b"a"].concat(), "\u{301}".as_bytes()), mark);
+    assert_eq!(charged(b"a", b"\x1b[b"), mark);
+    assert_eq!(charged(b"a", b"\x1b[0b"), mark);
+    assert_eq!(charged(b"a", b"\x1b[25b"), 25 * mark);
+    assert_eq!(
+        charged(&[TINT, b"a"].concat(), b"\x1b[25b"),
+        25 * 3 * narrow
+    );
+}
+
+/// LIM-03 Contract: marks accumulating on every cell, a few per update, are
+/// measured as they are kept, so however many updates a model accepts the
+/// allocator never sees its limit exceeded.
+#[test]
+fn marks_accumulating_on_every_cell_stay_within_the_limit() {
+    let at = geometry(80, 24);
+    let limit = mandatory(at) + 400 * 1024;
+    let round: String = (1..=24)
+        .flat_map(|row| (2..=81).map(move |col| format!("\x1b[{row};{col}H\u{301}")))
+        .collect();
+    let meter = Meter::watch();
+    let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+    model.feed(marked(at, 0).as_bytes()).unwrap();
+
+    let accepted = (0..200)
+        .take_while(|_| model.feed(round.as_bytes()).is_ok())
+        .count();
+
+    assert!(accepted > 0 && accepted < 200, "{accepted}");
+    assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+}
+
+/// LIM-03 Fault: repeated `CSI 65535 b` of a combining mark is rejected as
+/// soon as one repetition would not fit, so marks never pile up past the
+/// limit on one cell.
+#[test]
+fn repeated_repeats_stay_within_the_limit() {
+    let at = geometry(10, 3);
+    let limit = mandatory(at) + 2 * 1024 * 1024;
+    let meter = Meter::watch();
+    let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+    model.feed("a\u{301}".as_bytes()).unwrap();
+
+    let repeated = (0..20)
+        .take_while(|_| model.feed(b"\x1b[65535b").is_ok())
+        .count();
+
+    assert_eq!(repeated, 0);
+    assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
 }

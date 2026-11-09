@@ -6,7 +6,7 @@
 use crate::geometry::Geometry;
 use alacritty_terminal::{
     grid::Row,
-    term::{LineDamageBounds, cell::Cell},
+    term::{LineDamageBounds, SEMANTIC_ESCAPE_CHARS, cell::Cell},
 };
 use std::str::Utf8Chunk;
 use unicode_width::UnicodeWidthChar;
@@ -17,21 +17,21 @@ const PROCESSOR: usize = 2 * 1024 * 1024;
 /// Room for what is held only briefly or is too small to track: the front
 /// filter's partial token and the tokens one slice completes (at most about
 /// 400 KiB, when a cancelled sequence releases 4096 held controls as separate
-/// tokens), the cursor templates' cell data, the engine's configuration and
-/// its new tab stops on reset.
-const RESERVE: usize = 416 * 1024;
+/// tokens), the cursor templates' cell data, and the engine's new
+/// configuration and tab stops while it replaces them.
+pub(crate) const RESERVE: usize = 416 * 1024;
 
 /// Rows the engine adds to the normal screen's storage whenever its history
 /// outgrows it (`MAX_CACHE_SIZE`).
 pub(crate) const CHUNK: usize = 1000;
 
-/// The engine's allocation for a fresh terminal: both screens, tab stops and
-/// line damage.
+/// The engine's allocation for a fresh terminal: both screens, tab stops,
+/// line damage and its configuration.
 fn terminal(geometry: Geometry) -> usize {
     let cols = usize::from(geometry.cols());
     let rows = usize::from(geometry.rows());
     let screen = rows * (cols * size_of::<Cell>() + size_of::<Row<Cell>>());
-    2 * screen + cols + rows * size_of::<LineDamageBounds>()
+    2 * screen + cols + rows * size_of::<LineDamageBounds>() + SEMANTIC_ESCAPE_CHARS.len()
 }
 
 /// Everything a fresh model instance holds before any output.

@@ -60,14 +60,15 @@ impl Bounded {
 
     pub(crate) fn new(geometry: Geometry, rows: usize) -> Self {
         let limit = first(rows);
+        let term = Term::new(config(limit), &Size(geometry), VoidListener);
         Self {
-            term: Term::new(config(limit), &Size(geometry), VoidListener),
+            seen: term.grid().history_size(),
+            term,
             processor: Processor::new(),
             tokenizer: Tokenizer::new(),
             geometry,
             rows,
             limit,
-            seen: 0,
             extras: [0; 2],
         }
     }

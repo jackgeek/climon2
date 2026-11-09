@@ -3,6 +3,7 @@
 
 use crate::{
     bounded::{Bounded, Room},
+    cost,
     geometry::Geometry,
 };
 
@@ -35,6 +36,11 @@ pub struct Model {
 }
 
 impl Model {
+    /// Bytes every model charges beyond what its engine allocates: room for
+    /// the front filter's held token and the tokens one slice completes, and
+    /// for the engine's brief copies.
+    pub const RESERVE: usize = cost::RESERVE;
+
     /// A blank model, if its mandatory allocation fits the limit.
     pub fn new(geometry: Geometry, limits: Limits) -> Result<Self, Rejected> {
         let needed = Bounded::mandatory(geometry, limits.history_rows);
