@@ -12,6 +12,7 @@ flowchart TB
     subgraph shipped["Shipped crates"]
         launcher["climon2-launcher"]
         cli["climon2-cli"]
+        discovery["climon2-discovery"]
         client["climon2-client"]
         daemon["climon2-daemon"]
         install["climon2-install"]
@@ -20,7 +21,10 @@ flowchart TB
         vt["climon2-vt"]
 
         cli --> core
+        cli --> discovery
         cli --> platform
+        discovery --> core
+        discovery --> platform
         client --> core
         client --> platform
         daemon --> core
@@ -38,6 +42,7 @@ flowchart TB
     end
 
     cli -.->|"dev"| test_term
+    discovery -.->|"dev"| test_term
     client -.->|"dev"| test_term
     test_term --> cli
     test_term --> client
@@ -49,29 +54,25 @@ flowchart TB
     e2e -.->|"dev"| test_term
     fixtures -.->|"dev"| test_term
     xtask --> install
-
-    subgraph planned["Planned crate; not implemented"]
-        discovery["climon2-discovery"]
-    end
-    cli -.->|"planned"| discovery
-    style discovery stroke-dasharray: 5 5
 ```
 
 The launcher has no workspace crate dependencies. Cycles through
-`climon2-test-term` are test-only: CLI and [client](../GLOSSARY.md#sessions) tests consume the harness,
+`climon2-test-term` are test-only: CLI, discovery and [client](../GLOSSARY.md#sessions) tests consume the harness,
 which consumes their libraries and other runtime libraries.
 
-**Planned:** a separate discovery crate will share session discovery between
-the CLI and [monitor](../GLOSSARY.md#sessions), retained in
-[Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59).
-The monitor will consume discovery continuously and load version-matched client
-libraries in-process, with one client thread per [live session](../GLOSSARY.md#sessions). Its crate
-placement and the discovery crate's dependencies are not yet specified, so no
-additional crate names or edges are implied. Dynamic loading is shown in the
-artifact diagram, not as a Cargo dependency. The client library's planned
-`cdylib` form is an artifact decision, not a decision to add another crate.
-Ratatui is required for monitor rendering; third-party crates are deliberately
-excluded from this workspace-only diagram.
+**Current (#77):** `climon2-discovery` holds the session discovery that
+[Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59)
+planned to share between the CLI and the [monitor](../GLOSSARY.md#sessions).
+It consumes only `core` and `platform`, and today only the CLI consumes it.
+
+**Planned:** the monitor will consume discovery continuously and load
+version-matched client libraries in-process, with one client thread per
+[live session](../GLOSSARY.md#sessions). Its crate placement is not yet
+specified, so no additional crate names or edges are implied. Dynamic loading
+is shown in the artifact diagram, not as a Cargo dependency. The client
+library's planned `cdylib` form is an artifact decision, not a decision to add
+another crate. Ratatui is required for monitor rendering; third-party crates
+are deliberately excluded from this workspace-only diagram.
 
 The [status/activity revision](session-status.md) also requires the monitor role
 to consume `climon2-vt`, keeping one terminal model per session across uncertain

@@ -31,6 +31,15 @@ metadata; client home/filter configuration travels only through its
 environment, and the validated client settings through the
 `CLIMON2_CLIENT_STARTUP` envelope.
 
+`list`, `attach` and `kill` share one discovery pass from
+[`climon2-discovery`](../climon2-discovery/README.md), through
+`list::discover_live(home)`. It reads whole metadata files, removes stale
+metadata (`StaleMetadata::Remove`), and keeps only live sessions, newest
+created first with ascending session ID breaking ties. On its own thread the CLI logs
+`invalid session metadata` once per invalid entry, then
+`malformed hello extensions` for each live session whose capabilities or state
+are malformed. `list::LiveSession` is the library's type.
+
 The parent-owned list interface is `list::run(home: &Path, json: bool) ->
 io::Result<()>`, called after common logging/pruning. Columns are SESSION,
 CREATED, VERSION, STATE and CLIENTS (from the daemon's hello extensions,
@@ -98,6 +107,10 @@ client start.
 `list_shows_version_state_and_clients_only_when_advertised`,
 `list_json_adds_the_state_object_or_null` and
 `malformed_hello_extensions_are_logged_and_the_session_stays_live`.
+
+The list, attach and kill tests above run unchanged after discovery moved into
+`climon2-discovery`, which is the CLI part of DSC-06; the DSC-06 Contract case
+and the library's own cases are in that crate's tests.
 
 The generic terminal fixture is a test-hooks-only binary. Cross-package binaries
 are found beside the integration-test executable; no test invokes Cargo.

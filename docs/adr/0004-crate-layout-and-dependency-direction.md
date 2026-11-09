@@ -2,16 +2,17 @@
 
 **Monitor planning:** the [monitor ownership decision](https://github.com/jackgeek/climon2/issues/58)
 requires directly loaded client libraries and client threads in the monitor.
-The [discovery decision](https://github.com/jackgeek/climon2/issues/59) retains a
-planned discovery crate shared by CLI and monitor. Monitor crate placement and
-the library artifact layout remain open; the table below describes the current
+The [discovery decision](https://github.com/jackgeek/climon2/issues/59) moved
+the CLI's session discovery into `climon2-discovery`, a shipped library that the
+CLI uses today and the monitor will use (#77). Monitor crate placement and the
+library artifact layout remain open; the table below describes the current
 workspace, not a prohibition on those planned relationships.
 The [#63 terminal contract](../protocol/terminal-integration.md) also plans
 monitor reuse of `climon2-vt` with read-only Rust views. This is an explicit
 future exception to the current daemon-only dependency rule below, not a
 changed current Cargo edge, new crate placement, or cross-release cell schema.
 
-The workspace has one package per shipped binary. The CLI, daemon and client never link each other; they reach each other only by path at runtime (the CLI starts the daemon and execs into the version-matched client). Shared code lives in two libraries: `climon2-core`, which is platform-neutral and has no `cfg(target_os)`, and `climon2-platform`, which holds the shared seam modules (ADR 0003). The crate boundary keeps neutral code out of the seams, so `core` builds and runs its tests on Linux and Windows without the rest of the workspace.
+The workspace has one package per shipped binary. The CLI, daemon and client never link each other; they reach each other only by path at runtime (the CLI starts the daemon and execs into the version-matched client). Shared code lives in two libraries: `climon2-core`, which is platform-neutral and has no `cfg(target_os)`, and `climon2-platform`, which holds the shared seam modules (ADR 0003). The crate boundary keeps neutral code out of the seams, so `core` builds and runs its tests on Linux and Windows without the rest of the workspace. Session discovery, shared by the CLI and the monitor, is a third library, `climon2-discovery`, built on those two.
 
 ## Packages (`crates/`, plus `xtask/` at the root)
 
@@ -20,7 +21,8 @@ The workspace has one package per shipped binary. The CLI, daemon and client nev
 | `climon2-launcher` (bin `climon2`) | shipped | nothing, not even workspace crates (ADR 0002); contains seam 1 |
 | `climon2-core` | shipped lib | crates.io only |
 | `climon2-platform` | shipped lib | `core` |
-| `climon2-cli` (bin `climon2-cli`) | shipped lib + thin main | `core`, `platform` |
+| `climon2-cli` (bin `climon2-cli`) | shipped lib + thin main | `core`, `platform`, `discovery` |
+| `climon2-discovery` | shipped lib | `core`, `platform`; one discovery pass over a climon2 home, for the CLI and the monitor |
 | `climon2-daemon` (bin `climon2-daemon`) | shipped lib + thin main | `core`, `platform`, `vt` |
 | `climon2-client` (bin `climon2-client`) | shipped lib + thin main | `core`, `platform` |
 | `climon2-install` (bin `climon2-install`, shipped as `install`) | shipped lib + thin main | `core`; contains seam 8 |
@@ -34,6 +36,7 @@ Shipped crates may use test-only crates only as dev-dependencies. A workspace te
 - **One `climon2` package with three bins:** rejected. Each binary keeps its own dependencies, and the client library mustn't grow code that only the daemon needs. A future monitor loads version-matched client libraries by path, using a separately specified embedding interface rather than a Cargo dependency on another release.
 - **One shared library containing both the core and platform modules:** rejected. `compile_error!` would stop the neutral code building on Linux and Windows.
 - **Building the CLI as `climon2` and renaming the launcher:** rejected. The CLI is `climon2-cli` everywhere, so the launcher alone is `climon2`, and Cargo binary names don't collide.
+- **Discovery staying in the CLI package:** rejected. The monitor would have to link the CLI or copy its discovery; one library keeps a single implementation of metadata validation, probing and the staleness rules.
 
 ## Consequences
 

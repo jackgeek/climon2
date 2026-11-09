@@ -68,8 +68,10 @@ Installation relationships are outside this consumption diagram.
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
 
 **Current:** no climon2 dynamic library is built or shipped. Cargo's ordinary
-`lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,
-are not separately loaded dynamic libraries. System and third-party libraries
+`lib` targets, including `climon2-core`, `climon2-platform`,
+`climon2-discovery` and `climon2-vt`, are not separately loaded dynamic
+libraries; the CLI's hello probes for discovery come from `climon2-discovery`
+linked into the CLI executable. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
 
 **Planned:** the [monitor](../GLOSSARY.md#sessions) loads version-matched
