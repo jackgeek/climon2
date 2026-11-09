@@ -187,6 +187,13 @@ Checking size afterward, truncating accepted characters or relying on fewer
 processes is not sufficient. No engine patch, replacement or daemon behavior
 change is delivered here.
 
+This prerequisite is now met on the unchanged engine: `climon2-vt`'s monitor
+`Model` charges each token's worst-case growth before the engine sees it,
+admits history storage in the engine's chunks, stages restorations beside the
+current model and never reflows in place
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)).
+The monitor's own budgets and pressure policies above remain unimplemented.
+
 ## Queues and transfers
 
 | Field | Default per client |
