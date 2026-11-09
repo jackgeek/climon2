@@ -53,8 +53,10 @@ Boundaries are `copy-cli`, `version-staged`, `version-published`, and
 not contain these hooks.
 
 `tests/install.rs` documents the #21/#24/#33 rules at the public library and
-real-installer boundaries. Run with the sibling launcher built in the same
-Cargo target:
+real-installer boundaries. The #33 concurrent-fork lock test lives in
+`tests/lock.rs`, a separate test process, because its forked children inherit
+every descriptor of their process, including pipes other tests close. Run both
+with the sibling launcher built in the same Cargo target:
 
 ```sh
 cargo test -p climon2-launcher -p climon2-install --features climon2-install/test-hooks
