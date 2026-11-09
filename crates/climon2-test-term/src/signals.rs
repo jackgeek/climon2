@@ -5,6 +5,8 @@ use alacritty_terminal::vte::{Parser, Perform};
 use std::fmt;
 
 const BEL: u8 = 0x07;
+const CAN: u8 = 0x18;
+const SUB: u8 = 0x1a;
 const ESC: u8 = 0x1b;
 const PROGRAM_STATUS: &[u8] = b"7501";
 
@@ -29,8 +31,10 @@ impl fmt::Debug for HostSignal {
     }
 }
 
-/// Feeds the host's parser one byte at a time, so each signal keeps its exact
-/// bytes and its place in the stream however the host's reads split it.
+/// Feeds the host's parser so each signal keeps its exact bytes and its place
+/// in the stream however the host's reads split it: a byte that can end an
+/// OSC string or ring the bell, and the byte after ESC, go one at a time, and
+/// the runs between them, which can do neither, go in one call.
 #[derive(Default)]
 pub(crate) struct Signals {
     parser: Parser,
@@ -39,10 +43,13 @@ pub(crate) struct Signals {
 
 impl Signals {
     pub(crate) fn push(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.scan.before(byte);
-            self.parser.advance(&mut self.scan, &[byte]);
-            self.scan.previous = byte;
+        let mut rest = bytes;
+        while let Some(length) = self.scan.run(rest) {
+            let (run, later) = rest.split_at(length);
+            self.scan.before(run);
+            self.parser.advance(&mut self.scan, run);
+            self.scan.previous = run[length - 1];
+            rest = later;
         }
     }
 
@@ -63,22 +70,41 @@ struct Scan {
 }
 
 impl Scan {
-    fn before(&mut self, byte: u8) {
+    /// The length of the next run of `bytes` to parse, if any remain.
+    fn run(&self, bytes: &[u8]) -> Option<usize> {
+        let (&first, later) = bytes.split_first()?;
+        if self.previous == ESC || ends_osc(first) {
+            return Some(1);
+        }
+        Some(
+            1 + later
+                .iter()
+                .position(|&byte| ends_osc(byte))
+                .unwrap_or(later.len()),
+        )
+    }
+
+    fn before(&mut self, run: &[u8]) {
         if let Some(mut report) = self.ended_at_escape.take() {
-            if byte == b'\\' {
-                report.push(byte);
+            if run[0] == b'\\' {
+                report.push(run[0]);
             } else {
                 report.pop();
             }
             self.recorded.push(HostSignal::Osc7501(report));
         }
-        if self.previous == ESC && byte == b']' {
+        if self.previous == ESC && run[0] == b']' {
             self.osc = Some(vec![ESC]);
         }
         if let Some(osc) = &mut self.osc {
-            osc.push(byte);
+            osc.extend_from_slice(run);
         }
     }
+}
+
+/// Whether vte ends an OSC string at `byte`; BEL may instead ring the bell.
+fn ends_osc(byte: u8) -> bool {
+    matches!(byte, BEL | CAN | SUB | ESC)
 }
 
 impl Perform for Scan {
