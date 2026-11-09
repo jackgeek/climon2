@@ -1,5 +1,6 @@
 use crate::{
     cell::{Cell, Cursor},
+    input::{Host, Mouse},
     signals::{HostSignal, Signals},
 };
 use alacritty_terminal::{
@@ -329,6 +330,45 @@ impl Terminal {
     pub fn send(&mut self, bytes: impl AsRef<[u8]>) -> io::Result<()> {
         write(&self.writer, bytes.as_ref())
             .map_err(|error| self.screen.0.lock().expect("screen lock").failure(error))
+    }
+
+    /// Reports host focus gained (`CSI I`) or lost (`CSI O`), as a real
+    /// terminal does only while the application has focus reporting
+    /// (`CSI ? 1004 h`) on.
+    pub fn focus(&mut self, focused: bool) -> io::Result<()> {
+        self.inject(|host| host.focus(focused))
+    }
+
+    /// Reports a mouse `action` at the visible-screen cell (`row`, `column`),
+    /// 0-based, in SGR encoding (`CSI < Cb ; Cx ; Cy M` or `m`, 1-based), as a
+    /// real terminal does only with SGR encoding (`CSI ? 1006 h`) and a
+    /// tracking mode that reports the action on.
+    pub fn mouse(&mut self, action: Mouse, row: usize, column: usize) -> io::Result<()> {
+        self.inject(|host| host.mouse(action, row, column))
+    }
+
+    /// Pastes `text` unchanged between `CSI 200 ~` and `CSI 201 ~`, as a real
+    /// terminal does while the application has bracketed paste
+    /// (`CSI ? 2004 h`) on; send unbracketed paste with [`Terminal::send`].
+    pub fn paste(&mut self, text: impl AsRef<[u8]>) -> io::Result<()> {
+        self.inject(|host| host.paste(text.as_ref()))
+    }
+
+    /// Sends the input the emulated host makes of an event, or nothing, failing
+    /// with [`io::ErrorKind::InvalidInput`], when the host would not send it.
+    fn inject(&mut self, encode: impl FnOnce(&Host) -> Result<Vec<u8>, String>) -> io::Result<()> {
+        let bytes = {
+            let screen = self.screen.0.lock().expect("screen lock");
+            let host = Host {
+                mode: *screen.term.mode(),
+                rows: screen.term.screen_lines(),
+                columns: screen.term.columns(),
+            };
+            encode(&host).map_err(|reason| {
+                screen.failure(io::Error::new(io::ErrorKind::InvalidInput, reason))
+            })?
+        };
+        self.send(bytes)
     }
 
     pub fn screen(&self) -> String {

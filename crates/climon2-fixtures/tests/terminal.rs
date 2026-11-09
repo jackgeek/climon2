@@ -1,6 +1,6 @@
 use climon2_test_term::{
-    Cell, Color, Cursor, CursorShape, HostSignal, Isolation, Rendition, Terminal, Underline, Width,
-    bin_path,
+    Cell, Color, Cursor, CursorShape, HostSignal, Isolation, Mouse, MouseButton, Rendition,
+    Terminal, Underline, Width, bin_path,
 };
 use std::{fs, time::Duration};
 
@@ -259,6 +259,51 @@ fn generic_terminal_records_a_report_split_across_reads_once() {
     assert_eq!(terminal.host_signals(), [report(WORKING), HostSignal::Bell]);
     assert_eq!(terminal.wait_exit(SECOND).unwrap(), 0);
     drop(terminal);
+    isolation.assert_clean();
+}
+
+/// Injects one host input event into a terminal.
+type Inject = fn(&mut Terminal) -> std::io::Result<()>;
+
+/// #79 (Terminal oracle): like a real terminal, the harness sends focus, mouse
+/// and paste input only in the modes the generic fixture enabled; otherwise it
+/// refuses and nothing reaches the fixture, whose line discipline would echo it.
+#[test]
+fn generic_terminal_refuses_input_the_application_has_not_enabled() {
+    let isolation = Isolation::new();
+    let cases: [(&str, Inject); 5] = [
+        ("", |terminal| terminal.focus(true)),
+        ("", |terminal| terminal.paste("text")),
+        ("\x1b[?1000h", |terminal| {
+            terminal.mouse(Mouse::Press(MouseButton::Left), 0, 0)
+        }),
+        ("\x1b[?1000;1006h", |terminal| {
+            terminal.mouse(Mouse::Drag(MouseButton::Left), 0, 0)
+        }),
+        ("\x1b[?1006h", |terminal| {
+            terminal.mouse(Mouse::WheelUp, 0, 0)
+        }),
+    ];
+    for (modes, inject) in cases {
+        let mut command = isolation.command(bin_path("climon2-fixture"));
+        command.args(["print", &format!("{modes}ready"), "sleep", "5000"]);
+        let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
+        terminal.wait_for_text("ready", SECOND).unwrap();
+        let refused = inject(&mut terminal).unwrap_err();
+        assert_eq!(
+            refused.kind(),
+            std::io::ErrorKind::InvalidInput,
+            "{modes:?}"
+        );
+        terminal.send("done\n").unwrap();
+        terminal.wait_for_bytes(b"done\r\n", SECOND).unwrap();
+        let received = terminal.received();
+        assert!(
+            received.ends_with(b"readydone\r\n"),
+            "{modes:?}: {}",
+            received.escape_ascii()
+        );
+    }
     isolation.assert_clean();
 }
 

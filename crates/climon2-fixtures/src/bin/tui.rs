@@ -21,7 +21,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("expected report file".into());
     }
     let _raw = climon2_fixtures::RawTerminal::enter()?;
-    print!("\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[2J\x1b[3;5H\x1b[6n");
+    print!(
+        "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1004h\x1b[?1006h\x1b[?2004h\x1b[2J\x1b[3;5H\x1b[6n"
+    );
     io::stdout().flush()?;
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut input = Vec::new();
@@ -69,8 +71,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             report["cursor"] = serde_json::json!(cursor);
             report["mouse"] = serde_json::json!(mouse);
             report["paste"] = serde_json::json!(paste);
+            report["input"] = serde_json::json!(input);
             fs::write(&args[0], serde_json::to_vec_pretty(&report)?)?;
-            print!("\x1b[?2004l\x1b[?1006l\x1b[?1000l\x1b[?1049ltui-done");
+            print!("\x1b[?2004l\x1b[?1006l\x1b[?1004l\x1b[?1002l\x1b[?1000l\x1b[?1049ltui-done");
             io::stdout().flush()?;
             return Ok(());
         }
