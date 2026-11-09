@@ -112,19 +112,18 @@ impl Bounded {
     /// Charge `growth` if it fits, measuring the active screen first when
     /// the running charge alone does not leave room.
     fn admit(&mut self, growth: usize, room: Room) -> Result<(), Rejected> {
-        if self.fits(growth, room) {
-            self.extras[self.active()] += growth;
-            return Ok(());
+        if !self.fits(growth, room) {
+            self.measure();
         }
-        self.measure();
-        if self.fits(growth, room) {
-            self.extras[self.active()] += growth;
-            return Ok(());
+        let needed = self.needed(growth, room);
+        if needed > room.limit {
+            return Err(Rejected {
+                needed,
+                limit: room.limit,
+            });
         }
-        Err(Rejected {
-            needed: self.needed(growth, room),
-            limit: room.limit,
-        })
+        self.extras[self.active()] += growth;
+        Ok(())
     }
 
     /// Before a token that could fill the history limit, admit the engine's

@@ -67,13 +67,17 @@ const COMBINING: usize = 72;
 /// extra data; a printed cell shares the template's and may later need its
 /// own copy, and a wide character writes up to three cells: a leading spacer
 /// where it does not fit, itself and its spacer.
-const PRINTED: [[usize; 3]; 2] = [[COMBINING, 0, 0], [COMBINING, EXTRA, 168]];
+const PRINTED: [[usize; 3]; 2] = [[COMBINING, 0, 0], [COMBINING, EXTRA, WIDE]];
+
+/// A wide character's three cells under an underline colour.
+const WIDE: usize = 3 * EXTRA;
 
 /// The most repeating one character can add: a combining mark or, under an
 /// underline colour, a wide character's cells.
-const REPEATED: [usize; 2] = [COMBINING, 168];
+const REPEATED: [usize; 2] = [COMBINING, WIDE];
 
-/// What one cell's extra data can hold.
+/// The bound for what one cell's extra data holds: the shared data and its
+/// share for each combining mark.
 pub(crate) fn cell(cell: &Cell) -> usize {
     cell.zerowidth()
         .map_or(0, |marks| EXTRA + MARK * marks.len())

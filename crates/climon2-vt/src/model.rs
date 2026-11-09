@@ -17,16 +17,20 @@ pub struct Limits {
     pub history_rows: usize,
 }
 
-/// Growth refused before it happened: `needed` bytes would have exceeded the
-/// `limit`.
+/// Growth refused before it happened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rejected {
+    /// The bytes the model would have had to hold, its worst case for the
+    /// refused update included.
     pub needed: usize,
+    /// The limit that refused it.
     pub limit: usize,
 }
 
 /// One session's terminal model: the current model the monitor paints and,
 /// while a restoration is in progress, the separate model it is staged into.
+/// After a rejection the current model is read-only, keeping its last safe
+/// page, until a staged restoration is applied.
 pub struct Model {
     limits: Limits,
     current: Bounded,
