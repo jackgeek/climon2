@@ -1,4 +1,7 @@
-use crate::cell::{Cell, Cursor};
+use crate::{
+    cell::{Cell, Cursor},
+    signals::{HostSignal, Signals},
+};
 use alacritty_terminal::{
     Term,
     event::{Event, EventListener},
@@ -123,6 +126,7 @@ struct Screen {
     title: Option<String>,
     /// Queries and clipboard operations the host was asked to perform.
     requests: Vec<String>,
+    signals: Signals,
     recent: Vec<u8>,
     eof: bool,
     error: Option<io::Error>,
@@ -184,8 +188,9 @@ impl Screen {
         io::Error::new(
             error.kind(),
             format!(
-                "{error}\nSCREEN:\n{}\nRECENT BYTES:\n{:?}",
+                "{error}\nSCREEN:\n{}\nHOST SIGNALS:\n{:?}\nRECENT BYTES:\n{:?}",
                 self.text(),
+                self.signals.recorded(),
                 String::from_utf8_lossy(&self.recent)
             ),
         )
@@ -252,6 +257,7 @@ impl Terminal {
                 replies: options.replies,
                 title: None,
                 requests: Vec::new(),
+                signals: Signals::default(),
                 recent: Vec::new(),
                 eof: false,
                 error: None,
@@ -287,6 +293,7 @@ impl Terminal {
                     Ok(0) => state.eof = true,
                     Ok(count) => {
                         parser.advance(&mut state.term, &buffer[..count]);
+                        state.signals.push(&buffer[..count]);
                         state.recent.extend_from_slice(&buffer[..count]);
                         state.last_output = Instant::now();
                         let excess = state.recent.len().saturating_sub(65536);
@@ -380,6 +387,17 @@ impl Terminal {
         self.screen.0.lock().expect("screen lock").requests.clone()
     }
 
+    /// Every OSC 7501 report and bell the host received, in stream order.
+    pub fn host_signals(&self) -> Vec<HostSignal> {
+        self.screen
+            .0
+            .lock()
+            .expect("screen lock")
+            .signals
+            .recorded()
+            .to_vec()
+    }
+
     /// The most recent output bytes (at most 64 KiB).
     pub fn received(&self) -> Vec<u8> {
         self.screen.0.lock().expect("screen lock").recent.clone()
@@ -436,6 +454,15 @@ impl Terminal {
                     .windows(bytes.len())
                     .any(|window| window == bytes)
         })
+    }
+
+    /// Waits until `condition` holds for every host signal received so far.
+    pub fn wait_for_host_signals(
+        &mut self,
+        timeout: Duration,
+        condition: impl Fn(&[HostSignal]) -> bool,
+    ) -> io::Result<()> {
+        self.wait(timeout, |screen| condition(screen.signals.recorded()))
     }
 
     fn wait(&self, timeout: Duration, condition: impl Fn(&Screen) -> bool) -> io::Result<()> {

@@ -1,6 +1,6 @@
 use std::{
     env, fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     process::ExitCode,
     thread,
     time::{Duration, Instant},
@@ -22,7 +22,12 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         return Err("expected fixture script".into());
     }
     let mut script = args.iter();
+    let mut raw = None;
     while let Some(action) = script.next() {
+        if action == "raw" {
+            raw = Some(climon2_fixtures::RawTerminal::enter()?);
+            continue;
+        }
         if action == "await-resize" {
             let initial = climon2_fixtures::size()?;
             print!("resize-ready");
@@ -53,6 +58,8 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
                 print!("{value}");
                 io::stdout().flush()?;
             }
+            "await-input" if raw.is_some() => await_input(value)?,
+            "await-input" => return Err("await-input needs raw mode".into()),
             "exit" => return Ok(value.parse()?),
             "write-pid" => fs::write(value, std::process::id().to_string())?,
             "detach" => {
@@ -84,6 +91,23 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
 fn report(path: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let value = climon2_fixtures::report(args)?;
     fs::write(path, serde_json::to_vec_pretty(&value)?)?;
+    Ok(())
+}
+
+/// Reads raw input until `expected` arrives, so a test can hold this fixture's
+/// next output until the host has read everything before it.
+fn await_input(expected: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut input = Vec::new();
+    while !String::from_utf8_lossy(&input).contains(expected) {
+        if Instant::now() >= deadline {
+            return Err("input deadline exceeded".into());
+        }
+        // Raw mode returns from a read after at most 0.1 s without input.
+        let mut buffer = [0; 64];
+        let count = io::stdin().read(&mut buffer)?;
+        input.extend_from_slice(&buffer[..count]);
+    }
     Ok(())
 }
 

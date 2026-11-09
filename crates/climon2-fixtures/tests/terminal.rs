@@ -1,5 +1,6 @@
 use climon2_test_term::{
-    Cell, Color, Cursor, CursorShape, Isolation, Rendition, Terminal, Underline, Width, bin_path,
+    Cell, Color, Cursor, CursorShape, HostSignal, Isolation, Rendition, Terminal, Underline, Width,
+    bin_path,
 };
 use std::{fs, time::Duration};
 
@@ -169,6 +170,95 @@ fn generic_terminal_cursor_reports_position_visibility_shape_and_blink() {
         assert_eq!(terminal.wait_exit(SECOND).unwrap(), 0);
         assert_eq!(terminal.cursor_state(), expected, "{output:?}");
     }
+    isolation.assert_clean();
+}
+
+/// Documented exact bytes of the monitor's host reports (`docs/protocol/monitor-host`).
+const WORKING: &[u8] = b"\x1b]7501;state=working:app=climon2-monitor\x1b\\";
+const CLEAR: &[u8] = b"\x1b]7501;state=clear\x1b\\";
+
+fn report(bytes: &[u8]) -> HostSignal {
+    HostSignal::Osc7501(bytes.to_vec())
+}
+
+/// #79 (Terminal oracle): OSC 7501 reports and bells reach the host signal log
+/// in stream order with their exact bytes. A BEL that ends another OSC string,
+/// or sits inside an APC string, rings no bell; a report keeps the terminator
+/// the host parsed, or none when an escape sequence interrupted it.
+#[test]
+fn generic_terminal_records_program_status_reports_and_bells_in_order() {
+    let isolation = Isolation::new();
+    let blocked_by_bel = b"\x1b]7501;state=blocked:kind=question:app=climon2-monitor\x07";
+    let interrupted = b"\x1b]7501;state=idle";
+    let output = [
+        b"a\x07".as_slice(),
+        WORKING,
+        b"\x1b]0;title\x07",
+        b"\x1b_apc\x07\x1b\\",
+        blocked_by_bel,
+        b"\x1b]75010;x\x1b\\\x1b]750;x\x07",
+        interrupted,
+        b"\x1b[0m",
+        CLEAR,
+        b"\x07",
+    ]
+    .concat();
+    let mut command = isolation.command(bin_path("climon2-fixture"));
+    command.args(["print", std::str::from_utf8(&output).unwrap()]);
+    let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
+    assert_eq!(terminal.wait_exit(SECOND).unwrap(), 0);
+    assert_eq!(
+        terminal.host_signals(),
+        [
+            HostSignal::Bell,
+            report(WORKING),
+            report(blocked_by_bel),
+            report(interrupted),
+            report(CLEAR),
+            HostSignal::Bell,
+        ]
+    );
+    drop(terminal);
+    isolation.assert_clean();
+}
+
+/// #79 (Terminal oracle): a report split across host reads, even inside its
+/// `ESC \` terminator, is recorded once and whole when the read that completes
+/// it arrives, before the bell that follows it.
+#[test]
+fn generic_terminal_records_a_report_split_across_reads_once() {
+    let isolation = Isolation::new();
+    let mut command = isolation.command(bin_path("climon2-fixture"));
+    command.args([
+        "raw",
+        "print",
+        "\x1b]7501;state=wor",
+        "await-input",
+        "1",
+        "print",
+        "king:app=climon2-monitor\x1b",
+        "await-input",
+        "2",
+        "print",
+        "\\\x07",
+    ]);
+    let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
+    terminal
+        .wait_for_bytes(b"\x1b]7501;state=wor", SECOND)
+        .unwrap();
+    assert!(terminal.host_signals().is_empty());
+    terminal.send("1").unwrap();
+    terminal
+        .wait_for_bytes(b"king:app=climon2-monitor\x1b", SECOND)
+        .unwrap();
+    assert!(terminal.host_signals().is_empty());
+    terminal.send("2").unwrap();
+    terminal
+        .wait_for_host_signals(SECOND, |signals| signals.len() == 2)
+        .unwrap();
+    assert_eq!(terminal.host_signals(), [report(WORKING), HostSignal::Bell]);
+    assert_eq!(terminal.wait_exit(SECOND).unwrap(), 0);
+    drop(terminal);
     isolation.assert_clean();
 }
 
