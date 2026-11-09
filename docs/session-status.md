@@ -550,14 +550,15 @@ first hands back to the most recently controlling attachment, otherwise promotes
 the newest accepted passive registration, before final-participant
 [leave policy](../GLOSSARY.md#attachment-and-control). Registration alone does
 not take over a detached session. Committed termination overrides succession.
-No new native-crash survival guarantee is implied. Future
-[headless sessions](../GLOSSARY.md#sessions) explicitly survive zero clients for
+No new native-crash survival guarantee is implied.
+[Headless sessions](../GLOSSARY.md#sessions) explicitly survive zero clients for
 their entire lifetime, including later attachment loss, until command completion
-or Kill; ordinary sessions retain leave policy. Future
+or Kill; ordinary sessions retain leave policy.
 `climon2 exec --headless <command> [args...]` returns only after daemon-confirmed
-creation. This CLI spelling and lifetime are agreed in
-[lifecycle](monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill),
-not implemented; preserve existing CLI kill and test it with headless sessions.
+creation. This CLI spelling and lifetime, specified in
+[lifecycle](monitor-lifecycle.md#headless-creation-and-existing-cli-kill), are
+implemented, and existing CLI kill ends headless sessions. A headless session
+without attachments reports the `detached` lifecycle.
 
 Keep selection identity through loss/completion/revocation/failed acquisition;
 never automatically acquire a replacement. Retain rows and metadata for this
@@ -617,8 +618,9 @@ never routed to another/background session. Modal menus also clear keyboard focu
 The daemon wire schemas, compatibility/rejection, source normalization, viewing
 validation and notification identities are now agreed in #67, not implemented.
 The [lifecycle specification](monitor-lifecycle.md) now agrees recovery,
-concurrent shutdown, truthful Leave/closure/outcome/cleanup/join evidence,
-bounded whole-process fail-stop and headless lifetime, all unimplemented.
+concurrent shutdown, truthful Leave/closure/outcome/cleanup/join evidence and
+bounded whole-process fail-stop, all unimplemented, and headless lifetime, which
+is implemented.
 The [operational specification](monitor-operational-limits.md) now agrees
 numerical budgets/rate limits/retry intervals/retention (#69), not implemented.
 [Native declarations](protocol/monitor-client/core-v1.md) are agreed in #71;

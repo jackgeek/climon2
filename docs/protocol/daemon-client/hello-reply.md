@@ -55,6 +55,13 @@ Starting/detached state has zero attachments and no controller. Attached state
 has at least one attachment and a controller. Terminating state may retain
 attachments, but zero attachments cannot have a controller.
 
+An ordinary session is `starting` until its first attachment, and `detached`
+after an accepted final detach. A [headless session](../../../GLOSSARY.md#sessions)
+is never `starting`: it is `detached` whenever it has no attachment, from the
+moment it is created and after any later departure, including an unexpected
+loss. In both cases `detached` means the session keeps running without a
+client. No lifecycle value was added for headless sessions.
+
 ## Acceptance and failures
 
 Unknown optional reply fields are ignored. Malformed required fields fail the
@@ -73,8 +80,9 @@ Those core reports use [separate wire schemas](core-v1.md); do not infer them fr
 the current lifecycle advertisement or silently repurpose its existing fields.
 
 **Sources:** [implementation](../../../crates/climon2-core/src/protocol.rs),
-[hello advertisements](../../../crates/climon2-core/src/hello.rs), and
-[hello tests](../../../crates/climon2-core/tests/hello.rs).
+[hello advertisements](../../../crates/climon2-core/src/hello.rs),
+[hello tests](../../../crates/climon2-core/tests/hello.rs), and the daemon's
+headless-session [lifecycle tests](../../../crates/climon2-daemon/tests/lifecycle.rs).
 
 ## Revision 1 advertisement (agreed, not implemented)
 

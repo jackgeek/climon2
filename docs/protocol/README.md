@@ -76,17 +76,24 @@ and remote security remain unresolved. The
 There is no initial application checksum; only a future negotiated integrity
 revision could add one if chosen.
 
-Future `climon2 exec --headless <command> [args...]` creates a
-[headless session](../../GLOSSARY.md#sessions) without an interactive client and
-returns success only after daemon-confirmed creation. Its zero-client survival
-policy lasts until command completion or explicit
+`climon2 exec --headless <command> [args...]` creates a
+[headless session](../../GLOSSARY.md#sessions) without an interactive client. It
+prints the session ID and succeeds only after daemon-confirmed creation. The
+session's zero-client survival lasts until command completion or explicit
 [Kill](../../GLOSSARY.md#attachment-and-control), including after later
-[attachment](../../GLOSSARY.md#attachment-and-control) loss. CLI spelling and lifetime are
-[agreed, unimplemented](../monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill).
-Preserve existing `climon2 kill <session>` and require automated headless
-termination tests; no duplicate command is added. Ordinary sessions retain
+[attachment](../../GLOSSARY.md#attachment-and-control) loss. This CLI spelling
+and lifetime are implemented as agreed in the
+[lifecycle](../monitor-lifecycle.md#headless-creation-and-existing-cli-kill).
+The CLI passes the headless policy to its same-release daemon as a private
+startup argument; no wire message or field is added. Its
+[hello reply](daemon-client/hello-reply.md) reports `detached` whenever it has
+no attachment. Existing `climon2 kill <session>` ends headless sessions; no
+duplicate command is added. Ordinary sessions retain
 [leave policy](../../GLOSSARY.md#attachment-and-control), and this exception does
-not make all sessions persistent.
+not make all sessions persistent. Succession to
+[passive monitor connections](../../GLOSSARY.md#attachment-and-control) also
+applies to headless sessions, as part of the unimplemented
+[wire revision 1](daemon-client/core-v1.md).
 
 Ratatui powers the planned monitor's rendering. The agreed
 [terminal integration contract](terminal-integration.md) selects exact ordered
@@ -572,7 +579,7 @@ contracts and remaining open decisions are distinguished below:
 |---|---|
 | [Daemon wire #67](https://github.com/jackgeek/climon2/issues/67) | Agreed [wire revision 1](daemon-client/core-v1.md), not implemented. No remaining schema decision is delegated back to #67. |
 | [Terminal integration #63](https://github.com/jackgeek/climon2/issues/63) | Agreed [terminal contract](terminal-integration.md), including canonical monitor geometry and optional core Focus; not implemented. Numeric transfer budgets and native declarations are agreed in #69/#71. |
-| [Lifecycle #61](https://github.com/jackgeek/climon2/issues/61) | Agreed [lifecycle contract](../monitor-lifecycle.md), not implemented: exponential passive recovery, concurrent truthful shutdown, bounded whole-process fail-stop, Delete/removal and headless lifetime. Numerical schedules remain #69; no general native-crash survival guarantee. |
+| [Lifecycle #61](https://github.com/jackgeek/climon2/issues/61) | Agreed [lifecycle contract](../monitor-lifecycle.md), not implemented: exponential passive recovery, concurrent truthful shutdown, bounded whole-process fail-stop and Delete/removal. Headless creation and lifetime are implemented. Numerical schedules remain #69; no general native-crash survival guarantee. |
 | [Operational limits #69](https://github.com/jackgeek/climon2/issues/69) | Agreed [numerical specification](../monitor-operational-limits.md), not implemented: configurable byte/record/object and aggregate budgets, progress/stall deadlines, fair admission, protected recent history, payload/transfer limits and measurement thresholds. |
 | [Interface schemas #71](https://github.com/jackgeek/climon2/issues/71) | Agreed [native revision 1](monitor-client/core-v1.md), header, operation/event schemas, ownership/cleanup calls, errors, limits/measurements and C examples. Declaration checks do not replace future real same/mixed-release compatibility/rejection evidence. |
 
@@ -767,8 +774,8 @@ Examples are wire bodies, not native declarations or conformance evidence.
   optional core Focus and #64/#59 input/config amendments; not implemented.
 - [Define monitor exit and failure behavior](https://github.com/jackgeek/climon2/issues/61):
   agreed [lifecycle](../monitor-lifecycle.md), not implemented: recovery,
-  concurrent shutdown/fail-stop, truthful outcomes, selector removal and
-  headless zero-client lifetime.
+  concurrent shutdown/fail-stop, truthful outcomes and selector removal.
+  Its headless zero-client lifetime is implemented.
 - [Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69):
   agreed [numerical bounds, progress, admission and exhaustion](../monitor-operational-limits.md);
   unimplemented, with boundary/stall/cleanup and measurement obligations.

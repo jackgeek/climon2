@@ -4,8 +4,11 @@
 [Define automated monitor acceptance criteria](https://github.com/jackgeek/climon2/issues/62),
 not implementation or executed acceptance evidence.** The
 [monitor](../GLOSSARY.md#sessions), packaged
-[client libraries](../GLOSSARY.md#sessions), new daemon wire and headless
-creation remain unimplemented. Resolving this specification does not pass a
+[client libraries](../GLOSSARY.md#sessions) and new daemon wire remain
+unimplemented. Headless creation is implemented; its HDL-01 Contract cases and
+its Monitor-layer cases through the packaged CLI are mapped in the daemon and
+packaged-test READMEs, while the case that needs a running monitor waits for it.
+Resolving this specification does not pass a
 [release gate](../GLOSSARY.md#testing).
 
 This document specifies evidence for the agreed thread-based Ratatui monitor.

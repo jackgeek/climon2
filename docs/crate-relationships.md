@@ -99,9 +99,11 @@ browser. All workspace crates above remain unchanged.
 The [agreed lifecycle](monitor-lifecycle.md), not implemented, specifies
 concurrent per-instance shutdown/joins and exponential passive recovery. Selector
 Delete reuses Kill and dismisses a row/cache only after definitive termination
-and local cleanup. Future headless creation changes only an explicitly headless
-session's zero-client lifetime; it does not select another crate or alter a
-current Cargo edge. No new crate or consumption arrow is introduced here.
+and local cleanup. Implemented headless creation changes only an explicitly
+headless session's zero-client lifetime. Its policy type lives in
+`climon2-core`, which the CLI and daemon already consume; it does not select
+another crate or alter a current Cargo edge. No new crate or consumption arrow
+is introduced here.
 
 The agreed [operational limits](monitor-operational-limits.md), unimplemented,
 require allocation-aware terminal/parser updates and bounded discovery/queues/

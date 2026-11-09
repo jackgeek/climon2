@@ -22,8 +22,8 @@ flowchart TB
         browser(["Browser with xterm.js<br/>future external consumer"])
 
         launcher -->|"execs current version"| cli
-        cli -->|"starts for exec"| daemon
-        cli -->|"exec / attach / kill: session version"| client
+        cli -->|"starts for exec and exec --headless"| daemon
+        cli -->|"exec (not --headless) / attach / kill: session version"| client
         cli -->|"hello probes for discovery"| daemon
         client -->|"daemon-client communication; current"| daemon
         daemon -->|"runs on session PTY"| command
@@ -149,13 +149,15 @@ discovery and remote authentication/security remain deliberately unresolved;
 same-[UID](protocol/TERMS.md#uid)/private-directory local checks do not define
 future transport security. No forwarding implementation is claimed.
 
-Future `climon2 exec --headless` returns after daemon-confirmed creation without
-starting an interactive client. A [headless session](../GLOSSARY.md#sessions)
-keeps its explicit zero-client survival policy throughout its lifetime, including
-after later clients unexpectedly leave; command completion or existing CLI Kill
-ends it. The [lifecycle decision](monitor-lifecycle.md) agrees this narrow
-exception, not universal persistence or a new executable/library. Implementation
-remains unshipped; the current execution arrows above are unchanged.
+`climon2 exec --headless` returns after daemon-confirmed creation without
+starting an interactive client: the CLI starts the daemon, passing the headless
+policy as a private startup argument, and never execs the client. A
+[headless session](../GLOSSARY.md#sessions) keeps its explicit zero-client
+survival policy throughout its lifetime, including after later clients
+unexpectedly leave; command completion or existing CLI Kill ends it. The
+[lifecycle decision](monitor-lifecycle.md) agrees this narrow exception, not
+universal persistence or a new executable/library. It is implemented and adds no
+artifact or relationship; only the CLI's labels above name it.
 
 The planned relationships are indexed by
 [Chart the interactive monitor specification](https://github.com/jackgeek/climon2/issues/57);
