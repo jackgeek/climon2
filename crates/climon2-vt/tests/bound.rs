@@ -131,13 +131,13 @@ fn mandatory(at: Geometry) -> usize {
     needed(Model::new(at, limits(0, ROWS)))
 }
 
-/// A model with the smallest limit that accepts `bytes`.
-fn fitted(at: Geometry, bytes: &[u8]) -> Model {
+/// A model with the smallest limit that accepts `bytes`, and that limit.
+fn fitted(at: Geometry, bytes: &[u8]) -> (Model, usize) {
     let mut limit = mandatory(at);
     loop {
         let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
         match model.feed(bytes) {
-            Ok(()) => return model,
+            Ok(()) => return (model, limit),
             Err(rejected) => limit = rejected.needed,
         }
     }
@@ -150,7 +150,7 @@ fn fitted(at: Geometry, bytes: &[u8]) -> Model {
 /// produced. Returns the accepted model's screen.
 #[track_caller]
 fn assert_bound(at: Geometry, before: &[u8], update: &[u8]) -> Vec<String> {
-    let bound = needed(fitted(at, before).feed(update));
+    let bound = needed(fitted(at, before).0.feed(update));
 
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(bound, ROWS)).unwrap();
@@ -251,7 +251,7 @@ fn history_grows_at_the_bound_and_discards_its_oldest_row_one_byte_past_it() {
 fn released_marks_make_room_before_anything_is_rejected() {
     let at = geometry(10, 3);
     let update = format!("a{}", "\u{301}".repeat(31));
-    let bound = needed(fitted(at, b"").feed(update.as_bytes()));
+    let bound = needed(fitted(at, b"").0.feed(update.as_bytes()));
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(bound, ROWS)).unwrap();
 
@@ -312,4 +312,255 @@ fn sequences_no_host_receives_never_grow_the_model() {
     assert!(meter.live() <= limit);
     assert_eq!(model.footprint(), limit);
     assert_eq!(model.screen(), ["link", "", ""]);
+}
+
+/// LIM-03 Contract: a restoration is staged into a separate model while the
+/// current one stays visible, and the two are charged together. Restoration
+/// bytes that fit beside the current model are accepted at the bound and
+/// replace it whole when applied; one byte past it they are rejected, the
+/// partial restoration is discarded and the last safe page stays current and
+/// read-only.
+#[test]
+fn restoration_staging_is_accepted_at_the_bound_and_rejected_one_byte_past_it() {
+    let at = geometry(10, 3);
+    let restoration = format!("restored\r\na{}", "\u{301}".repeat(20));
+    let mut probe = Model::new(at, limits(mandatory(at), ROWS)).unwrap();
+    probe.feed(b"live page").unwrap();
+    let both = needed(probe.stage(at));
+    let mut probe = Model::new(at, limits(both, ROWS)).unwrap();
+    probe.feed(b"live page").unwrap();
+    probe.stage(at).unwrap();
+    let bound = needed(probe.feed(restoration.as_bytes()));
+
+    let meter = Meter::watch();
+    let mut model = Model::new(at, limits(bound, ROWS)).unwrap();
+    model.feed(b"live page").unwrap();
+    model.stage(at).unwrap();
+    model.feed(restoration.as_bytes()).unwrap();
+    assert!(meter.peak() <= bound, "{} > {bound}", meter.peak());
+    assert_eq!(model.screen(), ["live page", "", ""]);
+    assert!(model.apply());
+    assert!(model.footprint() < both);
+    assert_eq!(
+        model.screen(),
+        [
+            "restored".to_owned(),
+            format!("a{}", "\u{301}".repeat(20)),
+            String::new()
+        ]
+    );
+
+    let mut model = Model::new(at, limits(bound - 1, ROWS)).unwrap();
+    model.feed(b"live page").unwrap();
+    model.stage(at).unwrap();
+    let rejected = Rejected {
+        needed: bound,
+        limit: bound - 1,
+    };
+    assert_eq!(model.feed(restoration.as_bytes()), Err(rejected));
+    assert_eq!(model.feed(b"more"), Err(rejected));
+    assert!(!model.apply());
+    assert_eq!(model.screen(), ["live page", "", ""]);
+}
+
+/// LIM-03 Contract: a model never reflows in place; a new effective geometry
+/// arrives with a restoration staged at that geometry. Staging a larger
+/// geometry is accepted when both models fit (at the bound) and rejected one
+/// byte past it before anything is allocated, keeping the current page.
+#[test]
+fn resizing_stages_a_replacement_at_the_bound_and_is_rejected_one_byte_past_it() {
+    let small = geometry(10, 3);
+    let large = geometry(200, 60);
+    let mut probe = Model::new(small, limits(mandatory(small), ROWS)).unwrap();
+    probe.feed(b"page").unwrap();
+    let bound = needed(probe.stage(large));
+
+    let meter = Meter::watch();
+    let mut model = Model::new(small, limits(bound, ROWS)).unwrap();
+    model.feed(b"page").unwrap();
+    model.stage(large).unwrap();
+    model.feed(b"\x1b[60;190Hcorner").unwrap();
+    assert!(meter.peak() <= bound, "{} > {bound}", meter.peak());
+    assert_eq!(model.geometry(), small);
+    assert!(model.apply());
+    assert_eq!(model.geometry(), large);
+    assert_eq!(model.screen()[59].trim_start(), "corner");
+
+    let meter = Meter::watch();
+    let mut model = Model::new(small, limits(bound - 1, ROWS)).unwrap();
+    model.feed(b"page").unwrap();
+    assert_eq!(
+        model.stage(large),
+        Err(Rejected {
+            needed: bound,
+            limit: bound - 1
+        })
+    );
+    assert!(meter.peak() < bound);
+    assert_eq!(model.geometry(), small);
+    assert_eq!(model.screen(), ["page", "", ""]);
+}
+
+/// LIM-03 Contract: a superseded or abandoned restoration is discarded whole;
+/// the current model is never touched by it, and its bytes are released.
+#[test]
+fn discarded_restorations_never_become_current() {
+    let at = geometry(10, 3);
+    let mut model = Model::new(at, limits(ROOMY, ROWS)).unwrap();
+    model.feed(b"current").unwrap();
+    let alone = model.footprint();
+    model.stage(at).unwrap();
+    model.feed(b"first").unwrap();
+    model.stage(at).unwrap();
+    model.feed(b"second").unwrap();
+    assert!(model.footprint() > alone);
+
+    model.discard();
+
+    assert_eq!(model.footprint(), alone);
+    assert!(!model.apply());
+    assert_eq!(model.screen(), ["current", "", ""]);
+    model.stage(at).unwrap();
+    model.feed(b"third").unwrap();
+    assert!(model.apply());
+    assert_eq!(model.screen(), ["third", "", ""]);
+}
+
+/// A screenful of cells, each a letter carrying `marks` combining marks.
+fn marked(at: Geometry, marks: usize) -> String {
+    let cell = format!("a{}", "\u{301}".repeat(marks));
+    let row = cell.repeat(usize::from(at.cols()));
+    vec![row; usize::from(at.rows())].join("\r\n")
+}
+
+/// LIM-03 Contract: each screen's cell data is charged separately. Marks
+/// left on the alternate screen stay charged while the normal screen is
+/// active, because the engine keeps them, so the normal screen cannot use
+/// their room; entering the alternate screen again clears it, and measuring
+/// makes the room available.
+#[test]
+fn alternate_screen_marks_stay_charged_until_that_screen_is_cleared() {
+    let at = geometry(10, 3);
+    let alternate = format!("\x1b[?1049h\x1b[H{}", marked(at, 20));
+    let (mut model, limit) = fitted(at, alternate.as_bytes());
+    let meter = Meter::watch();
+
+    model.feed(b"\x1b[?1049l").unwrap();
+    let normal = marked(at, 20);
+    assert!(model.feed(normal.as_bytes()).is_err());
+    assert_eq!(model.screen(), ["", "", ""]);
+
+    let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+    for _ in 0..3 {
+        model.feed(alternate.as_bytes()).unwrap();
+        model.feed(b"\x1b[?1049l").unwrap();
+    }
+    assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+    assert_eq!(model.screen(), ["", "", ""]);
+}
+
+/// LIM-03 Contract: a model that rejected output stays read-only until a
+/// staged restoration replaces it whole; then it accepts output again.
+#[test]
+fn a_rejected_model_accepts_output_again_after_a_restoration_is_applied() {
+    let at = geometry(10, 3);
+    let marks = format!("a{}", "\u{301}".repeat(20));
+    let mut model = Model::new(at, limits(mandatory(at) * 2 + 1000, ROWS)).unwrap();
+    model.feed("kept\u{301}".as_bytes()).unwrap();
+    assert!(model.feed(b"\x1b[65535b").is_err());
+    let kept = model.screen();
+    assert_eq!(kept, ["kept\u{301}", "", ""]);
+    assert!(model.feed(b"x").is_err());
+
+    model.stage(at).unwrap();
+    model.feed(b"restored\r\n").unwrap();
+    assert_eq!(model.screen(), kept);
+    assert!(model.apply());
+    model.feed(marks.as_bytes()).unwrap();
+
+    assert_eq!(
+        model.screen(),
+        ["restored".to_owned(), marks, String::new()]
+    );
+}
+
+/// LIM-03 Contract: apart from the reserve every model keeps, a model's
+/// charge for its engine and screens is exactly what constructing it
+/// allocated, at every geometry.
+#[test]
+fn a_fresh_model_charges_exactly_what_its_engine_allocated() {
+    let built = |cols, rows| {
+        let meter = Meter::watch();
+        let model = Model::new(geometry(cols, rows), limits(ROOMY, 0)).unwrap();
+        assert!(meter.peak() <= model.footprint());
+        (meter.peak(), model.footprint())
+    };
+    let (small, small_charge) = built(2, 1);
+    for (cols, rows) in [(80, 24), (200, 60), (500, 200)] {
+        let (large, large_charge) = built(cols, rows);
+        assert_eq!(large_charge - small_charge, large - small, "{cols}x{rows}");
+    }
+}
+
+/// LIM-03 Contract: a long history at a narrow geometry is mostly the
+/// engine's row vector, which doubles as history grows and briefly holds its
+/// old buffer while it does. A model at the smallest limit that keeps ten
+/// thousand rows never lets the allocator see that limit exceeded.
+#[test]
+fn a_long_history_stays_within_the_smallest_limit_that_keeps_it() {
+    let at = geometry(2, 1);
+    let output = "x\r\n".repeat(10_500);
+    let mut roomy = Model::new(at, limits(ROOMY, 10_000)).unwrap();
+    roomy.feed(output.as_bytes()).unwrap();
+    let limit = roomy.footprint();
+
+    let meter = Meter::watch();
+    let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
+    model.feed(output.as_bytes()).unwrap();
+
+    assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+    assert_eq!(model.history().len(), 10_000);
+}
+
+/// LIM-03 Fault: a control sequence holding 4096 controls and then cancelled
+/// releases them as 4097 separate tokens at once; that burst stays within
+/// the reserve of a model at its mandatory limit.
+#[test]
+fn a_cancelled_sequence_releasing_held_controls_stays_within_the_limit() {
+    let at = geometry(10, 3);
+    let burst = [
+        b"\x1b[".as_slice(),
+        &[0x07; 4200],
+        &[0x18],
+        b"\x1b[".as_slice(),
+        &[0x07; 4200],
+        b"\x1b[m",
+    ]
+    .concat();
+    let limit = mandatory(at);
+    let meter = Meter::watch();
+    let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+
+    model.feed(&burst).unwrap();
+
+    assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+    assert_eq!(model.footprint(), limit);
+}
+
+/// LIM-03 Contract: a full reset releases every mark on both screens and the
+/// history holding them, so the room is available again after measuring.
+#[test]
+fn a_full_reset_releases_marks_and_history() {
+    let at = geometry(10, 3);
+    let heavy = format!("{}\r\n{}", marked(at, 20), marked(at, 20));
+    let (mut model, limit) = fitted(at, heavy.as_bytes());
+    let meter = Meter::watch();
+
+    for _ in 0..3 {
+        model.feed(b"\x1bc").unwrap();
+        model.feed(heavy.as_bytes()).unwrap();
+    }
+
+    assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+    assert_eq!(model.history().len(), 3);
 }

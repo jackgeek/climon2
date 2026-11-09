@@ -6,7 +6,7 @@
 use crate::geometry::Geometry;
 use alacritty_terminal::{
     grid::Row,
-    term::{LineDamageBounds, SEMANTIC_ESCAPE_CHARS, cell::Cell},
+    term::{LineDamageBounds, cell::Cell},
 };
 use std::str::Utf8Chunk;
 use unicode_width::UnicodeWidthChar;
@@ -14,22 +14,24 @@ use unicode_width::UnicodeWidthChar;
 /// vte's synchronized-update buffer, allocated whole by `Processor::new`.
 const PROCESSOR: usize = 2 * 1024 * 1024;
 
-/// Room for the front filter's buffers (a held partial token and the tokens
-/// one 64-byte slice completes) and the engine's short-lived copies: tab
-/// stops on reset, its configuration, and the cursor templates' cell data.
-const RESERVE: usize = 512 * 1024;
+/// Room for what is held only briefly or is too small to track: the front
+/// filter's partial token and the tokens one slice completes (at most about
+/// 400 KiB, when a cancelled sequence releases 4096 held controls as separate
+/// tokens), the cursor templates' cell data, the engine's configuration and
+/// its new tab stops on reset.
+const RESERVE: usize = 416 * 1024;
 
 /// Rows the engine adds to the normal screen's storage whenever its history
 /// outgrows it (`MAX_CACHE_SIZE`).
 pub(crate) const CHUNK: usize = 1000;
 
-/// The engine's allocation for a fresh terminal: both screens, tab stops,
-/// line damage and its configuration.
+/// The engine's allocation for a fresh terminal: both screens, tab stops and
+/// line damage.
 fn terminal(geometry: Geometry) -> usize {
     let cols = usize::from(geometry.cols());
     let rows = usize::from(geometry.rows());
     let screen = rows * (cols * size_of::<Cell>() + size_of::<Row<Cell>>());
-    2 * screen + cols + rows * size_of::<LineDamageBounds>() + SEMANTIC_ESCAPE_CHARS.len()
+    2 * screen + cols + rows * size_of::<LineDamageBounds>()
 }
 
 /// Everything a fresh model instance holds before any output.

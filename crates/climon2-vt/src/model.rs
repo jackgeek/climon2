@@ -24,10 +24,12 @@ pub struct Rejected {
     pub limit: usize,
 }
 
-/// One session's terminal model.
+/// One session's terminal model: the current model the monitor paints and,
+/// while a restoration is in progress, the separate model it is staged into.
 pub struct Model {
     limits: Limits,
     current: Bounded,
+    staged: Option<Bounded>,
     /// The rejection that made the current model read-only.
     rejected: Option<Rejected>,
 }
@@ -45,14 +47,78 @@ impl Model {
         Ok(Self {
             limits,
             current: Bounded::new(geometry, limits.history_rows),
+            staged: None,
             rejected: None,
         })
+    }
+
+    /// Begin a restoration at `geometry`: a blank model to stage it into,
+    /// replacing any restoration already staged. If both models cannot fit,
+    /// nothing is allocated and the current model becomes read-only.
+    pub fn stage(&mut self, geometry: Geometry) -> Result<(), Rejected> {
+        self.staged = None;
+        self.current.measure();
+        let needed = self.current.charge() + Bounded::mandatory(geometry, self.limits.history_rows);
+        if needed > self.limits.bytes {
+            let rejected = Rejected {
+                needed,
+                limit: self.limits.bytes,
+            };
+            self.rejected = Some(rejected);
+            return Err(rejected);
+        }
+        self.staged = Some(Bounded::new(geometry, self.limits.history_rows));
+        Ok(())
+    }
+
+    /// Complete the staged restoration: it replaces the current model and its
+    /// history whole. False when nothing is staged.
+    pub fn apply(&mut self) -> bool {
+        let Some(staged) = self.staged.take() else {
+            return false;
+        };
+        self.current = staged;
+        self.rejected = None;
+        true
+    }
+
+    /// Abandon the staged restoration, if any.
+    pub fn discard(&mut self) {
+        self.staged = None;
+    }
+
+    /// The current model's geometry.
+    pub fn geometry(&self) -> Geometry {
+        self.current.geometry()
     }
 
     /// Apply terminal bytes from the session. Output that would exceed the
     /// limit is rejected before it reaches the engine; the model keeps the
     /// page its accepted output produced and refuses everything after.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<(), Rejected> {
+        match self.staged.as_mut() {
+            Some(staged) => {
+                let room = Room {
+                    other: self.current.charge(),
+                    limit: self.limits.bytes,
+                };
+                let fed = staged.feed(bytes, room);
+                self.restored(fed)
+            }
+            None => self.live(bytes),
+        }
+    }
+
+    /// A rejected restoration is discarded whole.
+    fn restored(&mut self, fed: Result<(), Rejected>) -> Result<(), Rejected> {
+        if let Err(rejected) = fed {
+            self.staged = None;
+            self.rejected = Some(rejected);
+        }
+        fed
+    }
+
+    fn live(&mut self, bytes: &[u8]) -> Result<(), Rejected> {
         if let Some(rejected) = self.rejected {
             return Err(rejected);
         }
@@ -65,9 +131,10 @@ impl Model {
         fed
     }
 
-    /// The allocation capacity charged against the limit.
+    /// The allocation capacity charged against the limit, for the current
+    /// and any staged model.
     pub fn footprint(&self) -> usize {
-        self.current.charge()
+        self.current.charge() + self.staged.as_ref().map_or(0, Bounded::charge)
     }
 
     /// The current model's normal-screen history, oldest row first, while

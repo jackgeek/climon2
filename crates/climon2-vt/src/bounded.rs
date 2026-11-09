@@ -170,7 +170,7 @@ impl Bounded {
     }
 
     /// Replace the active screen's bound with what its cells hold now.
-    fn measure(&mut self) {
+    pub(crate) fn measure(&mut self) {
         let grid = self.term.grid();
         let lines = grid.topmost_line().0..=grid.bottommost_line().0;
         let held = lines
@@ -193,6 +193,10 @@ impl Bounded {
 
     fn active(&self) -> usize {
         usize::from(self.term.mode().contains(TermMode::ALT_SCREEN))
+    }
+
+    pub(crate) fn geometry(&self) -> Geometry {
+        self.geometry
     }
 
     /// The normal screen's history rows as text, oldest first; empty while
