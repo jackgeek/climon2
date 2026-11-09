@@ -111,6 +111,7 @@ Acceptance-matrix IDs are cited in each test's doc comment.
 | LIM-03 Contract: growth charged by what printing can hold; accumulating marks measured | `growth_is_charged_by_what_printing_can_hold`, `marks_accumulating_on_every_cell_stay_within_the_limit` |
 | LIM-03 Fault: `CSI 65535 b` of a mark at the bound and one past it, and repeated | `repeated_marks_are_accepted_at_the_bound_and_rejected_one_byte_past_it`, `repeated_repeats_stay_within_the_limit` |
 | LIM-03 Fault: hostile titles, title stack, hyperlinks, DCS, clipboard, queries | `sequences_no_host_receives_never_grow_the_model` |
+| LIM-03 Contract: the engine sees exactly what the live output policy forwards | `the_engine_sees_only_what_a_host_would_receive` |
 | LIM-03 Fault: a cancelled sequence releasing 4096 held controls | `a_cancelled_sequence_releasing_held_controls_stays_within_the_limit` |
 
 ## Limitations
