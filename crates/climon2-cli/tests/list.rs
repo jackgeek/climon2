@@ -552,3 +552,45 @@ fn malformed_hello_extensions_are_logged_and_the_session_stays_live() {
     );
     fs::remove_file(metadata.socket_path.as_str()).unwrap();
 }
+
+/// #37: shell-safe arguments are shown bare, and an empty argument as `''`.
+#[test]
+fn list_quotes_only_the_arguments_that_need_it() {
+    let home = tempfile::tempdir().unwrap();
+    let mut metadata = metadata(home.path(), 27, "2026-10-28T07:21:02.930Z");
+    metadata.args = ["plain", "--flag=a/b.c", "", "two words"]
+        .map(str::to_owned)
+        .to_vec();
+    let rendered = table(&[legacy(&metadata)], 400).unwrap();
+    let row = rendered.lines().last().unwrap();
+    assert!(
+        row.ends_with("  plain --flag=a/b.c '' 'two words'"),
+        "{row}"
+    );
+}
+
+/// #37: ARGS that exactly fill the terminal are shown whole; one cell less fills the row
+/// up to the terminal's last cell, with the ellipsis there.
+#[test]
+fn list_args_that_exactly_fit_are_whole_and_one_cell_less_is_truncated() {
+    let home = tempfile::tempdir().unwrap();
+    let mut metadata = metadata(home.path(), 28, "2026-10-28T07:21:02.930Z");
+    metadata.args = vec!["abcdefgh".to_owned()];
+    let sessions = [legacy(&metadata)];
+    let row = |width| {
+        table(&sessions, width)
+            .unwrap()
+            .lines()
+            .last()
+            .unwrap()
+            .to_owned()
+    };
+    let whole = row(400);
+    assert!(whole.ends_with("  abcdefgh"), "{whole}");
+    let width = unicode_width::UnicodeWidthStr::width(whole.as_str());
+    assert_eq!(row(width), whole);
+    assert_eq!(
+        row(width - 1),
+        format!("{}…", whole.strip_suffix("gh").unwrap())
+    );
+}
