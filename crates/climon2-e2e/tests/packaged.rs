@@ -331,6 +331,8 @@ fn owned_bash(package: &Package, ignore_hangup: bool) -> Terminal {
 /// #19/#21.7/#38: killing the real installed client cannot request session
 /// termination; EOF drives the daemon's one leave policy, including the full
 /// five-second grace and group kill of a command that ignores hangup.
+/// HDL-01 (Monitor layer), ordinary case: headless sessions leave this policy
+/// unchanged for ordinary sessions.
 #[test]
 fn killed_installed_client_uses_daemon_leave_policy_and_leaves_nothing() {
     let package = Package::new();

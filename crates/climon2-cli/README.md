@@ -1,34 +1,39 @@
 # climon2-cli
 
-CLI orchestration for `exec COMMAND [ARG...]`, `attach SESSION-ID`,
+CLI orchestration for `exec [--headless] COMMAND [ARG...]`, `attach SESSION-ID`,
 `kill SESSION-ID` and `list [--json]`. The usage string is
 `usage: climon2 exec [--headless] <command> [args...] | attach <session-id> | kill <session-id> | list [--json]`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.
-A successful exec or attach replaces the CLI process with the metadata
-version's client. Usage errors (including a malformed session selector) are 2;
-climon2 failures are 125; daemon startup preserves 126/127.
+A successful ordinary exec or attach replaces the CLI process with the metadata
+version's client; a successful headless exec returns 0. Usage errors (including
+a malformed session selector) are 2; climon2 failures are 125; daemon startup
+preserves 126/127.
 
 Home is resolved, created and canonicalized once. Common dispatch opens the
-general log and prunes old logs before any command. Exec checks stdin and
-stdout TTYs before spawning, then reads and validates the whole
-`config.jsonc` before any session side effect. It resolves canonical companions
+general log and prunes old logs before any command. Exec reads and validates the
+whole `config.jsonc`, then, unless headless, checks stdin and stdout TTYs, all
+before any session side effect. It resolves canonical companions
 from its own canonical version-layout path, generates one v4 GUID and socket,
 and switches to the linked session log. Core projects the exact OS-string
 command environment and provides depth/ordinal rules; `TERM=xterm-256color` and
 `COLORTERM=truecolor` are always set. The command's inherited `CLIMON2_HOME`
-and `CLIMON2_LOG` are not rewritten.
+and `CLIMON2_LOG` are not rewritten. The initial size is the stdin terminal's,
+or 80x24 when stdin is not a terminal (only possible for headless exec).
 
 Daemon startup uses the exact private interface documented in
 `../climon2-daemon/README.md`, including `--scrollback-max-rows` from the
-validated configuration; readiness fd and untouched command arguments are
-appended inside the platform spawn callback. The real five-second readiness
-deadline cleans metadata/socket on failure. After Ready, an armed guard sends
-TERM to the daemon, waits up to six seconds, then KILLs it if metadata/client
-handoff fails. The exact frozen client invocation is derived from the published
-metadata; client home/filter configuration travels only through its
-environment, and the validated client settings through the
+validated configuration and `--lifetime ordinary|headless`; readiness fd and
+untouched command arguments are appended inside the platform spawn callback. The
+real five-second readiness deadline cleans metadata/socket on failure. After
+Ready, an armed guard sends TERM to the daemon, waits up to six seconds, then
+KILLs it if metadata/client handoff fails. Headless exec instead writes the
+session ID and a newline to stdout, then disarms the guard and exits 0, leaving
+the session running; if stdout cannot be written, the guard still ends the
+session and exec fails with 125. The exact frozen client invocation is derived
+from the published metadata; client home/filter configuration travels only
+through its environment, and the validated client settings through the
 `CLIMON2_CLIENT_STARTUP` envelope.
 
 The parent-owned list interface is `list::run(home: &Path, json: bool) ->
@@ -83,6 +88,10 @@ client start.
 - `attach_overwrites_an_inherited_kill_envelope`
 - `a_config_edit_before_the_client_starts_changes_neither_client_nor_daemon`
   (uses `CLIMON2_CLI_HOLD`)
+
+Headless exec (`exec --headless`, HDL-01 and the confirmed headless scenarios)
+is proven through the installed launcher in `../climon2-e2e/tests/headless.rs`;
+its scenario table is in that crate's README.
 
 `tests/attach.rs` covers selection and capability checks for attach and kill:
 `a_selector_must_match_exactly_one_live_session`,

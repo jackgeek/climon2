@@ -34,7 +34,7 @@ pub fn run(
     general: &LogFile,
     filter: Option<&str>,
 ) -> Result<u32, Error> {
-    let (config, layout) = prepare(home)?;
+    let (config, layout) = prepare(home, lifetime)?;
     let (id, session) = new_session(home, general)?;
     let dispatch = session.dispatch(filter)?;
     tracing::dispatcher::with_default(&dispatch, || {
@@ -44,9 +44,9 @@ pub fn run(
 }
 
 /// Configuration and terminals are checked before anything is created.
-fn prepare(home: &Path) -> Result<(ExecConfig, ExecutableLayout), Error> {
+fn prepare(home: &Path, lifetime: Lifetime) -> Result<(ExecConfig, ExecutableLayout), Error> {
     let config = exec_config(home)?;
-    Ok((config, preflight()?))
+    Ok((config, preflight(lifetime)?))
 }
 
 fn new_session(home: &Path, general: &LogFile) -> io::Result<(SessionId, LogFile)> {
@@ -63,9 +63,12 @@ fn exec_config(home: &Path) -> Result<ExecConfig, Error> {
         .map_err(|error| Error::new(125, error))
 }
 
-/// TTY checks happen before anything is created or spawned.
-fn preflight() -> io::Result<ExecutableLayout> {
-    terminal::require_ttys()?;
+/// TTY checks happen before anything is created or spawned; a headless
+/// session needs no terminal.
+fn preflight(lifetime: Lifetime) -> io::Result<ExecutableLayout> {
+    if lifetime == Lifetime::Ordinary {
+        terminal::require_ttys()?;
+    }
     executable_layout()
 }
 
@@ -117,8 +120,8 @@ fn launch(
     let environment =
         SessionEnvironment::for_session(id, &inherited).map_err(|error| Error::new(125, error))?;
     warn_if_nested(&environment);
-    let _daemon = startup.ready(command, environment, filter)?;
-    startup.handoff(filter, config.client)
+    let daemon = startup.ready(command, environment, filter)?;
+    startup.finish(daemon, filter, config.client)
 }
 
 fn warn_if_nested(environment: &SessionEnvironment) {
@@ -137,7 +140,7 @@ impl Startup<'_> {
     ) -> Result<Startup<'a>, Error> {
         let socket = RuntimeDirectory::prepare(home)?.socket_path(id)?;
         let metadata = home.join("sessions").join(format!("{id}.pty"));
-        let size = terminal_size()?;
+        let size = terminal_size();
         let cwd = std::env::current_dir().map_err(|error| Error::new(126, error))?;
         Ok(Startup {
             home,
@@ -220,6 +223,32 @@ impl Startup<'_> {
         })
     }
 
+    /// Ordinary exec becomes the client; headless exec only reports the session.
+    /// `daemon` stops the session unless the CLI succeeds.
+    fn finish(
+        &self,
+        daemon: Started<'_>,
+        filter: Option<&str>,
+        settings: climon2_core::keys::ClientSettings,
+    ) -> Result<u32, Error> {
+        match self.lifetime {
+            Lifetime::Ordinary => self.handoff(filter, settings),
+            Lifetime::Headless => self.announce(daemon),
+        }
+    }
+
+    /// Prints the session ID once the daemon confirmed creation; the session
+    /// then outlives this CLI. A script that cannot read the ID could not
+    /// target the session, so a failed write still stops it.
+    fn announce(&self, daemon: Started<'_>) -> Result<u32, Error> {
+        let mut stdout = io::stdout().lock();
+        writeln!(stdout, "{}", self.id)?;
+        stdout.flush()?;
+        tracing::debug!(session_id = %self.id, "headless session started");
+        daemon.disarm();
+        Ok(0)
+    }
+
     fn handoff(
         &self,
         filter: Option<&str>,
@@ -264,8 +293,20 @@ impl Startup<'_> {
     }
 }
 
-fn terminal_size() -> io::Result<TerminalSize> {
-    terminal::size(&terminal::input()?)
+/// TIOCGWINSZ's value for an unknown dimension.
+const UNKNOWN: u16 = 0;
+
+/// The stdin terminal's size; without one (headless exec), the fallback for
+/// an unknown size, 80x24.
+fn terminal_size() -> TerminalSize {
+    let unknown = TerminalSize {
+        cols: UNKNOWN,
+        rows: UNKNOWN,
+    };
+    terminal::input()
+        .and_then(|input| terminal::size(&input))
+        .unwrap_or(unknown)
+        .initial()
 }
 
 struct Started<'a> {
@@ -296,6 +337,11 @@ impl Drop for Started<'_> {
 }
 
 impl Started<'_> {
+    /// The session outlives this CLI.
+    fn disarm(self) {
+        std::mem::forget(self);
+    }
+
     fn stop(&self) {
         let _ = process::signal_group(self.pid, Signal::Terminate);
         let deadline = Instant::now() + Duration::from_secs(6);
