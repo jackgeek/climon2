@@ -297,8 +297,12 @@ A climon2-owned test program that checks the session contract (args, cwd, enviro
 _Avoid_: Test shell, dummy command
 
 **TUI fixture**:
-A climon2-owned full-screen test program that exercises alternate screen, cursor queries, mouse, bracketed paste, and resize redraws.
+A climon2-owned full-screen test program that exercises alternate screen, cursor queries, focus reporting, mouse, bracketed paste, and resize redraws.
 _Avoid_: Fake app, mock TUI
+
+**Terminal oracle**:
+The test harness's emulated host, whose visible cells, cursor, modes, bells and status reports stand for what a user observes in their terminal.
+_Avoid_: Screen snapshot, golden output, renderer comparison
 
 **Shell profile**:
 The test harness's description of how to start one shell in a controlled way and drive it in tests; the only place climon2 knows about specific shells.

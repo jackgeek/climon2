@@ -311,9 +311,9 @@ The following are reusable starting points, not monitor acceptance evidence:
 
 | Existing source | Capability and boundary |
 |---|---|
-| [Terminal harness](../crates/climon2-test-term/src/terminal.rs), especially modes at lines 73-116 and screen/history/query handling at 119-186 | Native PTY, emulated host, screen/history and mode/query assertions; useful for driving the actual monitor. Character-only screen text does not by itself prove combining-cell/rendition/cursor fidelity. |
+| [Terminal harness](../crates/climon2-test-term/src/terminal.rs), especially modes at lines 75-122 and screen/history/query/host-signal handling at 124-206, with the [terminal oracle](../GLOSSARY.md#testing)'s [cell and cursor views](../crates/climon2-test-term/src/cell.rs), [host signals](../crates/climon2-test-term/src/signals.rs) and [input injection](../crates/climon2-test-term/src/input.rs) | Native PTY and emulated host with screen/history and mode/query assertions; useful for driving the actual monitor. Per-cell text, width (wide and combining characters), colours and rendition, and cursor position, visibility, shape and blink; OSC 7501 reports and BEL captured in stream order with exact bytes; focus, SGR mouse (press, drag, release, wheel) and bracketed-paste injection only in the modes the application enabled. [Generic terminal](../crates/climon2-fixtures/tests/terminal.rs) and TUI fixture tests prove these against independently specified expectations, not yet against the monitor. The host ignores blinking-text SGR, so neither it nor the oracle can show it. |
 | [Isolation](../crates/climon2-test-term/src/isolation.rs), lines 40-110 | Per-test home/environment, owned processes and leak checks. Ordinary cleanup expectations must be adapted to the deliberately surviving headless/detached sessions owned by a test. |
-| [TUI fixture tests](../crates/climon2-fixtures/tests/tui.rs), lines 4-59 | Alternate screen, cursor queries, mouse, paste and resize reports through a PTY. They currently test the fixture, not the monitor. |
+| [TUI fixture tests](../crates/climon2-fixtures/tests/tui.rs), lines 4-119 | Alternate screen, cursor queries, focus, mouse, paste and resize reports through a PTY, with the exact input bytes the fixture received. They currently test the fixture and harness, not the monitor. |
 | [Packaged tests](../crates/climon2-e2e/tests/packaged.rs), lines 10-42 and 68-145 | Real installer/launcher/CLI/daemon/client path and application-observed runtime/resize/log-privacy checks. This route currently has no public client-library or monitor qualification. |
 | [Native documentation checks](protocol/monitor-client/check.py), lines 14-94 | C declaration/example compilation for both target layouts, reference reachability and relative links. No linked production library or runtime call evidence. |
 
@@ -321,7 +321,6 @@ Genuinely missing release evidence includes the actual monitor and packaged
 public-library test path; independently packaged mixed-release/private-dependency
 fixtures; ABI lifetime/descriptor/allocator and fault/stall instrumentation;
 monitor-integrated continuous-output/overlay/readiness/recovery/routing scenarios;
-rich cell/cursor/host-output oracles where the current text harness is insufficient;
 deterministic clock/scheduling and numerical exhaustion cases; and reproducible
 monitor resource/startup/display qualification. Reuse existing fixture capabilities
 where suitable, but name necessary extensions before treating scenarios as runnable.
