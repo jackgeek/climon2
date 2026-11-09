@@ -6,6 +6,7 @@ const PACKAGES: &[&str] = &[
     "climon2-core",
     "climon2-platform",
     "climon2-cli",
+    "climon2-discovery",
     "climon2-daemon",
     "climon2-client",
     "climon2-install",
@@ -74,7 +75,8 @@ fn is_test_only(name: &str) -> bool {
 fn allowed_internal_dependencies(name: &str) -> &[&str] {
     match name {
         "climon2-platform" | "climon2-install" => &["climon2-core"],
-        "climon2-cli" | "climon2-client" => &["climon2-core", "climon2-platform"],
+        "climon2-client" | "climon2-discovery" => &["climon2-core", "climon2-platform"],
+        "climon2-cli" => &["climon2-core", "climon2-platform", "climon2-discovery"],
         "climon2-daemon" => &["climon2-core", "climon2-platform", "climon2-vt"],
         _ => &[],
     }
@@ -230,6 +232,12 @@ fn dependency_guard_rejects_forbidden_edges() {
         ("climon2-vt", "climon2-core", None, Some(".")),
         ("climon2-client", "climon2-vt", None, Some(".")),
         ("climon2-cli", "climon2-vt", None, Some(".")),
+        ("climon2-discovery", "climon2-cli", None, Some(".")),
+        ("climon2-discovery", "climon2-client", None, Some(".")),
+        ("climon2-discovery", "climon2-daemon", None, Some(".")),
+        ("climon2-discovery", "climon2-vt", None, Some(".")),
+        ("climon2-client", "climon2-discovery", None, Some(".")),
+        ("climon2-daemon", "climon2-discovery", None, Some(".")),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {
@@ -250,6 +258,10 @@ fn dependency_guard_accepts_shared_and_test_only_edges() {
         ("climon2-daemon", "climon2-test-term", Some("dev")),
         ("climon2-daemon", "climon2-vt", None),
         ("climon2-test-term", "climon2-daemon", None),
+        ("climon2-cli", "climon2-discovery", None),
+        ("climon2-discovery", "climon2-core", None),
+        ("climon2-discovery", "climon2-platform", None),
+        ("climon2-discovery", "climon2-test-term", Some("dev")),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {

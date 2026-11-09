@@ -1,0 +1,474 @@
+//! Shared discovery through its public boundary: real daemons for the DSC-06
+//! Contract case, otherwise synthetic metadata and raw-socket hello peers.
+use climon2_core::{
+    SessionId,
+    hello::{Lifecycle, SessionState},
+    layout::HomeLayout,
+    metadata::SessionMetadata,
+    protocol::{
+        ClientMessage, Frame, HANGUP_GRACE, ServerMessage, TerminalSize, read_frame, write_frame,
+    },
+};
+use climon2_discovery::{
+    Cleanup, InvalidReason, Options, Outcome, Pass, StaleMetadata, Uncertainty, discover,
+};
+use climon2_platform::{
+    daemon::{self, Readiness},
+    process, runtime,
+};
+use climon2_test_term::{Isolation, bin_path};
+use std::{
+    fs,
+    os::unix::{fs::PermissionsExt, net::UnixStream},
+    path::{Path, PathBuf},
+    process::Command,
+    thread,
+    time::Duration,
+};
+
+const RETAIN: Options = Options {
+    stale: StaleMetadata::Retain,
+};
+const REMOVE: Options = Options {
+    stale: StaleMetadata::Remove,
+};
+const OUTER: &str = "0d5c0000-0000-4000-8000-000000000001";
+const NESTED: &str = "0d5c0000-0000-4000-8000-000000000002";
+const CHILD: &str = "CLIMON2_DISCOVERY_SILENT_PASSES";
+
+/// A canonical climon2 home of its own.
+fn home() -> (tempfile::TempDir, PathBuf) {
+    let directory = tempfile::tempdir().unwrap();
+    let home = runtime::canonical_home(&directory.path().join("climon2")).unwrap();
+    (directory, home)
+}
+
+/// Valid metadata whose daemon identity is provably gone and whose socket is missing.
+fn record(home: &Path, suffix: u8, created: &str) -> SessionMetadata {
+    let id: SessionId = format!("12345678-1234-4234-8234-123456789a{suffix:02x}")
+        .parse()
+        .unwrap();
+    let socket = runtime::RuntimeDirectory::prepare(home)
+        .unwrap()
+        .socket_path(&id)
+        .unwrap();
+    serde_json::from_value(serde_json::json!({
+        "format_version":1,"session_id":id.as_str(),"socket_path":socket,
+        "daemon_pid":std::process::id(),"daemon_start_time":0,
+        "command":"bash","args":[],"cwd":home,"depth":1,"created_at":created,
+        "climon2_version":"0.1.0"
+    }))
+    .unwrap()
+}
+
+fn path(home: &Path, metadata: &SessionMetadata) -> PathBuf {
+    home.join("sessions")
+        .join(format!("{}.pty", metadata.session_id))
+}
+
+fn save(home: &Path, metadata: &SessionMetadata) -> PathBuf {
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    let path = path(home, metadata);
+    fs::write(&path, metadata.to_json().unwrap()).unwrap();
+    path
+}
+
+/// Answers each of `probes` hello requests with one frame.
+fn peer(
+    metadata: &SessionMetadata,
+    type_code: u8,
+    body: String,
+    probes: usize,
+) -> thread::JoinHandle<()> {
+    let listener = runtime::bind(Path::new(metadata.socket_path.as_str())).unwrap();
+    thread::spawn(move || {
+        for _ in 0..probes {
+            let (mut socket, _) = listener.accept().unwrap();
+            assert_eq!(read_frame(&mut socket).unwrap().body(), b"{\"protocol\":1}");
+            let frame = Frame::new(type_code, body.clone().into_bytes()).unwrap();
+            write_frame(&mut socket, &frame).unwrap();
+        }
+    })
+}
+
+fn hello_body(id: &str) -> String {
+    format!("{{\"session_id\":\"{id}\",\"climon2_version\":\"0.1.0\",\"protocol\":1}}")
+}
+
+fn ids(sessions: &[Outcome]) -> Vec<&str> {
+    sessions
+        .iter()
+        .map(|outcome| outcome.metadata().session_id.as_str())
+        .collect()
+}
+
+/// The CLI's own resolution of `CLIMON2_HOME`, created and canonicalized once.
+fn resolved(isolation: &Isolation) -> PathBuf {
+    let climon2_home = isolation.climon2_home();
+    let layout = HomeLayout::resolve(Some(climon2_home.as_os_str()), isolation.home()).unwrap();
+    runtime::canonical_home(layout.root()).unwrap()
+}
+
+fn send(stream: &mut UnixStream, message: ClientMessage) {
+    write_frame(stream, &message.to_frame().unwrap()).unwrap();
+}
+
+fn receive(stream: &mut UnixStream) -> ServerMessage {
+    ServerMessage::from_frame(read_frame(stream).unwrap()).unwrap()
+}
+
+fn hello(socket: &Path) -> UnixStream {
+    let mut stream = UnixStream::connect(socket).unwrap();
+    stream
+        .set_read_timeout(Some(HANGUP_GRACE + Duration::from_secs(5)))
+        .unwrap();
+    send(&mut stream, ClientMessage::Hello { protocol: 1 });
+    assert!(matches!(receive(&mut stream), ServerMessage::Hello(_)));
+    stream
+}
+
+/// Attaches and finishes restoration, so this connection controls the session.
+fn attach(socket: &Path) -> UnixStream {
+    let mut stream = hello(socket);
+    send(
+        &mut stream,
+        ClientMessage::Attach(TerminalSize { cols: 80, rows: 24 }),
+    );
+    assert_eq!(receive(&mut stream), ServerMessage::Attached);
+    loop {
+        match receive(&mut stream) {
+            ServerMessage::Granted { .. } | ServerMessage::Output(_) => {}
+            ServerMessage::RestoreEnd { period } => {
+                send(&mut stream, ClientMessage::Ready { period });
+                return stream;
+            }
+            other => panic!("unexpected restoration frame: {other:?}"),
+        }
+    }
+}
+
+/// An explicit detach leaves the session running without a client.
+fn detach(mut stream: UnixStream) {
+    send(&mut stream, ClientMessage::Detach);
+    while receive(&mut stream) != ServerMessage::Detached {}
+}
+
+/// A real session daemon running `/bin/cat`, so it lives until killed.
+struct Daemon {
+    pid: u32,
+    socket: PathBuf,
+}
+
+impl Daemon {
+    fn start(isolation: &Isolation, home: &Path, id: &str, depth: u32) -> Self {
+        let id: SessionId = id.parse().unwrap();
+        let socket = runtime::RuntimeDirectory::prepare(home)
+            .unwrap()
+            .socket_path(&id)
+            .unwrap();
+        let mut command = Command::new(bin_path("climon2-daemon"));
+        command
+            .env_clear()
+            .env("HOME", isolation.home())
+            .env("TERM", "xterm-256color")
+            .env("PATH", "/usr/bin:/bin")
+            .env("CLIMON2_TEST_ID", isolation.id())
+            .env("CLIMON2_SESSION_DEPTH", depth.to_string())
+            .env("CLIMON2_SESSION_ID", id.as_str())
+            .args(["--session-id", id.as_str(), "--home"])
+            .arg(home)
+            .arg("--socket")
+            .arg(&socket)
+            .args(["--version", env!("CARGO_PKG_VERSION"), "--cli-pid"])
+            .arg(std::process::id().to_string())
+            .args(["--rows", "24", "--cols", "80", "--cwd"])
+            .arg(isolation.home());
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile);
+        }
+        let pending = daemon::spawn(command, |command, fd| {
+            command
+                .args(["--scrollback-max-rows", "10000", "--readiness-fd"])
+                .arg(fd.to_string())
+                .args(["--", "/bin/cat"]);
+        })
+        .unwrap();
+        let pid = pending.id();
+        assert_eq!(pending.wait_ready(&[]).unwrap(), Readiness::Ready);
+        Self { pid, socket }
+    }
+}
+
+/// Kills each session through its own protocol, so their hang-up graces overlap, then
+/// reaps the daemons.
+fn kill(daemons: [Daemon; 2]) {
+    let killers = daemons.each_ref().map(|daemon| {
+        let mut killer = hello(&daemon.socket);
+        send(&mut killer, ClientMessage::Kill);
+        killer
+    });
+    for (mut daemon, mut killer) in daemons.into_iter().zip(killers) {
+        assert!(matches!(
+            receive(&mut killer),
+            ServerMessage::Terminated { .. }
+        ));
+        process::wait(daemon.pid).unwrap();
+        daemon.pid = 0;
+    }
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        if self.pid != 0 {
+            unsafe { libc::kill(self.pid as i32, libc::SIGTERM) };
+            let _ = process::wait(self.pid);
+        }
+    }
+}
+
+/// DSC-06 Contract case: a session controlled elsewhere and a nested session, each in its
+/// own independently resolved home, are live in that home's pass only, with their hello
+/// capabilities, state and depth. Probing never takes control. Stale metadata beside a
+/// live session is reported and kept, and removed only when the caller opts in.
+#[test]
+fn independent_homes_each_discover_their_own_nested_and_controlled_sessions() {
+    let outer_isolation = Isolation::new();
+    let nested_isolation = Isolation::new();
+    let outer_home = resolved(&outer_isolation);
+    let nested_home = resolved(&nested_isolation);
+    let outer = Daemon::start(&outer_isolation, &outer_home, OUTER, 1);
+    let nested = Daemon::start(&nested_isolation, &nested_home, NESTED, 2);
+    let controller = attach(&outer.socket);
+    detach(attach(&nested.socket));
+    let stale = record(&outer_home, 1, "2000-01-01T00:00:00.000Z");
+    let stale_path = save(&outer_home, &stale);
+    let controlled = SessionState::new(Lifecycle::Attached, 1, true);
+
+    let pass = discover(&outer_home, RETAIN).unwrap();
+    assert!(pass.invalid.is_empty(), "{pass:?}");
+    let [
+        Outcome::Live(live),
+        Outcome::Stale(found, Cleanup::Retained),
+    ] = pass.sessions.as_slice()
+    else {
+        panic!("{pass:?}");
+    };
+    assert_eq!(live.metadata.session_id.as_str(), OUTER);
+    assert_eq!(live.metadata.depth.get(), 1);
+    assert_eq!(live.state(), controlled);
+    let capabilities = live.extensions.capabilities.valid().unwrap();
+    assert!(capabilities.supports_attach() && capabilities.supports_kill());
+    assert_eq!(found, &stale);
+    assert!(stale_path.exists());
+
+    let pass = discover(&nested_home, RETAIN).unwrap();
+    assert!(pass.invalid.is_empty(), "{pass:?}");
+    let [Outcome::Live(live)] = pass.sessions.as_slice() else {
+        panic!("{pass:?}");
+    };
+    assert_eq!(live.metadata.session_id.as_str(), NESTED);
+    assert_eq!(live.metadata.depth.get(), 2);
+    assert_eq!(
+        live.state(),
+        SessionState::new(Lifecycle::Detached, 0, false)
+    );
+
+    let pass = discover(&outer_home, REMOVE).unwrap();
+    let [Outcome::Live(live), Outcome::Stale(found, Cleanup::Removed)] = pass.sessions.as_slice()
+    else {
+        panic!("{pass:?}");
+    };
+    assert_eq!(live.state(), controlled);
+    assert_eq!(found, &stale);
+    assert!(!stale_path.exists());
+    assert_eq!(
+        ids(&discover(&outer_home, REMOVE).unwrap().sessions),
+        [OUTER]
+    );
+
+    detach(controller);
+    kill([outer, nested]);
+    outer_isolation.assert_clean();
+    nested_isolation.assert_clean();
+}
+
+/// #77: a home without a sessions directory is an empty pass. Sessions are ordered newest
+/// created first, with ascending full session ID for ties, whatever their outcome.
+#[test]
+fn sessions_are_newest_created_first_with_ascending_session_id_ties() {
+    let (_directory, home) = home();
+    let empty = discover(&home, RETAIN).unwrap();
+    assert!(empty.sessions.is_empty() && empty.invalid.is_empty());
+    let tied = "2026-10-28T07:21:02.930Z";
+    for (suffix, created) in [
+        (0xa3, tied),
+        (0x01, "2026-10-28T07:21:02.929Z"),
+        (0xa5, tied),
+        (0xa1, tied),
+        (0xff, "2026-10-28T07:21:02.931Z"),
+        (0xa4, tied),
+        (0xa2, tied),
+    ] {
+        save(&home, &record(&home, suffix, created));
+    }
+    let id = |suffix: u8| format!("12345678-1234-4234-8234-123456789a{suffix:02x}");
+    let expected: Vec<_> = [0xff, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0x01].map(id).to_vec();
+    assert_eq!(ids(&discover(&home, RETAIN).unwrap().sessions), expected);
+}
+
+/// The setup and assertions of `every_outcome_is_structured_and_no_pass_prints`, run in a
+/// child process so that its standard output and error hold nothing else.
+fn every_outcome_in_three_passes() {
+    let (_directory, home) = home();
+    let live = record(&home, 0x19, "2026-10-28T07:21:09.000Z");
+    let mismatched = record(&home, 0x18, "2026-10-28T07:21:08.000Z");
+    let unanswered = record(&home, 0x17, "2026-10-28T07:21:07.000Z");
+    let unreachable = record(&home, 0x16, "2026-10-28T07:21:06.000Z");
+    let mut alive = record(&home, 0x15, "2026-10-28T07:21:05.000Z");
+    alive.daemon_start_time = process::start_time(std::process::id()).unwrap().unwrap();
+    let mut unknown = record(&home, 0x14, "2026-10-28T07:21:04.000Z");
+    unknown.daemon_pid = 0;
+    let stale = record(&home, 0x13, "2026-10-28T07:21:03.000Z");
+    let sessions = [
+        &live,
+        &mismatched,
+        &unanswered,
+        &unreachable,
+        &alive,
+        &unknown,
+        &stale,
+    ];
+    let files: Vec<_> = sessions
+        .iter()
+        .map(|metadata| save(&home, metadata))
+        .collect();
+    let peers = [
+        peer(&live, 1, hello_body(live.session_id.as_str()), 3),
+        peer(&mismatched, 1, hello_body(OUTER), 3),
+        peer(&unanswered, 1, "{".to_owned(), 3),
+    ];
+    fs::write(unreachable.socket_path.as_str(), b"not a socket").unwrap();
+    let sessions_directory = home.join("sessions");
+    let malformed = sessions_directory.join("not-a-session-id.pty");
+    fs::write(&malformed, b"{}").unwrap();
+    let corrupt = path(&home, &record(&home, 0x12, "2026-10-28T07:21:02.000Z"));
+    fs::write(&corrupt, b"not-json").unwrap();
+    let unreadable = path(&home, &record(&home, 0x11, "2026-10-28T07:21:01.000Z"));
+    fs::create_dir(&unreadable).unwrap();
+    fs::write(sessions_directory.join("notes.txt"), b"not metadata").unwrap();
+    let permissions =
+        |mode| fs::set_permissions(&sessions_directory, fs::Permissions::from_mode(mode)).unwrap();
+
+    println!("<passes>");
+    eprintln!("<passes>");
+    let retained = discover(&home, RETAIN).unwrap();
+    permissions(0o500);
+    let failed = discover(&home, REMOVE).unwrap();
+    permissions(0o700);
+    let removed = discover(&home, REMOVE).unwrap();
+    println!("</passes>");
+    eprintln!("</passes>");
+
+    for pass in [&retained, &failed, &removed] {
+        assert_eq!(
+            ids(&pass.sessions),
+            sessions.map(|metadata| metadata.session_id.as_str())
+        );
+        assert_uncertain_and_invalid(pass, &malformed, &corrupt, &unreadable);
+    }
+    assert!(matches!(
+        &retained.sessions[6],
+        Outcome::Stale(found, Cleanup::Retained) if found == &stale
+    ));
+    let Outcome::Stale(_, Cleanup::Failed(error)) = &failed.sessions[6] else {
+        panic!("stale cleanup in a read-only directory must fail");
+    };
+    assert_eq!(error.raw_os_error(), Some(libc::EACCES));
+    assert!(matches!(
+        &removed.sessions[6],
+        Outcome::Stale(_, Cleanup::Removed)
+    ));
+    let Outcome::Live(found) = &removed.sessions[0] else {
+        panic!("{removed:?}");
+    };
+    assert_eq!(found.metadata, live);
+    assert_eq!(found.state(), None);
+    for (index, file) in files.iter().enumerate() {
+        assert_eq!(file.exists(), index != 6, "{}", file.display());
+    }
+    for file in [&malformed, &corrupt, &unreadable] {
+        assert!(file.exists());
+    }
+    for peer in peers {
+        peer.join().unwrap();
+    }
+    for metadata in [&live, &mismatched, &unanswered, &unreachable] {
+        fs::remove_file(metadata.socket_path.as_str()).unwrap();
+    }
+}
+
+/// Every pass reports the same uncertain sessions and invalid metadata, never cleaning them.
+fn assert_uncertain_and_invalid(pass: &Pass, malformed: &Path, corrupt: &Path, unreadable: &Path) {
+    assert!(matches!(pass.sessions[0], Outcome::Live(_)));
+    assert!(matches!(
+        pass.sessions[1],
+        Outcome::Uncertain(_, Uncertainty::Mismatched)
+    ));
+    assert!(matches!(
+        pass.sessions[2],
+        Outcome::Uncertain(_, Uncertainty::Unanswered(_))
+    ));
+    let Outcome::Uncertain(_, Uncertainty::Unreachable(error)) = &pass.sessions[3] else {
+        panic!("{pass:?}");
+    };
+    assert_eq!(error.raw_os_error(), Some(libc::ENOTSOCK));
+    assert!(matches!(
+        pass.sessions[4],
+        Outcome::Uncertain(_, Uncertainty::DaemonAlive)
+    ));
+    assert!(matches!(
+        pass.sessions[5],
+        Outcome::Uncertain(_, Uncertainty::IdentityUnknown(_))
+    ));
+    let mut invalid: Vec<_> = pass.invalid.iter().collect();
+    invalid.sort_by(|first, second| first.path.cmp(&second.path));
+    let [first, second, third] = invalid.as_slice() else {
+        panic!("{pass:?}");
+    };
+    assert_eq!(
+        [&first.path, &second.path, &third.path],
+        [unreadable, corrupt, malformed]
+    );
+    assert!(matches!(third.reason, InvalidReason::Malformed(_)));
+    assert!(matches!(second.reason, InvalidReason::Malformed(_)));
+    let InvalidReason::Unreadable(error) = &first.reason else {
+        panic!("{pass:?}");
+    };
+    assert_eq!(error.raw_os_error(), Some(libc::EISDIR));
+}
+
+/// #77 and DSC-04 Contract cases (mismatched hello IDs, failed probes, uncertain
+/// disappearance, malformed metadata): every outcome is returned as structured data with
+/// its diagnostic, ordered newest first. Uncertainty and invalid metadata are never
+/// cleaned, a stale session's cleanup is opt-in and reports its failure, and no pass
+/// prints anything.
+#[test]
+fn every_outcome_is_structured_and_no_pass_prints() {
+    if std::env::var_os(CHILD).is_some() {
+        return every_outcome_in_three_passes();
+    }
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "every_outcome_is_structured_and_no_pass_prints",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert!(stdout.contains("<passes>\n</passes>\n"), "{stdout}");
+    assert!(stderr.contains("<passes>\n</passes>\n"), "{stderr}");
+}

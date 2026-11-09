@@ -109,6 +109,7 @@ name = "climon2-cli"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-discovery",
  "climon2-platform",
  "climon2-test-term",
  "filetime",
@@ -161,6 +162,18 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "climon2-discovery"
+version = "0.1.0"
+dependencies = [
+ "climon2-core",
+ "climon2-platform",
+ "climon2-test-term",
+ "libc",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
