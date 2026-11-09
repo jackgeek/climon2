@@ -59,11 +59,13 @@ The model holds its bound this way:
   screen's charge stands while the engine cannot change it.
 - **History.** The engine's history limit is whole 1000-row chunks, so its
   storage never outgrows the limit; the first chunk, which holds the protected
-  newest page, is mandatory. The next chunk is admitted before it is allocated;
-  when it does not fit, the engine discards its oldest row instead, truthfully,
-  and the update is still accepted. Storage left after a cleared history is
-  dropped at once, so measuring sees every mark still held. The model shows at
-  most `history_rows`.
+  newest page, is mandatory. The next chunk is admitted, before it is
+  allocated, ahead of any token that could fill the current one (a token pushes
+  at most a row per byte or a screenful; a long `CSI n b` can push more). When
+  the chunk does not fit, the engine discards its oldest rows instead,
+  truthfully, and the update is still accepted. Storage left after a cleared
+  history is dropped at once, so measuring sees every mark still held. The
+  model shows at most `history_rows`.
 - **Rejection.** The first token that does not fit is rejected before the
   engine sees it, and so is the rest of the update. The model keeps the page its
   accepted tokens produced, with every accepted character, and refuses output

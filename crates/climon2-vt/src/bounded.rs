@@ -103,7 +103,7 @@ impl Bounded {
             Live::Strip => return Ok(()),
         };
         self.admit(self.growth(token.kind, &bytes), room)?;
-        self.grow(room);
+        self.grow(bytes.len(), room);
         self.processor.advance(&mut self.term, &bytes);
         self.settle();
         Ok(())
@@ -127,10 +127,11 @@ impl Bounded {
         })
     }
 
-    /// At full history, admit the engine's next chunk of rows if it fits;
-    /// otherwise the engine discards its oldest row for each new one.
-    fn grow(&mut self, room: Room) {
-        let Some(next) = self.next_limit() else {
+    /// Before a token that could fill the history limit, admit the engine's
+    /// next chunk of rows if it fits; otherwise the engine discards its
+    /// oldest row for each new one.
+    fn grow(&mut self, length: usize, room: Room) {
+        let Some(next) = self.next_limit(length) else {
             return;
         };
         let growth = cost::history(self.geometry, next) - cost::history(self.geometry, self.limit);
@@ -140,11 +141,12 @@ impl Bounded {
         }
     }
 
-    /// The next history limit, once history has filled the current one and
-    /// the model may show more.
-    fn next_limit(&self) -> Option<usize> {
-        let full = self.normal_history() == Some(self.limit) && self.limit < self.rows;
-        full.then_some(self.limit + cost::CHUNK)
+    /// The next history limit, when a token of `length` bytes could fill the
+    /// current one and the model may show more. A token pushes at most a row
+    /// per byte or a screenful, except a long `CSI n b`.
+    fn next_limit(&self, length: usize) -> Option<usize> {
+        let reach = self.normal_history()? + length.max(usize::from(self.geometry.rows()));
+        (reach > self.limit && self.limit < self.rows).then_some(self.limit + cost::CHUNK)
     }
 
     /// After history is cleared the engine keeps its storage rows, cell data
@@ -236,5 +238,5 @@ fn text(cells: &[Cell]) -> String {
 /// The first chunk of history, which holds the protected newest page; none
 /// when the model keeps no history.
 fn first(rows: usize) -> usize {
-    cost::CHUNK.min(rows.next_multiple_of(cost::CHUNK))
+    rows.min(1) * cost::CHUNK
 }

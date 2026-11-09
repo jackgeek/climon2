@@ -223,41 +223,62 @@ fn wide_characters_are_accepted_at_the_bound_and_rejected_one_byte_past_it() {
 }
 
 /// LIM-03 Contract: plain text grows only history storage, which the engine
-/// adds a chunk of rows at a time. At the bound the next chunk is admitted
-/// and every row kept; one byte below it the chunk is refused before it is
-/// allocated and the oldest row is discarded instead, while the update itself
-/// is accepted with the newest page and every character intact.
+/// adds a chunk of rows at a time, admitted before output that could fill the
+/// current chunk. At the bound the next chunk is admitted and every row kept;
+/// one byte below it the chunk is refused before it is allocated and the
+/// oldest rows are discarded instead, while the update itself is accepted with
+/// the newest page and every character intact.
 #[test]
 fn history_grows_at_the_bound_and_discards_its_oldest_row_one_byte_past_it() {
     let at = geometry(8, 2);
     let rows = |range: std::ops::Range<usize>| -> Vec<String> {
         range.map(|row| format!("row{row}")).collect()
     };
-    let full = rows(0..1002).join("\r\n");
+    let early = rows(0..900).join("\r\n");
+    let late = format!("\r\n{}", rows(900..1003).join("\r\n"));
     let mut roomy = Model::new(at, limits(ROOMY, 2000)).unwrap();
-    roomy.feed(full.as_bytes()).unwrap();
-    assert_eq!(roomy.history(), rows(0..1000));
+    roomy.feed(early.as_bytes()).unwrap();
     let before = roomy.footprint();
-    roomy.feed(b"\r\nrow1002").unwrap();
+    roomy.feed(late.as_bytes()).unwrap();
     let bound = roomy.footprint();
     assert!(bound > before);
 
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(bound, 2000)).unwrap();
-    model.feed(full.as_bytes()).unwrap();
-    model.feed(b"\r\nrow1002").unwrap();
+    model.feed(early.as_bytes()).unwrap();
+    model.feed(late.as_bytes()).unwrap();
     assert!(meter.peak() <= bound, "{} > {bound}", meter.peak());
     assert_eq!(model.history(), rows(0..1001));
     assert_eq!(model.screen(), rows(1001..1003));
 
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(bound - 1, 2000)).unwrap();
-    model.feed(full.as_bytes()).unwrap();
-    model.feed(b"\r\nrow1002").unwrap();
+    model.feed(early.as_bytes()).unwrap();
+    model.feed(late.as_bytes()).unwrap();
     assert!(meter.peak() < bound, "{} >= {bound}", meter.peak());
     assert_eq!(model.footprint(), before);
     assert_eq!(model.history(), rows(1..1001));
     assert_eq!(model.screen(), rows(1001..1003));
+}
+
+/// LIM-03 Contract: the next chunk is admitted only before output that could
+/// fill the current one: output that at most reaches it grows nothing.
+#[test]
+fn history_grows_only_before_output_that_could_fill_it() {
+    let at = geometry(8, 2);
+    let mut model = Model::new(at, limits(ROOMY, 2000)).unwrap();
+    for _ in 0..999 {
+        model.feed(b"x\r\n").unwrap();
+    }
+    assert_eq!(model.history().len(), 998);
+    let footprint = model.footprint();
+
+    model.feed(b"a\n").unwrap();
+    assert_eq!(model.footprint(), footprint);
+    assert_eq!(model.history().len(), 999);
+    model.feed(b"\r\n\r\n").unwrap();
+    assert!(model.footprint() > footprint);
+    assert_eq!(model.history().len(), 1001);
 }
 
 /// LIM-03 Contract: erased screens and cleared history release their marks.
@@ -727,4 +748,18 @@ fn repeated_repeats_stay_within_the_limit() {
 
     assert_eq!(repeated, 0);
     assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+}
+
+/// LIM-03 Contract: the largest limits never overflow the accounting: a
+/// model allowed every byte and every history row still admits output and
+/// grows its history chunk by chunk.
+#[test]
+fn the_largest_limits_never_overflow_the_accounting() {
+    let mut model = Model::new(geometry(10, 3), limits(usize::MAX, usize::MAX)).unwrap();
+
+    model.feed("a\u{301}\x1b[65535b\r\n".as_bytes()).unwrap();
+    model.feed("x\r\n".repeat(1100).as_bytes()).unwrap();
+
+    assert!(model.footprint() < usize::MAX);
+    assert_eq!(model.history().len(), 1099);
 }
