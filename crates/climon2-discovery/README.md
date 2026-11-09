@@ -81,6 +81,7 @@ hello peers.
 | DSC-06: CLI `list`, `attach` and `kill` discovery is unchanged after the extraction | the unchanged `climon2-cli` tests in `tests/list.rs`, `tests/attach.rs` and `tests/exec.rs` |
 | DSC-04 Contract cases for one pass: mismatched hello IDs, failed probes, uncertain disappearance and malformed or unreadable metadata are structured outcomes and never cleaned up; a failed stale cleanup is reported; no pass prints | `every_outcome_is_structured_and_no_pass_prints` |
 | DSC-04 Contract case: oversized and too deeply nested metadata, at and one past each limit | `metadata_limits_accept_their_bound_and_reject_one_past_it` |
+| DSC-04 Contract case: a silent daemon is uncertain only after the frozen two-second hello deadline, and kept even when cleanup is requested | `a_silent_daemon_is_uncertain_after_the_two_second_hello_deadline` |
 | Shared discovery order: newest created first, then ascending full session ID; a home without sessions is an empty pass | `sessions_are_newest_created_first_with_ascending_session_id_ties` |
 
 The monitor's own DSC-01, DSC-03, DSC-04 and DSC-06 cases arrive with #106.

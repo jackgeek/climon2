@@ -6,7 +6,8 @@ use climon2_core::{
     layout::HomeLayout,
     metadata::SessionMetadata,
     protocol::{
-        ClientMessage, Frame, HANGUP_GRACE, ServerMessage, TerminalSize, read_frame, write_frame,
+        ClientMessage, Frame, HANGUP_GRACE, HELLO_TIMEOUT, ServerMessage, TerminalSize, read_frame,
+        write_frame,
     },
 };
 use climon2_discovery::{
@@ -20,11 +21,12 @@ use climon2_platform::{
 use climon2_test_term::{Isolation, bin_path};
 use std::{
     fs,
+    io::{self, Read},
     os::unix::{fs::PermissionsExt, net::UnixStream},
     path::{Path, PathBuf},
     process::Command,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const RETAIN: Options = Options {
@@ -572,4 +574,34 @@ fn metadata_limits_accept_their_bound_and_reject_one_past_it() {
     for file in [at_size, past_size, at_depth, past_depth, deepest] {
         assert!(file.exists());
     }
+}
+
+/// DSC-04 Contract case (slow and dead probes): a daemon that accepts the probe and never
+/// answers leaves its session uncertain once the frozen two-second hello deadline passes,
+/// not before, and the probe then hangs up. Its metadata stays.
+#[test]
+fn a_silent_daemon_is_uncertain_after_the_two_second_hello_deadline() {
+    let (_directory, home) = home();
+    let silent = record(&home, 0x51, CREATED);
+    let file = save(&home, &silent);
+    let listener = runtime::bind(Path::new(silent.socket_path.as_str())).unwrap();
+    let peer = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        read_frame(&mut socket).unwrap();
+        // Only a probe that keeps its own deadline hangs up before this read gives up.
+        socket.set_read_timeout(Some(HELLO_TIMEOUT * 5)).unwrap();
+        socket.read_to_end(&mut Vec::new())
+    });
+
+    let started = Instant::now();
+    let pass = discover(&home, REMOVE).unwrap();
+    let elapsed = started.elapsed();
+    let [Outcome::Uncertain(_, Uncertainty::Unanswered(error))] = pass.sessions.as_slice() else {
+        panic!("{pass:?}");
+    };
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(elapsed >= HELLO_TIMEOUT, "{elapsed:?}");
+    assert_eq!(peer.join().unwrap().unwrap(), 0);
+    assert!(file.exists());
+    fs::remove_file(silent.socket_path.as_str()).unwrap();
 }
