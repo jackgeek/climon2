@@ -520,14 +520,15 @@ fn installer_output_failure_uses_own_error_contract() {
     let workspace = Workspace::new();
     let source = workspace.payload("payload", env!("CARGO_PKG_VERSION"), 31);
     let destination = workspace.root.join("installed");
-    let mut child = Command::new(source.join("install"))
+    // Closing the only reader before the installer starts fails its write under any scheduling.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let output = Command::new(source.join("install"))
         .arg("--dir")
         .arg(destination)
         .isolated()
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+        .stdout(writer)
+        .output()
         .unwrap();
-    drop(child.stdout.take());
-    assert_installer_failure(child.wait_with_output().unwrap());
+    assert_installer_failure(output);
 }
