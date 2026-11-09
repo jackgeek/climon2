@@ -23,7 +23,7 @@ impl EventListener for Listener {
 /// Never pending, so the engine never buffers a synchronized update; the
 /// adapter's own first-begin latch owns synchronized output.
 #[derive(Default)]
-struct Unbuffered;
+pub(crate) struct Unbuffered;
 
 impl Timeout for Unbuffered {
     fn set_timeout(&mut self, _: Duration) {}
@@ -35,7 +35,7 @@ impl Timeout for Unbuffered {
     }
 }
 
-struct Size(Geometry);
+pub(crate) struct Size(pub(crate) Geometry);
 
 impl Dimensions for Size {
     fn total_lines(&self) -> usize {
@@ -51,7 +51,7 @@ impl Dimensions for Size {
     }
 }
 
-fn config(history: usize) -> Config {
+pub(crate) fn config(history: usize) -> Config {
     Config {
         scrolling_history: history,
         kitty_keyboard: false,
