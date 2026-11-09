@@ -106,8 +106,10 @@ client start.
 
 `tests/list.rs` covers discovery, stale cleanup and presentation, including
 `list_shows_version_state_and_clients_only_when_advertised`,
-`list_json_adds_the_state_object_or_null` and
-`malformed_hello_extensions_are_logged_and_the_session_stays_live`.
+`list_json_adds_the_state_object_or_null`,
+`malformed_hello_extensions_are_logged_and_the_session_stays_live`,
+`list_quotes_only_the_arguments_that_need_it` and
+`list_args_that_exactly_fit_are_whole_and_one_cell_less_is_truncated`.
 
 The list, attach and kill tests above run unchanged after discovery moved into
 `climon2-discovery`, which is the CLI part of DSC-06; the DSC-06 Contract case

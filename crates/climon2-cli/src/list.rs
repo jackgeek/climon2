@@ -117,7 +117,7 @@ fn truncate(value: &str, width: usize) -> String {
 fn leading_cells(value: &str, mut remaining: usize) -> String {
     let mut result = String::new();
     for character in value.chars() {
-        let cells = character.width().unwrap_or(0);
+        let cells = character.width().unwrap_or_default();
         if cells > remaining {
             break;
         }
