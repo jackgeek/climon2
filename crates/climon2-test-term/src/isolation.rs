@@ -10,6 +10,29 @@ use tempfile::TempDir;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
+/// Builds a non-PTY test command without inheriting concurrently allocated PTYs.
+pub fn process_command(executable: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let command = std::process::Command::new(executable);
+    #[cfg(target_os = "linux")]
+    let mut command = command;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // openpty sets CLOEXEC after allocation; another thread can fork in between.
+        // Mark only the child's copies, preserving stdio and spawn's error pipe.
+        unsafe {
+            command.pre_exec(|| {
+                if nix::libc::close_range(3, u32::MAX, nix::libc::CLOSE_RANGE_CLOEXEC as i32) == -1
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    command
+}
+
 pub fn bin_path(name: &str) -> PathBuf {
     let executable = env::current_exe().expect("locate test executable");
     let path = executable

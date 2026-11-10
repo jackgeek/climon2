@@ -485,7 +485,8 @@ impl Bridge {
     fn descriptors(&self) -> [libc::pollfd; 3] {
         let socket = self.socket_events();
         [
-            descriptor(self.transport.stream.as_raw_fd(), socket, true),
+            // Linux reports hang-up even with events=0; omit a parked socket entirely.
+            descriptor(self.transport.stream.as_raw_fd(), socket, socket != 0),
             descriptor(
                 self.terminal.as_raw_fd(),
                 libc::POLLIN,

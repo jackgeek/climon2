@@ -10,6 +10,6 @@ mod ownership;
 mod shell;
 mod terminal;
 
-pub use isolation::{Isolation, bin_path};
+pub use isolation::{Isolation, bin_path, process_command};
 pub use shell::controlled_bash;
 pub use terminal::{Modes, Options, Terminal};

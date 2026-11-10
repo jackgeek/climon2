@@ -101,7 +101,7 @@ impl Layout {
     }
 
     fn process(&self) -> Command {
-        let mut command = Command::new(self.cli());
+        let mut command = climon2_test_term::process_command(self.cli());
         command
             .env_clear()
             .env("HOME", self.directory.path())

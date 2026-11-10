@@ -58,3 +58,24 @@ fn process_names_with_spaces_and_parentheses_do_not_hide_owned_processes() {
             .stdout(Stdio::piped()),
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn non_terminal_commands_do_not_inherit_other_tests_descriptors() {
+    use std::os::fd::AsRawFd;
+
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let fd = file.as_raw_fd();
+    assert_eq!(unsafe { nix::libc::fcntl(fd, nix::libc::F_SETFD, 0) }, 0);
+    let status = climon2_test_term::process_command("/bin/sh")
+        .args([
+            "-c",
+            "[ ! /proc/self/fd/$1 -ef \"$2\" ]",
+            "descriptor-check",
+        ])
+        .arg(fd.to_string())
+        .arg(file.path())
+        .status()
+        .unwrap();
+    assert!(status.success(), "unrelated descriptor survived exec");
+}
