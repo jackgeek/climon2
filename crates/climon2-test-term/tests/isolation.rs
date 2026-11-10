@@ -47,12 +47,12 @@ fn marked_process_outside_a_terminal_is_owned_until_it_exits() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn process_names_with_spaces_and_parentheses_do_not_hide_owned_processes() {
+fn arbitrary_process_name_bytes_do_not_hide_owned_processes() {
     assert_owned_until_exit(
         Command::new("/bin/sh")
             .args([
                 "-c",
-                "printf 'owned ) shell' > /proc/self/comm; printf 'READY\\n'; read answer",
+                "printf 'owned ) sh\\377' > /proc/self/comm; printf 'READY\\n'; read answer",
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped()),

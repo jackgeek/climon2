@@ -163,10 +163,7 @@ fn owned_process_fixture() {
     let mode = std::env::var("CLIMON2_PLATFORM_FIXTURE").unwrap();
     #[cfg(target_os = "linux")]
     if mode == "named" {
-        assert_eq!(
-            unsafe { libc::prctl(libc::PR_SET_NAME, c"a ) name\n(".as_ptr(), 0, 0, 0) },
-            0
-        );
+        std::fs::write("/proc/self/comm", b"a ) name\n\xff(").unwrap();
     }
     if mode == "session" {
         let mut members = [
@@ -247,13 +244,14 @@ fn linux_daemon_identity_does_not_depend_on_the_wall_clock_epoch() {
 
 #[test]
 #[cfg(target_os = "linux")]
-fn linux_identity_handles_parentheses_and_newlines_and_uses_epoch_microseconds() {
+fn linux_identity_handles_arbitrary_name_bytes_and_uses_epoch_microseconds() {
     use std::time::{SystemTime, UNIX_EPOCH};
     let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     let (mut child, _master) = fixture("named");
-    let identity = process::start_time(child.id()).unwrap().unwrap();
+    let identity = process::start_time(child.id());
     child.kill().unwrap();
     child.wait().unwrap();
+    let identity = identity.unwrap().unwrap();
     let after = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     let started = Duration::from_micros(identity);
     // /proc's boot epoch is rounded to a whole second.

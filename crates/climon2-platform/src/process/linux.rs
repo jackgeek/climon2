@@ -11,8 +11,8 @@ struct Identity {
 
 fn identity(value: u32) -> io::Result<Option<Identity>> {
     let path = format!("/proc/{}/stat", pid(value)?);
-    match fs::read_to_string(path) {
-        Ok(stat) => parse(&stat).map(Some),
+    match fs::read(path) {
+        Ok(stat) => parse(&String::from_utf8_lossy(&stat)).map(Some),
         Err(error) if error.kind() == io::ErrorKind::NotFound => absent_process(),
         Err(error) => Err(error),
     }

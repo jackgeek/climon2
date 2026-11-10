@@ -43,7 +43,8 @@ pub(super) fn pids() -> Vec<i32> {
 }
 
 pub(super) fn process(pid: i32) -> Option<Process> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let stat = fs::read(format!("/proc/{pid}/stat")).ok()?;
+    let stat = String::from_utf8_lossy(&stat);
     // comm may contain spaces and parentheses, so only the last ')' ends it.
     let (head, fields) = stat.rsplit_once(')')?;
     let name = head.split_once('(')?.1.to_owned();
