@@ -4,6 +4,8 @@ This diagram covers every climon2-owned executable target and dynamic library,
 including development fixtures. Arrows run from consumer to consumed artifact;
 labels distinguish execution, communication, and loading.
 Solid relationships exist today; dashed relationships are planned.
+The current executable relationships apply on macOS and x86_64 GNU/Linux;
+native archives are described in [distribution](distribution.md).
 
 ```mermaid
 flowchart TB
@@ -85,6 +87,9 @@ and does not use this adapter.
 `lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,
 are not separately loaded dynamic libraries. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
+The macOS library filename in the planned node is not a Linux loader
+implementation. Linux native loading and its release-isolation policy remain
+subject to the [monitor integration decision](https://github.com/jackgeek/climon2/issues/125).
 
 **Planned:** the [monitor](../GLOSSARY.md#sessions) loads version-matched
 [client libraries](../GLOSSARY.md#sessions) directly into

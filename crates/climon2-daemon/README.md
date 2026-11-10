@@ -1,6 +1,6 @@
 # climon2-daemon
 
-Real session daemon library with a thin executable. macOS only; no client
+Real session daemon library with a thin executable on macOS and Linux; no client
 implementation or descriptor passing. The daemon owns the VT engine, bounded
 scrollback, terminal restoration and live presentation.
 

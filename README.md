@@ -305,8 +305,11 @@ not supported for interactive sessions. `install.sh` still runs under
 
 ## Install
 
-Requires **macOS 15 or newer**, Apple Silicon or Intel. Release binaries are
-universal and ad-hoc signed, without Developer ID signing or notarisation.
+Supports **macOS 15 or newer** on Apple Silicon and Intel, and **x86_64
+GNU/Linux** with glibc 2.39 or newer, qualified on Ubuntu 24.04. macOS binaries
+are universal and ad-hoc signed, without Developer ID signing or notarisation.
+Arch Linux is supported for native development; musl and Linux arm64 are not
+qualified. See [distribution](docs/distribution.md) for platform archives.
 
 Latest release:
 
@@ -338,7 +341,7 @@ The installer prints a matching hint for custom destinations and never modifies
 shell startup files. Upgrades preserve existing version folders and live sessions.
 There is no `sudo` or Homebrew installation step.
 
-For browser downloads, verify `SHA256SUMS`, extract the archive, then remove
+For macOS browser downloads, verify `SHA256SUMS`, extract the archive, then remove
 quarantine from the extracted directory before running its installer:
 
 ```sh
@@ -347,6 +350,12 @@ tar -xzf climon2-0.1.0-macos-universal.tar.gz
 xattr -dr com.apple.quarantine climon2-0.1.0-macos-universal
 ./climon2-0.1.0-macos-universal/install
 ```
+
+For Linux manual installation, use the `linux-x86_64-gnu` archive and
+`sha256sum`; there is no quarantine-removal step. Linux requires procfs and a
+filesystem supporting `renameat2` directory exchange at the installation path.
+Processes sharing a climon2 home must share the same PID namespace; sharing
+session metadata across containers or PID namespaces is not supported.
 
 ## Diagnostics
 
@@ -371,28 +380,36 @@ cargo xtask check --mutate-all
 cargo xtask dist
 ```
 
-Install ShellCheck before `xtask check`. Full tests need GNU bash 5.x, vim and
-less. Interactive shells are qualified on bash 5.x only: tests use
-`CLIMON2_TEST_BASH`, else `/opt/homebrew/bin/bash`, else `/usr/local/bin/bash`,
-never macOS `/bin/bash` (3.2). A missing bash 5 fails in CI and is a reported
-local skip. `install.sh` stays compatible with, and is tested under, `/bin/bash`
-3.2. Linux and Windows run only neutral contracts (Linux also tests the Unix
-launcher), not the macOS product.
+Development needs the pinned Rust toolchain, a C compiler and libclang,
+ShellCheck, Python 3.11 or newer, GNU bash 5.x, vim and less. Interactive tests
+use `CLIMON2_TEST_BASH`, then platform defaults: Homebrew bash on macOS, or
+`/bin/bash` and `/usr/bin/bash` on Linux. macOS `/bin/bash` 3.2 is not used for
+interactive qualification. A missing bash 5 fails in CI and is a reported local
+skip; use `CLIMON2_TEST_BASH=/usr/bin/bash` on Arch Linux. `install.sh` remains
+compatible with macOS `/bin/bash` 3.2.
+
+Linux and macOS run full runtime, real-terminal, packaged and native quality
+checks. Windows runs neutral contracts only. Coverage and mutation select the
+host's native process/peer implementation explicitly; shared source remains
+subject to the same gates on both operating systems.
 
 `xtask check` runs formatting, strict clippy, unit/integration/installer-built
 packaged tests, ShellCheck, append-only metadata fixtures, instrumentation and
 worker-isolation proofs, coverage-backed CRAP <= 5 and zero-survivor mutation.
 `CLIMON2_MUTATION_BASE` selects the changed-source comparison (default `HEAD`).
 
-`xtask dist` requires an **arm64 macOS host** and both Rust macOS targets. It
-builds isolated, unhooked packages with deployment target 15.0, merges and
-ad-hoc signs each executable, and checks signatures, architectures and versions.
-It writes the universal archive, version-stamped `install.sh` and `SHA256SUMS`
-to `target/dist/`. Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
+`xtask dist` requires an **arm64 macOS host** with both Rust macOS targets, or
+an **x86_64 GNU/Linux host**. macOS builds retain deployment target 15.0,
+universal slices and signature checks. Linux builds verify native ELF
+executables; published Linux artifacts are built on Ubuntu 24.04, not Arch,
+to establish the glibc baseline. Both builds isolate unhooked packages and
+write their native archive, stamped `install.sh` and `SHA256SUMS` to
+`target/dist/`. Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
 
 A `v<workspace version>` tag runs full mutation and all gates. The same final
-archive must pass both architectures under bash 5, including vim and less,
-before a non-draft GitHub Release and provenance attestation are published.
+macOS archive must pass both architectures, and the Linux archive must pass
+Ubuntu 24.04, under bash 5 including vim and less. Both platforms must pass
+before one GitHub Release and provenance attestation are published.
 `-rc.N` tags are prereleases. Starting with the second published release, actual
 previous-release compatibility is mandatory; the first release invents none.
 
