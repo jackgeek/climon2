@@ -404,20 +404,40 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
 /// #37: partial hello replies never justify deletion.
 #[test]
 fn failed_hello_retains_artifacts_under_a_single_two_second_deadline() {
+    assert_failed_hello_retains_artifacts(|socket| {
+        for byte in [0_u8, 0, 0, 10, 1, b'{'] {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            if socket.write_all(&[byte]).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+#[test]
+fn stalled_partial_hello_does_not_block_past_the_discovery_deadline() {
+    assert_failed_hello_retains_artifacts(|socket| {
+        socket.write_all(&[0]).unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(4)))
+            .unwrap();
+        let mut byte = [0];
+        assert_eq!(std::io::Read::read(socket, &mut byte).unwrap(), 0);
+    });
+}
+
+fn assert_failed_hello_retains_artifacts(
+    serve: impl FnOnce(&mut runtime::SocketStream) + Send + 'static,
+) {
     use std::time::{Duration, Instant};
     let home = tempfile::tempdir().unwrap();
     let metadata = metadata(home.path(), 7, "2026-10-28T07:21:02.930Z");
     let path = save(home.path(), &metadata);
     let listener = runtime::bind(std::path::Path::new(metadata.socket_path.as_str())).unwrap();
-    let (finished, discovery_finished) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
         climon2_core::protocol::read_frame(&mut socket).unwrap();
-        for byte in [0_u8, 0, 0] {
-            std::thread::sleep(Duration::from_millis(600));
-            socket.write_all(&[byte]).unwrap();
-        }
-        let _ = discovery_finished.recv_timeout(Duration::from_secs(4));
+        serve(&mut socket);
     });
     let started = Instant::now();
     assert!(discover(home.path()).unwrap().is_empty());
@@ -425,7 +445,6 @@ fn failed_hello_retains_artifacts_under_a_single_two_second_deadline() {
     assert!(started.elapsed() < Duration::from_secs(3));
     assert!(path.exists());
     assert!(std::path::Path::new(metadata.socket_path.as_str()).exists());
-    finished.send(()).unwrap();
     worker.join().unwrap();
     fs::remove_file(metadata.socket_path.as_str()).unwrap();
 }
