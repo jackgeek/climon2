@@ -1,4 +1,4 @@
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 //! Kill mode (plan 1.12): no terminal, no attachment, one Kill request.
 
 use climon2_core::protocol::{

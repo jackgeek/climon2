@@ -1,4 +1,4 @@
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use climon2_test_term::{Terminal, bin_path};
 use portable_pty::CommandBuilder;
@@ -124,8 +124,12 @@ impl Layout {
     }
 
     fn live_pids(&self) -> Vec<i32> {
+        #[cfg(target_os = "macos")]
+        const PROCESS_FLAGS: &str = "-axEww";
+        #[cfg(target_os = "linux")]
+        const PROCESS_FLAGS: &str = "axeww";
         let output = Command::new("/bin/ps")
-            .args(["-axEww", "-o", "pid=,stat=,command="])
+            .args([PROCESS_FLAGS, "-o", "pid=,stat=,command="])
             .output()
             .unwrap();
         assert!(output.status.success());

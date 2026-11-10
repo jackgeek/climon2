@@ -1,4 +1,4 @@
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use climon2_core::{
     SessionId,
@@ -280,7 +280,10 @@ impl Pty {
 }
 
 /// Darwin's kernel-private FWASWRITTEN: set by any write, not settable by F_SETFL.
+#[cfg(target_os = "macos")]
 const WAS_WRITTEN: i32 = 0x0001_0000;
+#[cfg(target_os = "linux")]
+const WAS_WRITTEN: i32 = 0;
 
 /// Waits until `file` is ready for `events`, or `milliseconds` pass so the caller can
 /// recheck its own exit conditions. A blind sleep would move only the PTY's ~1 KiB queue
@@ -303,19 +306,31 @@ fn status_flags(file: &File) -> i32 {
 
 /// A new open-file description of the same terminal device.
 fn reopen(terminal: &File) -> File {
-    // F_GETPATH, unlike Darwin's ttyname_r, never fails intermittently with ERANGE.
-    let mut name = [0 as libc::c_char; libc::PATH_MAX as usize];
-    assert_ne!(
-        unsafe { libc::fcntl(terminal.as_raw_fd(), libc::F_GETPATH, name.as_mut_ptr()) },
-        -1
-    );
-    let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
-    fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_NOCTTY)
-        .open(name.to_str().unwrap())
-        .unwrap()
+    #[cfg(target_os = "macos")]
+    {
+        // F_GETPATH, unlike Darwin's ttyname_r, never fails intermittently with ERANGE.
+        let mut name = [0 as libc::c_char; libc::PATH_MAX as usize];
+        assert_ne!(
+            unsafe { libc::fcntl(terminal.as_raw_fd(), libc::F_GETPATH, name.as_mut_ptr()) },
+            -1
+        );
+        let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(name.to_str().unwrap())
+            .unwrap()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(format!("/proc/self/fd/{}", terminal.as_raw_fd()))
+            .unwrap()
+    }
 }
 
 fn background_job() -> Command {
@@ -328,7 +343,7 @@ fn background_job() -> Command {
     ]);
     unsafe {
         command.pre_exec(|| {
-            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY.into(), 0) < 0 {
+            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
@@ -1214,6 +1229,7 @@ fn fill_output_queue(terminal: &File) {
 }
 
 /// CPU time (user + system) as reported by ps, e.g. `0:01.25`.
+#[cfg(target_os = "macos")]
 fn cpu_time(pid: u32) -> Duration {
     let output = Command::new("/bin/ps")
         .args(["-o", "time=", "-p", &pid.to_string()])
@@ -1223,6 +1239,19 @@ fn cpu_time(pid: u32) -> Duration {
     let (minutes, seconds) = text.trim().rsplit_once(':').unwrap();
     let minutes: u64 = minutes.rsplit(':').next().unwrap().parse().unwrap();
     Duration::from_secs(minutes * 60) + Duration::from_secs_f64(seconds.parse().unwrap())
+}
+
+#[cfg(target_os = "linux")]
+fn cpu_time(pid: u32) -> Duration {
+    // procps's time= truncates to seconds, which would hide a busy loop.
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let (_, fields) = stat.rsplit_once(')').unwrap();
+    let fields: Vec<_> = fields.split_whitespace().collect();
+    let user: u64 = fields[11].parse().unwrap();
+    let system: u64 = fields[12].parse().unwrap();
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    assert!(ticks > 0);
+    Duration::from_secs_f64((user + system) as f64 / ticks as f64)
 }
 
 /// #19: disconnects during Attach identify the session, before entering raw.

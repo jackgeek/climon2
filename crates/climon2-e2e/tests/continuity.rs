@@ -1,7 +1,7 @@
 //! Plan section 6.1: session continuity through the installed product, from
 //! controlled bash 5 outer terminals with isolated homes. Every scenario ends
 //! with `assert_clean()`.
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 #[allow(dead_code)]
 mod support;
