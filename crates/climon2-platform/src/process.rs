@@ -18,7 +18,7 @@ mod unix {
     #[cfg(target_os = "linux")]
     use super::linux::listed_pids;
     #[cfg(target_os = "linux")]
-    pub use super::linux::start_time;
+    pub use super::linux::{is_same_daemon, linux_identity, start_time};
     #[cfg(target_os = "macos")]
     use super::macos::listed_pids;
     #[cfg(target_os = "macos")]
@@ -51,6 +51,18 @@ mod unix {
     /// Errors (including permission failures) are deliberately not evidence of death.
     pub fn is_same_process(pid: u32, expected_start: u64) -> io::Result<bool> {
         Ok(start_time(pid)? == Some(expected_start))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn linux_identity(
+        _pid: u32,
+    ) -> io::Result<Option<climon2_core::metadata::LinuxProcessIdentity>> {
+        Ok(None)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn is_same_daemon(metadata: &climon2_core::metadata::SessionMetadata) -> io::Result<bool> {
+        is_same_process(metadata.daemon_pid, metadata.daemon_start_time)
     }
 
     pub fn validate_cwd(path: &Path) -> io::Result<()> {

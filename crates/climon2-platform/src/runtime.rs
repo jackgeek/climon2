@@ -12,7 +12,7 @@ mod unix {
         fs::{self, DirBuilder},
         io,
         os::unix::{
-            fs::{DirBuilderExt, MetadataExt},
+            fs::{DirBuilderExt, FileTypeExt, MetadataExt},
             net::{UnixListener, UnixStream},
         },
         path::{Path, PathBuf},
@@ -24,6 +24,21 @@ mod unix {
 
     pub type SocketListener = UnixListener;
     pub type SocketStream = UnixStream;
+
+    pub fn validate_stale_socket(path: &Path) -> io::Result<()> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => require_socket(&metadata),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn require_socket(metadata: &fs::Metadata) -> io::Result<()> {
+        if !metadata.file_type().is_socket() {
+            return Err(io::Error::other("stale socket path is not a socket"));
+        }
+        Ok(())
+    }
 
     pub struct SocketFreshness {
         socket: PathBuf,
@@ -38,7 +53,7 @@ mod unix {
             }
         }
 
-        /// Linux tmpfiles removes old sockets as well as directories, even while bound.
+        /// Conservatively refresh timestamps for age-based runtime cleanup policies.
         pub fn refresh(&mut self, now: Instant) -> io::Result<()> {
             if now.duration_since(self.refreshed) < Duration::from_secs(3600) {
                 return Ok(());

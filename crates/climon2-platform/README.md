@@ -1,6 +1,6 @@
 # climon2-platform
 
-Shared macOS seams (ADR 0003). Other targets fail inside each seam; neutral
+Shared macOS and Linux seams (ADR 0003). Other targets fail inside each seam; neutral
 contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
 
 ## Runtime and peers
@@ -16,17 +16,23 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
   Existing unsafe directories are refused, never repaired.
 - `runtime::bind(&Path)` binds under umask 077. Bind before starting worker
   threads: umask is process-wide; the lock serializes only this helper's calls.
-- `runtime::{SocketListener,SocketStream}` name the macOS transport types
+- `runtime::{SocketListener,SocketStream}` name the Unix transport types
   without exposing libc types in callers' signatures.
 - `peer::accept(&SocketListener)` returns only authenticated streams.
   `peer::{uid,authenticate}` support already accepted streams; authentication
   must happen before hello and callers must drop rejected streams.
+- Linux authenticates with `SO_PEERCRED`; macOS uses `getpeereid`. Both require
+  the effective user's UID.
 
 ## Processes and startup
 
-- `process::start_time(pid) -> io::Result<Option<u64>>` uses `proc_pidinfo`;
-  timestamps are Unix-epoch microseconds. `is_same_process(pid, expected)`
-  distinguishes PID reuse. Permission/inspection errors are **not** death.
+- `process::start_time(pid) -> io::Result<Option<u64>>` uses `proc_pidinfo` on
+  macOS and procfs boot time/start ticks on Linux; timestamps are Unix-epoch
+  microseconds. Permission/inspection errors are **not** death.
+- `process::is_same_daemon(metadata)` uses epoch start time on macOS and
+  `daemon_linux_identity` (boot ID plus start ticks) on Linux. Linux's epoch
+  conversion is clock-sensitive and is not stale-cleanup authority.
+  Missing stable identity makes Linux cleanup fail safely, retaining metadata.
 - `process::{wait,try_wait}` own reaping by PID and return core `ExitStatus`
   without portable-pty's lossy signal mapping. Do not also wait through
   portable-pty or `std::process::Child`.
@@ -37,11 +43,12 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
   its character device number; anything else is refused.
 - `process::TerminalSession::new(leader, terminal)` is the session a command
   leads on its PTY. Candidates for a session kill come **only** from kernel
-  lists: `proc_listpids(PROC_TTY_ONLY, terminal)` and, per recorded job group,
-  `proc_listpids(PROC_PGRP_ONLY, group)`; every candidate must also satisfy
+  lists: `proc_listpids` on macOS, or procfs filtered by terminal and recorded
+  job group on Linux; every candidate must also satisfy
   `getsid == leader` and not be the caller, and is signalled through a
-  non-zero-PID-only kill. Nothing ever enumerates all processes, so no single
-  predicate change can reach processes off that PTY and its job groups.
+  non-zero-PID-only kill. macOS asks the kernel for scoped candidate lists;
+  Linux must enumerate procfs, but filters both candidates and session
+  membership before signaling. Zombies are not live Linux candidates.
   macOS detaches the terminal from the session when the leader exits, so
   `observe()` records the members' job groups while the leader lives.
   `kill()` observes once more, then SIGKILLs members in bounded rounds until
@@ -58,7 +65,7 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
   every fork (pre_exec spawns, portable-pty spawn). macOS runs libnotify's fork
   handler in the child, which traps (SIGILL) or hangs if another thread was
   initialising libnotify at the fork; this call waits that initialisation out.
-  `daemon::spawn` calls it itself.
+  Linux needs no libnotify preparation. `daemon::spawn` calls it itself.
 - `daemon::spawn(Command, configure)` calls `configure(&mut Command, fd: u32)`
   so the caller can append its readiness descriptor argument. It uses exec via
   `Command::pre_exec(setsid)`, inherited pipe, null stdin/stdout, and the caller's

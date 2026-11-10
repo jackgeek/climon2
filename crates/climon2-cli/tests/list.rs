@@ -15,6 +15,7 @@ fn metadata(home: &std::path::Path, suffix: u8, created: &str) -> SessionMetadat
         "format_version":999,"session_id":id.as_str(),"socket_path":socket,
         "daemon_pid":std::process::id(),
         "daemon_start_time":process::start_time(std::process::id()).unwrap().unwrap(),
+        "daemon_linux_identity":process::linux_identity(std::process::id()).unwrap(),
         "command":"bash","args":["space arg","quote'arg","雪","\u{1b}[31m"],
         "cwd":home,"depth":3,"created_at":created,"climon2_version":"999.0.0",
         "future_field":true
@@ -106,6 +107,9 @@ fn stale_cleanup_requires_connection_refusal_and_proven_dead_identity() {
     let live = metadata(home.path(), 3, "2026-10-28T07:21:02.930Z");
     let mut reused = metadata(home.path(), 4, "2026-10-28T07:21:02.930Z");
     reused.daemon_start_time = 0;
+    if let Some(identity) = &mut reused.daemon_linux_identity {
+        identity.start_ticks = 0;
+    }
     let live_path = save(home.path(), &live);
     let stale_path = save(home.path(), &reused);
     refusing_socket(live.socket_path.as_str());
@@ -391,6 +395,9 @@ fn stale_metadata_cannot_unlink_a_regular_file_as_a_socket() {
     let home = tempfile::tempdir().unwrap();
     let mut metadata = metadata(home.path(), 8, "2026-10-28T07:21:02.930Z");
     metadata.daemon_start_time = 0;
+    if let Some(identity) = &mut metadata.daemon_linux_identity {
+        identity.start_ticks = 0;
+    }
     let path = save(home.path(), &metadata);
     fs::write(metadata.socket_path.as_str(), b"not a socket").unwrap();
     assert!(discover(home.path()).unwrap().is_empty());

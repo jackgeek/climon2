@@ -219,6 +219,34 @@ fn owned_process_fixture() {
 
 #[test]
 #[cfg(target_os = "linux")]
+fn linux_daemon_identity_does_not_depend_on_the_wall_clock_epoch() {
+    use climon2_core::metadata::SessionMetadata;
+    let (mut child, _master) = fixture("sleep");
+    let identity = process::linux_identity(child.id()).unwrap().unwrap();
+    let bytes = include_bytes!("../../climon2-core/tests/goldens/metadata-v1.json");
+    let mut metadata = SessionMetadata::from_json(
+        std::path::Path::new("550e8400-e29b-41d4-a716-446655440000.pty"),
+        bytes,
+    )
+    .unwrap();
+    metadata.daemon_pid = child.id();
+    metadata.daemon_start_time = 0;
+    metadata.daemon_linux_identity = Some(identity);
+    assert!(process::is_same_daemon(&metadata).unwrap());
+    metadata.daemon_linux_identity.as_mut().unwrap().start_ticks += 1;
+    assert!(!process::is_same_daemon(&metadata).unwrap());
+    metadata.daemon_linux_identity.as_mut().unwrap().start_ticks -= 1;
+    metadata.daemon_linux_identity.as_mut().unwrap().boot_id =
+        "00000000-0000-0000-0000-000000000000".into();
+    assert!(!process::is_same_daemon(&metadata).unwrap());
+    metadata.daemon_linux_identity = None;
+    assert!(process::is_same_daemon(&metadata).is_err());
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn linux_identity_handles_parentheses_and_newlines_and_uses_epoch_microseconds() {
     use std::time::{SystemTime, UNIX_EPOCH};
     let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();

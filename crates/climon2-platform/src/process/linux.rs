@@ -1,4 +1,5 @@
 use super::unix::{PROC_PGRP_ONLY, PROC_TTY_ONLY, pid};
+use climon2_core::metadata::{LinuxProcessIdentity, SessionMetadata};
 use std::{fs, io, num::NonZeroU32};
 
 struct Identity {
@@ -12,9 +13,36 @@ fn identity(value: u32) -> io::Result<Option<Identity>> {
     let path = format!("/proc/{}/stat", pid(value)?);
     match fs::read_to_string(path) {
         Ok(stat) => parse(&stat).map(Some),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => absent_process(),
         Err(error) => Err(error),
     }
+}
+
+fn absent_process() -> io::Result<Option<Identity>> {
+    fs::metadata("/proc/self/stat")?;
+    Ok(None)
+}
+
+pub fn linux_identity(value: u32) -> io::Result<Option<LinuxProcessIdentity>> {
+    let Some(info) = identity(value)? else {
+        return Ok(None);
+    };
+    if info.zombie {
+        return Ok(None);
+    }
+    let boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+    Ok(Some(LinuxProcessIdentity {
+        boot_id: boot_id.trim().to_owned(),
+        start_ticks: info.ticks,
+    }))
+}
+
+pub fn is_same_daemon(metadata: &SessionMetadata) -> io::Result<bool> {
+    let expected = metadata
+        .daemon_linux_identity
+        .as_ref()
+        .ok_or_else(|| io::Error::other("Linux daemon identity unavailable"))?;
+    Ok(linux_identity(metadata.daemon_pid)?.as_ref() == Some(expected))
 }
 
 fn parse(stat: &str) -> io::Result<Identity> {
@@ -86,17 +114,23 @@ fn boot_seconds() -> io::Result<u64> {
 }
 
 pub(super) fn listed_pids(kind: u32, which: u32) -> io::Result<Vec<i32>> {
-    let mut members = Vec::new();
-    for entry in fs::read_dir("/proc")? {
-        let entry = entry?;
-        let Ok(value) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        if matches(identity(value)?, kind, which) {
-            members.push(pid(value)?);
-        }
+    fs::read_dir("/proc")?
+        .filter_map(|entry| matching_pid(entry, kind, which).transpose())
+        .collect()
+}
+
+fn matching_pid(entry: io::Result<fs::DirEntry>, kind: u32, which: u32) -> io::Result<Option<i32>> {
+    let Some(value) = entry?
+        .file_name()
+        .to_str()
+        .and_then(|name| name.parse().ok())
+    else {
+        return Ok(None);
+    };
+    if matches(identity(value)?, kind, which) {
+        return pid(value).map(Some);
     }
-    Ok(members)
+    Ok(None)
 }
 
 fn matches(info: Option<Identity>, kind: u32, which: u32) -> bool {

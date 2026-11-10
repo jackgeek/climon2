@@ -155,12 +155,14 @@ fn metadata(options: &Options) -> io::Result<SessionMetadata> {
         .to_string_lossy()
         .parse()
         .map_err(io::Error::other)?;
+    let (daemon_start_time, daemon_linux_identity) = daemon_identity()?;
     Ok(SessionMetadata {
         format_version: NonZeroU32::MIN,
         session_id: options.id.clone(),
         socket_path,
         daemon_pid: std::process::id(),
-        daemon_start_time: daemon_start_time()?,
+        daemon_start_time,
+        daemon_linux_identity,
         command: display.command,
         args: display.args,
         cwd: display.cwd,
@@ -170,9 +172,11 @@ fn metadata(options: &Options) -> io::Result<SessionMetadata> {
     })
 }
 
-fn daemon_start_time() -> io::Result<u64> {
-    process::start_time(std::process::id())?
-        .ok_or_else(|| super::io_error("daemon process identity unavailable"))
+fn daemon_identity() -> io::Result<(u64, Option<climon2_core::metadata::LinuxProcessIdentity>)> {
+    let pid = std::process::id();
+    let start_time = process::start_time(pid)?
+        .ok_or_else(|| super::io_error("daemon process identity unavailable"))?;
+    Ok((start_time, process::linux_identity(pid)?))
 }
 
 fn inherited_depth() -> NonZeroU32 {
