@@ -57,8 +57,14 @@ impl Release {
     }
 
     fn checksum(&self) {
-        let output = Command::new("shasum")
-            .args(["-a", "256"])
+        let mut checksum = if cfg!(target_os = "linux") {
+            Command::new("sha256sum")
+        } else {
+            let mut command = Command::new("shasum");
+            command.args(["-a", "256"]);
+            command
+        };
+        let output = checksum
             .arg(self.archive.file_name().unwrap())
             .current_dir(&self.assets)
             .output()

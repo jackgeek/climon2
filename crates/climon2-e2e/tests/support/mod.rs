@@ -302,9 +302,14 @@ fn extract_payload(archive: &std::ffi::OsStr, directory: &Path) -> (PathBuf, Str
     assert!(listing.status.success(), "{listing:?}");
     let listing = String::from_utf8(listing.stdout).unwrap();
     let root = listing.lines().next().unwrap().split('/').next().unwrap();
+    let suffix = if cfg!(target_os = "linux") {
+        "-linux-x86_64-gnu"
+    } else {
+        "-macos-universal"
+    };
     let version = root
         .strip_prefix("climon2-")
-        .and_then(|root| root.strip_suffix("-macos-universal"))
+        .and_then(|root| root.strip_suffix(suffix))
         .expect("release archive's versioned root");
     version.parse::<climon2_core::VersionName>().unwrap();
     let expected = [

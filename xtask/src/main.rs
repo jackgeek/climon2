@@ -19,7 +19,7 @@ setup-quality installs the pinned Python quality tools and cargo-llvm-cov.
 mutation-probe checks real-binary worker isolation.
 tooling-probe proves staged coverage, complexity counting and covered mutation gates.
 release-check proves per-package releases exclude hooks and preserve test binaries.
-dist builds verified universal macOS release artifacts in target/dist (arm64 host).
+dist builds verified universal macOS release artifacts (arm64 host) or x86_64 GNU/Linux artifacts in target/dist.
 fixtures-check refuses any historical or uncommitted edit/deletion of an existing metadata golden.
 mutate runs coverage, crapper and mutation checks on shipped source.
 Cross-architecture execution of the same final archive is enforced in CI.";
