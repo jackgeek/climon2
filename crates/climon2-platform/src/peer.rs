@@ -5,6 +5,10 @@ compile_error!("peer credential seam requires macOS or Linux");
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use unix::*;
 
+#[cfg(target_os = "linux")]
+#[path = "peer/linux.rs"]
+mod linux;
+
 #[cfg(target_os = "macos")]
 #[path = "peer/macos.rs"]
 mod macos;
@@ -13,8 +17,6 @@ mod macos;
 mod unix {
     use crate::runtime::{SocketListener, SocketStream};
     use std::io;
-    #[cfg(target_os = "linux")]
-    use std::os::fd::AsRawFd;
 
     /// Return only authenticated streams; rejected streams close before hello.
     pub fn accept(listener: &SocketListener) -> io::Result<SocketStream> {
@@ -31,26 +33,7 @@ mod unix {
     pub use super::macos::uid;
 
     #[cfg(target_os = "linux")]
-    pub fn uid(stream: &SocketStream) -> io::Result<u32> {
-        let mut credentials = std::mem::MaybeUninit::<libc::ucred>::uninit();
-        let mut length = size_of::<libc::ucred>() as libc::socklen_t;
-        if unsafe {
-            libc::getsockopt(
-                stream.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_PEERCRED,
-                credentials.as_mut_ptr().cast(),
-                &mut length,
-            )
-        } == -1
-        {
-            return Err(io::Error::last_os_error());
-        }
-        if length as usize != size_of::<libc::ucred>() {
-            return Err(io::Error::other("incomplete peer credentials"));
-        }
-        Ok(unsafe { credentials.assume_init() }.uid)
-    }
+    pub use super::linux::uid;
 
     pub fn authenticate(stream: &SocketStream) -> io::Result<()> {
         authenticate_uid(stream, effective_uid())

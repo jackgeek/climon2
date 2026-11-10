@@ -5,6 +5,18 @@ compile_error!("runtime directory and socket seam requires macOS or Linux");
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use unix::*;
 
+#[cfg(target_os = "linux")]
+#[path = "runtime/linux.rs"]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::SocketFreshness;
+
+#[cfg(target_os = "macos")]
+#[path = "runtime/macos.rs"]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::SocketFreshness;
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix {
     use climon2_core::{SessionId, layout::RuntimeLayout};
@@ -17,7 +29,6 @@ mod unix {
         },
         path::{Path, PathBuf},
         sync::Mutex,
-        time::{Duration, Instant},
     };
 
     static UMASK: Mutex<()> = Mutex::new(());
@@ -37,58 +48,6 @@ mod unix {
         if !metadata.file_type().is_socket() {
             return Err(io::Error::other("stale socket path is not a socket"));
         }
-        Ok(())
-    }
-
-    pub struct SocketFreshness {
-        socket: PathBuf,
-        refreshed: Instant,
-    }
-
-    impl SocketFreshness {
-        pub fn new(socket: &Path, now: Instant) -> Self {
-            Self {
-                socket: socket.to_path_buf(),
-                refreshed: now,
-            }
-        }
-
-        /// Conservatively refresh timestamps for age-based runtime cleanup policies.
-        pub fn refresh(&mut self, now: Instant) -> io::Result<()> {
-            if now.duration_since(self.refreshed) < Duration::from_secs(3600) {
-                return Ok(());
-            }
-            refresh_path(&self.socket)?;
-            let parent = self
-                .socket
-                .parent()
-                .ok_or_else(|| io::Error::other("socket has no parent directory"))?;
-            refresh_path(parent)?;
-            self.refreshed = now;
-            Ok(())
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn refresh_path(path: &Path) -> io::Result<()> {
-        let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
-            .map_err(io::Error::other)?;
-        if unsafe {
-            libc::utimensat(
-                libc::AT_FDCWD,
-                path.as_ptr(),
-                std::ptr::null(),
-                libc::AT_SYMLINK_NOFOLLOW,
-            )
-        } == -1
-        {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    fn refresh_path(_path: &Path) -> io::Result<()> {
         Ok(())
     }
 

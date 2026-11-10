@@ -201,9 +201,12 @@ fn shipped_sources(root: &Path) -> io::Result<Vec<PathBuf>> {
 
 fn native_source_is_active(path: &Path) -> bool {
     match path.to_str() {
-        Some("crates/climon2-platform/src/process/linux.rs") => cfg!(target_os = "linux"),
+        Some("crates/climon2-platform/src/process/linux.rs")
+        | Some("crates/climon2-platform/src/peer/linux.rs")
+        | Some("crates/climon2-platform/src/runtime/linux.rs") => cfg!(target_os = "linux"),
         Some("crates/climon2-platform/src/process/macos.rs")
-        | Some("crates/climon2-platform/src/peer/macos.rs") => cfg!(target_os = "macos"),
+        | Some("crates/climon2-platform/src/peer/macos.rs")
+        | Some("crates/climon2-platform/src/runtime/macos.rs") => cfg!(target_os = "macos"),
         _ => true,
     }
 }
@@ -756,50 +759,58 @@ mod tests {
             .current_dir(root)
             .args(["init", "--quiet"]))
         .unwrap();
-        let shared = Path::new("crates/climon2-platform/src/process.rs");
-        let linux = Path::new("crates/climon2-platform/src/process/linux.rs");
-        let macos = Path::new("crates/climon2-platform/src/process/macos.rs");
-        let peer = Path::new("crates/climon2-platform/src/peer/macos.rs");
-        for path in [shared, linux, macos, peer] {
+        let sources = [
+            ("crates/climon2-platform/src/process.rs", true),
+            (
+                "crates/climon2-platform/src/process/linux.rs",
+                cfg!(target_os = "linux"),
+            ),
+            (
+                "crates/climon2-platform/src/process/macos.rs",
+                cfg!(target_os = "macos"),
+            ),
+            (
+                "crates/climon2-platform/src/peer/linux.rs",
+                cfg!(target_os = "linux"),
+            ),
+            (
+                "crates/climon2-platform/src/peer/macos.rs",
+                cfg!(target_os = "macos"),
+            ),
+            (
+                "crates/climon2-platform/src/runtime/linux.rs",
+                cfg!(target_os = "linux"),
+            ),
+            (
+                "crates/climon2-platform/src/runtime/macos.rs",
+                cfg!(target_os = "macos"),
+            ),
+        ];
+        for (path, _) in sources {
             fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
             fs::write(root.join(path), "pub fn never_called() { if true {} }").unwrap();
         }
         let selected = shipped_sources(root).unwrap();
-        assert!(selected.contains(&shared.to_owned()));
-        assert_eq!(
-            selected.contains(&linux.to_owned()),
-            cfg!(target_os = "linux")
-        );
-        assert_eq!(
-            selected.contains(&macos.to_owned()),
-            cfg!(target_os = "macos")
-        );
-        assert_eq!(
-            selected.contains(&peer.to_owned()),
-            cfg!(target_os = "macos")
-        );
+        for (path, active) in sources {
+            assert_eq!(selected.contains(&PathBuf::from(path)), active, "{path}");
+        }
         commit(root);
-        for path in [shared, linux, macos, peer] {
+        for (path, _) in sources {
             fs::write(root.join(path), "pub fn never_called() { if false {} }").unwrap();
         }
         assert_eq!(changed_sources(root, OsStr::new("HEAD")).unwrap(), selected);
         let report = root.join("coverage.info");
-        fs::write(
-            &report,
-            format!("SF:{}\nDA:1,0\n", root.join(shared).display()),
-        )
-        .unwrap();
-        verify_native_coverage(root, &report).unwrap();
-        let inactive = if cfg!(target_os = "linux") {
-            macos
-        } else {
-            linux
-        };
-        fs::write(
-            &report,
-            format!("SF:{}\nDA:1,0\n", root.join(inactive).display()),
-        )
-        .unwrap();
-        assert!(verify_native_coverage(root, &report).is_err());
+        for (path, active) in sources {
+            fs::write(
+                &report,
+                format!("SF:{}\nDA:1,0\n", root.join(path).display()),
+            )
+            .unwrap();
+            assert_eq!(
+                verify_native_coverage(root, &report).is_ok(),
+                active,
+                "{path}"
+            );
+        }
     }
 }

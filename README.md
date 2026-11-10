@@ -390,12 +390,14 @@ compatible with macOS `/bin/bash` 3.2.
 
 Linux and macOS run full runtime, real-terminal, packaged and native quality
 checks. Windows runs neutral contracts only. Coverage and mutation select the
-host's native process/peer implementation explicitly; shared source remains
+host's native implementations explicitly; shared source remains
 subject to the same gates on both operating systems.
 
 `xtask check` runs formatting, strict clippy, unit/integration/installer-built
 packaged tests, ShellCheck, append-only metadata fixtures, instrumentation and
 worker-isolation proofs, coverage-backed CRAP <= 5 and zero-survivor mutation.
+The unchanged workspace must pass in a real mutation overlay before mutation;
+worker infrastructure failures cannot count as killed mutants.
 `CLIMON2_MUTATION_BASE` selects the changed-source comparison (default `HEAD`).
 
 `xtask dist` requires an **arm64 macOS host** with both Rust macOS targets, or
