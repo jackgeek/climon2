@@ -1248,6 +1248,7 @@ fn fill_output_queue(terminal: &File) {
     );
     loop {
         match writer.write(b"Q") {
+            Ok(0) => panic!("terminal write made no progress"),
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return,
             Err(error) => panic!("{error}"),
