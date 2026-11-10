@@ -987,14 +987,14 @@ fn installed_large_restoration_is_complete_and_ordered() {
     let mut first = exec_bash(&package, &bash);
     first
         .send(format!(
-            "until [ -e ~/go ]; do sleep 0.05; done; \
+            "echo $((6*7))-producer-ready; until [ -e ~/go ]; do sleep 0.05; done; \
              awk 'BEGIN {{ for (i = 1; i <= {ROWS_PRODUCED}; i++) {{ printf \"%06d\", i; \
              for (j = 0; j < 73; j++) printf \"€\"; printf \"\\n\" }} }}'; : > ~/done; \
              until [ -e ~/live ]; do sleep 0.01; done; \
              for i in $(seq 1 {LIVE}); do echo live-$i; done; echo LIVE-$((2+2))\n"
         ))
         .unwrap();
-    first.wait_for_text("LIVE-$((2+2))", TIMEOUT).unwrap();
+    first.wait_for_text("42-producer-ready", TIMEOUT).unwrap();
     first.wait_for_input_ready(TIMEOUT).unwrap();
     let id = session_id(&package);
     detach(&mut first, &id);
