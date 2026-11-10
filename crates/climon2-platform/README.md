@@ -29,6 +29,8 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
 - `process::start_time(pid) -> io::Result<Option<u64>>` uses `proc_pidinfo` on
   macOS and procfs boot time/start ticks on Linux; timestamps are Unix-epoch
   microseconds. Permission/inspection errors are **not** death.
+  Linux treats both a missing stat path and `ESRCH` during its read as absence:
+  reaping can invalidate an already open procfs descriptor.
 - `process::is_same_daemon(metadata)` uses epoch start time on macOS and
   `daemon_linux_identity` (boot ID plus start ticks) on Linux. Linux's epoch
   conversion is clock-sensitive and is not stale-cleanup authority.
@@ -112,6 +114,11 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
 `issue19_terminal_must_be_a_character_device`,
 `issue15_bad_cwd_is_rejected_before_pty_can_fall_back`.
 
+On Linux x86_64,
+`procfs_reaping::process_reaped_between_procfs_open_and_read_is_absent` traces
+an owned helper to reap its target between the real procfs open and read.
+It exercises the public identity API without replacing procfs or mocking I/O.
+
 `tests/daemon.rs`: `issue19_daemon_exec_is_detached_and_readiness_preserves_launch_failure`,
 `issue19_empty_readiness_kills_daemon_and_cleans_metadata_before_socket`,
 `issue19_readiness_uses_real_five_second_absolute_deadline`.
@@ -122,6 +129,6 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
 
 Tests use isolated private directories. Direct socket fixtures use short `/tmp`
 paths so mutation workers and long checkouts do not exceed the socket limit.
-The two ignored libtest functions are owned subprocess fixtures, executed by the
+Ignored libtest functions are owned subprocess fixtures, executed by the
 behavioral tests, not skipped requirements. Production `/tmp` naming and home
 isolation are independently covered by core's layout tests.

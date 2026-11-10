@@ -242,6 +242,117 @@ fn linux_daemon_identity_does_not_depend_on_the_wall_clock_epoch() {
     child.wait().unwrap();
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod procfs_reaping {
+    use super::*;
+
+    struct Probe(Child);
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    #[ignore = "owned subprocess fixture"]
+    fn identity_reader() {
+        let pid = std::env::var("CLIMON2_REAPED_PID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(unsafe { libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) }, 0);
+        println!("trace-tid={}", unsafe { libc::syscall(libc::SYS_gettid) });
+        std::io::stdout().flush().unwrap();
+        unsafe { libc::raise(libc::SIGTRAP) };
+        assert!(process::start_time(pid).unwrap().is_none());
+    }
+
+    fn wait_tracee(tid: i32) -> i32 {
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(tid, &mut status, libc::__WALL) },
+            tid
+        );
+        status
+    }
+
+    fn reap_after_stat_open(tid: i32, probe: u32, target: &mut Child) {
+        let expected = std::path::PathBuf::from(format!("/proc/{}/stat", target.id()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut entry = true;
+        loop {
+            assert!(Instant::now() < deadline, "probe never opened target stat");
+            assert_eq!(unsafe { libc::ptrace(libc::PTRACE_SYSCALL, tid, 0, 0) }, 0);
+            assert!(libc::WIFSTOPPED(wait_tracee(tid)));
+            if !entry {
+                let mut registers: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+                assert_eq!(
+                    unsafe { libc::ptrace(libc::PTRACE_GETREGS, tid, 0, &mut registers) },
+                    0
+                );
+                if matches!(
+                    registers.orig_rax as libc::c_long,
+                    libc::SYS_open | libc::SYS_openat
+                ) && (registers.rax as i64) >= 0
+                {
+                    let fd = format!("/proc/{probe}/fd/{}", registers.rax);
+                    if std::fs::read_link(fd).unwrap() == expected {
+                        assert!(target.wait().unwrap().success());
+                        return;
+                    }
+                }
+            }
+            entry = !entry;
+        }
+    }
+
+    #[test]
+    fn process_reaped_between_procfs_open_and_read_is_absent() {
+        let mut target = Command::new("/usr/bin/true").spawn().unwrap();
+        assert!(gone(target.id()));
+        let mut probe = Probe(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "procfs_reaping::identity_reader",
+                    "--nocapture",
+                ])
+                .env("CLIMON2_REAPED_PID", target.id().to_string())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let mut reader = BufReader::new(probe.0.stdout.take().unwrap());
+        let tid: i32 = loop {
+            let mut line = String::new();
+            assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+            if let Some(tid) = line.trim().strip_prefix("trace-tid=") {
+                break tid.parse().unwrap();
+            }
+        };
+        assert!(libc::WIFSTOPPED(wait_tracee(tid)));
+        assert_eq!(
+            unsafe {
+                libc::ptrace(
+                    libc::PTRACE_SETOPTIONS,
+                    tid,
+                    0,
+                    libc::PTRACE_O_EXITKILL | libc::PTRACE_O_TRACESYSGOOD,
+                )
+            },
+            0
+        );
+        // Stop the real identity read after open, then reap before its read syscall.
+        reap_after_stat_open(tid, probe.0.id(), &mut target);
+        assert_eq!(unsafe { libc::ptrace(libc::PTRACE_CONT, tid, 0, 0) }, 0);
+        assert!(libc::WIFEXITED(wait_tracee(tid)));
+        assert!(probe.0.wait().unwrap().success());
+    }
+}
+
 #[test]
 #[cfg(target_os = "linux")]
 fn linux_identity_handles_arbitrary_name_bytes_and_uses_epoch_microseconds() {
