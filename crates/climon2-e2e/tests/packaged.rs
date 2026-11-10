@@ -51,12 +51,13 @@ fn launch(package: &Package, program: &str, args: &[&str]) -> Terminal {
 }
 
 fn launch_bash(package: &Package, bash: &Path) -> Terminal {
-    let mut terminal = launch(
-        package,
-        bash.to_str().unwrap(),
-        &["--noprofile", "--norc", "-i"],
-    );
-    terminal.wait_for_text("bash-5.3$", TIMEOUT).unwrap();
+    let mut command = package.command("climon2");
+    command.arg("exec");
+    command.arg(bash);
+    command.args(["--noprofile", "--norc", "-i"]);
+    command.env("PS1", "PACKAGED> ");
+    let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
+    terminal.wait_for_text("PACKAGED> ", TIMEOUT).unwrap();
     terminal.wait_for_input_ready(TIMEOUT).unwrap();
     terminal
 }
@@ -754,8 +755,9 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
         command.arg(&bash);
         command.args(["--noprofile", "--norc", "-i"]);
         command.env("CLIMON2_LOG", "warn");
+        command.env("PS1", "PACKAGED> ");
         let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
-        terminal.wait_for_text("bash-5.3$", TIMEOUT).unwrap();
+        terminal.wait_for_text("PACKAGED> ", TIMEOUT).unwrap();
         terminal.wait_for_input_ready(TIMEOUT).unwrap();
         terminal.send("echo $((6*7))-version-ready\n").unwrap();
         terminal.wait_for_text("42-version-ready", TIMEOUT).unwrap();
