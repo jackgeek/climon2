@@ -179,8 +179,38 @@ fn changed_sources(root: &Path, base: &OsStr) -> io::Result<Vec<PathBuf>> {
             .args(["ls-files", "--others", "--exclude-standard", "-z", "--"])
             .args(SHIPPED),
     )?;
+    source_paths(root, &[changed.stdout, untracked.stdout])
+}
+
+fn shipped_sources(root: &Path) -> io::Result<Vec<PathBuf>> {
+    let sources = output(
+        Command::new("git")
+            .current_dir(root)
+            .args([
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+            ])
+            .args(SHIPPED),
+    )?;
+    source_paths(root, &[sources.stdout])
+}
+
+fn native_source_is_active(path: &Path) -> bool {
+    match path.to_str() {
+        Some("crates/climon2-platform/src/process/linux.rs") => cfg!(target_os = "linux"),
+        Some("crates/climon2-platform/src/process/macos.rs")
+        | Some("crates/climon2-platform/src/peer/macos.rs") => cfg!(target_os = "macos"),
+        _ => true,
+    }
+}
+
+fn source_paths(root: &Path, outputs: &[Vec<u8>]) -> io::Result<Vec<PathBuf>> {
     let mut paths = BTreeSet::new();
-    for bytes in [&changed.stdout, &untracked.stdout] {
+    for bytes in outputs {
         for path in bytes
             .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())
@@ -188,12 +218,30 @@ fn changed_sources(root: &Path, base: &OsStr) -> io::Result<Vec<PathBuf>> {
             let path = PathBuf::from(std::str::from_utf8(path).map_err(io::Error::other)?);
             if path.extension().is_some_and(|extension| extension == "rs")
                 && root.join(&path).is_file()
+                && native_source_is_active(&path)
             {
                 paths.insert(path);
             }
         }
     }
     Ok(paths.into_iter().collect())
+}
+
+fn verify_native_coverage(root: &Path, report: &Path) -> io::Result<()> {
+    for file in fs::read_to_string(report)?
+        .lines()
+        .filter_map(|line| line.strip_prefix("SF:"))
+    {
+        let path = Path::new(file);
+        let relative = path.strip_prefix(root).unwrap_or(path);
+        if !native_source_is_active(relative) {
+            return Err(io::Error::other(format!(
+                "compiled native source would escape quality gates: {}",
+                relative.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub fn check(root: &Path, all: bool) -> io::Result<()> {
@@ -210,9 +258,11 @@ pub fn check(root: &Path, all: bool) -> io::Result<()> {
     if fs::metadata(&report)?.len() == 0 {
         return Err(io::Error::other("coverage report is empty"));
     }
+    verify_native_coverage(root, &report)?;
+    let sources = shipped_sources(root)?;
     run(tool(root, "crapper")?
         .args(["--use-existing-coverage", "--threshold", CRAP_THRESHOLD])
-        .args(SHIPPED))?;
+        .args(&sources))?;
     mutation.args([
         "--use-existing-coverage",
         "--mutate-all",
@@ -220,7 +270,7 @@ pub fn check(root: &Path, all: bool) -> io::Result<()> {
         MUTATION_WORKERS,
     ]);
     if all {
-        mutation.args(SHIPPED);
+        mutation.args(sources);
     } else {
         // Upstream --changed reads only git status and cannot limit itself to shipped crates.
         let base = env::var_os("CLIMON2_MUTATION_BASE").unwrap_or_else(|| "HEAD".into());
@@ -379,11 +429,12 @@ pub fn tooling_probe(root: &Path) -> io::Result<()> {
             "exec-replaced staged binary returned the wrong observation",
         ));
     }
+    prove_killed_profile(&staged, profile)?;
     export()?;
     let count = staged_count(&report)?;
-    if count != 2 {
+    if count != 3 {
         return Err(io::Error::other(format!(
-            "normal and exec-replaced staged runs must contribute two coverage hits, got {count}"
+            "normal, exec-replaced and killed staged runs must contribute three coverage hits, got {count}"
         )));
     }
     prove_crapper(root, workspace)?;
@@ -391,6 +442,30 @@ pub fn tooling_probe(root: &Path) -> io::Result<()> {
     eprintln!(
         "Verified installer-built coverage, ? complexity, threshold {CRAP_THRESHOLD} rejection, and changed/full covered mutations."
     );
+    Ok(())
+}
+
+fn prove_killed_profile(staged: &Path, profile: &str) -> io::Result<()> {
+    use std::{
+        io::{BufRead, BufReader},
+        process::Stdio,
+    };
+    let mut child = Command::new(staged.join(env!("CARGO_PKG_VERSION")).join("climon2-cli"))
+        .arg("--staged-kill")
+        .env("LLVM_PROFILE_FILE", profile)
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let mut line = String::new();
+    let observation =
+        BufReader::new(child.stdout.take().expect("piped output")).read_line(&mut line);
+    child.kill()?;
+    child.wait()?;
+    observation?;
+    if line != "42\n" {
+        return Err(io::Error::other(
+            "killed staged binary returned the wrong observation",
+        ));
+    }
     Ok(())
 }
 
@@ -658,5 +733,60 @@ mod tests {
             vec![core.to_owned()]
         );
         assert!(changed_sources(root, OsStr::new("missing-base")).is_err());
+    }
+
+    #[test]
+    fn native_selection_keeps_uncovered_shared_sources_and_only_the_current_os() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        run(Command::new("git")
+            .current_dir(root)
+            .args(["init", "--quiet"]))
+        .unwrap();
+        let shared = Path::new("crates/climon2-platform/src/process.rs");
+        let linux = Path::new("crates/climon2-platform/src/process/linux.rs");
+        let macos = Path::new("crates/climon2-platform/src/process/macos.rs");
+        let peer = Path::new("crates/climon2-platform/src/peer/macos.rs");
+        for path in [shared, linux, macos, peer] {
+            fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            fs::write(root.join(path), "pub fn never_called() { if true {} }").unwrap();
+        }
+        let selected = shipped_sources(root).unwrap();
+        assert!(selected.contains(&shared.to_owned()));
+        assert_eq!(
+            selected.contains(&linux.to_owned()),
+            cfg!(target_os = "linux")
+        );
+        assert_eq!(
+            selected.contains(&macos.to_owned()),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(
+            selected.contains(&peer.to_owned()),
+            cfg!(target_os = "macos")
+        );
+        commit(root);
+        for path in [shared, linux, macos, peer] {
+            fs::write(root.join(path), "pub fn never_called() { if false {} }").unwrap();
+        }
+        assert_eq!(changed_sources(root, OsStr::new("HEAD")).unwrap(), selected);
+        let report = root.join("coverage.info");
+        fs::write(
+            &report,
+            format!("SF:{}\nDA:1,0\n", root.join(shared).display()),
+        )
+        .unwrap();
+        verify_native_coverage(root, &report).unwrap();
+        let inactive = if cfg!(target_os = "linux") {
+            macos
+        } else {
+            linux
+        };
+        fs::write(
+            &report,
+            format!("SF:{}\nDA:1,0\n", root.join(inactive).display()),
+        )
+        .unwrap();
+        assert!(verify_native_coverage(root, &report).is_err());
     }
 }

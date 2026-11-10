@@ -11,6 +11,12 @@ fn main() -> std::process::ExitCode {
             let error = std::process::Command::new("/usr/bin/true").exec();
             panic!("exec /usr/bin/true: {error}");
         }
+        Some("--staged-kill") => {
+            println!("{}", staged_probe(41));
+            loop {
+                std::thread::park();
+            }
+        }
         _ => {}
     }
     println!(
