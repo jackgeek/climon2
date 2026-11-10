@@ -52,7 +52,9 @@ jobs:
       - name: Check native interface specification declarations and examples
         run: python3 docs/protocol/monitor-client/check.py
       - name: Run formatting, lint and real-terminal tests
-        run: cargo xtask test
+        run: |
+          cargo xtask fixtures-check
+          cargo xtask test
   neutral:
     name: Platform-neutral / ${{ matrix.os }}
     strategy:
@@ -70,12 +72,8 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo test --locked -p climon2-launcher
   quality:
-    name: Coverage and isolated mutation checks / ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [macos-15, ubuntu-24.04]
-    runs-on: ${{ matrix.runner }}
+    name: macOS-only CRAP and mutation
+    runs-on: macos-15
     env:
       CARGO_TARGET_DIR: target/quality-run
     steps:
@@ -89,14 +87,8 @@ jobs:
         run: rustup show active-toolchain
       - name: Require native architecture and install test prerequisites
         run: |
-          if [[ "$RUNNER_OS" == Linux ]]; then
-            test "$(uname -m)" = x86_64
-            sudo apt-get update -qq
-            sudo apt-get install -y clang libclang-dev shellcheck vim less
-          else
-            test "$(uname -m)" = arm64
-            brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
-          fi
+          test "$(uname -m)" = arm64
+          brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
       - uses: ./.github/actions/controlled-bash
       - name: Select the changed-source mutation base (fixture history is checked independently)
         env:
@@ -113,14 +105,14 @@ jobs:
           key: quality-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('xtask/src/quality.rs', 'tools/quality-requirements.txt') }}
       - name: Set up pinned quality tools
         run: cargo xtask setup-quality
-      - name: Run local-equivalent full quality gates
+      - name: Qualify only macOS-exclusive source (shared and Linux run locally)
         env:
           MUTATE_ALL: ${{ inputs.mutate_all || false }}
         run: |
           if [[ "$MUTATE_ALL" == true ]]; then
-            cargo xtask check --mutate-all
+            cargo xtask mutate --native-only --mutate-all
           else
-            cargo xtask check
+            cargo xtask mutate --native-only
           fi
   dist:
     name: Release artifact / ${{ matrix.platform }}

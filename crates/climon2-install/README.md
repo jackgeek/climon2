@@ -29,6 +29,9 @@ different same-version contents replace the whole version atomically using
 Darwin `renamex_np(RENAME_SWAP)` or Linux `renameat2(RENAME_EXCHANGE)`.
 Linux requires a filesystem supporting atomic directory exchange; an unsupported
 filesystem fails installation rather than falling back to non-atomic clobbering.
+The syscall adapters live in `src/platform/{macos,linux}.rs`, separately
+registered for native quality analysis; argument validation and publication
+remain shared.
 The launcher is always replaced atomically,
 including on an identical reinstall, per #21.19. Other versions are retained.
 The atomic `current` replacement is the final publication.

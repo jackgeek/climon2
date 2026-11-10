@@ -1,8 +1,17 @@
 use super::unix::{ProcessList, pid};
+use climon2_core::metadata::{LinuxProcessIdentity, SessionMetadata};
 use std::{io, mem::MaybeUninit};
 
 /// Room for processes started between sizing and filling the PID list.
 const PID_SLACK: usize = 64;
+
+pub fn linux_identity(_pid: u32) -> io::Result<Option<LinuxProcessIdentity>> {
+    Ok(None)
+}
+
+pub fn is_same_daemon(metadata: &SessionMetadata) -> io::Result<bool> {
+    super::unix::is_same_process(metadata.daemon_pid, metadata.daemon_start_time)
+}
 
 pub fn start_time(value: u32) -> io::Result<Option<u64>> {
     let Some(info) = bsd_info(pid(value)?)? else {

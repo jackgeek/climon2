@@ -73,8 +73,14 @@ Adding zsh, sh, pwsh, powershell or cmd is purely a test-harness change: a new s
 ## Consequences
 
 - Native CI runs full runtime/terminal and archive qualification on Linux
-  x86_64 and both macOS architectures. Linux and macOS arm64 independently
-  run the same coverage, CRAP <= 5 and zero-survivor mutation gates. Windows
-  retains platform-neutral contract tests, not runtime qualification.
+  x86_64 and both macOS architectures. The dedicated Linux development host
+  owns shared/Linux CRAP <= 5 and zero-survivor mutation; CI qualifies only
+  registered macOS-exclusive source at the same thresholds. OS-only bodies,
+  including installer exchange and daemon identity adapters, live in native
+  source files so this split cannot omit them. Native-only CI still exercises
+  real workspace callers for coverage and the unchanged-worker baseline.
+  Windows retains platform-neutral contract tests, not runtime qualification.
+- Local full quality gates must pass for the exact release commit before
+  tagging; this maintainer-owned check is not duplicated or certified by CI.
 - One release publishes both platform archives only after both native gates
   pass; see [distribution](../distribution.md).

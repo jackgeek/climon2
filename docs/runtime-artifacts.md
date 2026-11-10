@@ -6,6 +6,10 @@ labels distinguish execution, communication, and loading.
 Solid relationships exist today; dashed relationships are planned.
 The current executable relationships apply on macOS and x86_64 GNU/Linux;
 native archives are described in [distribution](distribution.md).
+The development host owns shared/Linux CRAP and mutation; CI qualifies only
+macOS-exclusive source, while retaining native runtime/archive tests. This
+[quality split](distribution.md#release-gates) changes no artifact or
+consumption relationship.
 
 ```mermaid
 flowchart TB

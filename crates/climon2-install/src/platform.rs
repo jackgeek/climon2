@@ -11,21 +11,14 @@ use std::path::PathBuf;
 
 unsafe extern "C" {
     fn flock(fd: std::ffi::c_int, operation: std::ffi::c_int) -> std::ffi::c_int;
-    #[cfg(target_os = "macos")]
-    fn renamex_np(
-        from: *const std::ffi::c_char,
-        to: *const std::ffi::c_char,
-        flags: u32,
-    ) -> std::ffi::c_int;
-    #[cfg(target_os = "linux")]
-    fn renameat2(
-        olddirfd: std::ffi::c_int,
-        oldpath: *const std::ffi::c_char,
-        newdirfd: std::ffi::c_int,
-        newpath: *const std::ffi::c_char,
-        flags: u32,
-    ) -> std::ffi::c_int;
 }
+
+#[cfg(target_os = "macos")]
+#[path = "platform/macos.rs"]
+mod native;
+#[cfg(target_os = "linux")]
+#[path = "platform/linux.rs"]
+mod native;
 
 pub(crate) fn default_directory() -> io::Result<PathBuf> {
     let home = std::env::var_os("HOME").ok_or_else(|| {
@@ -48,10 +41,7 @@ pub(crate) fn swap(source: &Path, destination: &Path) -> io::Result<()> {
     let source = CString::new(source.as_os_str().as_bytes())?;
     let destination = CString::new(destination.as_os_str().as_bytes())?;
     // Both kernels exchange directories without a missing-version window.
-    #[cfg(target_os = "macos")]
-    let result = unsafe { renamex_np(source.as_ptr(), destination.as_ptr(), 0x00000002) };
-    #[cfg(target_os = "linux")]
-    let result = unsafe { renameat2(-100, source.as_ptr(), -100, destination.as_ptr(), 2) };
+    let result = native::exchange(&source, &destination);
     if result != 0 {
         return Err(io::Error::last_os_error());
     }

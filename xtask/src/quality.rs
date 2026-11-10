@@ -26,6 +26,31 @@ const SHIPPED: &[&str] = &[
 ];
 const TEST_COMMAND: &str = "cargo test --workspace --locked --target-dir target/mutation-tests";
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum Scope {
+    Host,
+    Native,
+}
+
+impl Scope {
+    fn select(self, sources: Vec<PathBuf>) -> Vec<PathBuf> {
+        sources
+            .into_iter()
+            .filter(|path| self == Self::Host || native_source_os(path).is_some())
+            .collect()
+    }
+
+    fn workers(self) -> io::Result<String> {
+        match self {
+            Self::Host => Ok(MUTATION_WORKERS.to_owned()),
+            Self::Native => Ok(std::thread::available_parallelism()?
+                .get()
+                .min(16)
+                .to_string()),
+        }
+    }
+}
+
 pub(crate) fn run(command: &mut Command) -> io::Result<()> {
     eprintln!("> {command:?}");
     let status = command.status()?;
@@ -199,16 +224,22 @@ fn shipped_sources(root: &Path) -> io::Result<Vec<PathBuf>> {
     source_paths(root, &[sources.stdout])
 }
 
-fn native_source_is_active(path: &Path) -> bool {
+fn native_source_os(path: &Path) -> Option<&'static str> {
     match path.to_str() {
         Some("crates/climon2-platform/src/process/linux.rs")
         | Some("crates/climon2-platform/src/peer/linux.rs")
-        | Some("crates/climon2-platform/src/runtime/linux.rs") => cfg!(target_os = "linux"),
+        | Some("crates/climon2-platform/src/runtime/linux.rs")
+        | Some("crates/climon2-install/src/platform/linux.rs") => Some("linux"),
         Some("crates/climon2-platform/src/process/macos.rs")
         | Some("crates/climon2-platform/src/peer/macos.rs")
-        | Some("crates/climon2-platform/src/runtime/macos.rs") => cfg!(target_os = "macos"),
-        _ => true,
+        | Some("crates/climon2-platform/src/runtime/macos.rs")
+        | Some("crates/climon2-install/src/platform/macos.rs") => Some("macos"),
+        _ => None,
     }
+}
+
+fn native_source_is_active(path: &Path) -> bool {
+    native_source_os(path).is_none_or(|os| os == env::consts::OS)
 }
 
 fn source_paths(root: &Path, outputs: &[Vec<u8>]) -> io::Result<Vec<PathBuf>> {
@@ -247,7 +278,20 @@ fn verify_native_coverage(root: &Path, report: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub fn check(root: &Path, all: bool) -> io::Result<()> {
+pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
+    let sources = shipped_sources(root)?;
+    let scored = scope.select(sources.clone());
+    let paths = if all {
+        scored.clone()
+    } else {
+        // Upstream --changed reads only git status and cannot limit itself to shipped crates.
+        let base = env::var_os("CLIMON2_MUTATION_BASE").unwrap_or_else(|| "HEAD".into());
+        scope.select(changed_sources(root, &base)?)
+    };
+    if scope == Scope::Native && paths.is_empty() {
+        eprintln!("No selected native Rust source to qualify; shared source is checked locally.");
+        return Ok(());
+    }
     verify_llvm_cov()?;
     let mut mutation = mutation_command(root)?;
     let report = root.join("target/coverage/rust/lcov.info");
@@ -262,28 +306,20 @@ pub fn check(root: &Path, all: bool) -> io::Result<()> {
         return Err(io::Error::other("coverage report is empty"));
     }
     verify_native_coverage(root, &report)?;
-    let sources = shipped_sources(root)?;
     run(tool(root, "crapper")?
         .args(["--use-existing-coverage", "--threshold", CRAP_THRESHOLD])
-        .args(&sources))?;
+        .args(&scored))?;
     mutation.args([
         "--use-existing-coverage",
         "--mutate-all",
         "--max-workers",
-        MUTATION_WORKERS,
+        &scope.workers()?,
     ]);
-    if all {
-        mutation.args(&sources);
-    } else {
-        // Upstream --changed reads only git status and cannot limit itself to shipped crates.
-        let base = env::var_os("CLIMON2_MUTATION_BASE").unwrap_or_else(|| "HEAD".into());
-        let paths = changed_sources(root, &base)?;
-        if paths.is_empty() {
-            eprintln!("No changed shipped Rust source to mutate.");
-            return Ok(());
-        }
-        mutation.args(paths);
+    if paths.is_empty() {
+        eprintln!("No changed shipped Rust source to mutate.");
+        return Ok(());
     }
+    mutation.args(paths);
     verify_worker_baseline(root, &sources)?;
     run(&mut mutation)
 }
@@ -785,6 +821,14 @@ mod tests {
                 "crates/climon2-platform/src/runtime/macos.rs",
                 cfg!(target_os = "macos"),
             ),
+            (
+                "crates/climon2-install/src/platform/linux.rs",
+                cfg!(target_os = "linux"),
+            ),
+            (
+                "crates/climon2-install/src/platform/macos.rs",
+                cfg!(target_os = "macos"),
+            ),
         ];
         for (path, _) in sources {
             fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
@@ -794,11 +838,37 @@ mod tests {
         for (path, active) in sources {
             assert_eq!(selected.contains(&PathBuf::from(path)), active, "{path}");
         }
+        let native = Scope::Native.select(selected.clone());
+        assert_eq!(
+            native,
+            selected
+                .iter()
+                .filter(|path| path.as_path() != Path::new("crates/climon2-platform/src/process.rs"))
+                .cloned()
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(Scope::Host.select(selected.clone()), selected);
         commit(root);
         for (path, _) in sources {
             fs::write(root.join(path), "pub fn never_called() { if false {} }").unwrap();
         }
         assert_eq!(changed_sources(root, OsStr::new("HEAD")).unwrap(), selected);
+        fs::write(
+            root.join("crates/climon2-platform/src/process.rs"),
+            "shared-only committed change",
+        )
+        .unwrap();
+        commit(root);
+        fs::write(
+            root.join("crates/climon2-platform/src/process.rs"),
+            "another shared-only change",
+        )
+        .unwrap();
+        assert!(
+            Scope::Native
+                .select(changed_sources(root, OsStr::new("HEAD")).unwrap())
+                .is_empty()
+        );
         let report = root.join("coverage.info");
         for (path, active) in sources {
             fs::write(

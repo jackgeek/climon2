@@ -388,10 +388,18 @@ interactive qualification. A missing bash 5 fails in CI and is a reported local
 skip; use `CLIMON2_TEST_BASH=/usr/bin/bash` on Arch Linux. `install.sh` remains
 compatible with macOS `/bin/bash` 3.2.
 
-Linux and macOS run full runtime, real-terminal, packaged and native quality
-checks. Windows runs neutral contracts only. Coverage and mutation select the
-host's native implementations explicitly; shared source remains
-subject to the same gates on both operating systems.
+CI runs full runtime, real-terminal and packaged tests on Linux and both macOS
+architectures. Windows runs neutral contracts only. Shared and Linux-specific
+CRAP/mutation run on the dedicated Linux development host, with 16 mutation
+workers. CI does not repeat those quality checks.
+
+The macOS CI quality job uses `cargo xtask mutate --native-only`: CRAP scores
+only registered macOS-exclusive source, and mutation selects changed files
+within that set. Shared-only changes skip that quality run; release tags use
+`--native-only --mutate-all` to qualify every macOS-exclusive file. Coverage
+still executes the workspace to exercise real callers, and mutation still
+requires the unchanged full-workspace worker baseline. Native CI parallelism
+follows available CPUs, capped at 16.
 
 `xtask check` runs formatting, strict clippy, unit/integration/installer-built
 packaged tests, ShellCheck, append-only metadata fixtures, instrumentation and
@@ -399,6 +407,10 @@ worker-isolation proofs, coverage-backed CRAP <= 5 and zero-survivor mutation.
 The unchanged workspace must pass in a real mutation overlay before mutation;
 worker infrastructure failures cannot count as killed mutants.
 `CLIMON2_MUTATION_BASE` selects the changed-source comparison (default `HEAD`).
+For committed work, set it to the target branch or merge base, for example
+`CLIMON2_MUTATION_BASE=origin/main cargo xtask check`.
+Native implementations must live in registered source files; shared files
+must not hide macOS-only bodies that Linux cannot qualify.
 
 `xtask dist` requires an **arm64 macOS host** with both Rust macOS targets, or
 an **x86_64 GNU/Linux host**. macOS builds retain deployment target 15.0,
@@ -408,7 +420,10 @@ to establish the glibc baseline. Both builds isolate unhooked packages and
 write their native archive, stamped `install.sh` and `SHA256SUMS` to
 `target/dist/`. Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
 
-A `v<workspace version>` tag runs full mutation and all gates. The same final
+A release requires a local `cargo xtask check --mutate-all` pass for the exact
+release commit; this is the maintainer's responsibility, not a duplicated CI
+job. A `v<workspace version>` tag runs full macOS-only mutation and the native
+runtime/archive gates. The same final
 macOS archive must pass both architectures, and the Linux archive must pass
 Ubuntu 24.04, under bash 5 including vim and less. Both platforms must pass
 before one GitHub Release and provenance attestation are published.

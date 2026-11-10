@@ -52,9 +52,15 @@ alternatively select the checksum line for the downloaded archive.
 
 The checks workflow runs full runtime/terminal tests and strict formatting,
 Clippy and ShellCheck on native macOS arm64, macOS x86_64 and Linux x86_64.
-Coverage, complexity, instrumentation/worker-isolation proofs and mutation
-gates run independently on macOS arm64 and Linux x86_64 with identical
-thresholds. Windows retains its platform-neutral contract job.
+Shared and Linux-specific coverage-backed CRAP and mutation, including
+instrumentation/worker-isolation proofs, run on the dedicated Linux development
+host. CI does not repeat them. macOS arm64 CI runs
+`cargo xtask mutate --native-only`, scoring only registered macOS-exclusive
+source and mutating changed files in that set. Shared-only changes skip this
+quality run. The native-only run still collects real workspace coverage and
+requires the unchanged full-workspace worker baseline before mutation.
+Both scopes keep CRAP <= 5 and zero surviving mutants.
+Windows retains its platform-neutral contract job.
 
 Native distribution jobs produce separate artifacts. Archive jobs verify
 checksums, exercise the download script against those exact files, and run
@@ -72,7 +78,10 @@ the same platform. The first Linux release does not pretend a macOS archive
 is a prior Linux release. Only an explicitly absent previous platform archive
 permits the first-platform-release exception.
 
-Tagged releases require every native gate, full mutation, and archive jobs.
+Before tagging, the maintainer must run `cargo xtask check --mutate-all` locally
+for the exact release commit. CI cannot certify that local result. Tagged
+releases require all macOS-exclusive source to pass CRAP and mutation in CI,
+plus every native runtime and archive job.
 Publishing merges the independently generated checksum manifests, requires
 identical stamped install scripts, verifies all assets, and attests and uploads
 both archives. No native platform's failure can be replaced by neutral checks.

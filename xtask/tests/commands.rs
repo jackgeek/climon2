@@ -11,6 +11,8 @@ fn help_reports_local_and_distribution_gate_scope() {
     assert!(help.contains("fmt, clippy and workspace tests"));
     assert!(help.contains("including packaged acceptance"));
     assert!(help.contains("dist builds verified universal macOS release artifacts"));
+    assert!(help.contains("--native-only"));
+    assert!(help.contains("excludes shared source"));
 }
 
 #[test]
