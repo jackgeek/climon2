@@ -6,6 +6,31 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+/// Linux must replace a same-version executable without modifying its open inode.
+#[cfg(target_os = "linux")]
+#[test]
+fn reinstall_keeps_an_open_executable_unchanged() {
+    use std::io::Read;
+    let workspace = Workspace::new();
+    let source = workspace.payload("payload", "1.2.3", 17);
+    let payload = climon2_install::Payload::from_directory(&source, "1.2.3").unwrap();
+    let destination = workspace.0.join("installed");
+    climon2_install::install(&payload, &destination).unwrap();
+    let mut previous = fs::File::open(destination.join("1.2.3/climon2-cli")).unwrap();
+    script(&source.join("1.2.3/climon2-cli"), "exit 44");
+    climon2_install::install(&payload, &destination).unwrap();
+    let mut contents = String::new();
+    previous.read_to_string(&mut contents).unwrap();
+    assert_eq!(contents, "#!/bin/sh\nexit 17\n");
+    assert_eq!(
+        Command::new(destination.join("1.2.3/climon2-cli"))
+            .status()
+            .unwrap()
+            .code(),
+        Some(44)
+    );
+}
+
 trait IsolatedCommand {
     fn isolated(&mut self) -> &mut Self;
 }
@@ -548,6 +573,21 @@ fn installer_output_failure_uses_own_error_contract() {
 /// forked child still shares the lock descriptor before exec.
 #[test]
 fn completed_install_releases_its_lock_despite_concurrent_forks() {
+    // Isolate deliberate non-exec forks: on Linux they also inherit other tests'
+    // writable executable descriptors, preventing those tests from execing.
+    const ISOLATED: &str = "CLIMON2_INSTALL_FORK_TEST";
+    if std::env::var_os(ISOLATED).is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "completed_install_releases_its_lock_despite_concurrent_forks",
+            ])
+            .env(ISOLATED, "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
     use std::sync::atomic::AtomicBool;
     let workspace = Workspace::new();
     let source = workspace.payload("payload", "1.2.3", 17);

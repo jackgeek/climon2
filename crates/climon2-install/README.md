@@ -1,6 +1,6 @@
 # climon2-install
 
-The macOS installer is shipped as `install` beside `climon2` and the release's
+The macOS and GNU/Linux installer is shipped as `install` beside `climon2` and the release's
 `<version>/{climon2-cli,climon2-daemon,climon2-client}` directory.
 
 `install [--dir <directory>]` defaults to `$HOME/.local/share/climon2`.
@@ -26,7 +26,10 @@ changes signing/quarantine attributes. Errors produce one
 Payload files must be regular executable files, not symlinks. Installation
 copies rather than mutates them. Identical versions retain their existing files;
 different same-version contents replace the whole version atomically using
-Darwin `renamex_np(RENAME_SWAP)`. The launcher is always replaced atomically,
+Darwin `renamex_np(RENAME_SWAP)` or Linux `renameat2(RENAME_EXCHANGE)`.
+Linux requires a filesystem supporting atomic directory exchange; an unsupported
+filesystem fails installation rather than falling back to non-atomic clobbering.
+The launcher is always replaced atomically,
 including on an identical reinstall, per #21.19. Other versions are retained.
 The atomic `current` replacement is the final publication.
 
