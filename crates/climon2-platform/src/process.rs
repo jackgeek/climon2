@@ -34,8 +34,12 @@ mod unix {
 
     /// `libproc.h` listing kinds: processes of one process group, or of one controlling
     /// terminal. Session kills never enumerate all processes.
-    pub(super) const PROC_PGRP_ONLY: u32 = 2;
-    pub(super) const PROC_TTY_ONLY: u32 = 3;
+    #[derive(Clone, Copy)]
+    #[repr(u32)]
+    pub(super) enum ProcessList {
+        Group = 2,
+        Terminal = 3,
+    }
     /// SIGKILL rounds (each followed by `KILL_SETTLE`) before members count as survivors.
     const KILL_ROUNDS: u32 = 100;
     const KILL_SETTLE: Duration = Duration::from_millis(10);
@@ -213,7 +217,7 @@ mod unix {
 
         /// Records the process groups of members currently on the terminal.
         pub fn observe(&mut self) -> io::Result<()> {
-            for member in self.members(listed_pids(PROC_TTY_ONLY, self.terminal.0)?) {
+            for member in self.members(listed_pids(ProcessList::Terminal, self.terminal.0)?) {
                 if let Some(group) = group_of(member)
                     && !self.groups.contains(&group)
                 {
@@ -253,9 +257,9 @@ mod unix {
         }
 
         fn candidates(&self) -> io::Result<Vec<i32>> {
-            let mut candidates = listed_pids(PROC_TTY_ONLY, self.terminal.0)?;
+            let mut candidates = listed_pids(ProcessList::Terminal, self.terminal.0)?;
             for group in &self.groups {
-                candidates.extend(listed_pids(PROC_PGRP_ONLY, group.get())?);
+                candidates.extend(listed_pids(ProcessList::Group, group.get())?);
             }
             Ok(candidates)
         }

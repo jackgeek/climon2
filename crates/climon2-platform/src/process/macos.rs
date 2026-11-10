@@ -1,4 +1,4 @@
-use super::unix::pid;
+use super::unix::{ProcessList, pid};
 use std::{io, mem::MaybeUninit};
 
 /// Room for processes started between sizing and filling the PID list.
@@ -56,7 +56,8 @@ pub fn before_fork() {
 }
 
 /// The kernel's list of processes of one terminal or one process group.
-pub(super) fn listed_pids(kind: u32, which: u32) -> io::Result<Vec<i32>> {
+pub(super) fn listed_pids(kind: ProcessList, which: u32) -> io::Result<Vec<i32>> {
+    let kind = kind as u32;
     let needed = listed(unsafe { libc::proc_listpids(kind, which, std::ptr::null_mut(), 0) })?;
     let mut pids = vec![0; needed / size_of::<i32>() + PID_SLACK];
     let size = i32::try_from(size_of_val(pids.as_slice())).map_err(io::Error::other)?;

@@ -1,4 +1,4 @@
-use super::unix::{PROC_PGRP_ONLY, PROC_TTY_ONLY, pid};
+use super::unix::{ProcessList, pid};
 use climon2_core::metadata::{LinuxProcessIdentity, SessionMetadata};
 use std::{fs, io, num::NonZeroU32};
 
@@ -113,13 +113,17 @@ fn boot_seconds() -> io::Result<u64> {
         .map_err(io::Error::other)
 }
 
-pub(super) fn listed_pids(kind: u32, which: u32) -> io::Result<Vec<i32>> {
+pub(super) fn listed_pids(kind: ProcessList, which: u32) -> io::Result<Vec<i32>> {
     fs::read_dir("/proc")?
         .filter_map(|entry| matching_pid(entry, kind, which).transpose())
         .collect()
 }
 
-fn matching_pid(entry: io::Result<fs::DirEntry>, kind: u32, which: u32) -> io::Result<Option<i32>> {
+fn matching_pid(
+    entry: io::Result<fs::DirEntry>,
+    kind: ProcessList,
+    which: u32,
+) -> io::Result<Option<i32>> {
     let Some(value) = entry?
         .file_name()
         .to_str()
@@ -133,7 +137,7 @@ fn matching_pid(entry: io::Result<fs::DirEntry>, kind: u32, which: u32) -> io::R
     Ok(None)
 }
 
-fn matches(info: Option<Identity>, kind: u32, which: u32) -> bool {
+fn matches(info: Option<Identity>, kind: ProcessList, which: u32) -> bool {
     let Some(info) = info else {
         return false;
     };
@@ -141,8 +145,7 @@ fn matches(info: Option<Identity>, kind: u32, which: u32) -> bool {
         return false;
     }
     match kind {
-        PROC_PGRP_ONLY => info.group == which,
-        PROC_TTY_ONLY => info.terminal == which,
-        _ => false,
+        ProcessList::Group => info.group == which,
+        ProcessList::Terminal => info.terminal == which,
     }
 }
