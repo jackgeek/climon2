@@ -2050,7 +2050,8 @@ fn runtime_argv_cwd_and_inherited_environment_are_exact_not_display_metadata() {
             }
         });
         let mut controlling = session.attach();
-        let report = session.directory.path().join("report");
+        let home = fs::canonicalize(session.directory.path()).unwrap();
+        let report = home.join("report");
         let deadline = Instant::now() + Duration::from_secs(2);
         while !report.with_extension("ready").exists() {
             assert!(Instant::now() < deadline);
@@ -2066,9 +2067,7 @@ fn runtime_argv_cwd_and_inherited_environment_are_exact_not_display_metadata() {
             input.read_exact(&mut field).unwrap();
             fields.push(field);
         }
-        let cwd = fs::canonicalize(session.directory.path())
-            .unwrap()
-            .join("cwd space --literal é");
+        let cwd = home.join("cwd space --literal é");
         assert_eq!(fields[0], cwd.as_os_str().as_bytes());
         assert_eq!(fields[1], daemon_fixture().as_os_str().as_bytes());
         assert_eq!(

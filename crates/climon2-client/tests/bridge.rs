@@ -113,7 +113,7 @@ impl Pty {
         let mut command = if background {
             background_job()
         } else {
-            Command::new(env!("CARGO_BIN_EXE_climon2-client"))
+            climon2_test_term::process_command(env!("CARGO_BIN_EXE_climon2-client"))
         };
         command
             .args(["attach", "--metadata"])
@@ -334,7 +334,7 @@ fn reopen(terminal: &File) -> File {
 }
 
 fn background_job() -> Command {
-    let mut command = Command::new("/bin/sh");
+    let mut command = climon2_test_term::process_command("/bin/sh");
     command.args([
         "-c",
         "trap '' TTIN TTOU; set -m; \"$0\" \"$@\" 2>\"$HOME/stderr\" & wait $!; \
@@ -362,7 +362,7 @@ impl Drop for Pty {
 fn setup() -> (tempfile::TempDir, PathBuf, UnixListener) {
     let home = tempfile::Builder::new()
         .prefix("client-")
-        .tempdir_in(std::env::current_dir().unwrap())
+        .tempdir_in("/tmp")
         .unwrap();
     let socket = home.path().join("peer.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -1001,6 +1001,25 @@ fn terminal_eof_or_eio_is_silent_status_129_and_closes_connection() {
     hello(&mut stream);
     begin_bridge(&mut stream);
     pty.wait_raw();
+    #[cfg(target_os = "linux")]
+    let mut unrelated = {
+        // Reproduce another thread forking before openpty's descriptors get CLOEXEC.
+        assert_eq!(
+            unsafe { libc::fcntl(pty.master.as_raw_fd(), libc::F_SETFD, 0) },
+            0
+        );
+        let (home, metadata, listener) = setup();
+        let other = Pty::spawn(home.path(), &metadata, None);
+        assert_eq!(
+            unsafe { libc::fcntl(pty.master.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) },
+            0
+        );
+        let mut peer = accept(&listener);
+        hello(&mut peer);
+        begin_bridge(&mut peer);
+        other.wait_raw();
+        (home, other, peer)
+    };
     drop(std::mem::replace(
         &mut pty.master,
         File::open("/dev/null").unwrap(),
@@ -1023,6 +1042,11 @@ fn terminal_eof_or_eio_is_silent_status_129_and_closes_connection() {
         .unwrap();
     assert!(error.is_empty());
     assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    #[cfg(target_os = "linux")]
+    {
+        send(&mut unrelated.2, ServerMessage::Exit { code: 0 });
+        unrelated.1.finish(0);
+    }
 }
 
 /// #20: a terminal read failing with EIO (lost terminal) is the same silent HUP as EOF.
@@ -1231,7 +1255,7 @@ fn fill_output_queue(terminal: &File) {
 /// CPU time (user + system) as reported by ps, e.g. `0:01.25`.
 #[cfg(target_os = "macos")]
 fn cpu_time(pid: u32) -> Duration {
-    let output = Command::new("/bin/ps")
+    let output = climon2_test_term::process_command("/bin/ps")
         .args(["-o", "time=", "-p", &pid.to_string()])
         .output()
         .unwrap();

@@ -12,7 +12,7 @@ use std::{
 fn directory() -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix(".rt")
-        .tempdir_in(std::env::current_dir().unwrap())
+        .tempdir_in("/tmp")
         .unwrap()
 }
 

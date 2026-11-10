@@ -120,7 +120,8 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
 `issue20_real_pty_size_and_zero_fallback`,
 `issue20_signals_coalesce_resize_and_report_exit_signal`.
 
-Tests create files only under project-local isolated directories. The two
-ignored libtest functions are owned subprocess fixtures, executed by the
+Tests use isolated private directories. Direct socket fixtures use short `/tmp`
+paths so mutation workers and long checkouts do not exceed the socket limit.
+The two ignored libtest functions are owned subprocess fixtures, executed by the
 behavioral tests, not skipped requirements. Production `/tmp` naming and home
 isolation are independently covered by core's layout tests.

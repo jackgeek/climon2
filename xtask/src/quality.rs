@@ -270,7 +270,7 @@ pub fn check(root: &Path, all: bool) -> io::Result<()> {
         MUTATION_WORKERS,
     ]);
     if all {
-        mutation.args(sources);
+        mutation.args(&sources);
     } else {
         // Upstream --changed reads only git status and cannot limit itself to shipped crates.
         let base = env::var_os("CLIMON2_MUTATION_BASE").unwrap_or_else(|| "HEAD".into());
@@ -281,7 +281,20 @@ pub fn check(root: &Path, all: bool) -> io::Result<()> {
         }
         mutation.args(paths);
     }
+    verify_worker_baseline(root, &sources)?;
     run(&mut mutation)
+}
+
+fn verify_worker_baseline(root: &Path, sources: &[PathBuf]) -> io::Result<()> {
+    run(Command::new(tool_root(root).join("venv/bin/python"))
+        .arg(root.join("tools/check-mutation-workspace.py"))
+        .arg(root)
+        .arg(env!("CARGO"))
+        .args(sources)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env_remove("CARGO_BUILD_BUILD_DIR")
+        .current_dir(root))
 }
 
 pub fn probe(root: &Path) -> io::Result<()> {

@@ -10,7 +10,7 @@ use tempfile::TempDir;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
-/// Builds a non-PTY test command without inheriting concurrently allocated PTYs.
+/// Builds a test command without inheriting unrelated PTY descriptors.
 pub fn process_command(executable: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
     let command = std::process::Command::new(executable);
     #[cfg(target_os = "linux")]

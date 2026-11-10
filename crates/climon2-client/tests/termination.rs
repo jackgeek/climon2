@@ -9,7 +9,7 @@ use std::{
     io::Read,
     os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
-    process::{Child, Command, Output, Stdio},
+    process::{Child, Output, Stdio},
     time::{Duration, Instant},
 };
 
@@ -26,7 +26,7 @@ impl Peer {
     fn new() -> Self {
         let home = tempfile::Builder::new()
             .prefix("kill-")
-            .tempdir_in(std::env::current_dir().unwrap())
+            .tempdir_in("/tmp")
             .unwrap();
         let socket = home.path().join("peer.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -48,7 +48,7 @@ impl Peer {
 
     /// Stdin is not a terminal: kill mode must never need one.
     fn client(&self, envelope: &str) -> Child {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_climon2-client"));
+        let mut command = climon2_test_term::process_command(env!("CARGO_BIN_EXE_climon2-client"));
         command
             .args(["attach", "--metadata"])
             .arg(&self.metadata)
