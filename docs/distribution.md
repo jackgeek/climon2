@@ -7,8 +7,12 @@
 | macOS 15+, Apple Silicon and Intel | `climon2-<version>-macos-universal.tar.gz` | arm64 macOS, with both Darwin Rust targets |
 | GNU/Linux x86_64, qualified on Ubuntu 24.04 | `climon2-<version>-linux-x86_64-gnu.tar.gz` | x86_64 GNU/Linux |
 
-Linux releases are dynamically linked GNU libc executables, built on Ubuntu
-24.04; musl, other architectures and older GNU libc baselines are not qualified.
+Published Linux releases are dynamically linked GNU libc executables, built on
+Ubuntu 24.04 with a supported runtime baseline of GNU libc 2.39 or newer;
+musl, other architectures and older GNU libc baselines are not qualified.
+Local distribution builds inherit their build host's libc baseline. A native
+Arch Linux build is useful runtime evidence, not proof of the published
+Ubuntu baseline or compatibility with every Linux distribution.
 The Linux installer requires a filesystem supporting `renameat2` directory
 exchange. macOS executables retain universal slices and ad-hoc signing.
 

@@ -214,7 +214,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PLATFORM: ${{ matrix.platform }}
         run: |
-          tags="$(gh release list --exclude-drafts --limit 100 --json tagName --jq '.[].tagName')"
+          tags="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft == false) | .tag_name')"
           previous=
           while IFS= read -r tag; do
             if [[ -n "$tag" && "$tag" != "$GITHUB_REF_NAME" ]]; then
