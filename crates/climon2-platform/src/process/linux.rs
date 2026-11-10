@@ -13,10 +13,7 @@ fn identity(value: u32) -> io::Result<Option<Identity>> {
     let path = format!("/proc/{}/stat", pid(value)?);
     match fs::read(path) {
         Ok(stat) => parse(&String::from_utf8_lossy(&stat)).map(Some),
-        Err(error)
-            if error.kind() == io::ErrorKind::NotFound
-                || error.raw_os_error() == Some(libc::ESRCH) =>
-        {
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
             absent_process()
         }
         Err(error) => Err(error),
