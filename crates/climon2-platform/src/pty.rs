@@ -1,14 +1,14 @@
 //! Darwin PTY allocation serialization. Concurrent `posix_openpt` calls can
 //! fail with the kernel-internal EREDRIVEOPEN (-6), so every climon2 process
 //! (and test harness) holds this per-user lock only while allocating a pair.
-#[cfg(not(target_os = "macos"))]
-compile_error!("PTY allocation seam requires macOS");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("PTY allocation seam requires macOS or Linux");
 
-#[cfg(target_os = "macos")]
-pub use macos::*;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use unix::*;
 
-#[cfg(target_os = "macos")]
-mod macos {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod unix {
     use std::{
         fs::{File, OpenOptions},
         io,

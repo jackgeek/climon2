@@ -1,12 +1,12 @@
 //! Terminal ownership and deferred signal handling (#20).
-#[cfg(not(target_os = "macos"))]
-compile_error!("terminal seam requires macOS");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("terminal seam requires macOS or Linux");
 
-#[cfg(target_os = "macos")]
-pub use macos::*;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use unix::*;
 
-#[cfg(target_os = "macos")]
-mod macos {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod unix {
     use climon2_core::protocol::TerminalSize;
     use signal_hook::{SigId, consts::signal::*};
     use std::{

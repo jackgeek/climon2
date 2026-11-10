@@ -1,12 +1,12 @@
 //! Private runtime directories and bounded AF_UNIX sockets (#18).
-#[cfg(not(target_os = "macos"))]
-compile_error!("runtime directory and socket seam requires macOS");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("runtime directory and socket seam requires macOS or Linux");
 
-#[cfg(target_os = "macos")]
-pub use macos::*;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use unix::*;
 
-#[cfg(target_os = "macos")]
-mod macos {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod unix {
     use climon2_core::{SessionId, layout::RuntimeLayout};
     use std::{
         fs::{self, DirBuilder},
@@ -17,12 +17,65 @@ mod macos {
         },
         path::{Path, PathBuf},
         sync::Mutex,
+        time::{Duration, Instant},
     };
 
     static UMASK: Mutex<()> = Mutex::new(());
 
     pub type SocketListener = UnixListener;
     pub type SocketStream = UnixStream;
+
+    pub struct SocketFreshness {
+        socket: PathBuf,
+        refreshed: Instant,
+    }
+
+    impl SocketFreshness {
+        pub fn new(socket: &Path, now: Instant) -> Self {
+            Self {
+                socket: socket.to_path_buf(),
+                refreshed: now,
+            }
+        }
+
+        /// Linux tmpfiles removes old sockets as well as directories, even while bound.
+        pub fn refresh(&mut self, now: Instant) -> io::Result<()> {
+            if now.duration_since(self.refreshed) < Duration::from_secs(3600) {
+                return Ok(());
+            }
+            refresh_path(&self.socket)?;
+            let parent = self
+                .socket
+                .parent()
+                .ok_or_else(|| io::Error::other("socket has no parent directory"))?;
+            refresh_path(parent)?;
+            self.refreshed = now;
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn refresh_path(path: &Path) -> io::Result<()> {
+        let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+            .map_err(io::Error::other)?;
+        if unsafe {
+            libc::utimensat(
+                libc::AT_FDCWD,
+                path.as_ptr(),
+                std::ptr::null(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } == -1
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn refresh_path(_path: &Path) -> io::Result<()> {
+        Ok(())
+    }
 
     pub fn canonical_home(path: &Path) -> io::Result<PathBuf> {
         if !path.is_absolute() {

@@ -1,6 +1,6 @@
 //! A session daemon owns one PTY and one output pump; clients never own terminal handles.
-#[cfg(not(target_os = "macos"))]
-compile_error!("climon2-daemon currently supports macOS only");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("climon2-daemon requires macOS or Linux");
 
 mod args;
 mod connection;

@@ -1,4 +1,4 @@
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use climon2_platform::process;
 use std::os::unix::process::ExitStatusExt;
@@ -78,7 +78,7 @@ fn reporting_fixture(mode: &str) -> (Child, File, String, process::Terminal) {
             if libc::setsid() == -1 {
                 return Err(std::io::Error::last_os_error());
             }
-            if libc::ioctl(0, libc::TIOCSCTTY.into(), 0) == -1 {
+            if libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
@@ -161,6 +161,13 @@ fn gone(pid: u32) -> bool {
 #[ignore = "owned subprocess fixture"]
 fn owned_process_fixture() {
     let mode = std::env::var("CLIMON2_PLATFORM_FIXTURE").unwrap();
+    #[cfg(target_os = "linux")]
+    if mode == "named" {
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_SET_NAME, c"a ) name\n(".as_ptr(), 0, 0, 0) },
+            0
+        );
+    }
     if mode == "session" {
         let mut members = [
             spawn_member(Membership::Job),
@@ -208,6 +215,22 @@ fn owned_process_fixture() {
             std::thread::sleep(Duration::from_secs(60));
         },
     }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_identity_handles_parentheses_and_newlines_and_uses_epoch_microseconds() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let (mut child, _master) = fixture("named");
+    let identity = process::start_time(child.id()).unwrap().unwrap();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let after = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let started = Duration::from_micros(identity);
+    // /proc's boot epoch is rounded to a whole second.
+    assert!(started >= before - Duration::from_secs(1));
+    assert!(started <= after);
 }
 
 #[test]

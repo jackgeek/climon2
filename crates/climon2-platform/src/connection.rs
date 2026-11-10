@@ -1,10 +1,10 @@
 use crate::runtime::SocketStream;
 use std::{io, path::Path, time::Duration};
 
-#[cfg(not(target_os = "macos"))]
-compile_error!("climon2 socket connections currently support macOS only");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("climon2 socket connections require macOS or Linux");
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn connect(path: &Path, timeout: Duration) -> io::Result<SocketStream> {
     let address = socket2::SockAddr::unix(path)?;
     let socket = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
@@ -19,7 +19,7 @@ pub enum Interest {
     Write,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Interest {
     fn events(self) -> libc::c_short {
         match self {
@@ -29,7 +29,7 @@ impl Interest {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn wait(stream: &SocketStream, interest: Interest, timeout: Duration) -> io::Result<()> {
     use std::os::fd::AsRawFd;
     let mut descriptor = libc::pollfd {
@@ -42,7 +42,7 @@ pub fn wait(stream: &SocketStream, interest: Interest, timeout: Duration) -> io:
     poll_outcome(unsafe { libc::poll(&mut descriptor, 1, millis) })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn poll_outcome(ready: libc::c_int) -> io::Result<()> {
     match ready {
         -1 => Err(io::Error::last_os_error()),
