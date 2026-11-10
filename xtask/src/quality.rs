@@ -24,7 +24,7 @@ const SHIPPED: &[&str] = &[
     "crates/climon2-install/src",
     "crates/climon2-vt/src",
 ];
-const TEST_COMMAND: &str = "cargo test --workspace --locked --target-dir target/mutation-tests";
+const TEST_COMMAND: &str = r#""$CLIMON2_MUTATION_PYTHON" tools/test-mutation.py"#;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum Scope {
@@ -178,6 +178,11 @@ fn mutation_command(root: &Path) -> io::Result<Command> {
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("CARGO_BUILD_TARGET_DIR")
         .env_remove("CARGO_BUILD_BUILD_DIR")
+        .env(
+            "CLIMON2_MUTATION_PYTHON",
+            tool_root(root).join("venv/bin/python"),
+        )
+        .env("CLIMON2_MUTATION_CARGO", env!("CARGO"))
         .args(["--test-command", TEST_COMMAND]);
     Ok(command)
 }
@@ -384,6 +389,11 @@ fn probe_workspace(root: &Path) -> io::Result<tempfile::TempDir> {
     }
     let observations = scratch.path().join("observations");
     fs::create_dir(&observations)?;
+    fs::create_dir(scratch.path().join("tools"))?;
+    fs::copy(
+        root.join("tools/test-mutation.py"),
+        scratch.path().join("tools/test-mutation.py"),
+    )?;
     Ok(scratch)
 }
 

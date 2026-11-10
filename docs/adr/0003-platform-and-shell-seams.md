@@ -50,7 +50,8 @@ Clients reach daemons over AF_UNIX stream sockets on every OS, Windows included 
   homes are not supported.
 - Native process and peer implementations live in separate source files so
   coverage-backed complexity and mutation run on the operating system that
-  actually compiles them. Shared files remain qualified on both platforms.
+  actually compiles them. Shared source is qualified on the Linux development
+  host; native CI retains runtime and archive coverage on both platforms.
 
 ## Notes for future ports
 

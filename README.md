@@ -406,6 +406,12 @@ packaged tests, ShellCheck, append-only metadata fixtures, instrumentation and
 worker-isolation proofs, coverage-backed CRAP <= 5 and zero-survivor mutation.
 The unchanged workspace must pass in a real mutation overlay before mutation;
 worker infrastructure failures cannot count as killed mutants.
+Each mutant first runs workspace library tests, then its crate's integration
+tests. A failing stage stops immediately; every mutant that passes both still
+runs the full workspace before it can count as a survivor. The unchanged
+baseline always runs the full workspace. Workers receive private copies of
+its warm build artifacts (copy-on-write where supported), rather than
+rebuilding dependencies from scratch for every changed file.
 `CLIMON2_MUTATION_BASE` selects the changed-source comparison (default `HEAD`).
 For committed work, set it to the target branch or merge base, for example
 `CLIMON2_MUTATION_BASE=origin/main cargo xtask check`.
