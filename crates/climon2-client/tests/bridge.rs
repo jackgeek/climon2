@@ -1219,10 +1219,10 @@ fn pending_detach_while_stdout_is_blocked_ends_within_the_bound() {
 }
 
 /// Section 1.7.1: reading `Exit` starts the closing deadline. When stdout is
-/// already full, the placeholder's end can never be written; the client gives
+/// already blocked, the placeholder's end can never be written; the client gives
 /// up within the bound while the session connection stays open.
 #[test]
-fn exit_read_while_stdout_is_full_ends_within_the_closing_deadline() {
+fn exit_read_while_stdout_is_blocked_ends_within_the_closing_deadline() {
     let (_home, mut pty, mut stream) = observing();
     fill_output_queue(&pty.slave);
     let parsed = Instant::now();
@@ -1234,9 +1234,12 @@ fn exit_read_while_stdout_is_full_ends_within_the_closing_deadline() {
     drop(stream);
 }
 
-/// Writes through a separate description of the terminal until its output
-/// queue, which the test never reads, refuses more.
+/// Stop the driver draining between writes, then fill even its last byte.
 fn fill_output_queue(terminal: &File) {
+    assert_eq!(
+        unsafe { libc::tcflow(terminal.as_raw_fd(), libc::TCOOFF) },
+        0
+    );
     let mut writer = reopen(terminal);
     let flags = status_flags(&writer);
     assert_eq!(
@@ -1244,7 +1247,7 @@ fn fill_output_queue(terminal: &File) {
         0
     );
     loop {
-        match writer.write(&[b'Q'; 1024]) {
+        match writer.write(b"Q") {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return,
             Err(error) => panic!("{error}"),
