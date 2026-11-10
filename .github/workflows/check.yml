@@ -204,11 +204,13 @@ jobs:
           version="$(sed -n 's/^VERSION='"'"'\([^'"'"']*\)'"'"'$/\1/p' target/dist/install.sh)"
           releases="$PWD/target/script-smoke/releases"
           assets="$releases/v$version"
-          mkdir -p "$assets"
+          home="$PWD/target/script-smoke/home"
+          downloads="$PWD/target/script-smoke/downloads"
+          mkdir -p "$assets" "$home" "$downloads"
           cp target/dist/* "$assets/"
-          CLIMON2_RELEASE_BASE_URL="file://$releases" \
-            bash target/dist/install.sh --dir "$PWD/target/script-smoke/installed"
-          target/script-smoke/installed/climon2 --version
+          HOME="$home" TMPDIR="$downloads" CLIMON2_RELEASE_BASE_URL="file://$releases" \
+            /bin/bash target/dist/install.sh
+          "$home/.local/share/climon2/climon2" --version
       - name: Obtain the actual previous release when one exists
         env:
           GH_TOKEN: ${{ github.token }}
