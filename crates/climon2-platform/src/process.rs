@@ -1,16 +1,25 @@
 //! PID identity, exact wait status and terminal-session leave policy.
-#[cfg(not(target_os = "macos"))]
-compile_error!("process identity, hangup and exit seams require macOS");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("process identity, hangup and exit seams require macOS or Linux");
 
-#[cfg(target_os = "macos")]
-pub use macos::*;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use unix::*;
 
-#[cfg(target_os = "macos")]
-mod macos {
+#[cfg(target_os = "linux")]
+#[path = "process/linux.rs"]
+mod linux;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod unix {
+    #[cfg(target_os = "linux")]
+    use super::linux::listed_pids;
+    #[cfg(target_os = "linux")]
+    pub use super::linux::start_time;
     use climon2_core::{exit::ExitStatus, protocol::HANGUP_GRACE};
+    #[cfg(target_os = "macos")]
+    use std::mem::MaybeUninit;
     use std::{
         io,
-        mem::MaybeUninit,
         num::NonZeroU32,
         os::unix::fs::{FileTypeExt, MetadataExt},
         path::Path,
@@ -19,15 +28,16 @@ mod macos {
 
     /// `libproc.h` listing kinds: processes of one process group, or of one controlling
     /// terminal. Session kills never enumerate all processes.
-    const PROC_PGRP_ONLY: u32 = 2;
-    const PROC_TTY_ONLY: u32 = 3;
+    pub(super) const PROC_PGRP_ONLY: u32 = 2;
+    pub(super) const PROC_TTY_ONLY: u32 = 3;
     /// Room for processes started between sizing and filling the PID list.
+    #[cfg(target_os = "macos")]
     const PID_SLACK: usize = 64;
     /// SIGKILL rounds (each followed by `KILL_SETTLE`) before members count as survivors.
     const KILL_ROUNDS: u32 = 100;
     const KILL_SETTLE: Duration = Duration::from_millis(10);
 
-    fn pid(value: u32) -> io::Result<i32> {
+    pub(super) fn pid(value: u32) -> io::Result<i32> {
         let value = i32::try_from(value).map_err(io::Error::other)?;
         if value == 0 {
             return Err(io::Error::other("PID must be positive"));
@@ -35,6 +45,7 @@ mod macos {
         Ok(value)
     }
 
+    #[cfg(target_os = "macos")]
     pub fn start_time(value: u32) -> io::Result<Option<u64>> {
         let Some(info) = bsd_info(pid(value)?)? else {
             return Ok(None);
@@ -42,6 +53,7 @@ mod macos {
         started_micros(&info).map(Some)
     }
 
+    #[cfg(target_os = "macos")]
     fn bsd_info(pid: i32) -> io::Result<Option<libc::proc_bsdinfo>> {
         let mut info = MaybeUninit::<libc::proc_bsdinfo>::uninit();
         let size = i32::try_from(size_of::<libc::proc_bsdinfo>()).map_err(io::Error::other)?;
@@ -63,6 +75,7 @@ mod macos {
         Ok(Some(unsafe { info.assume_init() }))
     }
 
+    #[cfg(target_os = "macos")]
     fn started_micros(info: &libc::proc_bsdinfo) -> io::Result<u64> {
         info.pbi_start_tvsec
             .checked_mul(1_000_000)
@@ -70,6 +83,7 @@ mod macos {
             .ok_or_else(|| io::Error::other("process start time overflow"))
     }
 
+    #[cfg(target_os = "macos")]
     fn missing_process<T>(error: io::Error) -> io::Result<Option<T>> {
         match error.raw_os_error() {
             Some(libc::ESRCH | libc::ENOENT) => Ok(None),
@@ -101,6 +115,7 @@ mod macos {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
     unsafe extern "C" {
         /// libSystem's libnotify; any call first waits for its globals to be initialised.
         fn notify_is_valid_token(token: libc::c_int) -> bool;
@@ -110,7 +125,10 @@ mod macos {
     /// in the child, which traps (SIGILL) or hangs if another thread was initialising libnotify
     /// at the fork; touching libnotify here first waits any such initialisation out.
     pub fn before_fork() {
-        unsafe { notify_is_valid_token(0) };
+        #[cfg(target_os = "macos")]
+        unsafe {
+            notify_is_valid_token(0)
+        };
     }
 
     pub fn wait(pid: u32) -> io::Result<ExitStatus> {
@@ -296,7 +314,7 @@ mod macos {
         }
     }
 
-    /// `getsid` fails for zombies, which are already dead and only await their parent's reap.
+    /// Zombies are already dead and only await their parent's reap.
     fn in_session(pid: NonZeroU32, session: i32) -> bool {
         unsafe { libc::getsid(pid.get() as i32) == session }
     }
@@ -314,6 +332,7 @@ mod macos {
     }
 
     /// The kernel's list of processes of one terminal or one process group.
+    #[cfg(target_os = "macos")]
     fn listed_pids(kind: u32, which: u32) -> io::Result<Vec<i32>> {
         let needed = listed(unsafe { libc::proc_listpids(kind, which, std::ptr::null_mut(), 0) })?;
         let mut pids = vec![0; needed / size_of::<i32>() + PID_SLACK];
@@ -324,6 +343,7 @@ mod macos {
         Ok(pids)
     }
 
+    #[cfg(target_os = "macos")]
     fn listed(bytes: i32) -> io::Result<usize> {
         usize::try_from(bytes).map_err(|_| io::Error::last_os_error())
     }

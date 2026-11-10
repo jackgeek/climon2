@@ -1,4 +1,4 @@
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use climon2_platform::daemon::{self, Readiness, ReadinessWriter};
 use std::{
@@ -189,6 +189,7 @@ fn issue19_interrupted_readiness_wait_keeps_its_deadline() {
     assert!(start.elapsed() < Duration::from_secs(8));
 }
 
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     /// libSystem's libnotify; the first call in a process initialises its globals.
     fn notify_register_check(name: *const libc::c_char, token: *mut libc::c_int) -> u32;
@@ -198,6 +199,7 @@ unsafe extern "C" {
 /// launches a burst of daemons. Exits 0 only if every daemon reported ready.
 #[test]
 #[ignore = "owned subprocess fixture"]
+#[cfg(target_os = "macos")]
 fn owned_fork_race_fixture() {
     use std::sync::atomic::{AtomicBool, Ordering};
     static STARTED: AtomicBool = AtomicBool::new(false);
@@ -230,6 +232,7 @@ fn owned_fork_race_fixture() {
 /// exec (macOS runs libnotify's fork handler in the child, which traps on a half-initialised
 /// once-gate). Each attempt is a fresh process, as the initialisation happens once.
 #[test]
+#[cfg(target_os = "macos")]
 fn issue19_daemon_spawn_survives_concurrent_libnotify_initialisation() {
     let failed = (0..60)
         .filter(|_| {

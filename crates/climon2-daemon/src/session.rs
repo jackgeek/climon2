@@ -24,7 +24,7 @@ use climon2_core::{
 };
 use climon2_platform::{
     peer,
-    runtime::{SocketListener, SocketStream},
+    runtime::{SocketFreshness, SocketListener, SocketStream},
     terminal::Signals,
 };
 use climon2_vt::{Geometry, Vt, VtConfig};
@@ -66,6 +66,7 @@ struct Session<'a, C> {
     command: Command,
     initial_deadline: Instant,
     finish_deadline: Option<Instant>,
+    socket_freshness: SocketFreshness,
 }
 
 pub(crate) fn serve(
@@ -95,6 +96,7 @@ pub(crate) fn serve(
         command: Command::Running,
         initial_deadline: Instant::now() + INITIAL_TIMEOUT,
         finish_deadline: None,
+        socket_freshness: SocketFreshness::new(&options.socket, Instant::now()),
     }
     .run();
     end_pty(pty, result)
@@ -127,6 +129,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn tick(&mut self, now: Instant) -> io::Result<bool> {
+        self.socket_freshness.refresh(now)?;
         self.incoming()?;
         self.pump(now)?;
         self.outgoing(now)?;

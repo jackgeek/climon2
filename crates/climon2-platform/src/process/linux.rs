@@ -1,0 +1,114 @@
+use super::unix::{PROC_PGRP_ONLY, PROC_TTY_ONLY, pid};
+use std::{fs, io, num::NonZeroU32};
+
+struct Identity {
+    zombie: bool,
+    group: u32,
+    terminal: u32,
+    ticks: u64,
+}
+
+fn identity(value: u32) -> io::Result<Option<Identity>> {
+    let path = format!("/proc/{}/stat", pid(value)?);
+    match fs::read_to_string(path) {
+        Ok(stat) => parse(&stat).map(Some),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn parse(stat: &str) -> io::Result<Identity> {
+    // comm is parenthesized, but can itself contain spaces, newlines and parentheses.
+    let (_, fields) = stat
+        .rsplit_once(") ")
+        .ok_or_else(|| io::Error::other("invalid process identity"))?;
+    parse_fields(&fields.split_whitespace().collect::<Vec<_>>())
+}
+
+fn parse_fields(fields: &[&str]) -> io::Result<Identity> {
+    Ok(Identity {
+        zombie: field(fields, 0)? == "Z",
+        group: number(fields, 2)?,
+        terminal: terminal(number(fields, 4)?),
+        ticks: ticks(fields)?,
+    })
+}
+
+fn ticks(fields: &[&str]) -> io::Result<u64> {
+    field(fields, 19)?.parse().map_err(io::Error::other)
+}
+
+fn field<'a>(fields: &[&'a str], index: usize) -> io::Result<&'a str> {
+    fields
+        .get(index)
+        .copied()
+        .ok_or_else(|| io::Error::other("incomplete process identity"))
+}
+
+fn number(fields: &[&str], index: usize) -> io::Result<u32> {
+    // tty_nr is a signed 32-bit representation of the kernel's device encoding.
+    let value: i32 = field(fields, index)?.parse().map_err(io::Error::other)?;
+    Ok(value as u32)
+}
+
+fn terminal(encoded: u32) -> u32 {
+    let major = (encoded >> 8) & 0xfff;
+    let minor = (encoded & 0xff) | ((encoded >> 12) & 0xfff00);
+    libc::makedev(major, minor) as u32
+}
+
+pub fn start_time(value: u32) -> io::Result<Option<u64>> {
+    let Some(info) = identity(value)? else {
+        return Ok(None);
+    };
+    if info.zombie {
+        return Ok(None);
+    }
+    started_micros(info.ticks).map(Some)
+}
+
+fn started_micros(ticks: u64) -> io::Result<u64> {
+    let rate = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    let rate = NonZeroU32::new(u32::try_from(rate).map_err(io::Error::other)?)
+        .ok_or_else(|| io::Error::other("invalid clock tick rate"))?;
+    let micros = u128::from(boot_seconds()?) * 1_000_000
+        + u128::from(ticks) * 1_000_000 / u128::from(rate.get());
+    u64::try_from(micros).map_err(io::Error::other)
+}
+
+fn boot_seconds() -> io::Result<u64> {
+    fs::read_to_string("/proc/stat")?
+        .lines()
+        .find_map(|line| line.strip_prefix("btime "))
+        .ok_or_else(|| io::Error::other("boot time unavailable"))?
+        .parse()
+        .map_err(io::Error::other)
+}
+
+pub(super) fn listed_pids(kind: u32, which: u32) -> io::Result<Vec<i32>> {
+    let mut members = Vec::new();
+    for entry in fs::read_dir("/proc")? {
+        let entry = entry?;
+        let Ok(value) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if matches(identity(value)?, kind, which) {
+            members.push(pid(value)?);
+        }
+    }
+    Ok(members)
+}
+
+fn matches(info: Option<Identity>, kind: u32, which: u32) -> bool {
+    let Some(info) = info else {
+        return false;
+    };
+    if info.zombie {
+        return false;
+    }
+    match kind {
+        PROC_PGRP_ONLY => info.group == which,
+        PROC_TTY_ONLY => info.terminal == which,
+        _ => false,
+    }
+}

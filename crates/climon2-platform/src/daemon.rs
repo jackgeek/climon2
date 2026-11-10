@@ -1,12 +1,12 @@
 //! Exec-based detached daemon startup with a bounded inherited readiness pipe.
-#[cfg(not(target_os = "macos"))]
-compile_error!("daemon spawn and readiness seam requires macOS");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("daemon spawn and readiness seam requires macOS or Linux");
 
-#[cfg(target_os = "macos")]
-pub use macos::*;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use unix::*;
 
-#[cfg(target_os = "macos")]
-mod macos {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod unix {
     use climon2_core::protocol::STARTUP_TIMEOUT;
     use std::{
         fs::File,
