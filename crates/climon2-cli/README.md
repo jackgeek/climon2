@@ -101,6 +101,11 @@ client start.
 `list_quotes_only_the_arguments_that_need_it` and
 `list_args_that_exactly_fit_are_whole_and_one_cell_less_is_truncated`.
 
+Probe workers retain the caller's logging subscriber, including warnings when
+Linux's stable daemon identity is unavailable. An already absent stale socket
+is successful cleanup, not a warning. A trickled then stalled hello reply
+still observes the single two-second discovery deadline.
+
 The generic terminal fixture is a test-hooks-only binary. Cross-package binaries
 are found beside the integration-test executable; no test invokes Cargo.
 The exact-environment check also launches the fixture directly, accounting only

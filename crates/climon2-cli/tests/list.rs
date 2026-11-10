@@ -122,6 +122,46 @@ fn stale_cleanup_requires_connection_refusal_and_proven_dead_identity() {
     fs::remove_file(live.socket_path.as_str()).unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn uncertain_linux_daemon_identity_is_warned_and_metadata_is_retained() {
+    let home = tempfile::tempdir().unwrap();
+    let mut metadata = metadata(home.path(), 29, "2026-10-28T07:21:02.930Z");
+    metadata.daemon_linux_identity = None;
+    let path = save(home.path(), &metadata);
+    let log = logging::LogFile::general(home.path()).unwrap();
+    let dispatch = log.dispatch(Some("warn")).unwrap();
+    let sessions = tracing::dispatcher::with_default(&dispatch, || discover(home.path())).unwrap();
+    assert!(sessions.is_empty());
+    assert!(path.exists());
+    assert!(
+        fs::read_to_string(log.path())
+            .unwrap()
+            .contains("daemon identity is uncertain")
+    );
+}
+
+#[test]
+fn already_missing_stale_socket_does_not_report_cleanup_failure() {
+    let home = tempfile::tempdir().unwrap();
+    let mut metadata = metadata(home.path(), 30, "2026-10-28T07:21:02.930Z");
+    metadata.daemon_start_time = 0;
+    if let Some(identity) = &mut metadata.daemon_linux_identity {
+        identity.start_ticks = 0;
+    }
+    let path = save(home.path(), &metadata);
+    let log = logging::LogFile::general(home.path()).unwrap();
+    let dispatch = log.dispatch(Some("warn")).unwrap();
+    let sessions = tracing::dispatcher::with_default(&dispatch, || discover(home.path())).unwrap();
+    assert!(sessions.is_empty());
+    assert!(!path.exists());
+    assert!(
+        !fs::read_to_string(log.path())
+            .unwrap()
+            .contains("stale session cleanup failed")
+    );
+}
+
 /// A socket file left by a dead daemon: bound but never listening, so it refuses connections
 /// even while a concurrently forked, not yet exec'd child holds a copy of the descriptor (a
 /// closed listener would keep accepting through such a copy).
@@ -369,15 +409,15 @@ fn failed_hello_retains_artifacts_under_a_single_two_second_deadline() {
     let metadata = metadata(home.path(), 7, "2026-10-28T07:21:02.930Z");
     let path = save(home.path(), &metadata);
     let listener = runtime::bind(std::path::Path::new(metadata.socket_path.as_str())).unwrap();
+    let (finished, discovery_finished) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
         climon2_core::protocol::read_frame(&mut socket).unwrap();
-        for byte in [0_u8, 0, 0, 10, 1, b'{'] {
+        for byte in [0_u8, 0, 0] {
             std::thread::sleep(Duration::from_millis(600));
-            if socket.write_all(&[byte]).is_err() {
-                break;
-            }
+            socket.write_all(&[byte]).unwrap();
         }
+        let _ = discovery_finished.recv_timeout(Duration::from_secs(4));
     });
     let started = Instant::now();
     assert!(discover(home.path()).unwrap().is_empty());
@@ -385,6 +425,7 @@ fn failed_hello_retains_artifacts_under_a_single_two_second_deadline() {
     assert!(started.elapsed() < Duration::from_secs(3));
     assert!(path.exists());
     assert!(std::path::Path::new(metadata.socket_path.as_str()).exists());
+    finished.send(()).unwrap();
     worker.join().unwrap();
     fs::remove_file(metadata.socket_path.as_str()).unwrap();
 }

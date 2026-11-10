@@ -103,7 +103,12 @@ pub fn discover_live(home: &Path) -> io::Result<Vec<LiveSession>> {
     let mut live = std::thread::scope(|scope| {
         let workers: Vec<_> = metadata
             .into_iter()
-            .map(|metadata| scope.spawn(move || inspect(home, metadata)))
+            .map(|metadata| {
+                let dispatch = tracing::dispatcher::get_default(Clone::clone);
+                scope.spawn(move || {
+                    tracing::dispatcher::with_default(&dispatch, || inspect(home, metadata))
+                })
+            })
             .collect();
         workers
             .into_iter()
