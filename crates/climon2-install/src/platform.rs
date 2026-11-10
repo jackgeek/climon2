@@ -1,5 +1,5 @@
-#[cfg(not(target_os = "macos"))]
-compile_error!("climon2 installer currently supports macOS only");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("climon2 installer supports macOS and GNU/Linux");
 
 use std::ffi::CString;
 use std::fs::File;
@@ -11,9 +11,18 @@ use std::path::PathBuf;
 
 unsafe extern "C" {
     fn flock(fd: std::ffi::c_int, operation: std::ffi::c_int) -> std::ffi::c_int;
+    #[cfg(target_os = "macos")]
     fn renamex_np(
         from: *const std::ffi::c_char,
         to: *const std::ffi::c_char,
+        flags: u32,
+    ) -> std::ffi::c_int;
+    #[cfg(target_os = "linux")]
+    fn renameat2(
+        olddirfd: std::ffi::c_int,
+        oldpath: *const std::ffi::c_char,
+        newdirfd: std::ffi::c_int,
+        newpath: *const std::ffi::c_char,
         flags: u32,
     ) -> std::ffi::c_int;
 }
@@ -38,8 +47,12 @@ pub(crate) fn default_directory() -> io::Result<PathBuf> {
 pub(crate) fn swap(source: &Path, destination: &Path) -> io::Result<()> {
     let source = CString::new(source.as_os_str().as_bytes())?;
     let destination = CString::new(destination.as_os_str().as_bytes())?;
-    // Darwin RENAME_SWAP exchanges whole directories without a missing-version window.
-    if unsafe { renamex_np(source.as_ptr(), destination.as_ptr(), 0x00000002) } != 0 {
+    // Both kernels exchange directories without a missing-version window.
+    #[cfg(target_os = "macos")]
+    let result = unsafe { renamex_np(source.as_ptr(), destination.as_ptr(), 0x00000002) };
+    #[cfg(target_os = "linux")]
+    let result = unsafe { renameat2(-100, source.as_ptr(), -100, destination.as_ptr(), 2) };
+    if result != 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())

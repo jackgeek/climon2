@@ -43,6 +43,8 @@ flowchart TB
         daemon_fixture["climon2-daemon-fixture"]
         terminal_fixture["climon2-fixture"]
         tui_fixture["climon2-tui-fixture"]
+        owned_exec["climon2-test-owned<br/>Linux test ownership exec adapter"]
+        terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
         xtask -->|"runs builds and tests"| cargo
         xtask -->|"runs runtime probes"| cli
@@ -51,6 +53,8 @@ flowchart TB
         tests -->|"uses directly or as a session command"| daemon_fixture
         tests -->|"uses directly or as a session command"| terminal_fixture
         tests -->|"uses directly or as a session command"| tui_fixture
+        tests -->|"execs registered terminal roots through; Linux only"| owned_exec
+        owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
 
     style library stroke-dasharray: 5 5
@@ -66,6 +70,16 @@ The installer is a release-payload executable, not a `climon2 install` command.
 Installation relationships are outside this consumption diagram.
 
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
+
+On Linux, `climon2-test-term` builds `climon2-test-owned` as test tooling, never
+as a release payload. It opens one test-owned file descriptor before execing
+the requested terminal root. Forked descendants inherit that descriptor across
+environment clearing and reparenting, so procfs leak checks do not depend on
+catching short-lived parents. Process identity, sampled ancestry, session
+membership and environment markers remain additional ownership evidence.
+Commands that explicitly close inherited descriptors cannot retain this
+additional evidence. macOS keeps its kernel process/image ancestry tracking
+and does not use this adapter.
 
 **Current:** no climon2 dynamic library is built or shipped. Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,

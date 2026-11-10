@@ -6,10 +6,13 @@ use std::{
     process::Command,
 };
 
+#[cfg(target_os = "macos")]
 const PROBED: [&str; 2] = ["/opt/homebrew/bin/bash", "/usr/local/bin/bash"];
+#[cfg(target_os = "linux")]
+const PROBED: [&str; 2] = ["/bin/bash", "/usr/bin/bash"];
 
 /// The controlled interactive shell: GNU bash 5.x from `CLIMON2_TEST_BASH`,
-/// else Homebrew's, else `/usr/local`'s. macOS `/bin/bash` (3.2) is never an
+/// else the platform's standard locations. macOS `/bin/bash` (3.2) is never an
 /// interactive profile. A missing shell fails CI and is a reported local skip.
 pub fn controlled_bash() -> Option<PathBuf> {
     let path = candidate(
@@ -64,9 +67,12 @@ impl Isolation {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
     const HOMEBREW: &str = "/opt/homebrew/bin/bash";
+    #[cfg(target_os = "macos")]
     const USR_LOCAL: &str = "/usr/local/bin/bash";
 
+    #[cfg(target_os = "macos")]
     fn probe(existing: &[&str]) -> PathBuf {
         candidate(None, |path| {
             existing.iter().any(|known| path == Path::new(known))
@@ -80,6 +86,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn homebrew_is_probed_before_usr_local_and_never_bin_bash() {
         assert_eq!(
             probe(&["/bin/bash", HOMEBREW, USR_LOCAL]),
@@ -89,6 +96,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn missing_bash_5_is_reported_at_homebrew_not_bin_bash() {
         assert_eq!(probe(&["/bin/bash"]), PathBuf::from(HOMEBREW));
         assert_eq!(probe(&[]), PathBuf::from(HOMEBREW));

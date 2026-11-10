@@ -1,7 +1,7 @@
 //! Plan section 6.1: session continuity through the installed product, from
 //! controlled bash 5 outer terminals with isolated homes. Every scenario ends
 //! with `assert_clean()`.
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 #[allow(dead_code)]
 mod support;
@@ -885,9 +885,9 @@ fn is_client(pid: i32) -> bool {
         .args(["-p", &pid.to_string(), "-o", "comm="])
         .output()
         .unwrap();
-    String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .ends_with("/climon2-client")
+    Path::new(String::from_utf8_lossy(&output.stdout).trim())
+        .file_name()
+        .is_some_and(|name| name == "climon2-client")
 }
 
 const PASTE_START: &str = "\x1b[200~first";

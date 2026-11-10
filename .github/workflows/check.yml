@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, macos-15-intel]
+        runner: [macos-15, macos-15-intel, ubuntu-24.04]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -30,12 +30,18 @@ jobs:
           RUNNER_LABEL: ${{ matrix.runner }}
         run: |
           expected=arm64
-          if [[ "$RUNNER_LABEL" == macos-15-intel ]]; then expected=x86_64; fi
+          if [[ "$RUNNER_LABEL" != macos-15 ]]; then expected=x86_64; fi
           test "$(uname -m)" = "$expected"
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - name: Install ShellCheck
-        run: brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y clang libclang-dev shellcheck vim less
+          else
+            brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
+          fi
       - uses: ./.github/actions/controlled-bash
       - name: Check native interface specification declarations and examples
         run: python3 docs/protocol/monitor-client/check.py
@@ -58,8 +64,12 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo test --locked -p climon2-launcher
   quality:
-    name: Coverage and isolated mutation checks
-    runs-on: macos-15
+    name: Coverage and isolated mutation checks / ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
     env:
       CARGO_TARGET_DIR: target/quality-run
     steps:
@@ -71,10 +81,16 @@ jobs:
           python-version: "3.13"
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
-      - name: Require arm64 and install ShellCheck
+      - name: Require native architecture and install test prerequisites
         run: |
-          test "$(uname -m)" = arm64
-          brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            test "$(uname -m)" = x86_64
+            sudo apt-get update -qq
+            sudo apt-get install -y clang libclang-dev shellcheck vim less
+          else
+            test "$(uname -m)" = arm64
+            brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
+          fi
       - uses: ./.github/actions/controlled-bash
       - name: Select the changed-source mutation base (fixture history is checked independently)
         env:
@@ -101,21 +117,36 @@ jobs:
             cargo xtask check
           fi
   dist:
-    name: Universal release artifact
-    runs-on: macos-15
+    name: Release artifact / ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macos-universal
+          - runner: ubuntu-24.04
+            platform: linux-x86_64-gnu
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Require arm64 and install target slices
+      - name: Require native architecture and install target slices
         run: |
-          test "$(uname -m)" = arm64
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
-      - name: Build and verify the universal artifact
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            test "$(uname -m)" = x86_64
+            sudo apt-get update -qq
+            sudo apt-get install -y clang libclang-dev
+            rustup target add x86_64-unknown-linux-gnu
+          else
+            test "$(uname -m)" = arm64
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          fi
+      - name: Build and verify the release artifact
         run: cargo xtask dist
       - uses: actions/upload-artifact@v4
         with:
-          name: release-dist
+          name: release-dist-${{ matrix.platform }}
           path: target/dist/*
           if-no-files-found: error
   archive:
@@ -124,52 +155,89 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, macos-15-intel]
+        include:
+          - runner: macos-15
+            platform: macos-universal
+          - runner: macos-15-intel
+            platform: macos-universal
+          - runner: ubuntu-24.04
+            platform: linux-x86_64-gnu
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: release-dist
+          name: release-dist-${{ matrix.platform }}
           path: target/dist
       - name: Require the advertised architecture
         env:
           RUNNER_LABEL: ${{ matrix.runner }}
         run: |
           expected=arm64
-          if [[ "$RUNNER_LABEL" == macos-15-intel ]]; then expected=x86_64; fi
+          if [[ "$RUNNER_LABEL" != macos-15 ]]; then expected=x86_64; fi
           test "$(uname -m)" = "$expected"
+      - name: Install Linux test prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang libclang-dev vim less
       - uses: ./.github/actions/controlled-bash
       - name: Verify the exact downloaded artifact
+        env:
+          PLATFORM: ${{ matrix.platform }}
         run: |
           cd target/dist
-          shasum -a 256 -c SHA256SUMS
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sha256sum -c SHA256SUMS
+          else
+            shasum -a 256 -c SHA256SUMS
+          fi
           version="${GITHUB_REF_NAME#v}"
           if [[ "$GITHUB_REF_TYPE" != tag ]]; then
             version="$(sed -n 's/^VERSION='"'"'\([^'"'"']*\)'"'"'$/\1/p' install.sh)"
           fi
-          archive="$PWD/climon2-$version-macos-universal.tar.gz"
+          archive="$PWD/climon2-$version-$PLATFORM.tar.gz"
           test -f "$archive"
           echo "CLIMON2_E2E_ARCHIVE=$archive" >> "$GITHUB_ENV"
+      - name: Install-script smoke with this exact archive
+        run: |
+          version="$(sed -n 's/^VERSION='"'"'\([^'"'"']*\)'"'"'$/\1/p' target/dist/install.sh)"
+          releases="$PWD/target/script-smoke/releases"
+          assets="$releases/v$version"
+          home="$PWD/target/script-smoke/home"
+          downloads="$PWD/target/script-smoke/downloads"
+          mkdir -p "$assets" "$home" "$downloads"
+          cp target/dist/* "$assets/"
+          HOME="$home" TMPDIR="$downloads" CLIMON2_RELEASE_BASE_URL="file://$releases" \
+            /bin/bash target/dist/install.sh
+          "$home/.local/share/climon2/climon2" --version
       - name: Obtain the actual previous release when one exists
         env:
           GH_TOKEN: ${{ github.token }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
-          tags="$(gh release list --exclude-drafts --limit 100 --json tagName --jq '.[].tagName')"
+          tags="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft == false) | .tag_name')"
           previous=
           while IFS= read -r tag; do
-            if [[ -n "$tag" && "$tag" != "$GITHUB_REF_NAME" ]]; then previous="$tag"; break; fi
+            if [[ -n "$tag" && "$tag" != "$GITHUB_REF_NAME" ]]; then
+              assets="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+              if grep -q -- "-$PLATFORM.tar.gz$" <<< "$assets"; then
+                previous="$tag"
+                break
+              fi
+            fi
           done <<< "$tags"
           if [[ -n "$previous" ]]; then
             destination="$RUNNER_TEMP/climon2-previous"
             mkdir -p "$destination"
-            gh release download "$previous" --pattern 'climon2-*-macos-universal.tar.gz' --dir "$destination"
-            archives=("$destination"/climon2-*-macos-universal.tar.gz)
+            gh release download "$previous" --pattern "climon2-*-$PLATFORM.tar.gz" --dir "$destination"
+            archives=("$destination"/climon2-*-"$PLATFORM".tar.gz)
             test "${#archives[@]}" = 1
             test -f "${archives[0]}"
             echo "CLIMON2_E2E_PREVIOUS_ARCHIVE=${archives[0]}" >> "$GITHUB_ENV"
           else
-            echo "First release: no previous release exists; no synthetic compatibility fixture."
+            echo "First $PLATFORM release: no previous platform archive exists; no synthetic compatibility fixture."
           fi
       - name: Build test harnesses and debug siblings without substituting archive binaries
         run: cargo test --workspace --locked --no-run
