@@ -1,5 +1,36 @@
 use super::{MARKER, Process};
-use std::{fs, io::Read, os::unix::fs::MetadataExt};
+use std::{
+    collections::HashMap,
+    fs,
+    io::Read,
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
+};
+
+pub(super) struct Lease {
+    pub(super) path: PathBuf,
+    pub(super) identity: (u64, u64),
+}
+
+impl Lease {
+    pub(super) fn new(directory: &Path) -> Self {
+        let path = directory.join("process-ownership");
+        let file = fs::File::create(&path).expect("create process ownership lease");
+        let metadata = file.metadata().expect("process ownership lease identity");
+        Self {
+            path,
+            identity: (metadata.dev(), metadata.ino()),
+        }
+    }
+}
+
+pub(super) fn lease_marker(pid: i32, leases: &HashMap<(u64, u64), String>) -> Option<String> {
+    fs::read_dir(format!("/proc/{pid}/fd"))
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| fs::metadata(entry.path()).ok())
+        .find_map(|metadata| leases.get(&(metadata.dev(), metadata.ino())).cloned())
+}
 
 pub(super) fn pids() -> Vec<i32> {
     let uid = nix::unistd::geteuid().as_raw();

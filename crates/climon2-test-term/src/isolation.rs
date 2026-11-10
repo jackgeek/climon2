@@ -46,7 +46,7 @@ impl Isolation {
             std::process::id(),
             NEXT_ID.fetch_add(1, Ordering::Relaxed)
         );
-        ownership::register(&id);
+        ownership::register(&id, directory.path());
         Self { directory, id }
     }
 

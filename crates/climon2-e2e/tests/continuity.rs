@@ -885,9 +885,9 @@ fn is_client(pid: i32) -> bool {
         .args(["-p", &pid.to_string(), "-o", "comm="])
         .output()
         .unwrap();
-    String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .ends_with("/climon2-client")
+    Path::new(String::from_utf8_lossy(&output.stdout).trim())
+        .file_name()
+        .is_some_and(|name| name == "climon2-client")
 }
 
 const PASTE_START: &str = "\x1b[200~first";

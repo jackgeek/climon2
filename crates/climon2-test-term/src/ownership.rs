@@ -3,8 +3,8 @@
 //! A test owns the terminal roots it spawns, every process carrying its environment marker,
 //! every process forked by an owned process image, and every member of a session led by an
 //! owned process. macOS supplies kernel unique ids and image versions; Linux supplies pid and
-//! start ticks. Orphans lose their parent pid, so a sampler records owned processes while they
-//! live. macOS also retains the identity of the image that forked an orphan.
+//! start ticks plus a test-owned descriptor inherited by terminal descendants. Neither needs
+//! a short-lived orphan's parent to remain alive until the next sample.
 
 #[cfg(target_os = "macos")]
 use nix::libc;
@@ -70,6 +70,8 @@ struct Owned {
     processes: HashSet<(u64, i32)>,
     images: HashSet<i32>,
     sessions: HashSet<i32>,
+    #[cfg(target_os = "linux")]
+    lease: Option<linux::Lease>,
 }
 
 impl Owned {
@@ -131,6 +133,17 @@ struct Tracker {
 impl Tracker {
     fn scan(&mut self) -> Vec<Process> {
         let mut table: Vec<_> = pids().into_iter().filter_map(process).collect();
+        #[cfg(target_os = "linux")]
+        let leases: HashMap<_, _> = self
+            .tests
+            .iter()
+            .filter_map(|(marker, owned)| {
+                owned
+                    .lease
+                    .as_ref()
+                    .map(|lease| (lease.identity, marker.clone()))
+            })
+            .collect();
         for process in &mut table {
             #[cfg(target_os = "macos")]
             {
@@ -142,7 +155,8 @@ impl Tracker {
             }
             #[cfg(target_os = "linux")]
             {
-                process.marker = marker_of(process.pid, &mut self.arguments);
+                process.marker = marker_of(process.pid, &mut self.arguments)
+                    .or_else(|| linux::lease_marker(process.pid, &leases));
             }
         }
         #[cfg(target_os = "macos")]
@@ -164,8 +178,13 @@ fn tracker() -> MutexGuard<'static, Tracker> {
     TRACKER.lock().expect("process tracker lock")
 }
 
-pub(crate) fn register(marker: &str) {
-    tracker().tests.insert(marker.to_owned(), Owned::default());
+pub(crate) fn register(marker: &str, _directory: &std::path::Path) {
+    let owned = Owned {
+        #[cfg(target_os = "linux")]
+        lease: Some(linux::Lease::new(_directory)),
+        ..Owned::default()
+    };
+    tracker().tests.insert(marker.to_owned(), owned);
     SAMPLER.call_once(|| {
         thread::spawn(|| {
             loop {
@@ -179,6 +198,28 @@ pub(crate) fn register(marker: &str) {
             }
         });
     });
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn prepare(mut command: portable_pty::CommandBuilder) -> portable_pty::CommandBuilder {
+    let lease = command
+        .get_env(MARKER)
+        .and_then(|marker| marker.to_str())
+        .and_then(|marker| {
+            tracker()
+                .tests
+                .get(marker)
+                .and_then(|owned| owned.lease.as_ref().map(|lease| lease.path.clone()))
+        });
+    if let Some(lease) = lease {
+        let mut arguments = vec![
+            crate::isolation::bin_path("climon2-test-owned").into_os_string(),
+            lease.into_os_string(),
+        ];
+        arguments.append(command.get_argv_mut());
+        *command.get_argv_mut() = arguments;
+    }
+    command
 }
 
 pub(crate) fn forget(marker: &str) {
