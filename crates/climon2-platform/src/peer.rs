@@ -5,10 +5,16 @@ compile_error!("peer credential seam requires macOS or Linux");
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use unix::*;
 
+#[cfg(target_os = "macos")]
+#[path = "peer/macos.rs"]
+mod macos;
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix {
     use crate::runtime::{SocketListener, SocketStream};
-    use std::{io, os::fd::AsRawFd};
+    use std::io;
+    #[cfg(target_os = "linux")]
+    use std::os::fd::AsRawFd;
 
     /// Return only authenticated streams; rejected streams close before hello.
     pub fn accept(listener: &SocketListener) -> io::Result<SocketStream> {
@@ -22,14 +28,7 @@ mod unix {
     }
 
     #[cfg(target_os = "macos")]
-    pub fn uid(stream: &SocketStream) -> io::Result<u32> {
-        let mut uid = 0;
-        let mut gid = 0;
-        if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(uid)
-    }
+    pub use super::macos::uid;
 
     #[cfg(target_os = "linux")]
     pub fn uid(stream: &SocketStream) -> io::Result<u32> {
