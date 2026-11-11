@@ -188,6 +188,20 @@ impl Pty {
         }
     }
 
+    /// Runs `action` while the client is stopped, so the client sees only its outcome.
+    fn while_stopped(&mut self, action: impl FnOnce(&mut Self)) {
+        let pid = self.child.id() as libc::pid_t;
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &raw mut status, libc::WUNTRACED) },
+            pid
+        );
+        assert!(libc::WIFSTOPPED(status));
+        action(self);
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGCONT) }, 0);
+    }
+
     fn termios(&self) -> libc::termios {
         let mut termios = std::mem::MaybeUninit::uninit();
         assert_eq!(
@@ -1164,10 +1178,14 @@ fn terminal_eof_or_eio_is_silent_status_129_and_closes_connection() {
         other.wait_raw();
         (home, other, peer)
     };
-    drop(std::mem::replace(
-        &mut pty.master,
-        File::open("/dev/null").unwrap(),
-    ));
+    // Linux wakes the client before it finishes hanging the terminal up; a stopped
+    // client sees the hang-up only once it is complete.
+    pty.while_stopped(|pty| {
+        drop(std::mem::replace(
+            &mut pty.master,
+            File::open("/dev/null").unwrap(),
+        ));
+    });
     let deadline = Instant::now() + Duration::from_secs(3);
     let status = loop {
         if let Some(status) = pty.child.try_wait().unwrap() {
