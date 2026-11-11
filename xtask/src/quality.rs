@@ -182,7 +182,6 @@ fn mutation_command(root: &Path) -> io::Result<Command> {
             "CLIMON2_MUTATION_PYTHON",
             tool_root(root).join("venv/bin/python"),
         )
-        .env("CLIMON2_MUTATION_CARGO", env!("CARGO"))
         .args(["--test-command", TEST_COMMAND]);
     Ok(command)
 }

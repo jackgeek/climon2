@@ -65,8 +65,9 @@ def seed_build(workspace):
 
 
 def main():
+    # The rustup proxy pins rustc for nested builds too; tests may substitute Cargo.
     command = [
-        os.environ["CLIMON2_MUTATION_CARGO"],
+        os.environ.get("CLIMON2_MUTATION_CARGO", "cargo"),
         "test", "--workspace", "--locked", "--target-dir", "target/mutation-tests",
     ]
     for selection in stages(Path.cwd()):
