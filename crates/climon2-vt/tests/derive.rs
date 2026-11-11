@@ -235,7 +235,7 @@ fn resizes_between_direct_and_derived_switch_presentation() {
             painted(1, "a"),
             painted(2, ""),
             painted(3, ""),
-            "\x1b[1;2H\x1b[?6l\x1b[20l\x1b[?7h\x1b[4h".into()
+            "\x1b[1;2H\x1b[?6l\x1b[20l\x1b[?7h\x1b[4h\x1b[1;2H\x1b[0m".into()
         ]
         .concat()
     );
