@@ -13,6 +13,8 @@ const MUTATOR: &str = "a5a0cb803b66e0cdb8bf471b3b08af701d424a41";
 const LLVM_COV: &str = "0.9.1";
 const MUTATION_WORKERS: &str = "16";
 const MUTATION_LOAD_ROUNDS: &str = "5";
+/// A mutant's test run times out, counting as killed, after this multiple of the baseline run.
+const MUTATION_TIMEOUT_FACTOR: &str = "10";
 /// Owner-set maximum CRAP score for every shipped function (#21, amended to 5).
 pub(crate) const CRAP_THRESHOLD: &str = "5";
 const SHIPPED: &[&str] = &[
@@ -29,7 +31,11 @@ const TEST_COMMAND: &str = r#""$CLIMON2_MUTATION_PYTHON" tools/test-mutation.py"
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum Scope {
+    /// `cargo xtask check`: host source, after the unchanged workspace passes under mutation load.
+    Complete,
+    /// `cargo xtask mutate`: host source.
     Host,
+    /// `cargo xtask mutate --native-only`: only host-exclusive native source.
     Native,
 }
 
@@ -37,18 +43,23 @@ impl Scope {
     fn select(self, sources: Vec<PathBuf>) -> Vec<PathBuf> {
         sources
             .into_iter()
-            .filter(|path| self == Self::Host || native_source_os(path).is_some())
+            .filter(|path| self != Self::Native || native_source_os(path).is_some())
             .collect()
     }
 
     fn workers(self) -> io::Result<String> {
         match self {
-            Self::Host => Ok(MUTATION_WORKERS.to_owned()),
+            Self::Complete | Self::Host => Ok(MUTATION_WORKERS.to_owned()),
             Self::Native => Ok(std::thread::available_parallelism()?
                 .get()
                 .min(16)
                 .to_string()),
         }
+    }
+
+    /// Rounds of the mutation-load measurement required before mutation, if any.
+    fn load_rounds(self) -> Option<&'static str> {
+        (self == Self::Complete).then_some(MUTATION_LOAD_ROUNDS)
     }
 }
 
@@ -183,7 +194,8 @@ fn mutation_command(root: &Path) -> io::Result<Command> {
             "CLIMON2_MUTATION_PYTHON",
             tool_root(root).join("venv/bin/python"),
         )
-        .args(["--test-command", TEST_COMMAND]);
+        .args(["--test-command", TEST_COMMAND])
+        .args(["--timeout-factor", MUTATION_TIMEOUT_FACTOR]);
     Ok(command)
 }
 
@@ -321,14 +333,15 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
         "--max-workers",
         &workers,
     ]);
-    if scope == Scope::Host {
-        run(Command::new(tool_root(root).join("venv/bin/python"))
-            .arg(root.join("tools/check-mutation-load.py"))
-            .arg(root)
-            .arg(env!("CARGO"))
-            .arg(&workers)
-            .arg(MUTATION_LOAD_ROUNDS)
-            .current_dir(root))?;
+    if let Some(rounds) = scope.load_rounds() {
+        run(python_script(root, "check-mutation-load.py").args([
+            "--workers",
+            &workers,
+            "--rounds",
+            rounds,
+            "--timeout-factor",
+            MUTATION_TIMEOUT_FACTOR,
+        ]))?;
     }
     if paths.is_empty() {
         eprintln!("No changed shipped Rust source to mutate.");
@@ -339,16 +352,23 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
     run(&mut mutation)
 }
 
-fn verify_worker_baseline(root: &Path, sources: &[PathBuf]) -> io::Result<()> {
-    run(Command::new(tool_root(root).join("venv/bin/python"))
-        .arg(root.join("tools/check-mutation-workspace.py"))
+/// A repository quality script, run by the pinned tools' Python with the workspace and Cargo.
+fn python_script(root: &Path, script: &str) -> Command {
+    let mut command = Command::new(tool_root(root).join("venv/bin/python"));
+    command
+        .arg(root.join("tools").join(script))
         .arg(root)
         .arg(env!("CARGO"))
+        .current_dir(root);
+    command
+}
+
+fn verify_worker_baseline(root: &Path, sources: &[PathBuf]) -> io::Result<()> {
+    run(python_script(root, "check-mutation-workspace.py")
         .args(sources)
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("CARGO_BUILD_TARGET_DIR")
-        .env_remove("CARGO_BUILD_BUILD_DIR")
-        .current_dir(root))
+        .env_remove("CARGO_BUILD_BUILD_DIR"))
 }
 
 pub fn probe(root: &Path) -> io::Result<()> {
@@ -726,14 +746,14 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn load_gate_fixture_driver() {
-        let Some(root) = env::var_os("CLIMON2_LOAD_GATE_FIXTURE") else {
-            return;
-        };
-        let scope = if env::var_os("LOAD_GATE_NATIVE").is_some() {
-            Scope::Native
-        } else {
-            Scope::Host
+    #[ignore = "owned subprocess fixture"]
+    fn owned_load_gate_fixture() {
+        let root = env::var_os("CLIMON2_LOAD_GATE_FIXTURE").unwrap();
+        let scope = match env::var("LOAD_GATE_SCOPE").unwrap().as_str() {
+            "complete" => Scope::Complete,
+            "host" => Scope::Host,
+            "native" => Scope::Native,
+            other => panic!("unknown load-gate scope {other}"),
         };
         check(Path::new(&root), false, scope).unwrap();
     }
@@ -746,8 +766,41 @@ mod tests {
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    /// A `quality::check` run whose git, coverage and Python quality tools are controlled.
     #[cfg(unix)]
-    fn load_gate_fixture(fail: bool, changed: bool, native: bool) -> (bool, String, String) {
+    struct Gate {
+        scope: &'static str,
+        load_fails: bool,
+        changed: bool,
+    }
+
+    #[cfg(unix)]
+    struct GateRun {
+        success: bool,
+        output: String,
+        /// Each quality tool started, in order, with its arguments.
+        events: Vec<String>,
+    }
+
+    #[cfg(unix)]
+    impl GateRun {
+        fn started(&self, tool: &str) -> Option<usize> {
+            self.events
+                .iter()
+                .position(|event| event.split(' ').next() == Some(tool))
+        }
+
+        /// The value a quality tool was given for `option`.
+        fn option(&self, tool: &str, option: &str) -> &str {
+            let event = &self.events[self.started(tool).unwrap()];
+            let mut arguments = event.split(' ');
+            arguments.find(|argument| *argument == option).unwrap();
+            arguments.next().unwrap()
+        }
+    }
+
+    #[cfg(unix)]
+    fn run_gate(gate: Gate) -> GateRun {
         use std::{
             process::Stdio,
             thread,
@@ -755,7 +808,7 @@ mod tests {
         };
         let scratch = tempfile::tempdir().unwrap();
         let root = scratch.path();
-        let source = if native {
+        let source = if gate.scope == "native" {
             format!("crates/climon2-platform/src/process/{}.rs", env::consts::OS)
         } else {
             "crates/climon2-core/src/lib.rs".to_owned()
@@ -803,16 +856,18 @@ esac
         executable(
             &root.join(".metrics/tools/venv/bin/python"),
             r#"#!/bin/sh
+events="$CLIMON2_LOAD_GATE_FIXTURE/events"
 case "$*" in
     *check-mutation-load.py*)
-        printf 'load %s\n' "$*" >> "$CLIMON2_LOAD_GATE_FIXTURE/events"
+        shift
+        printf 'load %s\n' "$*" >> "$events"
         if [ "$LOAD_GATE_FAIL" = yes ]; then
             echo 'test flaky_fixture ... FAILED' >&2
             exit 1
         fi
         ;;
-    *check-mutation-workspace.py*) echo baseline >> "$CLIMON2_LOAD_GATE_FIXTURE/events" ;;
-    *'-m mutator'*) echo mutation >> "$CLIMON2_LOAD_GATE_FIXTURE/events" ;;
+    *check-mutation-workspace.py*) echo baseline >> "$events" ;;
+    *'-m mutator'*) shift 2; printf 'mutation %s\n' "$*" >> "$events" ;;
 esac
 "#,
         );
@@ -820,26 +875,24 @@ esac
         let file = fs::File::create(&output).unwrap();
         let mut path = vec![root.join("bin")];
         path.extend(env::split_paths(&env::var_os("PATH").unwrap()));
-        let mut command = Command::new(env::current_exe().unwrap());
-        command
+        let mut child = Command::new(env::current_exe().unwrap())
             .args([
+                "--ignored",
                 "--exact",
-                "quality::tests::load_gate_fixture_driver",
+                "quality::tests::owned_load_gate_fixture",
                 "--nocapture",
             ])
             .env("CLIMON2_LOAD_GATE_FIXTURE", root)
+            .env("LOAD_GATE_SCOPE", gate.scope)
             .env("LOAD_GATE_SOURCE", &source)
-            .env("LOAD_GATE_CHANGED", if changed { "yes" } else { "no" })
-            .env("LOAD_GATE_FAIL", if fail { "yes" } else { "no" })
+            .env("LOAD_GATE_CHANGED", if gate.changed { "yes" } else { "no" })
+            .env("LOAD_GATE_FAIL", if gate.load_fails { "yes" } else { "no" })
             .env("PATH", env::join_paths(path).unwrap())
-            .env_remove("LOAD_GATE_NATIVE")
             .env_remove("CLIMON2_MUTATION_BASE")
             .stdout(Stdio::from(file.try_clone().unwrap()))
-            .stderr(Stdio::from(file));
-        if native {
-            command.env("LOAD_GATE_NATIVE", "yes");
-        }
-        let mut child = command.spawn().unwrap();
+            .stderr(Stdio::from(file))
+            .spawn()
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(60);
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
@@ -855,53 +908,86 @@ esac
             }
             thread::sleep(Duration::from_millis(20));
         };
-        let events = root.join("events");
-        (
-            status.success(),
-            fs::read_to_string(output).unwrap(),
-            if events.exists() {
-                fs::read_to_string(events).unwrap()
-            } else {
-                String::new()
-            },
-        )
+        let events = fs::read_to_string(root.join("events")).unwrap_or_default();
+        GateRun {
+            success: status.success(),
+            output: fs::read_to_string(output).unwrap(),
+            events: events.lines().map(str::to_owned).collect(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn complete_qualification_measures_load_with_mutations_workers_before_mutating() {
+        let run = run_gate(Gate {
+            scope: "complete",
+            load_fails: false,
+            changed: true,
+        });
+        assert!(run.success, "{}", run.output);
+        let load = run.started("load").unwrap();
+        assert!(load < run.started("mutation").unwrap(), "{:?}", run.events);
+        assert_eq!(
+            run.option("load", "--workers"),
+            run.option("mutation", "--max-workers")
+        );
+        assert_eq!(
+            run.option("load", "--timeout-factor"),
+            run.option("mutation", "--timeout-factor")
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn a_failed_load_measurement_prevents_mutation() {
-        let (success, output, events) = load_gate_fixture(true, true, false);
-        assert!(!success, "{output}");
-        assert!(output.contains("flaky_fixture"), "{output}");
-        assert!(!events.lines().any(|line| line == "mutation"), "{events}");
+        let run = run_gate(Gate {
+            scope: "complete",
+            load_fails: true,
+            changed: true,
+        });
+        assert!(!run.success, "{}", run.output);
+        assert!(run.output.contains("flaky_fixture"), "{}", run.output);
+        assert_eq!(run.started("mutation"), None, "{:?}", run.events);
     }
 
     #[cfg(unix)]
     #[test]
-    fn host_load_is_required_even_without_mutation_candidates() {
-        let (success, output, events) = load_gate_fixture(true, false, false);
-        assert!(!success, "{output}");
-        assert!(output.contains("flaky_fixture"), "{output}");
-        assert!(!events.lines().any(|line| line == "mutation"), "{events}");
-        let (success, output, events) = load_gate_fixture(false, false, false);
-        assert!(success, "{output}");
-        assert!(events.starts_with("load "), "{events}");
-        assert!(!events.lines().any(|line| line == "mutation"), "{events}");
+    fn complete_qualification_measures_load_even_without_mutation_candidates() {
+        let run = run_gate(Gate {
+            scope: "complete",
+            load_fails: true,
+            changed: false,
+        });
+        assert!(!run.success, "{}", run.output);
+        assert!(run.output.contains("flaky_fixture"), "{}", run.output);
+        let run = run_gate(Gate {
+            scope: "complete",
+            load_fails: false,
+            changed: false,
+        });
+        assert!(run.success, "{}", run.output);
+        assert!(run.started("load").is_some(), "{:?}", run.events);
+        assert_eq!(run.started("mutation"), None, "{:?}", run.events);
     }
 
+    /// #135 owner decision: only `cargo xtask check` measures load; `mutate` stays incremental.
     #[cfg(unix)]
     #[test]
-    fn successful_host_load_allows_mutation_but_native_only_does_not_measure_load() {
-        let (success, output, events) = load_gate_fixture(false, true, false);
-        assert!(success, "{output}");
-        let mut lines = events.lines();
-        let load = lines.next().unwrap();
-        assert!(load.starts_with("load "), "{events}");
-        assert!(load.ends_with(" 16 5"), "{events}");
-        assert_eq!(lines.collect::<Vec<_>>(), ["baseline", "mutation"]);
-        let (success, output, events) = load_gate_fixture(true, true, true);
-        assert!(success, "{output}");
-        assert_eq!(events, "baseline\nmutation\n");
+    fn mutate_does_not_measure_load() {
+        for scope in ["host", "native"] {
+            let run = run_gate(Gate {
+                scope,
+                load_fails: true,
+                changed: true,
+            });
+            assert!(run.success, "{scope}: {}", run.output);
+            assert_eq!(run.started("load"), None, "{scope}: {:?}", run.events);
+            assert!(
+                run.started("mutation").is_some(),
+                "{scope}: {:?}",
+                run.events
+            );
+        }
     }
 
     /// #21 isolation amendment: a reported kill cannot stand in for the selected binary.

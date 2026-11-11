@@ -21,10 +21,10 @@ tooling-probe proves staged coverage, complexity counting and covered mutation g
 release-check proves per-package releases exclude hooks and preserve test binaries.
 dist builds verified universal macOS release artifacts (arm64 host) or x86_64 GNU/Linux artifacts in target/dist.
 fixtures-check refuses any historical or uncommitted edit/deletion of an existing metadata golden.
-mutate runs coverage, crapper, mutation-load measurement and mutation checks on shipped source.
+mutate runs coverage, crapper and mutation checks on shipped source.
 mutate --native-only excludes shared source; CI qualifies only host-exclusive implementations.
-Full-host qualification requires five rounds of worker-equivalent load, even without mutation candidates.
-Native-only qualification does not run the load measurement. Logs remain in target/flake-logs.
+check's mutation-load measurement runs 5 rounds of 16 workspace suites before mutating, even with
+nothing to mutate; mutate skips it. Logs remain in target/flake-logs.
 Cross-architecture execution of the same final archive is enforced in CI.";
 
 fn main() -> ExitCode {
@@ -83,7 +83,7 @@ fn check(all: bool) -> io::Result<()> {
     test()?;
     quality::probe(workspace_root())?;
     quality::tooling_probe(workspace_root())?;
-    quality::check(workspace_root(), all, quality::Scope::Host)
+    quality::check(workspace_root(), all, quality::Scope::Complete)
 }
 
 fn test() -> io::Result<()> {

@@ -408,19 +408,20 @@ packaged tests, ShellCheck, append-only metadata fixtures, instrumentation and
 worker-isolation proofs, coverage-backed CRAP <= 5 and zero-survivor mutation.
 The unchanged workspace must pass in a real mutation overlay before mutation;
 worker infrastructure failures cannot count as killed mutants.
-Full local qualification also warms `target/mutation-tests`, then runs five
-rounds of 16 unchanged full-workspace test suites at once, before mutation.
-Each worker owns a private copy of that warm build (copy-on-write where
-supported). Every suite runs all test targets with `--no-fail-fast`; a failed
-round stops qualification without retries. It names each failing test and test
-target, with the number of suites it failed in, and lists the failing suites'
-logs. Logs from every run, including successful runs and the warm build,
-remain in a unique directory under `target/flake-logs/`. Worker builds are
-removed afterward; the next measurement removes any that an interrupted one
-left. This measurement still runs when there is no changed shipped source to
-mutate; `mutate --native-only` does not run it.
-A failure under mutation load is a test defect: unrelated test failures can
-otherwise count as killed mutants and hide survivors.
+`cargo xtask check` also measures mutation load before mutating, even when no
+changed shipped source needs mutation; `cargo xtask mutate` does not. It warms
+`target/mutation-tests` and times one unloaded full-workspace run there, then
+runs five rounds of 16 full-workspace suites at once, each in a private copy of
+the warm build (copy-on-write where supported). As in mutation, each suite has
+its own session. A suite fails the measurement if any test fails or if it
+outlives the mutator's timeout (10 times the unloaded run, at least 2 s),
+because the mutator would count either outcome as a killed mutant and hide a
+survivor. A failure under load is a test defect; nothing is retried. The
+measurement stops after the failing round and names each failing test and test
+target with the number of suites it failed in. It then lists their logs. Logs
+from every run remain in a unique directory under `target/flake-logs/`. Worker
+builds are removed afterward, and the next measurement removes any that a killed
+one left.
 Each mutant first runs workspace library tests, then its crate's integration
 tests. A failing stage stops immediately; every mutant that passes both still
 runs the full workspace before it can count as a survivor. The unchanged
