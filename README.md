@@ -412,11 +412,13 @@ Full local qualification also warms `target/mutation-tests`, then runs five
 rounds of 16 unchanged full-workspace test suites at once, before mutation.
 Each worker owns a private copy of that warm build (copy-on-write where
 supported). Every suite runs all test targets with `--no-fail-fast`; a failed
-round stops qualification without retries and reports every failing suite's
-complete log. Logs from every run, including successful runs and the warm
-build, remain in a unique directory under `target/flake-logs/`. Temporary
-worker builds are removed afterward. This measurement still runs when there
-is no changed shipped source to mutate; `mutate --native-only` does not run it.
+round stops qualification without retries. It names each failing test and test
+target, with the number of suites it failed in, and lists the failing suites'
+logs. Logs from every run, including successful runs and the warm build,
+remain in a unique directory under `target/flake-logs/`. Worker builds are
+removed afterward; the next measurement removes any that an interrupted one
+left. This measurement still runs when there is no changed shipped source to
+mutate; `mutate --native-only` does not run it.
 A failure under mutation load is a test defect: unrelated test failures can
 otherwise count as killed mutants and hide survivors.
 Each mutant first runs workspace library tests, then its crate's integration

@@ -1,13 +1,19 @@
 """Require unchanged workspace tests to pass under the mutation workers' load."""
 
 import argparse
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
+
+FAILED_TEST = re.compile(r"^test (.+) \.\.\. FAILED$", re.MULTILINE)
+FAILED_TARGET = re.compile(r"^error: test failed, to rerun pass `(.+)`$", re.MULTILINE)
 
 
 def positive_integer(value):
@@ -33,10 +39,33 @@ def test_workspace(root, cargo, target, log, environment, no_run=False):
     return result.returncode
 
 
+def report_build_failure(log):
+    print(f"Mutation load could not build the workspace: {log}", file=sys.stderr)
+    print(log.read_text(errors="replace"), file=sys.stderr, flush=True)
+
+
 def report_failures(logs):
+    """Names each failing test and target with the number of suites it failed in."""
+    tests = Counter()
+    targets = Counter()
     for log in logs:
-        print(f"Mutation load failed: {log}", file=sys.stderr, flush=True)
-        print(log.read_text(errors="replace"), file=sys.stderr, flush=True)
+        text = log.read_text(errors="replace")
+        tests.update(set(FAILED_TEST.findall(text)))
+        targets.update(set(FAILED_TARGET.findall(text)))
+    for title, failures in (("Failing tests", tests), ("Failing test targets", targets)):
+        print(f"{title} (failed suites):", file=sys.stderr)
+        for name, suites in sorted(failures.items()):
+            print(f"  {suites:>3}  {name}", file=sys.stderr)
+        if not failures:
+            print("  none recognized; read the logs", file=sys.stderr)
+    print("Failed suite logs:", file=sys.stderr)
+    for log in logs:
+        print(f"  {log}", file=sys.stderr, flush=True)
+
+
+def remove(path):
+    if path.exists():
+        shutil.rmtree(path)
 
 
 def measure(root, cargo, workers, rounds):
@@ -51,10 +80,14 @@ def measure(root, cargo, workers, rounds):
     warm = target / "mutation-tests"
     warm_log = logs / "warm.log"
     if test_workspace(root, cargo, warm, warm_log, environment, no_run=True):
-        report_failures([warm_log])
+        report_build_failure(warm_log)
         return 1
-    with tempfile.TemporaryDirectory(prefix="mutation-load-", dir=target) as scratch:
-        builds = [Path(scratch) / f"worker-{worker}" for worker in range(1, workers + 1)]
+    scratch = target / "mutation-load"
+    # A killed measurement cannot clean up after itself, so never let its builds accumulate.
+    remove(scratch)
+    try:
+        scratch.mkdir()
+        builds = [scratch / f"worker-{worker}" for worker in range(1, workers + 1)]
         options = ["-cRp"] if sys.platform == "darwin" else ["-a", "--reflink=auto"]
         for build in builds:
             subprocess.run(["cp", *options, str(warm), str(build)], check=True)
@@ -78,6 +111,8 @@ def measure(root, cargo, workers, rounds):
                 if failed:
                     report_failures(failed)
                     return 1
+    finally:
+        remove(scratch)
     return 0
 
 

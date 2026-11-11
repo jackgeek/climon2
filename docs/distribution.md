@@ -66,9 +66,10 @@ Complete local qualification includes a mutation-load measurement before
 mutation, even when no changed source needs mutation. After warming the
 mutation build, five rounds each run 16 unchanged full-workspace test suites
 concurrently, with a private warm-build copy per worker. No test is retried.
-Every suite uses `--no-fail-fast`; any failing round stops qualification,
-reports all failed suites' logs and retains every run's log under
-`target/flake-logs/` in a unique directory. Worker builds are cleaned up.
+Every suite uses `--no-fail-fast`; any failing round stops qualification and
+names each failing test and test target with its failed-suite count. Every
+run's log remains under `target/flake-logs/` in a unique directory. Worker
+builds are removed, including any left by an interrupted measurement.
 Zero failures are required: a load-sensitive test can otherwise hide a
 surviving mutant. This measurement runs locally, not in macOS native-only CI.
 

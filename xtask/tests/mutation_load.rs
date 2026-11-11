@@ -1,9 +1,11 @@
 #![cfg(unix)]
 
 use std::{
+    ffi::OsString,
     fs,
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -35,30 +37,53 @@ impl Fixture {
         self.directory.path()
     }
 
-    fn measure(&self, workers: usize, rounds: usize) -> (bool, String) {
+    fn command(&self, workers: usize, rounds: usize) -> Command {
         let script = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
             .join("tools/check-mutation-load.py");
-        let mut command = Command::new(
-            std::env::var_os("CLIMON2_QUALITY_PYTHON").unwrap_or_else(|| "python3".into()),
-        );
+        let forbidden = self.root().join("forbidden-target");
+        let mut command = Command::new(python());
         command
             .arg(script)
             .arg(self.root())
             .arg(env!("CARGO"))
             .arg(workers.to_string())
             .arg(rounds.to_string())
-            .env("CARGO_TARGET_DIR", self.root().join("forbidden-target"))
-            .env(
-                "CARGO_BUILD_TARGET_DIR",
-                self.root().join("forbidden-target"),
-            )
-            .env(
-                "CARGO_BUILD_BUILD_DIR",
-                self.root().join("forbidden-target"),
-            );
-        run_bounded(&mut command, &self.root().join("output"))
+            .env("CARGO_TARGET_DIR", &forbidden)
+            .env("CARGO_BUILD_TARGET_DIR", &forbidden)
+            .env("CARGO_BUILD_BUILD_DIR", &forbidden);
+        command
+    }
+
+    fn measure(&self, workers: usize, rounds: usize) -> (bool, String) {
+        let output = self.root().join("output");
+        let mut child = spawn(&mut self.command(workers, rounds), &output);
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                kill_group(&mut child);
+                panic!(
+                    "load measurement timed out: {}",
+                    fs::read_to_string(&output).unwrap()
+                );
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
+        (status.success(), fs::read_to_string(output).unwrap())
+    }
+
+    /// Everything a measurement leaves in the workspace's target directory.
+    fn target_entries(&self) -> Vec<String> {
+        let mut entries: Vec<_> = fs::read_dir(self.root().join("target"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        entries.sort();
+        entries
     }
 
     fn logs(&self) -> Vec<PathBuf> {
@@ -69,29 +94,33 @@ impl Fixture {
     }
 }
 
-fn run_bounded(command: &mut Command, output: &Path) -> (bool, String) {
+fn python() -> OsString {
+    std::env::var_os("CLIMON2_QUALITY_PYTHON").unwrap_or_else(|| "python3".into())
+}
+
+/// Starts a measurement as its own process group, so its whole tree can be killed.
+fn spawn(command: &mut Command, output: &Path) -> Child {
     let file = fs::File::create(output).unwrap();
-    let mut child = command
+    command
+        .process_group(0)
         .stdout(Stdio::from(file.try_clone().unwrap()))
         .stderr(Stdio::from(file))
         .spawn()
+        .unwrap()
+}
+
+/// SIGKILLs the measurement, its Cargo runs and their tests, then reaps the measurement.
+fn kill_group(child: &mut Child) {
+    let status = Command::new(python())
+        .args([
+            "-c",
+            "import os, signal, sys\ntry:\n    os.killpg(int(sys.argv[1]), signal.SIGKILL)\nexcept ProcessLookupError:\n    pass",
+        ])
+        .arg(child.id().to_string())
+        .status()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(120);
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!(
-                "load measurement timed out: {}",
-                fs::read_to_string(output).unwrap()
-            );
-        }
-        thread::sleep(Duration::from_millis(20));
-    };
-    (status.success(), fs::read_to_string(output).unwrap())
+    assert!(status.success());
+    child.wait().unwrap();
 }
 
 #[test]
@@ -162,10 +191,11 @@ fn clean_fixture() {
 }
 
 #[test]
-fn failing_workspace_reports_every_failure_without_retrying() {
+fn failing_workspace_names_each_failure_concisely_without_retrying() {
     let fixture = Fixture::new(
         "#[test]\nfn first_failure() { panic!(\"first defect\"); }\n\
-         #[test]\nfn second_failure() { panic!(\"second defect\"); }\n",
+         #[test]\nfn second_failure() { panic!(\"second defect\"); }\n\
+         #[test]\nfn passing_neighbor() {}\n",
     );
     fs::create_dir(fixture.root().join("tests")).unwrap();
     fs::write(
@@ -173,11 +203,25 @@ fn failing_workspace_reports_every_failure_without_retrying() {
         "#[test]\nfn integration_failure() { panic!(\"integration defect\"); }\n",
     )
     .unwrap();
+    fs::write(
+        fixture.root().join("tests/crash.rs"),
+        "#[test]\nfn crashing_test() { std::process::abort(); }\n",
+    )
+    .unwrap();
     let (success, output) = fixture.measure(2, 3);
     assert!(!success, "{output}");
-    for name in ["first_failure", "second_failure", "integration_failure"] {
+    for name in [
+        "first_failure",
+        "second_failure",
+        "integration_failure",
+        "--test crash",
+    ] {
         assert!(output.contains(name), "missing {name}: {output}");
     }
+    assert!(
+        !output.contains("passing_neighbor"),
+        "the report reproduced passing output: {output}"
+    );
     let logs = fixture.logs();
     assert_eq!(
         logs.len(),
@@ -192,14 +236,58 @@ fn failing_workspace_reports_every_failure_without_retrying() {
         assert!(text.contains("first defect"), "{text}");
         assert!(text.contains("second defect"), "{text}");
         assert!(text.contains("integration defect"), "{text}");
+        assert!(text.contains("SIGABRT"), "{text}");
         assert!(output.contains(&log.display().to_string()), "{output}");
     }
-    let leftovers: Vec<_> = fs::read_dir(fixture.root().join("target"))
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name.starts_with("mutation-load-"))
-        .collect();
-    assert!(leftovers.is_empty(), "{leftovers:?}");
+    assert_eq!(fixture.target_entries(), ["flake-logs", "mutation-tests"]);
+}
+
+#[test]
+fn an_interrupted_measurement_leaves_no_worker_builds_after_the_next() {
+    let fixture = Fixture::new(
+        r#"
+#[test]
+fn interrupted_fixture() {
+    use std::{fs, thread, time::{Duration, Instant}};
+    let root = std::env::current_dir().unwrap();
+    if root.join("released").exists() {
+        return;
+    }
+    let executable = std::env::current_exe().unwrap();
+    let worker = executable.ancestors().nth(3).unwrap().file_name().unwrap();
+    fs::create_dir_all(root.join("arrivals")).unwrap();
+    fs::write(root.join("arrivals").join(worker), "").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("the measurement was not interrupted");
+}
+"#,
+    );
+    let output = fixture.root().join("interrupted-output");
+    let mut child = spawn(&mut fixture.command(2, 1), &output);
+    let arrivals = fixture.root().join("arrivals");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while fs::read_dir(&arrivals).map_or(0, Iterator::count) < 2 {
+        if Instant::now() >= deadline || child.try_wait().unwrap().is_some() {
+            kill_group(&mut child);
+            panic!(
+                "both workers did not start: {}",
+                fs::read_to_string(&output).unwrap()
+            );
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    kill_group(&mut child);
+    fs::write(fixture.root().join("released"), "").unwrap();
+    let (success, output) = fixture.measure(2, 1);
+    assert!(success, "{output}");
+    assert_eq!(
+        fixture.target_entries(),
+        ["flake-logs", "mutation-tests"],
+        "worker builds from the interrupted measurement remain"
+    );
 }
 
 #[test]
