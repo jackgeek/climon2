@@ -1043,12 +1043,20 @@ fn takeover_revokes_with_release_and_exit_leaves_the_alternate_screen() {
     let mut session = Session::start("tui-restore");
     wait_file(&session.directory.path().join("tui-ready"));
     let mut first = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
-    let (period, _) = restoration(&mut first);
+    let mut host = vt100::Parser::new(
+        std::num::NonZeroU16::new(37).unwrap(),
+        std::num::NonZeroU16::new(91).unwrap(),
+        0,
+    );
+    let (period, restored) = restoration(&mut first);
+    host.process(&restored);
     send(&mut first, ClientMessage::Ready { period });
     let mut second = attach_at(&session, TerminalSize { cols: 80, rows: 24 });
     let (released, revoked) = until_terminal(&mut first);
     assert_eq!(revoked, ServerMessage::Revoked);
     assert_eq!(count(&released, b"\x1b[?1049l"), 1);
+    host.process(&released);
+    assert_ne!(host.screen().cursor_position(), (3, 20));
     let (period, restored) = restoration(&mut second);
     assert_eq!(count(&restored, b"RESTORED-DISPLAY"), 1);
     send(&mut second, ClientMessage::Ready { period });
@@ -1057,7 +1065,9 @@ fn takeover_revokes_with_release_and_exit_leaves_the_alternate_screen() {
     let (released, revoked) = until_terminal(&mut second);
     assert_eq!(revoked, ServerMessage::Revoked);
     assert_eq!(count(&released, b"\x1b[?1049l"), 1);
-    let (period, _) = restoration(&mut first);
+    let (period, restored) = restoration(&mut first);
+    host.process(&restored);
+    assert_eq!(host.screen().cursor_position(), (3, 20));
     send(&mut first, ClientMessage::Ready { period });
     send(&mut first, ClientMessage::Input(vec![b'x']));
     let (output, result) = until_terminal(&mut first);
