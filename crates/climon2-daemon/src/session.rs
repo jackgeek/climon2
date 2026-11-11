@@ -566,8 +566,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn finished(&self, now: Instant) -> bool {
-        self.finish_deadline.is_some_and(|deadline| {
-            super::passed(deadline, now) || self.connections.values().all(Connection::available)
+        finished_at(self.finish_deadline, now, || {
+            self.connections.values().all(Connection::available)
         })
     }
 
@@ -889,4 +889,26 @@ fn protocol_error(error: &io::Error) -> String {
         return error.to_string();
     }
     "invalid session protocol".into()
+}
+
+/// An ending session finishes at its drain deadline, with output still queued for a client
+/// that stopped reading, or sooner once every connection has drained.
+fn finished_at(deadline: Option<Instant>, now: Instant, drained: impl FnOnce() -> bool) -> bool {
+    deadline.is_some_and(|deadline| super::passed(deadline, now) || drained())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::finished_at;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn an_ending_session_finishes_at_its_deadline_or_once_drained() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(1);
+        assert!(!finished_at(None, now, || true), "not ending");
+        assert!(!finished_at(Some(later), now, || false), "draining");
+        assert!(finished_at(Some(later), now, || true), "drained early");
+        assert!(finished_at(Some(now), now, || false), "deadline reached");
+    }
 }

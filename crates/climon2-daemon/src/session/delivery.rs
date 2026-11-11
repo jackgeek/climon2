@@ -249,13 +249,20 @@ mod tests {
             .collect()
     }
 
+    /// These restorations take a few frames; the bound turns a lost `RestoreEnd` into a
+    /// failure instead of a hang.
+    const MAX_FRAMES: usize = 1000;
+
     /// Produces until `RestoreEnd`, returning everything produced.
     fn restore(delivery: &mut Delivery, vt: &mut Vt) -> Vec<Out> {
         let mut all = Vec::new();
-        while !all.iter().any(|out| matches!(out, Out::RestoreEnd(_))) {
+        for _ in 0..MAX_FRAMES {
             all.extend(delivery.produce(vt, 0, false));
+            if all.iter().any(|out| matches!(out, Out::RestoreEnd(_))) {
+                return all;
+            }
         }
-        all
+        panic!("no RestoreEnd in {MAX_FRAMES} frames: {}", text(&all));
     }
 
     fn granted(vt: &mut Vt, host: TerminalSize) -> Delivery {
