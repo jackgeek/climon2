@@ -62,6 +62,16 @@ requires the unchanged full-workspace worker baseline before mutation.
 Both scopes keep CRAP <= 5 and zero surviving mutants.
 Windows retains its platform-neutral contract job.
 
+Complete local qualification includes a mutation-load measurement before
+mutation, even when no changed source needs mutation. After warming the
+mutation build, five rounds each run 16 unchanged full-workspace test suites
+concurrently, with a private warm-build copy per worker. No test is retried.
+Every suite uses `--no-fail-fast`; any failing round stops qualification,
+reports all failed suites' logs and retains every run's log under
+`target/flake-logs/` in a unique directory. Worker builds are cleaned up.
+Zero failures are required: a load-sensitive test can otherwise hide a
+surviving mutant. This measurement runs locally, not in macOS native-only CI.
+
 Native distribution jobs produce separate artifacts. Archive jobs verify
 checksums, exercise the download script against those exact files, and run
 packaged acceptance including bash smoke, vim and less. macOS runs the same

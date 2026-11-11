@@ -408,6 +408,17 @@ packaged tests, ShellCheck, append-only metadata fixtures, instrumentation and
 worker-isolation proofs, coverage-backed CRAP <= 5 and zero-survivor mutation.
 The unchanged workspace must pass in a real mutation overlay before mutation;
 worker infrastructure failures cannot count as killed mutants.
+Full local qualification also warms `target/mutation-tests`, then runs five
+rounds of 16 unchanged full-workspace test suites at once, before mutation.
+Each worker owns a private copy of that warm build (copy-on-write where
+supported). Every suite runs all test targets with `--no-fail-fast`; a failed
+round stops qualification without retries and reports every failing suite's
+complete log. Logs from every run, including successful runs and the warm
+build, remain in a unique directory under `target/flake-logs/`. Temporary
+worker builds are removed afterward. This measurement still runs when there
+is no changed shipped source to mutate; `mutate --native-only` does not run it.
+A failure under mutation load is a test defect: unrelated test failures can
+otherwise count as killed mutants and hide survivors.
 Each mutant first runs workspace library tests, then its crate's integration
 tests. A failing stage stops immediately; every mutant that passes both still
 runs the full workspace before it can count as a survivor. The unchanged

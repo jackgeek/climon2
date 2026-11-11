@@ -12,6 +12,7 @@ const CRAPPER: &str = "6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d";
 const MUTATOR: &str = "a5a0cb803b66e0cdb8bf471b3b08af701d424a41";
 const LLVM_COV: &str = "0.9.1";
 const MUTATION_WORKERS: &str = "16";
+const MUTATION_LOAD_ROUNDS: &str = "5";
 /// Owner-set maximum CRAP score for every shipped function (#21, amended to 5).
 pub(crate) const CRAP_THRESHOLD: &str = "5";
 const SHIPPED: &[&str] = &[
@@ -313,12 +314,22 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
     run(tool(root, "crapper")?
         .args(["--use-existing-coverage", "--threshold", CRAP_THRESHOLD])
         .args(&scored))?;
+    let workers = scope.workers()?;
     mutation.args([
         "--use-existing-coverage",
         "--mutate-all",
         "--max-workers",
-        &scope.workers()?,
+        &workers,
     ]);
+    if scope == Scope::Host {
+        run(Command::new(tool_root(root).join("venv/bin/python"))
+            .arg(root.join("tools/check-mutation-load.py"))
+            .arg(root)
+            .arg(env!("CARGO"))
+            .arg(&workers)
+            .arg(MUTATION_LOAD_ROUNDS)
+            .current_dir(root))?;
+    }
     if paths.is_empty() {
         eprintln!("No changed shipped Rust source to mutate.");
         return Ok(());
@@ -712,6 +723,186 @@ fn verify_observation(text: &str) -> io::Result<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn load_gate_fixture_driver() {
+        let Some(root) = env::var_os("CLIMON2_LOAD_GATE_FIXTURE") else {
+            return;
+        };
+        let scope = if env::var_os("LOAD_GATE_NATIVE").is_some() {
+            Scope::Native
+        } else {
+            Scope::Host
+        };
+        check(Path::new(&root), false, scope).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn executable(path: &Path, text: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn load_gate_fixture(fail: bool, changed: bool, native: bool) -> (bool, String, String) {
+        use std::{
+            process::Stdio,
+            thread,
+            time::{Duration, Instant},
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        let source = if native {
+            format!("crates/climon2-platform/src/process/{}.rs", env::consts::OS)
+        } else {
+            "crates/climon2-core/src/lib.rs".to_owned()
+        };
+        fs::create_dir_all(root.join(&source).parent().unwrap()).unwrap();
+        fs::write(root.join(&source), "").unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"gate-fixture\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
+             [lib]\npath = \"{source}\"\n[workspace]\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("Cargo.lock"),
+            "version = 4\n[[package]]\nname = \"gate-fixture\"\nversion = \"0.0.0\"\n",
+        )
+        .unwrap();
+        executable(
+            &root.join("bin/git"),
+            &format!(
+                "#!/bin/sh\ncase \"$*\" in\n\
+             *crapper*rev-parse*) echo {CRAPPER} ;;\n\
+             *mutator*rev-parse*) echo {MUTATOR} ;;\n\
+             *'rev-parse --verify'*) echo fixture ;;\n\
+             *'ls-files --cached'*) printf '%s\\0' \"$LOAD_GATE_SOURCE\" ;;\n\
+             *'diff --name-only'*) if [ \"$LOAD_GATE_CHANGED\" = yes ]; then printf '%s\\0' \"$LOAD_GATE_SOURCE\"; fi ;;\n\
+             esac\n"
+            ),
+        );
+        executable(
+            &root.join("bin/cargo-llvm-cov"),
+            r#"#!/bin/sh
+case "$2" in
+    --version) echo 'cargo-llvm-cov 0.9.1' ;;
+    show-env) echo "LLVM_PROFILE_FILE='$CLIMON2_LOAD_GATE_FIXTURE/target/profile.profraw'" ;;
+    report)
+        for last do :; done
+        printf 'SF:%s\nDA:1,1\n' "$LOAD_GATE_SOURCE" > "$last"
+        ;;
+esac
+"#,
+        );
+        executable(
+            &root.join(".metrics/tools/venv/bin/python"),
+            r#"#!/bin/sh
+case "$*" in
+    *check-mutation-load.py*)
+        printf 'load %s\n' "$*" >> "$CLIMON2_LOAD_GATE_FIXTURE/events"
+        if [ "$LOAD_GATE_FAIL" = yes ]; then
+            echo 'test flaky_fixture ... FAILED' >&2
+            exit 1
+        fi
+        ;;
+    *check-mutation-workspace.py*) echo baseline >> "$CLIMON2_LOAD_GATE_FIXTURE/events" ;;
+    *'-m mutator'*) echo mutation >> "$CLIMON2_LOAD_GATE_FIXTURE/events" ;;
+esac
+"#,
+        );
+        let output = root.join("output");
+        let file = fs::File::create(&output).unwrap();
+        let mut path = vec![root.join("bin")];
+        path.extend(env::split_paths(&env::var_os("PATH").unwrap()));
+        let mut command = Command::new(env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "quality::tests::load_gate_fixture_driver",
+                "--nocapture",
+            ])
+            .env("CLIMON2_LOAD_GATE_FIXTURE", root)
+            .env("LOAD_GATE_SOURCE", &source)
+            .env("LOAD_GATE_CHANGED", if changed { "yes" } else { "no" })
+            .env("LOAD_GATE_FAIL", if fail { "yes" } else { "no" })
+            .env("PATH", env::join_paths(path).unwrap())
+            .env_remove("LOAD_GATE_NATIVE")
+            .env_remove("CLIMON2_MUTATION_BASE")
+            .stdout(Stdio::from(file.try_clone().unwrap()))
+            .stderr(Stdio::from(file));
+        if native {
+            command.env("LOAD_GATE_NATIVE", "yes");
+        }
+        let mut child = command.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!(
+                    "gate fixture timed out: {}",
+                    fs::read_to_string(&output).unwrap()
+                );
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
+        let events = root.join("events");
+        (
+            status.success(),
+            fs::read_to_string(output).unwrap(),
+            if events.exists() {
+                fs::read_to_string(events).unwrap()
+            } else {
+                String::new()
+            },
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_load_measurement_prevents_mutation() {
+        let (success, output, events) = load_gate_fixture(true, true, false);
+        assert!(!success, "{output}");
+        assert!(output.contains("flaky_fixture"), "{output}");
+        assert!(!events.lines().any(|line| line == "mutation"), "{events}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_load_is_required_even_without_mutation_candidates() {
+        let (success, output, events) = load_gate_fixture(true, false, false);
+        assert!(!success, "{output}");
+        assert!(output.contains("flaky_fixture"), "{output}");
+        assert!(!events.lines().any(|line| line == "mutation"), "{events}");
+        let (success, output, events) = load_gate_fixture(false, false, false);
+        assert!(success, "{output}");
+        assert!(events.starts_with("load "), "{events}");
+        assert!(!events.lines().any(|line| line == "mutation"), "{events}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn successful_host_load_allows_mutation_but_native_only_does_not_measure_load() {
+        let (success, output, events) = load_gate_fixture(false, true, false);
+        assert!(success, "{output}");
+        let mut lines = events.lines();
+        let load = lines.next().unwrap();
+        assert!(load.starts_with("load "), "{events}");
+        assert!(load.ends_with(" 16 5"), "{events}");
+        assert_eq!(lines.collect::<Vec<_>>(), ["baseline", "mutation"]);
+        let (success, output, events) = load_gate_fixture(true, true, true);
+        assert!(success, "{output}");
+        assert_eq!(events, "baseline\nmutation\n");
+    }
 
     /// #21 isolation amendment: a reported kill cannot stand in for the selected binary.
     #[test]
