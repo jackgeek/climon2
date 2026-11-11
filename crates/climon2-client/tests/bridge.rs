@@ -18,17 +18,32 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
 
 const ID: &str = "01234567-89ab-4cde-8fab-0123456789ab";
 
+/// Which open-file descriptions of the terminal the client gets as stdin and stdout.
+#[derive(Clone, Copy)]
+enum Descriptions {
+    Shared,
+    SeparateOutput,
+    /// A read-only stdin whose file-status flags are all clear.
+    ReadOnlyInput,
+}
+
 struct Pty {
     master: File,
     slave: File,
     child: Child,
     saved: libc::termios,
+    /// The open-file description the client gets as stdin: the slave's unless read-only.
+    input: File,
     /// The open-file description the client gets as stdout: the stdin one unless separate.
     output: File,
     /// F_GETFL of stdin's then stdout's description before the client started.
@@ -41,13 +56,32 @@ impl Pty {
     }
 
     fn configured(home: &Path, metadata: &Path, fault: Option<&str>, filter: Option<&str>) -> Self {
-        Self::launch(home, metadata, fault, filter, false, false)
+        Self::launch(home, metadata, fault, filter, false, Descriptions::Shared)
     }
 
     /// Gives the client a stdout that is a separate open-file description of the
     /// same terminal, so stdin's and stdout's file-status flags are independent.
     fn separate_output(home: &Path, metadata: &Path) -> Self {
-        Self::launch(home, metadata, None, None, false, true)
+        Self::launch(
+            home,
+            metadata,
+            None,
+            None,
+            false,
+            Descriptions::SeparateOutput,
+        )
+    }
+
+    /// Gives the client a read-only stdin whose file-status flags are all clear.
+    fn read_only_input(home: &Path, metadata: &Path) -> Self {
+        Self::launch(
+            home,
+            metadata,
+            None,
+            None,
+            false,
+            Descriptions::ReadOnlyInput,
+        )
     }
 
     /// Runs the client as a background job of a shell that owns the PTY as its
@@ -55,7 +89,7 @@ impl Pty {
     /// The shell records the client's status and stderr under `home`, then stays alive:
     /// a session leader's exit would revoke the PTY before termios could be checked.
     fn background(home: &Path, metadata: &Path) -> Self {
-        Self::launch(home, metadata, None, None, true, false)
+        Self::launch(home, metadata, None, None, true, Descriptions::Shared)
     }
 
     fn launch(
@@ -64,7 +98,7 @@ impl Pty {
         fault: Option<&str>,
         filter: Option<&str>,
         background: bool,
-        separate_output: bool,
+        descriptions: Descriptions,
     ) -> Self {
         let mut master = -1;
         let mut slave = -1;
@@ -104,12 +138,12 @@ impl Pty {
                 0
             );
         }
-        let output = if separate_output {
-            reopen(&slave)
-        } else {
-            slave.try_clone().unwrap()
+        let (input, output) = match descriptions {
+            Descriptions::Shared => (slave.try_clone().unwrap(), slave.try_clone().unwrap()),
+            Descriptions::SeparateOutput => (slave.try_clone().unwrap(), reopen(&slave)),
+            Descriptions::ReadOnlyInput => (read_only(&master, &slave), slave.try_clone().unwrap()),
         };
-        let status_flags = [status_flags(&slave), status_flags(&output)];
+        let status_flags = [status_flags(&input), status_flags(&output)];
         let mut command = if background {
             background_job()
         } else {
@@ -125,7 +159,7 @@ impl Pty {
                 "CLIMON2_CLIENT_STARTUP",
                 r#"{"schema":1,"operation":"attach","settings":{"escape_prefix":29,"take_control_key":20}}"#,
             )
-            .stdin(slave.try_clone().unwrap())
+            .stdin(input.try_clone().unwrap())
             .stdout(output.try_clone().unwrap())
             .stderr(Stdio::piped());
         if let Some(fault) = fault {
@@ -148,6 +182,7 @@ impl Pty {
             slave,
             child,
             saved,
+            input,
             output,
             status_flags,
         }
@@ -254,7 +289,7 @@ impl Pty {
 
     fn assert_restored(&self) {
         assert_eq!(
-            [status_flags(&self.slave), status_flags(&self.output)],
+            [status_flags(&self.input), status_flags(&self.output)],
             self.status_flags,
             "terminal file-status flags (e.g. O_NONBLOCK) not restored"
         );
@@ -302,6 +337,51 @@ fn status_flags(file: &File) -> i32 {
     let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
     assert!(flags >= 0, "{}", std::io::Error::last_os_error());
     flags & !WAS_WRITTEN
+}
+
+/// A new read-only open-file description of the same terminal, with every
+/// file-status flag clear, as `climon2 attach < /dev/tty` gives on macOS.
+fn read_only(master: &File, terminal: &File) -> File {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = master;
+        let mut name = [0 as libc::c_char; libc::PATH_MAX as usize];
+        assert_ne!(
+            unsafe { libc::fcntl(terminal.as_raw_fd(), libc::F_GETPATH, name.as_mut_ptr()) },
+            -1
+        );
+        let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(name.to_str().unwrap())
+            .unwrap();
+        close_on_exec(&file);
+        file
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // A path open adds O_LARGEFILE; the master's peer open keeps the flags as given.
+        let _ = terminal;
+        let fd = unsafe {
+            libc::ioctl(
+                master.as_raw_fd(),
+                libc::TIOCGPTPEER,
+                libc::O_RDONLY | libc::O_NOCTTY,
+            )
+        };
+        assert!(fd >= 0, "{}", std::io::Error::last_os_error());
+        let file = unsafe { File::from_raw_fd(fd) };
+        close_on_exec(&file);
+        file
+    }
+}
+
+fn close_on_exec(file: &File) {
+    assert_eq!(
+        unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) },
+        0
+    );
 }
 
 /// A new open-file description of the same terminal device.
@@ -962,6 +1042,170 @@ fn separate_stdin_and_stdout_descriptions_both_get_their_flags_back() {
     }
 }
 
+/// #20: a read-only stdin whose file-status flags are all clear still bridges
+/// both ways and gets its flags back.
+#[test]
+fn read_only_input_with_clear_status_flags_is_bridged_and_restored() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::read_only_input(home.path(), &metadata);
+    assert_eq!(pty.status_flags[0], 0, "stdin must have no status flags");
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    begin_bridge(&mut stream);
+    pty.wait_raw();
+    pty.master.write_all(b"in").unwrap();
+    assert_eq!(receive(&mut stream), ClientMessage::Input(b"in".to_vec()));
+    send(&mut stream, ServerMessage::Output(b"out".to_vec()));
+    send(&mut stream, ServerMessage::Exit { code: 0 });
+    let (bytes, error) = pty.finish(0);
+    assert_eq!(bytes, b"out");
+    assert!(error.is_empty(), "{error}");
+}
+
+/// #20: input that another reader of the terminal consumed between the
+/// client's poll and its read is not a hang-up; later input still flows.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn input_consumed_by_another_reader_after_poll_is_not_a_hang_up() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    begin_bridge(&mut stream);
+    pty.wait_raw();
+    let terminal = fs::read_link(format!("/proc/self/fd/{}", pty.slave.as_raw_fd())).unwrap();
+    let tracer = ptrace::Tracer::seize(pty.child.id());
+    pty.master.write_all(b"taken").unwrap();
+    tracer.stop_at_read(&terminal, 32768);
+    // The slave shares the client's non-blocking stdin description.
+    let mut taken = Vec::new();
+    let mut buffer = [0; 16];
+    while taken.len() < 5 {
+        wait_ready(&pty.slave, libc::POLLIN, 5);
+        if let Ok(count) = pty.slave.read(&mut buffer) {
+            taken.extend_from_slice(&buffer[..count]);
+        }
+    }
+    assert_eq!(taken, b"taken");
+    assert_eq!(tracer.finish_syscall(), -i64::from(libc::EAGAIN));
+    tracer.detach();
+    pty.master.write_all(b"live").unwrap();
+    assert_eq!(receive(&mut stream), ClientMessage::Input(b"live".to_vec()));
+    send(&mut stream, ServerMessage::Exit { code: 0 });
+    let (bytes, error) = pty.finish(0);
+    assert!(bytes.is_empty(), "{bytes:?}");
+    assert!(error.is_empty(), "{error}");
+}
+
+/// Stops the real client at chosen system calls (Linux ptrace).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod ptrace {
+    use std::{
+        path::Path,
+        time::{Duration, Instant},
+    };
+
+    pub struct Tracer {
+        pid: i32,
+        /// Bounds the whole trace: a client that never makes the awaited call fails.
+        deadline: Instant,
+    }
+
+    impl Tracer {
+        /// Attaches to a child of this test and stops it wherever it is.
+        pub fn seize(pid: u32) -> Self {
+            let tracer = Self {
+                pid: i32::try_from(pid).unwrap(),
+                deadline: Instant::now() + Duration::from_secs(5),
+            };
+            tracer.request(libc::PTRACE_SEIZE, 0, libc::PTRACE_O_TRACESYSGOOD as usize);
+            tracer.request(libc::PTRACE_INTERRUPT, 0, 0);
+            tracer.wait();
+            tracer
+        }
+
+        fn request(&self, request: libc::c_uint, address: usize, data: usize) -> libc::c_long {
+            let result = unsafe { libc::ptrace(request, self.pid, address, data) };
+            assert!(result >= 0, "{}", std::io::Error::last_os_error());
+            result
+        }
+
+        fn wait(&self) -> i32 {
+            loop {
+                assert!(
+                    Instant::now() < self.deadline,
+                    "client never made the traced call"
+                );
+                let mut status = 0;
+                let waited =
+                    unsafe { libc::waitpid(self.pid, &mut status, libc::__WALL | libc::WNOHANG) };
+                if waited == self.pid {
+                    assert!(libc::WIFSTOPPED(status), "client ended while traced");
+                    return status;
+                }
+                assert_eq!(waited, 0, "{}", std::io::Error::last_os_error());
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        /// Resumes until the client enters `read(<path>, _, count)`.
+        pub fn stop_at_read(&self, path: &Path, count: u64) {
+            loop {
+                let info = self.next_syscall_stop();
+                if info.op != libc::PTRACE_SYSCALL_INFO_ENTRY {
+                    continue;
+                }
+                let entry = unsafe { info.u.entry };
+                if entry.nr == libc::SYS_read as u64
+                    && entry.args[2] == count
+                    && std::fs::read_link(format!("/proc/{}/fd/{}", self.pid, entry.args[0]))
+                        .is_ok_and(|target| target == path)
+                {
+                    return;
+                }
+            }
+        }
+
+        /// Runs the stopped system call to its exit and returns its result.
+        pub fn finish_syscall(&self) -> i64 {
+            loop {
+                let info = self.next_syscall_stop();
+                if info.op == libc::PTRACE_SYSCALL_INFO_EXIT {
+                    return unsafe { info.u.exit }.sval;
+                }
+            }
+        }
+
+        /// Resumes to the next system-call stop, passing real signals on.
+        fn next_syscall_stop(&self) -> libc::ptrace_syscall_info {
+            let mut signal = 0;
+            loop {
+                self.request(libc::PTRACE_SYSCALL, 0, signal);
+                let status = self.wait();
+                signal = 0;
+                if libc::WSTOPSIG(status) == libc::SIGTRAP | 0x80 {
+                    let mut info: libc::ptrace_syscall_info = unsafe { std::mem::zeroed() };
+                    self.request(
+                        libc::PTRACE_GET_SYSCALL_INFO,
+                        std::mem::size_of_val(&info),
+                        (&raw mut info) as usize,
+                    );
+                    return info;
+                }
+                // Event stops (status >> 16) carry no signal to deliver.
+                if status >> 16 == 0 {
+                    signal = libc::WSTOPSIG(status) as usize;
+                }
+            }
+        }
+
+        /// Lets the stopped system call run.
+        pub fn detach(self) {
+            self.request(libc::PTRACE_DETACH, 0, 0);
+        }
+    }
+}
+
 /// #20: blocked stdout backpressures sockets and Exit cannot overtake output.
 #[test]
 fn bounded_output_backpressure_drains_every_byte_before_exit() {
@@ -1147,6 +1391,142 @@ fn hung_up_session_during_blocked_output_sleeps_then_delivers_everything() {
                 error.contains(&format!("(logs: {}/logs/{ID})", home.path().display())),
                 "{error}"
             );
+        }
+    }
+}
+
+/// #20: an attached client with nothing to do sleeps in poll rather than
+/// waiting to write to a session it has nothing to send.
+#[test]
+fn an_idle_client_sleeps() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    begin_bridge(&mut stream);
+    pty.wait_raw();
+    let before = cpu_time(pty.child.id());
+    thread::sleep(Duration::from_secs(1));
+    let used = cpu_time(pty.child.id()) - before;
+    assert!(
+        used < Duration::from_millis(200),
+        "idle client used {used:?} CPU in 1 s"
+    );
+    send(&mut stream, ServerMessage::Exit { code: 0 });
+    let (bytes, error) = pty.finish(0);
+    assert!(bytes.is_empty(), "{bytes:?}");
+    assert!(error.is_empty(), "{error}");
+}
+
+/// #19/#20: a session that hangs up while stdout is blocked and input is
+/// backpressured loses none of the output already sent, and the client reads
+/// no more keys: what it can no longer send stays for the next program.
+#[test]
+fn hang_up_behind_blocked_output_and_input_keeps_output_and_leaves_keys() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    begin_bridge(&mut stream);
+    pty.wait_raw();
+    send(&mut stream, ServerMessage::Output(vec![b'X'; 60_000]));
+    send(&mut stream, ServerMessage::Output(b"later".to_vec()));
+    let typing = Typing::start(&pty.master);
+    wait_until_backpressured(&stream, &typing);
+    drop(stream);
+    thread::sleep(Duration::from_millis(300));
+    let before = typing.accepted();
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        typing.accepted(),
+        before,
+        "the client read keys after the session hung up"
+    );
+    drop(typing);
+    let (bytes, error) = pty.finish(125);
+    let mut expected = vec![b'X'; 60_000];
+    expected.extend(b"later");
+    expected.extend(CONSERVATIVE_RESET);
+    assert!(bytes == expected, "{:?}", &bytes[59_990.min(bytes.len())..]);
+    assert!(
+        error.contains(&format!("lost connection to session {ID}")),
+        "{error}"
+    );
+}
+
+/// Types into the terminal from another thread until dropped.
+struct Typing {
+    accepted: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Typing {
+    fn start(master: &File) -> Self {
+        let mut writer = master.try_clone().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = thread::spawn({
+            let (accepted, stop) = (accepted.clone(), stop.clone());
+            move || {
+                while !stop.load(Ordering::SeqCst) {
+                    match writer.write(&[b'k'; 4096]) {
+                        Ok(count) => {
+                            accepted.fetch_add(count, Ordering::SeqCst);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            wait_ready(&writer, libc::POLLOUT, 5);
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                }
+            }
+        });
+        Self {
+            accepted,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// Bytes the terminal has taken so far.
+    fn accepted(&self) -> usize {
+        self.accepted.load(Ordering::SeqCst)
+    }
+}
+
+/// Waits until the client's input fills the unread session socket and the
+/// terminal stops taking keys, so its next frame is waiting to be sent.
+fn wait_until_backpressured(stream: &std::os::unix::net::UnixStream, typing: &Typing) {
+    let queued = || {
+        let mut bytes: libc::c_int = 0;
+        assert_eq!(
+            unsafe { libc::ioctl(stream.as_raw_fd(), libc::FIONREAD, &mut bytes) },
+            0
+        );
+        bytes
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut last = (queued(), typing.accepted());
+    loop {
+        thread::sleep(Duration::from_millis(300));
+        let now = (queued(), typing.accepted());
+        if now == last && now.0 > 0 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the client never stopped reading"
+        );
+        last = now;
+    }
+}
+
+impl Drop for Typing {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
         }
     }
 }

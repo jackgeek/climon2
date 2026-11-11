@@ -251,25 +251,20 @@ fn set_flags(fd: &OwnedFd, flags: i32) -> io::Result<()> {
     Ok(())
 }
 
-struct Output;
+/// Poll results that mean the peer hung up or failed.
+const HANGUP: i16 = libc::POLLHUP | libc::POLLERR;
 
-impl io::Write for Output {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let count = unsafe { libc::write(1, bytes.as_ptr().cast(), bytes.len()) };
-        if count < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(count as usize)
-        }
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
+/// The most terminal input forwarded per read.
+const INPUT_CHUNK: usize = 32768;
+
+/// A poll timeout that reports readiness without waiting.
+const IMMEDIATELY: i32 = 0;
 
 struct Bridge {
     transport: Transport,
     terminal: File,
+    /// An owned duplicate of stdout: the same open-file description, so the same flags.
+    stdout: File,
     signals: Signals,
     filter: InputFilter,
     takeover: Option<ControlKey>,
@@ -282,6 +277,7 @@ struct Bridge {
     /// Set by a detach request, a terminal message or connection loss: past it,
     /// the result is unconfirmed, even while stdout is blocked.
     closing: Option<Instant>,
+    /// Set once the session has hung up: nothing more is sent or read from the terminal.
     hung_up: bool,
     /// The bridge's result, waiting for its farewell bytes to drain.
     ending: Option<io::Result<BridgeExit>>,
@@ -301,10 +297,12 @@ pub fn run(
     id: &SessionId,
     settings: ClientSettings,
 ) -> io::Result<BridgeExit> {
-    let _flags = Nonblocking::new(terminal.as_fd(), io::stdout().as_fd())?;
+    let stdout = File::from(io::stdout().as_fd().try_clone_to_owned()?);
+    let _flags = Nonblocking::new(terminal.as_fd(), stdout.as_fd())?;
     let mut bridge = Bridge {
         transport,
         terminal,
+        stdout,
         signals,
         filter: InputFilter::new(settings),
         takeover: settings.take_control_key(),
@@ -348,7 +346,7 @@ impl Bridge {
     fn check_closing(&mut self) -> io::Result<()> {
         if self
             .closing
-            .is_some_and(|deadline| Instant::now() >= deadline)
+            .is_some_and(|deadline| remaining(deadline).is_zero())
         {
             self.abandon(true);
             return Err(invalid(self.unconfirmed()));
@@ -359,7 +357,7 @@ impl Bridge {
     /// Stops writing pending output and makes one non-blocking attempt at the farewell.
     fn abandon(&mut self, reset: bool) {
         self.output = Pending::new(self.farewell(reset));
-        let _ = self.output.flush(&mut Output);
+        let _ = self.output.flush(&mut self.stdout);
     }
 
     /// The conservative reset when no daemon response restored the terminal, then
@@ -392,27 +390,28 @@ impl Bridge {
     fn tick(&mut self) -> io::Result<Option<BridgeExit>> {
         self.resize()?;
         let descriptors = self.poll()?;
-        self.observe_hangup(descriptors[0].revents | self.probe_hangup()?);
+        self.observe_hangup(self.probe_hangup()?);
         self.exchange(&descriptors)
     }
 
-    /// While stdout is blocked the socket is not polled for input, and macOS
-    /// then reports no hang-up either; one immediate probe per tick finds it.
-    fn probe_hangup(&self) -> io::Result<i16> {
+    /// While stdout is blocked the socket is not read, and macOS then reports no
+    /// hang-up for it either; one immediate probe per tick finds it. Otherwise
+    /// reading the socket finds the end of the session.
+    fn probe_hangup(&self) -> io::Result<bool> {
         if self.output.empty() {
-            return Ok(0);
+            return Ok(false);
         }
         let mut probe = [descriptor(
             self.transport.stream.as_raw_fd(),
             libc::POLLIN,
             true,
         )];
-        poll(&mut probe, 0)?;
-        Ok(probe[0].revents)
+        poll(&mut probe, IMMEDIATELY)?;
+        Ok(reported(probe[0].revents, HANGUP))
     }
 
-    fn observe_hangup(&mut self, events: i16) {
-        if events & (libc::POLLHUP | libc::POLLERR) != 0 {
+    fn observe_hangup(&mut self, hung_up: bool) {
+        if hung_up {
             self.hung_up = true;
             self.close_within_deadline();
         }
@@ -433,12 +432,10 @@ impl Bridge {
         Ok(descriptors)
     }
 
+    /// Rounded up, so the deadline's last fraction of a millisecond is waited, not spun.
     fn poll_timeout(&self) -> i32 {
         self.closing.map_or(20, |deadline| {
-            deadline
-                .saturating_duration_since(Instant::now())
-                .as_millis()
-                .clamp(1, 20) as i32
+            remaining(deadline).as_micros().div_ceil(1000).min(20) as i32
         })
     }
 
@@ -455,20 +452,23 @@ impl Bridge {
 
     fn flush_output(&mut self, events: i16) -> io::Result<()> {
         if events != 0 {
-            self.output.flush(&mut Output)?;
+            self.output.flush(&mut self.stdout)?;
         }
         Ok(())
     }
 
     fn flush_socket(&mut self, events: i16) -> io::Result<()> {
-        if events & libc::POLLOUT != 0 {
+        if reported(events, libc::POLLOUT) {
             self.transport.flush()?;
         }
         Ok(())
     }
 
+    /// The socket is polled for input only while output is empty. A hang-up seen
+    /// while waiting to write reads at most the next frame's header before the
+    /// probe parks the socket, so no frame is decoded until output has drained.
     fn receive_ready(&mut self, events: i16) -> io::Result<Option<BridgeExit>> {
-        if self.output.empty() && events & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+        if reported(events, libc::POLLIN | HANGUP) {
             return self.receive();
         }
         Ok(None)
@@ -490,9 +490,9 @@ impl Bridge {
             descriptor(
                 self.terminal.as_raw_fd(),
                 libc::POLLIN,
-                self.transport.outgoing.empty() && !self.pending_detach,
+                self.transport.outgoing.empty() && !self.pending_detach && !self.hung_up,
             ),
-            descriptor(1, libc::POLLOUT, !self.output.empty()),
+            descriptor(self.stdout.as_raw_fd(), libc::POLLOUT, !self.output.empty()),
         ]
     }
 
@@ -609,7 +609,7 @@ impl Bridge {
     }
 
     fn input(&mut self) -> io::Result<bool> {
-        let mut bytes = [0; 32768];
+        let mut bytes = [u8::default(); INPUT_CHUNK];
         match self.read_terminal(&mut bytes)? {
             Some(count) => self.forward(&bytes[..count]),
             // Another reader consumed what poll reported.
@@ -652,19 +652,17 @@ impl Bridge {
         Ok(())
     }
 
-    /// `Ready` waits until restoration is written and typed-ahead keys are drained.
+    /// `Ready` waits until typed-ahead keys are drained. The restoration is
+    /// already written: frames, `RestoreEnd` included, are read only once output
+    /// has drained.
     fn ready_after_drain(&mut self, descriptors: &[libc::pollfd; 3]) -> io::Result<()> {
-        if !self.drained(descriptors) {
+        if reported(descriptors[1].revents, libc::POLLIN) {
             return Ok(());
         }
         if let Some(period) = self.ready_period.take() {
             self.ready(period)?;
         }
         Ok(())
-    }
-
-    fn drained(&self, descriptors: &[libc::pollfd; 3]) -> bool {
-        self.output.empty() && descriptors[1].revents & libc::POLLIN == 0
     }
 
     fn ready(&mut self, period: u64) -> io::Result<()> {
@@ -703,6 +701,15 @@ fn hangup_as_eof(error: io::Error) -> io::Result<usize> {
         return Ok(0);
     }
     Err(error)
+}
+
+/// Time left before `deadline`; zero once it has passed.
+fn remaining(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
+}
+
+fn reported(events: i16, wanted: i16) -> bool {
+    events & wanted != 0
 }
 
 /// An inactive descriptor is -1, which poll ignores. `revents` is output-only.

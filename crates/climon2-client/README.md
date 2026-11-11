@@ -51,7 +51,7 @@ discarded through its closing marker, never replayed or read as keys.
 The event loop has one incremental incoming frame, one pending Input/Resize
 frame, and one pending Output payload. Core validates framing; no payload
 exceeds 65,535 bytes. Socket or terminal backpressure stops the corresponding
-producer, and no further frames are read while stdout has pending bytes. A
+producer, and no further frame is decoded while stdout has pending bytes. A
 pending detach or a hung-up session has a bounded five-second closing deadline
 (`detach not confirmed` or `session result not confirmed`), serviced even while
 terminal output is blocked.
@@ -89,6 +89,12 @@ pending output is discarded and the reset gets one non-blocking attempt.
 - `hello_deadline_is_absolute_across_partial_reply`
 - `fragmented_frames_and_coalesced_resize_preserve_the_stream`
 - `separate_stdin_and_stdout_descriptions_both_get_their_flags_back`
+- `read_only_input_with_clear_status_flags_is_bridged_and_restored` (a stdin
+  description whose file-status flags are all clear, as `< /dev/tty` gives on
+  macOS)
+- `input_consumed_by_another_reader_after_poll_is_not_a_hang_up` (Linux: ptrace
+  stops the client between its poll and its terminal read while another reader
+  takes the input)
 - `bounded_output_backpressure_drains_every_byte_before_exit`
 - `terminal_eof_or_eio_is_silent_status_129_and_closes_connection`
 - `terminal_eio_is_silent_status_129_and_restores_termios` (background job of a
