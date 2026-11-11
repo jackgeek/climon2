@@ -741,10 +741,11 @@ fn installed_detached_session_absorbs_a_large_write() {
 /// application keys and the alternate screen, then exits on any key without
 /// undoing any of them.
 /// Ends after one key; if its terminal closes first, it waits for the hang-up
-/// signal like `RECORDER`.
+/// signal like `RECORDER`. `dd` reads the key because `read -s`/`-n` install
+/// bash's terminating-signal handlers, which can consume that signal.
 const TUI: &str = r#"printf '\e[?1049h\e[?1000h\e[?1006h\e[?1004h\e[?2004h\e[?25l\e[?1h\e=\e[H\e[2JTUI-READY'
 stty raw -echo
-IFS= read -rsn1 _ || exec sleep 1000
+dd bs=1 count=1 >/dev/null 2>&1 || exec sleep 1000
 "#;
 
 /// An outer non-interactive shell that records termios around `climon2
