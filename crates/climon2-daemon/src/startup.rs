@@ -58,9 +58,7 @@ impl Resources {
 
     pub fn publish(&mut self, options: &Options) -> Result<(), Failure> {
         self.write_metadata(options)
-            .map_err(|_| Failure::own("cannot publish session metadata"))?;
-        self.published = true;
-        Ok(())
+            .map_err(|_| Failure::own("cannot publish session metadata"))
     }
 
     fn write_metadata(&mut self, options: &Options) -> io::Result<()> {
@@ -80,7 +78,8 @@ impl Resources {
             return Err(super::io_error("session metadata already exists"));
         }
         fs::rename(&self.temporary, &self.metadata)?;
-        self.temporary_owned = false;
+        // Ownership moves with the file.
+        self.published = std::mem::take(&mut self.temporary_owned);
         Ok(())
     }
 
@@ -132,10 +131,11 @@ fn listen(socket: &std::path::Path) -> Result<runtime::SocketListener, Failure> 
     Ok(listener)
 }
 
+/// Gives up ownership first: a file is removed at most once, so a later cleanup can never
+/// remove a file that has since appeared at the same path.
 fn remove_owned(path: &std::path::Path, owned: &mut bool) -> io::Result<()> {
-    if *owned {
+    if std::mem::take(owned) {
         remove(path)?;
-        *owned = false;
     }
     Ok(())
 }

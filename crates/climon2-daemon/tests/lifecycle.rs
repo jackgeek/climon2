@@ -1947,6 +1947,41 @@ fn startup_failure_reports_cleans_up_and_exits_with_the_reported_code() {
     }
 }
 
+/// #15/#17: a session file that already exists is someone else's. Publication fails, and the
+/// daemon removes only the temporary it created, leaving the existing file as it was.
+#[test]
+fn an_existing_session_file_fails_publication_and_is_left_in_place() {
+    for taken in ["pty", "publishing"] {
+        let name = format!("{ID}.{taken}");
+        let (prepared, readiness, status) = unsupervised(
+            "exit",
+            |_, home| {
+                let sessions = home.join("sessions");
+                fs::create_dir(&sessions).unwrap();
+                fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
+                fs::write(sessions.join(&name), "theirs").unwrap();
+            },
+            false,
+        );
+        assert_eq!(
+            readiness,
+            failed_readiness(125, "cannot publish session metadata"),
+            "{taken}"
+        );
+        assert_eq!(status.code(), Some(125), "{taken}");
+        let sessions = prepared.home.join("sessions");
+        let left: Vec<_> = fs::read_dir(&sessions)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(left, std::slice::from_ref(&name), "{taken}");
+        assert_eq!(fs::read_to_string(sessions.join(&name)).unwrap(), "theirs");
+        assert!(!prepared.socket.exists());
+        assert!(!prepared.startup_socket.exists());
+        assert_startup_command_gone(&prepared.home);
+    }
+}
+
 /// The same daemon command with one option's value replaced (Command args are append-only).
 fn replace_option(command: &Command, key: &str, value: &str) -> Command {
     let mut arguments: Vec<_> = command.get_args().map(ToOwned::to_owned).collect();
