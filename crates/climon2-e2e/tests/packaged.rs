@@ -198,35 +198,30 @@ fn installed_nested_bash_sessions_are_both_listed_and_route_exit_status() {
         return;
     };
     let package = Package::new();
-    let nested_ready = package.isolation.home().join("nested-prompt-ready");
     let mut command = package.command("climon2");
     command.args(["exec"]);
     command.arg(&bash);
     command.args(["--noprofile", "--norc", "-i"]);
     command.env("PS1", "ENCLOSING> ");
-    command.env("CLIMON2_TEST_NESTED_READY", &nested_ready);
     let mut terminal = Terminal::spawn(command, 30, 160).unwrap();
     terminal.wait_for_text("ENCLOSING> ", TIMEOUT).unwrap();
     terminal.wait_for_input_ready(TIMEOUT).unwrap();
     terminal
         .send(format!(
-            "PS1='INNER> ' PROMPT_COMMAND='sleep 1; printf ready >\"$CLIMON2_TEST_NESTED_READY\"' climon2 exec {} --noprofile --norc -i; s=$?; printf '\\nNESTED-STATUS=%s\\n' \"$s\"\n",
+            "PS1='INNER> ' climon2 exec {} --noprofile --norc -i; s=$?; printf '\\nNESTED-STATUS=%s\\n' \"$s\"\n",
             quote(&bash)
         ))
         .unwrap();
+    // The nested client's restoration can scroll the notice away before the screen is read.
     terminal
-        .wait_for_text("Starting climon2 session nested for the 1st time", TIMEOUT)
+        .wait_for_bytes(b"Starting climon2 session nested for the 1st time", TIMEOUT)
         .unwrap();
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    while !nested_ready.exists() {
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    terminal.wait_for_input_ready(TIMEOUT).unwrap();
-    terminal
-        .send("echo depth:$CLIMON2_SESSION_DEPTH\n")
-        .unwrap();
-    terminal.wait_for_text("depth:2", TIMEOUT).unwrap();
+    // The outer terminal's quiet says nothing about the nested client's readiness.
+    type_until(
+        &mut terminal,
+        "echo depth:$CLIMON2_SESSION_DEPTH\n",
+        "depth:2",
+    );
     let sessions = package.list();
     assert_eq!(sessions.len(), 2);
     assert_ne!(sessions[0]["session_id"], sessions[1]["session_id"]);
