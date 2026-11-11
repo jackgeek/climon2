@@ -121,16 +121,22 @@ impl Pty {
     }
     pub fn try_wait(&mut self) -> io::Result<Option<u32>> {
         if self.status.is_none() {
-            self.status = self.reap()?;
+            self.reap()?;
         }
         Ok(self.status)
     }
-    fn reap(&mut self) -> io::Result<Option<u32>> {
-        let Some(status) = process::try_wait(self.pid)? else {
-            return Ok(None);
-        };
+    fn reap(&mut self) -> io::Result<()> {
+        if let Some(status) = process::try_wait(self.pid)? {
+            self.exited(status)?;
+        }
+        Ok(())
+    }
+    /// Records the reaped command, which stays reaped even if its status has no code.
+    fn exited(&mut self, status: climon2_core::exit::ExitStatus) -> io::Result<u32> {
         self.reaped = true;
-        status.code().map(Some).map_err(io::Error::other)
+        let code = status.code().map_err(io::Error::other)?;
+        self.status = Some(code);
+        Ok(code)
     }
     fn close_master(&mut self) {
         close(&mut self.master, &mut self.master_io);
@@ -151,12 +157,8 @@ impl Pty {
             self.session.kill()?;
             return Ok(self.status.unwrap_or(129));
         }
-        let code = process::end_hangup(&mut self.session)?
-            .code()
-            .map_err(io::Error::other)?;
-        self.reaped = true;
-        self.status = Some(code);
-        Ok(code)
+        let status = process::end_hangup(&mut self.session)?;
+        self.exited(status)
     }
 
     /// The daemon loop failed, so the command session gets its grace here.
@@ -448,4 +450,23 @@ fn trickle(bytes: &[u8]) -> &[u8] {
     }
     std::thread::sleep(std::time::Duration::from_millis(5));
     &bytes[..bytes.len().min(1)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nonblocking;
+    use std::os::fd::AsRawFd;
+
+    /// A read-only descriptor's status flags read as zero, which is not a failure.
+    #[test]
+    fn a_read_only_descriptor_becomes_nonblocking() {
+        let (reader, _writer) = std::io::pipe().unwrap();
+        let fd = reader.as_raw_fd();
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFL) }, libc::O_RDONLY);
+        nonblocking(fd).unwrap();
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_GETFL) },
+            libc::O_RDONLY | libc::O_NONBLOCK
+        );
+    }
 }

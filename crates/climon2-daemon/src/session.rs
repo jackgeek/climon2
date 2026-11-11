@@ -449,10 +449,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.send_output(id, &bytes);
     }
 
+    /// Queued output; a connection lost earlier in this tick has none and accepts nothing,
+    /// so the value then is immaterial.
     fn queued(&self, id: u64) -> usize {
         self.connections
             .get(&id)
-            .map_or(0, Connection::queued_bytes)
+            .map(Connection::queued_bytes)
+            .unwrap_or_default()
     }
 
     // PTY input.
