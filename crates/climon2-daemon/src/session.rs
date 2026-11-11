@@ -29,7 +29,7 @@ use climon2_platform::{
 };
 use climon2_vt::{Geometry, Vt, VtConfig};
 use command::{Command, Drain, Read, classify};
-use delivery::{Delivery, LIVE_LIMIT, Out};
+use delivery::{Delivery, Out};
 use paste::PasteTracker;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -87,7 +87,7 @@ pub(crate) fn serve(
         deliveries: BTreeMap::new(),
         control: Control::new(options.size),
         vt,
-        next_id: 0,
+        next_id: Default::default(),
         controller: None,
         pending_grants: BTreeMap::new(),
         pending_lost: BTreeSet::new(),
@@ -157,11 +157,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn accept(&mut self) -> io::Result<()> {
-        for _ in 0..ACCEPTS_PER_TICK {
-            let Some(stream) = accepted(peer::accept(self.listener))? else {
-                break;
-            };
-            self.add_connection(stream)?;
+        let listener = self.listener;
+        let pending = std::iter::from_fn(|| accepted(peer::accept(listener)).transpose());
+        for stream in pending.take(ACCEPTS_PER_TICK) {
+            self.add_connection(stream?)?;
         }
         Ok(())
     }
@@ -320,7 +319,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn initial_deadline(&mut self, now: Instant) -> io::Result<()> {
-        if self.running() && now >= self.initial_deadline {
+        if self.running() && super::passed(self.initial_deadline, now) {
             return self.react(|control| control.initial_deadline());
         }
         Ok(())
@@ -345,7 +344,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         if !self.command.reads(now) {
             return Ok(());
         }
-        let mut bytes = vec![0; OUTPUT_CHUNK];
+        let mut bytes = vec![u8::default(); OUTPUT_CHUNK];
         let read = classify(self.pty.read_output(&mut bytes));
         self.command.observe(&read, now);
         self.after_read(read, &bytes, now)
@@ -444,7 +443,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// Committed live bytes beyond the live queue limit lose the attachment.
     fn commit_live(&mut self, id: u64, bytes: Vec<u8>) {
-        if self.queued(id) + bytes.len() > LIVE_LIMIT {
+        if delivery::within_limit(self.queued(id) + bytes.len()).is_err() {
             return self.mark_lost(id);
         }
         self.send_output(id, &bytes);
@@ -555,7 +554,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn starting(&self, now: Instant) -> bool {
-        self.control.snapshot().lifecycle == Lifecycle::Starting && now < self.initial_deadline
+        self.control.snapshot().lifecycle == Lifecycle::Starting
+            && !super::passed(self.initial_deadline, now)
     }
 
     fn awaiting_ready(&self) -> bool {
@@ -567,7 +567,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn finished(&self, now: Instant) -> bool {
         self.finish_deadline.is_some_and(|deadline| {
-            now >= deadline || self.connections.values().all(Connection::available)
+            super::passed(deadline, now) || self.connections.values().all(Connection::available)
         })
     }
 

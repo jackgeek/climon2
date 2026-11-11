@@ -13,7 +13,11 @@ use climon2_platform::{
     daemon::{Readiness, ReadinessWriter},
     logging::{LogFile, Role},
 };
-use std::{ffi::OsString, io};
+use std::{
+    ffi::OsString,
+    io,
+    time::{Duration, Instant},
+};
 
 /// Run the private daemon invocation documented in this crate's README.
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> u8 {
@@ -146,6 +150,16 @@ fn ready(readiness: &mut ReadinessWriter) -> Result<(), startup::Failure> {
 
 fn io_error(message: &'static str) -> io::Error {
     io::Error::other(message)
+}
+
+/// Whether `deadline` has passed by `now`; a deadline reached exactly has passed.
+fn passed(deadline: Instant, now: Instant) -> bool {
+    deadline.saturating_duration_since(now).is_zero()
+}
+
+/// Whether an action done at `last` and paced to once per `period` is due again.
+fn due(last: Instant, period: Duration) -> bool {
+    last.elapsed().checked_sub(period).is_some()
 }
 
 /// Nonblocking I/O: `WouldBlock` is no progress yet (`None`), never a failure.

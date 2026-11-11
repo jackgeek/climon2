@@ -35,7 +35,8 @@ pub fn wait(stream: &SocketStream, interest: Interest, timeout: Duration) -> io:
     let mut descriptor = libc::pollfd {
         fd: stream.as_raw_fd(),
         events: interest.events(),
-        revents: 0,
+        // Output-only.
+        revents: Default::default(),
     };
     let millis = i32::try_from(timeout.as_millis().saturating_add(1)).unwrap_or(i32::MAX);
     // The single pollfd remains valid for the duration of this call.

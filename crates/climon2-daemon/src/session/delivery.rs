@@ -209,7 +209,8 @@ fn deadline(started: Instant, prefix_bytes: usize) -> Instant {
     started + RESTORE_TIMEOUT + allowance
 }
 
-fn within_limit(bytes: usize) -> Result<(), Overflow> {
+/// The one live queue limit: queued bytes up to `LIVE_LIMIT` are within it.
+pub(super) fn within_limit(bytes: usize) -> Result<(), Overflow> {
     if bytes > LIVE_LIMIT {
         return Err(Overflow);
     }

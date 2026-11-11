@@ -18,9 +18,9 @@ const OBSERVE_JOBS: Duration = Duration::from_millis(100);
 
 pub(crate) struct Pty {
     master: Option<Box<dyn MasterPty + Send>>,
-    /// The command's input, through an owned duplicate of the master. Not
+    /// The command's output and input, through an owned duplicate of the master. Not
     /// portable-pty's writer, whose drop types a newline and end-of-file key.
-    writer: Option<File>,
+    master_io: Option<File>,
     pid: u32,
     session: process::TerminalSession,
     observed: Instant,
@@ -47,7 +47,7 @@ impl Pty {
             .map_err(|_| Failure::own("cannot identify command session"))?;
         let mut pty = Self {
             master: Some(master),
-            writer: None,
+            master_io: None,
             pid,
             session,
             observed: Instant::now(),
@@ -56,7 +56,7 @@ impl Pty {
         };
         // The master stays open as long as `pty` holds it, so the borrow is valid.
         let master = unsafe { BorrowedFd::borrow_raw(pty.fd()) };
-        pty.writer = Some(File::from(
+        pty.master_io = Some(File::from(
             master
                 .try_clone_to_owned()
                 .map_err(|_| Failure::own("cannot open terminal input"))?,
@@ -91,10 +91,10 @@ impl Pty {
         #[cfg(feature = "test-hooks")]
         let bytes = trickle(bytes);
         // After hang-up nothing reads the terminal; pending bytes are dropped.
-        let Some(writer) = &mut self.writer else {
+        let Some(master_io) = &mut self.master_io else {
             return Ok(bytes.len());
         };
-        writer.write(bytes)
+        master_io.write(bytes)
     }
     /// Waits at most `timeout` for output (or hangup) without reading it.
     pub fn wait_readable(&self, timeout: std::time::Duration) {
@@ -102,22 +102,22 @@ impl Pty {
             std::thread::sleep(timeout);
             return;
         }
-        let mut descriptor = libc::pollfd {
+        let mut descriptors = [libc::pollfd {
             fd: self.fd(),
             events: libc::POLLIN,
-            revents: 0,
-        };
+            // Output-only.
+            revents: Default::default(),
+        }];
         let milliseconds = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
         // An interrupted or failed poll only ends this wait early; the next read reports errors.
-        unsafe { libc::poll(&mut descriptor, 1, milliseconds) };
+        let count = descriptors.len() as libc::nfds_t;
+        unsafe { libc::poll(descriptors.as_mut_ptr(), count, milliseconds) };
     }
-    /// Only the session output pump calls this. No cloned PTY readers exist.
+    /// Only the session output pump calls this, while the terminal is open. Reading through
+    /// the input duplicate adds no master handle that hanging up would have to close.
     pub fn read_output(&self, bytes: &mut [u8]) -> io::Result<usize> {
-        let count = unsafe { libc::read(self.fd(), bytes.as_mut_ptr().cast(), bytes.len()) };
-        if count < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(count as usize)
+        let mut master_io = self.master_io.as_ref().expect("live PTY");
+        master_io.read(bytes)
     }
     pub fn try_wait(&mut self) -> io::Result<Option<u32>> {
         if self.status.is_none() {
@@ -133,7 +133,7 @@ impl Pty {
         status.code().map(Some).map_err(io::Error::other)
     }
     fn close_master(&mut self) {
-        close(&mut self.master, &mut self.writer);
+        close(&mut self.master, &mut self.master_io);
     }
     /// Closes the terminal without waiting; `end_hangup` follows once the
     /// hang-up grace has elapsed.
@@ -174,7 +174,7 @@ impl Pty {
     /// Records the command session's job groups while its leader may still hold the terminal;
     /// at most every `OBSERVE_JOBS`, as each look lists the terminal's processes.
     pub fn observe_jobs(&mut self) -> io::Result<()> {
-        if self.observed.elapsed() < OBSERVE_JOBS {
+        if !super::due(self.observed, OBSERVE_JOBS) {
             return Ok(());
         }
         self.observed = Instant::now();
@@ -183,8 +183,8 @@ impl Pty {
 }
 
 /// Closes every master handle, the input duplicate first, without writing to it.
-fn close(master: &mut Option<Box<dyn MasterPty + Send>>, writer: &mut Option<File>) {
-    writer.take();
+fn close(master: &mut Option<Box<dyn MasterPty + Send>>, master_io: &mut Option<File>) {
+    master_io.take();
     master.take();
 }
 
@@ -337,7 +337,7 @@ impl ExecListener {
     }
 
     fn accept(&self) -> Result<UnixStream, Failure> {
-        while Instant::now() < self.deadline {
+        while !super::passed(self.deadline, Instant::now()) {
             if let Some(stream) = super::unless_would_block(peer::accept(&self.listener))
                 .map_err(|_| Failure::own("command startup connection failed"))?
             {
@@ -396,9 +396,9 @@ fn launch_code(error: &io::Error, cwd: &std::path::Path) -> u8 {
 }
 
 fn confirm_exec(stream: &mut UnixStream, deadline: Instant) -> Result<(), Failure> {
-    let mut bytes = [0; 2];
+    let mut bytes = [u8::default(); 2];
     let mut length = 0;
-    while Instant::now() < deadline {
+    while !super::passed(deadline, Instant::now()) {
         let code = confirmation_read(stream, &mut bytes, &mut length)
             .map_err(|_| Failure::own("command startup confirmation failed"))?;
         if let Some(code) = code {
