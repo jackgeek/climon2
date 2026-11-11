@@ -1,25 +1,42 @@
 use crate::{quality, release};
 use std::{collections::BTreeSet, env, fs, io, path::Path, process::Command};
 
-const TARGETS: &[&str] = &["aarch64-apple-darwin", "x86_64-apple-darwin"];
+struct Platform {
+    suffix: &'static str,
+    targets: &'static [&'static str],
+}
+
+fn host_platform() -> io::Result<Platform> {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("macos", "aarch64") => Ok(Platform {
+            suffix: "macos-universal",
+            targets: &["aarch64-apple-darwin", "x86_64-apple-darwin"],
+        }),
+        ("linux", "x86_64") if cfg!(target_env = "gnu") => Ok(Platform {
+            suffix: "linux-x86_64-gnu",
+            targets: &["x86_64-unknown-linux-gnu"],
+        }),
+        _ => Err(io::Error::other(
+            "dist requires an arm64 macOS or x86_64 GNU/Linux host",
+        )),
+    }
+}
 
 pub fn run(root: &Path) -> io::Result<()> {
     let version = env!("CARGO_PKG_VERSION");
     validate_versions(root, version)?;
-    if env::consts::OS != "macos" || env::consts::ARCH != "aarch64" {
-        return Err(io::Error::other("dist requires an arm64 macOS host"));
-    }
+    let platform = host_platform()?;
     fs::create_dir_all(root.join("target"))?;
     let scratch = tempfile::Builder::new()
         .prefix("dist-")
         .tempdir_in(root.join("target"))?;
     let build = scratch.path().join("build");
-    for target in TARGETS {
+    for target in platform.targets {
         for (package, _) in release::PACKAGES {
             release::build(root, &build, package, Some(target))?;
         }
     }
-    let name = format!("climon2-{version}-macos-universal");
+    let name = format!("climon2-{version}-{}", platform.suffix);
     let payload = scratch.path().join(&name);
     fs::create_dir_all(payload.join(version))?;
     for (_, binary) in release::PACKAGES {
@@ -28,18 +45,7 @@ pub fn run(root: &Path) -> io::Result<()> {
             "climon2-install" => payload.join("install"),
             _ => payload.join(version).join(binary),
         };
-        let mut lipo = Command::new("lipo");
-        lipo.arg("-create");
-        for target in TARGETS {
-            lipo.arg(build.join(target).join("release").join(binary));
-        }
-        quality::run(lipo.arg("-output").arg(&destination))?;
-        quality::run(
-            Command::new("codesign")
-                .args(["--force", "-s", "-"])
-                .arg(&destination),
-        )?;
-        verify_binary(&destination)?;
+        package_binary(&platform, &build, binary, &destination)?;
     }
     for file in ["LICENSE", "README.md"] {
         fs::copy(root.join(file), payload.join(file))?;
@@ -57,9 +63,10 @@ pub fn run(root: &Path) -> io::Result<()> {
         scratch.path().join("install.sh"),
         stamped_script(&fs::read_to_string(root.join("install.sh"))?, version)?,
     )?;
+    let mut checksum = checksum_command(&platform);
     let sums = quality::output(
-        Command::new("shasum")
-            .args(["-a", "256", &archive_name, "install.sh"])
+        checksum
+            .args([&archive_name, "install.sh"])
             .current_dir(scratch.path()),
     )?;
     fs::write(scratch.path().join("SHA256SUMS"), sums.stdout)?;
@@ -69,6 +76,63 @@ pub fn run(root: &Path) -> io::Result<()> {
         fs::rename(scratch.path().join(file), destination.join(file))?;
     }
     eprintln!("Release artifacts: {}", destination.display());
+    Ok(())
+}
+
+fn checksum_command(platform: &Platform) -> Command {
+    if platform.suffix == "macos-universal" {
+        let mut command = Command::new("shasum");
+        command.args(["-a", "256"]);
+        command
+    } else {
+        Command::new("sha256sum")
+    }
+}
+
+fn package_binary(
+    platform: &Platform,
+    build: &Path,
+    binary: &str,
+    destination: &Path,
+) -> io::Result<()> {
+    if platform.targets.len() == 1 {
+        fs::copy(
+            build.join(platform.targets[0]).join("release").join(binary),
+            destination,
+        )?;
+        verify_linux_binary(destination)?;
+    } else {
+        let mut lipo = Command::new("lipo");
+        lipo.arg("-create");
+        for target in platform.targets {
+            lipo.arg(build.join(target).join("release").join(binary));
+        }
+        quality::run(lipo.arg("-output").arg(destination))?;
+        quality::run(
+            Command::new("codesign")
+                .args(["--force", "-s", "-"])
+                .arg(destination),
+        )?;
+        verify_macos_binary(destination)?;
+    }
+    if release::has_marker(&fs::read(destination)?) {
+        return Err(io::Error::other(format!(
+            "{} contains test hooks",
+            destination.display()
+        )));
+    }
+    Ok(())
+}
+
+fn verify_linux_binary(path: &Path) -> io::Result<()> {
+    let bytes = fs::read(path)?;
+    // ELF64, little-endian, current ELF version, AMD64 e_machine.
+    if !bytes.starts_with(b"\x7fELF\x02\x01\x01") || bytes.get(18..20) != Some(&[62, 0]) {
+        return Err(io::Error::other(format!(
+            "{} is not an x86_64 Linux ELF executable",
+            path.display()
+        )));
+    }
     Ok(())
 }
 
@@ -120,7 +184,7 @@ fn validate_tag(tag: &str, expected: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn verify_binary(path: &Path) -> io::Result<()> {
+fn verify_macos_binary(path: &Path) -> io::Result<()> {
     quality::run(
         Command::new("codesign")
             .args(["--verify", "--strict"])
@@ -131,12 +195,6 @@ fn verify_binary(path: &Path) -> io::Result<()> {
     if archs.split_whitespace().collect::<BTreeSet<_>>() != BTreeSet::from(["arm64", "x86_64"]) {
         return Err(io::Error::other(format!(
             "{} is not exactly arm64 + x86_64: {archs}",
-            path.display()
-        )));
-    }
-    if release::has_marker(&fs::read(path)?) {
-        return Err(io::Error::other(format!(
-            "{} contains test hooks",
             path.display()
         )));
     }

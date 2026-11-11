@@ -25,6 +25,15 @@ and daemon wire pages assign exact agreed schemas, separately from implementatio
 | [Client executable](../../GLOSSARY.md#sessions) to same-release library | Same-release loading agreed, not implemented | [Library embedding](library-embedding.md). |
 | Monitor to [host](../../GLOSSARY.md#sessions) | Program-status advertising and toast bell agreed, not implemented | [Reports and bell](#monitor-to-host-status-and-bell). |
 
+Current local runtime communication is implemented on macOS and x86_64
+GNU/Linux. The frozen [session metadata](../../GLOSSARY.md#sessions)
+[contract](../adr/0005-frozen-session-metadata-core.md) includes an optional
+clock-independent Linux daemon identity; the eleven frozen fields and hello
+messages are unchanged. The native monitor/library remains unimplemented on
+both systems. Linux loader policy still requires the
+[monitor integration decision](https://github.com/jackgeek/climon2/issues/125);
+runtime support alone does not qualify Linux in-process library loading.
+
 The embedding design selects a versioned [C ABI](TERMS.md#c-abi).
 Complete [declarations](monitor-client/client-v1.h) and
 [compilable examples](monitor-client/examples.c) are published as a specification.

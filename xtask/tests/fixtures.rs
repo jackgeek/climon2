@@ -25,6 +25,8 @@ fn clone(directory: &Path, extra: &[&str]) -> PathBuf {
     let source = format!(
         "file://{}",
         Path::new(env!("CARGO_MANIFEST_DIR"))
+            .canonicalize()
+            .unwrap()
             .parent()
             .unwrap()
             .display()
