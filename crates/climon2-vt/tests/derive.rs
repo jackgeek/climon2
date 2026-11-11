@@ -216,6 +216,7 @@ fn resizes_between_direct_and_derived_switch_presentation() {
         ]
         .concat()
     );
+    assert!(presentation.end_sync().is_empty());
     let update = text(&vt.present(&mut presentation, 12, 3));
     assert_eq!(
         update,

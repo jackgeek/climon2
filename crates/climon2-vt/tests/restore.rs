@@ -120,6 +120,14 @@ fn retained_history_is_the_newest_max_rows_rows() {
 }
 
 #[test]
+fn a_single_retained_history_row_still_reports_truncation() {
+    let mut vt = vt(60, 2, 1);
+    feed(&mut vt, &lines(1..=6));
+    let prefix = text(&restored(&mut vt));
+    assert_eq!(restored_history(60, 2, &prefix), [NOTICE_TEXT, "5"]);
+}
+
+#[test]
 fn exactly_full_history_has_no_notice_and_identical_rows_still_evict() {
     let mut full = vt(10, 2, 3);
     feed(&mut full, &lines(1..=4));
@@ -322,7 +330,13 @@ fn a_resize_that_may_drop_full_history_sets_the_eviction_flag() {
 
 #[test]
 fn shrinking_while_on_the_alternate_screen_sets_the_eviction_flag() {
-    for (cols, rows, notice) in [(9, 4, true), (10, 3, true), (11, 5, false), (10, 5, false)] {
+    for (cols, rows, notice) in [
+        (9, 4, true),
+        (10, 3, true),
+        (11, 5, false),
+        (10, 5, false),
+        (11, 4, false),
+    ] {
         let mut vt = vt(10, 4, 10);
         feed(&mut vt, &lines(1..=6));
         feed(&mut vt, b"\x1b[?1049h");
