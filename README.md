@@ -442,4 +442,6 @@ previous-release compatibility is mandatory; the first release invents none.
 a replacement native Intel macOS 15+ runner must pass the same artifact tests.
 An unavailable runner or arm64-only success does not establish Intel support.
 
-MIT licensed; see [LICENSE](LICENSE).
+## License
+
+climon2 is open source software licensed under the [MIT License](LICENSE).
