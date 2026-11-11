@@ -40,7 +40,8 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
   portable-pty or `std::process::Child`.
 - `process::signal_group(group, Signal)` supports Hangup, Interrupt, Terminate,
   Kill, rejects 0, 1 (launchd) and out-of-range IDs, so `kill(0)`/`kill(-1)`
-  are unreachable, and tolerates a nonexistent group.
+  are unreachable, and tolerates a nonexistent group. A unit test checks the
+  refusal without sending a signal: under a mutant it would reach `kill(-1)`.
 - `process::Terminal::from_path(path)` identifies a terminal (a PTY slave) by
   its character device number; anything else is refused.
 - `process::TerminalSession::new(leader, terminal)` is the session a command
@@ -119,7 +120,10 @@ On Linux x86_64,
 an owned helper to reap its target between the real procfs open and read.
 It exercises the public identity API without replacing procfs or mocking I/O.
 
-`tests/daemon.rs`: `issue19_daemon_exec_is_detached_and_readiness_preserves_launch_failure`,
+`tests/daemon.rs`: `issue19_an_inherited_readiness_pipe_closes_on_exec`,
+`issue19_a_readiness_descriptor_that_is_not_open_is_refused`,
+`issue19_the_longest_readiness_failure_message_arrives_whole`,
+`issue19_daemon_exec_is_detached_and_readiness_preserves_launch_failure`,
 `issue19_empty_readiness_kills_daemon_and_cleans_metadata_before_socket`,
 `issue19_readiness_uses_real_five_second_absolute_deadline`.
 

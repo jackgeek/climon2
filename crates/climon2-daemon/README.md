@@ -59,11 +59,12 @@ controlled startup path. The outer CLI readiness deadline remains five seconds.
 
 ## Ownership and lifecycle
 
-One event loop owns the master and writes input through an owned duplicate of
-it. It never takes portable-pty's writer, whose drop types a newline and the
-end-of-file key into the command's terminal.
+One event loop owns the master, and reads output and writes input through one
+owned duplicate of it. It never takes portable-pty's writer, whose drop types a
+newline and the end-of-file key into the command's terminal.
 `Session::read_pty` is the sole PTY reader, through `Pty::read_output`;
-there are no cloned readers or master handles outside the daemon.
+there are no other cloned readers or master handles, so closing the master and
+that duplicate hangs the terminal up.
 **ADR 0003 / #27 review rule:** reviewers must preserve this single-reader
 call graph. A textual ownership assertion would not prove it, so no vacuous
 architecture test is claimed.
@@ -165,9 +166,14 @@ clients and owned generic terminal fixtures:
 - `concurrent_probes_absolute_hello_deadline_and_second_attach`,
   `malformed_unknown_oversized_and_out_of_state_messages_close_only_the_probe`:
   frozen hello, concurrent probes, one Attach per connection and terminal
-  protocol errors.
+  protocol errors, each with its exact `Error` text: decoding failures name
+  themselves, other framing failures say `invalid session protocol`.
+- `a_connection_beyond_the_cap_is_closed_unanswered`: 64 connections are served
+  and a 65th is closed unanswered while the session goes on.
 - `initial_fallback_and_resize_use_the_real_pty`,
   `raw_input_output_are_byte_transparent`: real dimensions and binary framing.
+  The fixture reports any pixel size with the size, so every size assertion
+  also checks that none is reported.
 - `saturation_backpressures_pty_without_blocking_probes_or_losing_bytes`:
   an 8 MiB burst to a client that is not reading yet arrives exactly (the whole
   stream is compared, then the release) within 15 s, which a one-read-per-tick
@@ -199,8 +205,11 @@ clients and owned generic terminal fixtures:
   `kill_after_an_unreported_exit_confirms_that_status`,
   `an_unattached_session_ends_after_the_initial_deadline`,
   `a_stalled_reader_is_dropped_after_five_seconds_without_progress`,
-  `withheld_ready_is_an_unexpected_departure_after_the_restore_deadline` and
-  `a_pty_write_failure_releases_then_reports_error`.
+  `withheld_ready_is_an_unexpected_departure_after_the_restore_deadline`,
+  `a_pty_write_failure_releases_then_reports_error` and
+  `a_client_that_stops_reading_cannot_hold_an_ended_session` (a controller that
+  stopped reading after a 1 MiB burst holds the ended session for the one-second
+  drain cap, not until the five-second stalled-reader drop).
 - `leave_kills_every_job_of_the_command_session_but_not_new_sessions`: under
   job-control `bash -i`, HUP-ignoring foreground and background jobs (their own
   process groups) are gone after the real grace; a daemonized new-session
@@ -214,16 +223,27 @@ clients and owned generic terminal fixtures:
   `daemon_ignores_hup_int_pipe_without_ending_the_command`) cover safe launch
   diagnostics, refused permissions and ignored HUP/INT/PIPE.
 - `startup_failure_reports_cleans_up_and_exits_with_the_reported_code`,
+  `an_existing_session_file_fails_publication_and_is_left_in_place` (a session
+  file already present is someone else's: only the daemon's own temporary is
+  removed),
   `startup_confirmation_decides_the_reported_launch_failure`,
+  `an_unconfirmed_launch_fails_at_the_startup_deadline` (no helper connection,
+  or a silent one, ends startup at the four-second deadline),
   `repeated_unknown_zero_pid_and_relative_options_are_invalid_invocations` and
   `unsupervised_controlled_panic_ends_the_daemon_without_readiness` own the
   readiness pipe instead of using `wait_ready` (which kills a failed daemon),
   so they observe the daemon's own exit status and cleanup. The confirmation
-  test holds the shared PTY allocation lock briefly so its connection is the
-  first on the startup socket.
+  and deadline tests hold the shared PTY allocation lock briefly so their
+  connection is the first on the startup socket, or the socket is gone before
+  the helper runs.
 - `exec_helper_confirms_launch_failure_codes_and_exits_with_them` drives the
   private `--exec-command` helper directly: 127 for a missing command in a
   usable cwd, otherwise 126.
+
+Every wait for a daemon is bounded: `Session::finish`, its drop and
+`run_unsupervised` kill and reap a daemon still running 20 seconds after it
+should have ended, so a wedged daemon fails its test instead of hanging it (and
+with it a whole mutation run).
 
 On macOS, session-leader exit may revoke the PTY immediately, so the final
 drain fixture permits EOF/EIO before the idle/cap clocks expire; it does not
