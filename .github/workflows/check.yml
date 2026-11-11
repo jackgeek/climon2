@@ -3,7 +3,13 @@ name: Checks
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - LICENSE
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - LICENSE
   workflow_call:
     inputs:
       mutate_all:
