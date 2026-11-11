@@ -33,9 +33,13 @@ class NativeDeclarations(unittest.TestCase):
                     )
                     sources.append(source)
             checks = [(None, sources)]
-            for target in ("arm64-apple-macos11", "x86_64-apple-macos11"):
-                # Layout uses only compiler headers; examples need the target's libc SDK.
-                checks.append((target, sources if sys.platform == "darwin" else sources[:1]))
+            for target, system in (
+                ("arm64-apple-macos11", "darwin"),
+                ("x86_64-apple-macos11", "darwin"),
+                ("x86_64-linux-gnu", "linux"),
+            ):
+                # Layout uses only compiler headers; examples need the target's libc headers.
+                checks.append((target, sources if sys.platform == system else sources[:1]))
             for target, target_sources in checks:
                 options = ["-target", target, "-ffreestanding"] if target else []
                 for source in target_sources:

@@ -133,6 +133,9 @@ once; per-instance state counts separately. Successfully opened library handles,
 including later-rejected ones, and their reservations remain until process exit.
 A release without bounded qualified requirements is explicitly unsupported or
 resource-blocked; it is not assumed to use the default reservation.
+Qualified requirements are measured and recorded per platform, because a
+release's macOS and Linux libraries can differ, for example in notification
+descriptors.
 Qualified worker counts above the configured maximum require explicit rejection,
 not silently raising that ceiling. Greater reservations apply to actual
 stack/descriptor/shared-memory requirements, not permission to exceed a limit.

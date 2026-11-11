@@ -20,7 +20,7 @@ flowchart TB
             cli["climon2-cli<br/>CLI executable"]
             client["climon2-client<br/>client executable"]
             daemon["climon2-daemon<br/>session daemon executable"]
-            library[["libclimon2_client.dylib<br/>planned Rust cdylib on macOS"]]
+            library[["libclimon2_client.dylib / .so<br/>planned Rust cdylib on macOS and Linux"]]
         end
         command(["Session command<br/>external executable"])
         monitor(["Monitor runtime: monitor / mon<br/>planned Ratatui TUI; executable placement undecided"])
@@ -91,9 +91,10 @@ and does not use this adapter.
 `lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,
 are not separately loaded dynamic libraries. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
-The macOS library filename in the planned node is not a Linux loader
-implementation. Linux native loading and its release-isolation policy remain
-subject to the [monitor integration decision](https://github.com/jackgeek/climon2/issues/125).
+The planned node names both platforms' library files: `.dylib` on macOS and
+`.so` on x86-64 GNU/Linux. The
+[monitor integration decision](https://github.com/jackgeek/climon2/issues/125)
+agreed Linux loading and release isolation; neither library is built yet.
 
 **Planned:** the [monitor](../GLOSSARY.md#sessions) loads version-matched
 [client libraries](../GLOSSARY.md#sessions) directly into
@@ -148,8 +149,8 @@ operations. The monitor node represents a runtime role, not a decision to ship
 an executable named `climon2-monitor`.
 
 The agreed [embedding design](protocol/library-embedding.md) loads
-`<executable home>/<session version>/libclimon2_client.dylib` on macOS with no
-release fallback. It uses a versioned C interface, per-instance client threads,
+`<executable home>/<session version>/libclimon2_client.dylib` on macOS, or
+`libclimon2_client.so` on x86-64 GNU/Linux, with no release fallback. It uses a versioned C interface, per-instance client threads,
 release-private dependency resolution, and explicit memory ownership.
 Every successfully opened library handle stays loaded until monitor exit,
 including handles rejected by later validation. Such releases remain in use
