@@ -1166,6 +1166,64 @@ fn an_unfinished_token_still_restores_and_kill_confirms_termination() {
     session.finish();
 }
 
+/// Section 3.3: hanging up closes the command's terminal without typing into
+/// it. A newline or end-of-file key written on the way out would reach the
+/// command as if a client had sent it, for example running a shell's
+/// half-typed command line.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn hanging_up_types_nothing_into_the_command_terminal() {
+    let mut session = Session::start("ignore-hup");
+    let mut controlling = session.attach();
+    session.wait_marker(&mut controlling);
+    let mut killer = session.connect();
+    // The hang-up scans every process's procfs entry; each call stops here.
+    let tracer = climon2_test_term::ptrace::Tracer::seize(session.pid, Duration::from_secs(60));
+    send(&mut killer, ClientMessage::Kill);
+    let master = Path::new("/dev/ptmx");
+    let (write, close) = (libc::SYS_write as u64, libc::SYS_close as u64);
+    let mut typed = Vec::new();
+    loop {
+        let call = tracer.next_entry();
+        if ![write, close].contains(&call.number)
+            || tracer.descriptor(call.arguments[0]).as_deref() != Some(master)
+        {
+            continue;
+        }
+        if call.number == write {
+            typed.push(tracer.memory(call.arguments[1], call.arguments[2]));
+            continue;
+        }
+        tracer.finish_syscall();
+        if !holds(session.pid, master) {
+            break;
+        }
+    }
+    tracer.detach();
+    assert!(
+        typed.is_empty(),
+        "hang-up typed {typed:?} into the terminal"
+    );
+    assert!(matches!(
+        until_terminal(&mut controlling).1,
+        ServerMessage::Exit { .. }
+    ));
+    assert!(matches!(
+        receive(&mut killer),
+        ServerMessage::Terminated { .. }
+    ));
+    session.finish();
+}
+
+/// Whether `pid` still has a descriptor open on `target`.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn holds(pid: u32, target: &Path) -> bool {
+    fs::read_dir(format!("/proc/{pid}/fd"))
+        .unwrap()
+        .filter_map(|entry| fs::read_link(entry.unwrap().path()).ok())
+        .any(|link| link == target)
+}
+
 /// Section 1.7: attaching while the session terminates is refused.
 #[test]
 fn attach_during_termination_is_refused() {

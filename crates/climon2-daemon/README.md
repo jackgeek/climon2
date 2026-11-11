@@ -59,7 +59,9 @@ controlled startup path. The outer CLI readiness deadline remains five seconds.
 
 ## Ownership and lifecycle
 
-One event loop owns the master and keeps portable-pty's writer alive.
+One event loop owns the master and writes input through an owned duplicate of
+it. It never takes portable-pty's writer, whose drop types a newline and the
+end-of-file key into the command's terminal.
 `Session::read_pty` is the sole PTY reader, through `Pty::read_output`;
 there are no cloned readers or master handles outside the daemon.
 **ADR 0003 / #27 review rule:** reviewers must preserve this single-reader
@@ -115,7 +117,7 @@ The leave policy: while another attachment remains, the session continues;
 after an accepted final detach it keeps running with no idle timeout; a final
 unexpected departure, `Kill`, daemon TERM, an authoritative failure or no
 attachment within five seconds of readiness begins shutdown. Shutdown closes
-every master handle, then runs a real five-second hang-up grace as a loop
+every master handle without writing to it, then runs a real five-second hang-up grace as a loop
 deadline: probes see `terminating`, attaches are refused, repeated kills join
 without restarting it, and the grace is not shortened if the command exits
 meanwhile. Pending PTY writes and resizes are dropped after hang-up. When the
@@ -191,6 +193,8 @@ clients and owned generic terminal fixtures:
   `pty-write-partial`), and
   `a_kill_with_an_open_application_paste_still_terminates`.
 - Shutdown and departures: `attach_during_termination_is_refused`,
+  `hanging_up_types_nothing_into_the_command_terminal` (Linux: ptrace records
+  every write to the master from `Kill` until its last handle closes),
   `the_hang_up_grace_keeps_serving_and_a_second_kill_joins_it`,
   `kill_after_an_unreported_exit_confirms_that_status`,
   `an_unattached_session_ends_after_the_initial_deadline`,

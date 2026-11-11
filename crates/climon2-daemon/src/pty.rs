@@ -3,8 +3,12 @@ use climon2_platform::{peer, process, runtime};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::{
     ffi::OsString,
+    fs::File,
     io::{self, Read, Write},
-    os::unix::{net::UnixStream, process::CommandExt},
+    os::{
+        fd::BorrowedFd,
+        unix::{net::UnixStream, process::CommandExt},
+    },
     path::PathBuf,
     process::Command,
     time::{Duration, Instant},
@@ -14,7 +18,9 @@ const OBSERVE_JOBS: Duration = Duration::from_millis(100);
 
 pub(crate) struct Pty {
     master: Option<Box<dyn MasterPty + Send>>,
-    writer: Option<Box<dyn Write + Send>>,
+    /// The command's input, through an owned duplicate of the master. Not
+    /// portable-pty's writer, whose drop types a newline and end-of-file key.
+    writer: Option<File>,
     pid: u32,
     session: process::TerminalSession,
     observed: Instant,
@@ -48,11 +54,13 @@ impl Pty {
             reaped: false,
             status: None,
         };
-        pty.writer = Some(
-            pty.master()
-                .take_writer()
+        // The master stays open as long as `pty` holds it, so the borrow is valid.
+        let master = unsafe { BorrowedFd::borrow_raw(pty.fd()) };
+        pty.writer = Some(File::from(
+            master
+                .try_clone_to_owned()
                 .map_err(|_| Failure::own("cannot open terminal input"))?,
-        );
+        ));
         nonblocking(pty.fd()).map_err(|_| Failure::own("cannot configure command terminal"))?;
         Ok(pty)
     }
@@ -174,11 +182,8 @@ impl Pty {
     }
 }
 
-/// Drops every master handle: portable-pty's writer, then the master itself.
-fn close(
-    master: &mut Option<Box<dyn MasterPty + Send>>,
-    writer: &mut Option<Box<dyn Write + Send>>,
-) {
+/// Closes every master handle, the input duplicate first, without writing to it.
+fn close(master: &mut Option<Box<dyn MasterPty + Send>>, writer: &mut Option<File>) {
     writer.take();
     master.take();
 }

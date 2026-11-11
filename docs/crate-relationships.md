@@ -39,6 +39,7 @@ flowchart TB
 
     cli -.->|"dev"| test_term
     client -.->|"dev"| test_term
+    daemon -.->|"dev"| test_term
     test_term --> cli
     test_term --> client
     test_term --> daemon
@@ -58,8 +59,8 @@ flowchart TB
 ```
 
 The launcher has no workspace crate dependencies. Cycles through
-`climon2-test-term` are test-only: CLI and [client](../GLOSSARY.md#sessions) tests consume the harness,
-which consumes their libraries and other runtime libraries.
+`climon2-test-term` are test-only: CLI, [client](../GLOSSARY.md#sessions) and daemon tests consume
+the harness, which consumes their libraries and other runtime libraries.
 Linux support adds native bodies inside `climon2-platform`, not another
 workspace crate or runtime dependency edge. The test harness consumes those
 same Unix seams on Linux and macOS; Linux's ownership exec adapter is a
