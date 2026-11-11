@@ -13,7 +13,7 @@ mod unix {
         fs::{File, OpenOptions},
         io,
         os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
-        path::PathBuf,
+        path::{Path, PathBuf},
     };
 
     /// Held only while a PTY pair is being allocated; dropping releases the lock.
@@ -41,15 +41,29 @@ mod unix {
     }
 
     pub fn allocation() -> io::Result<Allocation> {
+        locked(&lock_path()?)
+    }
+
+    /// The first allocation after boot creates the lock file; nothing is ever written to it.
+    fn locked(path: &Path) -> io::Result<Allocation> {
         let file = OpenOptions::new()
-            .read(true)
-            .write(true)
+            .append(true)
             .create(true)
-            .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(lock_path()?)?;
+            .open(path)?;
         lock(&file)?;
         Ok(Allocation(file))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn the_first_allocation_creates_its_lock_file() {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("allocation.lock");
+            drop(super::locked(&path).unwrap());
+            assert!(path.is_file());
+        }
     }
 }

@@ -41,7 +41,7 @@ mod unix {
         Terminal = 3,
     }
     /// SIGKILL rounds (each followed by `KILL_SETTLE`) before members count as survivors.
-    const KILL_ROUNDS: u32 = 100;
+    const KILL_ROUNDS: usize = 100;
     const KILL_SETTLE: Duration = Duration::from_millis(10);
 
     pub(super) fn pid(value: u32) -> io::Result<i32> {
@@ -89,7 +89,7 @@ mod unix {
 
     fn reap(value: u32, options: i32) -> io::Result<Option<ExitStatus>> {
         let pid = pid(value)?;
-        let mut status = 0;
+        let mut status = Default::default();
         if wait_raw(pid, &mut status, options)? == 0 {
             return Ok(None);
         }
@@ -136,26 +136,28 @@ mod unix {
     /// Group 1 is launchd's and 0 means the caller's own group; refusing both also keeps
     /// `kill(-1)` (every permitted process) unreachable from here.
     pub fn signal_group(group: u32, signal: Signal) -> io::Result<()> {
+        deliver(group_target(group)?, signal)
+    }
+
+    /// The `kill(2)` target for a whole process group, which is never group 0 or 1.
+    fn group_target(group: u32) -> io::Result<i32> {
         let group = i32::try_from(group).map_err(io::Error::other)?;
         if group <= 1 {
             return Err(io::Error::other("invalid process group"));
         }
-        deliver(-group, signal)
+        Ok(-group)
     }
 
     fn deliver(target: i32, signal: Signal) -> io::Result<()> {
-        vanished_is_ok(unsafe { libc::kill(target, signal.raw()) })
+        send(target, signal.raw())
     }
 
-    /// A `kill(2)` result; a vanished target is not an error.
-    fn vanished_is_ok(result: i32) -> io::Result<()> {
-        if result == -1 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                return Err(error);
-            }
+    /// `kill(2)`; a vanished target is not an error.
+    fn send(target: i32, signal: i32) -> io::Result<()> {
+        match crate::syscall::checked(unsafe { libc::kill(target, signal) }) {
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+            result => result.map(drop),
         }
-        Ok(())
     }
 
     /// A terminal device (e.g. a PTY slave), identified by its device number.
@@ -226,7 +228,7 @@ mod unix {
         }
 
         fn kill_rounds(&self) -> io::Result<()> {
-            for _ in 0..KILL_ROUNDS {
+            for _ in std::iter::repeat_n((), KILL_ROUNDS) {
                 if !self.kill_members()? {
                     return Ok(());
                 }
@@ -276,7 +278,7 @@ mod unix {
     /// (a group, or `-1`: every permitted process) is expressible here.
     fn kill_process(member: NonZeroU32) -> io::Result<()> {
         let member = i32::try_from(member.get()).map_err(io::Error::other)?;
-        vanished_is_ok(unsafe { libc::kill(member, libc::SIGKILL) })
+        send(member, libc::SIGKILL)
     }
 
     /// Caller closes every PTY-master handle here. Even if the leader exits, every
@@ -304,6 +306,19 @@ mod unix {
         match exited {
             Some(status) => Ok(status),
             None => wait(leader),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        /// Checked without signalling: group 0 is the caller's own and `kill(-1)` reaches
+        /// every process the user may signal.
+        #[test]
+        fn only_real_process_groups_are_signal_targets() {
+            for group in [0, 1, u32::MAX] {
+                assert!(super::group_target(group).is_err(), "{group}");
+            }
+            assert_eq!(super::group_target(2).unwrap(), -2);
         }
     }
 }

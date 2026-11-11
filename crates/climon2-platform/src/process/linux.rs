@@ -133,16 +133,13 @@ fn matching_pid(
     else {
         return Ok(None);
     };
-    if matches(identity(value)?, kind, which) {
+    if identity(value)?.is_some_and(|info| matches(info, kind, which)) {
         return pid(value).map(Some);
     }
     Ok(None)
 }
 
-fn matches(info: Option<Identity>, kind: ProcessList, which: u32) -> bool {
-    let Some(info) = info else {
-        return false;
-    };
+fn matches(info: Identity, kind: ProcessList, which: u32) -> bool {
     if info.zombie {
         return false;
     }

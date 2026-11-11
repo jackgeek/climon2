@@ -9,6 +9,29 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// #19: the readiness pipe goes no further than the daemon, whose own children never inherit it.
+#[test]
+fn issue19_an_inherited_readiness_pipe_closes_on_exec() {
+    let mut descriptors = [-1; 2];
+    assert_eq!(unsafe { libc::pipe(descriptors.as_mut_ptr()) }, 0);
+    let _reader = unsafe { File::from_raw_fd(descriptors[0]) };
+    let writer =
+        unsafe { ReadinessWriter::from_inherited(u32::try_from(descriptors[1]).unwrap()) }.unwrap();
+    let flags = unsafe { libc::fcntl(descriptors[1], libc::F_GETFD) };
+    assert_eq!(flags & libc::FD_CLOEXEC, libc::FD_CLOEXEC);
+    drop(writer);
+}
+
+/// #19: an inherited readiness descriptor that is not open is refused, not adopted.
+#[test]
+fn issue19_a_readiness_descriptor_that_is_not_open_is_refused() {
+    let refused = unsafe { ReadinessWriter::from_inherited(i32::MAX as u32) };
+    assert_eq!(
+        refused.err().and_then(|error| error.raw_os_error()),
+        Some(libc::EBADF)
+    );
+}
+
 #[test]
 fn issue19_readiness_failure_writer_preserves_all_launch_codes_over_real_pipe() {
     for (code, encoded_code) in [(125, 0x7d), (126, 0x7e), (127, 0x7f)] {
@@ -69,6 +92,12 @@ fn owned_daemon_fixture() {
                 message: "cannot run command".into(),
             })
             .unwrap(),
+        "longest" => writer
+            .send(&Readiness::Failed {
+                code: 125,
+                message: "x".repeat(LONGEST_MESSAGE),
+            })
+            .unwrap(),
         "empty" => return,
         "partial" => {
             assert_eq!(
@@ -90,6 +119,21 @@ fn owned_daemon_fixture() {
         return;
     }
     std::thread::sleep(Duration::from_secs(30));
+}
+
+/// The readiness protocol's longest failure message, in bytes.
+const LONGEST_MESSAGE: usize = 4096;
+
+/// #19: a failure message of the protocol's maximum length is written and read whole.
+#[test]
+fn issue19_the_longest_readiness_failure_message_arrives_whole() {
+    assert_eq!(
+        launch("longest").wait_ready(&[]).unwrap(),
+        Readiness::Failed {
+            code: 125,
+            message: "x".repeat(LONGEST_MESSAGE)
+        }
+    );
 }
 
 #[test]
