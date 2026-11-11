@@ -55,9 +55,11 @@ Focused deterministic and packaged-monitor scenarios run for relevant changes.
 Before release, require the complete supported-architecture conformance matrix,
 native-fault evidence and operational measurements for the exact candidate
 artifacts. Dedicated heavy jobs are allowed; an older build or informal demo
-cannot discharge the gate. Qualify actual runtime behavior on both supported
-macOS arm64 and x86_64 architectures. Cross-compilation alone proves no runtime
-support. Linux/Windows monitor support is not added by this specification.
+cannot discharge the gate. Qualify actual runtime behavior on x86-64 GNU/Linux
+(Ubuntu 24.04) and on both supported macOS arm64 and x86_64 architectures; the
+[Linux decision](https://github.com/jackgeek/climon2/issues/125) added Linux.
+Cross-compilation alone proves no runtime support. Windows monitor support is
+not added by this specification.
 
 ## Entry and discovery
 
