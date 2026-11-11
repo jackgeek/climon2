@@ -509,6 +509,32 @@ fn early_exit_is_delivered_after_restore_readiness() {
     assert_exit_after_attachment("early", 43);
 }
 
+/// #20: a drained exit waits for the controller's `Ready`, however long it is withheld, so
+/// the controller is never handed a result before it confirmed its restoration.
+#[test]
+fn an_exit_waits_for_the_controllers_ready() {
+    let mut session = Session::start("early");
+    let mut stream = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
+    let (period, _) = restoration(&mut stream);
+    stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let withheld = read_frame(&mut stream).map(|frame| frame.type_code());
+    assert!(
+        withheld
+            .as_ref()
+            .is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock),
+        "a frame before Ready: {withheld:?}"
+    );
+    stream
+        .set_read_timeout(Some(Duration::from_secs(8)))
+        .unwrap();
+    send(&mut stream, ClientMessage::Ready { period });
+    let (_, result) = until_terminal(&mut stream);
+    assert_eq!(result, ServerMessage::Exit { code: 43 });
+    session.finish();
+}
+
 /// #20/#19: EOF/EIO may end drain before its idle/cap limits; no group member survives.
 #[test]
 fn final_drain_eof_or_deadline_is_bounded_and_leaves_no_descendants() {
@@ -2098,14 +2124,16 @@ fn startup_confirmation_decides_the_reported_launch_failure() {
 }
 
 /// #15/#29: the startup deadline bounds a launch that never confirms, whether nothing
-/// connects (the helper finds no socket) or the first connection stays silent.
+/// connects (the helper finds no socket) or the first connection stays silent. Behind a
+/// silent connection the helper still starts the command, which ignores SIGHUP and never
+/// reads: only the failed daemon's kill ends it.
 #[test]
 fn an_unconfirmed_launch_fails_at_the_startup_deadline() {
     for silent in [false, true] {
         // Holding the allocation lock keeps the daemon from spawning its helper until the
         // socket is gone, or this silent connection is first in its backlog.
         let allocation = climon2_platform::pty::allocation().unwrap();
-        let (prepared, mut command) = Prepared::new("exit", |_, _| {}, false);
+        let (prepared, mut command) = Prepared::new("ignore-hup", |_, _| {}, false);
         let startup_socket = prepared.startup_socket.clone();
         let (finished, until_finished) = std::sync::mpsc::channel::<()>();
         let interloper = thread::spawn(move || {
@@ -2127,7 +2155,7 @@ fn an_unconfirmed_launch_fails_at_the_startup_deadline() {
             let _ = until_finished.recv_timeout(Duration::from_secs(30));
             drop(held);
         });
-        let (readiness, status) = run_unsupervised(&mut command, &prepared, "exit");
+        let (readiness, status) = run_unsupervised(&mut command, &prepared, "ignore-hup");
         finished.send(()).unwrap();
         interloper.join().unwrap();
         assert_eq!(
@@ -2136,6 +2164,16 @@ fn an_unconfirmed_launch_fails_at_the_startup_deadline() {
             "silent: {silent}"
         );
         assert_eq!(status.code(), Some(125));
+        let started = fs::read_to_string(prepared.home.join("fixture-pid"));
+        assert_eq!(started.is_ok(), silent, "the command started: {started:?}");
+        if let Ok(pid) = started {
+            let pid: u32 = pid.parse().unwrap();
+            let survived = process::start_time(pid).unwrap().is_some();
+            if survived {
+                unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+            }
+            assert!(!survived, "the started command survived the failed startup");
+        }
         assert_startup_files_removed(&prepared);
         assert_startup_command_gone(&prepared.home);
     }

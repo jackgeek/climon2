@@ -161,8 +161,14 @@ clients and owned generic terminal fixtures:
   absent/empty/non-UTF8 SHELL, explicit logging filter and diagnostic privacy.
 - `exact_signal_exit_is_delivered`,
   `early_exit_is_delivered_after_restore_readiness`,
+  `an_exit_waits_for_the_controllers_ready`,
   `final_drain_eof_or_deadline_is_bounded_and_leaves_no_descendants`:
-  real signal mapping, early exit, final drain ordering and process groups.
+  real signal mapping, early exit (held while the controller withholds
+  `Ready`), final drain ordering and process groups. Once the command has
+  ended, the session finishes at the one-second drain cap even with output
+  still queued, or sooner when every connection has drained: the unit test
+  `an_ending_session_finishes_at_its_deadline_or_once_drained` in
+  `src/session.rs` checks that decision without wall-clock bounds.
 - `concurrent_probes_absolute_hello_deadline_and_second_attach`,
   `malformed_unknown_oversized_and_out_of_state_messages_close_only_the_probe`:
   frozen hello, concurrent probes, one Attach per connection and terminal
@@ -205,11 +211,8 @@ clients and owned generic terminal fixtures:
   `kill_after_an_unreported_exit_confirms_that_status`,
   `an_unattached_session_ends_after_the_initial_deadline`,
   `a_stalled_reader_is_dropped_after_five_seconds_without_progress`,
-  `withheld_ready_is_an_unexpected_departure_after_the_restore_deadline`,
-  `a_pty_write_failure_releases_then_reports_error` and
-  `a_client_that_stops_reading_cannot_hold_an_ended_session` (a controller that
-  stopped reading after a 1 MiB burst holds the ended session for the one-second
-  drain cap, not until the five-second stalled-reader drop).
+  `withheld_ready_is_an_unexpected_departure_after_the_restore_deadline` and
+  `a_pty_write_failure_releases_then_reports_error`.
 - `leave_kills_every_job_of_the_command_session_but_not_new_sessions`: under
   job-control `bash -i`, HUP-ignoring foreground and background jobs (their own
   process groups) are gone after the real grace; a daemonized new-session
@@ -228,7 +231,9 @@ clients and owned generic terminal fixtures:
   removed),
   `startup_confirmation_decides_the_reported_launch_failure`,
   `an_unconfirmed_launch_fails_at_the_startup_deadline` (no helper connection,
-  or a silent one, ends startup at the four-second deadline),
+  or a silent one, ends startup at the four-second deadline; a command already
+  started behind the silent one ignores SIGHUP, so only the failed daemon's kill
+  ends it),
   `repeated_unknown_zero_pid_and_relative_options_are_invalid_invocations` and
   `unsupervised_controlled_panic_ends_the_daemon_without_readiness` own the
   readiness pipe instead of using `wait_ready` (which kills a failed daemon),

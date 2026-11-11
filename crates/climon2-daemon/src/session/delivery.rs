@@ -30,6 +30,8 @@ pub(super) struct Delivery {
     presentation: Presentation,
     granted: Option<Granted>,
     backlog: Vec<u8>,
+    /// Output arrived since the last derived update. A derive with nothing new emits
+    /// nothing, so this only spares an unchanged screen its diff every tick.
     stale: bool,
     resized: Option<TerminalSize>,
 }
@@ -47,7 +49,8 @@ impl Delivery {
             presentation: Presentation::new(host.cols, host.rows),
             granted: None,
             backlog: Vec::new(),
-            stale: false,
+            // A grant's restoration starts from the current screen, not from this.
+            stale: Default::default(),
             resized: None,
         }
     }
@@ -83,7 +86,6 @@ impl Delivery {
     pub fn retire(&mut self) {
         self.granted = None;
         self.backlog.clear();
-        self.stale = false;
     }
 
     /// Retires the period and returns the bytes that hand the host back.
@@ -94,7 +96,6 @@ impl Delivery {
 
     /// The synchronized-update latch expired: end any update open on the host.
     pub fn end_sync(&mut self) -> Vec<u8> {
-        self.stale = true;
         self.presentation.end_sync()
     }
 
@@ -140,7 +141,6 @@ impl Delivery {
             self.restore(vt, &mut out);
         }
         if self.derives(sync_pending) {
-            self.stale = false;
             out.push(Out::Live(vt.derive(&mut self.presentation)));
         }
         out.retain(|out| !matches!(out, Out::Prefix(bytes) | Out::Live(bytes) if bytes.is_empty()));
@@ -175,17 +175,19 @@ impl Delivery {
         let backlog = std::mem::take(&mut self.backlog);
         self.presentation.commit_live(&backlog);
         out.push(Out::Live(backlog));
-        self.stale = true;
     }
 
-    fn derives(&self, sync_pending: bool) -> bool {
-        self.stale
-            && !sync_pending
+    /// A Derived controller past its restoration gets one update for the output since its
+    /// last, never during a synchronized update. Output during a restoration or an update
+    /// keeps the screen stale until then.
+    fn derives(&mut self, sync_pending: bool) -> bool {
+        !sync_pending
             && self.presentation.mode() == Mode::Derived
             && self
                 .granted
                 .as_ref()
                 .is_some_and(|granted| granted.restoration.is_none())
+            && std::mem::take(&mut self.stale)
     }
 
     fn restoring(&self) -> bool {
