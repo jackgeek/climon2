@@ -7,6 +7,8 @@
 
 mod isolation;
 mod ownership;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub mod ptrace;
 mod shell;
 mod terminal;
 

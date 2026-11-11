@@ -1074,9 +1074,18 @@ fn input_consumed_by_another_reader_after_poll_is_not_a_hang_up() {
     begin_bridge(&mut stream);
     pty.wait_raw();
     let terminal = fs::read_link(format!("/proc/self/fd/{}", pty.slave.as_raw_fd())).unwrap();
-    let tracer = ptrace::Tracer::seize(pty.child.id());
+    let tracer = climon2_test_term::ptrace::Tracer::seize(pty.child.id(), Duration::from_secs(5));
     pty.master.write_all(b"taken").unwrap();
-    tracer.stop_at_read(&terminal, 32768);
+    // Stop at the client's terminal read: read(<terminal>, _, 32768).
+    loop {
+        let call = tracer.next_entry();
+        if call.number == libc::SYS_read as u64
+            && call.arguments[2] == 32768
+            && tracer.descriptor(call.arguments[0]).as_ref() == Some(&terminal)
+        {
+            break;
+        }
+    }
     // The slave shares the client's non-blocking stdin description.
     let mut taken = Vec::new();
     let mut buffer = [0; 16];
@@ -1095,115 +1104,6 @@ fn input_consumed_by_another_reader_after_poll_is_not_a_hang_up() {
     let (bytes, error) = pty.finish(0);
     assert!(bytes.is_empty(), "{bytes:?}");
     assert!(error.is_empty(), "{error}");
-}
-
-/// Stops the real client at chosen system calls (Linux ptrace).
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-mod ptrace {
-    use std::{
-        path::Path,
-        time::{Duration, Instant},
-    };
-
-    pub struct Tracer {
-        pid: i32,
-        /// Bounds the whole trace: a client that never makes the awaited call fails.
-        deadline: Instant,
-    }
-
-    impl Tracer {
-        /// Attaches to a child of this test and stops it wherever it is.
-        pub fn seize(pid: u32) -> Self {
-            let tracer = Self {
-                pid: i32::try_from(pid).unwrap(),
-                deadline: Instant::now() + Duration::from_secs(5),
-            };
-            tracer.request(libc::PTRACE_SEIZE, 0, libc::PTRACE_O_TRACESYSGOOD as usize);
-            tracer.request(libc::PTRACE_INTERRUPT, 0, 0);
-            tracer.wait();
-            tracer
-        }
-
-        fn request(&self, request: libc::c_uint, address: usize, data: usize) -> libc::c_long {
-            let result = unsafe { libc::ptrace(request, self.pid, address, data) };
-            assert!(result >= 0, "{}", std::io::Error::last_os_error());
-            result
-        }
-
-        fn wait(&self) -> i32 {
-            loop {
-                assert!(
-                    Instant::now() < self.deadline,
-                    "client never made the traced call"
-                );
-                let mut status = 0;
-                let waited =
-                    unsafe { libc::waitpid(self.pid, &mut status, libc::__WALL | libc::WNOHANG) };
-                if waited == self.pid {
-                    assert!(libc::WIFSTOPPED(status), "client ended while traced");
-                    return status;
-                }
-                assert_eq!(waited, 0, "{}", std::io::Error::last_os_error());
-                std::thread::sleep(Duration::from_millis(1));
-            }
-        }
-
-        /// Resumes until the client enters `read(<path>, _, count)`.
-        pub fn stop_at_read(&self, path: &Path, count: u64) {
-            loop {
-                let info = self.next_syscall_stop();
-                if info.op != libc::PTRACE_SYSCALL_INFO_ENTRY {
-                    continue;
-                }
-                let entry = unsafe { info.u.entry };
-                if entry.nr == libc::SYS_read as u64
-                    && entry.args[2] == count
-                    && std::fs::read_link(format!("/proc/{}/fd/{}", self.pid, entry.args[0]))
-                        .is_ok_and(|target| target == path)
-                {
-                    return;
-                }
-            }
-        }
-
-        /// Runs the stopped system call to its exit and returns its result.
-        pub fn finish_syscall(&self) -> i64 {
-            loop {
-                let info = self.next_syscall_stop();
-                if info.op == libc::PTRACE_SYSCALL_INFO_EXIT {
-                    return unsafe { info.u.exit }.sval;
-                }
-            }
-        }
-
-        /// Resumes to the next system-call stop, passing real signals on.
-        fn next_syscall_stop(&self) -> libc::ptrace_syscall_info {
-            let mut signal = 0;
-            loop {
-                self.request(libc::PTRACE_SYSCALL, 0, signal);
-                let status = self.wait();
-                signal = 0;
-                if libc::WSTOPSIG(status) == libc::SIGTRAP | 0x80 {
-                    let mut info: libc::ptrace_syscall_info = unsafe { std::mem::zeroed() };
-                    self.request(
-                        libc::PTRACE_GET_SYSCALL_INFO,
-                        std::mem::size_of_val(&info),
-                        (&raw mut info) as usize,
-                    );
-                    return info;
-                }
-                // Event stops (status >> 16) carry no signal to deliver.
-                if status >> 16 == 0 {
-                    signal = libc::WSTOPSIG(status) as usize;
-                }
-            }
-        }
-
-        /// Lets the stopped system call run.
-        pub fn detach(self) {
-            self.request(libc::PTRACE_DETACH, 0, 0);
-        }
-    }
 }
 
 /// #20: blocked stdout backpressures sockets and Exit cannot overtake output.
