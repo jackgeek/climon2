@@ -1,6 +1,6 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
-use climon2_test_term::{Terminal, bin_path};
+use climon2_test_term::{Terminal, bin_path, copy_executable};
 use portable_pty::CommandBuilder;
 use std::{
     ffi::{OsStr, OsString},
@@ -30,7 +30,7 @@ impl Installation {
         let version = directory.path().join("exe/0.1.0");
         fs::create_dir_all(&version).unwrap();
         for binary in ["climon2-cli", "climon2-client", "climon2-daemon"] {
-            fs::copy(bin_path(binary), version.join(binary)).unwrap();
+            copy_executable(&bin_path(binary), &version.join(binary));
         }
         Self(directory)
     }

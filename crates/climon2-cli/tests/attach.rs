@@ -7,7 +7,7 @@ use climon2_core::{
     protocol::{Frame, HelloReply, PROTOCOL_VERSION, read_frame, write_frame},
 };
 use climon2_platform::{process, runtime};
-use climon2_test_term::{Isolation, Terminal, bin_path};
+use climon2_test_term::{Isolation, Terminal, bin_path, copy_executable};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -193,10 +193,7 @@ fn attach_needs_a_terminal() {
 #[test]
 fn a_session_of_an_uninstalled_version_names_that_version() {
     let isolation = Isolation::new();
-    let installed = isolation.home().join("exe/0.1.0");
-    fs::create_dir_all(&installed).unwrap();
-    let cli = installed.join("climon2-cli");
-    fs::copy(bin_path("climon2-cli"), &cli).unwrap();
+    let cli = installed_cli(&isolation);
     let session = FakeSession::start(&home(&isolation), 6, current);
     let (status, screen) = attach_in_terminal(&isolation, &cli, "12345678", None);
     assert_eq!(status, 125);
@@ -230,7 +227,7 @@ fn installed_cli(isolation: &Isolation) -> PathBuf {
     let installed = isolation.home().join("exe/0.1.0");
     fs::create_dir_all(&installed).unwrap();
     let cli = installed.join("climon2-cli");
-    fs::copy(bin_path("climon2-cli"), &cli).unwrap();
+    copy_executable(&bin_path("climon2-cli"), &cli);
     cli
 }
 

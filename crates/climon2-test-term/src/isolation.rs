@@ -49,6 +49,24 @@ pub fn bin_path(name: &str) -> PathBuf {
     path
 }
 
+/// Copies an executable a test will run. `cp` writes the copy, so this process never holds
+/// it open: Linux refuses to execute a file any process holds open for writing (ETXTBSY),
+/// and a child forked by another test thread holds every descriptor it inherited until it
+/// execs.
+pub fn copy_executable(from: &Path, to: &Path) {
+    let status = std::process::Command::new("cp")
+        .arg(from)
+        .arg(to)
+        .status()
+        .expect("run cp");
+    assert!(
+        status.success(),
+        "cp {} {}: {status}",
+        from.display(),
+        to.display()
+    );
+}
+
 pub struct Isolation {
     directory: TempDir,
     id: String,

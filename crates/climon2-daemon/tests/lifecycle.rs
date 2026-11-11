@@ -309,9 +309,10 @@ impl Prepared {
         };
         let executable = if mode == "long-paths" {
             let executable = home.join("climon2-daemon");
-            // A link, not a copy: a copy's write descriptor, inherited by a test thread's
-            // concurrent fork, makes exec fail with ETXTBSY.
-            fs::hard_link(env!("CARGO_BIN_EXE_climon2-daemon"), &executable).unwrap();
+            climon2_test_term::copy_executable(
+                Path::new(env!("CARGO_BIN_EXE_climon2-daemon")),
+                &executable,
+            );
             executable
         } else {
             PathBuf::from(env!("CARGO_BIN_EXE_climon2-daemon"))

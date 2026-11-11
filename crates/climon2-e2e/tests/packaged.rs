@@ -2,7 +2,7 @@
 
 mod support;
 
-use climon2_test_term::{Terminal, controlled_bash};
+use climon2_test_term::{Terminal, controlled_bash, copy_executable};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -689,7 +689,7 @@ fn debug_hook_mid_install_crash_recovers_without_stranding_live_client() {
     };
     let package = Package::private();
     let installer = package.executable_home().join("install");
-    fs::copy(climon2_test_term::bin_path("climon2-install"), &installer).unwrap();
+    copy_executable(&climon2_test_term::bin_path("climon2-install"), &installer);
     let mut terminal = launch_bash(&package, &bash);
     terminal.send("echo $((6*7))-install-ready\n").unwrap();
     terminal.wait_for_text("42-install-ready", TIMEOUT).unwrap();
