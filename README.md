@@ -380,6 +380,8 @@ cargo xtask setup-quality
 cargo xtask check
 cargo xtask check --mutate-all
 cargo xtask dist
+cargo xtask install
+cargo xtask install --dir "$HOME/tools/climon2"
 ```
 
 Development needs the pinned Rust toolchain, a C compiler and libclang,
@@ -389,6 +391,9 @@ use `CLIMON2_TEST_BASH`, then platform defaults: Homebrew bash on macOS, or
 interactive qualification. A missing bash 5 fails in CI and is a reported local
 skip; use `CLIMON2_TEST_BASH=/usr/bin/bash` on Arch Linux. `install.sh` remains
 compatible with macOS `/bin/bash` 3.2.
+
+On arm64 macOS, install both Rust targets before running workspace tests,
+`dist` or `install`: `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
 
 CI runs full runtime, real-terminal and packaged tests on Linux and both macOS
 architectures. Windows runs neutral contracts only. Shared and Linux-specific
@@ -427,6 +432,12 @@ executables; published Linux artifacts are built on Ubuntu 24.04, not Arch,
 to establish the glibc baseline. Both builds isolate unhooked packages and
 write their native archive, stamped `install.sh` and `SHA256SUMS` to
 `target/dist/`. Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
+
+`xtask install` builds and verifies the same production payload as `dist`, then
+runs its installer without creating an archive. It has the same host and build
+requirements as `dist`. The default executable home is `~/.local/share/climon2`;
+`--dir <directory>` selects another destination. The installer preserves other
+versions and prints a PATH hint when needed; shell startup files are unchanged.
 
 A release requires a local `cargo xtask check --mutate-all` pass for the exact
 release commit; this is the maintainer's responsibility, not a duplicated CI

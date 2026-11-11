@@ -46,6 +46,9 @@ jobs:
           test "$(uname -m)" = "$expected"
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
+      - name: Install universal payload targets for install tests
+        if: runner.os == 'macOS' && runner.arch == 'ARM64'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Install ShellCheck
         run: |
           if [[ "$RUNNER_OS" == Linux ]]; then

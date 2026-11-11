@@ -53,6 +53,7 @@ flowchart TB
         terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
         xtask -->|"runs builds and tests"| cargo
+        xtask -->|"install: runs verified production payload"| installer
         xtask -->|"runs runtime probes"| cli
         cargo -->|"runs"| tests
         tests -->|"uses directly or as a session command"| cli_fixture
