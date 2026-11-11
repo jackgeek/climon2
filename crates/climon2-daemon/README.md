@@ -173,7 +173,9 @@ clients and owned generic terminal fixtures:
   `malformed_unknown_oversized_and_out_of_state_messages_close_only_the_probe`:
   frozen hello, concurrent probes, one Attach per connection and terminal
   protocol errors, each with its exact `Error` text: decoding failures name
-  themselves, other framing failures say `invalid session protocol`.
+  themselves, other framing failures say `invalid session protocol`. An
+  unfinished hello that writes a byte every 50 ms still ends two seconds after
+  connecting, however long the rest of the test takes.
 - `a_connection_beyond_the_cap_is_closed_unanswered`: 64 connections are served
   and a 65th is closed unanswered while the session goes on.
 - `initial_fallback_and_resize_use_the_real_pty`,
