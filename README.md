@@ -416,7 +416,9 @@ the warm build (copy-on-write where supported). As in mutation, each suite has
 its own session. A suite fails the measurement if any test fails or if it
 outlives the mutator's timeout (10 times the unloaded run, at least 2 s),
 because the mutator would count either outcome as a killed mutant and hide a
-survivor. A failure under load is a test defect; nothing is retried. The
+survivor. A surviving mutant's run also stages library and crate tests within
+that timeout, so this catches stalled suites rather than every possible mutant
+timeout. A failure under load is a test defect; nothing is retried. The
 measurement stops after the failing round and names each failing test and test
 target with the number of suites it failed in. It then lists their logs. Logs
 from every run remain in a unique directory under `target/flake-logs/`. Worker

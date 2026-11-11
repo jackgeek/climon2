@@ -38,12 +38,22 @@ impl Fixture {
     }
 
     fn command(&self, workers: usize, rounds: usize, timeout_factor: &str) -> Command {
+        self.configure(Command::new(python()), workers, rounds, timeout_factor)
+    }
+
+    /// Gives `command`, which runs Python, the measurement script and its arguments.
+    fn configure(
+        &self,
+        mut command: Command,
+        workers: usize,
+        rounds: usize,
+        timeout_factor: &str,
+    ) -> Command {
         let script = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
             .join("tools/check-mutation-load.py");
         let forbidden = self.root().join("forbidden-target");
-        let mut command = Command::new(python());
         command
             .arg(script)
             .arg(self.root())
@@ -76,7 +86,7 @@ impl Fixture {
                 break status;
             }
             if Instant::now() >= deadline {
-                kill_group(&mut child);
+                stop(&mut child);
                 panic!(
                     "load measurement timed out: {}",
                     fs::read_to_string(&output).unwrap()
@@ -109,7 +119,8 @@ fn python() -> OsString {
     std::env::var_os("CLIMON2_QUALITY_PYTHON").unwrap_or_else(|| "python3".into())
 }
 
-/// Starts a measurement as its own process group, so its whole tree can be killed.
+/// Starts a measurement in a process group of its own. Its suites start sessions of their
+/// own, so signals to that group reach only the measurement.
 fn spawn(command: &mut Command, output: &Path) -> Child {
     let file = fs::File::create(output).unwrap();
     command
@@ -137,6 +148,20 @@ fn signal(action: &str, pid: &str) {
 fn kill_group(child: &mut Child) {
     signal("os.killpg(pid, signal.SIGKILL)", &child.id().to_string());
     child.wait().unwrap();
+}
+
+/// Stops a measurement with SIGTERM, which kills its suites and removes its worker builds;
+/// SIGKILLs its process group if it has not exited by the deadline.
+fn stop(child: &mut Child) {
+    signal("os.kill(pid, signal.SIGTERM)", &child.id().to_string());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            kill_group(child);
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn process_exists(pid: &str) -> bool {
@@ -189,16 +214,16 @@ fn blocked_under_load() {
 }
 "#;
 
-/// Starts measuring the `BLOCKED` fixture with two workers and waits until both block.
-/// Returns the measurement and its suites' process groups.
-fn start_blocked(fixture: &Fixture) -> (Child, Vec<String>) {
+/// Starts `measurement` of the `BLOCKED` fixture with two workers and waits until both
+/// block. Returns the measurement and its suites' process groups.
+fn start_blocked(fixture: &Fixture, mut measurement: Command) -> (Child, Vec<String>) {
     let output = fixture.root().join("blocked-output");
-    let mut child = spawn(&mut fixture.command(2, 1, "1000"), &output);
+    let mut child = spawn(&mut measurement, &output);
     let suites = fixture.root().join("suites");
     let deadline = Instant::now() + Duration::from_secs(120);
     while fs::read_dir(&suites).map_or(0, Iterator::count) < 2 {
         if Instant::now() >= deadline || child.try_wait().unwrap().is_some() {
-            kill_group(&mut child);
+            stop(&mut child);
             panic!(
                 "both workers did not start: {}",
                 fs::read_to_string(&output).unwrap()
@@ -361,7 +386,7 @@ fn load_sensitive_failures_are_named_concisely_without_retrying() {
 #[test]
 fn the_next_measurement_removes_worker_builds_a_killed_one_left_even_if_it_cannot_build() {
     let fixture = Fixture::new(BLOCKED);
-    let (mut child, suites) = start_blocked(&fixture);
+    let (mut child, suites) = start_blocked(&fixture, fixture.command(2, 1, "1000"));
     kill_group(&mut child);
     // Nothing is left to stop suites in sessions of their own after SIGKILL.
     for suite in &suites {
@@ -385,7 +410,7 @@ fn the_next_measurement_removes_worker_builds_a_killed_one_left_even_if_it_canno
 #[test]
 fn a_terminated_measurement_stops_its_suites_and_removes_their_worker_builds() {
     let fixture = Fixture::new(BLOCKED);
-    let (mut child, suites) = start_blocked(&fixture);
+    let (mut child, suites) = start_blocked(&fixture, fixture.command(2, 1, "1000"));
     signal("os.kill(pid, signal.SIGTERM)", &child.id().to_string());
     let deadline = Instant::now() + Duration::from_secs(60);
     let status = loop {
@@ -401,6 +426,20 @@ fn a_terminated_measurement_stops_its_suites_and_removes_their_worker_builds() {
     assert!(!status.success());
     assert_exited(&suites);
     assert_eq!(fixture.target_entries(), ["flake-logs", "mutation-tests"]);
+}
+
+#[test]
+fn a_measurement_started_under_nohup_survives_a_hangup() {
+    let fixture = Fixture::new(BLOCKED);
+    let mut nohup = Command::new("nohup");
+    nohup.arg(python());
+    let (mut child, suites) = start_blocked(&fixture, fixture.configure(nohup, 2, 1, "1000"));
+    signal("os.kill(pid, signal.SIGHUP)", &child.id().to_string());
+    thread::sleep(Duration::from_secs(1));
+    let survived = child.try_wait().unwrap().is_none();
+    stop(&mut child);
+    assert_exited(&suites);
+    assert!(survived, "a hangup ended a measurement started under nohup");
 }
 
 #[test]
@@ -433,24 +472,42 @@ fn a_workspace_that_fails_unloaded_stops_before_loading_workers() {
 
 /// The mutator counts a run that outlives its timeout as a killed mutant, hiding survivors.
 #[test]
-fn a_suite_outliving_the_mutation_timeout_is_killed_and_fails() {
-    let fixture = Fixture::new(
-        r#"
+fn a_suite_outliving_the_mutation_timeout_is_killed_and_names_its_stuck_test() {
+    let fixture = Fixture::new(&format!(
+        r#"{UNDER_LOAD}
+/// libtest's own warning about a test running over 60 seconds, without the wait.
+fn warn_running_long(name: &str) {{
+    use std::io::Write;
+    writeln!(std::io::stdout(), "\ntest {{name}} has been running for over 60 seconds").unwrap();
+}}
+
 #[test]
-fn hung_under_load() {
-    let executable = std::env::current_exe().unwrap();
-    if executable.ancestors().nth(3).unwrap().file_name().unwrap() == "mutation-tests" {
+fn slow_but_passing() {{
+    if under_load() {{
+        warn_running_long("slow_but_passing");
+    }}
+}}
+
+#[test]
+fn hung_under_load() {{
+    if !under_load() {{
         return;
-    }
+    }}
+    warn_running_long("hung_under_load");
     let pid = std::env::current_dir().unwrap().join("hung.pid");
     std::fs::write(pid, std::process::id().to_string()).unwrap();
-    std::thread::sleep(std::time::Duration::from_secs(300));
-}
-"#,
-    );
+    std::thread::sleep(std::time::Duration::from_secs(60));
+}}
+"#
+    ));
     let (success, output) = fixture.measure_with_timeout_factor(1, 2, "2");
     assert!(!success, "{output}");
     assert!(output.contains("mutation timeout"), "{output}");
+    assert!(output.contains("hung_under_load"), "{output}");
+    assert!(
+        !output.contains("slow_but_passing"),
+        "a test that passed was reported as stuck: {output}"
+    );
     let logs = fixture.logs();
     let hung = logs
         .iter()

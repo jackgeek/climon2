@@ -21,17 +21,10 @@ import tempfile
 import time
 
 MINIMUM_TIMEOUT = 2.0
-SUMMARY = (
-    ("Failing tests", re.compile(r"^test (.+) \.\.\. FAILED$", re.MULTILINE)),
-    (
-        "Failing test targets",
-        re.compile(r"^error: test failed, to rerun pass `(.+)`$", re.MULTILINE),
-    ),
-    (
-        "Tests still running after 60 seconds",
-        re.compile(r"^test (.+) has been running for over 60 seconds$", re.MULTILINE),
-    ),
-)
+FAILED_TEST = re.compile(r"^test (.+) \.\.\. FAILED$", re.MULTILINE)
+FAILED_TARGET = re.compile(r"^error: test failed, to rerun pass `(.+)`$", re.MULTILINE)
+SLOW_TEST = re.compile(r"^test (.+) has been running for over 60 seconds$", re.MULTILINE)
+FINISHED_TEST = re.compile(r"^test (.+) \.\.\. ", re.MULTILINE)
 COPY = ["-cRp"] if sys.platform == "darwin" else ["-a", "--reflink=auto"]
 
 
@@ -104,11 +97,23 @@ def report_build_failure(log):
     print(log.read_text(errors="replace"), file=sys.stderr, flush=True)
 
 
+def stuck_tests(text):
+    """Tests that libtest reported running over 60 seconds and that never finished."""
+    return set(SLOW_TEST.findall(text)) - set(FINISHED_TEST.findall(text))
+
+
 def report_failures(failed, timed_out, timeout):
-    """Names each failing test and target with the number of suites it failed in."""
-    texts = [log.read_text(errors="replace") for log in failed]
-    for title, pattern in SUMMARY:
-        names = Counter(name for text in texts for name in set(pattern.findall(text)))
+    """Names each failing test and target, and each test stuck in a suite killed at the
+    timeout, with the number of suites it happened in."""
+    summary = (
+        ("Failing tests", failed, lambda text: set(FAILED_TEST.findall(text))),
+        ("Failing test targets", failed, lambda text: set(FAILED_TARGET.findall(text))),
+        ("Tests running over 60 seconds when killed", timed_out, stuck_tests),
+    )
+    for title, logs, names_in in summary:
+        names = Counter(
+            name for log in logs for name in names_in(log.read_text(errors="replace"))
+        )
         if names:
             print(f"{title} (failed suites):", file=sys.stderr)
             for name, suites in sorted(names.items()):
@@ -184,7 +189,9 @@ def terminate(signum, _frame):
 
 def main():
     for signum in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(signum, terminate)
+        # An inherited SIG_IGN (as `nohup` sets) stays: that caller asked to keep running.
+        if signal.getsignal(signum) is not signal.SIG_IGN:
+            signal.signal(signum, terminate)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path)
     parser.add_argument("cargo")

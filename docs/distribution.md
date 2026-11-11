@@ -67,12 +67,14 @@ before mutation, even when no changed source needs mutation. After warming the
 mutation build and timing one unloaded run, five rounds each run 16 unchanged
 full-workspace test suites concurrently. As in mutation, each suite uses a
 private warm-build copy and its own session. Zero failures are required, and no
-suite may outlive the mutator's timeout (10 times the unloaded run): the mutator
-counts either as a killed mutant, which could hide a survivor. No test is
-retried. A failing round stops qualification and names each failing test and
-test target with its failed-suite count. Every run's log remains under
-`target/flake-logs/` in a unique directory. `cargo xtask mutate`, including
-macOS native-only CI, does not measure load.
+suite may outlive the mutator's timeout (10 times the unloaded run): the
+mutator counts either as a killed mutant, which could hide a survivor. The
+timeout catches stalled suites; a surviving mutant's staged run is longer, so
+passing cannot rule out every mutant timeout. No test is retried. A failing
+round stops qualification and names each failing test and test target with its
+failed-suite count. Every run's log remains under `target/flake-logs/` in a
+unique directory. `cargo xtask mutate`, including macOS native-only CI, does
+not measure load.
 
 Native distribution jobs produce separate artifacts. Archive jobs verify
 checksums, exercise the download script against those exact files, and run
