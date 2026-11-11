@@ -1,9 +1,22 @@
 use crate::{quality, release};
-use std::{collections::BTreeSet, env, fs, io, path::Path, process::Command};
+use std::{
+    collections::BTreeSet,
+    env,
+    ffi::OsString,
+    fs, io,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 struct Platform {
     suffix: &'static str,
     targets: &'static [&'static str],
+}
+
+struct BuiltPayload {
+    scratch: tempfile::TempDir,
+    directory: PathBuf,
+    platform: Platform,
 }
 
 fn host_platform() -> io::Result<Platform> {
@@ -22,7 +35,7 @@ fn host_platform() -> io::Result<Platform> {
     }
 }
 
-pub fn run(root: &Path) -> io::Result<()> {
+fn build_payload(root: &Path) -> io::Result<BuiltPayload> {
     let version = env!("CARGO_PKG_VERSION");
     validate_versions(root, version)?;
     let platform = host_platform()?;
@@ -50,14 +63,32 @@ pub fn run(root: &Path) -> io::Result<()> {
     for file in ["LICENSE", "README.md"] {
         fs::copy(root.join(file), payload.join(file))?;
     }
-    let archive_name = format!("{name}.tar.gz");
+    Ok(BuiltPayload {
+        scratch,
+        directory: payload,
+        platform,
+    })
+}
+
+pub fn install(root: &Path, args: &[OsString]) -> io::Result<()> {
+    let payload = build_payload(root)?;
+    quality::run(Command::new(payload.directory.join("install")).args(args))
+}
+
+pub fn run(root: &Path) -> io::Result<()> {
+    let payload = build_payload(root)?;
+    let scratch = payload.scratch;
+    let name = payload.directory.file_name().expect("release payload name");
+    let platform = payload.platform;
+    let version = env!("CARGO_PKG_VERSION");
+    let archive_name = format!("{}.tar.gz", name.to_string_lossy());
     quality::run(
         Command::new("tar")
             .arg("-czf")
             .arg(scratch.path().join(&archive_name))
             .arg("-C")
             .arg(scratch.path())
-            .arg(&name),
+            .arg(name),
     )?;
     fs::write(
         scratch.path().join("install.sh"),
