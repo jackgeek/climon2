@@ -554,7 +554,7 @@ No new native-crash survival guarantee is implied. Future
 [headless sessions](../GLOSSARY.md#sessions) explicitly survive zero clients for
 their entire lifetime, including later attachment loss, until command completion
 or Kill; ordinary sessions retain leave policy. Future
-`climon2 exec --headless <command> [args...]` returns only after daemon-confirmed
+`c2 exec --headless <command> [args...]` returns only after daemon-confirmed
 creation. This CLI spelling and lifetime are agreed in
 [lifecycle](monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill),
 not implemented; preserve existing CLI kill and test it with headless sessions.

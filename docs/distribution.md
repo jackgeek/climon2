@@ -37,6 +37,13 @@ downloading. It verifies the selected archive with `shasum` on macOS or
 removal is macOS-only. Both platforms default to `$HOME/.local/share/climon2`;
 `--dir` overrides the executable home without changing shell profiles.
 
+Fresh installs and upgrades create `c2 -> climon2` in that home. Use `c2` as
+the command; `climon2` remains supported without warnings. An existing correct
+relative link is accepted, but any unrelated `c2` entry blocks installation
+before publication and is never overwritten. Link-creation errors leave
+`current` unchanged. The archive still contains the launcher as `climon2`;
+the installer creates the short command rather than requiring another payload.
+
 For manual Linux installation:
 
 ```sh

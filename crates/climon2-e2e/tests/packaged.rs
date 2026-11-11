@@ -27,7 +27,7 @@ fn installer_built_bash_smoke_lists_one_session_and_preserves_exit_seven() {
     terminal.wait_for_input_ready(TIMEOUT).unwrap();
     terminal
         .send(format!(
-            "PS1='INNER> ' climon2 exec {} --noprofile --norc -i; status=$?; printf '\\nOUTER-STATUS=%s\\n' \"$status\"; exit \"$status\"\n",
+            "PS1='INNER> ' c2 exec {} --noprofile --norc -i; status=$?; printf '\\nOUTER-STATUS=%s\\n' \"$status\"; exit \"$status\"\n",
             quote(&bash)
         ))
         .unwrap();
