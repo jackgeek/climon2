@@ -600,14 +600,21 @@ fn malformed_unknown_oversized_and_out_of_state_messages_close_only_the_probe() 
     let mut session = Session::start("exit");
     let mut controlling = session.attach();
     session.wait_marker(&mut controlling);
-    for (hello, bytes) in [
-        (false, vec![0, 0, 0, 1, 0x11]),
-        (true, vec![0, 0, 0, 1, 0x11]),
-        (false, vec![0, 0, 0, 2, 0x01, b'[']),
-        (true, vec![0, 0, 0, 1, 0x66]),
-        (true, vec![0, 0, 0, 0]),
-        (true, vec![0, 16, 0, 1]),
-        (true, vec![0, 1, 0, 1, 0x11]),
+    // A decoding failure names itself; any other framing failure is generic.
+    let not_allowed = "message not allowed in connection state";
+    let generic = "invalid session protocol";
+    for (hello, bytes, message) in [
+        (false, vec![0, 0, 0, 1, 0x11], not_allowed),
+        (true, vec![0, 0, 0, 1, 0x11], not_allowed),
+        (
+            false,
+            vec![0, 0, 0, 2, 0x01, b'['],
+            "malformed control JSON",
+        ),
+        (true, vec![0, 0, 0, 1, 0x66], "unknown message type"),
+        (true, vec![0, 0, 0, 0], generic),
+        (true, vec![0, 16, 0, 1], generic),
+        (true, vec![0, 1, 0, 1, 0x11], generic),
         (
             true,
             ClientMessage::Hello { protocol: 1 }
@@ -618,6 +625,7 @@ fn malformed_unknown_oversized_and_out_of_state_messages_close_only_the_probe() 
                     bytes
                 })
                 .unwrap(),
+            not_allowed,
         ),
     ] {
         let mut probe = if hello {
@@ -629,12 +637,55 @@ fn malformed_unknown_oversized_and_out_of_state_messages_close_only_the_probe() 
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
         probe.write_all(&bytes).unwrap();
-        assert!(matches!(receive(&mut probe), ServerMessage::Error { .. }));
+        assert_eq!(
+            receive(&mut probe),
+            ServerMessage::Error {
+                message: message.into()
+            },
+            "{bytes:?}"
+        );
         assert!(read_frame(&mut probe).is_err());
     }
     send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
     while !matches!(receive(&mut controlling), ServerMessage::Exit { code: 42 }) {}
     session.finish();
+}
+
+/// #20: the daemon serves at most 64 connections at a time; one more is closed unanswered
+/// and the session goes on.
+#[test]
+fn a_connection_beyond_the_cap_is_closed_unanswered() {
+    let mut session = Session::start("exit");
+    let mut controlling = session.attach();
+    session.wait_marker(&mut controlling);
+    let probes: Vec<_> = (1..64).map(|_| session.connect()).collect();
+    let mut extra = UnixStream::connect(&session.socket).unwrap();
+    extra
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    assert_eq!(extra.read(&mut [0]).unwrap(), 0);
+    drop(probes);
+    send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
+    while !matches!(receive(&mut controlling), ServerMessage::Exit { code: 42 }) {}
+    session.finish();
+}
+
+/// #19/#20: once the command has ended, a client that stopped reading holds the session for
+/// at most the final drain cap (one second), not until it is dropped as stalled (five).
+#[test]
+fn a_client_that_stops_reading_cannot_hold_an_ended_session() {
+    let mut session = Session::start("burst");
+    let mut controlling = session.attach();
+    session.wait_marker(&mut controlling);
+    send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
+    let started = Instant::now();
+    session.finish();
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+    drop(controlling);
 }
 
 /// #20: initial zero size falls back; changed Resize applies, zero dimensions are ignored.
@@ -2064,6 +2115,50 @@ fn startup_confirmation_decides_the_reported_launch_failure() {
     }
 }
 
+/// #15/#29: the startup deadline bounds a launch that never confirms, whether nothing
+/// connects (the helper finds no socket) or the first connection stays silent.
+#[test]
+fn an_unconfirmed_launch_fails_at_the_startup_deadline() {
+    for silent in [false, true] {
+        // Holding the allocation lock keeps the daemon from spawning its helper until the
+        // socket is gone, or this silent connection is first in its backlog.
+        let allocation = climon2_platform::pty::allocation().unwrap();
+        let (prepared, mut command) = Prepared::new("exit", |_, _| {}, false);
+        let startup_socket = prepared.startup_socket.clone();
+        let (finished, until_finished) = std::sync::mpsc::channel::<()>();
+        let interloper = thread::spawn(move || {
+            let started = Instant::now();
+            let held = loop {
+                // The socket path appears at bind, before it listens.
+                let attempt = if silent {
+                    UnixStream::connect(&startup_socket).map(Some)
+                } else {
+                    fs::remove_file(&startup_socket).map(|()| None)
+                };
+                if let Ok(held) = attempt {
+                    break held;
+                }
+                assert!(started.elapsed() < Duration::from_secs(5));
+                thread::sleep(Duration::from_millis(2));
+            };
+            drop(allocation);
+            let _ = until_finished.recv_timeout(Duration::from_secs(30));
+            drop(held);
+        });
+        let (readiness, status) = run_unsupervised(&mut command, &prepared, "exit");
+        finished.send(()).unwrap();
+        interloper.join().unwrap();
+        assert_eq!(
+            readiness,
+            failed_readiness(125, "command startup deadline exceeded"),
+            "silent: {silent}"
+        );
+        assert_eq!(status.code(), Some(125));
+        assert_startup_files_removed(&prepared);
+        assert_startup_command_gone(&prepared.home);
+    }
+}
+
 /// #15/#29: the private exec helper confirms a failed exec as 127 (missing command in a usable
 /// cwd) or 126 (not executable, or unusable cwd) and exits with that code.
 #[test]
@@ -2314,6 +2409,7 @@ fn job_fixture(job: &str) -> ! {
 
 static WINCHES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// `COLSxROWS`, followed by any pixel size: clients send none, so none may be reported.
 fn terminal_size() -> String {
     let mut size = std::mem::MaybeUninit::<libc::winsize>::uninit();
     assert_eq!(
@@ -2321,7 +2417,11 @@ fn terminal_size() -> String {
         0
     );
     let size = unsafe { size.assume_init() };
-    format!("{}x{}", size.ws_col, size.ws_row)
+    let pixels = match (size.ws_xpixel, size.ws_ypixel) {
+        (0, 0) => String::new(),
+        (width, height) => format!(" {width}x{height}px"),
+    };
+    format!("{}x{}{pixels}", size.ws_col, size.ws_row)
 }
 
 /// Records each line it reads with the terminal size at that moment.
@@ -2434,22 +2534,13 @@ fn fixture_child() {
         std::process::exit(0);
     }
     fs::write("fixture-pid", std::process::id().to_string()).unwrap();
-    let mut size = std::mem::MaybeUninit::<libc::winsize>::uninit();
-    assert_eq!(
-        unsafe { libc::ioctl(0, libc::TIOCGWINSZ, size.as_mut_ptr()) },
-        0
-    );
-    let size = unsafe { size.assume_init() };
+    let size = terminal_size();
     if mode == "zero-size" {
         // Publish atomically: the test polls for the name, then reads the contents.
-        fs::write(
-            "initial-size.tmp",
-            format!("{}x{}", size.ws_col, size.ws_row),
-        )
-        .unwrap();
+        fs::write("initial-size.tmp", size).unwrap();
         fs::rename("initial-size.tmp", "initial-size").unwrap();
     } else {
-        assert_eq!((size.ws_col, size.ws_row), (91, 37));
+        assert_eq!(size, "91x37");
     }
     if mode == "raw" {
         let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
@@ -2510,18 +2601,8 @@ fn fixture_child() {
         io::stdout().flush().unwrap();
         let mut line = String::new();
         io::stdin().read_line(&mut line).unwrap();
-        let mut size = std::mem::MaybeUninit::<libc::winsize>::uninit();
-        assert_eq!(
-            unsafe { libc::ioctl(0, libc::TIOCGWINSZ, size.as_mut_ptr()) },
-            0
-        );
-        let size = unsafe { size.assume_init() };
         let winches = WINCHES.load(std::sync::atomic::Ordering::SeqCst);
-        fs::write(
-            "resized",
-            format!("{winches} {}x{}", size.ws_col, size.ws_row),
-        )
-        .unwrap();
+        fs::write("resized", format!("{winches} {}", terminal_size())).unwrap();
         std::process::exit(0);
     }
     if mode == "tui-restore" {
@@ -2592,13 +2673,7 @@ fn fixture_child() {
     if mode == "zero-size" {
         let mut line = String::new();
         io::stdin().read_line(&mut line).unwrap();
-        let mut size = std::mem::MaybeUninit::<libc::winsize>::uninit();
-        assert_eq!(
-            unsafe { libc::ioctl(0, libc::TIOCGWINSZ, size.as_mut_ptr()) },
-            0
-        );
-        let size = unsafe { size.assume_init() };
-        fs::write("resized", format!("{}x{}", size.ws_col, size.ws_row)).unwrap();
+        fs::write("resized", terminal_size()).unwrap();
         std::process::exit(0);
     }
     if mode == "early" {
@@ -2615,6 +2690,12 @@ fn fixture_child() {
         }
         print!("final-bytes");
         std::process::exit(42);
+    }
+    if mode == "burst" {
+        let mut line = String::new();
+        io::stdin().read_line(&mut line).unwrap();
+        io::stdout().write_all(&vec![b'x'; 1 << 20]).unwrap();
+        std::process::exit(17);
     }
     if mode == "flood" {
         let mut line = String::new();
