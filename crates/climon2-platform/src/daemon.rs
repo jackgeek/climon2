@@ -213,19 +213,15 @@ mod unix {
         Ok(())
     }
 
-    /// Retries an interrupted read; EOF before the whole reply is a failure.
+    /// Reads only once poll has reported the pipe readable, so the read cannot block and
+    /// no signal can interrupt it. EOF before the whole reply is a failure.
     fn read_once(reader: &mut File, bytes: &mut [u8]) -> io::Result<usize> {
-        loop {
-            match reader.read(bytes) {
-                Ok(0) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "daemon readiness pipe closed",
-                    ));
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                result => return result,
-            }
+        match reader.read(bytes)? {
+            0 => Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "daemon readiness pipe closed",
+            )),
+            count => Ok(count),
         }
     }
 
