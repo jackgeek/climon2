@@ -48,6 +48,13 @@ Clients reach daemons over AF_UNIX stream sockets on every OS, Windows included 
 - Procfs inspection errors are not evidence of process death. All participants
   sharing session metadata must share a PID namespace. Cross-namespace shared
   homes are not supported.
+- Hanging up closes the PTY master, as closing a terminal window does. Linux
+  wakes terminal readers before it signals the session leader, so a leader
+  blocked reading the terminal can end with its own status (an interactive
+  shell's 0, `cat`'s 1) rather than SIGHUP's 129; under CPU contention this is
+  the usual outcome. macOS signals first. climon2 relays the command's actual
+  status and does not emulate the macOS order, which would send a surviving
+  leader a second SIGHUP.
 - Native process and peer implementations live in separate source files so
   coverage-backed complexity and mutation run on the operating system that
   actually compiles them. Shared source is qualified on the Linux development

@@ -916,12 +916,15 @@ fn log_suffix_escapes_control_characters_in_the_actual_absolute_home() {
     assert_eq!(fs::read_dir(home.join("logs/general")).unwrap().count(), 1);
 }
 
-/// Starts `climon2 exec <fixture> hold` attached in a terminal and waits for the fixture.
-fn held_session(layout: &Layout) -> (Terminal, climon2_core::metadata::SessionMetadata) {
+/// Starts `climon2 exec <fixture> <mode>` attached in a terminal and waits for the fixture.
+fn held_session(
+    layout: &Layout,
+    mode: &str,
+) -> (Terminal, climon2_core::metadata::SessionMetadata) {
     let mut command = layout.command();
     command.args(["exec"]);
     command.arg(layout.fixture());
-    command.arg("hold");
+    command.arg(mode);
     let mut terminal = Terminal::spawn(command, 31, 97).unwrap();
     terminal
         .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
@@ -953,7 +956,7 @@ fn kill_session(layout: &Layout, selector: &str) -> (i32, String, String) {
 #[test]
 fn kill_terminates_a_detached_session_silently_after_cleanup() {
     let layout = Layout::new();
-    let (mut terminal, metadata) = held_session(&layout);
+    let (mut terminal, metadata) = held_session(&layout, "hold");
     terminal.send(b"\x1dd").unwrap();
     assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
 
@@ -971,7 +974,8 @@ fn kill_terminates_a_detached_session_silently_after_cleanup() {
 #[test]
 fn kill_while_attached_gives_the_client_the_signal_status() {
     let layout = Layout::new();
-    let (mut terminal, metadata) = held_session(&layout);
+    // A reader can see Linux close the terminal before the leader is signalled (ADR 0003).
+    let (mut terminal, metadata) = held_session(&layout, "await-signal");
     assert_eq!(
         kill_session(&layout, metadata.session_id.as_str()),
         (0, String::new(), String::new())
@@ -983,7 +987,7 @@ fn kill_while_attached_gives_the_client_the_signal_status() {
 #[test]
 fn attach_overwrites_an_inherited_kill_envelope() {
     let layout = Layout::new();
-    let (mut first, metadata) = held_session(&layout);
+    let (mut first, metadata) = held_session(&layout, "hold");
     first.send(b"\x1dd").unwrap();
     assert_eq!(first.wait_exit(Duration::from_secs(8)).unwrap(), 0);
 

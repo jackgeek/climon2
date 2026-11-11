@@ -76,6 +76,16 @@ fn prompt_after(terminal: &mut Terminal, marker: &str) {
     terminal.wait_for_input_ready(TIMEOUT).unwrap();
 }
 
+/// Runs a foreground command that never reads the terminal, so a kill ends the
+/// shell with the hang-up signal rather than a prompt read failure (see
+/// `RECORDER`).
+fn hold_without_reading(terminal: &mut Terminal) {
+    terminal
+        .send("printf 'HOLD%s\\n' ING; sleep 1000\n")
+        .unwrap();
+    terminal.wait_for_text("HOLDING", TIMEOUT).unwrap();
+}
+
 /// An outer controlled bash that fills its host with sentinels, then becomes
 /// `climon2 <climon2>`, so the host is occupied when the client starts.
 fn occupied(package: &Package, bash: &Path, climon2: &str) -> Terminal {
@@ -394,6 +404,7 @@ fn installed_kill_ends_detached_and_attached_sessions() {
     drop(b);
     let mut c = climon2(&package, &["attach", &id[..8]], ROWS, COLS);
     prompt(&mut c);
+    hold_without_reading(&mut c);
     let mut kill = climon2(&package, &["kill", &id[..8]], ROWS, COLS);
     assert_eq!(kill.wait_exit(TIMEOUT).unwrap(), 0);
     assert_eq!(kill.screen().trim(), "", "kill is silent");
@@ -729,9 +740,11 @@ fn installed_detached_session_absorbs_a_large_write() {
 /// A TUI that sets mouse reporting, focus, bracketed paste, a hidden cursor,
 /// application keys and the alternate screen, then exits on any key without
 /// undoing any of them.
+/// Ends after one key; if its terminal closes first, it waits for the hang-up
+/// signal like `RECORDER`.
 const TUI: &str = r#"printf '\e[?1049h\e[?1000h\e[?1006h\e[?1004h\e[?2004h\e[?25l\e[?1h\e=\e[H\e[2JTUI-READY'
 stty raw -echo
-IFS= read -rsn1 _
+IFS= read -rsn1 _ || exec sleep 1000
 "#;
 
 /// An outer non-interactive shell that records termios around `climon2
@@ -845,9 +858,14 @@ fn installed_client_releases_the_host_on_every_ending() {
 }
 
 /// Records every input byte in `$1` with bracketed paste enabled.
+/// Linux wakes a terminal reader before it signals the session leader when a
+/// killed session's terminal closes, so a leader still reading the terminal
+/// can end with its own status (ADR 0003). The shell therefore leaves reading
+/// to `cat` and waits for the hang-up signal once `cat` ends.
 const RECORDER: &str = r#"stty raw -echo
 printf '\e[?2004hREC-READY'
-exec cat > "$1"
+cat > "$1"
+exec sleep 1000
 "#;
 
 fn recorder(package: &Package, bash: &Path, name: &str) -> (Terminal, PathBuf) {

@@ -96,7 +96,9 @@ session hangs up its terminal and always waits the full five-second grace
 before killing any remaining jobs, so a kill normally takes about five seconds.
 It exits 0 once the command has ended and the session is cleaned up, or 125 if
 that is not confirmed within 10 seconds. Attached clients exit with the
-command's signal-derived status.
+command's status, normally signal-derived. On Linux, as when a terminal window
+closes, a command reading the terminal can see it close before the hang-up
+signal arrives and end with its own status instead.
 
 When a client's view of a session ends (detach, exit, kill or takeover by
 another client), climon2 returns its terminal to a normal shell state: it ends
