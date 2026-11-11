@@ -13,11 +13,20 @@ fn help_reports_local_and_distribution_gate_scope() {
     assert!(help.contains("dist builds verified universal macOS release artifacts"));
     assert!(help.contains("--native-only"));
     assert!(help.contains("excludes shared source"));
+    assert!(help.contains("install [--dir <directory>]"));
+    assert!(help.contains("install builds verified production artifacts"));
 }
 
 #[test]
 fn invalid_arguments_fail_before_running_checks() {
-    for args in [vec!["dist", "unexpected"], vec!["check", "unexpected"]] {
+    for args in [
+        vec!["dist", "unexpected"],
+        vec!["check", "unexpected"],
+        vec!["install", "unexpected"],
+        vec!["install", "--dir"],
+        vec!["install", "--dir", ""],
+        vec!["install", "--dir", "somewhere", "unexpected"],
+    ] {
         let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
             .args(args)
             .output()
