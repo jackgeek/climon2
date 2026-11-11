@@ -4,7 +4,11 @@ mod support;
 
 use climon2_test_term::{Terminal, controlled_bash};
 use serde_json::{Value, json};
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::Path,
+    time::{Duration, Instant},
+};
 use support::{Package, TIMEOUT, quote};
 
 /// #21.6/#38: real installer → PATH launcher → CLI → daemon → client, from
@@ -28,9 +32,7 @@ fn installer_built_bash_smoke_lists_one_session_and_preserves_exit_seven() {
         ))
         .unwrap();
     terminal.wait_for_text("INNER> ", TIMEOUT).unwrap();
-    terminal.wait_for_input_ready(TIMEOUT).unwrap();
-    terminal.send("echo $((6*7))-ok\n").unwrap();
-    terminal.wait_for_text("42-ok", TIMEOUT).unwrap();
+    type_until(&mut terminal, "echo $((6*7))-ok\n", "42-ok");
     let sessions = package.list();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0]["depth"], 1);
@@ -41,6 +43,24 @@ fn installer_built_bash_smoke_lists_one_session_and_preserves_exit_seven() {
     assert!(package.list().is_empty());
     package.assert_clean();
     package.assert_archive_default_levels();
+}
+
+/// Types `command` until `output` appears. A client drops keys typed before it confirmed
+/// its restoration, and nothing on the screen says when it has, so `command` must be
+/// harmless to repeat.
+fn type_until(terminal: &mut Terminal, command: &str, output: &str) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        terminal.wait_for_input_ready(TIMEOUT).unwrap();
+        terminal.send(command).unwrap();
+        if terminal
+            .wait_for_text(output, Duration::from_secs(1))
+            .is_ok()
+        {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{output:?} never appeared");
+    }
 }
 
 fn launch(package: &Package, program: &str, args: &[&str]) -> Terminal {
@@ -624,14 +644,25 @@ fn missing_installed_client_after_ready_is_diagnostic_and_cleans_command() {
         .join("climon2-client");
     let saved = client.with_file_name("client-held-away");
     fs::rename(&client, &saved).unwrap();
-    let script = "trap '' HUP; printf command-started > \"$HOME/ready-marker\"; while :; do /bin/sleep 1; done";
+    let script = "trap '' HUP; while :; do /bin/sleep 1; done";
     let mut terminal = launch(
         &package,
         "/bin/bash",
         &["--noprofile", "--norc", "-c", script],
     );
     assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 125);
-    assert!(package.isolation.home().join("ready-marker").is_file());
+    // Logged right after the daemon reports readiness, before it handles the CLI's SIGTERM.
+    // A marker written by the command proves nothing: Ready follows its exec, not its script.
+    let daemon_log = package
+        .logs()
+        .into_iter()
+        .find(|path| path.ends_with("daemon.log"))
+        .expect("session log");
+    assert!(
+        fs::read_to_string(daemon_log)
+            .unwrap()
+            .contains("session ready")
+    );
     let screen = terminal.screen();
     assert_eq!(screen.matches("climon2: error:").count(), 1);
     terminal
