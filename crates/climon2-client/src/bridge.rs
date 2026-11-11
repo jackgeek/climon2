@@ -35,8 +35,9 @@ enum FilterAction {
 }
 
 /// The local terminal's paste stream: never reset by role changes (section 1.4).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum Paste {
+    #[default]
     Outside,
     Open,
     /// Began before the current role: discarded through its closing marker.
@@ -56,6 +57,8 @@ impl Paste {
     }
 }
 
+/// Starts with no prefix pending, outside a paste, with no partial marker.
+#[derive(Default)]
 struct InputFilter {
     escape: Option<u8>,
     take_control: Option<u8>,
@@ -69,9 +72,7 @@ impl InputFilter {
         Self {
             escape: settings.escape_prefix().map(|key| key.byte()),
             take_control: settings.take_control_key().map(|key| key.byte()),
-            prefix_pending: false,
-            paste: Paste::Outside,
-            marker: Vec::new(),
+            ..Self::default()
         }
     }
 
