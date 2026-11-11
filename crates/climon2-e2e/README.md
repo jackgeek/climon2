@@ -2,8 +2,11 @@
 
 The default macOS and GNU/Linux packaged acceptance tier (#38), using the public installer,
 the PATH launcher, real sibling binaries and `climon2-test-term` PTYs.
-There are no nested Cargo builds, ignored packaged tests, retries, or shortened
-production deadlines. Each scenario has an isolated HOME and climon2 home;
+There are no nested Cargo builds, ignored packaged tests, test retries, or shortened
+production deadlines. A client discards keys typed during its restoration and
+nothing on the screen marks its end, so the smoke test's first command is a
+harmless one that `type_until` retypes until its output appears.
+Each scenario has an isolated HOME and climon2 home;
 normal completion checks owned processes, session metadata and runtime sockets.
 Logs intentionally survive until the isolated home is dropped.
 
