@@ -11,7 +11,9 @@ use std::{
 const CRAPPER: &str = "6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d";
 const MUTATOR: &str = "a5a0cb803b66e0cdb8bf471b3b08af701d424a41";
 const LLVM_COV: &str = "0.9.1";
-const MUTATION_WORKERS: &str = "16";
+/// Full-host mutation workers, and so the suites the mutation-load measurement runs at once;
+/// 8 leaves room for another agent's tests on the shared development host.
+const MUTATION_WORKERS: &str = "8";
 const MUTATION_LOAD_ROUNDS: &str = "5";
 /// A mutant's test run times out, counting as killed, after this multiple of the baseline run.
 const MUTATION_TIMEOUT_FACTOR: &str = "10";

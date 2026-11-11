@@ -24,7 +24,7 @@ install builds verified production artifacts and runs their installer (optional 
 fixtures-check refuses any historical or uncommitted edit/deletion of an existing metadata golden.
 mutate runs coverage, crapper and mutation checks on shipped source.
 mutate --native-only excludes shared source; CI qualifies only host-exclusive implementations.
-check's mutation-load measurement runs 5 rounds of 16 workspace suites before mutating, even with
+check's mutation-load measurement runs 5 rounds of 8 workspace suites before mutating, even with
 nothing to mutate; mutate skips it. Logs remain in target/flake-logs.
 Cross-architecture execution of the same final archive is enforced in CI.";
 

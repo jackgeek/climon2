@@ -397,7 +397,7 @@ On arm64 macOS, install both Rust targets before running workspace tests,
 
 CI runs full runtime, real-terminal and packaged tests on Linux and both macOS
 architectures. Windows runs neutral contracts only. Shared and Linux-specific
-CRAP/mutation run on the dedicated Linux development host, with 16 mutation
+CRAP/mutation run on the dedicated Linux development host, with 8 mutation
 workers. CI does not repeat those quality checks.
 
 The macOS CI quality job uses `cargo xtask mutate --native-only`: CRAP scores
@@ -416,7 +416,7 @@ worker infrastructure failures cannot count as killed mutants.
 `cargo xtask check` also measures mutation load before mutating, even when no
 changed shipped source needs mutation; `cargo xtask mutate` does not. It warms
 `target/mutation-tests` and times one unloaded full-workspace run there, then
-runs five rounds of 16 full-workspace suites at once, each in a private copy of
+runs five rounds of 8 full-workspace suites at once, each in a private copy of
 the warm build (copy-on-write where supported). As in mutation, each suite has
 its own session. A suite fails the measurement if any test fails or if it
 outlives the mutator's timeout (10 times the unloaded run, at least 2 s),

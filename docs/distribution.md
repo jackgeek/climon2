@@ -64,7 +64,7 @@ Windows retains its platform-neutral contract job.
 
 Complete local qualification (`cargo xtask check`) measures mutation load
 before mutation, even when no changed source needs mutation. After warming the
-mutation build and timing one unloaded run, five rounds each run 16 unchanged
+mutation build and timing one unloaded run, five rounds each run 8 unchanged
 full-workspace test suites concurrently. As in mutation, each suite uses a
 private warm-build copy and its own session. Zero failures are required, and no
 suite may outlive the mutator's timeout (10 times the unloaded run): the
