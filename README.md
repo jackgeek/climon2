@@ -392,6 +392,9 @@ interactive qualification. A missing bash 5 fails in CI and is a reported local
 skip; use `CLIMON2_TEST_BASH=/usr/bin/bash` on Arch Linux. `install.sh` remains
 compatible with macOS `/bin/bash` 3.2.
 
+On arm64 macOS, install both Rust targets before running workspace tests,
+`dist` or `install`: `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
+
 CI runs full runtime, real-terminal and packaged tests on Linux and both macOS
 architectures. Windows runs neutral contracts only. Shared and Linux-specific
 CRAP/mutation run on the dedicated Linux development host, with 16 mutation
