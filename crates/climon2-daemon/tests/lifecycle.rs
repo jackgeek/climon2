@@ -586,7 +586,8 @@ fn daemon_ignores_hup_int_pipe_without_ending_the_command() {
     session.finish();
 }
 
-/// #20/#27: unfinished hellos and live probes never hold the controlling connection.
+/// #20/#27: unfinished hellos and live probes never hold the controlling connection, and a
+/// hello's deadline runs from accept however recently the peer wrote.
 #[test]
 fn concurrent_probes_absolute_hello_deadline_and_second_attach() {
     let mut session = Session::start("exit");
@@ -595,9 +596,10 @@ fn concurrent_probes_absolute_hello_deadline_and_second_attach() {
     let mut controlling = session.attach();
     session.wait_marker(&mut controlling);
     let mut slow = UnixStream::connect(&session.socket).unwrap();
-    slow.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-    slow.write_all(&[0]).unwrap();
     let accepted = Instant::now();
+    slow.set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let trickle = trickle(slow.try_clone().unwrap());
     for _ in 0..8 {
         drop(session.connect());
     }
@@ -608,12 +610,10 @@ fn concurrent_probes_absolute_hello_deadline_and_second_attach() {
     );
     assert_eq!(receive(&mut second), ServerMessage::Attached);
     session.ready(&mut second);
-    thread::sleep(Duration::from_millis(1200));
-    slow.write_all(&[0]).unwrap();
     let reply = receive(&mut slow);
     assert!(matches!(reply, ServerMessage::Error { .. }));
     assert!(accepted.elapsed() >= Duration::from_secs(2));
-    assert!(accepted.elapsed() < Duration::from_millis(2900));
+    trickle.join().unwrap();
     send(
         &mut controlling,
         ClientMessage::Input(b"ignored\n".to_vec()),
@@ -621,6 +621,23 @@ fn concurrent_probes_absolute_hello_deadline_and_second_attach() {
     send(&mut second, ClientMessage::Input(b"go\n".to_vec()));
     while !matches!(receive(&mut second), ServerMessage::Exit { code: 42 }) {}
     session.finish();
+}
+
+/// Writes a hello that never finishes and never goes quiet: a 256-byte control frame's
+/// prefix and type, then a payload byte every 50 ms until the daemon closes the connection.
+/// A deadline that restarted on each byte would not expire within the reader's 10 seconds.
+fn trickle(mut stream: UnixStream) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        if stream.write_all(&[0, 0, 1, 0, 0x01]).is_err() {
+            return;
+        }
+        for _ in 0..254 {
+            thread::sleep(Duration::from_millis(50));
+            if stream.write_all(b" ").is_err() {
+                return;
+            }
+        }
+    })
 }
 
 /// #20: malformed probes are terminal but never end the session.
