@@ -33,8 +33,9 @@ const ID: &str = "01234567-89ab-4cde-8fab-0123456789ab";
 enum Descriptions {
     Shared,
     SeparateOutput,
-    /// A read-only stdin whose file-status flags are all clear.
-    ReadOnlyInput,
+    /// Each open for one direction only: a read-only stdin whose file-status flags are
+    /// all clear, and a write-only stdout.
+    OneWay,
 }
 
 struct Pty {
@@ -72,16 +73,10 @@ impl Pty {
         )
     }
 
-    /// Gives the client a read-only stdin whose file-status flags are all clear.
-    fn read_only_input(home: &Path, metadata: &Path) -> Self {
-        Self::launch(
-            home,
-            metadata,
-            None,
-            None,
-            false,
-            Descriptions::ReadOnlyInput,
-        )
+    /// Gives the client a read-only stdin whose file-status flags are all clear and a
+    /// write-only stdout.
+    fn one_way(home: &Path, metadata: &Path) -> Self {
+        Self::launch(home, metadata, None, None, false, Descriptions::OneWay)
     }
 
     /// Runs the client as a background job of a shell that owns the PTY as its
@@ -141,7 +136,10 @@ impl Pty {
         let (input, output) = match descriptions {
             Descriptions::Shared => (slave.try_clone().unwrap(), slave.try_clone().unwrap()),
             Descriptions::SeparateOutput => (slave.try_clone().unwrap(), reopen(&slave)),
-            Descriptions::ReadOnlyInput => (read_only(&master, &slave), slave.try_clone().unwrap()),
+            Descriptions::OneWay => (
+                one_way(&master, &slave, libc::O_RDONLY),
+                one_way(&master, &slave, libc::O_WRONLY),
+            ),
         };
         let status_flags = [status_flags(&input), status_flags(&output)];
         let mut command = if background {
@@ -355,7 +353,8 @@ fn status_flags(file: &File) -> i32 {
 
 /// A new read-only open-file description of the same terminal, with every
 /// file-status flag clear, as `climon2 attach < /dev/tty` gives on macOS.
-fn read_only(master: &File, terminal: &File) -> File {
+/// Opens the terminal again for `access` alone (O_RDONLY or O_WRONLY).
+fn one_way(master: &File, terminal: &File, access: i32) -> File {
     #[cfg(target_os = "macos")]
     {
         let _ = master;
@@ -366,7 +365,8 @@ fn read_only(master: &File, terminal: &File) -> File {
         );
         let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
         let file = fs::OpenOptions::new()
-            .read(true)
+            .read(access == libc::O_RDONLY)
+            .write(access == libc::O_WRONLY)
             .custom_flags(libc::O_NOCTTY)
             .open(name.to_str().unwrap())
             .unwrap();
@@ -381,7 +381,7 @@ fn read_only(master: &File, terminal: &File) -> File {
             libc::ioctl(
                 master.as_raw_fd(),
                 libc::TIOCGPTPEER,
-                libc::O_RDONLY | libc::O_NOCTTY,
+                access | libc::O_NOCTTY,
             )
         };
         assert!(fd >= 0, "{}", std::io::Error::last_os_error());
@@ -1056,12 +1056,13 @@ fn separate_stdin_and_stdout_descriptions_both_get_their_flags_back() {
     }
 }
 
-/// #20: a read-only stdin whose file-status flags are all clear still bridges
-/// both ways and gets its flags back.
+/// #20: a read-only stdin whose file-status flags are all clear and a write-only
+/// stdout still bridge both ways (input is read from stdin, never stdout) and get
+/// their flags back.
 #[test]
-fn read_only_input_with_clear_status_flags_is_bridged_and_restored() {
+fn one_way_descriptors_are_bridged_and_restored() {
     let (home, metadata, listener) = setup();
-    let mut pty = Pty::read_only_input(home.path(), &metadata);
+    let mut pty = Pty::one_way(home.path(), &metadata);
     assert_eq!(pty.status_flags[0], 0, "stdin must have no status flags");
     let mut stream = accept(&listener);
     hello(&mut stream);

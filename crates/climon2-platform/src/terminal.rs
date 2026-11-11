@@ -33,10 +33,7 @@ mod unix {
     }
 
     fn duplicate(fd: i32) -> io::Result<File> {
-        let fd = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
-        if fd == -1 {
-            return Err(io::Error::last_os_error());
-        }
+        let fd = crate::syscall::checked(unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) })?;
         Ok(unsafe { File::from_raw_fd(fd) })
     }
 
@@ -59,13 +56,9 @@ mod unix {
     }
 
     impl SavedTerminal {
-        fn restore(&self) -> io::Result<()> {
-            if unsafe { libc::tcsetattr(self.terminal.as_raw_fd(), libc::TCSANOW, &self.saved) }
-                == -1
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
+        /// Best effort: a drop or the panic hook restores, with no one to report a failure to.
+        fn restore(&self) {
+            unsafe { libc::tcsetattr(self.terminal.as_raw_fd(), libc::TCSANOW, &self.saved) };
         }
     }
 
@@ -79,7 +72,7 @@ mod unix {
                 if let Ok(active) = ACTIVE.lock()
                     && let Some(saved) = active.as_ref()
                 {
-                    let _ = saved.restore();
+                    saved.restore();
                 }
                 previous(panic);
             }));
@@ -108,18 +101,18 @@ mod unix {
         let saved = save(terminal)?;
         let mut raw = saved.saved;
         unsafe { libc::cfmakeraw(&mut raw) };
-        if unsafe { libc::tcsetattr(saved.terminal.as_raw_fd(), libc::TCSANOW, &raw) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
+        crate::syscall::checked(unsafe {
+            libc::tcsetattr(saved.terminal.as_raw_fd(), libc::TCSANOW, &raw)
+        })?;
         Ok(saved)
     }
 
     fn save(terminal: &File) -> io::Result<SavedTerminal> {
         let terminal = duplicate(terminal.as_raw_fd())?;
         let mut saved = MaybeUninit::uninit();
-        if unsafe { libc::tcgetattr(terminal.as_raw_fd(), saved.as_mut_ptr()) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
+        crate::syscall::checked(unsafe {
+            libc::tcgetattr(terminal.as_raw_fd(), saved.as_mut_ptr())
+        })?;
         Ok(SavedTerminal {
             terminal,
             saved: unsafe { saved.assume_init() },
@@ -128,7 +121,7 @@ mod unix {
 
     impl Drop for RawModeGuard {
         fn drop(&mut self) {
-            let _ = self.0.restore();
+            self.0.restore();
             if let Ok(mut active) = ACTIVE.lock() {
                 *active = None;
             }
@@ -165,8 +158,8 @@ mod unix {
 
         fn empty() -> Self {
             Self {
-                resize: Arc::new(AtomicBool::new(false)),
-                termination: Arc::new(AtomicUsize::new(0)),
+                resize: Arc::default(),
+                termination: Arc::default(),
                 registrations: Vec::new(),
             }
         }
