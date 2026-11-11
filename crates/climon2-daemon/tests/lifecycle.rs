@@ -514,9 +514,17 @@ fn early_exit_is_delivered_after_restore_readiness() {
 /// the controller is never handed a result before it confirmed its restoration.
 #[test]
 fn an_exit_waits_for_the_controllers_ready() {
-    let mut session = Session::start("early");
+    let mut session = Session::start("early-after-restore");
     let mut stream = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
     let (period, _) = restoration(&mut stream);
+    fs::write(session.directory.path().join("finish-early"), b"").unwrap();
+    let mut output = Vec::new();
+    while !output.windows(11).any(|bytes| bytes == b"early-final") {
+        match receive(&mut stream) {
+            ServerMessage::Output(bytes) => output.extend(bytes),
+            other => panic!("a result before Ready: {other:?}"),
+        }
+    }
     stream
         .set_read_timeout(Some(Duration::from_millis(500)))
         .unwrap();
@@ -2725,7 +2733,10 @@ fn fixture_child() {
         fs::write("resized", terminal_size()).unwrap();
         std::process::exit(0);
     }
-    if mode == "early" {
+    if mode == "early" || mode == "early-after-restore" {
+        if mode == "early-after-restore" {
+            wait_file(Path::new("finish-early"));
+        }
         print!("early-final");
         std::process::exit(43);
     }
