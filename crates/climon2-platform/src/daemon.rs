@@ -94,9 +94,9 @@ mod unix {
         let child = command.spawn()?;
         drop(writer);
         Ok(PendingDaemon {
-            child,
+            pid: child.id(),
+            child: Some(child),
             reader,
-            armed: true,
             started,
         })
     }
@@ -126,15 +126,16 @@ mod unix {
     }
 
     pub struct PendingDaemon {
-        child: Child,
+        pid: u32,
+        /// Present until the daemon is ready or aborted; dropping kills and reaps it.
+        child: Option<Child>,
         reader: File,
-        armed: bool,
         started: Instant,
     }
 
     impl PendingDaemon {
         pub fn id(&self) -> u32 {
-            self.child.id()
+            self.pid
         }
 
         /// Supply metadata then socket as cleanup paths. Success leaves the
@@ -142,7 +143,8 @@ mod unix {
         pub fn wait_ready(mut self, cleanup: &[&Path]) -> io::Result<Readiness> {
             let result = read_readiness(&mut self.reader, self.started + STARTUP_TIMEOUT);
             if matches!(result, Ok(Readiness::Ready)) {
-                self.armed = false;
+                // A ready daemon runs on: dropping its handle neither kills nor reaps it.
+                self.child.take();
                 return result;
             }
             self.abort();
@@ -153,17 +155,16 @@ mod unix {
         }
 
         fn abort(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-            self.armed = false;
+            if let Some(mut child) = self.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
 
     impl Drop for PendingDaemon {
         fn drop(&mut self) {
-            if self.armed {
-                self.abort();
-            }
+            self.abort();
         }
     }
 

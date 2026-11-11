@@ -39,9 +39,9 @@ mod unix {
 
     pub fn size(terminal: &File) -> io::Result<TerminalSize> {
         let mut size = MaybeUninit::<libc::winsize>::uninit();
-        if unsafe { libc::ioctl(terminal.as_raw_fd(), libc::TIOCGWINSZ, size.as_mut_ptr()) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
+        crate::syscall::checked(unsafe {
+            libc::ioctl(terminal.as_raw_fd(), libc::TIOCGWINSZ, size.as_mut_ptr())
+        })?;
         let size = unsafe { size.assume_init() };
         Ok(TerminalSize {
             cols: size.ws_col,

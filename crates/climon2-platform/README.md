@@ -122,6 +122,8 @@ It exercises the public identity API without replacing procfs or mocking I/O.
 
 `tests/daemon.rs`: `issue19_an_inherited_readiness_pipe_closes_on_exec`,
 `issue19_a_readiness_descriptor_that_is_not_open_is_refused`,
+`issue19_descriptor_3_carries_readiness`,
+`issue19_dropping_a_pending_daemon_kills_and_reaps_it`,
 `issue19_the_longest_readiness_failure_message_arrives_whole`,
 `issue19_daemon_exec_is_detached_and_readiness_preserves_launch_failure`,
 `issue19_empty_readiness_kills_daemon_and_cleans_metadata_before_socket`,

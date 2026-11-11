@@ -22,6 +22,72 @@ fn issue19_an_inherited_readiness_pipe_closes_on_exec() {
     drop(writer);
 }
 
+/// #19: descriptor 3, the first after stdio, is a valid readiness descriptor.
+#[test]
+fn issue19_descriptor_3_carries_readiness() {
+    use std::os::{
+        fd::{AsRawFd, OwnedFd},
+        unix::process::CommandExt,
+    };
+    let (mut reader, writer) = std::io::pipe().unwrap();
+    let writer = OwnedFd::from(writer);
+    let inherited = writer.as_raw_fd();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "owned_daemon_fixture",
+            "--nocapture",
+        ])
+        .env("CLIMON2_DAEMON_FIXTURE", "ready")
+        .env("CLIMON2_READINESS_FIXTURE_FD", "3")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null());
+    unsafe {
+        command.pre_exec(move || {
+            // dup2 leaves the copy open across exec; the fixture expects its own session.
+            if libc::dup2(inherited, 3) == -1
+                || libc::fcntl(3, libc::F_SETFD, 0) == -1
+                || libc::setsid() == -1
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().unwrap();
+    drop(writer);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mut reply = Vec::new();
+    reader.read_to_end(&mut reply).unwrap();
+    assert_eq!(reply, b"R");
+}
+
+/// #19: a pending startup dropped before its readiness is read kills and reaps the daemon.
+#[test]
+fn issue19_dropping_a_pending_daemon_kills_and_reaps_it() {
+    let daemon = launch("partial");
+    let pid = daemon.id();
+    drop(daemon);
+    let reaped = climon2_platform::process::try_wait(pid);
+    if matches!(reaped, Ok(None)) {
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        let _ = climon2_platform::process::wait(pid);
+    }
+    assert_eq!(
+        reaped.err().and_then(|error| error.raw_os_error()),
+        Some(libc::ECHILD),
+        "the dropped daemon was not killed and reaped"
+    );
+}
+
 /// #19: an inherited readiness descriptor that is not open is refused, not adopted.
 #[test]
 fn issue19_a_readiness_descriptor_that_is_not_open_is_refused() {
