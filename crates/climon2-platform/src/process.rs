@@ -246,7 +246,7 @@ mod unix {
             Ok(!members.is_empty())
         }
 
-        fn candidates(&self) -> io::Result<Vec<i32>> {
+        fn candidates(&self) -> io::Result<Vec<NonZeroU32>> {
             let mut candidates = listed_pids(ProcessList::Terminal, self.terminal.0)?;
             for group in &self.groups {
                 candidates.extend(listed_pids(ProcessList::Group, group.get())?);
@@ -254,11 +254,10 @@ mod unix {
             Ok(candidates)
         }
 
-        fn members(&self, candidates: Vec<i32>) -> Vec<NonZeroU32> {
+        fn members(&self, candidates: Vec<NonZeroU32>) -> Vec<NonZeroU32> {
             let caller = std::process::id();
             candidates
                 .into_iter()
-                .filter_map(|pid| u32::try_from(pid).ok().and_then(NonZeroU32::new))
                 .filter(|pid| pid.get() != caller && in_session(*pid, self.id))
                 .collect()
         }

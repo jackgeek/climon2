@@ -1,9 +1,15 @@
 use super::unix::{ProcessList, pid};
 use climon2_core::metadata::{LinuxProcessIdentity, SessionMetadata};
-use std::{io, mem::MaybeUninit};
+use std::{io, mem::MaybeUninit, num::NonZeroU32};
 
 /// Room for processes started between sizing and filling the PID list.
 const PID_SLACK: usize = 64;
+/// `PROC_PIDTBSDINFO` takes no argument.
+const NO_ARGUMENT: u64 = 0;
+/// Without a buffer, `proc_listpids` returns the number of bytes it would fill.
+const SIZE_QUERY: libc::c_int = 0;
+/// Any token: the call only waits for libnotify's initialisation.
+const ANY_TOKEN: libc::c_int = 0;
 
 pub fn linux_identity(_pid: u32) -> io::Result<Option<LinuxProcessIdentity>> {
     Ok(None)
@@ -27,12 +33,12 @@ fn bsd_info(pid: i32) -> io::Result<Option<libc::proc_bsdinfo>> {
         libc::proc_pidinfo(
             pid,
             libc::PROC_PIDTBSDINFO,
-            0,
+            NO_ARGUMENT,
             info.as_mut_ptr().cast(),
             size,
         )
     };
-    if result <= 0 {
+    if !result.is_positive() {
         return missing_process(io::Error::last_os_error());
     }
     if result != size {
@@ -61,19 +67,22 @@ unsafe extern "C" {
 
 /// Wait out libnotify's global initialization before its macOS fork handler runs.
 pub fn before_fork() {
-    unsafe { notify_is_valid_token(0) };
+    unsafe { notify_is_valid_token(ANY_TOKEN) };
 }
 
-/// The kernel's list of processes of one terminal or one process group.
-pub(super) fn listed_pids(kind: ProcessList, which: u32) -> io::Result<Vec<i32>> {
+/// The kernel's list of processes of one terminal or one process group. Slots it did not
+/// fill stay 0, which is no process.
+pub(super) fn listed_pids(kind: ProcessList, which: u32) -> io::Result<Vec<NonZeroU32>> {
     let kind = kind as u32;
-    let needed = listed(unsafe { libc::proc_listpids(kind, which, std::ptr::null_mut(), 0) })?;
-    let mut pids = vec![0; needed / size_of::<i32>() + PID_SLACK];
+    let needed =
+        listed(unsafe { libc::proc_listpids(kind, which, std::ptr::null_mut(), SIZE_QUERY) })?;
+    let mut pids = vec![i32::default(); needed / size_of::<i32>() + PID_SLACK];
     let size = i32::try_from(size_of_val(pids.as_slice())).map_err(io::Error::other)?;
-    let bytes =
-        listed(unsafe { libc::proc_listpids(kind, which, pids.as_mut_ptr().cast(), size) })?;
-    pids.truncate(bytes / size_of::<i32>());
-    Ok(pids)
+    listed(unsafe { libc::proc_listpids(kind, which, pids.as_mut_ptr().cast(), size) })?;
+    Ok(pids
+        .into_iter()
+        .filter_map(|pid| u32::try_from(pid).ok().and_then(NonZeroU32::new))
+        .collect())
 }
 
 fn listed(bytes: i32) -> io::Result<usize> {

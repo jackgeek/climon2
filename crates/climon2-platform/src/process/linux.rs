@@ -115,7 +115,7 @@ fn boot_seconds() -> io::Result<u64> {
         .map_err(io::Error::other)
 }
 
-pub(super) fn listed_pids(kind: ProcessList, which: u32) -> io::Result<Vec<i32>> {
+pub(super) fn listed_pids(kind: ProcessList, which: u32) -> io::Result<Vec<NonZeroU32>> {
     fs::read_dir("/proc")?
         .filter_map(|entry| matching_pid(entry, kind, which).transpose())
         .collect()
@@ -125,7 +125,7 @@ fn matching_pid(
     entry: io::Result<fs::DirEntry>,
     kind: ProcessList,
     which: u32,
-) -> io::Result<Option<i32>> {
+) -> io::Result<Option<NonZeroU32>> {
     let Some(value) = entry?
         .file_name()
         .to_str()
@@ -134,7 +134,7 @@ fn matching_pid(
         return Ok(None);
     };
     if identity(value)?.is_some_and(|info| matches(info, kind, which)) {
-        return pid(value).map(Some);
+        return Ok(NonZeroU32::new(value));
     }
     Ok(None)
 }
