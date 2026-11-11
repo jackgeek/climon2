@@ -47,6 +47,9 @@ fn continuous_profile(environment: &mut [(String, String)]) -> io::Result<String
 }
 
 fn aligned_sections() -> String {
+    if cfg!(target_os = "linux") {
+        return "-Cllvm-args=-runtime-counter-relocation".to_owned();
+    }
     SECTIONS
         .iter()
         .map(|section| format!("-Clink-arg=-Wl,-sectalign,__DATA,{section},0x4000"))

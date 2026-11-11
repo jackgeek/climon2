@@ -96,7 +96,9 @@ session hangs up its terminal and always waits the full five-second grace
 before killing any remaining jobs, so a kill normally takes about five seconds.
 It exits 0 once the command has ended and the session is cleaned up, or 125 if
 that is not confirmed within 10 seconds. Attached clients exit with the
-command's signal-derived status.
+command's status, normally signal-derived. On Linux, as when a terminal window
+closes, a command reading the terminal can see it close before the hang-up
+signal arrives and end with its own status instead.
 
 When a client's view of a session ends (detach, exit, kill or takeover by
 another client), climon2 returns its terminal to a normal shell state: it ends
@@ -305,8 +307,11 @@ not supported for interactive sessions. `install.sh` still runs under
 
 ## Install
 
-Requires **macOS 15 or newer**, Apple Silicon or Intel. Release binaries are
-universal and ad-hoc signed, without Developer ID signing or notarisation.
+Supports **macOS 15 or newer** on Apple Silicon and Intel, and **x86_64
+GNU/Linux** with glibc 2.39 or newer, qualified on Ubuntu 24.04. macOS binaries
+are universal and ad-hoc signed, without Developer ID signing or notarisation.
+Arch Linux is supported for native development; musl and Linux arm64 are not
+qualified. See [distribution](docs/distribution.md) for platform archives.
 
 Latest release:
 
@@ -338,7 +343,7 @@ The installer prints a matching hint for custom destinations and never modifies
 shell startup files. Upgrades preserve existing version folders and live sessions.
 There is no `sudo` or Homebrew installation step.
 
-For browser downloads, verify `SHA256SUMS`, extract the archive, then remove
+For macOS browser downloads, verify `SHA256SUMS`, extract the archive, then remove
 quarantine from the extracted directory before running its installer:
 
 ```sh
@@ -347,6 +352,12 @@ tar -xzf climon2-0.1.0-macos-universal.tar.gz
 xattr -dr com.apple.quarantine climon2-0.1.0-macos-universal
 ./climon2-0.1.0-macos-universal/install
 ```
+
+For Linux manual installation, use the `linux-x86_64-gnu` archive and
+`sha256sum`; there is no quarantine-removal step. Linux requires procfs and a
+filesystem supporting `renameat2` directory exchange at the installation path.
+Processes sharing a climon2 home must share the same PID namespace; sharing
+session metadata across containers or PID namespaces is not supported.
 
 ## Diagnostics
 
@@ -371,28 +382,59 @@ cargo xtask check --mutate-all
 cargo xtask dist
 ```
 
-Install ShellCheck before `xtask check`. Full tests need GNU bash 5.x, vim and
-less. Interactive shells are qualified on bash 5.x only: tests use
-`CLIMON2_TEST_BASH`, else `/opt/homebrew/bin/bash`, else `/usr/local/bin/bash`,
-never macOS `/bin/bash` (3.2). A missing bash 5 fails in CI and is a reported
-local skip. `install.sh` stays compatible with, and is tested under, `/bin/bash`
-3.2. Linux and Windows run only neutral contracts (Linux also tests the Unix
-launcher), not the macOS product.
+Development needs the pinned Rust toolchain, a C compiler and libclang,
+ShellCheck, Python 3.11 or newer, GNU bash 5.x, vim and less. Interactive tests
+use `CLIMON2_TEST_BASH`, then platform defaults: Homebrew bash on macOS, or
+`/bin/bash` and `/usr/bin/bash` on Linux. macOS `/bin/bash` 3.2 is not used for
+interactive qualification. A missing bash 5 fails in CI and is a reported local
+skip; use `CLIMON2_TEST_BASH=/usr/bin/bash` on Arch Linux. `install.sh` remains
+compatible with macOS `/bin/bash` 3.2.
+
+CI runs full runtime, real-terminal and packaged tests on Linux and both macOS
+architectures. Windows runs neutral contracts only. Shared and Linux-specific
+CRAP/mutation run on the dedicated Linux development host, with 16 mutation
+workers. CI does not repeat those quality checks.
+
+The macOS CI quality job uses `cargo xtask mutate --native-only`: CRAP scores
+only registered macOS-exclusive source, and mutation selects changed files
+within that set. Shared-only changes skip that quality run; release tags use
+`--native-only --mutate-all` to qualify every macOS-exclusive file. Coverage
+still executes the workspace to exercise real callers, and mutation still
+requires the unchanged full-workspace worker baseline. Native CI parallelism
+follows available CPUs, capped at 16.
 
 `xtask check` runs formatting, strict clippy, unit/integration/installer-built
 packaged tests, ShellCheck, append-only metadata fixtures, instrumentation and
 worker-isolation proofs, coverage-backed CRAP <= 5 and zero-survivor mutation.
+The unchanged workspace must pass in a real mutation overlay before mutation;
+worker infrastructure failures cannot count as killed mutants.
+Each mutant first runs workspace library tests, then its crate's integration
+tests. A failing stage stops immediately; every mutant that passes both still
+runs the full workspace before it can count as a survivor. The unchanged
+baseline always runs the full workspace. Workers receive private copies of
+its warm build artifacts (copy-on-write where supported), rather than
+rebuilding dependencies from scratch for every changed file.
 `CLIMON2_MUTATION_BASE` selects the changed-source comparison (default `HEAD`).
+For committed work, set it to the target branch or merge base, for example
+`CLIMON2_MUTATION_BASE=origin/main cargo xtask check`.
+Native implementations must live in registered source files; shared files
+must not hide macOS-only bodies that Linux cannot qualify.
 
-`xtask dist` requires an **arm64 macOS host** and both Rust macOS targets. It
-builds isolated, unhooked packages with deployment target 15.0, merges and
-ad-hoc signs each executable, and checks signatures, architectures and versions.
-It writes the universal archive, version-stamped `install.sh` and `SHA256SUMS`
-to `target/dist/`. Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
+`xtask dist` requires an **arm64 macOS host** with both Rust macOS targets, or
+an **x86_64 GNU/Linux host**. macOS builds retain deployment target 15.0,
+universal slices and signature checks. Linux builds verify native ELF
+executables; published Linux artifacts are built on Ubuntu 24.04, not Arch,
+to establish the glibc baseline. Both builds isolate unhooked packages and
+write their native archive, stamped `install.sh` and `SHA256SUMS` to
+`target/dist/`. Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
 
-A `v<workspace version>` tag runs full mutation and all gates. The same final
-archive must pass both architectures under bash 5, including vim and less,
-before a non-draft GitHub Release and provenance attestation are published.
+A release requires a local `cargo xtask check --mutate-all` pass for the exact
+release commit; this is the maintainer's responsibility, not a duplicated CI
+job. A `v<workspace version>` tag runs full macOS-only mutation and the native
+runtime/archive gates. The same final
+macOS archive must pass both architectures, and the Linux archive must pass
+Ubuntu 24.04, under bash 5 including vim and less. Both platforms must pass
+before one GitHub Release and provenance attestation are published.
 `-rc.N` tags are prereleases. Starting with the second published release, actual
 previous-release compatibility is mandatory; the first release invents none.
 

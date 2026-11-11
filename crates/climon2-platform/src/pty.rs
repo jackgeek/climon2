@@ -1,19 +1,19 @@
 //! Darwin PTY allocation serialization. Concurrent `posix_openpt` calls can
 //! fail with the kernel-internal EREDRIVEOPEN (-6), so every climon2 process
 //! (and test harness) holds this per-user lock only while allocating a pair.
-#[cfg(not(target_os = "macos"))]
-compile_error!("PTY allocation seam requires macOS");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("PTY allocation seam requires macOS or Linux");
 
-#[cfg(target_os = "macos")]
-pub use macos::*;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use unix::*;
 
-#[cfg(target_os = "macos")]
-mod macos {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod unix {
     use std::{
         fs::{File, OpenOptions},
         io,
         os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
-        path::PathBuf,
+        path::{Path, PathBuf},
     };
 
     /// Held only while a PTY pair is being allocated; dropping releases the lock.
@@ -41,15 +41,29 @@ mod macos {
     }
 
     pub fn allocation() -> io::Result<Allocation> {
+        locked(&lock_path()?)
+    }
+
+    /// The first allocation after boot creates the lock file; nothing is ever written to it.
+    fn locked(path: &Path) -> io::Result<Allocation> {
         let file = OpenOptions::new()
-            .read(true)
-            .write(true)
+            .append(true)
             .create(true)
-            .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(lock_path()?)?;
+            .open(path)?;
         lock(&file)?;
         Ok(Allocation(file))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn the_first_allocation_creates_its_lock_file() {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("allocation.lock");
+            drop(super::locked(&path).unwrap());
+            assert!(path.is_file());
+        }
     }
 }

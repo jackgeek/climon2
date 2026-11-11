@@ -4,6 +4,12 @@ This diagram covers every climon2-owned executable target and dynamic library,
 including development fixtures. Arrows run from consumer to consumed artifact;
 labels distinguish execution, communication, and loading.
 Solid relationships exist today; dashed relationships are planned.
+The current executable relationships apply on macOS and x86_64 GNU/Linux;
+native archives are described in [distribution](distribution.md).
+The development host owns shared/Linux CRAP and mutation; CI qualifies only
+macOS-exclusive source, while retaining native runtime/archive tests. This
+[quality split](distribution.md#release-gates) changes no artifact or
+consumption relationship.
 
 ```mermaid
 flowchart TB
@@ -43,6 +49,8 @@ flowchart TB
         daemon_fixture["climon2-daemon-fixture"]
         terminal_fixture["climon2-fixture"]
         tui_fixture["climon2-tui-fixture"]
+        owned_exec["climon2-test-owned<br/>Linux test ownership exec adapter"]
+        terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
         xtask -->|"runs builds and tests"| cargo
         xtask -->|"runs runtime probes"| cli
@@ -51,6 +59,8 @@ flowchart TB
         tests -->|"uses directly or as a session command"| daemon_fixture
         tests -->|"uses directly or as a session command"| terminal_fixture
         tests -->|"uses directly or as a session command"| tui_fixture
+        tests -->|"execs registered terminal roots through; Linux only"| owned_exec
+        owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
 
     style library stroke-dasharray: 5 5
@@ -67,10 +77,23 @@ Installation relationships are outside this consumption diagram.
 
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
 
+On Linux, `climon2-test-term` builds `climon2-test-owned` as test tooling, never
+as a release payload. It opens one test-owned file descriptor before execing
+the requested terminal root. Forked descendants inherit that descriptor across
+environment clearing and reparenting, so procfs leak checks do not depend on
+catching short-lived parents. Process identity, sampled ancestry, session
+membership and environment markers remain additional ownership evidence.
+Commands that explicitly close inherited descriptors cannot retain this
+additional evidence. macOS keeps its kernel process/image ancestry tracking
+and does not use this adapter.
+
 **Current:** no climon2 dynamic library is built or shipped. Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,
 are not separately loaded dynamic libraries. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
+The macOS library filename in the planned node is not a Linux loader
+implementation. Linux native loading and its release-isolation policy remain
+subject to the [monitor integration decision](https://github.com/jackgeek/climon2/issues/125).
 
 **Planned:** the [monitor](../GLOSSARY.md#sessions) loads version-matched
 [client libraries](../GLOSSARY.md#sessions) directly into

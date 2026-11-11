@@ -103,7 +103,12 @@ pub fn discover_live(home: &Path) -> io::Result<Vec<LiveSession>> {
     let mut live = std::thread::scope(|scope| {
         let workers: Vec<_> = metadata
             .into_iter()
-            .map(|metadata| scope.spawn(move || inspect(home, metadata)))
+            .map(|metadata| {
+                let dispatch = tracing::dispatcher::get_default(Clone::clone);
+                scope.spawn(move || {
+                    tracing::dispatcher::with_default(&dispatch, || inspect(home, metadata))
+                })
+            })
             .collect();
         workers
             .into_iter()
@@ -252,7 +257,7 @@ fn inspect_failure(home: &Path, metadata: &SessionMetadata, error: &io::Error) {
 
 /// Only a proven dead daemon identity makes a refused session stale.
 fn cleanup_if_dead(home: &Path, metadata: &SessionMetadata) {
-    match process::is_same_process(metadata.daemon_pid, metadata.daemon_start_time) {
+    match process::is_same_daemon(metadata) {
         Ok(false) => cleanup_stale(home, metadata),
         Ok(true) => tracing::debug!("refused connection belongs to a live daemon"),
         Err(error) => {
@@ -265,8 +270,10 @@ fn cleanup_stale(home: &Path, metadata: &SessionMetadata) {
     let path = home
         .join("sessions")
         .join(format!("{}.pty", metadata.session_id));
-    let result = remove_if_present(&path)
-        .and_then(|()| remove_if_present(Path::new(metadata.socket_path.as_str())));
+    let result =
+        climon2_platform::runtime::validate_stale_socket(Path::new(metadata.socket_path.as_str()))
+            .and_then(|()| remove_if_present(&path))
+            .and_then(|()| remove_if_present(Path::new(metadata.socket_path.as_str())));
     if let Err(error) = result {
         tracing::warn!(errno = error.raw_os_error(), "stale session cleanup failed");
     }
@@ -321,7 +328,7 @@ fn truncate(value: &str, width: usize) -> String {
 fn leading_cells(value: &str, mut remaining: usize) -> String {
     let mut result = String::new();
     for character in value.chars() {
-        let cells = character.width().unwrap_or(0);
+        let cells = character.width().unwrap_or_default();
         if cells > remaining {
             break;
         }
