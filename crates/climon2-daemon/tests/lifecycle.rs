@@ -170,11 +170,10 @@ impl Session {
         let fixture = fs::read_to_string(self.directory.path().join("fixture-pid"))
             .ok()
             .and_then(|pid| pid.parse::<u32>().ok());
-        let status = process::wait(self.pid).unwrap();
-        self.pid = 0;
+        let status = exit_by(std::mem::take(&mut self.pid), after(FINISH_BOUND));
         assert_eq!(
-            status.code().unwrap(),
-            0,
+            status.map(|status| status.code().ok()),
+            Some(Some(0)),
             "daemon log: {:?}",
             fs::read_to_string(self.directory.path().join(format!("logs/{ID}/daemon.log")))
         );
@@ -224,9 +223,45 @@ impl Drop for Session {
             unsafe {
                 libc::kill(self.pid as i32, libc::SIGTERM);
             }
-            let _ = process::wait(self.pid);
+            exit_by(self.pid, after(FINISH_BOUND));
         }
     }
+}
+
+/// Generous for every orderly exit, the five-second leave grace included.
+const FINISH_BOUND: Duration = Duration::from_secs(20);
+
+fn after(bound: Duration) -> Instant {
+    Instant::now() + bound
+}
+
+/// Reaps the daemon; one still running at `deadline` is killed and reaped instead, so a wedged
+/// daemon fails its test rather than hanging it (and with it, every mutation run).
+fn exit_by(pid: u32, deadline: Instant) -> Option<climon2_core::exit::ExitStatus> {
+    while Instant::now() < deadline {
+        if let Some(status) = process::try_wait(pid).unwrap() {
+            return Some(status);
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    let _ = process::wait(pid);
+    None
+}
+
+/// Whether `file` turns readable before `deadline`.
+fn readable_by(file: &fs::File, deadline: Instant) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut descriptor = [libc::pollfd {
+        fd: file.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    }];
+    let milliseconds = deadline
+        .saturating_duration_since(Instant::now())
+        .as_millis();
+    let milliseconds = i32::try_from(milliseconds).unwrap_or(i32::MAX);
+    unsafe { libc::poll(descriptor.as_mut_ptr(), 1, milliseconds) > 0 }
 }
 
 struct Prepared {
@@ -1821,9 +1856,10 @@ fn run_unsupervised(
         .spawn()
         .unwrap();
     drop(writer);
+    let deadline = after(FINISH_BOUND);
     let mut readiness = Vec::new();
     let mut chunk = [0; 512];
-    loop {
+    while readable_by(&reader, deadline) {
         let count = reader.read(&mut chunk).unwrap();
         readiness.extend_from_slice(&chunk[..count]);
         if readiness == b"R" {
@@ -1833,7 +1869,18 @@ fn run_unsupervised(
             break;
         }
     }
-    (readiness, child.wait().unwrap())
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("daemon killed at its deadline after readiness {readiness:?}");
+        }
+        thread::sleep(Duration::from_millis(5));
+    };
+    (readiness, status)
 }
 
 fn failed_readiness(code: u32, message: &str) -> Vec<u8> {
