@@ -6,6 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The longest this fixture sleeps or awaits input: longer than any test waits
+/// on it under load, and short enough for a fixture a killed test left to end.
+const BOUND: Duration = Duration::from_secs(60);
+
 fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
@@ -76,11 +80,11 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
                 nix::sys::signal::raise(signal)?;
             }
             "sleep" => {
-                let millis: u64 = value.parse()?;
-                if millis > 5000 {
-                    return Err("sleep exceeds 5 s fixture bound".into());
+                let duration = Duration::from_millis(value.parse()?);
+                if duration > BOUND {
+                    return Err("sleep exceeds the fixture bound".into());
                 }
-                thread::sleep(Duration::from_millis(millis));
+                thread::sleep(duration);
             }
             _ => return Err(format!("unknown fixture action: {action}").into()),
         }
@@ -97,7 +101,7 @@ fn report(path: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>>
 /// Reads raw input until `expected` arrives, so a test can hold this fixture's
 /// next output until the host has read everything before it.
 fn await_input(expected: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + BOUND;
     let mut input = Vec::new();
     while !String::from_utf8_lossy(&input).contains(expected) {
         if Instant::now() >= deadline {

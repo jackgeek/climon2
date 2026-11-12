@@ -1,6 +1,9 @@
 use climon2_test_term::{Isolation, Mouse, MouseButton, Terminal, bin_path};
 use std::{fs, io::ErrorKind, time::Duration};
 
+/// Bounds every wait for an eventual event, tolerant of mutation-worker load.
+const TIMEOUT: Duration = Duration::from_secs(20);
+
 /// #31: the reader keeps the screen and cursor replies live even between API waits.
 #[test]
 fn terminal_answers_cursor_queries_without_an_active_wait() {
@@ -65,8 +68,7 @@ fn tui_receives_injected_focus_mouse_wheel_and_paste_encodings() {
     let mut command = isolation.command(bin_path("climon2-tui-fixture"));
     command.arg(&report);
     let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
-    let second = Duration::from_secs(1);
-    terminal.wait_for_text("cursor-ok", second).unwrap();
+    terminal.wait_for_text("cursor-ok", TIMEOUT).unwrap();
     terminal.focus(true).unwrap();
     terminal.focus(false).unwrap();
     for (action, row, column) in [
@@ -89,7 +91,7 @@ fn tui_receives_injected_focus_mouse_wheel_and_paste_encodings() {
     }
     terminal.paste("multi\nline \x1b[A paste").unwrap();
     terminal.send(b"\x04").unwrap();
-    assert_eq!(terminal.wait_exit(second).unwrap(), 0);
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
     let value: serde_json::Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
     let input: Vec<u8> = serde_json::from_value(value["input"].clone()).unwrap();
     let expected = [

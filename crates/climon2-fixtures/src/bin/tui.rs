@@ -25,7 +25,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1004h\x1b[?1006h\x1b[?2004h\x1b[2J\x1b[3;5H\x1b[6n"
     );
     io::stdout().flush()?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Longer than any test waits on this fixture under load.
+    let deadline = Instant::now() + Duration::from_secs(60);
     let mut input = Vec::new();
     let mut previous = String::new();
     loop {

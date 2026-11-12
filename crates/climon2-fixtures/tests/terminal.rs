@@ -4,7 +4,8 @@ use climon2_test_term::{
 };
 use std::{fs, time::Duration};
 
-const SECOND: Duration = Duration::from_secs(1);
+/// Bounds every wait for an eventual event, tolerant of mutation-worker load.
+const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// A default-coloured cell holding `text`.
 fn cell(text: &str) -> Cell {
@@ -28,7 +29,7 @@ fn generic_terminal_cells_report_rendition_colours_and_character_width() {
          \x1b[0;44m\u{754c}\x1b[0me\u{301}",
     ]);
     let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
-    assert_eq!(terminal.wait_exit(SECOND).unwrap(), 0);
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
     let expected = [
         Cell {
             foreground: Color::Ansi(1),
@@ -167,7 +168,7 @@ fn generic_terminal_cursor_reports_position_visibility_shape_and_blink() {
         let mut command = isolation.command(bin_path("climon2-fixture"));
         command.args(["print", output]);
         let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
-        assert_eq!(terminal.wait_exit(SECOND).unwrap(), 0);
+        assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
         assert_eq!(terminal.cursor_state(), expected, "{output:?}");
     }
     isolation.assert_clean();
@@ -206,7 +207,7 @@ fn generic_terminal_records_program_status_reports_and_bells_in_order() {
     let mut command = isolation.command(bin_path("climon2-fixture"));
     command.args(["print", std::str::from_utf8(&output).unwrap()]);
     let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
-    assert_eq!(terminal.wait_exit(SECOND).unwrap(), 0);
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
     assert_eq!(
         terminal.host_signals(),
         [
@@ -244,20 +245,20 @@ fn generic_terminal_records_a_report_split_across_reads_once() {
     ]);
     let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
     terminal
-        .wait_for_bytes(b"\x1b]7501;state=wor", SECOND)
+        .wait_for_bytes(b"\x1b]7501;state=wor", TIMEOUT)
         .unwrap();
     assert!(terminal.host_signals().is_empty());
     terminal.send("1").unwrap();
     terminal
-        .wait_for_bytes(b"king:app=climon2-monitor\x1b", SECOND)
+        .wait_for_bytes(b"king:app=climon2-monitor\x1b", TIMEOUT)
         .unwrap();
     assert!(terminal.host_signals().is_empty());
     terminal.send("2").unwrap();
     terminal
-        .wait_for_host_signals(SECOND, |signals| signals.len() == 2)
+        .wait_for_host_signals(TIMEOUT, |signals| signals.len() == 2)
         .unwrap();
     assert_eq!(terminal.host_signals(), [report(WORKING), HostSignal::Bell]);
-    assert_eq!(terminal.wait_exit(SECOND).unwrap(), 0);
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
     drop(terminal);
     isolation.assert_clean();
 }
@@ -286,9 +287,9 @@ fn generic_terminal_refuses_input_the_application_has_not_enabled() {
     ];
     for (modes, inject) in cases {
         let mut command = isolation.command(bin_path("climon2-fixture"));
-        command.args(["print", &format!("{modes}ready"), "sleep", "5000"]);
+        command.args(["print", &format!("{modes}ready"), "sleep", "60000"]);
         let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
-        terminal.wait_for_text("ready", SECOND).unwrap();
+        terminal.wait_for_text("ready", TIMEOUT).unwrap();
         let refused = inject(&mut terminal).unwrap_err();
         assert_eq!(
             refused.kind(),
@@ -296,7 +297,7 @@ fn generic_terminal_refuses_input_the_application_has_not_enabled() {
             "{modes:?}"
         );
         terminal.send("done\n").unwrap();
-        terminal.wait_for_bytes(b"done\r\n", SECOND).unwrap();
+        terminal.wait_for_bytes(b"done\r\n", TIMEOUT).unwrap();
         let received = terminal.received();
         assert!(
             received.ends_with(b"readydone\r\n"),
@@ -325,9 +326,9 @@ fn generic_terminal_reports_its_contract_and_exits() {
     command.env("PWD", "literal-not-the-working-directory");
     command.env("SHLVL", "41");
     let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
-    terminal.wait_for_text("hello-pty", SECOND).unwrap();
-    terminal.wait_for_bytes(b"hello-pty", SECOND).unwrap();
-    assert_eq!(terminal.wait_exit(SECOND).unwrap(), 7);
+    terminal.wait_for_text("hello-pty", TIMEOUT).unwrap();
+    terminal.wait_for_bytes(b"hello-pty", TIMEOUT).unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 7);
     let value: serde_json::Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
     assert_eq!(
         value["cwd"],
@@ -359,7 +360,7 @@ fn generic_terminal_observes_resize_and_signal_exit() {
         "TERM",
     ]);
     let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
-    terminal.wait_for_text("resize-ready", SECOND).unwrap();
+    terminal.wait_for_text("resize-ready", TIMEOUT).unwrap();
     terminal.resize(31, 97).unwrap();
     assert_eq!(terminal.wait_exit(Duration::from_secs(2)).unwrap(), 143);
     let value: serde_json::Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
@@ -383,7 +384,7 @@ fn timed_waits_dump_screen_and_bytes_and_drop_cleans_ignored_sighup() {
         "5000",
     ]);
     let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
-    terminal.wait_for_text("still-alive", SECOND).unwrap();
+    terminal.wait_for_text("still-alive", TIMEOUT).unwrap();
     for result in [
         terminal.wait_for_text("missing", Duration::from_millis(100)),
         terminal.wait_for_bytes(b"absent", Duration::from_millis(100)),
