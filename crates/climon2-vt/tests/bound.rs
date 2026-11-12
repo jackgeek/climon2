@@ -120,21 +120,22 @@ fn a_model_is_admitted_at_its_mandatory_bytes_and_rejected_one_below() {
 
 const ROOMY: usize = 64 * 1024 * 1024;
 
-/// LIM-03 Contract: plain text fills cells the engine already holds, so it is
-/// accepted unchanged without charging anything more.
+/// LIM-03 Contract: plain text, invalid bytes included, fills cells the
+/// engine already holds, so it is accepted unchanged without charging
+/// anything more.
 #[test]
 fn plain_text_fills_held_cells_without_growth() {
     let meter = Meter::watch();
-    let mut model = Model::new(geometry(10, 3), limits(ROOMY, 100)).unwrap();
+    let mut model = Model::new(geometry(10, 3), limits(ROOMY, ROWS)).unwrap();
     let footprint = model.footprint();
 
     model
-        .feed(b"\x1b7hel\x1b[1mlo\x1b[0m\x1b8\r\nworld\r\n\xe4\xb8\x80x\x07")
+        .feed(b"\x1b7hel\x1b[1mlo\x1b[0m\x1b8\r\nworld\r\n\xe4\xb8\x80x\xff\x07")
         .unwrap();
 
     assert!(meter.peak() <= footprint);
     assert_eq!(model.footprint(), footprint);
-    assert_eq!(model.screen(), ["hello", "world", "\u{4e00}x"]);
+    assert_eq!(model.screen(), ["hello", "world", "\u{4e00}x\u{fffd}"]);
 }
 
 /// History rows for tests about anything but history: none, so a charged but
