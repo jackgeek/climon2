@@ -91,7 +91,7 @@ impl Connection {
             accepted: Instant::now(),
             incoming: Vec::new(),
             outgoing: VecDeque::new(),
-            queued_bytes: 0,
+            queued_bytes: Default::default(),
             last_progress: Instant::now(),
             close_when_empty: false,
         })
