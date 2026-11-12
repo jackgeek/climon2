@@ -18,10 +18,13 @@ Do not treat their private codes, authority IDs or response shapes as revision 1
 
 Current [release](../../../GLOSSARY.md#restoration-and-presentation) output
 resets terminal modes to the normal-shell baseline, then restores the
-normal-screen cursor recorded by that attachment's committed presentation.
+normal-screen cursor recorded by that
+[attachment](../../../GLOSSARY.md#attachment-and-control)'s committed
+[presentation](../../../GLOSSARY.md#restoration-and-presentation).
 This keeps subsequent shell input below restored output, including after Vim
-has left the alternate screen. It does not restore the host's pre-attachment
-screen or query the host. See the [terminal architecture](../../adr/0007-daemon-owned-virtual-terminal.md#presentation-release).
+has left the alternate screen. It does not restore the
+[host](../../../GLOSSARY.md#sessions)'s pre-attachment screen or query the host.
+See the [terminal architecture](../../adr/0007-daemon-owned-virtual-terminal.md#presentation-release).
 
 The frozen [hello request](hello-request.md) and [reply](hello-reply.md) remain
 unchanged in required fields, protocol 1 and existing limits.
