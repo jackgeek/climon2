@@ -193,7 +193,7 @@ failure instead uses the climon2 error code.
 
 ## Future headless creation and existing CLI kill
 
-Reserve future `climon2 exec --headless <command> [args...]`. It starts no
+Reserve future `c2 exec --headless <command> [args...]`. It starts no
 interactive client and returns success only after daemon-confirmed successful
 session creation. A later command outcome is the session's outcome, not the
 already-returned CLI's status. Creation failure must be reported truthfully.
@@ -205,7 +205,7 @@ explicit Kill. Normal sessions retain their existing leave policy; deliberate
 detach retains its established behavior. This narrowly scoped headless lifetime
 exception does not make every session persistent or add native-crash isolation.
 
-`climon2 kill <session>` already exists. Preserve it and require it to terminate
+`c2 kill <session>` already exists. Preserve it and require it to terminate
 future headless sessions using the same authoritative Kill semantics. Selector
 Delete adds confirmation and run-local dismissal, not a different wire Kill.
 CLI kill does not dismiss rows in an independently running monitor.

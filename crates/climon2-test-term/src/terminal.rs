@@ -217,6 +217,8 @@ impl Terminal {
         cols: u16,
         options: Options,
     ) -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        let command = crate::ownership::prepare(command);
         let pair = {
             let _allocation = climon2_platform::pty::allocation()?;
             portable_pty::native_pty_system().openpty(pty_size(rows, cols)?)

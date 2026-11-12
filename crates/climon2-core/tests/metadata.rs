@@ -6,6 +6,37 @@ const FILE: &str = "550e8400-e29b-41d4-a716-446655440000.pty";
 const V1: &[u8] = include_bytes!("goldens/metadata-v1.json");
 
 #[test]
+fn linux_process_identity_is_additive_and_rejects_malformed_boot_ids() {
+    let mut record: serde_json::Value = serde_json::from_slice(V1).unwrap();
+    record["daemon_linux_identity"] = serde_json::json!({
+        "boot_id": "d56f4c51-46d4-48b3-aeb5-68aa95558389",
+        "start_ticks": 12345
+    });
+    let read = |record: &serde_json::Value| {
+        SessionMetadata::from_json(Path::new(FILE), &serde_json::to_vec(record).unwrap())
+    };
+    let parsed = read(&record).unwrap();
+    assert_eq!(
+        parsed.daemon_linux_identity.as_ref().unwrap().start_ticks,
+        12345
+    );
+    let written: serde_json::Value = serde_json::from_slice(&parsed.to_json().unwrap()).unwrap();
+    assert_eq!(written, record);
+    for invalid in [
+        "not-a-boot-id",
+        "D56F4C51-46D4-48B3-AEB5-68AA95558389",
+        "d56f4c5146d448b3aeb568aa95558389",
+    ] {
+        record["daemon_linux_identity"]["boot_id"] = serde_json::json!(invalid);
+        assert!(read(&record).is_err(), "{invalid}");
+    }
+    record["daemon_linux_identity"]["boot_id"] =
+        serde_json::json!("d56f4c51-46d4-48b3-aeb5-68aa95558389");
+    record["daemon_linux_identity"]["start_ticks"] = serde_json::json!(-1);
+    assert!(read(&record).is_err());
+}
+
+#[test]
 fn adr0005_every_checked_in_golden_is_readable_by_the_current_reader() {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/goldens");
     for entry in std::fs::read_dir(directory).unwrap() {

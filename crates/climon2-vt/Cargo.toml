@@ -8,5 +8,8 @@ publish.workspace = true
 [dependencies]
 alacritty_terminal = { version = "=0.26.0", default-features = false }
 
+[dev-dependencies]
+vt100 = "0.18.1"
+
 [lints]
 workspace = true
