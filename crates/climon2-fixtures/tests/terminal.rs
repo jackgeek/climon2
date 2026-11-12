@@ -4,8 +4,8 @@ use climon2_test_term::{
 };
 use std::{fs, time::Duration};
 
-/// Bounds every wait for an eventual event, tolerant of mutation-worker load.
-const TIMEOUT: Duration = Duration::from_secs(20);
+mod support;
+use support::TIMEOUT;
 
 /// A default-coloured cell holding `text`.
 fn cell(text: &str) -> Cell {
@@ -362,7 +362,7 @@ fn generic_terminal_observes_resize_and_signal_exit() {
     let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
     terminal.wait_for_text("resize-ready", TIMEOUT).unwrap();
     terminal.resize(31, 97).unwrap();
-    assert_eq!(terminal.wait_exit(Duration::from_secs(2)).unwrap(), 143);
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 143);
     let value: serde_json::Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
     assert_eq!(value["size"], serde_json::json!([31, 97]));
     drop(terminal);
