@@ -151,9 +151,11 @@ impl LogFile {
 
     pub fn capture_stderr(&self) -> io::Result<StderrCapture> {
         let (reader, writer) = crate::daemon::pipe()?;
-        // The saved descriptor is owned here and is never inherited across exec.
-        let saved =
-            owned_fd(unsafe { libc::fcntl(libc::STDERR_FILENO, libc::F_DUPFD_CLOEXEC, 3) })?;
+        let saved = crate::syscall::checked(unsafe {
+            libc::fcntl(libc::STDERR_FILENO, libc::F_DUPFD_CLOEXEC, 3)
+        })?;
+        // The new descriptor is owned here and is never inherited across exec.
+        let saved = unsafe { OwnedFd::from_raw_fd(saved) };
         replace_stderr(writer.as_raw_fd())?;
         drop(writer);
         let mut sink = self.writer();
@@ -174,20 +176,8 @@ pub struct StderrCapture {
     reader: Option<std::thread::JoinHandle<io::Result<()>>>,
 }
 
-fn owned_fd(fd: libc::c_int) -> io::Result<OwnedFd> {
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // Every caller transfers a newly allocated descriptor.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
-}
-
 fn replace_stderr(fd: libc::c_int) -> io::Result<()> {
-    if unsafe { libc::dup2(fd, libc::STDERR_FILENO) } < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    crate::syscall::checked(unsafe { libc::dup2(fd, libc::STDERR_FILENO) }).map(drop)
 }
 
 impl Drop for StderrCapture {
