@@ -22,6 +22,17 @@ fn a_fresh_presentation_is_direct_with_nothing_open() {
 }
 
 #[test]
+fn an_empty_restoration_releases_at_the_first_cell() {
+    let mut vt = vt(20, 6, 0);
+    let mut presentation = Presentation::new(20, 6);
+    restore(&mut vt, &mut presentation);
+    assert_eq!(
+        presentation.release(),
+        [release(false), b"\x1b[1;1H".to_vec()].concat()
+    );
+}
+
+#[test]
 fn committed_live_output_tracks_the_alternate_screen_and_synchronized_updates() {
     let mut vt = vt(80, 24, 0);
     let mut presentation = Presentation::new(80, 24);
@@ -136,7 +147,9 @@ fn derived_history_pushes_leave_the_normal_cursor_at_the_host_bottom() {
     bytes.extend(vt.derive(&mut presentation));
     feed(&mut vt, b"\x1b[?1049l\x1b[6;1H\nhistory\n\x1b[?1049h");
     bytes.extend(vt.derive(&mut presentation));
-    bytes.extend(presentation.release());
+    let released = presentation.release();
+    assert_eq!(released, [release(true), b"\x1b[8;1H".to_vec()].concat());
+    bytes.extend(released);
     assert_eq!(cursor(&host(30, 8, &bytes)), (7, 0, false));
 }
 

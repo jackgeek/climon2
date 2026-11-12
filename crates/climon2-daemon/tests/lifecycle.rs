@@ -1662,6 +1662,31 @@ fn repeated_sync_begins_do_not_hold_a_grant() {
     session.finish();
 }
 
+#[test]
+fn an_open_synchronized_update_is_not_released_before_its_deadline() {
+    let session = Session::start("retain-10");
+    let mut stream = session.attach();
+    session.wait_marker(&mut stream);
+    for _ in 0..3 {
+        let started = Instant::now();
+        script(&session, "sync");
+        let mut output = Vec::new();
+        while count(&output, b"\x1b[?2026l") == 0 {
+            match receive(&mut stream) {
+                ServerMessage::Output(bytes) => output.extend(bytes),
+                other => panic!("unexpected synchronized update frame: {other:?}"),
+            }
+        }
+        assert_eq!(count(&output, b"\x1b[?2026h"), 1);
+        assert!(
+            started.elapsed() >= Duration::from_millis(150),
+            "synchronized update ended early: {:?}",
+            started.elapsed()
+        );
+    }
+    kill(session);
+}
+
 /// A host beyond the session's size limits sees a derived presentation; a
 /// later host resize is presented without resizing the command.
 #[test]
@@ -2525,6 +2550,7 @@ fn follow_script() -> ! {
                     }
                 }
                 ["clear"] => write!(out, "\x1b[3J").unwrap(),
+                ["sync"] => write!(out, "\x1b[?2026h").unwrap(),
                 _ => panic!("unknown script command {command:?}"),
             }
             out.flush().unwrap();
