@@ -5,6 +5,9 @@ use climon2_core::wire::{
     ControlRecord, Counter, Families, FatalCode, Frame, Geometry, Mode, Open, Request, Requested,
 };
 use std::num::NonZeroU32;
+use support::{counter, families};
+
+mod support;
 
 const OPEN: u8 = 0x30;
 const LEAVE: u8 = 0x37;
@@ -12,14 +15,6 @@ const KILL: u8 = 0x38;
 
 fn request(code: u8, body: impl AsRef<[u8]>) -> Result<Request, FatalCode> {
     Request::from_frame(&Frame::new(code, body.as_ref().to_vec()))
-}
-
-fn counter(value: u64) -> Counter {
-    Counter::new(value).unwrap()
-}
-
-fn families(tokens: &[&str]) -> Families {
-    Families::new(tokens.iter().map(|token| token.to_string()).collect()).unwrap()
 }
 
 fn open_body(capabilities: &str, mode: &str) -> String {

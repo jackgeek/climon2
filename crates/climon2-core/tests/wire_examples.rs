@@ -4,10 +4,10 @@
 //! published text and the codec cannot drift apart. The same examples seed
 //! the member strictness sweep (COM-02).
 use climon2_core::wire::{
-    Available, CommandFinal, CommandResult, ControlRecord, Counter, Error, Families, FatalCode,
-    FatalError, Frame, InitialMetadata, Kill, Leave, Mode, Notification, NotificationSource, Open,
-    Outcome, Progress, ProgressChanged, ProgressState, Request, Requested, Response, ServerMessage,
-    Status, StatusChanged, StatusState, Success, TitleChanged,
+    Available, CommandFinal, CommandResult, ControlRecord, Error, FatalCode, FatalError, Frame,
+    InitialMetadata, Kill, Leave, Mode, Notification, NotificationSource, Open, Outcome, Progress,
+    ProgressChanged, ProgressState, Request, Requested, Response, ServerMessage, Status,
+    StatusChanged, StatusState, Success, TitleChanged,
 };
 use climon2_core::{
     hello::{
@@ -18,35 +18,17 @@ use climon2_core::{
     wire::{Advertisement, Family, FrameLimit, FrameLimits},
 };
 use serde_json::{Map, Value, json};
+use std::collections::BTreeSet;
 use std::num::NonZeroU32;
-use std::{collections::BTreeSet, fs, path::Path};
+use support::{counter, families, page_examples};
 
-/// Every JSON example on one daemon wire page, in page order.
-fn examples(page: &str) -> Vec<String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/protocol/daemon-client")
-        .join(page);
-    let text = fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
-    text.split("```json\n")
-        .skip(1)
-        .map(|block| block.split_once("\n```").expect("closed JSON example").0)
-        .map(str::to_owned)
-        .collect()
-}
+mod support;
 
 /// The single JSON example on one daemon wire page.
 fn example(page: &str) -> String {
-    let mut blocks = examples(page);
+    let mut blocks = page_examples(page);
     assert_eq!(blocks.len(), 1, "{page} publishes one JSON example");
     blocks.remove(0)
-}
-
-fn counter(value: u64) -> Counter {
-    Counter::new(value).unwrap()
-}
-
-fn families(tokens: &[&str]) -> Families {
-    Families::new(tokens.iter().map(|token| token.to_string()).collect()).unwrap()
 }
 
 fn request(code: u8, page: &str) -> (Request, Frame) {
@@ -202,7 +184,8 @@ fn hello(body: &str) -> (HelloReply, HelloExtensions) {
 /// re-encode byte-identically.
 #[test]
 fn published_hello_advertisement_examples_round_trip_byte_identically() {
-    let [frozen, current, revision1]: [String; 3] = examples("hello-reply.md").try_into().unwrap();
+    let [frozen, current, revision1]: [String; 3] =
+        page_examples("hello-reply.md").try_into().unwrap();
     let expected = HelloReply {
         session_id: "550e8400-e29b-41d4-a716-446655440000".parse().unwrap(),
         climon2_version: "1.2.3".parse().unwrap(),

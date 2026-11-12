@@ -9,6 +9,9 @@ use climon2_core::wire::{
     Rejection, Response, ServerMessage, Status, StatusChanged, StatusState, Success, Utc,
 };
 use std::num::NonZeroU32;
+use support::counter;
+
+mod support;
 
 const RESPONSE: u8 = 0x40;
 const INITIAL_METADATA: u8 = 0x41;
@@ -45,10 +48,6 @@ fn encoded(message: &ServerMessage) -> Frame {
         ServerMessage::CommandFinal(result) => result.to_frame(),
         ServerMessage::FatalError(error) => error.to_frame(),
     }
-}
-
-fn counter(value: u64) -> Counter {
-    Counter::new(value).unwrap()
 }
 
 fn utc(text: &str) -> Utc {
