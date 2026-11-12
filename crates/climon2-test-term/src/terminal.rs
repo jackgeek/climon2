@@ -72,7 +72,12 @@ impl Default for Options {
 pub struct Modes {
     pub alternate_screen: bool,
     pub cursor_visible: bool,
+    /// Any mouse tracking or SGR mouse encoding mode.
     pub mouse: bool,
+    /// Button-event (press, release and drag) mouse tracking, DEC 1002.
+    pub mouse_drag: bool,
+    /// SGR extended mouse encoding, DEC 1006.
+    pub sgr_mouse: bool,
     pub focus: bool,
     pub bracketed_paste: bool,
     pub application_cursor: bool,
@@ -89,6 +94,8 @@ impl Modes {
         alternate_screen: false,
         cursor_visible: true,
         mouse: false,
+        mouse_drag: false,
+        sgr_mouse: false,
         focus: false,
         bracketed_paste: false,
         application_cursor: false,
@@ -104,6 +111,8 @@ impl Modes {
             alternate_screen: mode.contains(TermMode::ALT_SCREEN),
             cursor_visible: mode.contains(TermMode::SHOW_CURSOR),
             mouse: mode.intersects(TermMode::MOUSE_MODE | TermMode::SGR_MOUSE),
+            mouse_drag: mode.contains(TermMode::MOUSE_DRAG),
+            sgr_mouse: mode.contains(TermMode::SGR_MOUSE),
             focus: mode.contains(TermMode::FOCUS_IN_OUT),
             bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
             application_cursor: mode.contains(TermMode::APP_CURSOR),

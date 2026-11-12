@@ -245,18 +245,25 @@ fn expected_screen(rows: u16, cols: u16, prefix: &str) -> String {
 }
 
 /// The monitor owns the host: its own alternate screen showing the top row and
-/// the empty state, raw input, bracketed paste, SGR mouse and focus reporting,
-/// no cursor, and the host's title untouched.
+/// the empty state, raw input, bracketed paste, SGR-encoded button and drag
+/// mouse reports and focus reports, no cursor, every other mode at the
+/// baseline, and the host's title untouched.
 fn opened(terminal: &mut Terminal) {
     terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
     terminal.wait_for_input_ready(TIMEOUT).unwrap();
-    let modes = terminal.modes();
-    assert!(modes.alternate_screen, "{modes:?}");
-    assert!(
-        modes.bracketed_paste && modes.mouse && modes.focus,
-        "{modes:?}"
+    assert_eq!(
+        terminal.modes(),
+        Modes {
+            alternate_screen: true,
+            cursor_visible: false,
+            mouse: true,
+            mouse_drag: true,
+            sgr_mouse: true,
+            focus: true,
+            bracketed_paste: true,
+            ..Modes::BASELINE
+        }
     );
-    assert!(!modes.cursor_visible, "{modes:?}");
     assert_title_untouched(terminal);
 }
 
