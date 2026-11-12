@@ -1,8 +1,8 @@
 //! Server messages: session daemon to client, types `0x40` through `0x4d`.
 //! Core metadata flows to every selected family regardless of control.
 use super::{
-    Available, CommandResult, Counter, Error, FatalCode, Frame, Geometry, Progress, Response,
-    Status,
+    Available, CommandResult, Counter, Display, Error, FatalCode, Frame, Geometry, Progress,
+    Response, Status,
     record::{self, ControlRecord, Decoder, by_name, nullable},
 };
 use crate::ContractError;
@@ -341,13 +341,14 @@ pub enum ServerMessage {
     ControlGranted(ControlGranted),
     ControlRevoked(ControlRevoked),
     RestorationBegin(RestorationBegin),
+    Display(Display),
     RestorationComplete(RestorationComplete),
     Geometry(ActualGeometry),
     CommandFinal(CommandFinal),
     FatalError(FatalError),
 }
 
-const DECODERS: [(u8, Decoder<ServerMessage>); 13] = [
+const DECODERS: [(u8, Decoder<ServerMessage>); 14] = [
     (Response::CODE, |body| {
         record::decode(body).map(ServerMessage::Response)
     }),
@@ -374,6 +375,9 @@ const DECODERS: [(u8, Decoder<ServerMessage>); 13] = [
     }),
     (RestorationBegin::CODE, |body| {
         record::decode(body).map(ServerMessage::RestorationBegin)
+    }),
+    (Display::CODE, |body| {
+        Display::decode(body).map(ServerMessage::Display)
     }),
     (RestorationComplete::CODE, |body| {
         record::decode(body).map(ServerMessage::RestorationComplete)

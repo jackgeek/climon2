@@ -28,7 +28,7 @@ pub trait ControlRecord: Serialize + DeserializeOwned {
 
 /// Every request carries a `request_id` and a Response echoes one; no other
 /// record has one.
-fn correlated(code: u8) -> bool {
+pub(crate) fn correlated(code: u8) -> bool {
     REQUEST_TYPES.contains(&code) || code == Response::CODE
 }
 

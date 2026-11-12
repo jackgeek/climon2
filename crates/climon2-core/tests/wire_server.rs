@@ -51,6 +51,7 @@ fn encoded(message: &ServerMessage) -> Frame {
         ServerMessage::ControlGranted(grant) => grant.to_frame(),
         ServerMessage::ControlRevoked(revocation) => revocation.to_frame(),
         ServerMessage::RestorationBegin(begin) => begin.to_frame(),
+        ServerMessage::Display(display) => display.to_frame(),
         ServerMessage::RestorationComplete(complete) => complete.to_frame(),
         ServerMessage::Geometry(geometry) => geometry.to_frame(),
         ServerMessage::CommandFinal(result) => result.to_frame(),

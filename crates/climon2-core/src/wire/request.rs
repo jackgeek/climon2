@@ -1,6 +1,6 @@
 //! Requests: client to session daemon, types `0x30` through `0x39`.
 use super::{
-    Counter, Families, FatalCode, Frame, Geometry, Requested,
+    Counter, Families, FatalCode, Frame, Geometry, Input, Requested,
     record::{self, ControlRecord, Decoder, by_name, nullable},
 };
 use crate::ContractError;
@@ -223,6 +223,7 @@ impl ControlRecord for Focus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Request {
     Open(Open),
+    Input(Input),
     Resize(Resize),
     Acquire(Acquire),
     Ready(Ready),
@@ -233,8 +234,9 @@ pub enum Request {
     Focus(Focus),
 }
 
-const DECODERS: [(u8, Decoder<Request>); 9] = [
+const DECODERS: [(u8, Decoder<Request>); 10] = [
     (Open::CODE, |body| record::decode(body).map(Request::Open)),
+    (Input::CODE, |body| Input::decode(body).map(Request::Input)),
     (Resize::CODE, |body| {
         record::decode(body).map(Request::Resize)
     }),

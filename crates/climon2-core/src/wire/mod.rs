@@ -7,6 +7,7 @@
 //!
 //! Extend a direction by adding its record type, a `ControlRecord` impl and
 //! one decoder-table entry; binary records implement `to_frame` themselves.
+mod binary;
 mod catalogue;
 mod families;
 mod frame;
@@ -19,6 +20,7 @@ mod types;
 
 /// Shares the session ID's GUID syntax and validator.
 pub use crate::identity::Guid;
+pub use binary::{Display, Input};
 pub use catalogue::{Error, ErrorCode, FatalCode, OperationalCode};
 pub use families::{Advertisement, Families, Family, FrameLimits, Requested};
 pub use frame::{Frame, FrameLimit, WireError, read_frame, write_frame};

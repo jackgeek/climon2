@@ -5,11 +5,12 @@
 //! strictness sweeps (COM-02).
 use climon2_core::wire::{
     Acknowledge, Acquire, ActualGeometry, Available, CommandFinal, CommandResult, ControlGranted,
-    ControlRecord, ControlRevoked, Error, FatalCode, FatalError, Focus, FocusBytes, Frame,
-    GrantReason, InitialMetadata, Kill, Leave, Mode, Notification, NotificationSource, Open,
+    ControlRecord, ControlRevoked, Display, Error, FatalCode, FatalError, Focus, FocusBytes, Frame,
+    GrantReason, InitialMetadata, Input, Kill, Leave, Mode, Notification, NotificationSource, Open,
     OperationalCode, Outcome, Progress, ProgressChanged, ProgressState, Ready, Rejection, Request,
     Requested, Resize, Response, RestorationBegin, RestorationComplete, RevocationReason,
     ServerMessage, SetViewing, Status, StatusChanged, StatusState, Success, TitleChanged,
+    read_frame, write_frame,
 };
 use climon2_core::{
     hello::{
@@ -20,9 +21,8 @@ use climon2_core::{
     wire::{Advertisement, Family, FrameLimit, FrameLimits},
 };
 use serde_json::{Map, Value, json};
-use std::collections::BTreeSet;
-use std::num::NonZeroU32;
-use support::{counter, families, geometry, page_examples};
+use std::{collections::BTreeSet, fs, num::NonZeroU32, path::Path};
+use support::{counter, families, geometry, page_dumps, page_examples};
 
 mod support;
 
@@ -320,6 +320,56 @@ fn published_control_and_restoration_examples_round_trip_byte_identically() {
     assert_eq!(expected.to_frame(), frame);
 }
 
+fn limit() -> FrameLimit {
+    FrameLimit::new(1_048_576).unwrap()
+}
+
+/// The single hex dump on one daemon wire page, read as one whole frame.
+fn dumped(page: &str) -> (Frame, Vec<u8>) {
+    let [bytes]: [Vec<u8>; 1] = page_dumps(page).try_into().unwrap();
+    let mut reader = bytes.as_slice();
+    let frame = read_frame(&mut reader, limit()).unwrap().unwrap();
+    assert!(reader.is_empty(), "{page} shows exactly one frame");
+    (frame, bytes)
+}
+
+fn written(frame: &Frame) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    write_frame(&mut bytes, frame, limit()).unwrap();
+    bytes
+}
+
+/// DOC-01 / COM-04: Input `0x31` and Display `0x49` publish whole frames as
+/// hex dumps that carry the payload `00 ff 41`. Each decodes to its
+/// documented counters and exact payload and re-encodes to the same bytes.
+#[test]
+fn published_binary_examples_round_trip_byte_identically() {
+    let (frame, bytes) = dumped("request-input.md");
+    let expected = Input {
+        request_id: counter(2),
+        period: counter(1),
+        restoration_id: counter(1),
+        payload: vec![0x00, 0xff, 0x41],
+    };
+    assert_eq!(
+        Request::from_frame(&frame),
+        Ok(Request::Input(expected.clone()))
+    );
+    assert_eq!(written(&expected.to_frame()), bytes);
+
+    let (frame, bytes) = dumped("event-display.md");
+    let expected = Display {
+        period: counter(2),
+        restoration_id: counter(3),
+        payload: vec![0x00, 0xff, 0x41],
+    };
+    assert_eq!(
+        ServerMessage::from_frame(&frame),
+        Ok(ServerMessage::Display(expected.clone()))
+    );
+    assert_eq!(written(&expected.to_frame()), bytes);
+}
+
 fn hello(body: &str) -> (HelloReply, HelloExtensions) {
     let frame = protocol::Frame::new(0x01, body.as_bytes().to_vec()).unwrap();
     let protocol::ServerMessage::Hello(reply) = protocol::ServerMessage::from_frame(frame).unwrap()
@@ -439,6 +489,34 @@ const JSON_PAGES: [(&str, &[u8]); 22] = [
     ("event-command-final.md", &[0x4c]),
     ("event-fatal-error.md", &[0x4d]),
 ];
+
+/// DOC-01: every example on every revision-1 page is exercised: its JSON
+/// examples through the sweep table, and its hex dumps, which only Input and
+/// Display publish, through the binary round trip. The frozen hello pages
+/// have their own tests.
+#[test]
+fn every_revision1_page_example_is_exercised() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/protocol/daemon-client");
+    let mut dumps = BTreeSet::new();
+    for entry in fs::read_dir(directory).unwrap() {
+        let page = entry.unwrap().file_name().into_string().unwrap();
+        if page.starts_with("hello-") {
+            continue;
+        }
+        let listed = JSON_PAGES
+            .iter()
+            .find(|(listed, _)| *listed == page)
+            .map_or(0, |(_, codes)| codes.len());
+        assert_eq!(page_examples(&page).len(), listed, "{page}");
+        if !page_dumps(&page).is_empty() {
+            dumps.insert(page);
+        }
+    }
+    assert_eq!(
+        dumps,
+        BTreeSet::from(["event-display.md".to_owned(), "request-input.md".to_owned()])
+    );
+}
 
 /// Valid JSON records: every published example, then each documented shape
 /// that no page shows.
