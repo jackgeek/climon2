@@ -162,6 +162,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "uuid",
  "vt100",
 ]
 
