@@ -60,16 +60,30 @@ fn body(frame: &Frame, code: u8) -> &str {
     std::str::from_utf8(frame.body()).unwrap()
 }
 
-/// Ends an `exit` fixture session through an ordinary private attachment.
-fn end_through_attachment(mut session: Session) {
+/// Starts an `exit` fixture session with a ready private controller, so the
+/// session outlives its initial-attachment deadline however slow the test.
+fn controlled() -> (Session, UnixStream) {
+    let session = Session::start("exit");
     let mut controlling = session.attach();
     session.wait_marker(&mut controlling);
+    (session, controlling)
+}
+
+/// Ends an `exit` fixture session through its controller.
+fn end_controlled(mut session: Session, mut controlling: UnixStream) {
     crate::send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
-    while !matches!(
-        crate::receive(&mut controlling),
+    assert_eq!(
+        crate::until_terminal(&mut controlling).1,
         PrivateMessage::Exit { code: 42 }
-    ) {}
+    );
     session.finish();
+}
+
+/// Ends an `exit` fixture session through an ordinary private attachment.
+fn end_through_attachment(session: Session) {
+    let mut controlling = session.attach();
+    session.wait_marker(&mut controlling);
+    end_controlled(session, controlling);
 }
 
 /// COM-01 (Contract case): hello advertises revision 1 the way the published
@@ -108,7 +122,7 @@ fn hello_advertises_revision1_beside_the_frozen_tokens_and_state() {
 /// progress explicitly unavailable, and no command result.
 #[test]
 fn monitor_open_selects_supported_families_then_reports_initial_metadata() {
-    let session = Session::start("exit");
+    let (session, controlling) = controlled();
     let mut first = peer(&session);
     let optional = ["monitor-v1", "status-v1", "focus-v1", "future-v9"];
     request(
@@ -126,7 +140,7 @@ fn monitor_open_selects_supported_families_then_reports_initial_metadata() {
     assert!(selected.is_empty(), "{selected:?}");
     assert_eq!(body(&frame(&mut second), 0x41), NO_TITLE);
     assert_ne!(first_id, second_id);
-    end_through_attachment(session);
+    end_controlled(session, controlling);
 }
 
 /// Attaches and detaches through the private protocol, so the session has
@@ -278,9 +292,7 @@ fn kill(request_id: u64, revision: u32, required: &[&str]) -> Kill {
 /// detached.
 #[test]
 fn passive_requests_get_their_documented_outcomes() {
-    let mut session = Session::start("exit");
-    let mut controlling = session.attach();
-    session.wait_marker(&mut controlling);
+    let (session, controlling) = controlled();
     let mut stream = peer(&session);
     request(
         &mut stream,
@@ -326,12 +338,7 @@ fn passive_requests_get_their_documented_outcomes() {
         crate::advertised_state(&session),
         (Lifecycle::Attached, 1, true)
     );
-    crate::send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
-    assert_eq!(
-        crate::until_terminal(&mut controlling).1,
-        PrivateMessage::Exit { code: 42 }
-    );
-    session.finish();
+    end_controlled(session, controlling);
 }
 
 /// CTL-01 (Contract): a passive registration is not an attachment and never
@@ -445,9 +452,7 @@ fn padded_open(bytes: usize) -> Vec<u8> {
 /// connections and the session go on.
 #[test]
 fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
-    let mut session = Session::start("exit");
-    let mut controlling = session.attach();
-    session.wait_marker(&mut controlling);
+    let (session, controlling) = controlled();
     let valid =
         r#""revision":1,"required_capabilities":[],"optional_capabilities":[],"mode":"monitor""#;
     let first_frames: [(Vec<u8>, &str); 8] = [
@@ -531,13 +536,7 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
     let (mut stream, _) = monitor(&session, &[]);
     stream.shutdown(Shutdown::Write).unwrap();
     assert_closed(&mut stream);
-
-    crate::send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
-    assert_eq!(
-        crate::until_terminal(&mut controlling).1,
-        PrivateMessage::Exit { code: 42 }
-    );
-    session.finish();
+    end_controlled(session, controlling);
 }
 
 /// COM-02 (Contract, oversized frames): a request frame exactly at the
@@ -546,7 +545,7 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
 /// arrives.
 #[test]
 fn a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal() {
-    let session = Session::start("exit");
+    let (session, controlling) = controlled();
     let mut at_limit = peer(&session);
     at_limit.write_all(&padded_open(1_048_575)).unwrap();
     opened(&frame(&mut at_limit), "1");
@@ -555,7 +554,7 @@ fn a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal() {
     let (mut over, _) = monitor(&session, &[]);
     over.write_all(&1_048_577_u32.to_be_bytes()).unwrap();
     assert_fatal(&mut over, "frame_too_large");
-    end_through_attachment(session);
+    end_controlled(session, controlling);
 }
 
 /// COM-02 (Contract, fragmented and coalesced I/O): partial reads and writes
@@ -566,7 +565,7 @@ fn a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal() {
 /// before the next is sent, is answered once whole.
 #[test]
 fn coalesced_and_fragmented_revision1_frames_are_each_answered_in_order() {
-    let session = Session::start("exit");
+    let (session, controlling) = controlled();
     let mut coalesced = UnixStream::connect(&session.socket).unwrap();
     coalesced
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -608,16 +607,16 @@ fn coalesced_and_fragmented_revision1_frames_are_each_answered_in_order() {
     opened(&frame(&mut fragmented), "1");
     assert_eq!(body(&frame(&mut fragmented), 0x41), NO_TITLE);
     leave(&mut fragmented, 2);
-    end_through_attachment(session);
+    end_controlled(session, controlling);
 }
 
 /// Interim until #87 and #88: this daemon advertises `daemon-wire-v1` but
 /// serves neither interactive Open nor standalone Kill yet. Each is rejected
 /// without effects (`internal_error`) and ends its stream; the session goes
-/// on, neither attached nor terminating.
+/// on with its one controller, neither newly attached nor terminating.
 #[test]
 fn interactive_open_and_standalone_kill_are_refused_until_they_are_served() {
-    let session = Session::start("exit");
+    let (session, controlling) = controlled();
     let geometry = Geometry {
         cols: NonZeroU32::new(80).unwrap(),
         rows: NonZeroU32::new(24).unwrap(),
@@ -635,9 +634,9 @@ fn interactive_open_and_standalone_kill_are_refused_until_they_are_served() {
     assert_closed(&mut killer);
     assert_eq!(
         crate::advertised_state(&session),
-        (Lifecycle::Starting, 0, false)
+        (Lifecycle::Attached, 1, true)
     );
-    end_through_attachment(session);
+    end_controlled(session, controlling);
 }
 
 /// COM-02 (Contract, connection effects): a connection-fatal failure on a
