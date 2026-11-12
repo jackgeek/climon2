@@ -341,6 +341,10 @@ fn part1_records() -> Vec<(u8, String)> {
             r#"{"request_id":"1","outcome":"failed","result":{"kind":"termination","command_result":{"kind":"signal","number":9,"name":null},"cleanup":"incomplete"},"error":{"code":"cleanup_failed","message":"busy"}}"#.to_owned(),
         ),
         (
+            0x40,
+            r#"{"request_id":"1","outcome":"indeterminate","result":{"kind":"focus","changed":false,"focused":true,"accepted_bytes":3},"error":{"code":"io_error","message":"lost"}}"#.to_owned(),
+        ),
+        (
             0x41,
             format!(
                 r#"{{"title":{{"available":true,"value":"vim"}},"status":{{"available":true,"value":{{"state":"completed","changed_at":"2026-11-06T12:00:00.000Z","episode_id":null}}}},"progress":{{"available":true,"value":{{"state":"normal","percent":50}}}},"command_result":{exit}}}"#

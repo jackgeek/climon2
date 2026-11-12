@@ -36,8 +36,10 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   tokens or state.
 - `wire`: the platform-neutral, stateless daemon wire revision 1 codec shared
   by the daemon and the client library (part 1: framing, shared types and
-  session messages). Roles, ordering, authority and request-ID sequencing
-  belong to the connection owners.
+  session messages). Roles, ordering, authority, request-ID sequencing and
+  whether a Response's result belongs to its request's operation belong to
+  the connection owners: a stateless codec does not know which request an
+  ID names.
   - `read_frame(&mut impl Read, FrameLimit)` and
     `write_frame(&mut impl Write, &Frame, FrameLimit)`: `u32be length | u8
     type | body`, the length counting type and body. `FrameLimit` is a
@@ -74,8 +76,11 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     geometry), `Leave`, `Kill`, `Response` (`Outcome::Ok` holds a `Success`;
     every non-success holds an `Error`: a `Rejection` at most a known final
     command result, and a failed or indeterminate `Failure` at most a
-    `PartialTermination`; any other pairing is `invalid_record`), every
-    documented result variant, `InitialMetadata`, `TitleChanged`,
+    `KnownResult`, either the operation's known result in its success shape
+    or a Kill's `PartialTermination`, never a confirmed termination, which
+    `Failure::new` refuses; any other pairing of outcome, result and error
+    is `invalid_record`), every documented result variant,
+    `InitialMetadata`, `TitleChanged`,
     `StatusChanged` (never a final state), `Notification`,
     `ProgressChanged`, `CommandFinal` (status null or the agreeing final
     status) and `FatalError`. `Family`, `FrameLimits` and `Advertisement`

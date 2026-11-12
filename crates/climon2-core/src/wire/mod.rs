@@ -1,8 +1,9 @@
 //! [Daemon wire revision 1](../../../../docs/protocol/daemon-client/core-v1.md):
 //! the frozen post-hello codec that the session daemon and the client library
 //! share. It is platform-neutral and stateless. It frames, encodes and strictly
-//! validates records. Roles, ordering, authority and request-ID sequencing
-//! belong to the connection that owns them.
+//! validates records. Roles, ordering, authority, request-ID sequencing and
+//! whether a Response's result belongs to its request's operation belong to
+//! the connection that owns them.
 //!
 //! Extend a direction by adding its record type, a `ControlRecord` impl and
 //! one decoder-table entry; binary records implement `to_frame` themselves.
@@ -27,8 +28,8 @@ pub use metadata::{
 pub use record::ControlRecord;
 pub use request::{Kill, Leave, Mode, Open, Request};
 pub use response::{
-    Cleanup, Failure, FocusBytes, Outcome, PartialCleanup, PartialTermination, Rejection, Response,
-    Success,
+    Cleanup, Failure, FocusBytes, KnownResult, Outcome, PartialCleanup, PartialTermination,
+    Rejection, Response, Success,
 };
 pub use server::{
     CommandFinal, FatalError, InitialMetadata, Notification, NotificationSource, ProgressChanged,

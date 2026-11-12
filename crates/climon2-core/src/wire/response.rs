@@ -1,4 +1,7 @@
-//! Response `0x40`: one correlated outcome for each received request.
+//! Response `0x40`: one correlated outcome for each received request. The
+//! codec checks each outcome's error and the results it may carry. Whether a
+//! result belongs to the request's operation is the connection's to check: a
+//! stateless codec does not know which request a request ID names.
 use super::{
     CommandResult, Counter, Error, Families, Guid,
     record::{ControlRecord, nullable},
@@ -32,12 +35,41 @@ pub struct Rejection {
     pub known_final: Option<CommandResult>,
 }
 
-/// The operation failed, or whether it ran is unknown. A Kill may expose what
-/// it knows of termination, never a successful confirmation.
+/// The operation failed, or whether it ran is unknown. It may expose what is
+/// known of the operation instead of hiding partial effects, but never a
+/// successful Kill confirmation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Failure {
-    pub error: Error,
-    pub termination: Option<PartialTermination>,
+    error: Error,
+    known: Option<KnownResult>,
+}
+
+/// What a failed or indeterminate outcome knows of its operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum KnownResult {
+    /// The operation's known result, in its success shape.
+    Operation(Success),
+    /// What a Kill knows of termination: cleanup is incomplete or unknown.
+    Termination(PartialTermination),
+}
+
+impl Failure {
+    /// `None` for a confirmed termination, which only a Kill success reports.
+    pub fn new(error: Error, known: Option<KnownResult>) -> Option<Self> {
+        let confirmed = matches!(
+            known,
+            Some(KnownResult::Operation(Success::Termination { .. }))
+        );
+        (!confirmed).then_some(Self { error, known })
+    }
+
+    pub fn error(&self) -> &Error {
+        &self.error
+    }
+
+    pub fn known(&self) -> Option<&KnownResult> {
+        self.known.as_ref()
+    }
 }
 
 /// The success result of each operation, named by its `kind`.
@@ -139,12 +171,12 @@ pub enum PartialCleanup {
     Unknown,
 }
 
-/// The results a non-success may carry, as written on the wire. Only a
-/// rejection carries `known_final`; only a failed or indeterminate outcome
-/// carries partial `termination`.
+/// The results only a non-success outcome carries, as written on the wire:
+/// a rejection's `known_final` and a failed or indeterminate Kill's partial
+/// `termination`.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum Known {
+enum NonSuccessResult {
     KnownFinal { command_result: CommandResult },
     Termination(PartialTermination),
 }
@@ -159,45 +191,54 @@ enum OutcomeName {
 }
 
 impl OutcomeName {
-    fn failure(self, error: Error, known: Option<Known>) -> Option<Outcome> {
+    fn non_success(self, error: Error, result: Option<ResultBody>) -> Option<Outcome> {
         match self {
             Self::Ok => None,
-            Self::Rejected => Rejection::decoded(error, known).map(Outcome::Rejected),
-            Self::Failed => Failure::decoded(error, known).map(Outcome::Failed),
-            Self::Indeterminate => Failure::decoded(error, known).map(Outcome::Indeterminate),
+            Self::Rejected => Rejection::decoded(error, result).map(Outcome::Rejected),
+            Self::Failed => Failure::decoded(error, result).map(Outcome::Failed),
+            Self::Indeterminate => Failure::decoded(error, result).map(Outcome::Indeterminate),
         }
     }
 }
 
 impl Rejection {
-    fn decoded(error: Error, known: Option<Known>) -> Option<Self> {
-        let known_final = match known {
+    /// A rejection carries at most `known_final`.
+    fn decoded(error: Error, result: Option<ResultBody>) -> Option<Self> {
+        let known_final = match result {
             None => None,
-            Some(Known::KnownFinal { command_result }) => Some(command_result),
-            Some(Known::Termination(_)) => return None,
+            Some(ResultBody::NonSuccess(Object(NonSuccessResult::KnownFinal {
+                command_result,
+            }))) => Some(command_result),
+            Some(_) => return None,
         };
         Some(Self { error, known_final })
     }
 }
 
 impl Failure {
-    fn decoded(error: Error, known: Option<Known>) -> Option<Self> {
-        let termination = match known {
+    /// A failure carries at most a known result; never `known_final`.
+    fn decoded(error: Error, result: Option<ResultBody>) -> Option<Self> {
+        let known = match result {
             None => None,
-            Some(Known::Termination(termination)) => Some(termination),
-            Some(Known::KnownFinal { .. }) => return None,
+            Some(ResultBody::Success(Object(success))) => Some(KnownResult::Operation(success)),
+            Some(ResultBody::NonSuccess(Object(NonSuccessResult::Termination(termination)))) => {
+                Some(KnownResult::Termination(termination))
+            }
+            Some(ResultBody::NonSuccess(Object(NonSuccessResult::KnownFinal { .. }))) => {
+                return None;
+            }
         };
-        Some(Self { error, termination })
+        Self::new(error, known)
     }
 }
 
-/// Success results and known results share the `kind` space; each side
-/// decodes only from an object.
+/// Success results and non-success results share the `kind` space; each
+/// side decodes only from an object.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum ResultBody {
     Success(Object<Success>),
-    Known(Object<Known>),
+    NonSuccess(Object<NonSuccessResult>),
 }
 
 #[derive(Deserialize)]
@@ -217,7 +258,7 @@ impl TryFrom<ResponseFields> for Response {
     fn try_from(fields: ResponseFields) -> Result<Self, Self::Error> {
         let outcome = match fields.error {
             None => success(fields.outcome, fields.result),
-            Some(error) => failure(fields.outcome, error, fields.result),
+            Some(error) => fields.outcome.non_success(error, fields.result),
         };
         outcome
             .map(|outcome| Self {
@@ -235,20 +276,11 @@ fn success(name: OutcomeName, result: Option<ResultBody>) -> Option<Outcome> {
     }
 }
 
-fn failure(name: OutcomeName, error: Error, result: Option<ResultBody>) -> Option<Outcome> {
-    let known = match result {
-        None => None,
-        Some(ResultBody::Known(Object(known))) => Some(known),
-        Some(ResultBody::Success(_)) => return None,
-    };
-    name.failure(error, known)
-}
-
 #[derive(Serialize)]
 #[serde(untagged)]
 enum ResultMember<'a> {
     Success(&'a Success),
-    Known(Known),
+    NonSuccess(NonSuccessResult),
 }
 
 #[derive(Serialize)]
@@ -259,46 +291,64 @@ struct ResponseMembers<'a> {
     error: Option<&'a Error>,
 }
 
-type Members<'a> = (OutcomeName, Option<ResultMember<'a>>, Option<&'a Error>);
-
-impl Outcome {
-    fn members(&self) -> Members<'_> {
-        match self {
-            Self::Ok(success) => (OutcomeName::Ok, Some(ResultMember::Success(success)), None),
-            Self::Rejected(rejection) => rejection.members(),
-            Self::Failed(failure) => failure.members(OutcomeName::Failed),
-            Self::Indeterminate(failure) => failure.members(OutcomeName::Indeterminate),
+impl Response {
+    fn members(&self) -> ResponseMembers<'_> {
+        let request_id = self.request_id;
+        match &self.outcome {
+            Outcome::Ok(success) => ResponseMembers {
+                request_id,
+                outcome: OutcomeName::Ok,
+                result: Some(ResultMember::Success(success)),
+                error: None,
+            },
+            Outcome::Rejected(rejection) => rejection.members(request_id),
+            Outcome::Failed(failure) => failure.members(request_id, OutcomeName::Failed),
+            Outcome::Indeterminate(failure) => {
+                failure.members(request_id, OutcomeName::Indeterminate)
+            }
         }
     }
 }
 
 impl Rejection {
-    fn members(&self) -> Members<'_> {
-        let known = self
-            .known_final
-            .clone()
-            .map(|command_result| ResultMember::Known(Known::KnownFinal { command_result }));
-        (OutcomeName::Rejected, known, Some(&self.error))
+    fn members(&self, request_id: Counter) -> ResponseMembers<'_> {
+        let known_final = self.known_final.clone().map(|command_result| {
+            ResultMember::NonSuccess(NonSuccessResult::KnownFinal { command_result })
+        });
+        ResponseMembers {
+            request_id,
+            outcome: OutcomeName::Rejected,
+            result: known_final,
+            error: Some(&self.error),
+        }
     }
 }
 
 impl Failure {
-    fn members(&self, name: OutcomeName) -> Members<'_> {
-        let known = self.termination.clone().map(Known::Termination);
-        (name, known.map(ResultMember::Known), Some(&self.error))
+    fn members(&self, request_id: Counter, outcome: OutcomeName) -> ResponseMembers<'_> {
+        ResponseMembers {
+            request_id,
+            outcome,
+            result: self.known.as_ref().map(KnownResult::member),
+            error: Some(&self.error),
+        }
+    }
+}
+
+impl KnownResult {
+    fn member(&self) -> ResultMember<'_> {
+        match self {
+            Self::Operation(success) => ResultMember::Success(success),
+            Self::Termination(termination) => {
+                ResultMember::NonSuccess(NonSuccessResult::Termination(termination.clone()))
+            }
+        }
     }
 }
 
 impl Serialize for Response {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let (outcome, result, error) = self.outcome.members();
-        ResponseMembers {
-            request_id: self.request_id,
-            outcome,
-            result,
-            error,
-        }
-        .serialize(serializer)
+        self.members().serialize(serializer)
     }
 }
 
