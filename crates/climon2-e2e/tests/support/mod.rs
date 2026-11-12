@@ -1,5 +1,5 @@
 use climon2_install::{Payload, install};
-use climon2_test_term::{Isolation, Terminal, bin_path};
+use climon2_test_term::{Isolation, Modes, Terminal, bin_path};
 use portable_pty::CommandBuilder;
 use serde_json::Value;
 use std::{
@@ -286,6 +286,62 @@ fn collect_logs(directory: &Path, files: &mut Vec<PathBuf>) {
 
 pub fn quote(path: &Path) -> String {
     format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"))
+}
+
+/// An outer non-interactive `bash` on a `rows` x `cols` terminal that records
+/// termios around `command`, reports its status as `OUTER-DONE=<status>`,
+/// then echoes one ordinary typed line as `TYPED=<line>`. The continuity and
+/// monitor scenarios run climon2 from it; packaged.rs does not.
+#[allow(dead_code)]
+pub fn outer(package: &Package, bash: &Path, command: &str, rows: u16, cols: u16) -> Terminal {
+    let mut shell = package.command(bash);
+    shell.args(["--noprofile", "--norc", "-c"]);
+    shell.arg(format!(
+        "stty -g > ~/before; {command}; s=$?; stty -g > ~/after; \
+         printf 'OUTER-DONE=%s\\n' \"$s\"; IFS= read -r line; printf 'TYPED=%s\\n' \"$line\""
+    ));
+    Terminal::spawn(shell, rows, cols).unwrap()
+}
+
+/// After the [`outer`] shell's `command` returned `status`: the documented
+/// normal-shell baseline, exact termios and ordinary shell input.
+#[allow(dead_code)]
+pub fn assert_released(package: &Package, terminal: &mut Terminal, status: i32) {
+    terminal
+        .wait_for_text(&format!("OUTER-DONE={status}"), TIMEOUT)
+        .unwrap();
+    assert_eq!(terminal.modes(), Modes::BASELINE, "{}", terminal.screen());
+    let home = package.isolation.home();
+    assert_eq!(
+        termios(&home.join("after")),
+        termios(&home.join("before")),
+        "termios restored"
+    );
+    terminal.send("plain words\n").unwrap();
+    terminal
+        .wait_for_text("TYPED=plain words", TIMEOUT)
+        .unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+}
+
+/// `stty -g` settings without macOS's transient `PENDIN`, which the kernel
+/// sets whenever a terminal returns to canonical mode.
+#[allow(dead_code)]
+fn termios(path: &Path) -> String {
+    const PENDIN: u64 = 0x2000_0000;
+    fs::read_to_string(path)
+        .unwrap()
+        .trim_end()
+        .split(':')
+        .map(|field| match field.strip_prefix("lflag=") {
+            Some(flags) => {
+                let flags = u64::from_str_radix(flags, 16).unwrap() & !PENDIN;
+                format!("lflag={flags:x}")
+            }
+            None => field.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 fn extract_payload(archive: &std::ffi::OsStr, directory: &Path) -> (PathBuf, String) {

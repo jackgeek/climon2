@@ -36,40 +36,25 @@ const PASTES: &[u8] = b"\x1b[200~\x1dx\x1b[201~\x1d\x1b[200~x\x1b[201~x\x1b[200~
 const TOP_ROW: &str = "No session selected";
 const EMPTY: &str = "No sessions to show.";
 
-/// An outer non-interactive shell that titles its host, records termios around
-/// `command`, reports its status, then echoes one ordinary typed line.
+/// The [`support::outer`] shell, first titling its host and marking where
+/// `command`'s output begins.
 fn outer(package: &Package, command: &str) -> Terminal {
-    let mut shell = package.command("/bin/bash");
-    shell.args(["--noprofile", "--norc", "-c"]);
-    shell.arg(format!(
-        "printf '\\033]2;{TITLE}\\007'; stty -g > ~/before; printf 'BEFORE-MONITOR\\n'; \
-         {command}; s=$?; stty -g > ~/after; printf 'OUTER-DONE=%s\\n' \"$s\"; \
-         IFS= read -r line; printf 'TYPED=%s\\n' \"$line\""
-    ));
-    Terminal::spawn(shell, ROWS, COLS).unwrap()
+    support::outer(
+        package,
+        Path::new("/bin/bash"),
+        &format!("printf '\\033]2;{TITLE}\\007'; printf 'BEFORE-MONITOR\\n'; {command}"),
+        ROWS,
+        COLS,
+    )
 }
 
-/// After `command` returned `status`: the documented normal-shell baseline,
-/// exact termios, the outer title untouched, no OSC output beyond the outer
-/// shell's own title, the host's earlier content and ordinary shell input.
+/// After `command` returned `status`: the host released as
+/// [`support::assert_released`] checks, with the outer title untouched, no OSC
+/// output beyond the outer shell's own title, and the host's earlier content.
 fn assert_released(package: &Package, terminal: &mut Terminal, status: i32) {
-    terminal
-        .wait_for_text(&format!("OUTER-DONE={status}"), TIMEOUT)
-        .unwrap();
-    assert_eq!(terminal.modes(), Modes::BASELINE, "{}", terminal.screen());
+    support::assert_released(package, terminal, status);
     assert_title_untouched(terminal);
     assert!(terminal.screen().contains("BEFORE-MONITOR"));
-    let home = package.isolation.home();
-    assert_eq!(
-        termios(&home.join("after")),
-        termios(&home.join("before")),
-        "termios restored"
-    );
-    terminal.send("plain words\n").unwrap();
-    terminal
-        .wait_for_text("TYPED=plain words", TIMEOUT)
-        .unwrap();
-    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
 }
 
 /// The outer shell titled the host once; nothing else ever sent an OSC.
@@ -83,25 +68,6 @@ fn assert_title_untouched(terminal: &Terminal) {
             .count(),
         1
     );
-}
-
-/// `stty -g` settings without macOS's transient `PENDIN`, which the kernel
-/// sets whenever a terminal returns to canonical mode.
-fn termios(path: &Path) -> String {
-    const PENDIN: u64 = 0x2000_0000;
-    fs::read_to_string(path)
-        .unwrap()
-        .trim_end()
-        .split(':')
-        .map(|field| match field.strip_prefix("lflag=") {
-            Some(flags) => {
-                let flags = u64::from_str_radix(flags, 16).unwrap() & !PENDIN;
-                format!("lflag={flags:x}")
-            }
-            None => field.to_owned(),
-        })
-        .collect::<Vec<_>>()
-        .join(":")
 }
 
 /// Everything `command` wrote to the host, between the outer shell's markers.
