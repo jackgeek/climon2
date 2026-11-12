@@ -290,7 +290,8 @@ fn errors_name_their_class_for_the_one_line_diagnostic() {
 }
 
 fn home(name: &str) -> HomeLayout {
-    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("config-{name}"));
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("config-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     HomeLayout::resolve(Some(root.as_os_str()), &root).unwrap()
