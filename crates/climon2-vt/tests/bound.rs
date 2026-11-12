@@ -221,8 +221,36 @@ fn combining_marks_are_accepted_at_the_bound_and_rejected_one_byte_past_it() {
 /// rejected before growth with the page intact.
 #[test]
 fn underline_coloured_cells_are_accepted_at_the_bound_and_rejected_one_byte_past_it() {
-    let accepted = assert_bound(geometry(10, 3), b"page\r\n\x1b[58;5;1m", b"under");
-    assert_eq!(accepted, ["page", "under", ""]);
+    for (update, shown) in [
+        (&b"under"[..], "under"),
+        (b"in\xffvalid", "in\u{fffd}valid"),
+    ] {
+        let accepted = assert_bound(geometry(10, 3), b"page\r\n\x1b[58;5;1m", update);
+        assert_eq!(accepted, ["page", shown, ""]);
+    }
+}
+
+/// LIM-03 Contract: an underline colour changed between cells leaves each
+/// earlier cell holding its own copy of the extra data. Whatever is printed
+/// that way, narrow, invalid or wide, the model keeps no more than it was
+/// charged, once the front filter has held text.
+#[test]
+fn cells_under_changing_underline_colours_keep_no_more_than_they_were_charged() {
+    for glyph in [&b"x"[..], b"\xff", "\u{4e00}".as_bytes()] {
+        let meter = Meter::watch();
+        let mut model = Model::new(geometry(10, 3), limits(ROOMY, ROWS)).unwrap();
+        model.feed(b"\r").unwrap();
+        let (held, charged) = (meter.live(), model.footprint());
+
+        for colour in 1..=30 {
+            let tinted = [format!("\x1b[58;5;{colour}m").as_bytes(), glyph].concat();
+            model.feed(&tinted).unwrap();
+        }
+
+        let kept = meter.live() - held;
+        let charge = model.footprint() - charged;
+        assert!(kept <= charge, "{glyph:?}: kept {kept} > charged {charge}");
+    }
 }
 
 /// LIM-03 Contract: a wide character writes up to three cells (a leading

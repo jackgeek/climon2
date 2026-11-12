@@ -107,7 +107,7 @@ Acceptance-matrix IDs are cited in each test's doc comment.
 | LIM-03 Contract: the largest limits never overflow the accounting | `the_largest_limits_never_overflow_the_accounting` |
 | LIM-03 Contract: wide characters at the bound and one past it | `wide_characters_are_accepted_at_the_bound_and_rejected_one_byte_past_it` |
 | LIM-03 Contract: combining marks at the bound and one past it | `combining_marks_are_accepted_at_the_bound_and_rejected_one_byte_past_it` |
-| LIM-03 Contract: auxiliary cell data (underline colour) at the bound and one past it | `underline_coloured_cells_are_accepted_at_the_bound_and_rejected_one_byte_past_it` |
+| LIM-03 Contract: auxiliary cell data (underline colour) at the bound and one past it, invalid bytes included; colours changed between cells keep no more than charged | `underline_coloured_cells_are_accepted_at_the_bound_and_rejected_one_byte_past_it`, `cells_under_changing_underline_colours_keep_no_more_than_they_were_charged` |
 | LIM-03 Contract: restoration staging at the bound and one past it | `restoration_staging_is_accepted_at_the_bound_and_rejected_one_byte_past_it` |
 | LIM-03 Contract: resize staged at the bound and rejected one past it | `resizing_stages_a_replacement_at_the_bound_and_is_rejected_one_byte_past_it` |
 | LIM-03 Contract: discarded and superseded restorations never become current | `discarded_restorations_never_become_current` |
