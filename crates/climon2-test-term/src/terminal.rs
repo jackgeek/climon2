@@ -559,6 +559,42 @@ impl Terminal {
     }
 }
 
+/// A second terminal that a command opens by path as its input, and that the
+/// test hangs up while the command's own terminal stays open.
+pub struct InputTerminal {
+    master: Box<dyn MasterPty + Send>,
+    _slave: Box<dyn SlavePty + Send>,
+    path: std::path::PathBuf,
+}
+
+impl InputTerminal {
+    pub fn open(rows: u16, cols: u16) -> io::Result<Self> {
+        let pair = {
+            let _allocation = climon2_platform::pty::allocation()?;
+            portable_pty::native_pty_system().openpty(pty_size(rows, cols)?)
+        }
+        .map_err(io::Error::other)?;
+        let path = pair
+            .master
+            .tty_name()
+            .ok_or_else(|| io::Error::other("terminal device unnamed"))?;
+        Ok(Self {
+            master: pair.master,
+            _slave: pair.slave,
+            path,
+        })
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// Closes the master side: every reader of the terminal sees it hang up.
+    pub fn hang_up(self) {
+        drop(self.master);
+    }
+}
+
 fn write(writer: &Writer, bytes: &[u8]) -> io::Result<()> {
     let mut writer = writer.lock().expect("PTY writer lock");
     writer.write_all(bytes).and_then(|()| writer.flush())

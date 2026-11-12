@@ -14,4 +14,4 @@ mod terminal;
 
 pub use isolation::{Isolation, bin_path, copy_executable, process_command};
 pub use shell::controlled_bash;
-pub use terminal::{Modes, Options, Terminal};
+pub use terminal::{InputTerminal, Modes, Options, Terminal};

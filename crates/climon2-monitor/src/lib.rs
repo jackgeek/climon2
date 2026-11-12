@@ -81,15 +81,22 @@ pub fn run() -> Result<u32, Error> {
         .map_err(|error| Error::new(error).logged(&log))
 }
 
-/// Owns the host until an ending, and releases it before any diagnostic.
+/// Records how the monitor ended: the host terminal may be gone, so a failure
+/// is logged as well as returned for main to print.
 fn monitor(startup: &Startup) -> io::Result<u32> {
     tracing::info!(version = %startup.version, "monitor started");
-    let (mut host, size) = Host::enter()?;
-    let served = Monitor::start(size, startup.prefix).and_then(|monitor| monitor.serve(&mut host));
-    let released = host.release();
-    let status = served.and_then(|ending| released.map(|()| ending.status()))?;
+    let status =
+        owned(startup.prefix).inspect_err(|error| tracing::error!(%error, "monitor failed"))?;
     tracing::info!(status, "monitor stopped");
     Ok(status)
+}
+
+/// Owns the host until an ending, and releases it before any diagnostic.
+fn owned(prefix: ControlKey) -> io::Result<u32> {
+    let (mut host, size) = Host::enter()?;
+    let served = Monitor::start(size, prefix).and_then(|monitor| monitor.serve(&mut host));
+    let released = host.release();
+    served.and_then(|ending| released.map(|()| ending.status()))
 }
 
 /// The empty monitor: what it draws and the keys that act on it.

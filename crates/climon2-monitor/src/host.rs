@@ -103,22 +103,28 @@ impl Host {
     }
 
     fn input(&mut self) -> io::Result<Event<'_>> {
-        if !self.readable() {
+        if !self.readable()? {
             return Ok(Event::Idle);
         }
         self.read().map(Event::Input)
     }
 
-    /// Waits one tick for input. An interrupted or failed wait reports none,
+    /// Waits one tick for input. A wait that a signal interrupts finds none,
     /// and the caller checks signals before waiting again.
-    fn readable(&self) -> bool {
+    fn readable(&self) -> io::Result<bool> {
         let mut descriptor = libc::pollfd {
             fd: self.input.as_raw_fd(),
             events: libc::POLLIN,
             revents: Default::default(),
         };
-        unsafe { libc::poll(&mut descriptor, 1, TICK_MILLISECONDS) };
-        descriptor.revents != 0
+        let table: *mut libc::pollfd = &mut descriptor;
+        #[cfg(feature = "test-hooks")]
+        let table = crate::hooks::poll_table(table);
+        // poll reads and updates at most the one descriptor at `table`.
+        match unsafe { libc::poll(table, 1, TICK_MILLISECONDS) } {
+            -1 => interrupted(io::Error::last_os_error()),
+            _ => Ok(descriptor.revents != 0),
+        }
     }
 
     fn read(&mut self) -> io::Result<&[u8]> {
@@ -131,6 +137,17 @@ impl Host {
             bytes => Ok(bytes),
         }
     }
+}
+
+/// An interrupted wait found no input; any other failed wait ends the monitor.
+fn interrupted(error: io::Error) -> io::Result<bool> {
+    if error.kind() == io::ErrorKind::Interrupted {
+        return Ok(false);
+    }
+    Err(io::Error::new(
+        error.kind(),
+        format!("cannot wait for host input: {error}"),
+    ))
 }
 
 /// The monitor owns the host output: nothing else writes to stdout.

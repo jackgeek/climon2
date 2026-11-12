@@ -7,7 +7,7 @@
 #[allow(dead_code)]
 mod support;
 
-use climon2_test_term::{Modes, Terminal, bin_path};
+use climon2_test_term::{InputTerminal, Modes, Terminal, bin_path};
 use nix::{
     sys::signal::{Signal, kill},
     unistd::Pid,
@@ -451,16 +451,84 @@ fn debug_hook_render_failure_restores_the_host_before_its_diagnostic() {
     }
     let package = Package::new();
     let mut terminal = outer(&package, "CLIMON2_MONITOR_FAULT=draw climon2 monitor");
-    let written = written(&mut terminal);
+    assert_diagnosed_after_release(
+        &mut terminal,
+        "climon2: error: injected draw failure (logs: ",
+    );
+    assert_released(&package, &mut terminal, 125);
+    package.assert_clean();
+}
+
+/// Everything the monitor wrote: its own alternate screen entered and left,
+/// then exactly one diagnostic line, beginning `diagnostic`, with its log.
+fn assert_diagnosed_after_release(terminal: &mut Terminal, diagnostic: &str) {
+    let written = written(terminal);
     let entered = written.find("\x1b[?1049h").unwrap();
     let left = written.rfind("\x1b[?1049l").unwrap();
-    let diagnostic = written
-        .find("climon2: error: injected draw failure (logs: ")
-        .unwrap();
-    assert!(entered < left && left < diagnostic, "{written:?}");
+    let reported = written.find(diagnostic).unwrap();
+    assert!(entered < left && left < reported, "{written:?}");
     assert!(written.ends_with(")\r\n"), "{written:?}");
-    assert_eq!(written.matches("climon2: error:").count(), 1);
+    assert_eq!(written.matches("climon2: error:").count(), 1, "{written:?}");
+}
+
+/// EXT-03 (Fault layer, empty monitor): a failed wait for host input ends the
+/// monitor at once instead of spinning: it leaves its alternate screen and
+/// restores the baseline and exact termios, then prints one diagnostic, and
+/// exits with the climon2 error code. Only hook-enabled debug siblings inject
+/// it, by giving the kernel no descriptor table to poll (EFAULT).
+#[test]
+fn debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic() {
+    if env::var_os("CLIMON2_E2E_ARCHIVE").is_some() {
+        return;
+    }
+    let package = Package::new();
+    let mut terminal = outer(&package, "CLIMON2_MONITOR_FAULT=poll climon2 monitor");
+    assert_diagnosed_after_release(
+        &mut terminal,
+        "climon2: error: cannot wait for host input: Bad address (os error 14) (logs: ",
+    );
     assert_released(&package, &mut terminal, 125);
+    package.assert_clean();
+}
+
+/// EXT-03 (Monitor layer, empty monitor): when its host input hangs up, the
+/// monitor ends at once instead of spinning: it releases the host it still
+/// writes to, then reports the closed terminal, also in its general log, with
+/// the climon2 error code. Linux wakes readers before it finishes hanging a
+/// terminal up, so the monitor is stopped until the hang-up is complete.
+#[test]
+fn a_hung_up_host_input_releases_the_host_before_its_diagnostic() {
+    let package = Package::new();
+    let input = InputTerminal::open(ROWS, COLS).unwrap();
+    let mut terminal = outer(
+        &package,
+        &format!("climon2 monitor < {}", quote(input.path())),
+    );
+    terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
+    let monitor = monitor_process(&package).0;
+    stop(monitor);
+    input.hang_up();
+    kill(Pid::from_raw(monitor), Signal::SIGCONT).unwrap();
+    assert_diagnosed_after_release(
+        &mut terminal,
+        "climon2: error: the host terminal closed (logs: ",
+    );
+    assert_released(&package, &mut terminal, 125);
+    let logs = package.logs();
+    let log = logs
+        .iter()
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("monitor-")
+        })
+        .map(|path| fs::read_to_string(path).unwrap())
+        .unwrap();
+    assert!(
+        log.contains("monitor failed error=the host terminal closed"),
+        "{log}"
+    );
     package.assert_clean();
 }
 
