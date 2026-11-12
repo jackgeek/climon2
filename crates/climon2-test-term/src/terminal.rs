@@ -429,7 +429,8 @@ impl Terminal {
         self.screen.0.lock().expect("screen lock").requests.clone()
     }
 
-    /// Every OSC 7501 report and bell the host received, in stream order.
+    /// Every OSC 7501 report and bell the host received, in the order its parser
+    /// acted on them.
     pub fn host_signals(&self) -> Vec<HostSignal> {
         self.screen
             .0
