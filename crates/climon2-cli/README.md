@@ -2,7 +2,7 @@
 
 CLI orchestration for `exec COMMAND [ARG...]`, `attach SESSION-ID`,
 `kill SESSION-ID` and `list [--json]`. The usage string is
-`usage: climon2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json]`.
+`usage: c2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json]`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.

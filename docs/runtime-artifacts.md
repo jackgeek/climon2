@@ -14,7 +14,7 @@ consumption relationship.
 ```mermaid
 flowchart TB
     subgraph runtime["Shipped runtime"]
-        launcher["climon2<br/>launcher executable"]
+        launcher["c2 / climon2<br/>same launcher executable"]
         installer["install<br/>built as climon2-install"]
         subgraph version["Installed version v; versions coexist"]
             cli["climon2-cli<br/>CLI executable"]
@@ -73,7 +73,10 @@ flowchart TB
 `v` represents a [session](../GLOSSARY.md#sessions)'s installed version, not necessarily the current
 version selected by the launcher. The CLI starts a new session using its own
 version; [attachment](../GLOSSARY.md#attachment-and-control) and termination use the existing session's version.
-The installer is a release-payload executable, not a `climon2 install` command.
+The installed `c2` command is a relative symlink to `climon2` in the same
+executable home. Both names consume the same current-version CLI through the
+unchanged launcher; `climon2` remains supported without deprecation warnings.
+The installer is a release-payload executable, not a `c2 install` command.
 Installation relationships are outside this consumption diagram.
 
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
@@ -174,7 +177,7 @@ discovery and remote authentication/security remain deliberately unresolved;
 same-[UID](protocol/TERMS.md#uid)/private-directory local checks do not define
 future transport security. No forwarding implementation is claimed.
 
-Future `climon2 exec --headless` returns after daemon-confirmed creation without
+Future `c2 exec --headless` returns after daemon-confirmed creation without
 starting an interactive client. A [headless session](../GLOSSARY.md#sessions)
 keeps its explicit zero-client survival policy throughout its lifetime, including
 after later clients unexpectedly leave; command completion or existing CLI Kill

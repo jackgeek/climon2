@@ -4,13 +4,18 @@ Run any terminal command in a managed session, detach from it and reattach
 later, end it deliberately, or list live sessions:
 
 ```sh
-climon2 exec bash --noprofile --norc
-climon2 exec vim
-climon2 attach 3f2a9c1e
-climon2 kill 3f2a9c1e
-climon2 list
-climon2 list --json
+c2 exec bash --noprofile --norc
+c2 exec vim
+c2 attach 3f2a9c1e
+c2 kill 3f2a9c1e
+c2 list
+c2 list --json
 ```
+
+`c2` is the short command for climon2. The installer creates `c2 -> climon2`;
+the original `climon2` command remains supported without warnings. Both names
+run the same current version. Product names, version output, diagnostic prefixes,
+configuration/data paths and environment variables remain unchanged.
 
 The command keeps its arguments, working directory and environment, except that
 it always sees `TERM=xterm-256color` and `COLORTERM=truecolor`. Its exit status
@@ -30,13 +35,13 @@ already delivered.
 ## Sessions
 
 `exec` starts the command and attaches to it. There is no start-detached option.
-Future `climon2 exec --headless <command> [args...]` is agreed but **not
+Future `c2 exec --headless <command> [args...]` is agreed but **not
 implemented**. It will return success only after daemon-confirmed creation,
 without an interactive client. A headless session will survive zero clients
 throughout its lifetime, including after later attachment loss, until command
 completion or explicit Kill. Ordinary leave policy below remains unchanged.
 The [lifecycle specification](docs/monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill)
-requires preserving existing `climon2 kill <session>` and automated headless
+requires preserving existing `c2 kill <session>` and automated headless
 termination tests, not adding another kill command.
 
 **Detach** with the escape prefix, Ctrl+], then `d`. The session keeps running
@@ -47,7 +52,7 @@ other key sends both. A lone Ctrl+] waits for the next key, without a timeout.
 Every other key, including Ctrl+C and Ctrl+D, goes to the command. No binding
 is interpreted inside a bracketed paste.
 
-**Attach** with `climon2 attach <session>`. It needs a terminal on stdin and
+**Attach** with `c2 attach <session>`. It needs a terminal on stdin and
 stdout, and takes control immediately. `<session>` is a full session ID or a
 unique prefix of at least 8 hex digits, case-insensitive, with or without
 hyphens, matching a live session. A malformed `<session>` is a usage error (2).
@@ -90,7 +95,7 @@ control returns to the most recently controlling client that is still attached.
 - A session that no client attaches to within five seconds of starting ends.
 - When the command exits, every attached client exits with its status.
 
-**Kill** one session with `climon2 kill <session>` (same selector rules), whether
+**Kill** one session with `c2 kill <session>` (same selector rules), whether
 or not clients are attached. It needs no terminal and prints nothing. The
 session hangs up its terminal and always waits the full five-second grace
 before killing any remaining jobs, so a kill normally takes about five seconds.
@@ -240,12 +245,12 @@ never raw session-sequence passthrough.
 
 ## Listing
 
-`climon2 list` shows live sessions, newest first, with the columns SESSION,
+`c2 list` shows live sessions, newest first, with the columns SESSION,
 CREATED, VERSION, STATE, CLIENTS, COMMAND and ARGS. STATE is `starting`,
 `attached`, `detached`, `terminating`, or `unknown` for a session that does not
 report it. CLIENTS counts attached clients, or shows `-` when unknown.
 
-`climon2 list --json` prints an array of session metadata objects. Each has a
+`c2 list --json` prints an array of session metadata objects. Each has a
 `state` key holding `{"lifecycle": …, "attachments": …, "controlled": …}`, or
 `null` when the session does not report a valid state.
 
@@ -341,6 +346,10 @@ export PATH="$HOME/.local/share/climon2:$PATH"
 
 The installer prints a matching hint for custom destinations and never modifies
 shell startup files. Upgrades preserve existing version folders and live sessions.
+Fresh installs and upgrades add `c2` in the same executable home, with no PATH
+change needed for existing users. An unrelated file or symlink named `c2` there
+blocks installation before publication; resolve the reported conflict and retry.
+An existing correct relative link is accepted on repeated installs.
 There is no `sudo` or Homebrew installation step.
 
 For macOS browser downloads, verify `SHA256SUMS`, extract the archive, then remove

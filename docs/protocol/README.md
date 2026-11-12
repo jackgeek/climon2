@@ -86,14 +86,14 @@ and remote security remain unresolved. The
 There is no initial application checksum; only a future negotiated integrity
 revision could add one if chosen.
 
-Future `climon2 exec --headless <command> [args...]` creates a
+Future `c2 exec --headless <command> [args...]` creates a
 [headless session](../../GLOSSARY.md#sessions) without an interactive client and
 returns success only after daemon-confirmed creation. Its zero-client survival
 policy lasts until command completion or explicit
 [Kill](../../GLOSSARY.md#attachment-and-control), including after later
 [attachment](../../GLOSSARY.md#attachment-and-control) loss. CLI spelling and lifetime are
 [agreed, unimplemented](../monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill).
-Preserve existing `climon2 kill <session>` and require automated headless
+Preserve existing `c2 kill <session>` and require automated headless
 termination tests; no duplicate command is added. Ordinary sessions retain
 [leave policy](../../GLOSSARY.md#attachment-and-control), and this exception does
 not make all sessions persistent.
