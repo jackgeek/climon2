@@ -21,6 +21,7 @@ pub enum Role {
     Cli,
     Daemon,
     Client,
+    Monitor,
 }
 
 impl Role {
@@ -29,7 +30,14 @@ impl Role {
             Self::Cli => "cli",
             Self::Daemon => "daemon",
             Self::Client => "client",
+            Self::Monitor => "monitor",
         }
+    }
+
+    /// The log of one process in this role: its role, UTC second and pid, so
+    /// it never collides with another process's log in the same directory.
+    fn process_log_name(self, at: SystemTime, pid: u32) -> io::Result<String> {
+        Ok(format!("{}-{}-{pid}.log", self.name(), file_stamp(at)?))
     }
 }
 
@@ -57,18 +65,30 @@ fn file_stamp(at: SystemTime) -> io::Result<String> {
 
 /// Every client invocation gets its own log; a name collision is an ordinary failure.
 pub fn client_log_name(at: SystemTime, pid: u32) -> io::Result<String> {
-    Ok(format!("client-{}-{pid}.log", file_stamp(at)?))
+    Role::Client.process_log_name(at, pid)
 }
 
 fn session_log_name(role: Role) -> io::Result<String> {
     match role {
-        Role::Client => client_log_name(SystemTime::now(), std::process::id()),
+        Role::Client | Role::Monitor => {
+            role.process_log_name(SystemTime::now(), std::process::id())
+        }
         Role::Cli | Role::Daemon => Ok(format!("{}.log", role.name())),
     }
 }
 
+/// The CLI's general log is named by its UTC second and pid alone. Any other
+/// role's is a process log: the monitor runs under the pid of the CLI that
+/// exec'd it, possibly within the same second, so its log is named apart.
+fn general_log_name(role: Role, at: SystemTime, pid: u32) -> io::Result<String> {
+    match role {
+        Role::Cli => Ok(format!("{}-{pid}.log", file_stamp(at)?)),
+        Role::Daemon | Role::Client | Role::Monitor => role.process_log_name(at, pid),
+    }
+}
+
 impl LogFile {
-    fn open(directory: &Path, name: &str, role: &str) -> io::Result<Self> {
+    fn open(directory: &Path, name: &str, role: Role) -> io::Result<Self> {
         crate::runtime::private_directory(directory)?;
         let path = directory.join(name);
         let file = OpenOptions::new()
@@ -80,8 +100,9 @@ impl LogFile {
         let mut writer = CappedWriter::new(file);
         writeln!(
             writer,
-            "{} INFO climon2: role={role} pid={} version={}",
+            "{} INFO climon2: role={} pid={} version={}",
             timestamp()?,
+            role.name(),
             std::process::id(),
             env!("CARGO_PKG_VERSION")
         )?;
@@ -89,24 +110,18 @@ impl LogFile {
     }
 
     pub fn general(home: &Path) -> io::Result<Self> {
-        Self::general_as(home, "", Role::Cli.name())
+        Self::general_as(home, Role::Cli)
     }
 
-    /// The monitor's general log. The CLI that exec'd the monitor wrote its own
-    /// general log under the same pid, possibly in the same second, so the
-    /// monitor's is named apart.
+    /// The monitor's general log, named apart from the CLI's.
     pub fn monitor(home: &Path) -> io::Result<Self> {
-        Self::general_as(home, "monitor-", "monitor")
+        Self::general_as(home, Role::Monitor)
     }
 
-    fn general_as(home: &Path, prefix: &str, role: &str) -> io::Result<Self> {
+    fn general_as(home: &Path, role: Role) -> io::Result<Self> {
         crate::runtime::private_directory(&home.join("logs"))?;
-        let stamp = file_stamp(SystemTime::now())?;
-        Self::open(
-            &home.join("logs/general"),
-            &format!("{prefix}{stamp}-{}.log", std::process::id()),
-            role,
-        )
+        let name = general_log_name(role, SystemTime::now(), std::process::id())?;
+        Self::open(&home.join("logs/general"), &name, role)
     }
 
     pub fn session(
@@ -124,7 +139,7 @@ impl LogFile {
     }
 
     fn session_file(directory: &Path, role: Role) -> io::Result<Self> {
-        Self::open(directory, &session_log_name(role)?, role.name())
+        Self::open(directory, &session_log_name(role)?, role)
     }
 
     fn links(&mut self, cli_pid: Option<u32>, previous: Option<&Path>) -> io::Result<()> {
