@@ -375,7 +375,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let Some(delivery) = self.deliveries.get_mut(&id) else {
             return;
         };
-        match delivery.live(live, queued) {
+        match delivery.live(&self.vt, live, queued) {
             Ok(bytes) => self.commit_live(id, bytes),
             Err(delivery::Overflow) => self.mark_lost(id),
         }
