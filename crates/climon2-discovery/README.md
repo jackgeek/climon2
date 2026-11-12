@@ -46,11 +46,11 @@ choose `Remove`. With
 monitor discovery never deletes metadata. Uncertain sessions and invalid
 metadata are never cleaned up.
 
-The library never prints or logs. Callers own scheduling, presentation and
-logging. The CLI logs on its own thread exactly what it logged before the
-extraction: `invalid session metadata` once per invalid entry, then
-`malformed hello extensions` with `session=` for each live session whose
-capabilities or state are malformed.
+The library never prints or logs: its probe threads emit nothing, and every
+diagnostic is returned as data. Callers own scheduling, presentation and
+logging. The CLI logs, on its own thread and under its own target, exactly the
+events it logged before the extraction, mapped from these outcomes and invalid
+entries ([CLI README](../climon2-cli/README.md)).
 
 Bounded probe concurrency, incremental passes that report incomplete progress,
 and fair continuation come with the monitor's discovery (#106).

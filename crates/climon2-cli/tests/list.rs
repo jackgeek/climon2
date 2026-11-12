@@ -654,3 +654,130 @@ fn list_args_that_exactly_fit_are_whole_and_one_cell_less_is_truncated() {
         format!("{}…", whole.strip_suffix("gh").unwrap())
     );
 }
+
+/// #77, DSC-06: discovery moved into `climon2-discovery`, and `list` still logs each probe's
+/// diagnostic in the general log once per session, at its old level, under the CLI's own
+/// target and with its errno: a hello from another session or a failed exchange, an
+/// unreachable socket, a session whose daemon still runs or whose identity is unknown, and a
+/// failed stale cleanup. Uncertain sessions keep their metadata.
+#[test]
+fn every_probe_diagnostic_is_logged_once_with_its_errno() {
+    use climon2_core::protocol::{Frame, read_frame, write_frame};
+    use climon2_test_term::{Isolation, bin_path, process_command};
+    use std::os::unix::fs::PermissionsExt;
+    let isolation = Isolation::new();
+    let home = runtime::canonical_home(&isolation.climon2_home()).unwrap();
+    let created = "2026-10-28T07:21:02.930Z";
+    let other = "{\"session_id\":\"12345678-1234-4234-8234-123456789aff\",\"climon2_version\":\"0.1.0\",\"protocol\":1}";
+    let peers: Vec<_> = [(31, other), (32, "{")]
+        .into_iter()
+        .map(|(suffix, body)| {
+            let metadata = metadata(&home, suffix, created);
+            save(&home, &metadata);
+            let listener =
+                runtime::bind(std::path::Path::new(metadata.socket_path.as_str())).unwrap();
+            let worker = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                read_frame(&mut socket).unwrap();
+                write_frame(&mut socket, &Frame::new(1, body.into()).unwrap()).unwrap();
+            });
+            (metadata, worker)
+        })
+        .collect();
+    let unreachable = metadata(&home, 33, created);
+    let datagram =
+        std::os::unix::net::UnixDatagram::bind(unreachable.socket_path.as_str()).unwrap();
+    let alive = metadata(&home, 34, created);
+    let mut unknown = metadata(&home, 35, created);
+    unknown.daemon_pid = 0;
+    let mut stale = metadata(&home, 36, created);
+    stale.daemon_start_time = 0;
+    if let Some(identity) = &mut stale.daemon_linux_identity {
+        identity.start_ticks = 0;
+    }
+    let files: Vec<_> = [&unreachable, &alive, &unknown, &stale]
+        .into_iter()
+        .map(|metadata| save(&home, metadata))
+        .collect();
+    let sessions = home.join("sessions");
+    fs::set_permissions(&sessions, fs::Permissions::from_mode(0o500)).unwrap();
+    let stdout = isolation.home().join("stdout");
+    let stderr = isolation.home().join("stderr");
+    let mut command = process_command(bin_path("climon2-cli"));
+    command
+        .env_clear()
+        .env("HOME", isolation.home())
+        .env("CLIMON2_HOME", &home)
+        .env("CLIMON2_LOG", "trace")
+        .env("CLIMON2_TEST_ID", isolation.id())
+        .arg("list")
+        .stdout(fs::File::create(&stdout).unwrap())
+        .stderr(fs::File::create(&stderr).unwrap());
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        command.env("LLVM_PROFILE_FILE", profile);
+    }
+    let status = exit_within(command.spawn().unwrap(), std::time::Duration::from_secs(30));
+    fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert!(status.is_some_and(|status| status.success()), "{status:?}");
+    assert_eq!(
+        fs::read(&stdout).unwrap(),
+        b"No climon2 sessions running.\n"
+    );
+    assert_eq!(fs::read(&stderr).unwrap(), b"");
+    let [log] = fs::read_dir(home.join("logs/general"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    let log = fs::read_to_string(log).unwrap();
+    for line in [
+        "DEBUG climon2_cli::list: session probe did not match responded=true\n".to_owned(),
+        "DEBUG climon2_cli::list: session probe did not match responded=false\n".to_owned(),
+        format!(
+            "DEBUG climon2_cli::list: session connection failed errno={}\n",
+            libc::EPROTOTYPE
+        ),
+        "DEBUG climon2_cli::list: refused connection belongs to a live daemon\n".to_owned(),
+        " WARN climon2_cli::list: daemon identity is uncertain\n".to_owned(),
+        format!(
+            " WARN climon2_cli::list: stale session cleanup failed errno={}\n",
+            libc::EACCES
+        ),
+    ] {
+        assert_eq!(log.matches(&line).count(), 1, "{line}{log}");
+    }
+    assert!(files.iter().all(|file| file.exists()));
+    for (metadata, worker) in peers {
+        worker.join().unwrap();
+        fs::remove_file(metadata.socket_path.as_str()).unwrap();
+        fs::remove_file(
+            home.join("sessions")
+                .join(format!("{}.pty", metadata.session_id)),
+        )
+        .unwrap();
+    }
+    drop(datagram);
+    fs::remove_file(unreachable.socket_path.as_str()).unwrap();
+    files.iter().for_each(|file| fs::remove_file(file).unwrap());
+    isolation.assert_clean();
+}
+
+/// The child's exit status, or `None` after killing and reaping a child still running at
+/// the deadline, so a wedged child fails its test instead of hanging it.
+fn exit_within(
+    mut child: std::process::Child,
+    bound: std::time::Duration,
+) -> Option<std::process::ExitStatus> {
+    let deadline = std::time::Instant::now() + bound;
+    while std::time::Instant::now() < deadline {
+        if let Some(status) = child.try_wait().unwrap() {
+            return Some(status);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    None
+}

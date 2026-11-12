@@ -37,10 +37,17 @@ environment, and the validated client settings through the
 `list::discover_live(home)`. It reads whole metadata files
 (`MetadataLimits::UNBOUNDED`), removes stale metadata
 (`StaleMetadata::Remove`), and keeps only live sessions, newest created first
-with ascending session ID breaking ties. On its own thread the CLI logs
-`invalid session metadata` once per invalid entry, then
-`malformed hello extensions` for each live session whose capabilities or state
-are malformed. `list::LiveSession` is the library's type.
+with ascending session ID breaking ties. `list::LiveSession` is the library's
+type. The library logs nothing: the CLI logs each pass's diagnostics on the
+calling thread, so the general log records them under the CLI's own target, as
+before the extraction. They are `invalid session metadata` (warn) once per
+invalid entry; then one per probe that proves nothing or fails its cleanup:
+`session probe did not match` (debug, `responded=`), `session connection
+failed` (debug, `errno=`), `refused connection belongs to a live daemon`
+(debug), `daemon identity is uncertain` (warn, `errno=`; Linux also warns when
+the daemon's stable identity is unavailable) and `stale session cleanup failed`
+(warn, `errno=`); then `malformed hello extensions` (warn, `session=`) for each
+live session whose capabilities or state are malformed.
 
 The parent-owned list interface is `list::run(home: &Path, json: bool) ->
 io::Result<()>`, called after common logging/pruning. Columns are SESSION,
@@ -124,13 +131,14 @@ and `climon2`, by `climon2-e2e` `tests/monitor.rs`:
 `list_shows_version_state_and_clients_only_when_advertised`,
 `list_json_adds_the_state_object_or_null`,
 `malformed_hello_extensions_are_logged_and_the_session_stays_live`,
-`list_quotes_only_the_arguments_that_need_it` and
-`list_args_that_exactly_fit_are_whole_and_one_cell_less_is_truncated`.
+`list_quotes_only_the_arguments_that_need_it`,
+`list_args_that_exactly_fit_are_whole_and_one_cell_less_is_truncated` and
+`every_probe_diagnostic_is_logged_once_with_its_errno` (DSC-06: the general
+log keeps every probe diagnostic after the extraction).
 
-Probe workers retain the caller's logging subscriber, including warnings when
-Linux's stable daemon identity is unavailable. An already absent stale socket
-is successful cleanup, not a warning. A trickled then stalled hello reply
-still observes the single two-second discovery deadline.
+An already absent stale socket is successful cleanup, not a warning. A
+trickled then stalled hello reply still observes the single two-second
+discovery deadline.
 
 The list, attach and kill tests above run unchanged after discovery moved into
 `climon2-discovery`, which is the CLI part of DSC-06; the DSC-06 Contract case

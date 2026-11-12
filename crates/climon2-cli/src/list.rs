@@ -1,5 +1,5 @@
 use climon2_core::metadata::SessionMetadata;
-use climon2_discovery::{MetadataLimits, Options, Outcome, StaleMetadata};
+use climon2_discovery::{Cleanup, MetadataLimits, Options, Outcome, StaleMetadata, Uncertainty};
 use climon2_platform::presentation;
 use std::{io, io::Write, path::Path};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -60,6 +60,7 @@ pub fn discover_live(home: &Path) -> io::Result<Vec<LiveSession>> {
     for _ in &pass.invalid {
         tracing::warn!("invalid session metadata");
     }
+    pass.sessions.iter().for_each(log_probe);
     let live: Vec<_> = pass
         .sessions
         .into_iter()
@@ -67,6 +68,33 @@ pub fn discover_live(home: &Path) -> io::Result<Vec<LiveSession>> {
         .collect();
     live.iter().for_each(warn_if_malformed);
     Ok(live)
+}
+
+/// What each probe logged when discovery still lived in the CLI.
+fn log_probe(outcome: &Outcome) {
+    match outcome {
+        Outcome::Uncertain(_, uncertainty) => log_uncertainty(uncertainty),
+        Outcome::Stale(_, Cleanup::Failed(error)) => {
+            tracing::warn!(errno = error.raw_os_error(), "stale session cleanup failed")
+        }
+        Outcome::Live(_) | Outcome::Stale(..) => {}
+    }
+}
+
+fn log_uncertainty(uncertainty: &Uncertainty) {
+    match uncertainty {
+        Uncertainty::Mismatched | Uncertainty::Unanswered(_) => tracing::debug!(
+            responded = matches!(uncertainty, Uncertainty::Mismatched),
+            "session probe did not match"
+        ),
+        Uncertainty::Unreachable(error) => {
+            tracing::debug!(errno = error.raw_os_error(), "session connection failed")
+        }
+        Uncertainty::DaemonAlive => tracing::debug!("refused connection belongs to a live daemon"),
+        Uncertainty::IdentityUnknown(error) => {
+            tracing::warn!(errno = error.raw_os_error(), "daemon identity is uncertain")
+        }
+    }
 }
 
 fn warn_if_malformed(session: &LiveSession) {
