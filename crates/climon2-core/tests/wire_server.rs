@@ -648,8 +648,8 @@ fn utc_times_are_exact_calendar_milliseconds() {
     }
 }
 
-/// COM-02 / STA-07 (codec case): only the two attention states carry a
-/// nonnull episode; Status changed never carries the final transition.
+/// COM-02 / COM-06 / STA-07 (codec case): only the two attention states
+/// carry a nonnull episode; Status changed never carries the final transition.
 #[test]
 fn status_episodes_belong_only_to_attention_states() {
     for (state, episode, expected) in [
