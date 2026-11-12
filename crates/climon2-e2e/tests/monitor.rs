@@ -275,8 +275,8 @@ fn monitor_process(package: &Package) -> (i32, String) {
 /// `climon2 monitor` and `climon2 mon` all open the same monitor through the
 /// launcher, the CLI and the version's installed `climon2-monitor`: one
 /// permanent top row above the explicit empty state, whose hint names the
-/// default prefix. Prefix+x, even split across reads, exits 0 and releases the
-/// host.
+/// default prefix. Prefix+x exits 0 and releases the host even split across
+/// reads: the monitor has read the prefix alone before x is typed.
 #[test]
 fn installed_monitor_and_mon_open_the_same_monitor() {
     let package = Package::new();
@@ -290,9 +290,10 @@ fn installed_monitor_and_mon_open_the_same_monitor() {
     for command in ["c2 monitor", "c2 mon", "climon2 monitor", "climon2 mon"] {
         let mut terminal = outer(&package, command);
         opened(&mut terminal);
-        assert_eq!(monitor_process(&package).1, installed.to_str().unwrap());
+        let (monitor, executable) = monitor_process(&package);
+        assert_eq!(executable, installed.to_str().unwrap());
         assert_eq!(terminal.screen(), expected, "{command}");
-        terminal.send(b"\x1d").unwrap();
+        read_alone(&mut terminal, monitor, b"\x1d");
         terminal.send(b"x").unwrap();
         assert_released(&package, &mut terminal, 0);
     }
@@ -300,9 +301,10 @@ fn installed_monitor_and_mon_open_the_same_monitor() {
 }
 
 /// INP-01 (Monitor layer): the monitor reuses the configured client escape
-/// prefix: the empty state's hint names it and prefix+x exits. A null
-/// take-control key is accepted, and Ctrl+C, the default prefix and its x are
-/// not exits.
+/// prefix: the empty state's hint names it and prefix+x exits 0. A null
+/// take-control key is accepted. Ctrl+C, the default prefix and its x are not
+/// exits: a monitor that has read them still runs, and leaves on SIGTERM with
+/// that signal's status, not prefix+x's.
 #[test]
 fn installed_monitor_hints_and_exits_with_the_configured_prefix() {
     let package = Package::new();
@@ -311,12 +313,18 @@ fn installed_monitor_hints_and_exits_with_the_configured_prefix() {
         r#"{"client": {"escape_prefix": "Ctrl+B", "take_control_key": null}}"#,
     )
     .unwrap();
-    let mut terminal = outer(&package, "climon2 monitor");
-    opened(&mut terminal);
-    assert_eq!(terminal.screen(), expected_screen(ROWS, COLS, "Ctrl+B"));
-    terminal.send(b"\x03\x1dx").unwrap();
-    terminal.send(b"\x02x").unwrap();
-    assert_released(&package, &mut terminal, 0);
+    let mut ignoring = outer(&package, "climon2 monitor");
+    opened(&mut ignoring);
+    assert_eq!(ignoring.screen(), expected_screen(ROWS, COLS, "Ctrl+B"));
+    let monitor = monitor_process(&package).0;
+    read_alone(&mut ignoring, monitor, b"\x03\x1dx");
+    kill(Pid::from_raw(monitor), Signal::SIGTERM)
+        .expect("the monitor still runs after reading Ctrl+C and the default prefix+x");
+    assert_released(&package, &mut ignoring, 143);
+    let mut exiting = outer(&package, "climon2 monitor");
+    opened(&mut exiting);
+    exiting.send(b"\x02x").unwrap();
+    assert_released(&package, &mut exiting, 0);
     package.assert_clean();
 }
 
@@ -339,24 +347,30 @@ fn stop(pid: i32) {
     }
 }
 
+/// Has `monitor` read `bytes` in one read of their own: they all reach its
+/// terminal while it is stopped, then it resumes and reads every one before
+/// this returns.
+fn read_alone(terminal: &mut Terminal, monitor: i32, bytes: &[u8]) {
+    stop(monitor);
+    terminal.send(bytes).unwrap();
+    terminal
+        .wait_for_unread_input(bytes.len(), TIMEOUT)
+        .unwrap();
+    kill(Pid::from_raw(monitor), Signal::SIGCONT).unwrap();
+    terminal.wait_for_unread_input(0, TIMEOUT).unwrap();
+}
+
 /// INP-03 (Monitor layer, empty monitor): a paste never exits, never completes
 /// a pending prefix and leaves none pending, so typed x after it is not an
-/// exit either. Every pasted byte reaches the stopped monitor's terminal before
-/// it resumes and reads them all; it is still running afterwards and leaves on
-/// SIGTERM, not with prefix+x's status.
+/// exit either. Once the monitor has read every pasted byte it is still
+/// running, and leaves on SIGTERM, not with prefix+x's status.
 #[test]
 fn pastes_never_exit_or_leave_a_pending_prefix() {
     let package = Package::new();
     let mut terminal = outer(&package, "climon2 monitor");
     opened(&mut terminal);
     let monitor = monitor_process(&package).0;
-    stop(monitor);
-    terminal.send(PASTES).unwrap();
-    terminal
-        .wait_for_unread_input(PASTES.len(), TIMEOUT)
-        .unwrap();
-    kill(Pid::from_raw(monitor), Signal::SIGCONT).unwrap();
-    terminal.wait_for_unread_input(0, TIMEOUT).unwrap();
+    read_alone(&mut terminal, monitor, PASTES);
     kill(Pid::from_raw(monitor), Signal::SIGTERM)
         .expect("the monitor still runs after reading every paste");
     assert!(!written(&mut terminal).contains("climon2: error"));
