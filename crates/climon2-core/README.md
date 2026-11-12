@@ -70,7 +70,7 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   from a command. Attach and kill take exactly one `selector::Selector`. List
   permits only `--json`; top-level help/version take no arguments.
   `UsageError::exit_code` returns 2; `cli::USAGE` is the usage line.
-- `selector::Selector`: 8 to 32 hex digits after removing hyphens and folding
+- `selector::Selector`: 1 to 32 hex digits after removing hyphens and folding
   case; anything else is a `UsageError`. `select` picks exactly one candidate by
   unique prefix or full ID; no match or ambiguity (listing every full ID) is a
   `SelectionError`.
