@@ -82,46 +82,14 @@ impl From<Object<GeometryFields>> for Geometry {
     }
 }
 
-/// A lowercase canonical hyphenated GUID. It is used by new revision-1
-/// fields; the frozen hello keeps its own accepted syntax.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct Guid(String);
-
-impl Guid {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl FromStr for Guid {
-    type Err = ContractError;
-
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        uuid::Uuid::parse_str(text)
-            .ok()
-            .filter(|guid| guid.hyphenated().to_string() == text)
-            .map(|_| Self(text.to_owned()))
-            .ok_or_else(|| ContractError("invalid GUID".into()))
-    }
-}
-
-impl TryFrom<String> for Guid {
-    type Error = ContractError;
-
-    fn try_from(text: String) -> Result<Self, Self::Error> {
-        text.parse()
-    }
-}
-
-impl From<Guid> for String {
-    fn from(guid: Guid) -> Self {
-        guid.0
-    }
-}
-
 /// `YYYY-MM-DDTHH:MM:SS.mmmZ` on a real calendar date, with seconds 00
 /// through 59. It records when; it is not an ordering or an identity.
+///
+/// It is deliberately not the frozen metadata's `Timestamp`. That
+/// `created_at` contract is RFC 3339 UTC with milliseconds, which also admits
+/// a leap second (`23:59:60`) and a `t` or space separator, and readers of
+/// every release's metadata must keep accepting them. The wire fixes this
+/// one exact form.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Utc(String);

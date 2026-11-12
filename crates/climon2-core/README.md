@@ -57,9 +57,11 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     included), wrong types, non-object records and inconsistent values.
     `ControlRecord::to_frame` encodes members in their documented order.
   - Shared types: `Counter` (canonical decimal string 1 through
-    18446744073709551615), `Guid` (lowercase canonical hyphenated), `Geometry`
-    (positive columns and rows), `Utc` (`YYYY-MM-DDTHH:MM:SS.mmmZ` on a real
-    date, seconds 00-59), `CommandResult` (raw u32 exit or signal number with
+    18446744073709551615), `Guid` (lowercase canonical hyphenated, validated
+    exactly like `SessionId`), `Geometry` (positive columns and rows), `Utc`
+    (`YYYY-MM-DDTHH:MM:SS.mmmZ` on a real date, seconds 00-59; stricter than
+    the frozen `Timestamp`, whose RFC 3339 also admits a leap second and a
+    `t` or space separator), `CommandResult` (raw u32 exit or signal number with
     optional name; `final_state`), `Status` (episodes exactly for the two
     attention states), `Progress` and `Percent` (0-100, present as the state
     requires), `Available<T>` (unavailable carries null) and `Error` with a

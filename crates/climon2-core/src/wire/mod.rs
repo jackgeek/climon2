@@ -16,6 +16,8 @@ mod response;
 mod server;
 mod types;
 
+/// Shares the session ID's GUID syntax and validator.
+pub use crate::identity::Guid;
 pub use catalogue::{Error, ErrorCode, FatalCode, OperationalCode};
 pub use families::{Advertisement, Families, Family, FrameLimits, Requested};
 pub use frame::{Frame, FrameLimit, WireError, read_frame, write_frame};
@@ -32,4 +34,4 @@ pub use server::{
     CommandFinal, FatalError, InitialMetadata, Notification, NotificationSource, ProgressChanged,
     ServerMessage, StatusChanged, TitleChanged,
 };
-pub use types::{Counter, Geometry, Guid, Utc};
+pub use types::{Counter, Geometry, Utc};
