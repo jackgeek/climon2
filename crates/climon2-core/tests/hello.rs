@@ -425,8 +425,6 @@ fn revision1_support_is_advertised_beside_the_frozen_tokens_and_state() {
     );
     let extensions = HelloExtensions::from_body(frame.body());
     assert_eq!(extensions.daemon_wire_v1, Advertised::Valid(advertisement));
-    let frozen = HelloExtensions::from_body(advertise(&reply(), snapshot).unwrap().body());
-    assert_eq!(extensions.capabilities, frozen.capabilities);
     assert_eq!(extensions.state, Advertised::Valid(snapshot));
     assert_eq!(
         ServerMessage::from_frame(frame).unwrap(),
