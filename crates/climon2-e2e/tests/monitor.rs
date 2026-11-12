@@ -1,8 +1,8 @@
-//! Spec #73 / #74: the packaged monitor, reached as `climon2 monitor` or
-//! `climon2 mon` through the installed launcher, driven through real PTYs from
-//! outer shells with isolated homes (the Monitor layer). Every scenario ends
-//! with `assert_clean()`.
-#![cfg(target_os = "macos")]
+//! Spec #73 / #74: the packaged monitor, reached as `c2 monitor`, `c2 mon` or
+//! their `climon2` spellings through the installed launcher, driven through
+//! real PTYs from outer shells with isolated homes (the Monitor layer), on
+//! macOS and Linux. Every scenario ends with `assert_clean()`.
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 #[allow(dead_code)]
 mod support;
@@ -126,7 +126,7 @@ fn refusal(terminal: &mut Terminal) -> String {
 #[test]
 fn installed_monitor_arguments_are_a_usage_error() {
     let package = Package::new();
-    for command in ["climon2 monitor extra", "climon2 mon --help"] {
+    for command in ["c2 monitor extra", "climon2 mon --help"] {
         let mut terminal = outer(&package, command);
         assert_eq!(refusal(&mut terminal), USAGE);
         assert_released(&package, &mut terminal, 2);
@@ -168,7 +168,7 @@ fn installed_monitor_refuses_a_non_terminal_stdin_or_stdout() {
     let package = Package::new();
     let stdout = package.isolation.home().join("monitor stdout");
     for command in [
-        "climon2 monitor < /dev/null".to_owned(),
+        "c2 monitor < /dev/null".to_owned(),
         format!("climon2 mon > {}", quote(&stdout)),
     ] {
         let mut terminal = outer(&package, &command);
@@ -260,33 +260,40 @@ fn opened(terminal: &mut Terminal) {
     assert_title_untouched(terminal);
 }
 
+/// The executable a process runs: the kernel's record on Linux, `ps`'s full
+/// command path on macOS. Empty once the process is gone.
+fn executable(pid: i32) -> String {
+    if cfg!(target_os = "linux") {
+        return fs::read_link(format!("/proc/{pid}/exe"))
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+    }
+    let output = Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
 /// The executable of the one running monitor process this test owns.
 fn monitor_process(package: &Package) -> (i32, String) {
     let processes: Vec<_> = package
         .isolation
         .owned_pids()
         .into_iter()
-        .map(|pid| {
-            let output = Command::new("/bin/ps")
-                .args(["-p", &pid.to_string(), "-o", "comm="])
-                .output()
-                .unwrap();
-            (
-                pid,
-                String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-            )
-        })
+        .map(|pid| (pid, executable(pid)))
         .filter(|(_, command)| command.ends_with("/climon2-monitor"))
         .collect();
     assert_eq!(processes.len(), 1, "{processes:?}");
     processes.into_iter().next().unwrap()
 }
 
-/// ENT-01 (Monitor layer): from an installed release, `climon2 monitor` and
-/// its alias `climon2 mon` open the same monitor through the launcher, the CLI
-/// and the version's installed `climon2-monitor`: one permanent top row above
-/// the explicit empty state, whose hint names the default prefix. Prefix+x,
-/// even split across reads, exits 0 and releases the host.
+/// ENT-01 (Monitor layer): from an installed release, `c2 monitor`, `c2 mon`,
+/// `climon2 monitor` and `climon2 mon` all open the same monitor through the
+/// launcher, the CLI and the version's installed `climon2-monitor`: one
+/// permanent top row above the explicit empty state, whose hint names the
+/// default prefix. Prefix+x, even split across reads, exits 0 and releases the
+/// host.
 #[test]
 fn installed_monitor_and_mon_open_the_same_monitor() {
     let package = Package::new();
@@ -296,18 +303,16 @@ fn installed_monitor_and_mon_open_the_same_monitor() {
         .unwrap()
         .join(VERSION)
         .join("climon2-monitor");
-    let mut screens = Vec::new();
-    for command in ["climon2 monitor", "climon2 mon"] {
+    let expected = expected_screen(ROWS, COLS, "Ctrl+]");
+    for command in ["c2 monitor", "c2 mon", "climon2 monitor", "climon2 mon"] {
         let mut terminal = outer(&package, command);
         opened(&mut terminal);
         assert_eq!(monitor_process(&package).1, installed.to_str().unwrap());
-        screens.push(terminal.screen());
+        assert_eq!(terminal.screen(), expected, "{command}");
         terminal.send(b"\x1d").unwrap();
         terminal.send(b"x").unwrap();
         assert_released(&package, &mut terminal, 0);
     }
-    assert_eq!(screens[0], expected_screen(ROWS, COLS, "Ctrl+]"));
-    assert_eq!(screens[1], screens[0]);
     package.assert_clean();
 }
 
