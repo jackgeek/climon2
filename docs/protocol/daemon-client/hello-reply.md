@@ -83,19 +83,23 @@ The [approved contract](https://github.com/jackgeek/climon2/issues/67) adds
 `max_request_frame_bytes` and `max_server_frame_bytes`: positive unsigned
 32-bit integer limits counting type plus body, not the four-byte prefix.
 The entire advertisement must fit inside frozen hello's existing limit.
+A daemon that speaks revision 1 still sends the frozen tokens and `state`,
+as in this complete reply.
 These example numbers are **illustrative advertisements, not agreed defaults**;
 [Operational limits](../../monitor-operational-limits.md#configuration-and-communication-of-limits)
 assigns configurable local ceilings and how they interact with this advertisement.
 
 ```json
-{"session_id":"550e8400-e29b-41d4-a716-446655440000","climon2_version":"1.2.3","protocol":1,"capabilities":["daemon-wire-v1","monitor-v1","title-v1","status-v1","notification-v1","progress-v1","focus-v1"],"daemon_wire_v1":{"max_request_frame_bytes":1048576,"max_server_frame_bytes":1048576}}
+{"session_id":"550e8400-e29b-41d4-a716-446655440000","climon2_version":"1.2.3","protocol":1,"capabilities":["attach","kill","state-v1","client-startup-v1","daemon-wire-v1","monitor-v1","title-v1","status-v1","notification-v1","progress-v1","focus-v1"],"state":{"lifecycle":"attached","attachments":2,"controlled":true},"daemon_wire_v1":{"max_request_frame_bytes":1048576,"max_server_frame_bytes":1048576}}
 ```
 
 Missing/malformed advertisement makes revision 1 unavailable, not the session
 stale. The [hello parser](../../../crates/climon2-core/src/hello.rs) already
 reports this advertisement as valid, absent or malformed, and
-[its tests](../../../crates/climon2-core/tests/hello.rs) cover each case; the
-current daemon still advertises only the implemented tokens and `state`.
+[its tests](../../../crates/climon2-core/tests/hello.rs) cover each case.
+[`climon2-core`](../../../crates/climon2-core/README.md) can also encode it
+beside the frozen tokens and `state`, but the current daemon still
+advertises only the implemented tokens and `state`.
 Existing optional-field behavior and required fields remain frozen;
 this is not permission to apply post-hello strict unknown-field rejection to
 hello. Optional family meanings are in the

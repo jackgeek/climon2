@@ -30,8 +30,10 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   only when the capabilities include `daemon-wire-v1` and `daemon_wire_v1`
   holds positive u32 `max_request_frame_bytes` and `max_server_frame_bytes`;
   neither is `Absent`, anything else is `Malformed`, and none of these ever
-  makes a session stale. `advertise_with` encodes chosen optional fields,
-  appending the revision-1 families after the frozen tokens.
+  makes a session stale. `advertise_revision1` encodes the same frozen tokens
+  and state plus a revision-1 `Advertisement`: its families after the frozen
+  tokens and its `daemon_wire_v1` limits. Neither encoder can omit the frozen
+  tokens or state.
 - `wire`: the platform-neutral, stateless daemon wire revision 1 codec shared
   by the daemon and the client library (part 1: framing, shared types and
   session messages). Roles, ordering, authority and request-ID sequencing

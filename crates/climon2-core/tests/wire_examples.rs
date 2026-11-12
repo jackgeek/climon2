@@ -11,8 +11,8 @@ use climon2_core::wire::{
 };
 use climon2_core::{
     hello::{
-        Advertised, Capabilities, Capability, HelloExtensions, Lifecycle, SessionState, advertise,
-        advertise_with,
+        Advertised, Capability, HelloExtensions, Lifecycle, SessionState, advertise,
+        advertise_revision1,
     },
     protocol::{self, HelloReply},
     wire::{Advertisement, Family, FrameLimit, FrameLimits},
@@ -249,18 +249,17 @@ fn published_hello_advertisement_examples_round_trip_byte_identically() {
         },
     );
     assert_eq!(reply, expected);
-    assert_eq!(
-        extensions.capabilities,
-        Advertised::Valid(Capabilities::default())
-    );
-    assert_eq!(extensions.state, Advertised::Absent);
+    let capabilities = extensions.capabilities.valid().unwrap();
+    for capability in Capability::ADVERTISED {
+        assert!(capabilities.contains(capability), "{capability:?}");
+    }
+    assert_eq!(extensions.state, Advertised::Valid(state));
     assert_eq!(
         extensions.daemon_wire_v1,
         Advertised::Valid(advertisement.clone())
     );
-    let encoded: &[Capability] = &[];
     assert_eq!(
-        advertise_with(&reply, encoded, None, Some(&advertisement))
+        advertise_revision1(&reply, state, &advertisement)
             .unwrap()
             .body(),
         revision1.as_bytes()

@@ -416,13 +416,7 @@ fn revision1_support_is_advertised_beside_the_frozen_tokens_and_state() {
         [Family::StatusV1, Family::MonitorV1],
         frame_limits(65_536, 1_048_576),
     );
-    let frame = advertise_with(
-        &reply(),
-        &Capability::ADVERTISED,
-        Some(snapshot),
-        Some(&advertisement),
-    )
-    .unwrap();
+    let frame = advertise_revision1(&reply(), snapshot, &advertisement).unwrap();
     assert_eq!(
         std::str::from_utf8(frame.body()).unwrap(),
         format!(
@@ -431,14 +425,11 @@ fn revision1_support_is_advertised_beside_the_frozen_tokens_and_state() {
     );
     let extensions = HelloExtensions::from_body(frame.body());
     assert_eq!(extensions.daemon_wire_v1, Advertised::Valid(advertisement));
+    let frozen = HelloExtensions::from_body(advertise(&reply(), snapshot).unwrap().body());
+    assert_eq!(extensions.capabilities, frozen.capabilities);
     assert_eq!(extensions.state, Advertised::Valid(snapshot));
-    assert!(extensions.capabilities.valid().unwrap().supports_state());
     assert_eq!(
         ServerMessage::from_frame(frame).unwrap(),
         ServerMessage::Hello(reply())
-    );
-    assert_eq!(
-        advertise_with(&reply(), &Capability::ADVERTISED, Some(snapshot), None).unwrap(),
-        advertise(&reply(), snapshot).unwrap()
     );
 }
