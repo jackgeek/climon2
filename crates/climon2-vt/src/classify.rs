@@ -8,7 +8,8 @@ use alacritty_terminal::vte::{Params, Parser, Perform};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Live {
     Forward,
-    Strip,
+    /// These bytes instead of the token: the C0 controls the parser executed
+    /// in it, which the host must perform too, then any replacement.
     Replace(Vec<u8>),
 }
 
@@ -68,10 +69,11 @@ pub(crate) fn classify(token: &Token) -> Policy {
         Kind::Text => Policy::of(Live::Forward),
         Kind::Escape => escape(&parse(&token.bytes)),
         Kind::Csi => csi(&parse(&token.bytes)),
-        _ => Policy::of(Live::Strip),
+        _ => Policy::of(strip(&parse(&token.bytes))),
     }
 }
 
+/// What vte did with one token.
 #[derive(Debug, Default)]
 struct Dispatch {
     params: Vec<u16>,
@@ -79,6 +81,8 @@ struct Dispatch {
     action: u8,
     ignored: bool,
     dispatched: bool,
+    /// The C0 controls executed, in order.
+    executed: Vec<u8>,
 }
 
 impl Dispatch {
@@ -91,6 +95,10 @@ impl Dispatch {
 }
 
 impl Perform for Dispatch {
+    fn execute(&mut self, byte: u8) {
+        self.executed.push(byte);
+    }
+
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], ignored: bool, action: char) {
         self.params = params.iter().map(|param| param[0]).collect();
         self.record(intermediates, ignored, action as u8);
@@ -116,9 +124,14 @@ fn parse(bytes: &[u8]) -> Dispatch {
     dispatch
 }
 
+/// Only the controls the parser executed reach the host.
+fn strip(dispatch: &Dispatch) -> Live {
+    Live::Replace(dispatch.executed.clone())
+}
+
 fn escape(dispatch: &Dispatch) -> Policy {
     let live = if dispatch.is(b'Z', b"") {
-        Live::Strip
+        strip(dispatch)
     } else {
         Live::Forward
     };
@@ -144,7 +157,7 @@ fn csi(dispatch: &Dispatch) -> Policy {
 
 fn csi_live(dispatch: &Dispatch) -> Live {
     if !dispatch.dispatched || dispatch.ignored || is_request(dispatch) {
-        Live::Strip
+        strip(dispatch)
     } else {
         screen_modes(dispatch)
     }
@@ -174,15 +187,15 @@ fn screen_modes(dispatch: &Dispatch) -> Live {
     if private_mode(dispatch).is_none() || kept.len() == dispatch.params.len() {
         Live::Forward
     } else {
-        without_screens(&kept, dispatch.action)
+        without_screens(&kept, dispatch)
     }
 }
 
-fn without_screens(kept: &[u16], action: u8) -> Live {
+fn without_screens(kept: &[u16], dispatch: &Dispatch) -> Live {
     if kept.is_empty() {
-        Live::Strip
+        strip(dispatch)
     } else {
-        Live::Replace(decset(kept, action))
+        Live::Replace([&dispatch.executed[..], &decset(kept, dispatch.action)].concat())
     }
 }
 

@@ -31,8 +31,9 @@ pub enum Kind {
 }
 
 /// One complete token. `bytes` are what the engine is fed: escape sequences
-/// lose bytes the parser ignores, and a control string the parser ended
-/// without ST (by CAN, SUB or another escape) gains a synthetic ST.
+/// lose bytes the parser ignores but keep the C0 controls it executes where
+/// they were, even before the introducer, and a control string the parser
+/// ended without ST (by CAN, SUB or another escape) gains a synthetic ST.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Token {
     pub kind: Kind,
@@ -196,8 +197,9 @@ const RULES: &[Rule] = &[
     rule(STR_ESC, 0x00, 0xFF, Tokenizer::interrupt_string, None),
 ];
 
-/// Introducer byte after `ESC` that names a token's kind; anything else is an
-/// escape sequence.
+/// Introducer byte that names a token's kind; anything else is an escape
+/// sequence. The introducer is the first byte after `ESC` that the parser
+/// does not execute: C0 controls between them leave it in its escape state.
 const KINDS: &[(u8, Kind)] = &[
     (b'[', Kind::Csi),
     (b']', Kind::Osc),
@@ -351,10 +353,13 @@ impl Tokenizer {
     }
 }
 
+/// A held sequence starts with `ESC` and then holds only executed C0
+/// controls until its introducer; DEL is never held there.
 fn kind_of(bytes: &[u8]) -> Kind {
+    let introducer = bytes.iter().find(|byte| !byte.is_ascii_control());
     KINDS
         .iter()
-        .find(|(introducer, _)| bytes.get(1) == Some(introducer))
+        .find(|(byte, _)| introducer == Some(byte))
         .map_or(Kind::Escape, |(_, kind)| *kind)
 }
 

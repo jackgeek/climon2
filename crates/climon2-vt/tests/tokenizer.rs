@@ -327,6 +327,42 @@ fn c0_controls_in_aborted_escape_sequences_still_reach_the_engine() {
     );
 }
 
+/// The parser actions each kind of token may cause: text is printed or
+/// executed, and a sequence is dispatched as its kind, after executing the
+/// C0 controls inside it. SOS, PM and APC strings, and the forms the parser
+/// ignores, dispatch nothing.
+fn dispatches(kind: Kind) -> &'static [&'static str] {
+    match kind {
+        Kind::Text => &["print", "execute"],
+        Kind::Escape => &["execute", "esc"],
+        Kind::Csi => &["execute", "csi"],
+        Kind::Osc => &["execute", "osc"],
+        Kind::Dcs => &["execute", "hook", "put", "unhook"],
+        Kind::Sos => &["execute"],
+        Kind::Oversized => &[],
+    }
+}
+
+/// Plan section 1.9: the live output policy and the presentation classify
+/// tokens by kind, so a token's kind must be what vte does with it. C0
+/// controls vte executes between `ESC` and the introducer do not change
+/// which sequence it then dispatches (TRM-02).
+#[test]
+fn vte_dispatches_each_token_as_its_kind() {
+    for input in tricky_inputs() {
+        for token in Tokenizer::new().push(&input) {
+            let actions = vte_actions(std::slice::from_ref(&token.bytes));
+            let allowed = dispatches(token.kind);
+            assert!(
+                actions
+                    .iter()
+                    .all(|action| allowed.contains(&action.split(' ').next().unwrap())),
+                "input {input:?} token {token:?} actions {actions:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn completed_tokens_never_leave_vte_inside_a_sequence() {
     for input in tricky_inputs() {
