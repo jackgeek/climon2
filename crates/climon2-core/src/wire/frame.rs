@@ -118,8 +118,10 @@ fn truncated() -> WireError {
     WireError::Fatal(FatalCode::TruncatedFrame)
 }
 
-/// Write one whole frame if `limit` admits it; nothing is written otherwise.
-/// Pass the smaller of the local ceiling and the peer's advertised maximum.
+/// Write one frame if `limit` admits it; nothing is written otherwise. An I/O
+/// error can leave part of the frame written, so close the connection on any
+/// error. Pass the smaller of the local ceiling and the peer's advertised
+/// maximum.
 pub fn write_frame(
     writer: &mut impl Write,
     frame: &Frame,

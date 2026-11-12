@@ -47,7 +47,9 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     maximum when writing. Oversize is `frame_too_large`, decided from the
     prefix before any body is read; zero is `invalid_frame_length`; closure
     between frames is `Ok(None)` and inside a frame `truncated_frame`;
-    transport errors stay `WireError::Io`. Writes are all or nothing.
+    transport errors stay `WireError::Io`. A frame the limit refuses is
+    never written. Otherwise the frame goes out in one `write_all`, so an I/O
+    error can leave part of it written; close the connection on any error.
   - `Request::from_frame` (daemon side: Open `0x30`, Leave `0x37`, Kill
     `0x38`) and `ServerMessage::from_frame` (client side: Response `0x40`,
     Initial metadata `0x41`, Title changed `0x42`, Status changed `0x43`,
