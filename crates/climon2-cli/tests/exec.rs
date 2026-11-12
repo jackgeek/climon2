@@ -112,8 +112,10 @@ impl Layout {
         command
     }
 
+    /// Teardown needs only a few checks, but each scans every process's environment with
+    /// `ps`, which takes seconds on a loaded machine (as under mutation), so the bound is generous.
     fn clean(&self) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while !self.files_clean() || !self.live_pids().is_empty() {
             assert!(
                 std::time::Instant::now() < deadline,
