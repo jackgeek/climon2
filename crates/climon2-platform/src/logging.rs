@@ -151,11 +151,7 @@ impl LogFile {
 
     pub fn capture_stderr(&self) -> io::Result<StderrCapture> {
         let (reader, writer) = crate::daemon::pipe()?;
-        let saved = crate::syscall::checked(unsafe {
-            libc::fcntl(libc::STDERR_FILENO, libc::F_DUPFD_CLOEXEC, 3)
-        })?;
-        // The new descriptor is owned here and is never inherited across exec.
-        let saved = unsafe { OwnedFd::from_raw_fd(saved) };
+        let saved = saved_stderr()?;
         replace_stderr(writer.as_raw_fd())?;
         drop(writer);
         let mut sink = self.writer();
@@ -174,6 +170,15 @@ impl LogFile {
 pub struct StderrCapture {
     saved: OwnedFd,
     reader: Option<std::thread::JoinHandle<io::Result<()>>>,
+}
+
+/// A duplicate of stderr, numbered above the standard streams, that is owned
+/// here and never inherited across exec.
+fn saved_stderr() -> io::Result<OwnedFd> {
+    let fd = crate::syscall::checked(unsafe {
+        libc::fcntl(libc::STDERR_FILENO, libc::F_DUPFD_CLOEXEC, 3)
+    })?;
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 fn replace_stderr(fd: libc::c_int) -> io::Result<()> {
