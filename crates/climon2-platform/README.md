@@ -1,6 +1,6 @@
 # climon2-platform
 
-Shared macOS seams (ADR 0003). Other targets fail inside each seam; neutral
+Shared macOS and Linux seams (ADR 0003). Other targets fail inside each seam; neutral
 contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
 
 ## Runtime and peers
@@ -16,32 +16,42 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
   Existing unsafe directories are refused, never repaired.
 - `runtime::bind(&Path)` binds under umask 077. Bind before starting worker
   threads: umask is process-wide; the lock serializes only this helper's calls.
-- `runtime::{SocketListener,SocketStream}` name the macOS transport types
+- `runtime::{SocketListener,SocketStream}` name the Unix transport types
   without exposing libc types in callers' signatures.
 - `peer::accept(&SocketListener)` returns only authenticated streams.
   `peer::{uid,authenticate}` support already accepted streams; authentication
   must happen before hello and callers must drop rejected streams.
+- Linux authenticates with `SO_PEERCRED`; macOS uses `getpeereid`. Both require
+  the effective user's UID.
 
 ## Processes and startup
 
-- `process::start_time(pid) -> io::Result<Option<u64>>` uses `proc_pidinfo`;
-  timestamps are Unix-epoch microseconds. `is_same_process(pid, expected)`
-  distinguishes PID reuse. Permission/inspection errors are **not** death.
+- `process::start_time(pid) -> io::Result<Option<u64>>` uses `proc_pidinfo` on
+  macOS and procfs boot time/start ticks on Linux; timestamps are Unix-epoch
+  microseconds. Permission/inspection errors are **not** death.
+  Linux treats both a missing stat path and `ESRCH` during its read as absence:
+  reaping can invalidate an already open procfs descriptor.
+- `process::is_same_daemon(metadata)` uses epoch start time on macOS and
+  `daemon_linux_identity` (boot ID plus start ticks) on Linux. Linux's epoch
+  conversion is clock-sensitive and is not stale-cleanup authority.
+  Missing stable identity makes Linux cleanup fail safely, retaining metadata.
 - `process::{wait,try_wait}` own reaping by PID and return core `ExitStatus`
   without portable-pty's lossy signal mapping. Do not also wait through
   portable-pty or `std::process::Child`.
 - `process::signal_group(group, Signal)` supports Hangup, Interrupt, Terminate,
   Kill, rejects 0, 1 (launchd) and out-of-range IDs, so `kill(0)`/`kill(-1)`
-  are unreachable, and tolerates a nonexistent group.
+  are unreachable, and tolerates a nonexistent group. A unit test checks the
+  refusal without sending a signal: under a mutant it would reach `kill(-1)`.
 - `process::Terminal::from_path(path)` identifies a terminal (a PTY slave) by
   its character device number; anything else is refused.
 - `process::TerminalSession::new(leader, terminal)` is the session a command
   leads on its PTY. Candidates for a session kill come **only** from kernel
-  lists: `proc_listpids(PROC_TTY_ONLY, terminal)` and, per recorded job group,
-  `proc_listpids(PROC_PGRP_ONLY, group)`; every candidate must also satisfy
+  lists: `proc_listpids` on macOS, or procfs filtered by terminal and recorded
+  job group on Linux; every candidate must also satisfy
   `getsid == leader` and not be the caller, and is signalled through a
-  non-zero-PID-only kill. Nothing ever enumerates all processes, so no single
-  predicate change can reach processes off that PTY and its job groups.
+  non-zero-PID-only kill. macOS asks the kernel for scoped candidate lists;
+  Linux must enumerate procfs, but filters both candidates and session
+  membership before signaling. Zombies are not live Linux candidates.
   macOS detaches the terminal from the session when the leader exits, so
   `observe()` records the members' job groups while the leader lives.
   `kill()` observes once more, then SIGKILLs members in bounded rounds until
@@ -58,7 +68,7 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
   every fork (pre_exec spawns, portable-pty spawn). macOS runs libnotify's fork
   handler in the child, which traps (SIGILL) or hangs if another thread was
   initialising libnotify at the fork; this call waits that initialisation out.
-  `daemon::spawn` calls it itself.
+  Linux needs no libnotify preparation. `daemon::spawn` calls it itself.
 - `daemon::spawn(Command, configure)` calls `configure(&mut Command, fd: u32)`
   so the caller can append its readiness descriptor argument. It uses exec via
   `Command::pre_exec(setsid)`, inherited pipe, null stdin/stdout, and the caller's
@@ -105,7 +115,17 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
 `issue19_terminal_must_be_a_character_device`,
 `issue15_bad_cwd_is_rejected_before_pty_can_fall_back`.
 
-`tests/daemon.rs`: `issue19_daemon_exec_is_detached_and_readiness_preserves_launch_failure`,
+On Linux x86_64,
+`procfs_reaping::process_reaped_between_procfs_open_and_read_is_absent` traces
+an owned helper to reap its target between the real procfs open and read.
+It exercises the public identity API without replacing procfs or mocking I/O.
+
+`tests/daemon.rs`: `issue19_an_inherited_readiness_pipe_closes_on_exec`,
+`issue19_a_readiness_descriptor_that_is_not_open_is_refused`,
+`issue19_descriptor_3_carries_readiness`,
+`issue19_dropping_a_pending_daemon_kills_and_reaps_it`,
+`issue19_the_longest_readiness_failure_message_arrives_whole`,
+`issue19_daemon_exec_is_detached_and_readiness_preserves_launch_failure`,
 `issue19_empty_readiness_kills_daemon_and_cleans_metadata_before_socket`,
 `issue19_readiness_uses_real_five_second_absolute_deadline`.
 
@@ -113,7 +133,8 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
 `issue20_real_pty_size_and_zero_fallback`,
 `issue20_signals_coalesce_resize_and_report_exit_signal`.
 
-Tests create files only under project-local isolated directories. The two
-ignored libtest functions are owned subprocess fixtures, executed by the
+Tests use isolated private directories. Direct socket fixtures use short `/tmp`
+paths so mutation workers and long checkouts do not exceed the socket limit.
+Ignored libtest functions are owned subprocess fixtures, executed by the
 behavioral tests, not skipped requirements. Production `/tmp` naming and home
 isolation are independently covered by core's layout tests.

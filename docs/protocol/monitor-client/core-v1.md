@@ -15,10 +15,11 @@ Read the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 
 ## Representation and compatibility
 
-Revision 1 targets the supported macOS arm64 and x86_64 platform C calling
-conventions, with 64-bit pointers, natural alignment and no packing. All calls
-use the platform C calling convention. No Rust layouts, C enums, `bool`,
-`size_t`, variadic calls, callbacks or unwinding cross this interface.
+Revision 1 targets the supported platform C calling conventions (macOS arm64
+and x86_64, and x86-64 GNU/Linux), with 64-bit pointers, natural alignment and
+no packing. All calls use the platform C calling convention. No Rust layouts,
+C enums, `bool`, `size_t`, variadic calls, callbacks or unwinding cross this
+interface.
 The header fixes every field and tag; the platform fixes padding/alignment.
 Never serialize these structs or compare their padding.
 
@@ -184,6 +185,10 @@ required by #69;
 bootstrap data is a post-load validation, not permission to load an unqualified
 release first. Requirements incompatible with admitted
 limits reject explicitly. Release resources count once and remain until exit.
+Each platform's library reports that platform's qualified requirements. On
+Linux the [notification descriptor](../TERMS.md#pollable-notification-descriptor) is one `eventfd`, created close-on-exec and
+nonblocking; it stays readable until the library clears it and counts once in
+`instance_descriptors`.
 
 `snapshot` supplies bounded nonblocking current/peak instance and shared-release
 allocation, queue-byte measurements, record/delivery/operation/worker/descriptor
@@ -222,7 +227,7 @@ release/destroy leaves its object valid and owned.
 | `shutdown(control)` | Thread-safe nonblocking idempotent shutdown intent, independent of queue space. Does not prove Leave, cleanup or join. May precede run. |
 | `release_communication(communication)` | After stream terminal, all deliveries released and concurrent submit/drain/snapshot/notification/poll use ended. Releases caller handle; no later calls. Busy if stream/deliveries still active. |
 | `release_control(control)` | After stream terminal and all concurrent shutdown calls ended. Does not destroy the instance. Busy if stream still active. |
-| `notification(communication, out_fd)` | Thread-safe bounded lookup of borrowed nonnegative macOS pollable descriptor. Caller polls only, never reads/writes/closes. Library signaling/rearming cannot miss work/closure. |
+| `notification(communication, out_fd)` | Thread-safe bounded lookup of borrowed nonnegative platform pollable descriptor. Caller polls only, never reads/writes/closes. Library signaling/rearming cannot miss work/closure. |
 | `snapshot(communication, out)` | Thread-safe bounded local measurement, available through terminal until handle release. No I/O/wait/join. |
 
 Wrong-owner-thread calls return `CM1_WRONG_THREAD`. No concurrent destruction
@@ -416,7 +421,7 @@ session or bypass admission. Copy returned diagnostic text before the next call.
 
 | Step | Valid caller observations and obligations |
 |---|---|
-| Load/check | On a load worker, load the absolute exact-release dylib with eager/local resolution, retain its handle, resolve the frozen bootstrap, and check revision/release/qualified resources. `example_bootstrap` illustrates validation after resolution; the direct symbol call stands for the resolved entry point. |
+| Load/check | On a load worker, load the absolute exact-release library with eager/local resolution, retain its handle, resolve the frozen bootstrap, and check revision/release/qualified resources. `example_bootstrap` illustrates validation after resolution; the direct symbol call stands for the resolved entry point. |
 | Create/publish | On the dedicated owner thread, `example_create` returns three handles. Publish communication/control to the monitor through caller-owned synchronized handoff. No daemon I/O/workers have started. |
 | Open/run | `example_open` submits ID 1; accepted buffers are copied. Owner calls `example_owner_finish` (run) while monitor polls/drains. Open response then Initial metadata establishes support; explicit acquisition/restoration/application precedes Input. |
 | Input/drain | `example_input` submits literal `00 ff 41` under current authority only after selected paint. `example_drain` returns a batch/empty/terminal. Process records before `example_release_batch`; no record pointers survive release. Handle full/rejected admission explicitly. |

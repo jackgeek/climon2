@@ -1,9 +1,12 @@
 # climon2-e2e
 
-The default macOS packaged acceptance tier (#38), using the public installer,
+The default macOS and GNU/Linux packaged acceptance tier (#38), using the public installer,
 the PATH launcher, real sibling binaries and `climon2-test-term` PTYs.
-There are no nested Cargo builds, ignored packaged tests, retries, or shortened
-production deadlines. Each scenario has an isolated HOME and climon2 home;
+There are no nested Cargo builds, ignored packaged tests, test retries, or shortened
+production deadlines. A client discards keys typed during its restoration and
+nothing on the screen marks its end, so the smoke test's first command is a
+harmless one that `type_until` retypes until its output appears.
+Each scenario has an isolated HOME and climon2 home;
 normal completion checks owned processes, session metadata and runtime sockets.
 Logs intentionally survive until the isolated home is dropped.
 
@@ -20,9 +23,9 @@ environments preserve only the harness controls and inherited
 
 Interactive shells are GNU bash 5.x only. `controlled_bash` uses
 `CLIMON2_TEST_BASH`, else `/opt/homebrew/bin/bash`, else `/usr/local/bin/bash`,
-and never macOS `/bin/bash`; anything other than bash 5.x is rejected. A missing
+or Linux `/bin/bash`, and never macOS `/bin/bash`; anything other than bash 5.x is rejected. A missing
 bash 5 fails CI and is explicitly reported as a local skip. `/bin/bash` remains
-only for non-interactive `-c` helpers and fixture scripts; `install.sh`
+on macOS only for non-interactive `-c` helpers and fixture scripts; `install.sh`
 compatibility with `/bin/bash` 3.2 is tested in `xtask/tests/install_script.rs`.
 Vim and less are the actual `/usr/bin` applications.
 
@@ -40,6 +43,10 @@ sibling. Fixtures remain test-only sibling binaries, not shipped programs.
 The smoke scenario leaves `CLIMON2_LOG` unset and checks the actual installed
 release's logs contain no DEBUG or TRACE records.
 
+On Linux use `climon2-0.1.0-linux-x86_64-gnu.tar.gz` instead. Archive payload
+validation requires the host platform's suffix; a Darwin archive cannot stand
+in for Linux runtime qualification. See [distribution](../../docs/distribution.md).
+
 Internal-only fault injections (including the CLI's `CLIMON2_CLI_HOLD`, the
 daemon's `pty-write` and `pty-write-partial`, and the monitor's
 `CLIMON2_MONITOR_FAULT=draw`) and the explicitly synthetic client-invocation
@@ -49,7 +56,7 @@ raw-socket cases run against the archive. A removed client is restored by
 renaming the same archive binary, never by rebuilding/substituting it.
 
 From release two, set `CLIMON2_E2E_PREVIOUS_ARCHIVE` to the actual published
-previous release archive as well. The compatibility gate starts its real
+previous release archive for that platform as well. The compatibility gate starts its real
 client/session before installing the current archive into the same executable
 home, then both CLIs list both versions and both clients deliver command exit
 statuses. With no prior archive, the first-release gate explicitly reports that
@@ -172,7 +179,7 @@ would not prove ownership, so no vacuous architecture test is claimed.
 ## Validation and remaining release evidence
 
 Local development runs use bash 5 (`CLIMON2_TEST_BASH`, Homebrew or
-`/usr/local`). The full architecture matrix, exact final universal archive
+`/usr/local`, or Linux `/bin/bash`). The full architecture matrix, exact final native archive
 execution and actual prior-release branch require their CI/release inputs. A successful debug
 run is not evidence that those release gates passed. Packaged slow-reader,
 unsafe-runtime and empty-readiness scenarios are not newly claimed here; their

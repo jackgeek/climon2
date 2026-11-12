@@ -1,12 +1,13 @@
 # climon2-install
 
-The macOS installer is shipped as `install` beside `climon2` and the release's
+The macOS and GNU/Linux installer is shipped as `install` beside `climon2` and the release's
 `<version>/{climon2-cli,climon2-daemon,climon2-client,climon2-monitor}` directory.
 
 `install [--dir <directory>]` defaults to `$HOME/.local/share/climon2`.
 It prints a shell-quoted `export PATH=…` hint only when the canonical destination
-is absent from PATH. It never changes shell profiles, creates symlinks, or
-changes signing/quarantine attributes. Errors produce one
+is absent from PATH. It creates the relative symlink `c2 -> climon2` in the
+executable home on fresh installs and upgrades; both commands remain supported.
+It never changes shell profiles or signing/quarantine attributes. Errors produce one
 `climon2: error: …` line on stderr and status 125.
 
 ## Library boundary
@@ -29,9 +30,22 @@ changes signing/quarantine attributes. Errors produce one
 Payload files must be regular executable files, not symlinks. Installation
 copies rather than mutates them. Identical versions retain their existing files;
 different same-version contents replace the whole version atomically using
-Darwin `renamex_np(RENAME_SWAP)`. The launcher is always replaced atomically,
+Darwin `renamex_np(RENAME_SWAP)` or Linux `renameat2(RENAME_EXCHANGE)`.
+Linux requires a filesystem supporting atomic directory exchange; an unsupported
+filesystem fails installation rather than falling back to non-atomic clobbering.
+The syscall adapters live in `src/platform/{macos,linux}.rs`, separately
+registered for native quality analysis; argument validation and publication
+remain shared.
+The launcher is always replaced atomically,
 including on an identical reinstall, per #21.19. Other versions are retained.
 The atomic `current` replacement is the final publication.
+
+Before publishing a version or replacing the launcher, the installer creates
+`c2` or accepts an existing symlink whose target is exactly `climon2`. Other entries,
+including absolute or differently targeted symlinks, are left untouched and
+reported with their conflicting path. A link-creation failure aborts installation
+without switching `current`. Release payload filenames and executable-home paths
+are unchanged.
 
 ## Interruption and concurrency
 
@@ -45,13 +59,15 @@ This is process-interruption recovery, not a power-loss durability guarantee.
 
 Only the compile-time `test-hooks` feature enables
 `CLIMON2_TEST_INSTALL_FAULT=fail:<boundary>` or `crash:<boundary>`.
-Boundaries are `copy-cli`, `version-staged`, `version-published`, and
+Boundaries are `copy-cli`, `version-staged`, `short-command`, `version-published`, and
 `launcher-published`; crash exits 86 without Rust cleanup. Production builds do
 not contain these hooks.
 
 `tests/install.rs` documents the #21/#24/#33 rules at the public library and
-real-installer boundaries. Run with the sibling launcher built in the same
-Cargo target:
+real-installer boundaries. The #33 concurrent-fork lock test lives in
+`tests/lock.rs`, a separate test process, because its forked children inherit
+every descriptor of their process, including pipes other tests close. Run both
+with the sibling launcher built in the same Cargo target:
 
 ```sh
 cargo test -p climon2-launcher -p climon2-install --features climon2-install/test-hooks

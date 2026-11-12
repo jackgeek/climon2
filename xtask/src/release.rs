@@ -34,7 +34,6 @@ pub(crate) fn build(
         .env_remove("RUSTC_WRAPPER")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .env_remove("LLVM_PROFILE_FILE")
-        .env("MACOSX_DEPLOYMENT_TARGET", "15.0")
         .args([
             "build",
             "--release",
@@ -44,6 +43,9 @@ pub(crate) fn build(
             "--target-dir",
         ])
         .arg(directory);
+    if cfg!(target_os = "macos") {
+        command.env("MACOSX_DEPLOYMENT_TARGET", "15.0");
+    }
     if let Some(target) = target {
         command.args(["--target", target]);
     }

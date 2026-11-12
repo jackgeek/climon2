@@ -28,7 +28,7 @@ impl UsageError {
     }
 }
 
-pub const USAGE: &str = "usage: climon2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon";
+pub const USAGE: &str = "usage: c2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon";
 
 impl fmt::Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

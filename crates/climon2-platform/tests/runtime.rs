@@ -1,4 +1,4 @@
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use climon2_platform::{peer, runtime};
 use std::{
@@ -12,7 +12,7 @@ use std::{
 fn directory() -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix(".rt")
-        .tempdir_in(std::env::current_dir().unwrap())
+        .tempdir_in("/tmp")
         .unwrap()
 }
 
@@ -62,7 +62,7 @@ fn issue18_home_is_created_then_canonicalized_and_socket_is_private_and_authenti
 
 #[test]
 fn issue18_private_directory_refuses_existing_root_owned_directory_without_repair() {
-    let path = std::path::Path::new("/private");
+    let path = std::path::Path::new("/usr");
     let before = fs::symlink_metadata(path).unwrap();
     assert!(before.is_dir());
     assert_eq!(before.uid(), 0);
