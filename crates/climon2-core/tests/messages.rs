@@ -1,5 +1,8 @@
 //! #20, #27, #28 and ADR 0001: public typed protocol and state boundaries.
 use climon2_core::protocol::*;
+use support::json_examples;
+
+mod support;
 
 #[test]
 fn issue20_control_json_is_an_object_with_required_typed_fields_and_direction() {
@@ -496,17 +499,9 @@ fn a_connection_chooses_attach_or_kill_once_and_attachment_requests_need_attach(
     assert_eq!(stopped, ConnectionState::Closed);
 }
 
-fn documented_json_examples(document: &str) -> Vec<&str> {
-    document
-        .split("```json\n")
-        .skip(1)
-        .map(|block| block.split_once("\n```").expect("closed JSON example").0)
-        .collect()
-}
-
 #[test]
 fn protocol_reference_hello_examples_use_the_public_wire_contract() {
-    let requests = documented_json_examples(include_str!(
+    let requests = json_examples(include_str!(
         "../../../docs/protocol/daemon-client/hello-request.md"
     ));
     assert!(!requests.is_empty(), "document at least one hello request");
@@ -519,7 +514,7 @@ fn protocol_reference_hello_examples_use_the_public_wire_contract() {
         assert_eq!(state, ConnectionState::Probing);
     }
 
-    let replies = documented_json_examples(include_str!(
+    let replies = json_examples(include_str!(
         "../../../docs/protocol/daemon-client/hello-reply.md"
     ));
     assert!(!replies.is_empty(), "document at least one hello reply");
