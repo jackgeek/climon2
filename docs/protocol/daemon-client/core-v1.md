@@ -23,7 +23,7 @@ The [session daemon](../../../GLOSSARY.md#sessions) implements this revision
 for [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
 ([#86](https://github.com/jackgeek/climon2/issues/86)): the
 [hello advertisement](hello-reply.md#revision-1-advertisement), framing and
-validation with every connection-fatal code, monitor-mode Open, Leave,
+validation with their connection-fatal codes, monitor-mode Open, Leave,
 Response, Fatal error, Initial metadata (the title; status and progress
 reported unavailable) and Title changed. Interactive Open, standalone Kill,
 the control, terminal, status, notification, progress and final-result
