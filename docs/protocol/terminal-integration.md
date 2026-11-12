@@ -2,25 +2,28 @@
 
 **Status: agreed specification from [#63](https://github.com/jackgeek/climon2/issues/63), almost entirely unimplemented.**
 This also records the confirmed input/configuration amendments to
-[#64](https://github.com/jackgeek/climon2/issues/64) and attention-jump amendment to
+[#64](https://github.com/jackgeek/climon2/issues/64) and
+[attention](../../GLOSSARY.md#status-and-attention)-jump amendment to
 [#59](https://github.com/jackgeek/climon2/issues/59). This document supplies no
 executable changes or evidence itself.
 
 **Implemented with packaged evidence ([#74](https://github.com/jackgeek/climon2/issues/74)):**
-only the empty [monitor](../../GLOSSARY.md#sessions), which has no sessions to
-show. It takes its own alternate screen with one permanent top row, enables
-host bracketed-paste, mouse and focus reporting, and never changes the
-[host](../../GLOSSARY.md#sessions) title. Only the typed
-[client escape prefix](../../GLOSSARY.md#attachment-and-control) followed by x
-acts: pasted bytes are data, never complete a pending prefix and leave none
-pending. A host resize repaints the whole frame without blanking it or showing
-the cursor. Every exit returns the host to the normal-shell baseline with the
-[release](../../GLOSSARY.md#restoration-and-presentation) bytes before any
-diagnostic. Everything else in this document remains agreed and unimplemented.
+only the empty [monitor](../../GLOSSARY.md#sessions), which has no
+[sessions](../../GLOSSARY.md#sessions) to show. It takes its own alternate screen
+with one permanent top row, enables [host](../../GLOSSARY.md#sessions)
+bracketed-paste, mouse and focus reporting, and never changes the host title.
+Only the typed [client escape prefix](../../GLOSSARY.md#attachment-and-control)
+followed by x acts: pasted [bytes](TERMS.md#byte) are data, never complete a
+pending prefix and leave none pending. A host resize repaints the whole screen
+without blanking it or showing the cursor. Every exit writes the
+[release](../../GLOSSARY.md#restoration-and-presentation) bytes to the host
+before any diagnostic. Everything else in this document remains agreed and
+unimplemented.
 
 The later [selector and attention-presentation decision](../monitor-selector.md)
 confirms the captionless double-bordered selector, always-focused search,
-explicit read-only disconnected/final history selection and animated toasts.
+explicit read-only disconnected/final history selection and animated
+[toasts](TERMS.md#toast).
 It also adds the monitor's own
 [host program-status reports and configurable bell](README.md#monitor-to-host-status-and-bell).
 These are planned presentation/host signals, not session-byte passthrough or changed daemon
@@ -54,7 +57,7 @@ The monitor parses those bytes into its own per-[session](../../GLOSSARY.md#sess
 [virtual terminal](../../GLOSSARY.md#sessions), using `climon2-vt`, and Ratatui
 paints its read-only Rust views. These views of cells, modes, cursor, and history
 are a planned addition; current `climon2-vt` exposes no public cell views, and the
-monitor uses it only for the normal-shell baseline. The monitor runs as its own
+monitor uses it only for its release bytes. The monitor runs as its own
 `climon2-monitor` executable, beside the other executables of its release
 ([ADR 0004](../adr/0004-crate-layout-and-dependency-direction.md)); this contract
 chooses no workspace crate.
