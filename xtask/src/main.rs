@@ -11,17 +11,22 @@ mod quality;
 mod release;
 
 const HELP: &str = "\
-Usage: cargo xtask <check [--mutate-all]|test|dist|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--mutate-all]>
+Usage: cargo xtask <check [--mutate-all]|test|dist|install [--dir <directory>]|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--native-only] [--mutate-all]>
 
-check runs test, append-only fixtures, tooling proofs, coverage, crapper and mutation.
+check runs test, append-only fixtures, tooling proofs, coverage, crapper, mutation-load measurement and mutation.
 test runs fmt, clippy and workspace tests, including packaged acceptance, plus ShellCheck.
+Before the workspace tests it runs the monitor's build test alone, against its plain binary.
 setup-quality installs the pinned Python quality tools and cargo-llvm-cov.
 mutation-probe checks real-binary worker isolation.
 tooling-probe proves staged coverage, complexity counting and covered mutation gates.
 release-check proves per-package releases exclude hooks and preserve test binaries.
-dist builds verified universal macOS release artifacts in target/dist (arm64 host).
+dist builds verified universal macOS release artifacts (arm64 host) or x86_64 GNU/Linux artifacts in target/dist.
+install builds verified production artifacts and runs their installer (optional --dir).
 fixtures-check refuses any historical or uncommitted edit/deletion of an existing metadata golden.
 mutate runs coverage, crapper and mutation checks on shipped source.
+mutate --native-only excludes shared source; CI qualifies only host-exclusive implementations.
+check's mutation-load measurement runs 5 rounds of 8 workspace suites before mutating, even with
+nothing to mutate; mutate skips it. Logs remain in target/flake-logs.
 Cross-architecture execution of the same final archive is enforced in CI.";
 
 fn main() -> ExitCode {
@@ -46,12 +51,20 @@ fn main() -> ExitCode {
         release::check(workspace_root())
     } else if args == ["dist"] {
         dist::run(workspace_root())
+    } else if args == ["install"] {
+        dist::install(workspace_root(), &[])
+    } else if args.len() == 3 && args[0] == "install" && args[1] == "--dir" && !args[2].is_empty() {
+        dist::install(workspace_root(), &args[1..])
     } else if args == ["fixtures-check"] {
         fixtures::check(workspace_root())
     } else if args == ["mutate"] {
-        quality::check(workspace_root(), false)
+        quality::check(workspace_root(), false, quality::Scope::Host)
     } else if args == ["mutate", "--mutate-all"] {
-        quality::check(workspace_root(), true)
+        quality::check(workspace_root(), true, quality::Scope::Host)
+    } else if args == ["mutate", "--native-only"] {
+        quality::check(workspace_root(), false, quality::Scope::Native)
+    } else if args == ["mutate", "--native-only", "--mutate-all"] {
+        quality::check(workspace_root(), true, quality::Scope::Native)
     } else {
         eprintln!("xtask: error: unknown arguments\n\n{HELP}");
         return ExitCode::from(2);
@@ -76,7 +89,7 @@ fn check(all: bool) -> io::Result<()> {
     test()?;
     quality::probe(workspace_root())?;
     quality::tooling_probe(workspace_root())?;
-    quality::check(workspace_root(), all)
+    quality::check(workspace_root(), all, quality::Scope::Complete)
 }
 
 fn test() -> io::Result<()> {
@@ -92,6 +105,16 @@ fn test() -> io::Result<()> {
             "--",
             "-D",
             "warnings",
+        ],
+        // Alone, the monitor package builds its binary without test hooks; the
+        // workspace tests that follow rebuild the hooked sibling in its place.
+        &[
+            "test",
+            "-p",
+            "climon2-monitor",
+            "--locked",
+            "--test",
+            "build",
         ],
         &["test", "--workspace", "--locked"],
     ] {

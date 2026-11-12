@@ -15,8 +15,12 @@ fn selector(text: &str) -> Selector {
 }
 
 #[test]
-fn selectors_normalise_hyphens_and_case_to_8_through_32_hex_digits() {
+fn selectors_normalise_hyphens_and_case_to_1_through_32_hex_digits() {
     for (text, normal) in [
+        ("A", "a"),
+        ("-F-", "f"),
+        ("550e840", "550e840"),
+        ("550e-840", "550e840"),
         ("550e8400", "550e8400"),
         ("550E8400", "550e8400"),
         ("550e-8400", "550e8400"),
@@ -31,6 +35,10 @@ fn selectors_normalise_hyphens_and_case_to_8_through_32_hex_digits() {
     ] {
         assert_eq!(selector(text).as_str(), normal, "{text}");
     }
+    let full = "550e8400e29b41d4a716446655440000";
+    for length in 1..=32 {
+        assert_eq!(selector(&full[..length]).as_str(), &full[..length]);
+    }
 }
 
 #[test]
@@ -39,8 +47,6 @@ fn malformed_or_omitted_selectors_are_usage_errors() {
         "",
         "-",
         "--------",
-        "550e840",
-        "550e-840",
         "550e8400e29b41d4a7164466554400001",
         "550e840g",
         "550e8400 ",
@@ -66,6 +72,9 @@ fn malformed_or_omitted_selectors_are_usage_errors() {
 fn a_unique_prefix_or_full_id_selects_exactly_that_candidate() {
     let candidates = ids();
     for (text, expected) in [
+        ("6", C),
+        ("-6-6-0-E-", C),
+        ("660e840", C),
         ("660e8400", C),
         ("660E8400E29B", C),
         (A, A),
@@ -83,35 +92,31 @@ fn a_unique_prefix_or_full_id_selects_exactly_that_candidate() {
 #[test]
 fn no_match_and_ambiguity_fail_and_ambiguity_lists_every_full_id() {
     let candidates = ids();
-    let error = selector("770e8400")
-        .select(&candidates, |id| id)
-        .unwrap_err();
+    let error = selector("7").select(&candidates, |id| id).unwrap_err();
     assert_eq!(
         error,
         SelectionError::NoMatch {
-            selector: selector("770e8400")
+            selector: selector("7")
         }
     );
-    assert_eq!(error.to_string(), "no live session matches 770e8400");
+    assert_eq!(error.to_string(), "no live session matches 7");
     let empty: [SessionId; 0] = [];
     assert!(matches!(
-        selector(A).select(&empty, |id| id),
+        selector("6").select(&empty, |id| id),
         Err(SelectionError::NoMatch { .. })
     ));
 
-    let error = selector("550E8400")
-        .select(&candidates, |id| id)
-        .unwrap_err();
+    let error = selector("5").select(&candidates, |id| id).unwrap_err();
     assert_eq!(
         error,
         SelectionError::Ambiguous {
-            selector: selector("550e8400"),
+            selector: selector("5"),
             matches: vec![A.parse().unwrap(), B.parse().unwrap()],
         }
     );
     assert_eq!(
         error.to_string(),
-        format!("session selector 550e8400 is ambiguous; it matches {A}, {B}")
+        format!("session selector 5 is ambiguous; it matches {A}, {B}")
     );
     let pairs: Vec<_> = candidates.iter().map(|id| (id.clone(), "x")).collect();
     let found = selector("550e8400e29b41d4a716").select(&pairs, |pair| &pair.0);

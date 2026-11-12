@@ -3,7 +3,8 @@
 **Status: developer-confirmed specification for
 [Define automated monitor acceptance criteria](https://github.com/jackgeek/climon2/issues/62),
 not implementation or executed acceptance evidence.** The
-[monitor](../GLOSSARY.md#sessions), packaged
+[monitor](../GLOSSARY.md#sessions) exists only as the empty walking skeleton of
+[#74](https://github.com/jackgeek/climon2/issues/74); packaged
 [client libraries](../GLOSSARY.md#sessions), new daemon wire and headless
 creation remain unimplemented. Resolving this specification does not pass a
 [release gate](../GLOSSARY.md#testing).
@@ -55,9 +56,11 @@ Focused deterministic and packaged-monitor scenarios run for relevant changes.
 Before release, require the complete supported-architecture conformance matrix,
 native-fault evidence and operational measurements for the exact candidate
 artifacts. Dedicated heavy jobs are allowed; an older build or informal demo
-cannot discharge the gate. Qualify actual runtime behavior on both supported
-macOS arm64 and x86_64 architectures. Cross-compilation alone proves no runtime
-support. Linux/Windows monitor support is not added by this specification.
+cannot discharge the gate. Qualify actual runtime behavior on x86-64 GNU/Linux
+(Ubuntu 24.04) and on both supported macOS arm64 and x86_64 architectures; the
+[Linux decision](https://github.com/jackgeek/climon2/issues/125) added Linux.
+Cross-compilation alone proves no runtime support. Windows monitor support is
+not added by this specification.
 
 ## Entry and discovery
 
@@ -225,7 +228,7 @@ and [shutdown/error calls](protocol/monitor-client/core-v1.md#errors-terminal-ev
 | EXT-02 | Repeat prefix+x/signals; lose Leave response, stall workers/loaders/discovery or hold deliveries beyond budget. | Deadline is not restarted; unrelated cleanup progresses. Current unconfirmed required Leave or cleanup means failure. Bounded whole-process fail-stop attempts host restoration/clear and reports affected identities/unconfirmed work, never false join/detach or forced unload/thread kill. | Library, Monitor, Fault |
 | EXT-03 | Exit orderly, send catchable SIGINT/SIGTERM/SIGHUP, type Ctrl+C, break host output and cause shared render failure. | Terminal modes/settings and root clear precede final diagnostics on clean exit. Ctrl+C is app input; signals use common cleanup and signal-style success status. Shared failure/cleanup/restore failure uses climon2 error code; broken output is explicit best effort, native crash/uncatchable signal has no cleanup promise. | Monitor, Fault |
 | EXT-04 | Finish/fail a selected command or safely clean a local error, then cleanly exit; separately have prior uncertain transport loss. | Monitor does not inherit command exit code. Resolved local errors/old closed-and-cleaned uncertainty do not poison clean exit, nor retroactively become accepted Leave; uncertainty for a possibly active connection closed during this shutdown does fail exit. | Monitor, Fault |
-| HDL-01 | Run `climon2 exec --headless <command> [args...]`, fail creation, add/remove later attachments and finally complete/Kill. | Creation success only after daemon confirmation, no initial interactive client. Explicit [headless session](../GLOSSARY.md#sessions) survives zero clients throughout lifetime, including later unexpected loss, until command completion/Kill. Existing CLI Kill works; ordinary leave policy remains unchanged, and CLI Kill does not dismiss another monitor's row. | Contract, Monitor |
+| HDL-01 | Run `c2 exec --headless <command> [args...]`, fail creation, add/remove later attachments and finally complete/Kill. | Creation success only after daemon confirmation, no initial interactive client. Explicit [headless session](../GLOSSARY.md#sessions) survives zero clients throughout lifetime, including later unexpected loss, until command completion/Kill. Existing CLI Kill works; ordinary leave policy remains unchanged, and CLI Kill does not dismiss another monitor's row. | Contract, Monitor |
 
 ## Limits and measured qualification
 

@@ -15,6 +15,7 @@ fn metadata(home: &std::path::Path, suffix: u8, created: &str) -> SessionMetadat
         "format_version":999,"session_id":id.as_str(),"socket_path":socket,
         "daemon_pid":std::process::id(),
         "daemon_start_time":process::start_time(std::process::id()).unwrap().unwrap(),
+        "daemon_linux_identity":process::linux_identity(std::process::id()).unwrap(),
         "command":"bash","args":["space arg","quote'arg","雪","\u{1b}[31m"],
         "cwd":home,"depth":3,"created_at":created,"climon2_version":"999.0.0",
         "future_field":true
@@ -106,6 +107,9 @@ fn stale_cleanup_requires_connection_refusal_and_proven_dead_identity() {
     let live = metadata(home.path(), 3, "2026-10-28T07:21:02.930Z");
     let mut reused = metadata(home.path(), 4, "2026-10-28T07:21:02.930Z");
     reused.daemon_start_time = 0;
+    if let Some(identity) = &mut reused.daemon_linux_identity {
+        identity.start_ticks = 0;
+    }
     let live_path = save(home.path(), &live);
     let stale_path = save(home.path(), &reused);
     refusing_socket(live.socket_path.as_str());
@@ -116,6 +120,46 @@ fn stale_cleanup_requires_connection_refusal_and_proven_dead_identity() {
     assert!(!std::path::Path::new(reused.socket_path.as_str()).exists());
     assert!(std::path::Path::new(live.socket_path.as_str()).exists());
     fs::remove_file(live.socket_path.as_str()).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn uncertain_linux_daemon_identity_is_warned_and_metadata_is_retained() {
+    let home = tempfile::tempdir().unwrap();
+    let mut metadata = metadata(home.path(), 29, "2026-10-28T07:21:02.930Z");
+    metadata.daemon_linux_identity = None;
+    let path = save(home.path(), &metadata);
+    let log = logging::LogFile::general(home.path()).unwrap();
+    let dispatch = log.dispatch(Some("warn")).unwrap();
+    let sessions = tracing::dispatcher::with_default(&dispatch, || discover(home.path())).unwrap();
+    assert!(sessions.is_empty());
+    assert!(path.exists());
+    assert!(
+        fs::read_to_string(log.path())
+            .unwrap()
+            .contains("daemon identity is uncertain")
+    );
+}
+
+#[test]
+fn already_missing_stale_socket_does_not_report_cleanup_failure() {
+    let home = tempfile::tempdir().unwrap();
+    let mut metadata = metadata(home.path(), 30, "2026-10-28T07:21:02.930Z");
+    metadata.daemon_start_time = 0;
+    if let Some(identity) = &mut metadata.daemon_linux_identity {
+        identity.start_ticks = 0;
+    }
+    let path = save(home.path(), &metadata);
+    let log = logging::LogFile::general(home.path()).unwrap();
+    let dispatch = log.dispatch(Some("warn")).unwrap();
+    let sessions = tracing::dispatcher::with_default(&dispatch, || discover(home.path())).unwrap();
+    assert!(sessions.is_empty());
+    assert!(!path.exists());
+    assert!(
+        !fs::read_to_string(log.path())
+            .unwrap()
+            .contains("stale session cleanup failed")
+    );
 }
 
 /// A socket file left by a dead daemon: bound but never listening, so it refuses connections
@@ -360,6 +404,31 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
 /// #37: partial hello replies never justify deletion.
 #[test]
 fn failed_hello_retains_artifacts_under_a_single_two_second_deadline() {
+    assert_failed_hello_retains_artifacts(|socket| {
+        for byte in [0_u8, 0, 0, 10, 1, b'{'] {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            if socket.write_all(&[byte]).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+#[test]
+fn stalled_partial_hello_does_not_block_past_the_discovery_deadline() {
+    assert_failed_hello_retains_artifacts(|socket| {
+        socket.write_all(&[0]).unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(4)))
+            .unwrap();
+        let mut byte = [0];
+        assert_eq!(std::io::Read::read(socket, &mut byte).unwrap(), 0);
+    });
+}
+
+fn assert_failed_hello_retains_artifacts(
+    serve: impl FnOnce(&mut runtime::SocketStream) + Send + 'static,
+) {
     use std::time::{Duration, Instant};
     let home = tempfile::tempdir().unwrap();
     let metadata = metadata(home.path(), 7, "2026-10-28T07:21:02.930Z");
@@ -368,12 +437,7 @@ fn failed_hello_retains_artifacts_under_a_single_two_second_deadline() {
     let worker = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
         climon2_core::protocol::read_frame(&mut socket).unwrap();
-        for byte in [0_u8, 0, 0, 10, 1, b'{'] {
-            std::thread::sleep(Duration::from_millis(600));
-            if socket.write_all(&[byte]).is_err() {
-                break;
-            }
-        }
+        serve(&mut socket);
     });
     let started = Instant::now();
     assert!(discover(home.path()).unwrap().is_empty());
@@ -391,6 +455,9 @@ fn stale_metadata_cannot_unlink_a_regular_file_as_a_socket() {
     let home = tempfile::tempdir().unwrap();
     let mut metadata = metadata(home.path(), 8, "2026-10-28T07:21:02.930Z");
     metadata.daemon_start_time = 0;
+    if let Some(identity) = &mut metadata.daemon_linux_identity {
+        identity.start_ticks = 0;
+    }
     let path = save(home.path(), &metadata);
     fs::write(metadata.socket_path.as_str(), b"not a socket").unwrap();
     assert!(discover(home.path()).unwrap().is_empty());

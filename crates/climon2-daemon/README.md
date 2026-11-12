@@ -1,6 +1,6 @@
 # climon2-daemon
 
-Real session daemon library with a thin executable. macOS only; no client
+Real session daemon library with a thin executable on macOS and Linux; no client
 implementation or descriptor passing. The daemon owns the VT engine, bounded
 scrollback, terminal restoration and live presentation.
 
@@ -59,9 +59,12 @@ controlled startup path. The outer CLI readiness deadline remains five seconds.
 
 ## Ownership and lifecycle
 
-One event loop owns the master and keeps portable-pty's writer alive.
+One event loop owns the master, and reads output and writes input through one
+owned duplicate of it. It never takes portable-pty's writer, whose drop types a
+newline and the end-of-file key into the command's terminal.
 `Session::read_pty` is the sole PTY reader, through `Pty::read_output`;
-there are no cloned readers or master handles outside the daemon.
+there are no other cloned readers or master handles, so closing the master and
+that duplicate hangs the terminal up.
 **ADR 0003 / #27 review rule:** reviewers must preserve this single-reader
 call graph. A textual ownership assertion would not prove it, so no vacuous
 architecture test is claimed.
@@ -115,7 +118,7 @@ The leave policy: while another attachment remains, the session continues;
 after an accepted final detach it keeps running with no idle timeout; a final
 unexpected departure, `Kill`, daemon TERM, an authoritative failure or no
 attachment within five seconds of readiness begins shutdown. Shutdown closes
-every master handle, then runs a real five-second hang-up grace as a loop
+every master handle without writing to it, then runs a real five-second hang-up grace as a loop
 deadline: probes see `terminating`, attaches are refused, repeated kills join
 without restarting it, and the grace is not shortened if the command exits
 meanwhile. Pending PTY writes and resizes are dropped after hang-up. When the
@@ -158,14 +161,27 @@ clients and owned generic terminal fixtures:
   absent/empty/non-UTF8 SHELL, explicit logging filter and diagnostic privacy.
 - `exact_signal_exit_is_delivered`,
   `early_exit_is_delivered_after_restore_readiness`,
+  `an_exit_waits_for_the_controllers_ready`,
   `final_drain_eof_or_deadline_is_bounded_and_leaves_no_descendants`:
-  real signal mapping, early exit, final drain ordering and process groups.
+  real signal mapping, early exit (held while the controller withholds
+  `Ready`), final drain ordering and process groups. Once the command has
+  ended, the session finishes at the one-second drain cap even with output
+  still queued, or sooner when every connection has drained: the unit test
+  `an_ending_session_finishes_at_its_deadline_or_once_drained` in
+  `src/session.rs` checks that decision without wall-clock bounds.
 - `concurrent_probes_absolute_hello_deadline_and_second_attach`,
   `malformed_unknown_oversized_and_out_of_state_messages_close_only_the_probe`:
   frozen hello, concurrent probes, one Attach per connection and terminal
-  protocol errors.
+  protocol errors, each with its exact `Error` text: decoding failures name
+  themselves, other framing failures say `invalid session protocol`. An
+  unfinished hello that writes a byte every 50 ms still ends two seconds after
+  connecting, however long the rest of the test takes.
+- `a_connection_beyond_the_cap_is_closed_unanswered`: 64 connections are served
+  and a 65th is closed unanswered while the session goes on.
 - `initial_fallback_and_resize_use_the_real_pty`,
   `raw_input_output_are_byte_transparent`: real dimensions and binary framing.
+  The fixture reports any pixel size with the size, so every size assertion
+  also checks that none is reported.
 - `saturation_backpressures_pty_without_blocking_probes_or_losing_bytes`:
   an 8 MiB burst to a client that is not reading yet arrives exactly (the whole
   stream is compared, then the release) within 15 s, which a one-read-per-tick
@@ -191,6 +207,8 @@ clients and owned generic terminal fixtures:
   `pty-write-partial`), and
   `a_kill_with_an_open_application_paste_still_terminates`.
 - Shutdown and departures: `attach_during_termination_is_refused`,
+  `hanging_up_types_nothing_into_the_command_terminal` (Linux: ptrace records
+  every write to the master from `Kill` until its last handle closes),
   `the_hang_up_grace_keeps_serving_and_a_second_kill_joins_it`,
   `kill_after_an_unreported_exit_confirms_that_status`,
   `an_unattached_session_ends_after_the_initial_deadline`,
@@ -210,16 +228,29 @@ clients and owned generic terminal fixtures:
   `daemon_ignores_hup_int_pipe_without_ending_the_command`) cover safe launch
   diagnostics, refused permissions and ignored HUP/INT/PIPE.
 - `startup_failure_reports_cleans_up_and_exits_with_the_reported_code`,
+  `an_existing_session_file_fails_publication_and_is_left_in_place` (a session
+  file already present is someone else's: only the daemon's own temporary is
+  removed),
   `startup_confirmation_decides_the_reported_launch_failure`,
+  `an_unconfirmed_launch_fails_at_the_startup_deadline` (no helper connection,
+  or a silent one, ends startup at the four-second deadline; a command already
+  started behind the silent one ignores SIGHUP, so only the failed daemon's kill
+  ends it),
   `repeated_unknown_zero_pid_and_relative_options_are_invalid_invocations` and
   `unsupervised_controlled_panic_ends_the_daemon_without_readiness` own the
   readiness pipe instead of using `wait_ready` (which kills a failed daemon),
   so they observe the daemon's own exit status and cleanup. The confirmation
-  test holds the shared PTY allocation lock briefly so its connection is the
-  first on the startup socket.
+  and deadline tests hold the shared PTY allocation lock briefly so their
+  connection is the first on the startup socket, or the socket is gone before
+  the helper runs.
 - `exec_helper_confirms_launch_failure_codes_and_exits_with_them` drives the
   private `--exec-command` helper directly: 127 for a missing command in a
   usable cwd, otherwise 126.
+
+Every wait for a daemon is bounded: `Session::finish`, its drop and
+`run_unsupervised` kill and reap a daemon still running 20 seconds after it
+should have ended, so a wedged daemon fails its test instead of hanging it (and
+with it a whole mutation run).
 
 On macOS, session-leader exit may revoke the PTY immediately, so the final
 drain fixture permits EOF/EIO before the idle/cap clocks expire; it does not

@@ -1,7 +1,8 @@
 use climon2_test_term::bin_path;
 use std::fs;
 
-/// ADR 0004 / #21/#31: test-term normal dependencies unify hooks into real binaries.
+/// ADR 0004 / #21/#31/#74: test-term normal dependencies unify hooks into real
+/// binaries, which other packages' tests find as siblings, never by nested builds.
 #[test]
 fn workspace_binaries_contain_test_hooks() {
     let marker = b"CLIMON2_TEST_HOOKS_ENABLED";
@@ -10,6 +11,7 @@ fn workspace_binaries_contain_test_hooks() {
         "climon2-daemon",
         "climon2-client",
         "climon2-install",
+        "climon2-monitor",
     ] {
         let bytes = fs::read(bin_path(name)).unwrap();
         assert!(

@@ -141,7 +141,7 @@ End one client's attachment without ending the session or its command; it is del
 _Avoid_: Exit the session, kill, stop
 
 **Kill**:
-A request, made with `climon2 kill`, to end a session whatever its attachments; it is confirmed only after the command has ended and the session is cleaned up.
+A request, made with `c2 kill`, to end a session whatever its attachments; it is confirmed only after the command has ended and the session is cleaned up.
 _Avoid_: Stop, force-detach
 
 **Hang-up grace**:
@@ -259,7 +259,7 @@ _Avoid_: Client, protocol extension
 ## Installation
 
 **Launcher**:
-The `climon2` executable on PATH that hands off to the current version's CLI.
+The executable invoked as `c2` or `climon2` on PATH that hands off to the current version's CLI.
 _Avoid_: Shim, wrapper, stub
 
 **Current version**:
@@ -280,7 +280,7 @@ _Avoid_: Data dir, state dir, config dir
 
 **Installer**:
 The program shipped in a release archive that places that release's version into a climon2 executable home and makes it the current version.
-_Avoid_: Setup, `climon2 install`
+_Avoid_: Setup, `c2 install`
 
 **Release archive**:
 The single downloadable file for one climon2 version, holding the installer, the launcher and that version's folder.

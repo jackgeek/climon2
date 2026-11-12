@@ -1,6 +1,6 @@
 # Monitor lifecycle, exit and failure
 
-**Status: agreed specification, not implemented behavior.** This resolves
+**Status: agreed specification, almost entirely unimplemented.** This resolves
 [Define monitor exit and failure behavior](https://github.com/jackgeek/climon2/issues/61)
 within [the monitor planning map](https://github.com/jackgeek/climon2/issues/57).
 It amends the earlier selector/history and session-management scope decisions.
@@ -12,7 +12,16 @@ Read the [domain glossary](../GLOSSARY.md), [status mechanics](session-status.md
 [selector](monitor-selector.md), [terminal contract](protocol/terminal-integration.md),
 [embedding](protocol/library-embedding.md) and
 [daemon wire](protocol/daemon-client/core-v1.md) together with this document.
-No monitor, new wire, native interface or headless implementation is delivered.
+
+**Implemented with packaged evidence ([#74](https://github.com/jackgeek/climon2/issues/74)):**
+only the empty [monitor](../GLOSSARY.md#sessions). It discovers no sessions and
+shows its empty state until it exits. Prefix+x exits 0; a catchable SIGINT,
+SIGTERM or SIGHUP exits with signal-style status; a render failure or a failed
+or hung-up host input exits with the climon2 error code. Every one of these
+exits restores the host terminal's modes and termios before any diagnostic.
+Keyboard Ctrl+C is not an exit. Discovery, clients and their shutdown, Leave,
+the root attention `clear`, new wire, native interfaces and headless creation
+remain unimplemented.
 
 ## Monitor and selection lifetime
 
@@ -193,7 +202,7 @@ failure instead uses the climon2 error code.
 
 ## Future headless creation and existing CLI kill
 
-Reserve future `climon2 exec --headless <command> [args...]`. It starts no
+Reserve future `c2 exec --headless <command> [args...]`. It starts no
 interactive client and returns success only after daemon-confirmed successful
 session creation. A later command outcome is the session's outcome, not the
 already-returned CLI's status. Creation failure must be reported truthfully.
@@ -205,7 +214,7 @@ explicit Kill. Normal sessions retain their existing leave policy; deliberate
 detach retains its established behavior. This narrowly scoped headless lifetime
 exception does not make every session persistent or add native-crash isolation.
 
-`climon2 kill <session>` already exists. Preserve it and require it to terminate
+`c2 kill <session>` already exists. Preserve it and require it to terminate
 future headless sessions using the same authoritative Kill semantics. Selector
 Delete adds confirmation and run-local dismissal, not a different wire Kill.
 CLI kill does not dismiss rows in an independently running monitor.

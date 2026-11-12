@@ -6,13 +6,48 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 pub(crate) fn commit(stage: &Stage, home: &Path, payload: &crate::Payload) -> io::Result<()> {
+    short_command(home)?;
     version(stage, &home.join(payload.version().to_string()))?;
     #[cfg(feature = "test-hooks")]
     crate::hooks::checkpoint("version-published")?;
+    launcher(stage, home)?;
+    fs::rename(stage.current(), home.join("current"))
+}
+
+fn launcher(stage: &Stage, home: &Path) -> io::Result<()> {
     fs::rename(stage.launcher(), home.join("climon2"))?;
     #[cfg(feature = "test-hooks")]
     crate::hooks::checkpoint("launcher-published")?;
-    fs::rename(stage.current(), home.join("current"))
+    Ok(())
+}
+
+fn short_command(home: &Path) -> io::Result<()> {
+    let path = home.join("c2");
+    create_short_command(&path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("cannot install {}: {error}", path.display()),
+        )
+    })
+}
+
+fn create_short_command(path: &Path) -> io::Result<()> {
+    #[cfg(feature = "test-hooks")]
+    crate::hooks::checkpoint("short-command")?;
+    match std::os::unix::fs::symlink("climon2", path) {
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => existing_short_command(path),
+        result => result,
+    }
+}
+
+fn existing_short_command(path: &Path) -> io::Result<()> {
+    if fs::read_link(path)?.as_os_str() != "climon2" {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "expected a relative symlink to climon2",
+        ));
+    }
+    Ok(())
 }
 
 fn version(stage: &Stage, destination: &Path) -> io::Result<()> {

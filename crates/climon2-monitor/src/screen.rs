@@ -1,0 +1,80 @@
+//! What the monitor draws on its own alternate screen, through Ratatui.
+use climon2_core::{keys::ControlKey, protocol::TerminalSize};
+use ratatui::{
+    backend::{Backend, CrosstermBackend},
+    buffer::Buffer,
+    layout::{Constraint, Rect},
+    style::Stylize,
+    text::Line,
+    widgets::{Paragraph, Widget},
+};
+use std::io::{self, Stdout};
+
+/// The permanent top row's height.
+const TOP_ROW: u16 = 1;
+const NO_SELECTION: &str = "No session selected";
+const EMPTY: &str = "No sessions to show.";
+
+/// Ratatui's backend writing to the monitor-owned host output. It is never
+/// asked the host's size or cursor, and the cursor stays hidden.
+pub(crate) struct Screen {
+    backend: CrosstermBackend<Stdout>,
+    lines: [Line<'static>; 2],
+}
+
+impl Screen {
+    pub(crate) fn new(size: TerminalSize, prefix: ControlKey) -> io::Result<Self> {
+        let mut screen = Self {
+            backend: CrosstermBackend::new(io::stdout()),
+            lines: [
+                Line::from(EMPTY),
+                Line::from(format!("Press {prefix} then x to exit.")),
+            ],
+        };
+        screen.backend.hide_cursor()?;
+        screen.paint(size)?;
+        Ok(screen)
+    }
+
+    pub(crate) fn resize(&mut self, size: TerminalSize) -> io::Result<()> {
+        self.paint(size)
+    }
+
+    /// Paints every cell of the frame at `size`, so whatever the host showed
+    /// is overwritten in place: nothing is erased first, and no blank screen
+    /// shows between two frames.
+    fn paint(&mut self, size: TerminalSize) -> io::Result<()> {
+        #[cfg(feature = "test-hooks")]
+        crate::hooks::fail("draw")?;
+        let frame = frame(size, &self.lines);
+        let cells = frame.content().iter().enumerate().map(|(index, cell)| {
+            let (x, y) = frame.pos_of(index);
+            (x, y, cell)
+        });
+        self.backend.draw(cells)?;
+        Backend::flush(&mut self.backend)
+    }
+}
+
+/// The permanent top row, and below it the empty state, centred.
+fn frame(size: TerminalSize, empty: &[Line<'static>; 2]) -> Buffer {
+    let area = Rect::new(0, 0, size.cols, size.rows);
+    let mut frame = Buffer::empty(area);
+    let top = Rect {
+        height: TOP_ROW,
+        ..area
+    };
+    let below = Rect {
+        y: top.bottom(),
+        height: area.height - TOP_ROW,
+        ..area
+    };
+    Paragraph::new(NO_SELECTION)
+        .reversed()
+        .render(top, &mut frame);
+    let height = Constraint::Length(empty.len() as u16);
+    Paragraph::new(empty.to_vec())
+        .centered()
+        .render(below.centered_vertically(height), &mut frame);
+    frame
+}

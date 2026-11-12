@@ -1,14 +1,22 @@
 //! Authenticate a connection before reading any hello bytes.
-#[cfg(not(target_os = "macos"))]
-compile_error!("peer credential seam requires macOS");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("peer credential seam requires macOS or Linux");
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use unix::*;
+
+#[cfg(target_os = "linux")]
+#[path = "peer/linux.rs"]
+mod linux;
 
 #[cfg(target_os = "macos")]
-pub use macos::*;
+#[path = "peer/macos.rs"]
+mod macos;
 
-#[cfg(target_os = "macos")]
-mod macos {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod unix {
     use crate::runtime::{SocketListener, SocketStream};
-    use std::{io, os::fd::AsRawFd};
+    use std::io;
 
     /// Return only authenticated streams; rejected streams close before hello.
     pub fn accept(listener: &SocketListener) -> io::Result<SocketStream> {
@@ -21,14 +29,11 @@ mod macos {
         unsafe { libc::geteuid() }
     }
 
-    pub fn uid(stream: &SocketStream) -> io::Result<u32> {
-        let mut uid = 0;
-        let mut gid = 0;
-        if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(uid)
-    }
+    #[cfg(target_os = "macos")]
+    pub use super::macos::uid;
+
+    #[cfg(target_os = "linux")]
+    pub use super::linux::uid;
 
     pub fn authenticate(stream: &SocketStream) -> io::Result<()> {
         authenticate_uid(stream, effective_uid())

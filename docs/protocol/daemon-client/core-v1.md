@@ -9,6 +9,17 @@ The [current private protocol](post-hello.md) is not this revision.
 Use the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md) alongside each message page.
 
+An encoder and validator for the [framing](../TERMS.md#frame), shared types,
+[Open](request-open.md), [Leave](request-leave.md), [Kill](request-kill.md),
+[Response](response.md), [Fatal error](event-fatal-error.md) and the
+[core metadata](../README.md#capabilities-and-connection-generations) events
+now exists in
+[`climon2-core`](../../../crates/climon2-core/README.md). Its tests decode
+every published example on those pages and re-encode it to identical
+[bytes](../TERMS.md#byte). No [session daemon](../../../GLOSSARY.md#sessions)
+or [client](../../../GLOSSARY.md#sessions) speaks this revision yet, so the
+behavior below remains unimplemented.
+
 ## Transport and startup
 
 The [client](../../../GLOSSARY.md#sessions) communicates with the
@@ -185,14 +196,14 @@ interactive work; Leave and repeated standalone Kill remain possible.
 This intentionally amends #58's final-attachment assumptions; it does not
 guarantee survival of a native monitor crash.
 
-Future `climon2 exec --headless <command> [args...]` starts a
+Future `c2 exec --headless <command> [args...]` starts a
 [headless session](../../../GLOSSARY.md#sessions) without an interactive client
 and returns success only after daemon-confirmed creation. Zero-client survival
 lasts for that session's lifetime, even after later attachments disappear,
 until command completion or explicit Kill. CLI spelling/lifetime are
 [agreed, unimplemented](../../monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill);
 creation encoding is not assigned by this amendment. Preserve existing
-`climon2 kill <session>` and test its future headless support. Ordinary leave
+`c2 kill <session>` and test its future headless support. Ordinary leave
 policy and succession remain unchanged; not every session becomes persistent.
 
 The [lifecycle amendment](../../monitor-lifecycle.md) also agrees concurrent
