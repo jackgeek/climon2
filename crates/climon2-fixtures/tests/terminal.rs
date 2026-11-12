@@ -1,6 +1,6 @@
 use climon2_test_term::{
-    Cell, Color, Cursor, CursorShape, HostSignal, Isolation, Mouse, MouseButton, Rendition,
-    Terminal, Underline, Width, bin_path,
+    AnsiColor, Cell, Color, Cursor, CursorShape, HostSignal, Isolation, Mouse, MouseButton,
+    Rendition, Terminal, Underline, Width, bin_path,
 };
 use std::{fs, time::Duration};
 
@@ -32,7 +32,7 @@ fn generic_terminal_cells_report_rendition_colours_and_character_width() {
     assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
     let expected = [
         Cell {
-            foreground: Color::Ansi(1),
+            foreground: Color::Ansi(AnsiColor::Red),
             rendition: Rendition {
                 bold: true,
                 ..Rendition::default()
@@ -64,8 +64,8 @@ fn generic_terminal_cells_report_rendition_colours_and_character_width() {
             ..cell("C")
         },
         Cell {
-            foreground: Color::Ansi(12),
-            background: Color::Ansi(11),
+            foreground: Color::Ansi(AnsiColor::BrightBlue),
+            background: Color::Ansi(AnsiColor::BrightYellow),
             underline_color: Color::Rgb(10, 20, 30),
             rendition: Rendition {
                 underline: Some(Underline::Double),
@@ -90,12 +90,12 @@ fn generic_terminal_cells_report_rendition_colours_and_character_width() {
         },
         Cell {
             width: Width::Wide,
-            background: Color::Ansi(4),
+            background: Color::Ansi(AnsiColor::Blue),
             ..cell("\u{754c}")
         },
         Cell {
             width: Width::Spacer,
-            background: Color::Ansi(4),
+            background: Color::Ansi(AnsiColor::Blue),
             ..cell("")
         },
         cell("e\u{301}"),
@@ -103,6 +103,48 @@ fn generic_terminal_cells_report_rendition_colours_and_character_width() {
     ];
     assert_eq!(terminal.cells(0)[..expected.len()], expected);
     assert_eq!(terminal.cells(0).len(), 80);
+    drop(terminal);
+    isolation.assert_clean();
+}
+
+/// #79 (Terminal oracle): SGR 30-37 select the eight ANSI colours and SGR
+/// 90-97 their bright forms, each reported by name.
+#[test]
+fn generic_terminal_cells_name_the_sixteen_ansi_colours() {
+    let isolation = Isolation::new();
+    let output: String = (30..=37)
+        .chain(90..=97)
+        .map(|sgr| format!("\x1b[{sgr}mx"))
+        .collect();
+    let mut command = isolation.command(bin_path("climon2-fixture"));
+    command.args(["print", &output]);
+    let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    let colours: Vec<Color> = terminal.cells(0)[..16]
+        .iter()
+        .map(|cell| cell.foreground)
+        .collect();
+    use AnsiColor::*;
+    let expected = [
+        Black,
+        Red,
+        Green,
+        Yellow,
+        Blue,
+        Magenta,
+        Cyan,
+        White,
+        BrightBlack,
+        BrightRed,
+        BrightGreen,
+        BrightYellow,
+        BrightBlue,
+        BrightMagenta,
+        BrightCyan,
+        BrightWhite,
+    ]
+    .map(Color::Ansi);
+    assert_eq!(colours, expected);
     drop(terminal);
     isolation.assert_clean();
 }

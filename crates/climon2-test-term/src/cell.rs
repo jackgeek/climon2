@@ -92,9 +92,8 @@ pub enum Color {
     /// The host's default colour: SGR 39, 49 or 59, or never set.
     #[default]
     Default,
-    /// One of the 16 ANSI colours: 0-7 from SGR 30-37 or 40-47, and 8-15 from
-    /// SGR 90-97 or 100-107. Hosts may brighten these for bold text.
-    Ansi(u8),
+    /// One of the 16 ANSI colours. Hosts may brighten these for bold text.
+    Ansi(AnsiColor),
     /// A 256-colour palette entry: SGR 38;5;n, 48;5;n or 58;5;n.
     Palette(u8),
     /// A direct colour: SGR 38;2;r;g;b, 48;2;r;g;b or 58:2::r:g:b.
@@ -111,13 +110,49 @@ impl Color {
     }
 
     fn named(name: NamedColor) -> Self {
-        match name {
-            NamedColor::Foreground | NamedColor::Background => Self::Default,
-            _ => Self::Ansi(u8::try_from(name as usize).unwrap_or_else(|_| {
-                panic!("SGR never puts the renderer colour {name:?} in a cell")
-            })),
-        }
+        Self::Ansi(match name {
+            NamedColor::Foreground | NamedColor::Background => return Self::Default,
+            NamedColor::Black => AnsiColor::Black,
+            NamedColor::Red => AnsiColor::Red,
+            NamedColor::Green => AnsiColor::Green,
+            NamedColor::Yellow => AnsiColor::Yellow,
+            NamedColor::Blue => AnsiColor::Blue,
+            NamedColor::Magenta => AnsiColor::Magenta,
+            NamedColor::Cyan => AnsiColor::Cyan,
+            NamedColor::White => AnsiColor::White,
+            NamedColor::BrightBlack => AnsiColor::BrightBlack,
+            NamedColor::BrightRed => AnsiColor::BrightRed,
+            NamedColor::BrightGreen => AnsiColor::BrightGreen,
+            NamedColor::BrightYellow => AnsiColor::BrightYellow,
+            NamedColor::BrightBlue => AnsiColor::BrightBlue,
+            NamedColor::BrightMagenta => AnsiColor::BrightMagenta,
+            NamedColor::BrightCyan => AnsiColor::BrightCyan,
+            NamedColor::BrightWhite => AnsiColor::BrightWhite,
+            renderer => panic!("SGR never puts the renderer colour {renderer:?} in a cell"),
+        })
     }
+}
+
+/// The 16 ANSI colours: SGR 30-37 and 40-47 select the first eight, and SGR
+/// 90-97 and 100-107 the bright eight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnsiColor {
+    Black,
+    Red,
+    Green,
+    Yellow,
+    Blue,
+    Magenta,
+    Cyan,
+    White,
+    BrightBlack,
+    BrightRed,
+    BrightGreen,
+    BrightYellow,
+    BrightBlue,
+    BrightMagenta,
+    BrightCyan,
+    BrightWhite,
 }
 
 /// The SGR rendition of a cell. The emulated host ignores SGR 5 and 6 (blinking
