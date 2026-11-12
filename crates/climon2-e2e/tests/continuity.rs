@@ -388,8 +388,9 @@ fn installed_kill_ends_detached_and_attached_sessions() {
     for (args, status) in [
         (["kill", "deadbeef"], 125),
         (["attach", "deadbeef"], 125),
+        (["attach", "1234567"], 125),
         (["kill", "not-hex"], 2),
-        (["attach", "1234567"], 2),
+        (["attach", "---"], 2),
     ] {
         let mut refused = climon2(&package, &args, ROWS, COLS);
         assert_eq!(refused.wait_exit(TIMEOUT).unwrap(), status, "{args:?}");

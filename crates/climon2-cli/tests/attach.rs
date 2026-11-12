@@ -19,7 +19,7 @@ use std::{
 struct FakeSession {
     metadata: SessionMetadata,
     path: PathBuf,
-    server: Option<JoinHandle<()>>,
+    server: Option<JoinHandle<runtime::SocketListener>>,
 }
 
 impl FakeSession {
@@ -36,6 +36,7 @@ impl FakeSession {
             let (mut socket, _) = listener.accept().unwrap();
             read_frame(&mut socket).unwrap();
             write_frame(&mut socket, &frame).unwrap();
+            listener
         });
         Self {
             metadata,
@@ -43,12 +44,27 @@ impl FakeSession {
             server: Some(server),
         }
     }
+
+    fn assert_only_probed(&mut self) {
+        let listener = self.server.take().unwrap().join().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        assert_eq!(
+            fs::read(&self.path).unwrap(),
+            self.metadata.to_json().unwrap()
+        );
+    }
 }
 
 impl Drop for FakeSession {
     fn drop(&mut self) {
-        if !thread::panicking() {
-            self.server.take().unwrap().join().unwrap();
+        if !thread::panicking()
+            && let Some(server) = self.server.take()
+        {
+            server.join().unwrap();
         }
         let _ = fs::remove_file(self.metadata.socket_path.as_str());
         let _ = fs::remove_file(&self.path);
@@ -117,17 +133,14 @@ fn home(isolation: &Isolation) -> PathBuf {
 fn a_selector_must_match_exactly_one_live_session() {
     let isolation = Isolation::new();
     let cli = bin_path("climon2-cli");
-    let (status, screen) = attach_in_terminal(&isolation, &cli, "abcdef12", None);
+    let (status, screen) = attach_in_terminal(&isolation, &cli, "a", None);
     assert_eq!(status, 125);
-    assert!(
-        screen.contains("no live session matches abcdef12"),
-        "{screen}"
-    );
+    assert!(screen.contains("no live session matches a"), "{screen}");
 
     let home = home(&isolation);
-    let first = FakeSession::start(&home, 1, current);
-    let second = FakeSession::start(&home, 2, current);
-    let (status, screen) = attach_in_terminal(&isolation, &cli, "12345678", None);
+    let mut first = FakeSession::start(&home, 1, current);
+    let mut second = FakeSession::start(&home, 2, current);
+    let (status, screen) = attach_in_terminal(&isolation, &cli, "1", None);
     assert_eq!(status, 125);
     assert!(screen.contains("is ambiguous"), "{screen}");
     assert!(
@@ -138,6 +151,8 @@ fn a_selector_must_match_exactly_one_live_session() {
         screen.contains(second.metadata.session_id.as_str()),
         "{screen}"
     );
+    first.assert_only_probed();
+    second.assert_only_probed();
     drop((first, second));
     isolation.assert_clean();
 }
@@ -194,14 +209,21 @@ fn attach_needs_a_terminal() {
 fn a_session_of_an_uninstalled_version_names_that_version() {
     let isolation = Isolation::new();
     let cli = installed_cli(&isolation);
-    let session = FakeSession::start(&home(&isolation), 6, current);
-    let (status, screen) = attach_in_terminal(&isolation, &cli, "12345678", None);
+    let home = home(&isolation);
+    let session = FakeSession::start(&home, 6, current);
+    let non_live = metadata(&home, 16);
+    let path = home
+        .join("sessions")
+        .join(format!("{}.pty", non_live.session_id));
+    fs::write(&path, non_live.to_json().unwrap()).unwrap();
+    let (status, screen) = attach_in_terminal(&isolation, &cli, "1", None);
     assert_eq!(status, 125);
     let expected = format!(
         "session {} needs climon2 999.0.0, which is not installed",
         session.metadata.session_id
     );
     assert!(screen.contains(&expected), "{screen}");
+    fs::remove_file(path).unwrap();
     drop(session);
     isolation.assert_clean();
 }
@@ -235,21 +257,20 @@ fn installed_cli(isolation: &Isolation) -> PathBuf {
 fn kill_selects_exactly_one_live_session() {
     let isolation = Isolation::new();
     let cli = bin_path("climon2-cli");
-    let (status, stdout, stderr) = kill(&isolation, &cli, "abcdef12");
+    let (status, stdout, stderr) = kill(&isolation, &cli, "a");
     assert_eq!((status, stdout.as_str()), (125, ""));
-    assert!(
-        stderr.contains("no live session matches abcdef12"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("no live session matches a"), "{stderr}");
 
     let home = home(&isolation);
-    let first = FakeSession::start(&home, 7, current);
-    let second = FakeSession::start(&home, 8, current);
-    let (status, _, stderr) = kill(&isolation, &cli, "12345678");
-    assert_eq!(status, 125);
+    let mut first = FakeSession::start(&home, 7, current);
+    let mut second = FakeSession::start(&home, 8, current);
+    let (status, stdout, stderr) = kill(&isolation, &cli, "1");
+    assert_eq!((status, stdout.as_str()), (125, ""));
     assert!(stderr.contains("is ambiguous"), "{stderr}");
     assert!(stderr.contains(first.metadata.session_id.as_str()));
     assert!(stderr.contains(second.metadata.session_id.as_str()));
+    first.assert_only_probed();
+    second.assert_only_probed();
     drop((first, second));
     isolation.assert_clean();
 }
@@ -277,13 +298,19 @@ fn kill_of_an_uninstalled_version_names_that_version_and_ignores_config() {
     let home = home(&isolation);
     fs::write(home.join("config.jsonc"), "{ malformed").unwrap();
     let session = FakeSession::start(&home, 10, current);
-    let (status, _, stderr) = kill(&isolation, &cli, "12345678");
+    let non_live = metadata(&home, 17);
+    let path = home
+        .join("sessions")
+        .join(format!("{}.pty", non_live.session_id));
+    fs::write(&path, non_live.to_json().unwrap()).unwrap();
+    let (status, _, stderr) = kill(&isolation, &cli, "1");
     assert_eq!(status, 125);
     let expected = format!(
         "session {} needs climon2 999.0.0, which is not installed",
         session.metadata.session_id
     );
     assert!(stderr.contains(&expected), "{stderr}");
+    fs::remove_file(path).unwrap();
     drop(session);
     isolation.assert_clean();
 }

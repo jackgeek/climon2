@@ -325,7 +325,13 @@ fn packaged_client_can_detach_and_reattach_to_a_live_session() {
     assert_eq!(status, 0, "detach failed: {}", first.screen());
 
     let mut command = layout.command();
-    command.args(["attach", &metadata.session_id.as_str()[..8]]);
+    command.args([
+        "attach",
+        &format!(
+            "-{}-",
+            metadata.session_id.as_str()[..1].to_ascii_uppercase()
+        ),
+    ]);
     let mut second = Terminal::spawn(command, 31, 97).unwrap();
     second
         .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
@@ -963,7 +969,7 @@ fn kill_terminates_a_detached_session_silently_after_cleanup() {
     assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
 
     let started = std::time::Instant::now();
-    let selector = &metadata.session_id.as_str()[..8];
+    let selector = &metadata.session_id.as_str()[..1];
     assert_eq!(
         kill_session(&layout, selector),
         (0, String::new(), String::new())
