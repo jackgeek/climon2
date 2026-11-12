@@ -1,6 +1,8 @@
 # Response — `0x40`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed; implemented for Open, Leave and every rejection the
+session daemon sends**, owned by [#67](https://github.com/jackgeek/climon2/issues/67);
+the other operations' results arrive with their operations.
 The [session daemon](../../../GLOSSARY.md#sessions) answers a
 [client](../../../GLOSSARY.md#sessions) request.
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),

@@ -1,6 +1,8 @@
 # Leave — `0x37`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed; implemented for passive monitor connections**, owned by
+[#67](https://github.com/jackgeek/climon2/issues/67); attachments leave with
+[#87](https://github.com/jackgeek/climon2/issues/87).
 The [client](../../../GLOSSARY.md#sessions) requests accepted departure from the
 [session daemon](../../../GLOSSARY.md#sessions) after Open.
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
@@ -51,3 +53,14 @@ Stalled cleanup uses bounded whole-process failure, not false Leave/join success
 [native declarations](../monitor-client/core-v1.md) are agreed, unimplemented;
 the [acceptance matrix](../../monitor-acceptance.md) is agreed in #62,
 not executed conformance evidence. Related: [Kill](request-kill.md).
+
+## Implemented behavior
+
+On a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control)
+the [session daemon](../../../GLOSSARY.md#sessions) removes the registration
+in the same step that queues the success Response
+`{"kind":"left","attachment_detached":false}`, then closes the stream once that
+Response is written; requests sent after Leave are not served, and no core
+metadata follows it. Leave before any Open is `invalid_state` and the stream
+goes on. A peer may half-close after sending Leave and still read its
+Response.

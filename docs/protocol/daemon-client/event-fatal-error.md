@@ -1,6 +1,6 @@
 # Fatal error — `0x4d`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) may report a connection-fatal
 failure to the [client](../../../GLOSSARY.md#sessions).
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
@@ -36,3 +36,15 @@ Queue exhaustion must preserve required records or explicitly fail the affected
 connection under #69 policy, without requiring successful fatal-event delivery.
 Other connections/control must progress independently.
 Related: [Response](response.md), [Command final](event-command-final.md).
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) sends this event for
+every connection-fatal failure on a revision-1 connection, with a fixed
+diagnostic message; the code says what failed. It replaces any output not
+yet started on the stream, then closes the connection. The daemon decides
+`frame_too_large` and `invalid_frame_length` from the length prefix before
+any body arrives, and `truncated_frame` when the stream ends inside a frame; a
+stream that ends between frames closes without this event. The first frame
+after hello is judged as revision 1 only once its type selects revision 1, as
+the [post-hello boundary](post-hello.md#choosing-a-protocol) explains.
