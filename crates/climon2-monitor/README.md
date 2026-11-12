@@ -47,8 +47,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   no target exists. A bracketed paste is data, however the host splits its
   reads: it never exits, it discards a pending prefix, and it leaves none
   pending. Mouse and focus reports are not classified yet: they never exit, but
-  they end a pending prefix. The input router (#109, #111) owns that
-  classification.
+  they end a pending prefix. The input router classifies them (#109) and
+  routes them to applications (#111).
 - A failed wait for host input, other than one a signal interrupts, and the
   end of host input (a hung-up host terminal) end the monitor through the exit
   path below with status 125: `cannot wait for host input: …` or
@@ -98,6 +98,6 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`; Linux `linux_packaging_rejects_a_non_x86_64_or_hooked_monitor`; macOS `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
 
 Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), application input such
-as Ctrl+C (#109), mouse and focus report classification (#111) and the
-universal archive's runtime on both architectures, which only CI's `dist` and
-`archive` jobs build and execute.
+as Ctrl+C (#109), mouse and focus report classification (#109) and their
+routing to applications (#111), and the universal archive's runtime on both
+architectures, which only CI's `dist` and `archive` jobs build and execute.
