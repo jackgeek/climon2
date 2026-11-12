@@ -51,7 +51,7 @@ instance delivery/handle release, cleanup and thread join. Rejection or lost
 response keeps the row. Never automatically replay Kill; passive recovery may
 establish later definitive completion. Dismissal is run-local and blocks same-run
 rediscovery; fallback selection never acquires another session.
-Existing `climon2 kill <session>` also terminates
+Existing `c2 kill <session>` also terminates
 [headless sessions](../../../GLOSSARY.md#sessions), whose zero-client lifetime
 survives later attachment loss until completion or Kill; that is implemented on
 the current private protocol. The other amendments are unimplemented; operation

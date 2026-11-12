@@ -9,6 +9,7 @@ const PACKAGES: &[&str] = &[
     "climon2-daemon",
     "climon2-client",
     "climon2-install",
+    "climon2-monitor",
     "climon2-vt",
     "climon2-test-term",
     "climon2-fixtures",
@@ -76,6 +77,12 @@ fn allowed_internal_dependencies(name: &str) -> &[&str] {
         "climon2-platform" | "climon2-install" => &["climon2-core"],
         "climon2-cli" | "climon2-client" => &["climon2-core", "climon2-platform"],
         "climon2-daemon" => &["climon2-core", "climon2-platform", "climon2-vt"],
+        "climon2-monitor" => &[
+            "climon2-core",
+            "climon2-platform",
+            "climon2-vt",
+            "climon2-discovery",
+        ],
         _ => &[],
     }
 }
@@ -161,6 +168,7 @@ fn shipped_targets_have_the_agreed_names_and_libraries() {
         ("climon2-daemon", "climon2-daemon"),
         ("climon2-client", "climon2-client"),
         ("climon2-install", "climon2-install"),
+        ("climon2-monitor", "climon2-monitor"),
     ] {
         let package = metadata.packages.iter().find(|p| p.name == name).unwrap();
         let binaries: Vec<_> = package
@@ -230,6 +238,10 @@ fn dependency_guard_rejects_forbidden_edges() {
         ("climon2-vt", "climon2-core", None, Some(".")),
         ("climon2-client", "climon2-vt", None, Some(".")),
         ("climon2-cli", "climon2-vt", None, Some(".")),
+        ("climon2-monitor", "climon2-client", None, Some(".")),
+        ("climon2-monitor", "climon2-daemon", None, Some(".")),
+        ("climon2-monitor", "climon2-cli", None, Some(".")),
+        ("climon2-cli", "climon2-monitor", None, Some(".")),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {
@@ -250,6 +262,10 @@ fn dependency_guard_accepts_shared_and_test_only_edges() {
         ("climon2-daemon", "climon2-test-term", Some("dev")),
         ("climon2-daemon", "climon2-vt", None),
         ("climon2-test-term", "climon2-daemon", None),
+        ("climon2-monitor", "climon2-platform", None),
+        ("climon2-monitor", "climon2-vt", None),
+        ("climon2-monitor", "climon2-discovery", None),
+        ("climon2-test-term", "climon2-monitor", None),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {

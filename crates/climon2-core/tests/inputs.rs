@@ -18,8 +18,10 @@ fn value<'a>(env: &'a SessionEnvironment, name: &str) -> &'a OsStr {
     &env.values.iter().find(|(key, _)| key == name).unwrap().1
 }
 
+/// #29: exec keeps its OS arguments literally, list, attach and kill parse
+/// exactly, and anything else they are given is a usage error (2).
 #[test]
-fn issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors() {
+fn issue29_exec_list_attach_and_kill_parse_exact_arguments_and_reject_usage_errors() {
     let args = ["exec", "some command", "--flag", "", "a b", "日本語", "--"];
     let CliArgs::Exec {
         lifetime: Lifetime::Ordinary,
@@ -130,6 +132,63 @@ fn exec_headless_selects_the_headless_lifetime_and_double_dash_keeps_it_literal(
         &["exec", "--headless", "--", ""],
     ] {
         assert_eq!(parse(bad).unwrap_err().exit_code(), 2, "{bad:?}");
+    }
+}
+
+#[test]
+fn attach_and_kill_accept_short_selectors_but_not_empty_or_extra_arguments() {
+    for operation in ["attach", "kill"] {
+        for (text, expected) in [
+            ("A", "a"),
+            ("-AB-", "ab"),
+            ("ABC", "abc"),
+            ("ABCD", "abcd"),
+            ("ABCDE", "abcde"),
+            ("ABCDEF", "abcdef"),
+            ("ABCDE-F0", "abcdef0"),
+        ] {
+            let parsed = CliArgs::parse([operation, text].map(OsString::from)).unwrap();
+            let selector = match (operation, parsed) {
+                ("attach", CliArgs::Attach(selector)) | ("kill", CliArgs::Kill(selector)) => {
+                    selector
+                }
+                (_, other) => panic!("unexpected command: {other:?}"),
+            };
+            assert_eq!(selector.as_str(), expected);
+        }
+        for arguments in [
+            vec![operation, ""],
+            vec![operation, "---"],
+            vec![operation, "g"],
+            vec![operation, "a", "extra"],
+        ] {
+            assert_eq!(
+                CliArgs::parse(arguments.into_iter().map(OsString::from))
+                    .unwrap_err()
+                    .exit_code(),
+                2
+            );
+        }
+    }
+}
+
+/// #74 (INP-01 derived refusal): `monitor` and its alias `mon` take no
+/// arguments; anything after either word is a usage error (2).
+#[test]
+fn issue74_monitor_and_mon_take_no_arguments() {
+    for monitor in ["monitor", "mon"] {
+        assert_eq!(
+            CliArgs::parse([monitor].map(OsString::from)).unwrap(),
+            CliArgs::Monitor
+        );
+    }
+    for bad in [["monitor", "extra"], ["mon", ""], ["mon", "--help"]] {
+        assert_eq!(
+            CliArgs::parse(bad.map(OsString::from))
+                .unwrap_err()
+                .exit_code(),
+            2
+        );
     }
 }
 

@@ -24,12 +24,12 @@ use climon2_core::{
 };
 use climon2_platform::{
     peer,
-    runtime::{SocketListener, SocketStream},
+    runtime::{SocketFreshness, SocketListener, SocketStream},
     terminal::Signals,
 };
 use climon2_vt::{Geometry, Vt, VtConfig};
 use command::{Command, Drain, Read, classify};
-use delivery::{Delivery, LIVE_LIMIT, Out};
+use delivery::{Delivery, Out};
 use paste::PasteTracker;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -66,6 +66,7 @@ struct Session<'a, C> {
     command: Command,
     initial_deadline: Instant,
     finish_deadline: Option<Instant>,
+    socket_freshness: SocketFreshness,
 }
 
 pub(crate) fn serve(
@@ -86,7 +87,7 @@ pub(crate) fn serve(
         deliveries: BTreeMap::new(),
         control: Control::new(options.size, options.lifetime),
         vt,
-        next_id: 0,
+        next_id: Default::default(),
         controller: None,
         pending_grants: BTreeMap::new(),
         pending_lost: BTreeSet::new(),
@@ -95,6 +96,7 @@ pub(crate) fn serve(
         command: Command::Running,
         initial_deadline: Instant::now() + INITIAL_TIMEOUT,
         finish_deadline: None,
+        socket_freshness: SocketFreshness::new(&options.socket, Instant::now()),
     }
     .run();
     end_pty(pty, result)
@@ -127,6 +129,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn tick(&mut self, now: Instant) -> io::Result<bool> {
+        self.socket_freshness.refresh(now)?;
         self.incoming()?;
         self.pump(now)?;
         self.outgoing(now)?;
@@ -154,11 +157,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn accept(&mut self) -> io::Result<()> {
-        for _ in 0..ACCEPTS_PER_TICK {
-            let Some(stream) = accepted(peer::accept(self.listener))? else {
-                break;
-            };
-            self.add_connection(stream)?;
+        let listener = self.listener;
+        let pending = std::iter::from_fn(|| accepted(peer::accept(listener)).transpose());
+        for stream in pending.take(ACCEPTS_PER_TICK) {
+            self.add_connection(stream?)?;
         }
         Ok(())
     }
@@ -317,7 +319,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn initial_deadline(&mut self, now: Instant) -> io::Result<()> {
-        if self.running() && now >= self.initial_deadline {
+        if self.running() && super::passed(self.initial_deadline, now) {
             return self.react(|control| control.initial_deadline());
         }
         Ok(())
@@ -342,7 +344,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         if !self.command.reads(now) {
             return Ok(());
         }
-        let mut bytes = vec![0; OUTPUT_CHUNK];
+        let mut bytes = vec![u8::default(); OUTPUT_CHUNK];
         let read = classify(self.pty.read_output(&mut bytes));
         self.command.observe(&read, now);
         self.after_read(read, &bytes, now)
@@ -373,7 +375,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let Some(delivery) = self.deliveries.get_mut(&id) else {
             return;
         };
-        match delivery.live(live, queued) {
+        match delivery.live(&self.vt, live, queued) {
             Ok(bytes) => self.commit_live(id, bytes),
             Err(delivery::Overflow) => self.mark_lost(id),
         }
@@ -441,16 +443,19 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// Committed live bytes beyond the live queue limit lose the attachment.
     fn commit_live(&mut self, id: u64, bytes: Vec<u8>) {
-        if self.queued(id) + bytes.len() > LIVE_LIMIT {
+        if delivery::within_limit(self.queued(id) + bytes.len()).is_err() {
             return self.mark_lost(id);
         }
         self.send_output(id, &bytes);
     }
 
+    /// Queued output; a connection lost earlier in this tick has none and accepts nothing,
+    /// so the value then is immaterial.
     fn queued(&self, id: u64) -> usize {
         self.connections
             .get(&id)
-            .map_or(0, Connection::queued_bytes)
+            .map(Connection::queued_bytes)
+            .unwrap_or_default()
     }
 
     // PTY input.
@@ -552,7 +557,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn starting(&self, now: Instant) -> bool {
-        self.control.snapshot().lifecycle == Lifecycle::Starting && now < self.initial_deadline
+        self.control.snapshot().lifecycle == Lifecycle::Starting
+            && !super::passed(self.initial_deadline, now)
     }
 
     fn awaiting_ready(&self) -> bool {
@@ -563,8 +569,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn finished(&self, now: Instant) -> bool {
-        self.finish_deadline.is_some_and(|deadline| {
-            now >= deadline || self.connections.values().all(Connection::available)
+        finished_at(self.finish_deadline, now, || {
+            self.connections.values().all(Connection::available)
         })
     }
 
@@ -886,4 +892,26 @@ fn protocol_error(error: &io::Error) -> String {
         return error.to_string();
     }
     "invalid session protocol".into()
+}
+
+/// An ending session finishes at its drain deadline, with output still queued for a client
+/// that stopped reading, or sooner once every connection has drained.
+fn finished_at(deadline: Option<Instant>, now: Instant, drained: impl FnOnce() -> bool) -> bool {
+    deadline.is_some_and(|deadline| super::passed(deadline, now) || drained())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::finished_at;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn an_ending_session_finishes_at_its_deadline_or_once_drained() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(1);
+        assert!(!finished_at(None, now, || true), "not ending");
+        assert!(!finished_at(Some(later), now, || false), "draining");
+        assert!(finished_at(Some(later), now, || true), "drained early");
+        assert!(finished_at(Some(now), now, || false), "deadline reached");
+    }
 }

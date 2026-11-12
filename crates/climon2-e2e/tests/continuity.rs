@@ -1,7 +1,7 @@
 //! Plan section 6.1: session continuity through the installed product, from
 //! controlled bash 5 outer terminals with isolated homes. Every scenario ends
 //! with `assert_clean()`.
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 #[allow(dead_code)]
 mod support;
@@ -14,7 +14,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use support::{Package, TIMEOUT, quote};
+use support::{Package, TIMEOUT, assert_released, outer, quote};
 
 const DETACH: &[u8] = b"\x1dd";
 const TAKE_CONTROL: &[u8] = b"\x14";
@@ -74,6 +74,16 @@ fn prompt_after(terminal: &mut Terminal, marker: &str) {
         })
         .unwrap();
     terminal.wait_for_input_ready(TIMEOUT).unwrap();
+}
+
+/// Runs a foreground command that never reads the terminal, so a kill ends the
+/// shell with the hang-up signal rather than a prompt read failure (see
+/// `RECORDER`).
+fn hold_without_reading(terminal: &mut Terminal) {
+    terminal
+        .send("printf 'HOLD%s\\n' ING; sleep 1000\n")
+        .unwrap();
+    terminal.wait_for_text("HOLDING", TIMEOUT).unwrap();
 }
 
 /// An outer controlled bash that fills its host with sentinels, then becomes
@@ -198,6 +208,68 @@ fn configure(package: &Package, config: &str) {
         config,
     )
     .unwrap();
+}
+
+#[test]
+fn installed_session_after_vim_keeps_outer_shell_input_below_restored_output() {
+    let Some(bash) = controlled_bash() else {
+        return;
+    };
+    let package = Package::new();
+    let path = package.isolation.home().join("vim.txt");
+    fs::write(&path, "vim-cursor-regression\n").unwrap();
+    let mut command = package.bash(&bash);
+    command.env("PS1", "OUTER> ");
+    let mut terminal = Terminal::spawn(command, ROWS, COLS).unwrap();
+    terminal.wait_for_text("OUTER> ", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    terminal
+        .send(format!(
+            "printf 'OUTER-HISTORY\\n'; PS1='INNER> ' climon2 exec {} --noprofile --norc -i; printf 'OUTER-%s\\n' RETURN\n",
+            quote(&bash)
+        ))
+        .unwrap();
+    prompt(&mut terminal);
+    terminal
+        .send(format!(
+            "printf 'SESSION-%s\\n' HISTORY; /usr/bin/vim -Nu NONE -i NONE -n {}\n",
+            quote(&path)
+        ))
+        .unwrap();
+    terminal
+        .wait_for_text("vim-cursor-regression", TIMEOUT)
+        .unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    terminal.send(":q!\r").unwrap();
+    prompt(&mut terminal);
+    terminal.send("exit\n").unwrap();
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| {
+            screen
+                .rsplit_once("OUTER-RETURN")
+                .is_some_and(|(_, after)| after.contains("OUTER> "))
+        })
+        .unwrap();
+    terminal.wait_for_text("OUTER> ", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    terminal.send("echo OUTER-INPUT\n").unwrap();
+    terminal.wait_for_text("OUTER-INPUT", TIMEOUT).unwrap();
+    let screen = terminal.screen();
+    let history = screen
+        .lines()
+        .position(|line| line.trim_end() == "SESSION-HISTORY")
+        .unwrap_or_else(|| panic!("restored output was overwritten:\n{screen}"));
+    let input = screen
+        .lines()
+        .position(|line| line.starts_with("OUTER> echo OUTER-INPUT"))
+        .expect("outer shell input remains visible");
+    assert!(
+        input > history,
+        "outer input overwrote restored output:\n{screen}"
+    );
+    terminal.send("exit\n").unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    package.assert_clean();
 }
 
 /// Section 6.1.1: history and output produced while detached are restored on
@@ -378,8 +450,9 @@ fn installed_kill_ends_detached_and_attached_sessions() {
     for (args, status) in [
         (["kill", "deadbeef"], 125),
         (["attach", "deadbeef"], 125),
+        (["attach", "1234567"], 125),
         (["kill", "not-hex"], 2),
-        (["attach", "1234567"], 2),
+        (["attach", "---"], 2),
     ] {
         let mut refused = climon2(&package, &args, ROWS, COLS);
         assert_eq!(refused.wait_exit(TIMEOUT).unwrap(), status, "{args:?}");
@@ -394,6 +467,7 @@ fn installed_kill_ends_detached_and_attached_sessions() {
     drop(b);
     let mut c = climon2(&package, &["attach", &id[..8]], ROWS, COLS);
     prompt(&mut c);
+    hold_without_reading(&mut c);
     let mut kill = climon2(&package, &["kill", &id[..8]], ROWS, COLS);
     assert_eq!(kill.wait_exit(TIMEOUT).unwrap(), 0);
     assert_eq!(kill.screen().trim(), "", "kill is silent");
@@ -729,61 +803,13 @@ fn installed_detached_session_absorbs_a_large_write() {
 /// A TUI that sets mouse reporting, focus, bracketed paste, a hidden cursor,
 /// application keys and the alternate screen, then exits on any key without
 /// undoing any of them.
+/// Ends after one key; if its terminal closes first, it waits for the hang-up
+/// signal like `RECORDER`. `dd` reads the key because `read -s`/`-n` install
+/// bash's terminating-signal handlers, which can consume that signal.
 const TUI: &str = r#"printf '\e[?1049h\e[?1000h\e[?1006h\e[?1004h\e[?2004h\e[?25l\e[?1h\e=\e[H\e[2JTUI-READY'
 stty raw -echo
-IFS= read -rsn1 _
+dd bs=1 count=1 >/dev/null 2>&1 || exec sleep 1000
 "#;
-
-/// An outer non-interactive shell that records termios around `climon2
-/// <args>`, then reports the status and echoes one ordinary input line.
-fn released(package: &Package, bash: &Path, args: &str) -> Terminal {
-    let mut command = package.command(bash);
-    command.args(["--noprofile", "--norc", "-c"]);
-    command.arg(format!(
-        "stty -g > ~/before; climon2 {args}; s=$?; stty -g > ~/after; \
-         printf 'OUTER-DONE=%s\\n' $s; IFS= read -r line; echo TYPED=$line"
-    ));
-    Terminal::spawn(command, ROWS, COLS).unwrap()
-}
-
-/// After the client returned `status`: the documented baseline, exact
-/// termios and ordinary shell input.
-fn assert_released(package: &Package, terminal: &mut Terminal, status: i32) {
-    terminal
-        .wait_for_text(&format!("OUTER-DONE={status}"), TIMEOUT)
-        .unwrap();
-    assert_eq!(terminal.modes(), Modes::BASELINE, "{}", terminal.screen());
-    let home = package.isolation.home();
-    assert_eq!(
-        termios(&home.join("after")),
-        termios(&home.join("before")),
-        "termios restored"
-    );
-    terminal.send("plain words\n").unwrap();
-    terminal
-        .wait_for_text("TYPED=plain words", TIMEOUT)
-        .unwrap();
-    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
-}
-
-/// `stty -g` settings without macOS's transient `PENDIN`, which the kernel
-/// sets whenever a terminal returns to canonical mode.
-fn termios(path: &Path) -> String {
-    const PENDIN: u64 = 0x2000_0000;
-    fs::read_to_string(path)
-        .unwrap()
-        .trim_end()
-        .split(':')
-        .map(|field| match field.strip_prefix("lflag=") {
-            Some(flags) => {
-                let flags = u64::from_str_radix(flags, 16).unwrap() & !PENDIN;
-                format!("lflag={flags:x}")
-            }
-            None => field.to_owned(),
-        })
-        .collect::<Vec<_>>()
-        .join(":")
-}
 
 fn kill_session(package: &Package, id: &str) {
     let mut kill = climon2(package, &["kill", id], ROWS, COLS);
@@ -800,14 +826,14 @@ fn installed_client_releases_the_host_on_every_ending() {
     };
     let package = Package::new();
     let tui = script(&package, &bash, "tui.sh", TUI);
-    let exec = format!("exec {}", quote(&tui));
+    let exec = format!("climon2 exec {}", quote(&tui));
     let ready = |terminal: &mut Terminal| {
         terminal.wait_for_text("TUI-READY", TIMEOUT).unwrap();
         terminal.wait_for_input_ready(TIMEOUT).unwrap();
         assert!(terminal.modes().alternate_screen && terminal.modes().mouse);
     };
 
-    let mut detached = released(&package, &bash, &exec);
+    let mut detached = outer(&package, &bash, &exec, ROWS, COLS);
     ready(&mut detached);
     let id = session_id(&package);
     detached.send(DETACH).unwrap();
@@ -815,20 +841,20 @@ fn installed_client_releases_the_host_on_every_ending() {
     drop(detached);
     kill_session(&package, &id);
 
-    let mut natural = released(&package, &bash, &exec);
+    let mut natural = outer(&package, &bash, &exec, ROWS, COLS);
     ready(&mut natural);
     natural.send("q").unwrap();
     assert_released(&package, &mut natural, 0);
     drop(natural);
 
-    let mut killed = released(&package, &bash, &exec);
+    let mut killed = outer(&package, &bash, &exec, ROWS, COLS);
     ready(&mut killed);
     let id = session_id(&package);
     kill_session(&package, &id);
     assert_released(&package, &mut killed, 129);
     drop(killed);
 
-    let mut observer = released(&package, &bash, &exec);
+    let mut observer = outer(&package, &bash, &exec, ROWS, COLS);
     ready(&mut observer);
     let id = session_id(&package);
     let mut controller = climon2(&package, &["attach", &id], ROWS, COLS);
@@ -845,9 +871,14 @@ fn installed_client_releases_the_host_on_every_ending() {
 }
 
 /// Records every input byte in `$1` with bracketed paste enabled.
+/// Linux wakes a terminal reader before it signals the session leader when a
+/// killed session's terminal closes, so a leader still reading the terminal
+/// can end with its own status (ADR 0003). The shell therefore leaves reading
+/// to `cat` and waits for the hang-up signal once `cat` ends.
 const RECORDER: &str = r#"stty raw -echo
 printf '\e[?2004hREC-READY'
-exec cat > "$1"
+cat > "$1"
+exec sleep 1000
 "#;
 
 fn recorder(package: &Package, bash: &Path, name: &str) -> (Terminal, PathBuf) {
@@ -885,9 +916,9 @@ fn is_client(pid: i32) -> bool {
         .args(["-p", &pid.to_string(), "-o", "comm="])
         .output()
         .unwrap();
-    String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .ends_with("/climon2-client")
+    Path::new(String::from_utf8_lossy(&output.stdout).trim())
+        .file_name()
+        .is_some_and(|name| name == "climon2-client")
 }
 
 const PASTE_START: &str = "\x1b[200~first";
@@ -987,14 +1018,14 @@ fn installed_large_restoration_is_complete_and_ordered() {
     let mut first = exec_bash(&package, &bash);
     first
         .send(format!(
-            "until [ -e ~/go ]; do sleep 0.05; done; \
+            "echo $((6*7))-producer-ready; until [ -e ~/go ]; do sleep 0.05; done; \
              awk 'BEGIN {{ for (i = 1; i <= {ROWS_PRODUCED}; i++) {{ printf \"%06d\", i; \
              for (j = 0; j < 73; j++) printf \"€\"; printf \"\\n\" }} }}'; : > ~/done; \
              until [ -e ~/live ]; do sleep 0.01; done; \
              for i in $(seq 1 {LIVE}); do echo live-$i; done; echo LIVE-$((2+2))\n"
         ))
         .unwrap();
-    first.wait_for_text("LIVE-$((2+2))", TIMEOUT).unwrap();
+    first.wait_for_text("42-producer-ready", TIMEOUT).unwrap();
     first.wait_for_input_ready(TIMEOUT).unwrap();
     let id = session_id(&package);
     detach(&mut first, &id);

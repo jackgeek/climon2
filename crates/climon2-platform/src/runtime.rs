@@ -1,18 +1,30 @@
 //! Private runtime directories and bounded AF_UNIX sockets (#18).
-#[cfg(not(target_os = "macos"))]
-compile_error!("runtime directory and socket seam requires macOS");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("runtime directory and socket seam requires macOS or Linux");
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use unix::*;
+
+#[cfg(target_os = "linux")]
+#[path = "runtime/linux.rs"]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::SocketFreshness;
 
 #[cfg(target_os = "macos")]
-pub use macos::*;
-
+#[path = "runtime/macos.rs"]
+mod macos;
 #[cfg(target_os = "macos")]
-mod macos {
+pub use macos::SocketFreshness;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod unix {
     use climon2_core::{SessionId, layout::RuntimeLayout};
     use std::{
         fs::{self, DirBuilder},
         io,
         os::unix::{
-            fs::{DirBuilderExt, MetadataExt},
+            fs::{DirBuilderExt, FileTypeExt, MetadataExt},
             net::{UnixListener, UnixStream},
         },
         path::{Path, PathBuf},
@@ -23,6 +35,21 @@ mod macos {
 
     pub type SocketListener = UnixListener;
     pub type SocketStream = UnixStream;
+
+    pub fn validate_stale_socket(path: &Path) -> io::Result<()> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => require_socket(&metadata),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn require_socket(metadata: &fs::Metadata) -> io::Result<()> {
+        if !metadata.file_type().is_socket() {
+            return Err(io::Error::other("stale socket path is not a socket"));
+        }
+        Ok(())
+    }
 
     pub fn canonical_home(path: &Path) -> io::Result<PathBuf> {
         if !path.is_absolute() {

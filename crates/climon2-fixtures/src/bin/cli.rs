@@ -96,6 +96,14 @@ fn main() {
                 io::stdout().flush().unwrap();
             }
         }
+        // Never reads the terminal, so only a signal ends it.
+        Some("await-signal") => {
+            println!("FIXTURE_READY");
+            io::stdout().flush().unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
         Some("tui") => {
             let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
             assert_eq!(unsafe { libc::tcgetattr(0, termios.as_mut_ptr()) }, 0);

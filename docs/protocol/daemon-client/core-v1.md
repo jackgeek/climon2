@@ -9,6 +9,17 @@ The [current private protocol](post-hello.md) is not this revision.
 Use the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md) alongside each message page.
 
+An encoder and validator for the [framing](../TERMS.md#frame), shared types,
+[Open](request-open.md), [Leave](request-leave.md), [Kill](request-kill.md),
+[Response](response.md), [Fatal error](event-fatal-error.md) and the
+[core metadata](../README.md#capabilities-and-connection-generations) events
+now exists in
+[`climon2-core`](../../../crates/climon2-core/README.md). Its tests decode
+every published example on those pages and re-encode it to identical
+[bytes](../TERMS.md#byte). No [session daemon](../../../GLOSSARY.md#sessions)
+or [client](../../../GLOSSARY.md#sessions) speaks this revision yet, so the
+behavior below remains unimplemented.
+
 ## Transport and startup
 
 The [client](../../../GLOSSARY.md#sessions) communicates with the
@@ -185,7 +196,7 @@ interactive work; Leave and repeated standalone Kill remain possible.
 This intentionally amends #58's final-attachment assumptions; it does not
 guarantee survival of a native monitor crash.
 
-`climon2 exec --headless <command> [args...]` starts a
+`c2 exec --headless <command> [args...]` starts a
 [headless session](../../../GLOSSARY.md#sessions) without an interactive client
 and returns success only after daemon-confirmed creation. Zero-client survival
 lasts for that session's lifetime, even after later attachments disappear,
@@ -194,7 +205,7 @@ until command completion or explicit Kill. That CLI spelling and lifetime are
 on the current private protocol: creation uses a private same-release daemon
 startup argument, not a wire message, and the frozen [hello reply](hello-reply.md)
 reports a headless session without attachments as `detached`. Existing
-`climon2 kill <session>` ends headless sessions. Under this revision,
+`c2 kill <session>` ends headless sessions. Under this revision,
 succession stays as above for every session. The headless policy changes only
 what happens with no attachment: from creation on, and after succession leaves
 no participant, the session keeps running. Ordinary leave policy is unchanged,

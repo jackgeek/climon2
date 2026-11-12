@@ -1,13 +1,18 @@
 # Monitor selector and attention presentation
 
 **Agreed planning specification from [Shape the overlaid session selector](https://github.com/jackgeek/climon2/issues/60).**
-The [monitor](../GLOSSARY.md#sessions) is not shipped.
+The [monitor](../GLOSSARY.md#sessions) ships only as the empty walking skeleton of
+[#74](https://github.com/jackgeek/climon2/issues/74), whose packaged tests show
+that typed prefix+x exits it. Nothing else this document specifies is
+implemented: no key introduction, selector or key-hint footer, Delete, toasts
+or bell.
 The [throwaway prototype](https://github.com/jackgeek/climon2/pull/72) is a
 primary source, not monitor implementation or real daemon/client acceptance.
 Use the [terminal contract](protocol/terminal-integration.md) and
 [session-status mechanics](session-status.md) for existing authority and attention rules.
 The later [lifecycle specification](monitor-lifecycle.md) amends history,
-recovery, exit and selector termination/removal. All remain unimplemented.
+recovery, exit and selector termination/removal. Apart from the empty monitor's
+exits, all remain unimplemented.
 
 ## Key introduction and help
 

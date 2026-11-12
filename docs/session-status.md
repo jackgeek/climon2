@@ -554,7 +554,7 @@ No new native-crash survival guarantee is implied.
 [Headless sessions](../GLOSSARY.md#sessions) explicitly survive zero clients for
 their entire lifetime, including later attachment loss, until command completion
 or Kill; ordinary sessions retain leave policy.
-`climon2 exec --headless <command> [args...]` returns only after daemon-confirmed
+`c2 exec --headless <command> [args...]` returns only after daemon-confirmed
 creation. This CLI spelling and lifetime, specified in
 [lifecycle](monitor-lifecycle.md#headless-creation-and-existing-cli-kill), are
 implemented, and existing CLI kill ends headless sessions. A headless session

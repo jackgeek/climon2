@@ -19,6 +19,7 @@ pub enum CliArgs {
     },
     Attach(Selector),
     Kill(Selector),
+    Monitor,
     Help,
     Version,
 }
@@ -32,7 +33,7 @@ impl UsageError {
     }
 }
 
-pub const USAGE: &str = "usage: climon2 exec [--headless] <command> [args...] | attach <session-id> | kill <session-id> | list [--json]";
+pub const USAGE: &str = "usage: c2 exec [--headless] <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon";
 
 impl fmt::Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -59,13 +60,15 @@ impl CliArgs {
 
 type Parser = fn(Vec<OsString>) -> Result<CliArgs, UsageError>;
 
-const SUBCOMMANDS: [(&str, Parser); 4] = [
+const SUBCOMMANDS: [(&str, Parser); 6] = [
     ("exec", parse_exec),
     ("list", parse_list),
     ("attach", |arguments| {
         parse_selector(arguments, CliArgs::Attach)
     }),
     ("kill", |arguments| parse_selector(arguments, CliArgs::Kill)),
+    ("monitor", parse_monitor),
+    ("mon", parse_monitor),
 ];
 
 /// Help and version flags accept no further arguments.
@@ -113,6 +116,14 @@ fn parse_list(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
         [flag] if flag == "--json" => Ok(CliArgs::List { json: true }),
         _ => Err(UsageError),
     }
+}
+
+/// `monitor` and its alias `mon` take no arguments.
+fn parse_monitor(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
+    arguments
+        .is_empty()
+        .then_some(CliArgs::Monitor)
+        .ok_or(UsageError)
 }
 
 /// `attach` and `kill` take exactly one selector.

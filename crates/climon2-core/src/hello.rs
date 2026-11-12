@@ -4,7 +4,9 @@
 //! Additively frozen: the tokens, the state fields and the lifecycle names.
 use crate::{
     json::Object,
+    names,
     protocol::{self, Frame, HelloReply},
+    wire::{Advertisement, Family, FrameLimits},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -35,11 +37,11 @@ impl Capability {
     ];
 
     pub fn token(self) -> &'static str {
-        lookup(&TOKENS, |(capability, _)| *capability == self).1
+        names::name(&TOKENS, self)
     }
 
     fn from_token(token: &str) -> Option<Self> {
-        find(&TOKENS, |(_, name)| *name == token).map(|(capability, _)| capability)
+        names::named(&TOKENS, token)
     }
 }
 
@@ -85,21 +87,12 @@ const LIFECYCLES: [(Lifecycle, &str); 4] = [
 
 impl Lifecycle {
     pub fn name(self) -> &'static str {
-        lookup(&LIFECYCLES, |(lifecycle, _)| *lifecycle == self).1
+        names::name(&LIFECYCLES, self)
     }
 
     fn from_name(name: &str) -> Option<Self> {
-        find(&LIFECYCLES, |(_, known)| *known == name).map(|(lifecycle, _)| lifecycle)
+        names::named(&LIFECYCLES, name)
     }
-}
-
-fn find<T: Copy>(table: &[T], wanted: impl Fn(&T) -> bool) -> Option<T> {
-    table.iter().copied().find(wanted)
-}
-
-/// Tables cover every variant, so a lookup by variant always succeeds.
-fn lookup<T: Copy>(table: &[T], wanted: impl Fn(&T) -> bool) -> T {
-    find(table, wanted).expect("table covers every variant")
 }
 
 /// One consistent point-in-time snapshot; `attachments` counts accepted
@@ -166,6 +159,8 @@ impl<T> Advertised<T> {
 pub struct HelloExtensions {
     pub capabilities: Advertised<Capabilities>,
     pub state: Advertised<SessionState>,
+    /// Daemon wire revision 1, available only when valid.
+    pub daemon_wire_v1: Advertised<Advertisement>,
 }
 
 impl HelloExtensions {
@@ -178,6 +173,7 @@ impl HelloExtensions {
         Self {
             capabilities: advertised(reply, "capabilities", capabilities),
             state: advertised(reply, "state", state),
+            daemon_wire_v1: revision1(reply),
         }
     }
 }
@@ -189,12 +185,44 @@ fn advertised<T>(reply: &Value, field: &str, parse: fn(&Value) -> Option<T>) -> 
     }
 }
 
+/// The tokens of a capability array that `from_token` knows; others are
+/// ignored.
+fn known<T: Ord>(tokens: &Value, from_token: fn(&str) -> Option<T>) -> Option<BTreeSet<T>> {
+    let tokens = Vec::<String>::deserialize(tokens).ok()?;
+    Some(
+        tokens
+            .iter()
+            .filter_map(|token| from_token(token))
+            .collect(),
+    )
+}
+
 fn capabilities(value: &Value) -> Option<Capabilities> {
-    let tokens = Vec::<String>::deserialize(value).ok()?;
-    let known = tokens
-        .iter()
-        .filter_map(|token| Capability::from_token(token));
-    Some(Capabilities(known.collect()))
+    known(value, Capability::from_token).map(Capabilities)
+}
+
+/// Both the `daemon-wire-v1` token and valid limits make revision 1
+/// available. A missing or malformed advertisement makes it unavailable,
+/// never the session stale; unknown tokens and members are ignored.
+fn revision1(reply: &Value) -> Advertised<Advertisement> {
+    let families = reply
+        .get("capabilities")
+        .and_then(|tokens| known(tokens, Family::from_token))
+        .unwrap_or_default();
+    let limits = advertised(reply, "daemon_wire_v1", frame_limits);
+    match (families.contains(&Family::DaemonWireV1), limits) {
+        (false, Advertised::Absent) => Advertised::Absent,
+        (true, Advertised::Valid(limits)) => {
+            Advertised::Valid(Advertisement::new(families, limits))
+        }
+        _ => Advertised::Malformed,
+    }
+}
+
+fn frame_limits(value: &Value) -> Option<FrameLimits> {
+    Object::<FrameLimits>::deserialize(value)
+        .ok()
+        .map(|Object(limits)| limits)
 }
 
 #[derive(Deserialize)]
@@ -217,8 +245,10 @@ fn state(value: &Value) -> Option<SessionState> {
 struct AdvertisedHello<'a> {
     #[serde(flatten)]
     reply: &'a HelloReply,
-    capabilities: [&'static str; 4],
+    capabilities: Vec<&'static str>,
     state: StateBody,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    daemon_wire_v1: Option<FrameLimits>,
 }
 
 #[derive(Serialize)]
@@ -231,16 +261,38 @@ struct StateBody {
 /// The daemon's hello reply: the frozen mandatory fields plus every advertised
 /// capability and the current state snapshot.
 pub fn advertise(reply: &HelloReply, state: SessionState) -> io::Result<Frame> {
+    encode(reply, state, None)
+}
+
+/// The same reply once the daemon speaks revision 1: its families follow the
+/// frozen tokens, and `daemon_wire_v1` follows the state. No reply can omit
+/// the tokens and state that admission and `list` rely on.
+pub fn advertise_revision1(
+    reply: &HelloReply,
+    state: SessionState,
+    revision1: &Advertisement,
+) -> io::Result<Frame> {
+    encode(reply, state, Some(revision1))
+}
+
+fn encode(
+    reply: &HelloReply,
+    state: SessionState,
+    revision1: Option<&Advertisement>,
+) -> io::Result<Frame> {
+    let frozen = Capability::ADVERTISED.map(Capability::token);
+    let families = revision1.into_iter().flat_map(Advertisement::tokens);
     protocol::control(
         protocol::HELLO,
         &AdvertisedHello {
             reply,
-            capabilities: Capability::ADVERTISED.map(Capability::token),
+            capabilities: frozen.into_iter().chain(families).collect(),
             state: StateBody {
                 lifecycle: state.lifecycle.name(),
                 attachments: state.attachments,
                 controlled: state.controlled,
             },
+            daemon_wire_v1: revision1.map(Advertisement::limits),
         },
     )
 }

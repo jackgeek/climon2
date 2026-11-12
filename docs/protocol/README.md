@@ -2,7 +2,9 @@
 
 This reference is for future [plugin](../../GLOSSARY.md#protocol-and-plugin-concepts)
 authors. It distinguishes implemented behavior, agreed plans, and unresolved
-interfaces. The [monitor](../../GLOSSARY.md#sessions) is not implemented.
+interfaces. The [monitor](../../GLOSSARY.md#sessions) ships only as an empty
+walking skeleton ([#74](https://github.com/jackgeek/climon2/issues/74)) that
+implements none of these interfaces.
 Plugin implementation is deferred. Title and terminal-signal detection and
 [session status](../../GLOSSARY.md#status-and-attention) belong in
 [session daemon](../../GLOSSARY.md#sessions) core;
@@ -20,10 +22,20 @@ and daemon wire pages assign exact agreed schemas, separately from implementatio
 | Interface | Status | Reference |
 |---|---|---|
 | [Client](../../GLOSSARY.md#sessions) to session daemon: [hello handshake](../../GLOSSARY.md#sessions) | Implemented and frozen | [Request](daemon-client/hello-request.md) and [reply](daemon-client/hello-reply.md). |
-| Client to session daemon: after hello | Current private protocol implemented; separate wire revision 1 agreed, not implemented | [Decision boundary](daemon-client/post-hello.md), [complete wire rules](daemon-client/core-v1.md). |
+| Client to session daemon: after hello | Current private protocol implemented; separate wire revision 1 agreed, not implemented (an encoder and validator for its framing and session messages exists, unused) | [Decision boundary](daemon-client/post-hello.md), [complete wire rules](daemon-client/core-v1.md). |
 | Monitor to [client library](../../GLOSSARY.md#sessions) | Complete native revision-1 specification agreed, not implemented | [Library embedding](library-embedding.md), [native contract/header/examples](monitor-client/core-v1.md), and [shared communication contract](#shared-in-process-communication-contract). |
 | [Client executable](../../GLOSSARY.md#sessions) to same-release library | Same-release loading agreed, not implemented | [Library embedding](library-embedding.md). |
 | Monitor to [host](../../GLOSSARY.md#sessions) | Program-status advertising and toast bell agreed, not implemented | [Reports and bell](#monitor-to-host-status-and-bell). |
+
+Current local runtime communication is implemented on macOS and x86_64
+GNU/Linux. The frozen [session metadata](../../GLOSSARY.md#sessions)
+[contract](../adr/0005-frozen-session-metadata-core.md) includes an optional
+clock-independent Linux daemon identity; the eleven frozen fields and hello
+messages are unchanged. The native monitor/library remains unimplemented on
+both systems. The [Linux decision](https://github.com/jackgeek/climon2/issues/125)
+agreed Linux in-process loading in the
+[embedding design](library-embedding.md#artifact-and-dependency-lookup): the
+monitor and its client library ship on both systems in the same release.
 
 The embedding design selects a versioned [C ABI](TERMS.md#c-abi).
 Complete [declarations](monitor-client/client-v1.h) and
@@ -76,7 +88,7 @@ and remote security remain unresolved. The
 There is no initial application checksum; only a future negotiated integrity
 revision could add one if chosen.
 
-`climon2 exec --headless <command> [args...]` creates a
+`c2 exec --headless <command> [args...]` creates a
 [headless session](../../GLOSSARY.md#sessions) without an interactive client. It
 prints the session ID and succeeds only after daemon-confirmed creation. The
 session's zero-client survival lasts until command completion or explicit
@@ -87,7 +99,7 @@ and lifetime are implemented as agreed in the
 The CLI passes the headless policy to its same-release daemon as a private
 startup argument; no wire message or field is added. Its
 [hello reply](daemon-client/hello-reply.md) reports `detached` whenever it has
-no attachment. Existing `climon2 kill <session>` ends headless sessions; no
+no attachment. Existing `c2 kill <session>` ends headless sessions; no
 duplicate command is added. Ordinary sessions retain
 [leave policy](../../GLOSSARY.md#attachment-and-control), and this exception does
 not make all sessions persistent. Succession to
@@ -565,7 +577,7 @@ These are specification requirements, not checks passed by current code:
   global responsiveness measurements under normal operation, load, and stalls.
   Numerical thresholds are in the [agreed operational limits](../monitor-operational-limits.md).
 - Compile the [native examples and layout assertions](monitor-client/check.py)
-  for both macOS ABIs. These declaration checks are automated here, not evidence
+  for both macOS ABIs and x86-64 GNU/Linux. These declaration checks are automated here, not evidence
   of working libraries. [Required runtime evidence](monitor-client/core-v1.md#required-runtime-evidence)
   must use real packaged libraries.
 
@@ -582,6 +594,7 @@ contracts and remaining open decisions are distinguished below:
 | [Lifecycle #61](https://github.com/jackgeek/climon2/issues/61) | Agreed [lifecycle contract](../monitor-lifecycle.md), not implemented: exponential passive recovery, concurrent truthful shutdown, bounded whole-process fail-stop and Delete/removal. Headless creation and lifetime are implemented. Numerical schedules remain #69; no general native-crash survival guarantee. |
 | [Operational limits #69](https://github.com/jackgeek/climon2/issues/69) | Agreed [numerical specification](../monitor-operational-limits.md), not implemented: configurable byte/record/object and aggregate budgets, progress/stall deadlines, fair admission, protected recent history, payload/transfer limits and measurement thresholds. |
 | [Interface schemas #71](https://github.com/jackgeek/climon2/issues/71) | Agreed [native revision 1](monitor-client/core-v1.md), header, operation/event schemas, ownership/cleanup calls, errors, limits/measurements and C examples. Declaration checks do not replace future real same/mixed-release compatibility/rejection evidence. |
+| [Linux integration #125](https://github.com/jackgeek/climon2/issues/125) | Agreed Linux loading in the [embedding design](library-embedding.md#artifact-and-dependency-lookup) and [native revision 1](monitor-client/core-v1.md), not implemented: `libclimon2_client.so` by exact path, one self-contained library per release, an `eventfd` notification descriptor, and Linux qualified alongside both macOS architectures. |
 
 ## Compatibility, errors, and limits
 

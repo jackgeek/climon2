@@ -5,6 +5,7 @@ const BINARIES: &[&str] = &[
     "climon2-daemon",
     "climon2-client",
     "climon2-install",
+    "climon2-monitor",
 ];
 const MARKER: &[u8] = b"CLIMON2_TEST_HOOKS_ENABLED";
 pub(crate) const PACKAGES: &[(&str, &str)] = &[
@@ -13,6 +14,7 @@ pub(crate) const PACKAGES: &[(&str, &str)] = &[
     ("climon2-daemon", "climon2-daemon"),
     ("climon2-client", "climon2-client"),
     ("climon2-install", "climon2-install"),
+    ("climon2-monitor", "climon2-monitor"),
 ];
 
 pub(crate) fn build(
@@ -32,7 +34,6 @@ pub(crate) fn build(
         .env_remove("RUSTC_WRAPPER")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .env_remove("LLVM_PROFILE_FILE")
-        .env("MACOSX_DEPLOYMENT_TARGET", "15.0")
         .args([
             "build",
             "--release",
@@ -42,6 +43,9 @@ pub(crate) fn build(
             "--target-dir",
         ])
         .arg(directory);
+    if cfg!(target_os = "macos") {
+        command.env("MACOSX_DEPLOYMENT_TARGET", "15.0");
+    }
     if let Some(target) = target {
         command.args(["--target", target]);
     }

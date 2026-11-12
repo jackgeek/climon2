@@ -1,4 +1,6 @@
-use crate::{classify::private_modes, derive::Cache, geometry::Geometry, token::Tokenizer};
+use crate::{
+    classify::private_modes, derive::Cache, geometry::Geometry, render::goto, token::Tokenizer,
+};
 
 const ALTERNATE_SCREEN: u16 = 1049;
 const SYNC_UPDATE: u16 = 2026;
@@ -34,7 +36,7 @@ impl Mode {
 /// into. The daemon owns one per attachment and keeps it current: every
 /// byte string this crate returns for an attachment (`grant`, `produce`,
 /// `derive`, `end_sync`, `release`) must be committed, and committed Direct
-/// live output must be reported with [`Presentation::commit_live`].
+/// live output must be reported with [`crate::Vt::commit_live`].
 #[derive(Debug)]
 pub struct Presentation {
     pub(crate) cols: u16,
@@ -43,6 +45,7 @@ pub struct Presentation {
     pub(crate) alternate: bool,
     pub(crate) sync_open: bool,
     pub(crate) cache: Cache,
+    pub(crate) release_cursor: Option<(usize, usize)>,
     observer: Tokenizer,
 }
 
@@ -56,6 +59,7 @@ impl Presentation {
             alternate: false,
             sync_open: false,
             cache: Cache::default(),
+            release_cursor: None,
             observer: Tokenizer::new(),
         }
     }
@@ -75,7 +79,7 @@ impl Presentation {
     /// Record committed Direct live output: it may enter or leave the
     /// alternate screen (`CSI ? 1049 h/l`) or open or end a synchronized
     /// update (`CSI ? 2026 h/l`).
-    pub fn commit_live(&mut self, bytes: &[u8]) {
+    pub(crate) fn commit_live(&mut self, bytes: &[u8]) {
         for (set, modes) in self.observer.push(bytes).iter().filter_map(private_modes) {
             self.observe(set, &modes);
         }
@@ -107,6 +111,9 @@ impl Presentation {
             bytes.extend_from_slice(b"\x1b[?1049l");
         }
         bytes.extend_from_slice(BASELINE);
+        if let Some((row, col)) = self.release_cursor {
+            goto(&mut bytes, row, col);
+        }
         self.alternate = false;
         self.sync_open = false;
         bytes
