@@ -65,6 +65,7 @@ pub(crate) struct Engine {
     processor: Processor<Unbuffered>,
     events: Rc<RefCell<Vec<Event>>>,
     signals: Signals,
+    normal_cursor: (usize, usize),
 }
 
 /// What the engine reported through events: the application's title
@@ -84,16 +85,29 @@ impl Engine {
             processor: Processor::new(),
             events,
             signals: Signals::default(),
+            normal_cursor: (1, 1),
         }
     }
 
     /// Feed one step and collect the replies it produced.
     pub(crate) fn advance(&mut self, bytes: &[u8], replies: &mut Vec<u8>) {
         self.processor.advance(&mut self.term, bytes);
+        self.remember_cursor();
         let events = std::mem::take(&mut *self.events.borrow_mut());
         events
             .into_iter()
             .for_each(|event| self.event(event, replies));
+    }
+
+    fn remember_cursor(&mut self) {
+        if !self.alternate() {
+            let point = self.term.grid().cursor.point;
+            self.normal_cursor = (point.line.0 as usize + 1, point.column.0 + 1);
+        }
+    }
+
+    pub(crate) fn normal_cursor(&self) -> (usize, usize) {
+        self.normal_cursor
     }
 
     fn event(&mut self, event: Event, replies: &mut Vec<u8>) {
@@ -139,6 +153,7 @@ impl Engine {
 
     pub(crate) fn resize(&mut self, geometry: Geometry) {
         self.term.resize(Size(geometry));
+        self.remember_cursor();
     }
 
     pub(crate) fn alternate(&self) -> bool {
@@ -167,6 +182,7 @@ impl Engine {
         }
         let alternate = self.term.grid().clone();
         self.term.swap_alt();
+        self.remember_cursor();
         let result = read(self.term.grid());
         self.term.swap_alt();
         *self.term.grid_mut() = alternate;

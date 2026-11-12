@@ -134,7 +134,8 @@ fn modes_set_after_a_control_are_tracked_for_the_host() {
     let mut vt = vt();
     let now = Instant::now();
     let mut presentation = Presentation::new(80, 24);
-    presentation.commit_live(&vt.feed(b"\x1b\x07[?1049h\x1b\x07[?2026h", now).live);
+    let live = vt.feed(b"\x1b\x07[?1049h\x1b\x07[?2026h", now).live;
+    vt.commit_live(&mut presentation, &live);
     assert!(vt.sync_pending(now));
     assert_eq!(presentation.end_sync(), b"\x1b[?2026l");
     assert!(

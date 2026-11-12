@@ -7,7 +7,7 @@ use crate::{
     modes::{DIRECT, SHARED, cursor_style, transitions},
     presentation::{Mode, Presentation},
     render::{cursor, cursors, screen},
-    restore::{Chunk, PROLOGUE, Restoration, lead},
+    restore::{Chunk, PROLOGUE, Restoration, Snapshot, lead},
     sync::Latch,
     title,
     token::{Kind, Token, Tokenizer},
@@ -99,14 +99,7 @@ impl Vt {
             .min(self.ledger.max_rows);
         let notice = self.ledger.evicted && rows > 0;
         let suffix = self.suffix(direct);
-        let restoration = Restoration::new(
-            &self.ledger,
-            rows,
-            notice,
-            presentation,
-            suffix,
-            self.engine.alternate(),
-        );
+        let restoration = Restoration::new(&self.ledger, rows, notice, presentation, suffix);
         presentation.cache = Cache::current(&self.engine, &self.ledger, &self.title_text());
         (lead(presentation, notice), restoration)
     }
@@ -132,7 +125,10 @@ impl Vt {
         presentation.rows = rows;
         presentation.mode = Mode::of(cols, rows, self.geometry);
         match (from, presentation.mode) {
-            (Mode::Direct, Mode::Direct) => Vec::new(),
+            (Mode::Direct, Mode::Direct) => {
+                self.commit_live(presentation, b"");
+                Vec::new()
+            }
             (Mode::Direct, Mode::Derived) => self.enter_derived(presentation),
             (Mode::Derived, Mode::Derived) => self.repaint(presentation),
             (Mode::Derived, Mode::Direct) => self.leave_derived(presentation),
@@ -181,6 +177,13 @@ impl Vt {
             self.token(&token, now, &mut fed);
         }
         fed
+    }
+
+    /// Record Direct live bytes committed through the latest [`Vt::feed`],
+    /// including the normal-screen cursor to restore when presentation ends.
+    pub fn commit_live(&self, presentation: &mut Presentation, bytes: &[u8]) {
+        presentation.commit_live(bytes);
+        presentation.release_cursor = Some(self.engine.normal_cursor());
     }
 
     /// True while a synchronized update is open and before its deadline;
@@ -241,7 +244,7 @@ impl Vt {
     }
 
     /// Phases C2 to C6, captured at the snapshot point.
-    fn suffix(&mut self, direct: bool) -> Vec<u8> {
+    fn suffix(&mut self, direct: bool) -> Snapshot {
         let mut out = Vec::new();
         self.engine.normal(|grid| {
             screen(grid, &mut out);
@@ -254,7 +257,11 @@ impl Vt {
         }
         self.modes(direct, &mut out);
         out.extend(self.title());
-        out
+        Snapshot {
+            bytes: out,
+            alternate: self.engine.alternate(),
+            normal_cursor: self.engine.normal_cursor(),
+        }
     }
 
     /// C5: every input and display mode, plus the Direct-only modes, which

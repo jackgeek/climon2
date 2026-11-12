@@ -43,7 +43,8 @@ the monitor never forwards parser replies or session bytes directly to its host.
 - `Presentation::new(host_cols, host_rows)`: one per attachment, owned by the
   daemon. Every byte string returned for it (`grant`, `produce`, `derive`,
   `present`, `end_sync`, `release`) must be committed; committed Direct live
-  output must be reported with `commit_live`. `mode()` is Direct or Derived.
+  output must be reported with `Vt::commit_live(&mut presentation, bytes)`
+  after feeding that output. `mode()` is Direct or Derived.
 - `Vt::grant(&mut presentation) -> (phase A, Restoration)` takes the
   snapshot point; `Vt::produce(&mut restoration, &mut presentation, budget)
   -> Chunk { bytes, done }` yields whole history rows up to about `budget`
@@ -54,7 +55,10 @@ the monitor never forwards parser replies or session bytes directly to its host.
   controller's resize, the repaint (or nothing, Direct to Direct) that must
   precede further live output.
 - `Presentation::release()`: the normal-shell baseline, leaving the alternate
-  screen only if this attachment entered it.
+  screen only if this attachment entered it, then restoring the normal-screen
+  cursor from this attachment's committed presentation. Resetting the scroll
+  region and origin mode can home the cursor, so release ends with absolute
+  positioning, not a cursor save/restore that could reinstate application modes.
 - `token::Tokenizer`: the front filter's tokenizer, public for differential
   testing against vte.
 
