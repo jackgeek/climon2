@@ -302,7 +302,6 @@ _Avoid_: Fake app, mock TUI
 
 **Terminal oracle**:
 The test harness's emulated host, whose visible cells, cursor, modes, bells and status reports stand for what a user observes in their terminal.
-_Avoid_: Screen snapshot, golden output, renderer comparison
 
 **Shell profile**:
 The test harness's description of how to start one shell in a controlled way and drive it in tests; the only place climon2 knows about specific shells.
