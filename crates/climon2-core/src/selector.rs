@@ -1,9 +1,9 @@
 //! Session selectors for attach and kill (plan 1.2): a full GUID or a unique
-//! prefix of at least 8 hex digits, case-insensitive, hyphens ignored.
+//! prefix of at least 1 hex digit, case-insensitive, hyphens ignored.
 use crate::{SessionId, cli::UsageError};
 use std::{ffi::OsStr, fmt};
 
-/// A normalised selector: 8..=32 lowercase hex digits, no hyphens.
+/// A normalised selector: 1..=32 lowercase hex digits, no hyphens.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Selector(String);
 
@@ -12,7 +12,7 @@ impl Selector {
         let text = value.to_str().ok_or(UsageError)?;
         let digits: String = text.chars().filter(|c| *c != '-').collect();
         let valid =
-            (8..=32).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_hexdigit());
+            (1..=32).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_hexdigit());
         valid
             .then(|| Self(digits.to_ascii_lowercase()))
             .ok_or(UsageError)
