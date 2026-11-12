@@ -62,6 +62,45 @@ fn diagnostic_roles_have_private_files_and_required_headers() {
     assert_eq!(now.as_str().len(), 24);
 }
 
+/// #25, #74: the CLI's general log is named by its UTC second and pid; the
+/// monitor's, written under the pid of the CLI that exec'd it, starts with its
+/// role. Both are private files headed by their role.
+#[test]
+fn general_logs_are_named_and_headed_by_their_roles() {
+    let home = tempfile::tempdir().unwrap();
+    let pid = std::process::id();
+    for (log, role, prefix) in [
+        (LogFile::general(home.path()).unwrap(), "cli", ""),
+        (
+            LogFile::monitor(home.path()).unwrap(),
+            "monitor",
+            "monitor-",
+        ),
+    ] {
+        let name = log.path().file_name().unwrap().to_str().unwrap();
+        let stamp = name
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(&format!("Z-{pid}.log")))
+            .unwrap_or_else(|| panic!("{name}"));
+        let shape: String = stamp
+            .chars()
+            .map(|c| if c.is_ascii_digit() { 'd' } else { c })
+            .collect();
+        assert_eq!(shape, "ddddddddTdddddd", "{name}");
+        let header = fs::read_to_string(log.path()).unwrap();
+        assert!(
+            header.contains(&format!(
+                " INFO climon2: role={role} pid={pid} version=0.1.0"
+            )),
+            "{header}"
+        );
+        assert_eq!(
+            fs::metadata(log.path()).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
 /// #25: a role log is created once per session and never reopened or overwritten.
 #[test]
 fn session_role_log_is_never_reopened() {
