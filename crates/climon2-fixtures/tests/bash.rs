@@ -64,10 +64,18 @@ fn profile_selection_enforces_ci_and_reports_local_skips() {
 /// Interactive qualification is GNU bash 5.x only: macOS `/bin/bash` (3.2) is
 /// rejected even when requested explicitly, locally as well as in CI.
 #[test]
+#[cfg(target_os = "macos")]
 fn macos_bash_3_2_is_not_an_interactive_profile() {
     let rejected = select_profile(false, Path::new("/bin/bash"));
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("unsupported bash /bin/bash"));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_system_bash_is_a_qualified_interactive_profile() {
+    let accepted = select_profile(false, Path::new("/bin/bash"));
+    assert!(accepted.status.success(), "{accepted:?}");
 }
 
 fn select_profile(ci: bool, path: &Path) -> Output {

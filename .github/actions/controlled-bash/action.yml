@@ -1,6 +1,6 @@
 name: Select controlled bash 5
 description: >
-  Install Homebrew GNU bash 5.x and export it as CLIMON2_TEST_BASH. Interactive
+  Select native GNU bash 5.x and export it as CLIMON2_TEST_BASH. Interactive
   tests are qualified on bash 5.x only; macOS /bin/bash (3.2) is never selected.
 runs:
   using: composite
@@ -8,8 +8,12 @@ runs:
     - name: Select controlled bash 5
       shell: bash
       run: |
-        brew list bash >/dev/null 2>&1 || brew install bash
-        bash_path="$(brew --prefix bash)/bin/bash"
+        if [[ "$RUNNER_OS" == macOS ]]; then
+          brew list bash >/dev/null 2>&1 || brew install bash
+          bash_path="$(brew --prefix bash)/bin/bash"
+        else
+          bash_path=/bin/bash
+        fi
         test -x "$bash_path"
         actual="$("$bash_path" --version)"
         case "$actual" in

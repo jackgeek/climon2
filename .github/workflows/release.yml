@@ -22,8 +22,16 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: release-dist
-          path: target/dist
+          pattern: release-dist-*
+          path: target/downloaded
+      - name: Assemble both native release artifacts
+        run: |
+          mkdir -p target/dist
+          macos=target/downloaded/release-dist-macos-universal
+          linux=target/downloaded/release-dist-linux-x86_64-gnu
+          cmp "$macos/install.sh" "$linux/install.sh"
+          cp "$macos/"*.tar.gz "$linux/"*.tar.gz "$macos/install.sh" target/dist/
+          cat "$macos/SHA256SUMS" "$linux/SHA256SUMS" | sort -u > target/dist/SHA256SUMS
       - name: Verify artifact checksums
         run: cd target/dist && shasum -a 256 -c SHA256SUMS
       - uses: actions/attest-build-provenance@v2
@@ -39,4 +47,5 @@ jobs:
           if [[ "$GITHUB_REF_NAME" =~ -rc\.[0-9]+$ ]]; then args+=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" \
             "target/dist/climon2-$version-macos-universal.tar.gz" \
+            "target/dist/climon2-$version-linux-x86_64-gnu.tar.gz" \
             target/dist/install.sh target/dist/SHA256SUMS "${args[@]}"

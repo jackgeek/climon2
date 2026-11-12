@@ -2,7 +2,7 @@
 
 CLI orchestration for `exec COMMAND [ARG...]`, `attach SESSION-ID`,
 `kill SESSION-ID` and `list [--json]`. The usage string is
-`usage: climon2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json]`.
+`usage: c2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json]`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.
@@ -96,8 +96,15 @@ client start.
 
 `tests/list.rs` covers discovery, stale cleanup and presentation, including
 `list_shows_version_state_and_clients_only_when_advertised`,
-`list_json_adds_the_state_object_or_null` and
-`malformed_hello_extensions_are_logged_and_the_session_stays_live`.
+`list_json_adds_the_state_object_or_null`,
+`malformed_hello_extensions_are_logged_and_the_session_stays_live`,
+`list_quotes_only_the_arguments_that_need_it` and
+`list_args_that_exactly_fit_are_whole_and_one_cell_less_is_truncated`.
+
+Probe workers retain the caller's logging subscriber, including warnings when
+Linux's stable daemon identity is unavailable. An already absent stale socket
+is successful cleanup, not a warning. A trickled then stalled hello reply
+still observes the single two-second discovery deadline.
 
 The generic terminal fixture is a test-hooks-only binary. Cross-package binaries
 are found beside the integration-test executable; no test invokes Cargo.

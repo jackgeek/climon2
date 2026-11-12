@@ -1,18 +1,18 @@
 //! Exec-based detached daemon startup with a bounded inherited readiness pipe.
-#[cfg(not(target_os = "macos"))]
-compile_error!("daemon spawn and readiness seam requires macOS");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("daemon spawn and readiness seam requires macOS or Linux");
 
-#[cfg(target_os = "macos")]
-pub use macos::*;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use unix::*;
 
-#[cfg(target_os = "macos")]
-mod macos {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod unix {
     use climon2_core::protocol::STARTUP_TIMEOUT;
     use std::{
         fs::File,
         io::{self, Read, Write},
         os::{
-            fd::{AsRawFd, FromRawFd},
+            fd::{AsRawFd, FromRawFd, OwnedFd},
             unix::process::CommandExt,
         },
         path::Path,
@@ -94,9 +94,9 @@ mod macos {
         let child = command.spawn()?;
         drop(writer);
         Ok(PendingDaemon {
-            child,
+            pid: child.id(),
+            child: Some(child),
             reader,
-            armed: true,
             started,
         })
     }
@@ -105,43 +105,37 @@ mod macos {
     fn detach_on_exec(command: &mut Command, descriptor: i32) {
         unsafe {
             command.pre_exec(move || {
-                if libc::setsid() == -1 {
-                    return Err(io::Error::last_os_error());
-                }
+                crate::syscall::checked(libc::setsid())?;
                 close_on_exec(descriptor, false)
             });
         }
     }
 
+    /// Both ends close on exec.
     pub(crate) fn pipe() -> io::Result<(File, File)> {
-        let mut fds = [-1; 2];
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        let (reader, writer) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
-        close_on_exec(reader.as_raw_fd(), true)?;
-        close_on_exec(writer.as_raw_fd(), true)?;
-        Ok((reader, writer))
+        let (reader, writer) = io::pipe()?;
+        Ok((
+            File::from(OwnedFd::from(reader)),
+            File::from(OwnedFd::from(writer)),
+        ))
     }
 
     fn close_on_exec(fd: i32, enabled: bool) -> io::Result<()> {
         let flags = if enabled { libc::FD_CLOEXEC } else { 0 };
-        if unsafe { libc::fcntl(fd, libc::F_SETFD, flags) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+        crate::syscall::checked(unsafe { libc::fcntl(fd, libc::F_SETFD, flags) }).map(drop)
     }
 
     pub struct PendingDaemon {
-        child: Child,
+        pid: u32,
+        /// Present until the daemon is ready or aborted; dropping kills and reaps it.
+        child: Option<Child>,
         reader: File,
-        armed: bool,
         started: Instant,
     }
 
     impl PendingDaemon {
         pub fn id(&self) -> u32 {
-            self.child.id()
+            self.pid
         }
 
         /// Supply metadata then socket as cleanup paths. Success leaves the
@@ -149,7 +143,8 @@ mod macos {
         pub fn wait_ready(mut self, cleanup: &[&Path]) -> io::Result<Readiness> {
             let result = read_readiness(&mut self.reader, self.started + STARTUP_TIMEOUT);
             if matches!(result, Ok(Readiness::Ready)) {
-                self.armed = false;
+                // A ready daemon runs on: dropping its handle neither kills nor reaps it.
+                self.child.take();
                 return result;
             }
             self.abort();
@@ -160,22 +155,21 @@ mod macos {
         }
 
         fn abort(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-            self.armed = false;
+            if let Some(mut child) = self.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
 
     impl Drop for PendingDaemon {
         fn drop(&mut self) {
-            if self.armed {
-                self.abort();
-            }
+            self.abort();
         }
     }
 
     fn read_readiness(reader: &mut File, deadline: Instant) -> io::Result<Readiness> {
-        let mut tag = [0];
+        let mut tag = [u8::default()];
         read_deadline(reader, &mut tag, deadline)?;
         match tag[0] {
             b'R' => Ok(Readiness::Ready),
@@ -185,7 +179,7 @@ mod macos {
     }
 
     fn read_failure(reader: &mut File, deadline: Instant) -> io::Result<Readiness> {
-        let mut header = [0; 8];
+        let mut header = [u8::default(); 8];
         read_deadline(reader, &mut header, deadline)?;
         let [c0, c1, c2, c3, l0, l1, l2, l3] = header;
         let code = u32::from_be_bytes([c0, c1, c2, c3]);
@@ -204,7 +198,7 @@ mod macos {
         if length > MAX_MESSAGE {
             return Err(io::Error::other("readiness failure message too long"));
         }
-        let mut message = vec![0; length];
+        let mut message = vec![u8::default(); length];
         read_deadline(reader, &mut message, deadline)?;
         let message = String::from_utf8(message)
             .map_err(|_| io::Error::other("invalid readiness message"))?;
@@ -220,14 +214,15 @@ mod macos {
         Ok(())
     }
 
+    /// Reads only once poll has reported the pipe readable, so the read cannot block and
+    /// no signal can interrupt it. EOF before the whole reply is a failure.
     fn read_once(reader: &mut File, bytes: &mut [u8]) -> io::Result<usize> {
-        match reader.read(bytes) {
-            Ok(0) => Err(io::Error::new(
+        match reader.read(bytes)? {
+            0 => Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "daemon readiness pipe closed",
             )),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => Ok(0),
-            result => result,
+            count => Ok(count),
         }
     }
 
@@ -235,7 +230,8 @@ mod macos {
         let mut fd = libc::pollfd {
             fd: reader.as_raw_fd(),
             events: libc::POLLIN,
-            revents: 0,
+            // Output-only.
+            revents: Default::default(),
         };
         while !poll_once(&mut fd, remaining_millis(deadline)?)? {}
         Ok(())
@@ -245,7 +241,8 @@ mod macos {
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "daemon readiness timed out"))?;
-        i32::try_from(remaining.as_millis().max(1)).map_err(io::Error::other)
+        // Rounded up, so the deadline's last fraction of a millisecond is waited, not spun.
+        i32::try_from(remaining.as_micros().div_ceil(1000)).map_err(io::Error::other)
     }
 
     fn poll_once(fd: &mut libc::pollfd, milliseconds: i32) -> io::Result<bool> {

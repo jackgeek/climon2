@@ -9,5 +9,8 @@ publish.workspace = true
 alacritty_terminal = { version = "=0.26.0", default-features = false }
 unicode-width = "0.2"
 
+[dev-dependencies]
+vt100 = "0.18.1"
+
 [lints]
 workspace = true
