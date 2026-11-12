@@ -421,8 +421,11 @@ fn signals_release_the_host_with_signal_style_status() {
     package.assert_clean();
 }
 
-/// Spec #73 Host terminal: SIGWINCH redraws the top row and the empty state at
-/// the new size, leaving nothing of the old frame behind.
+/// Spec #73 Host terminal; TRM-04 (Monitor layer, empty monitor): SIGWINCH
+/// redraws the top row and the empty state at the new size, leaving nothing of
+/// the old frame behind, and one frame replaces the other without blanking or
+/// flashing: until its exit, the monitor never erases the screen or shows the
+/// cursor.
 #[test]
 fn resizing_the_host_redraws_the_monitor_at_the_new_size() {
     let package = Package::new();
@@ -434,10 +437,31 @@ fn resizing_the_host_redraws_the_monitor_at_the_new_size() {
         terminal
             .wait_for_screen(TIMEOUT, |screen| screen == expected)
             .unwrap();
+        assert!(!terminal.modes().cursor_visible);
     }
+    let received = terminal.received();
     terminal.send(b"\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
+    let frames = &received[position(&received, b"\x1b[?1049h")..];
+    assert!(!contains(frames, b"\x1b[?25h"), "cursor shown");
+    assert!(!erases(frames), "screen erased");
     package.assert_clean();
+}
+
+fn contains(bytes: &[u8], needle: &[u8]) -> bool {
+    bytes.windows(needle.len()).any(|window| window == needle)
+}
+
+/// Whether `bytes` hold an erase in display or in line: CSI, optional digits,
+/// then `J` or `K`.
+fn erases(bytes: &[u8]) -> bool {
+    bytes.windows(2).enumerate().any(|(start, window)| {
+        window == b"\x1b["
+            && bytes[start + 2..]
+                .iter()
+                .find(|byte| !byte.is_ascii_digit())
+                .is_some_and(|last| matches!(last, b'J' | b'K'))
+    })
 }
 
 /// EXT-03 (Fault layer, empty monitor): a render failure while the monitor owns

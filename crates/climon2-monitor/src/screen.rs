@@ -1,12 +1,12 @@
 //! What the monitor draws on its own alternate screen, through Ratatui.
 use climon2_core::{keys::ControlKey, protocol::TerminalSize};
 use ratatui::{
-    Frame, Terminal, TerminalOptions, Viewport,
     backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Position, Rect, Size},
+    buffer::Buffer,
+    layout::{Constraint, Rect},
     style::Stylize,
     text::Line,
-    widgets::Paragraph,
+    widgets::{Paragraph, Widget},
 };
 use std::io::{self, Stdout};
 
@@ -15,57 +15,51 @@ const TOP_ROW: u16 = 1;
 const NO_SELECTION: &str = "No session selected";
 const EMPTY: &str = "No sessions to show.";
 
-type Host = Terminal<CrosstermBackend<Stdout>>;
-
-/// Ratatui writing to the monitor-owned host output over a fixed area, so it
-/// never asks the host for its size or cursor.
+/// Ratatui's backend writing to the monitor-owned host output. It is never
+/// asked the host's size or cursor, and the cursor stays hidden.
 pub(crate) struct Screen {
-    terminal: Host,
+    backend: CrosstermBackend<Stdout>,
     lines: [Line<'static>; 2],
 }
 
 impl Screen {
     pub(crate) fn new(size: TerminalSize, prefix: ControlKey) -> io::Result<Self> {
         let mut screen = Self {
-            terminal: fixed(size)?,
+            backend: CrosstermBackend::new(io::stdout()),
             lines: [
                 Line::from(EMPTY),
                 Line::from(format!("Press {prefix} then x to exit.")),
             ],
         };
-        screen.draw()?;
+        screen.backend.hide_cursor()?;
+        screen.paint(size)?;
         Ok(screen)
     }
 
-    /// A resized host keeps nothing of the old frame: clear it, then draw the
-    /// whole frame at the new size.
     pub(crate) fn resize(&mut self, size: TerminalSize) -> io::Result<()> {
-        self.terminal = fixed(size)?;
-        self.terminal.backend_mut().clear()?;
-        self.draw()
+        self.paint(size)
     }
 
-    fn draw(&mut self) -> io::Result<()> {
+    /// Paints every cell of the frame at `size`, so whatever the host showed
+    /// is overwritten in place: nothing is erased first, and no blank screen
+    /// shows between two frames.
+    fn paint(&mut self, size: TerminalSize) -> io::Result<()> {
         #[cfg(feature = "test-hooks")]
         crate::hooks::fail("draw")?;
-        self.terminal.draw(|frame| paint(frame, &self.lines))?;
-        Ok(())
+        let frame = frame(size, &self.lines);
+        let cells = frame.content().iter().enumerate().map(|(index, cell)| {
+            let (x, y) = frame.pos_of(index);
+            (x, y, cell)
+        });
+        self.backend.draw(cells)?;
+        Backend::flush(&mut self.backend)
     }
-}
-
-fn fixed(size: TerminalSize) -> io::Result<Host> {
-    let area = Rect::from((Position::ORIGIN, Size::new(size.cols, size.rows)));
-    Terminal::with_options(
-        CrosstermBackend::new(io::stdout()),
-        TerminalOptions {
-            viewport: Viewport::Fixed(area),
-        },
-    )
 }
 
 /// The permanent top row, and below it the empty state, centred.
-fn paint(frame: &mut Frame, empty: &[Line<'static>; 2]) {
-    let area = frame.area();
+fn frame(size: TerminalSize, empty: &[Line<'static>; 2]) -> Buffer {
+    let area = Rect::new(0, 0, size.cols, size.rows);
+    let mut frame = Buffer::empty(area);
     let top = Rect {
         height: TOP_ROW,
         ..area
@@ -75,10 +69,12 @@ fn paint(frame: &mut Frame, empty: &[Line<'static>; 2]) {
         height: area.height - TOP_ROW,
         ..area
     };
-    frame.render_widget(Paragraph::new(NO_SELECTION).reversed(), top);
+    Paragraph::new(NO_SELECTION)
+        .reversed()
+        .render(top, &mut frame);
     let height = Constraint::Length(empty.len() as u16);
-    frame.render_widget(
-        Paragraph::new(empty.to_vec()).centered(),
-        below.centered_vertically(height),
-    );
+    Paragraph::new(empty.to_vec())
+        .centered()
+        .render(below.centered_vertically(height), &mut frame);
+    frame
 }
