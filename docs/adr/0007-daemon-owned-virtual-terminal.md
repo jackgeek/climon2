@@ -17,12 +17,18 @@ auxiliary cell data, resize and restoration staging, rejecting unsafe growth
 before it happens, keeping the last safe page and never truncating accepted
 characters. Row limits or a size check after allocation do not prove that.
 
-**Outcome (#76): the bound holds on unchanged Alacritty 0.26.0.** The engine
-stays unpatched; only the monitor's interface is fallible. `climon2-vt`
-exposes `Model`, one per session, created with `Limits { bytes, history_rows }`
-and refusing with `Rejected { needed, limit }`. The daemon's `Vt` and its
-behaviour are unchanged. The engine facts that shaped the design, all for
-0.26.0 and vte 0.15.0:
+**Outcome (#76): no counterexample on unchanged Alacritty 0.26.0, for the
+tested streams.** The engine stays unpatched; only the monitor's interface is
+fallible. `climon2-vt` exposes `Model`, one per session, created with
+`Limits { bytes, history_rows }` and refusing with `Rejected { needed, limit }`.
+The daemon's `Vt` and its behaviour are unchanged, apart from the
+classification fix both share
+([#152](https://github.com/jackgeek/climon2/issues/152)). The tests below
+cover every growth path found and deterministic adversarial streams: they are
+evidence that the bound holds for those streams, not a proof for every input.
+Every hole found so far was in the adapter's admission, not the engine, so the
+stop condition was not reached. The engine facts that shaped the design, all
+for 0.26.0 and vte 0.15.0:
 
 - every `Processor` allocates vte's 2 MiB synchronized-update buffer;
 - one cell's combining marks live in a shared `CellExtra` with an unbounded
@@ -37,35 +43,43 @@ behaviour are unchanged. The engine facts that shaped the design, all for
   allocates about 62,000 cells per row (measured), and kept rows can retain
   their old capacity.
 
-The model holds its bound this way:
+The model keeps to its limit this way:
 
 - **Input.** Only what the live output policy forwards to a Direct host reaches
-  the engine. The daemon already applied that policy, so a stripped token can
-  only be malformed input and is dropped whole. Titles, the title stack,
-  hyperlinks, clipboard, DCS and queries therefore never allocate in a model.
+  the engine, classified by the sequence vte dispatches. The daemon already
+  applied that policy, so a stripped token can only be malformed input; only
+  the C0 controls vte executes in it reach the engine. Titles, the title
+  stack, hyperlinks, clipboard, DCS and queries are therefore stripped before
+  a model's engine, whether or not controls sit before their introducer;
+  tests feed both forms to a model with no history at its mandatory limit.
 - **Fixed charge.** The engine's allocation for its geometry, vte's buffer and a
-  416 KiB reserve for the front filter's held token and the tokens one slice
-  completes (a cancelled sequence releases up to 4096 held controls as separate
-  tokens, about 405 KB measured) and the engine's brief copies.
+  32 KiB reserve for what the front filter and the engine hold briefly: a
+  partial token and the tokens one slice completes (at most about 15 KiB
+  measured, for a 4096-byte control string held across one-byte reads; an
+  abandoned sequence's held controls are released as one token), the cursor
+  templates' cell data, and the engine's new configuration and tab stops
+  while it replaces them.
 - **Admission.** Output is admitted one token at a time, a token being at most
   one 64-byte slice of text or one control sequence. Before the engine sees a
-  token the model charges its worst-case growth: 72 bytes per combining mark (new
-  extra data and the vector's first four characters); 56 bytes per cell printed
-  while the cursor template carries extra data, such as an underline colour,
-  and three cells per wide character; for `CSI n b`, `n` times the worst repeated
-  character. When the running charge leaves no room, the model measures what the
-  active screen's cells hold (56 bytes per cell with extra data and 16 per mark,
-  which covers the doubling vector and its copy) and decides again; the inactive
-  screen's charge stands while the engine cannot change it.
+  token the model charges its worst-case growth, from the live output policy's
+  own vte parse of that token: 72 bytes per combining mark (new extra data and
+  the vector's first four characters); 56 bytes per cell printed while the
+  cursor template carries extra data, such as an underline colour, and three
+  cells per wide character; for `CSI n b`, the count vte parses, wherever
+  controls sit in the sequence, times the worst repeated character. When the
+  running charge leaves no room, the model measures what the active screen's
+  cells hold (56 bytes per cell with extra data and 16 per mark, which covers
+  the doubling vector and its copy) and decides again; the inactive screen's
+  charge stands while the engine cannot change it.
 - **History.** The engine's history limit is whole 1000-row chunks, so its
   storage never outgrows the limit; the first chunk, which holds the protected
   newest page, is mandatory. The next chunk is admitted, before it is
-  allocated, ahead of any token that could fill the current one (a token pushes
-  at most a row per byte or a screenful; a long `CSI n b` can push more). When
-  the chunk does not fit, the engine discards its oldest rows instead,
-  truthfully, and the update is still accepted. Storage left after a cleared
-  history is dropped at once, so measuring sees every mark still held. The
-  model shows at most `history_rows`.
+  allocated, ahead of any token that could fill the current one (a token
+  pushes at most a row per byte and per repetition, or a screenful). When the
+  chunk does not fit, the engine discards its oldest rows instead, and the
+  update is still accepted; no truncation state reports this yet. Storage
+  left after a cleared history is dropped at once, so measuring sees every
+  mark still held. The model shows at most `history_rows`.
 - **Rejection.** The first token that does not fit is rejected before the
   engine sees it, and so is the rest of the update. The model keeps the page its
   accepted tokens produced, with every accepted character, and refuses output
@@ -74,22 +88,50 @@ The model holds its bound this way:
   charged beside the current one; applying it replaces the current model and
   history whole, and a rejected or discarded restoration never becomes current.
   A model's geometry is fixed: a new effective geometry arrives as a restoration
-  staged at that geometry, admitted only if both models fit. Models never reflow
-  in place, so monitor-mode presentation needs a restoration after every
-  geometry change.
+  staged at that geometry, admitted only if both models fit. Models never
+  reflow in place. **Open:** that needs a restoration after every effective
+  geometry change, but the agreed wire says only that one may follow a resize
+  ([Restoration begin](../protocol/daemon-client/event-restoration-begin.md)),
+  and a [Geometry](../protocol/daemon-client/event-geometry.md) event carries
+  none. How a model handles a Geometry event without a restoration awaits the
+  developer's decision.
 
 Evidence: `crates/climon2-vt/tests/bound.rs` (LIM-03) counts each test thread's
-allocations with a global allocator and shows that no tested stream takes a
-model past its limit, that plain text, wide and combining characters, underline
-colours, `CSI b`, staging and resize are accepted exactly at the bound and
-rejected one byte past it with the page and accepted characters intact, and
-that measuring reclaims released marks.
+allocations with a global allocator. It shows the following:
+
+- no tested stream takes a model past its limit;
+- what an update keeps is no more than it was charged, so the reserve's unused
+  room cannot hide an undercharge;
+- plain text, wide and combining characters, underline colours, `CSI b` with
+  controls anywhere in it, staging and resize are accepted exactly at the
+  bound and rejected one byte past it, with the page and accepted characters
+  intact;
+- deterministic adversarial streams never pass the limit. They slip the
+  tokenizer tests' tricky bytes among text, marks, repeats, tints, scrolls,
+  screen switches and control strings, read in pieces of any size;
+- the reserve covers the largest transients with no history;
+- measuring reclaims released marks.
 
 Limits: the bound is tracked allocation capacity, not resident memory or
 allocator overhead. Charges are upper bounds, so a model may reject, or stop
 growing history, before memory is strictly exhausted; optional history growth
 uses the running charge and never measures. Which history yields under
 pressure across sessions is monitor policy (#119).
+
+**Open: per-model cost (measured on #76).** A model's mandatory charge is
+vte's 2 MiB buffer, the reserve, both screens and, when it keeps any history,
+the first 1000-row chunk:
+
+| Geometry | No history | With history | Staged beside the current model | 10,000 history rows |
+|---|---:|---:|---:|---:|
+| 80x24 | 2.12 MiB | 4.05 MiB | 8.09 MiB | 21.35 MiB |
+| 200x60 | 2.59 MiB | 7.26 MiB | 14.52 MiB | 49.28 MiB |
+| 500x200 | 6.63 MiB | 18.18 MiB | 36.36 MiB | 122.00 MiB |
+
+The default `memory.total_bytes` (512 MiB) therefore holds 126, 70 and 28
+models with history, or 241, 198 and 77 without, while PERF-01 asks for 100
+sessions at each geometry. Whether to change the design or the budgets awaits
+the developer's decision.
 
 ## Live output policy and query authority
 
@@ -184,4 +226,4 @@ The engine never buffers a synchronized update: its `Timeout` reports no pending
 - **The engine's own synchronized-update buffering:** rejected; it re-arms on repeated begins and flushes its whole buffer in one call.
 - **Capping combining marks per cell, or only rows, in monitor models:** rejected; a cap truncates accepted characters, and rows bound neither marks nor storage chunks.
 - **Reflowing monitor models in place on resize:** rejected; reflow's allocation grows quadratically with the column ratio and keeps old row capacities.
-- **A patched or replaced engine for monitor models:** unnecessary; the bound holds by admitting each token's worst-case growth before the unchanged engine sees it.
+- **A patched or replaced engine for monitor models:** not chosen; admitting each token's worst-case growth before the unchanged engine sees it has found no counterexample (see the outcome above). Reopen this if one is found that admission cannot charge.

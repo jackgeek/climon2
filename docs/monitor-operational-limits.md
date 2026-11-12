@@ -190,12 +190,17 @@ Checking size afterward, truncating accepted characters or relying on fewer
 processes is not sufficient. No engine patch, replacement or daemon behavior
 change is delivered here.
 
-This prerequisite is now met on the unchanged engine: `climon2-vt`'s monitor
-`Model` charges each token's worst-case growth before the engine sees it,
-admits history storage in the engine's chunks, stages restorations beside the
-current model and never reflows in place
+#76 adds `climon2-vt`'s monitor `Model` on the unchanged engine. It charges
+each token's worst-case growth, from vte's own parse of the token, before
+the engine sees it. It admits history storage in the engine's chunks,
+stages restorations beside the current model and never reflows in place
 ([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)).
-The monitor's own budgets and pressure policies above remain unimplemented.
+Its tests show no stream passing a model's limit, including adversarial
+ones. That is evidence for the tested streams, not a proof for every input.
+Two questions remain open: how a model handles a geometry change that no
+restoration follows, and whether the measured per-model cost can meet
+PERF-01 at these defaults. The monitor's own budgets and pressure policies
+above remain unimplemented.
 
 ## Queues and transfers
 
