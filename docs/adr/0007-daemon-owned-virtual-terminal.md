@@ -94,7 +94,15 @@ Session geometry is the controller's host size clamped to 2..=500 columns and 1.
 
 ## Presentation release
 
-The daemon keeps a per-attachment presentation record of what that attachment's committed bytes put its host into (alternate screen, open synchronized update, Derived cache). Prologues and the release that ends a presentation are computed from it, never from the session's engine state: the release returns the host to a documented normal-shell baseline and leaves the alternate screen only if this attachment entered it.
+The daemon keeps a per-attachment presentation record of what that attachment's committed bytes put its host into (alternate screen, open synchronized update, normal-screen cursor, Derived cache). Prologues and the release that ends a presentation are computed from it, never from the session's engine state: the release returns the host to a documented normal-shell baseline and leaves the alternate screen only if this attachment entered it.
+
+Release then re-establishes the committed normal-screen cursor by absolute
+position, because resetting scroll margins or origin mode can home it. A
+restoration captures that cursor at its snapshot point; Direct commits record it
+from the corresponding engine output, while Derived updates retain the last
+painted normal-screen cursor. Engine advancement alone cannot move a released
+host's cursor. Cursor save/restore sequences are not used: restoring saved
+attributes or origin mode would undo the normal-shell baseline.
 
 ## Zero-buffer synchronized output
 
