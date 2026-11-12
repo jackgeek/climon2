@@ -452,6 +452,45 @@ impl Terminal {
         }
     }
 
+    /// Waits until exactly `count` bytes sent to this terminal are still unread
+    /// by the programs on it, as the terminal device itself reports.
+    pub fn wait_for_unread_input(&self, count: usize, timeout: Duration) -> io::Result<()> {
+        let device = self.device()?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            let unread = unread(&device)?;
+            if unread == count {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(self
+                    .screen
+                    .0
+                    .lock()
+                    .expect("screen lock")
+                    .failure(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("{unread} bytes of input unread, not {count}"),
+                    )));
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// The terminal device the programs read, opened without becoming anyone's
+    /// controlling terminal.
+    fn device(&self) -> io::Result<std::fs::File> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = self
+            .master
+            .tty_name()
+            .ok_or_else(|| io::Error::other("terminal device unnamed"))?;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_NOCTTY | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC)
+            .open(path)
+    }
+
     pub fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()> {
         let size = pty_size(rows, cols)?;
         let mut screen = self.screen.0.lock().expect("screen lock");
@@ -523,6 +562,17 @@ impl Terminal {
 fn write(writer: &Writer, bytes: &[u8]) -> io::Result<()> {
     let mut writer = writer.lock().expect("PTY writer lock");
     writer.write_all(bytes).and_then(|()| writer.flush())
+}
+
+/// Input queued on a terminal device that no reader has taken yet.
+fn unread(device: &std::fs::File) -> io::Result<usize> {
+    use std::os::fd::AsRawFd;
+    let mut count: nix::libc::c_int = 0;
+    // FIONREAD writes one int, the count of bytes queued for reading.
+    if unsafe { nix::libc::ioctl(device.as_raw_fd(), nix::libc::FIONREAD, &mut count) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    usize::try_from(count).map_err(io::Error::other)
 }
 
 fn terminal_is_raw(fd: i32) -> io::Result<bool> {

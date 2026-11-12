@@ -12,7 +12,13 @@ use nix::{
     sys::signal::{Signal, kill},
     unistd::Pid,
 };
-use std::{env, fs, path::Path, process::Command};
+use std::{
+    env, fs,
+    path::Path,
+    process::Command,
+    thread,
+    time::{Duration, Instant},
+};
 use support::{Package, TIMEOUT, quote};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -23,6 +29,10 @@ const BEFORE: &[u8] = b"BEFORE-MONITOR\r\n";
 const DONE: &[u8] = b"OUTER-DONE=";
 const USAGE: &str = "climon2: error: usage: c2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon\r\n";
 const NO_TERMINAL: &str = "climon2: error: climon2 monitor needs a terminal\r\n";
+/// Three bracketed pastes with the default prefix: one holding prefix+x, one
+/// after a typed prefix and followed by a typed x, and one holding the prefix
+/// alone, followed by a typed x.
+const PASTES: &[u8] = b"\x1b[200~\x1dx\x1b[201~\x1d\x1b[200~x\x1b[201~x\x1b[200~\x1d\x1b[201~x";
 const TOP_ROW: &str = "No session selected";
 const EMPTY: &str = "No sessions to show.";
 
@@ -341,6 +351,50 @@ fn installed_monitor_hints_and_exits_with_the_configured_prefix() {
     terminal.send(b"\x03\x1dx").unwrap();
     terminal.send(b"\x02x").unwrap();
     assert_released(&package, &mut terminal, 0);
+    package.assert_clean();
+}
+
+/// The process state `ps` reports, such as `T` once stopped.
+fn state(pid: i32) -> String {
+    let output = Command::new("/bin/ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// Stops `pid`, and returns once it no longer runs.
+fn stop(pid: i32) {
+    kill(Pid::from_raw(pid), Signal::SIGSTOP).unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !state(pid).starts_with('T') {
+        assert!(Instant::now() < deadline, "{pid} never stopped");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// INP-03 (Monitor layer, empty monitor): a paste never exits, never completes
+/// a pending prefix and leaves none pending, so typed x after it is not an
+/// exit either. Every pasted byte reaches the stopped monitor's terminal before
+/// it resumes and reads them all; it is still running afterwards and leaves on
+/// SIGTERM, not with prefix+x's status.
+#[test]
+fn pastes_never_exit_or_leave_a_pending_prefix() {
+    let package = Package::new();
+    let mut terminal = outer(&package, "climon2 monitor");
+    opened(&mut terminal);
+    let monitor = monitor_process(&package).0;
+    stop(monitor);
+    terminal.send(PASTES).unwrap();
+    terminal
+        .wait_for_unread_input(PASTES.len(), TIMEOUT)
+        .unwrap();
+    kill(Pid::from_raw(monitor), Signal::SIGCONT).unwrap();
+    terminal.wait_for_unread_input(0, TIMEOUT).unwrap();
+    kill(Pid::from_raw(monitor), Signal::SIGTERM)
+        .expect("the monitor still runs after reading every paste");
+    assert!(!written(&mut terminal).contains("climon2: error"));
+    assert_released(&package, &mut terminal, 143);
     package.assert_clean();
 }
 
