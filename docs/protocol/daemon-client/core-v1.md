@@ -185,14 +185,14 @@ interactive work; Leave and repeated standalone Kill remain possible.
 This intentionally amends #58's final-attachment assumptions; it does not
 guarantee survival of a native monitor crash.
 
-Future `climon2 exec --headless <command> [args...]` starts a
+Future `c2 exec --headless <command> [args...]` starts a
 [headless session](../../../GLOSSARY.md#sessions) without an interactive client
 and returns success only after daemon-confirmed creation. Zero-client survival
 lasts for that session's lifetime, even after later attachments disappear,
 until command completion or explicit Kill. CLI spelling/lifetime are
 [agreed, unimplemented](../../monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill);
 creation encoding is not assigned by this amendment. Preserve existing
-`climon2 kill <session>` and test its future headless support. Ordinary leave
+`c2 kill <session>` and test its future headless support. Ordinary leave
 policy and succession remain unchanged; not every session becomes persistent.
 
 The [lifecycle amendment](../../monitor-lifecycle.md) also agrees concurrent

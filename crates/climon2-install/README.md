@@ -5,8 +5,9 @@ The macOS and GNU/Linux installer is shipped as `install` beside `climon2` and t
 
 `install [--dir <directory>]` defaults to `$HOME/.local/share/climon2`.
 It prints a shell-quoted `export PATH=…` hint only when the canonical destination
-is absent from PATH. It never changes shell profiles, creates symlinks, or
-changes signing/quarantine attributes. Errors produce one
+is absent from PATH. It creates the relative symlink `c2 -> climon2` in the
+executable home on fresh installs and upgrades; both commands remain supported.
+It never changes shell profiles or signing/quarantine attributes. Errors produce one
 `climon2: error: …` line on stderr and status 125.
 
 ## Library boundary
@@ -36,6 +37,13 @@ The launcher is always replaced atomically,
 including on an identical reinstall, per #21.19. Other versions are retained.
 The atomic `current` replacement is the final publication.
 
+Before publishing a version or replacing the launcher, the installer creates
+`c2` or accepts an existing symlink whose target is exactly `climon2`. Other entries,
+including absolute or differently targeted symlinks, are left untouched and
+reported with their conflicting path. A link-creation failure aborts installation
+without switching `current`. Release payload filenames and executable-home paths
+are unchanged.
+
 ## Interruption and concurrency
 
 An exclusive nonblocking lock on the executable-home directory serializes
@@ -48,7 +56,7 @@ This is process-interruption recovery, not a power-loss durability guarantee.
 
 Only the compile-time `test-hooks` feature enables
 `CLIMON2_TEST_INSTALL_FAULT=fail:<boundary>` or `crash:<boundary>`.
-Boundaries are `copy-cli`, `version-staged`, `version-published`, and
+Boundaries are `copy-cli`, `version-staged`, `short-command`, `version-published`, and
 `launcher-published`; crash exits 86 without Rust cleanup. Production builds do
 not contain these hooks.
 
