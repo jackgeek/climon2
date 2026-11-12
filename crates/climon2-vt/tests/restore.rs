@@ -88,7 +88,7 @@ fn without_history_there_is_no_scroll_off_before_the_screen() {
 fn a_replacement_restoration_leaves_this_attachments_alternate_screen_first() {
     let mut vt = vt(10, 3, 10);
     let mut presentation = Presentation::new(10, 3);
-    presentation.commit_live(b"\x1b[?1049h\x1b[?2026h");
+    vt.commit_live(&mut presentation, b"\x1b[?1049h\x1b[?2026h");
     let (lead, _) = vt.grant(&mut presentation);
     assert!(text(&lead).starts_with(&format!("\x1b[?1049l{PROLOGUE}")));
     assert_eq!(presentation.end_sync(), b"");
@@ -99,7 +99,7 @@ fn a_replacement_restoration_leaves_this_attachments_alternate_screen_first() {
 fn a_replacement_grant_at_a_new_host_size_keeps_what_the_host_was_put_into() {
     let mut vt = vt(10, 3, 10);
     let mut presentation = Presentation::new(10, 3);
-    presentation.commit_live(b"\x1b[?1049h");
+    vt.commit_live(&mut presentation, b"\x1b[?1049h");
     presentation.resize_host(12, 5);
     let (lead, _) = vt.grant(&mut presentation);
     let lead = text(&lead);
