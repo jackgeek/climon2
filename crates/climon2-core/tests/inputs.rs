@@ -74,6 +74,43 @@ fn issue29_exec_list_attach_and_kill_parse_exact_arguments_and_reject_usage_erro
     }
 }
 
+#[test]
+fn attach_and_kill_accept_short_selectors_but_not_empty_or_extra_arguments() {
+    for operation in ["attach", "kill"] {
+        for (text, expected) in [
+            ("A", "a"),
+            ("-AB-", "ab"),
+            ("ABC", "abc"),
+            ("ABCD", "abcd"),
+            ("ABCDE", "abcde"),
+            ("ABCDEF", "abcdef"),
+            ("ABCDE-F0", "abcdef0"),
+        ] {
+            let parsed = CliArgs::parse([operation, text].map(OsString::from)).unwrap();
+            let selector = match (operation, parsed) {
+                ("attach", CliArgs::Attach(selector)) | ("kill", CliArgs::Kill(selector)) => {
+                    selector
+                }
+                (_, other) => panic!("unexpected command: {other:?}"),
+            };
+            assert_eq!(selector.as_str(), expected);
+        }
+        for arguments in [
+            vec![operation, ""],
+            vec![operation, "---"],
+            vec![operation, "g"],
+            vec![operation, "a", "extra"],
+        ] {
+            assert_eq!(
+                CliArgs::parse(arguments.into_iter().map(OsString::from))
+                    .unwrap_err()
+                    .exit_code(),
+                2
+            );
+        }
+    }
+}
+
 /// #74 (INP-01 derived refusal): `monitor` and its alias `mon` take no
 /// arguments; anything after either word is a usage error (2).
 #[test]

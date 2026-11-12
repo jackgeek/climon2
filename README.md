@@ -55,7 +55,7 @@ is interpreted inside a bracketed paste.
 
 **Attach** with `c2 attach <session>`. It needs a terminal on stdin and
 stdout, and takes control immediately. `<session>` is a full session ID or a
-unique prefix of at least 8 hex digits, case-insensitive, with or without
+unique prefix of at least 1 hex digit, case-insensitive, with or without
 hyphens, matching a live session. A malformed `<session>` is a usage error (2).
 No match, or more than one, fails with 125; an ambiguous prefix lists every
 matching ID. Attaching to the session you are running inside is refused.

@@ -210,6 +210,68 @@ fn configure(package: &Package, config: &str) {
     .unwrap();
 }
 
+#[test]
+fn installed_session_after_vim_keeps_outer_shell_input_below_restored_output() {
+    let Some(bash) = controlled_bash() else {
+        return;
+    };
+    let package = Package::new();
+    let path = package.isolation.home().join("vim.txt");
+    fs::write(&path, "vim-cursor-regression\n").unwrap();
+    let mut command = package.bash(&bash);
+    command.env("PS1", "OUTER> ");
+    let mut terminal = Terminal::spawn(command, ROWS, COLS).unwrap();
+    terminal.wait_for_text("OUTER> ", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    terminal
+        .send(format!(
+            "printf 'OUTER-HISTORY\\n'; PS1='INNER> ' climon2 exec {} --noprofile --norc -i; printf 'OUTER-%s\\n' RETURN\n",
+            quote(&bash)
+        ))
+        .unwrap();
+    prompt(&mut terminal);
+    terminal
+        .send(format!(
+            "printf 'SESSION-%s\\n' HISTORY; /usr/bin/vim -Nu NONE -i NONE -n {}\n",
+            quote(&path)
+        ))
+        .unwrap();
+    terminal
+        .wait_for_text("vim-cursor-regression", TIMEOUT)
+        .unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    terminal.send(":q!\r").unwrap();
+    prompt(&mut terminal);
+    terminal.send("exit\n").unwrap();
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| {
+            screen
+                .rsplit_once("OUTER-RETURN")
+                .is_some_and(|(_, after)| after.contains("OUTER> "))
+        })
+        .unwrap();
+    terminal.wait_for_text("OUTER> ", TIMEOUT).unwrap();
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    terminal.send("echo OUTER-INPUT\n").unwrap();
+    terminal.wait_for_text("OUTER-INPUT", TIMEOUT).unwrap();
+    let screen = terminal.screen();
+    let history = screen
+        .lines()
+        .position(|line| line.trim_end() == "SESSION-HISTORY")
+        .unwrap_or_else(|| panic!("restored output was overwritten:\n{screen}"));
+    let input = screen
+        .lines()
+        .position(|line| line.starts_with("OUTER> echo OUTER-INPUT"))
+        .expect("outer shell input remains visible");
+    assert!(
+        input > history,
+        "outer input overwrote restored output:\n{screen}"
+    );
+    terminal.send("exit\n").unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    package.assert_clean();
+}
+
 /// Section 6.1.1: history and output produced while detached are restored on
 /// an occupied host after attaching by an 8-hex prefix; typing works; a
 /// second detach/reattach works; each client invocation has its own log and
@@ -388,8 +450,9 @@ fn installed_kill_ends_detached_and_attached_sessions() {
     for (args, status) in [
         (["kill", "deadbeef"], 125),
         (["attach", "deadbeef"], 125),
+        (["attach", "1234567"], 125),
         (["kill", "not-hex"], 2),
-        (["attach", "1234567"], 2),
+        (["attach", "---"], 2),
     ] {
         let mut refused = climon2(&package, &args, ROWS, COLS);
         assert_eq!(refused.wait_exit(TIMEOUT).unwrap(), status, "{args:?}");

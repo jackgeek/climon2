@@ -30,8 +30,14 @@ pub struct Restoration {
     view: View,
     direct: bool,
     host_rows: u16,
-    suffix: Option<Vec<u8>>,
-    alternate: bool,
+    suffix: Option<Snapshot>,
+}
+
+#[derive(Debug)]
+pub(crate) struct Snapshot {
+    pub bytes: Vec<u8>,
+    pub alternate: bool,
+    pub normal_cursor: (usize, usize),
 }
 
 /// Phase B's position among the `h0` retained rows at the snapshot point,
@@ -141,6 +147,7 @@ pub(crate) fn lead(presentation: &mut Presentation, notice: bool) -> Vec<u8> {
     }
     presentation.alternate = false;
     presentation.sync_open = false;
+    presentation.release_cursor = None;
     out
 }
 
@@ -150,8 +157,7 @@ impl Restoration {
         rows: usize,
         notice: bool,
         presentation: &Presentation,
-        suffix: Vec<u8>,
-        alternate: bool,
+        suffix: Snapshot,
     ) -> Self {
         Self {
             view: View {
@@ -166,7 +172,6 @@ impl Restoration {
             direct: presentation.mode == Mode::Direct,
             host_rows: presentation.rows,
             suffix: Some(suffix),
-            alternate,
         }
     }
 
@@ -198,8 +203,9 @@ impl Restoration {
             if self.view.lines {
                 self.after_history(out);
             }
-            out.extend(suffix);
-            presentation.alternate = self.alternate;
+            out.extend(suffix.bytes);
+            presentation.alternate = suffix.alternate;
+            presentation.release_cursor = Some(suffix.normal_cursor);
         }
         self.suffix.is_none()
     }

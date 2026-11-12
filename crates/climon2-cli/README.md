@@ -38,7 +38,7 @@ CREATED, VERSION, STATE and CLIENTS (from the daemon's hello extensions,
 `unknown` when not advertised or malformed, which is logged), COMMAND and ARGS;
 `--json` adds a `state` object or `null`.
 
-Attach discovers live sessions and resolves an exact ID or unique prefix (8 to
+Attach discovers live sessions and resolves an exact ID or unique prefix (1 to
 32 hex digits; none or several matches is 125). It then requires the daemon's
 `attach` and `client-startup-v1` capabilities, refuses self-attachment
 (`cannot attach to the current session`) and non-TTY use
