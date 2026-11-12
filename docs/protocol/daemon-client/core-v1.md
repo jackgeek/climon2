@@ -9,6 +9,17 @@ The [current private protocol](post-hello.md) is not this revision.
 Use the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md) alongside each message page.
 
+An encoder and validator for the [framing](../TERMS.md#frame), shared types,
+[Open](request-open.md), [Leave](request-leave.md), [Kill](request-kill.md),
+[Response](response.md), [Fatal error](event-fatal-error.md) and the
+[core metadata](../README.md#capabilities-and-connection-generations) events
+now exists in
+[`climon2-core`](../../../crates/climon2-core/README.md). Its tests decode
+every published example on those pages and re-encode it to identical
+[bytes](../TERMS.md#byte). No [session daemon](../../../GLOSSARY.md#sessions)
+or [client](../../../GLOSSARY.md#sessions) speaks this revision yet, so the
+behavior below remains unimplemented.
+
 ## Transport and startup
 
 The [client](../../../GLOSSARY.md#sessions) communicates with the

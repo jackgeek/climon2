@@ -94,7 +94,10 @@ Exact-release libraries carry terminal bytes, not a native cross-release cell
 schema; the monitor parses at effective daemon geometry and paints locally.
 Canonical monitor presentation and optional core Focus introduce no new crate.
 
-The agreed [daemon wire revision 1](protocol/daemon-client/core-v1.md) also
+The platform-neutral encoder and validator for
+[daemon wire revision 1](protocol/daemon-client/core-v1.md) lives in
+`climon2-core`, which the daemon and client already consume, so it adds no
+crate or edge. The agreed revision also
 anticipates source-monitor session consumption and browser terminal consumption
 over future forwarding boundaries, shown in the artifact diagram. Their crate
 placement is unassigned; no new crate or Cargo edge is implied. The wire
