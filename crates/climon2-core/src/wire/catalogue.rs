@@ -1,6 +1,10 @@
 //! The operational and connection-fatal error catalogues, and the shared
 //! `Error` record.
-use crate::{ContractError, json::Object};
+use crate::{
+    ContractError,
+    json::Object,
+    names::{name, named},
+};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
@@ -50,7 +54,7 @@ const OPERATIONAL: [(OperationalCode, &str); 16] = [
 
 impl OperationalCode {
     pub fn as_str(self) -> &'static str {
-        token(&OPERATIONAL, self)
+        name(&OPERATIONAL, self)
     }
 }
 
@@ -83,7 +87,7 @@ const FATAL: [(FatalCode, &str); 9] = [
 
 impl FatalCode {
     pub fn as_str(self) -> &'static str {
-        token(&FATAL, self)
+        name(&FATAL, self)
     }
 }
 
@@ -165,20 +169,4 @@ impl From<Object<ErrorFields>> for Error {
             message: fields.message,
         }
     }
-}
-
-/// Tables list every variant, so a lookup by variant always succeeds.
-pub(crate) fn token<T: Copy + PartialEq>(table: &[(T, &'static str)], value: T) -> &'static str {
-    table
-        .iter()
-        .find(|(known, _)| *known == value)
-        .map(|(_, token)| *token)
-        .expect("the table lists every variant")
-}
-
-pub(crate) fn named<T: Copy>(table: &[(T, &'static str)], text: &str) -> Option<T> {
-    table
-        .iter()
-        .find(|(_, token)| *token == text)
-        .map(|(value, _)| *value)
 }

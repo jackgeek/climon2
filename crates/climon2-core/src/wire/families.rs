@@ -1,9 +1,11 @@
 //! Capability families: the tokens a peer requires, permits or advertises.
-use super::{
-    FrameLimit,
-    catalogue::{named, token},
+use super::FrameLimit;
+use crate::{
+    ContractError,
+    hello::Advertised,
+    json::Object,
+    names::{name, named},
 };
-use crate::{ContractError, hello::Advertised, json::Object};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -37,7 +39,7 @@ const FAMILIES: [(Family, &str); 7] = [
 
 impl Family {
     pub fn token(self) -> &'static str {
-        token(&FAMILIES, self)
+        name(&FAMILIES, self)
     }
 
     /// Tokens are case-sensitive; an unknown token is not a family.

@@ -4,6 +4,7 @@
 //! Additively frozen: the tokens, the state fields and the lifecycle names.
 use crate::{
     json::Object,
+    names,
     protocol::{self, Frame, HelloReply},
     wire::{Advertisement, FrameLimits},
 };
@@ -36,11 +37,11 @@ impl Capability {
     ];
 
     pub fn token(self) -> &'static str {
-        lookup(&TOKENS, |(capability, _)| *capability == self).1
+        names::name(&TOKENS, self)
     }
 
     fn from_token(token: &str) -> Option<Self> {
-        find(&TOKENS, |(_, name)| *name == token).map(|(capability, _)| capability)
+        names::named(&TOKENS, token)
     }
 }
 
@@ -85,21 +86,12 @@ const LIFECYCLES: [(Lifecycle, &str); 4] = [
 
 impl Lifecycle {
     pub fn name(self) -> &'static str {
-        lookup(&LIFECYCLES, |(lifecycle, _)| *lifecycle == self).1
+        names::name(&LIFECYCLES, self)
     }
 
     fn from_name(name: &str) -> Option<Self> {
-        find(&LIFECYCLES, |(_, known)| *known == name).map(|(lifecycle, _)| lifecycle)
+        names::named(&LIFECYCLES, name)
     }
-}
-
-fn find<T: Copy>(table: &[T], wanted: impl Fn(&T) -> bool) -> Option<T> {
-    table.iter().copied().find(wanted)
-}
-
-/// Tables cover every variant, so a lookup by variant always succeeds.
-fn lookup<T: Copy>(table: &[T], wanted: impl Fn(&T) -> bool) -> T {
-    find(table, wanted).expect("table covers every variant")
 }
 
 /// One consistent point-in-time snapshot; `attachments` counts accepted
