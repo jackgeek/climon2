@@ -5,7 +5,7 @@ use crate::connection::{Connection, frame_limit};
 use climon2_core::wire::{
     Advertisement, Available, ControlRecord, Counter, Error, Families, Family, Frame, FrameLimits,
     Guid, InitialMetadata, Kill, Mode, Open, OperationalCode, Outcome, Rejection, Request,
-    Response, Success,
+    Response, Success, TitleChanged,
 };
 use std::{collections::BTreeSet, io};
 
@@ -116,7 +116,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// in order and whatever the control state.
     pub(super) fn titles(&mut self, titles: Vec<Option<String>>) {
         for title in titles {
-            let frame = climon2_core::wire::TitleChanged { title }.to_frame();
+            let frame = TitleChanged { title }.to_frame();
             for id in self.subscribers(Family::TitleV1) {
                 self.send_wire(id, &frame);
             }

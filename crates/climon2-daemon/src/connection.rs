@@ -3,7 +3,7 @@ use climon2_core::{
         ClientMessage, ConnectionState, MAX_FRAME_LENGTH, ServerMessage, hello_time_remaining,
         read_frame, write_frame,
     },
-    wire::{self, Counter, FatalCode, FrameLimit, Request},
+    wire::{self, ControlRecord, Counter, FatalCode, FrameLimit, Request},
 };
 use std::{
     collections::VecDeque,
@@ -167,7 +167,7 @@ impl Connection {
             code: code.into(),
             message: FATAL_MESSAGE.into(),
         });
-        self.last(|connection| connection.queue_wire(&wire::ControlRecord::to_frame(&error)));
+        self.last(|connection| connection.queue_wire(&error.to_frame()));
     }
 
     /// Queues a connection's last frame. It replaces output not yet started,
