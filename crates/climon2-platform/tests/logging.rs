@@ -117,6 +117,31 @@ fn pruning_retains_live_recent_and_unknown_artifacts() {
     assert!(!old.path().parent().unwrap().exists());
 }
 
+/// #25, #74: general logs, the monitor's included, are kept for exactly seven
+/// days and pruned one nanosecond later.
+#[test]
+fn general_logs_are_pruned_only_after_exactly_seven_days() {
+    let home = tempfile::tempdir().unwrap();
+    let logs = [
+        LogFile::general(home.path()).unwrap(),
+        LogFile::monitor(home.path()).unwrap(),
+    ];
+    let written = SystemTime::UNIX_EPOCH + Duration::from_secs(1_793_232_245);
+    for log in &logs {
+        filetime::set_file_mtime(log.path(), filetime::FileTime::from_system_time(written))
+            .unwrap();
+    }
+    let seven_days = Duration::from_secs(604_800);
+    prune(home.path(), written + seven_days);
+    for log in &logs {
+        assert!(log.path().exists(), "{:?} pruned at the limit", log.path());
+    }
+    prune(home.path(), written + seven_days + Duration::from_nanos(1));
+    for log in &logs {
+        assert!(!log.path().exists(), "{:?} kept past the limit", log.path());
+    }
+}
+
 /// #25/#26: invalid metadata entries still protect their logs from pruning.
 #[test]
 fn dangling_metadata_entry_is_not_absence_of_metadata() {
