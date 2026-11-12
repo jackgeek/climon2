@@ -16,10 +16,10 @@ const PROCESSOR: usize = 2 * 1024 * 1024;
 
 /// Room for what is held only briefly or is too small to track: the front
 /// filter's partial token and the tokens one slice completes (at most about
-/// 400 KiB, when a cancelled sequence releases 4096 held controls as separate
-/// tokens), the cursor templates' cell data, and the engine's new
-/// configuration and tab stops while it replaces them.
-pub(crate) const RESERVE: usize = 416 * 1024;
+/// 15 KiB measured, for a 4096-byte control string held across one-byte
+/// reads and then parsed), the cursor templates' cell data, and the engine's
+/// new configuration and tab stops while it replaces them.
+pub(crate) const RESERVE: usize = 32 * 1024;
 
 /// Rows the engine adds to the normal screen's storage whenever its history
 /// outgrows it (`MAX_CACHE_SIZE`).

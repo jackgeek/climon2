@@ -631,8 +631,8 @@ fn a_long_history_stays_within_the_smallest_limit_that_keeps_it() {
 }
 
 /// LIM-03 Fault: a control sequence holding 4096 controls and then cancelled
-/// releases them as 4097 separate tokens at once; that burst stays within
-/// the reserve of a model at its mandatory limit.
+/// or restarted releases them at once; they reach the engine within the
+/// reserve of a model with no history at its mandatory limit.
 #[test]
 fn a_cancelled_sequence_releasing_held_controls_stays_within_the_limit() {
     let at = geometry(10, 3);
@@ -653,6 +653,37 @@ fn a_cancelled_sequence_releasing_held_controls_stays_within_the_limit() {
 
     assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
     assert_eq!(model.footprint(), limit);
+}
+
+/// LIM-03 Fault: the reserve covers what a model holds only briefly. A model
+/// with no history at its mandatory limit takes a control string, a device
+/// control string and a CSI of the largest body held across one-byte reads,
+/// 4000 controls before an introducer, repeated full resets and cursor
+/// templates tinted on both screens, and the allocator never sees the limit
+/// exceeded.
+#[test]
+fn the_reserve_covers_what_is_held_briefly() {
+    let at = geometry(80, 24);
+    let body = "A".repeat(4090);
+    let tints = "\x1b[58;5;1m\x1b7\x1b[?1049h\x1b[58;5;2m\x1b7\x1b[?1049l\x1b[58;5;3m\x1b[?1049h";
+    for (stream, read) in [
+        (format!("\x1b]52;c;{body}\x07"), 1),
+        (format!("\x1bP{body}\x1b\\"), 1),
+        (format!("\x1b[{}m", "1;".repeat(2047)), 1),
+        (format!("\x1b{}]52;c;aGVsbG8=\x07", "\x07".repeat(4000)), 64),
+        ("\x1bc".repeat(100), 64),
+        (tints.to_owned(), 64),
+    ] {
+        let limit = mandatory(at);
+        let meter = Meter::watch();
+        let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+
+        for read in stream.as_bytes().chunks(read) {
+            model.feed(read).unwrap();
+        }
+
+        assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+    }
 }
 
 /// LIM-03 Contract: a full reset releases every mark on both screens and the
