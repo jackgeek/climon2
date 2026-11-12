@@ -294,7 +294,8 @@ mod tests {
         );
     }
 
-    /// This workspace's monitor test build: one architecture, with test hooks.
+    /// This workspace's monitor test build: an executable of this host's one
+    /// architecture.
     fn built_monitor() -> PathBuf {
         let built = env::current_exe()
             .unwrap()
@@ -307,6 +308,60 @@ mod tests {
         built
     }
 
+    /// The monitor test build, with the test-hook marker only if `hooked`,
+    /// whatever features built it: a stand-in that differs from a release
+    /// build in at most that one respect.
+    fn monitor_stand_in(hooked: bool) -> Vec<u8> {
+        const MARKER: &[u8] = b"CLIMON2_TEST_HOOKS_ENABLED";
+        let mut bytes = fs::read(built_monitor()).unwrap();
+        while let Some(start) = bytes
+            .windows(MARKER.len())
+            .position(|window| window == MARKER)
+        {
+            bytes[start..start + MARKER.len()].fill(b'-');
+        }
+        if hooked {
+            bytes.extend_from_slice(MARKER);
+        }
+        bytes
+    }
+
+    /// #74 (Linux amendment): packaging for the Linux release archive accepts
+    /// an x86-64 monitor without test hooks, and rejects one-defect stand-ins:
+    /// an AArch64 ELF, and an x86-64 binary carrying the test-hook marker.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    #[test]
+    fn linux_packaging_rejects_a_non_x86_64_or_hooked_monitor() {
+        const AARCH64: u16 = 183;
+        let platform = host_platform().unwrap();
+        let scratch = tempfile::tempdir_in(built_monitor().parent().unwrap()).unwrap();
+        let build = scratch.path().join("build");
+        let release = build.join(platform.targets[0]).join("release");
+        fs::create_dir_all(&release).unwrap();
+        let packaged = scratch.path().join("climon2-monitor");
+        let package = |bytes: &[u8]| {
+            fs::write(release.join("climon2-monitor"), bytes).unwrap();
+            package_binary(&platform, &build, "climon2-monitor", &packaged)
+                .map_err(|error| error.to_string())
+        };
+        let plain = monitor_stand_in(false);
+        package(&plain).unwrap();
+        assert_eq!(fs::read(&packaged).unwrap(), plain);
+        let mut arm = plain;
+        arm[18..20].copy_from_slice(&AARCH64.to_le_bytes());
+        assert_eq!(
+            package(&arm).unwrap_err(),
+            format!(
+                "{} is not an x86_64 Linux ELF executable",
+                packaged.display()
+            )
+        );
+        assert_eq!(
+            package(&monitor_stand_in(true)).unwrap_err(),
+            format!("{} contains test hooks", packaged.display())
+        );
+    }
+
     /// #74: the universal-binary check rejects a monitor that is not exactly
     /// arm64 plus x86_64, such as this host's single-architecture test build.
     #[cfg(target_os = "macos")]
@@ -315,7 +370,7 @@ mod tests {
         let built = built_monitor();
         let scratch = tempfile::tempdir_in(built.parent().unwrap()).unwrap();
         let thin = scratch.path().join("climon2-monitor");
-        fs::copy(&built, &thin).unwrap();
+        fs::write(&thin, monitor_stand_in(false)).unwrap();
         quality::run(
             Command::new("codesign")
                 .args(["--force", "-s", "-"])
@@ -326,12 +381,17 @@ mod tests {
         assert!(error.contains("is not exactly arm64 + x86_64"), "{error}");
     }
 
-    /// #74: the release binary check rejects a monitor that carries the
-    /// test-hook marker, such as this workspace's hook-enabled test build.
+    /// #74: the release binary check accepts a monitor without the test-hook
+    /// marker and rejects the same binary carrying it.
+    #[cfg(target_os = "macos")]
     #[test]
     fn binary_check_rejects_a_hooked_monitor() {
-        let built = built_monitor();
-        let error = unhooked(&built).unwrap_err().to_string();
-        assert_eq!(error, format!("{} contains test hooks", built.display()));
+        let scratch = tempfile::tempdir_in(built_monitor().parent().unwrap()).unwrap();
+        let monitor = scratch.path().join("climon2-monitor");
+        fs::write(&monitor, monitor_stand_in(false)).unwrap();
+        unhooked(&monitor).unwrap();
+        fs::write(&monitor, monitor_stand_in(true)).unwrap();
+        let error = unhooked(&monitor).unwrap_err().to_string();
+        assert_eq!(error, format!("{} contains test hooks", monitor.display()));
     }
 }
