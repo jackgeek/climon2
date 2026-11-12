@@ -34,7 +34,8 @@ pub use response::{
     Rejection, Response, Success,
 };
 pub use server::{
-    CommandFinal, FatalError, InitialMetadata, Notification, NotificationSource, ProgressChanged,
-    ServerMessage, StatusChanged, TitleChanged,
+    ActualGeometry, CommandFinal, ControlGranted, ControlRevoked, FatalError, GrantReason,
+    InitialMetadata, Notification, NotificationSource, ProgressChanged, RestorationBegin,
+    RestorationComplete, RevocationReason, ServerMessage, StatusChanged, TitleChanged,
 };
 pub use types::{Counter, Geometry, Utc};

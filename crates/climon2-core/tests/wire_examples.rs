@@ -4,11 +4,12 @@
 //! text and the codec cannot drift apart. The same examples seed the member
 //! strictness sweeps (COM-02).
 use climon2_core::wire::{
-    Acknowledge, Acquire, Available, CommandFinal, CommandResult, ControlRecord, Error, FatalCode,
-    FatalError, Focus, FocusBytes, Frame, InitialMetadata, Kill, Leave, Mode, Notification,
-    NotificationSource, Open, OperationalCode, Outcome, Progress, ProgressChanged, ProgressState,
-    Ready, Rejection, Request, Requested, Resize, Response, ServerMessage, SetViewing, Status,
-    StatusChanged, StatusState, Success, TitleChanged,
+    Acknowledge, Acquire, ActualGeometry, Available, CommandFinal, CommandResult, ControlGranted,
+    ControlRecord, ControlRevoked, Error, FatalCode, FatalError, Focus, FocusBytes, Frame,
+    GrantReason, InitialMetadata, Kill, Leave, Mode, Notification, NotificationSource, Open,
+    OperationalCode, Outcome, Progress, ProgressChanged, ProgressState, Ready, Rejection, Request,
+    Requested, Resize, Response, RestorationBegin, RestorationComplete, RevocationReason,
+    ServerMessage, SetViewing, Status, StatusChanged, StatusState, Success, TitleChanged,
 };
 use climon2_core::{
     hello::{
@@ -270,6 +271,55 @@ fn published_core_metadata_examples_round_trip_byte_identically() {
     assert_eq!(expected.to_frame(), frame);
 }
 
+/// DOC-01: Control granted `0x46`, Control revoked `0x47`, Restoration begin
+/// `0x48`, Restoration complete `0x4a` and Geometry `0x4b`.
+#[test]
+fn published_control_and_restoration_examples_round_trip_byte_identically() {
+    let (granted, frame) = server(0x46, "event-control-granted.md");
+    let expected = ControlGranted {
+        period: counter(2),
+        restoration_id: counter(3),
+        geometry: geometry(80, 24),
+        reason: GrantReason::Successor,
+    };
+    assert_eq!(granted, ServerMessage::ControlGranted(expected));
+    assert_eq!(expected.to_frame(), frame);
+
+    let (revoked, frame) = server(0x47, "event-control-revoked.md");
+    let expected = ControlRevoked {
+        period: counter(1),
+        restoration_id: counter(1),
+        reason: RevocationReason::Takeover,
+    };
+    assert_eq!(revoked, ServerMessage::ControlRevoked(expected));
+    assert_eq!(expected.to_frame(), frame);
+
+    let (begin, frame) = server(0x48, "event-restoration-begin.md");
+    let expected = RestorationBegin {
+        period: counter(2),
+        restoration_id: counter(3),
+        geometry: geometry(80, 24),
+    };
+    assert_eq!(begin, ServerMessage::RestorationBegin(expected));
+    assert_eq!(expected.to_frame(), frame);
+
+    let (complete, frame) = server(0x4a, "event-restoration-complete.md");
+    let expected = RestorationComplete {
+        period: counter(2),
+        restoration_id: counter(3),
+    };
+    assert_eq!(complete, ServerMessage::RestorationComplete(expected));
+    assert_eq!(expected.to_frame(), frame);
+
+    let (actual, frame) = server(0x4b, "event-geometry.md");
+    let expected = ActualGeometry {
+        period: counter(2),
+        geometry: geometry(100, 30),
+    };
+    assert_eq!(actual, ServerMessage::Geometry(expected));
+    assert_eq!(expected.to_frame(), frame);
+}
+
 fn hello(body: &str) -> (HelloReply, HelloExtensions) {
     let frame = protocol::Frame::new(0x01, body.as_bytes().to_vec()).unwrap();
     let protocol::ServerMessage::Hello(reply) = protocol::ServerMessage::from_frame(frame).unwrap()
@@ -365,7 +415,7 @@ fn ok(result: &str) -> String {
 
 /// Every daemon wire page that publishes JSON examples, with the type of each
 /// example in page order. The frozen hello pages have their own tests.
-const JSON_PAGES: [(&str, &[u8]); 17] = [
+const JSON_PAGES: [(&str, &[u8]); 22] = [
     ("request-open.md", &[0x30]),
     ("request-resize.md", &[0x32]),
     ("request-acquire.md", &[0x33]),
@@ -381,6 +431,11 @@ const JSON_PAGES: [(&str, &[u8]); 17] = [
     ("event-status-changed.md", &[0x43]),
     ("event-notification.md", &[0x44]),
     ("event-progress-changed.md", &[0x45]),
+    ("event-control-granted.md", &[0x46]),
+    ("event-control-revoked.md", &[0x47]),
+    ("event-restoration-begin.md", &[0x48]),
+    ("event-restoration-complete.md", &[0x4a]),
+    ("event-geometry.md", &[0x4b]),
     ("event-command-final.md", &[0x4c]),
     ("event-fatal-error.md", &[0x4d]),
 ];
@@ -655,8 +710,11 @@ fn every_period_and_restoration_id_is_a_counter_at_both_bounds() {
     }
     assert_eq!(
         carriers,
-        BTreeSet::from([0x32, 0x34, 0x35, 0x36, 0x39, 0x40]),
-        "Resize, Ready, Set viewing, Acknowledge, Focus and the Acquire and Ready results"
+        BTreeSet::from([
+            0x32, 0x34, 0x35, 0x36, 0x39, 0x40, 0x46, 0x47, 0x48, 0x4a, 0x4b
+        ]),
+        "Resize, Ready, Set viewing, Acknowledge, Focus, the Acquire and Ready results, \
+         Control granted and revoked, Restoration begin and complete, and Geometry"
     );
 }
 
@@ -696,7 +754,7 @@ fn every_geometry_has_positive_u32_columns_and_rows_at_both_bounds() {
     }
     assert_eq!(
         carriers,
-        BTreeSet::from([0x30, 0x32]),
-        "interactive Open and Resize"
+        BTreeSet::from([0x30, 0x32, 0x46, 0x48, 0x4b]),
+        "interactive Open, Resize, Control granted, Restoration begin and Geometry"
     );
 }

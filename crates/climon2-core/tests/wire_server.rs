@@ -1,15 +1,16 @@
-//! Daemon wire revision 1 server messages (session daemon to client):
-//! Response, Fatal error and the core metadata events. Each test is the
-//! codec case of the matrix scenarios it cites; the daemon and library cases
-//! come with their own tickets.
+//! Daemon wire revision 1 JSON server messages (session daemon to client):
+//! Response, Fatal error, the core metadata events and the control and
+//! restoration events. Each test is the codec case of the matrix scenarios
+//! it cites; the daemon and library cases come with their own tickets.
 use climon2_core::wire::{
-    Available, Cleanup, CommandFinal, CommandResult, ControlRecord, Counter, Error, ErrorCode,
-    Failure, Families, FatalCode, FocusBytes, Frame, Guid, InitialMetadata, KnownResult,
-    OperationalCode, Outcome, PartialCleanup, PartialTermination, Percent, Progress, ProgressState,
-    Rejection, Response, ServerMessage, Status, StatusChanged, StatusState, Success, Utc,
+    Available, Cleanup, CommandFinal, CommandResult, ControlGranted, ControlRecord, ControlRevoked,
+    Counter, Error, ErrorCode, Failure, Families, FatalCode, FocusBytes, Frame, GrantReason, Guid,
+    InitialMetadata, KnownResult, OperationalCode, Outcome, PartialCleanup, PartialTermination,
+    Percent, Progress, ProgressState, Rejection, Response, RevocationReason, ServerMessage, Status,
+    StatusChanged, StatusState, Success, Utc,
 };
 use std::num::NonZeroU32;
-use support::counter;
+use support::{counter, geometry};
 
 mod support;
 
@@ -19,6 +20,8 @@ const TITLE_CHANGED: u8 = 0x42;
 const STATUS_CHANGED: u8 = 0x43;
 const NOTIFICATION: u8 = 0x44;
 const PROGRESS_CHANGED: u8 = 0x45;
+const CONTROL_GRANTED: u8 = 0x46;
+const CONTROL_REVOKED: u8 = 0x47;
 const COMMAND_FINAL: u8 = 0x4c;
 const FATAL_ERROR: u8 = 0x4d;
 
@@ -45,6 +48,11 @@ fn encoded(message: &ServerMessage) -> Frame {
         ServerMessage::StatusChanged(status) => status.to_frame(),
         ServerMessage::Notification(notification) => notification.to_frame(),
         ServerMessage::ProgressChanged(progress) => progress.to_frame(),
+        ServerMessage::ControlGranted(grant) => grant.to_frame(),
+        ServerMessage::ControlRevoked(revocation) => revocation.to_frame(),
+        ServerMessage::RestorationBegin(begin) => begin.to_frame(),
+        ServerMessage::RestorationComplete(complete) => complete.to_frame(),
+        ServerMessage::Geometry(geometry) => geometry.to_frame(),
         ServerMessage::CommandFinal(result) => result.to_frame(),
         ServerMessage::FatalError(error) => error.to_frame(),
     }
@@ -1126,6 +1134,81 @@ fn notifications_are_normalized_records_from_known_sources() {
     ] {
         assert_eq!(
             server(NOTIFICATION, body),
+            Err(FatalCode::InvalidRecord),
+            "{body}"
+        );
+    }
+}
+
+/// COM-02 (codec case): a grant's reason is `attach`, `acquire`, `hand_back`
+/// or `successor`, and a revocation's `takeover` or `session_ending`, spelled
+/// exactly. Each decodes and re-encodes; any other name, including the other
+/// event's, or any other type is `invalid_record`.
+#[test]
+fn grant_and_revocation_reasons_are_their_documented_names() {
+    let grant = |reason: &str| {
+        format!(
+            r#"{{"period":"2","restoration_id":"3","geometry":{{"cols":80,"rows":24}},"reason":{reason}}}"#
+        )
+    };
+    let revocation =
+        |reason: &str| format!(r#"{{"period":"1","restoration_id":"1","reason":{reason}}}"#);
+    for (name, reason) in [
+        ("attach", GrantReason::Attach),
+        ("acquire", GrantReason::Acquire),
+        ("hand_back", GrantReason::HandBack),
+        ("successor", GrantReason::Successor),
+    ] {
+        assert_eq!(
+            round_trip(CONTROL_GRANTED, &grant(&format!(r#""{name}""#))),
+            ServerMessage::ControlGranted(ControlGranted {
+                period: counter(2),
+                restoration_id: counter(3),
+                geometry: geometry(80, 24),
+                reason,
+            })
+        );
+    }
+    for (name, reason) in [
+        ("takeover", RevocationReason::Takeover),
+        ("session_ending", RevocationReason::SessionEnding),
+    ] {
+        assert_eq!(
+            round_trip(CONTROL_REVOKED, &revocation(&format!(r#""{name}""#))),
+            ServerMessage::ControlRevoked(ControlRevoked {
+                period: counter(1),
+                restoration_id: counter(1),
+                reason,
+            })
+        );
+    }
+    for reason in [
+        r#""Attach""#,
+        r#""hand-back""#,
+        r#""handback""#,
+        r#""takeover""#,
+        r#""""#,
+        "null",
+        "1",
+    ] {
+        let body = grant(reason);
+        assert_eq!(
+            server(CONTROL_GRANTED, &body),
+            Err(FatalCode::InvalidRecord),
+            "{body}"
+        );
+    }
+    for reason in [
+        r#""Takeover""#,
+        r#""session-ending""#,
+        r#""successor""#,
+        r#""""#,
+        "null",
+        "1",
+    ] {
+        let body = revocation(reason);
+        assert_eq!(
+            server(CONTROL_REVOKED, &body),
             Err(FatalCode::InvalidRecord),
             "{body}"
         );
