@@ -77,7 +77,12 @@ impl Default for Options {
 pub struct Modes {
     pub alternate_screen: bool,
     pub cursor_visible: bool,
+    /// Any mouse tracking or SGR mouse encoding mode.
     pub mouse: bool,
+    /// Button-event (press, release and drag) mouse tracking, DEC 1002.
+    pub mouse_drag: bool,
+    /// SGR extended mouse encoding, DEC 1006.
+    pub sgr_mouse: bool,
     pub focus: bool,
     pub bracketed_paste: bool,
     pub application_cursor: bool,
@@ -94,6 +99,8 @@ impl Modes {
         alternate_screen: false,
         cursor_visible: true,
         mouse: false,
+        mouse_drag: false,
+        sgr_mouse: false,
         focus: false,
         bracketed_paste: false,
         application_cursor: false,
@@ -109,6 +116,8 @@ impl Modes {
             alternate_screen: mode.contains(TermMode::ALT_SCREEN),
             cursor_visible: mode.contains(TermMode::SHOW_CURSOR),
             mouse: mode.intersects(TermMode::MOUSE_MODE | TermMode::SGR_MOUSE),
+            mouse_drag: mode.contains(TermMode::MOUSE_DRAG),
+            sgr_mouse: mode.contains(TermMode::SGR_MOUSE),
             focus: mode.contains(TermMode::FOCUS_IN_OUT),
             bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
             application_cursor: mode.contains(TermMode::APP_CURSOR),
@@ -515,6 +524,45 @@ impl Terminal {
         }
     }
 
+    /// Waits until exactly `count` bytes sent to this terminal are still unread
+    /// by the programs on it, as the terminal device itself reports.
+    pub fn wait_for_unread_input(&self, count: usize, timeout: Duration) -> io::Result<()> {
+        let device = self.device()?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            let unread = unread(&device)?;
+            if unread == count {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(self
+                    .screen
+                    .0
+                    .lock()
+                    .expect("screen lock")
+                    .failure(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("{unread} bytes of input unread, not {count}"),
+                    )));
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// The terminal device the programs read, opened without becoming anyone's
+    /// controlling terminal.
+    fn device(&self) -> io::Result<std::fs::File> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = self
+            .master
+            .tty_name()
+            .ok_or_else(|| io::Error::other("terminal device unnamed"))?;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_NOCTTY | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC)
+            .open(path)
+    }
+
     pub fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()> {
         let size = pty_size(rows, cols)?;
         let mut screen = self.screen.0.lock().expect("screen lock");
@@ -583,9 +631,56 @@ impl Terminal {
     }
 }
 
+/// A second terminal that a command opens by path as its input, and that the
+/// test hangs up while the command's own terminal stays open.
+pub struct InputTerminal {
+    master: Box<dyn MasterPty + Send>,
+    _slave: Box<dyn SlavePty + Send>,
+    path: std::path::PathBuf,
+}
+
+impl InputTerminal {
+    pub fn open(rows: u16, cols: u16) -> io::Result<Self> {
+        let pair = {
+            let _allocation = climon2_platform::pty::allocation()?;
+            portable_pty::native_pty_system().openpty(pty_size(rows, cols)?)
+        }
+        .map_err(io::Error::other)?;
+        let path = pair
+            .master
+            .tty_name()
+            .ok_or_else(|| io::Error::other("terminal device unnamed"))?;
+        Ok(Self {
+            master: pair.master,
+            _slave: pair.slave,
+            path,
+        })
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// Closes the master side: every reader of the terminal sees it hang up.
+    pub fn hang_up(self) {
+        drop(self.master);
+    }
+}
+
 fn write(writer: &Writer, bytes: &[u8]) -> io::Result<()> {
     let mut writer = writer.lock().expect("PTY writer lock");
     writer.write_all(bytes).and_then(|()| writer.flush())
+}
+
+/// Input queued on a terminal device that no reader has taken yet.
+fn unread(device: &std::fs::File) -> io::Result<usize> {
+    use std::os::fd::AsRawFd;
+    let mut count: nix::libc::c_int = 0;
+    // FIONREAD writes one int, the count of bytes queued for reading.
+    if unsafe { nix::libc::ioctl(device.as_raw_fd(), nix::libc::FIONREAD, &mut count) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    usize::try_from(count).map_err(io::Error::other)
 }
 
 fn terminal_is_raw(fd: i32) -> io::Result<bool> {
