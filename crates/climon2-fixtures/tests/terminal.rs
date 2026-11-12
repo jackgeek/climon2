@@ -369,9 +369,10 @@ fn generic_terminal_observes_resize_and_signal_exit() {
     isolation.assert_clean();
 }
 
-/// #21/#31: writer stays alive, waits are bounded and failure output aids diagnosis.
+/// #21/#31/#79: writer stays alive, waits are bounded and failure output (the
+/// screen, the host signals and the recent bytes) aids diagnosis.
 #[test]
-fn timed_waits_dump_screen_and_bytes_and_drop_cleans_ignored_sighup() {
+fn timed_waits_dump_screen_signals_and_bytes_and_drop_cleans_ignored_sighup() {
     let isolation = Isolation::new();
     let mut command = isolation.command(bin_path("climon2-fixture"));
     command.args([
@@ -379,7 +380,7 @@ fn timed_waits_dump_screen_and_bytes_and_drop_cleans_ignored_sighup() {
         "kill-self",
         "HUP",
         "print",
-        "still-alive",
+        "\x07still-alive",
         "sleep",
         "5000",
     ]);
@@ -395,6 +396,7 @@ fn timed_waits_dump_screen_and_bytes_and_drop_cleans_ignored_sighup() {
         let message = error.to_string();
         assert!(
             message.contains("SCREEN:")
+                && message.contains("HOST SIGNALS:\n[Bell]")
                 && message.contains("RECENT BYTES:")
                 && message.contains("still-alive"),
             "{message}"
