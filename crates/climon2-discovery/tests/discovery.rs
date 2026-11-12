@@ -22,7 +22,10 @@ use climon2_test_term::{Isolation, bin_path};
 use std::{
     fs,
     io::{self, Read},
-    os::unix::{fs::PermissionsExt, net::UnixStream},
+    os::unix::{
+        fs::PermissionsExt,
+        net::{UnixDatagram, UnixStream},
+    },
     path::{Path, PathBuf},
     process::Command,
     thread,
@@ -342,6 +345,7 @@ fn every_outcome_in_three_passes() {
     let unreachable = record(&home, 0x16, "2026-10-28T07:21:06.000Z");
     let mut alive = record(&home, 0x15, "2026-10-28T07:21:05.000Z");
     alive.daemon_start_time = process::start_time(std::process::id()).unwrap().unwrap();
+    alive.daemon_linux_identity = own_identity();
     let mut unknown = record(&home, 0x14, "2026-10-28T07:21:04.000Z");
     unknown.daemon_pid = 0;
     let stale = record(&home, 0x13, "2026-10-28T07:21:03.000Z");
@@ -363,7 +367,8 @@ fn every_outcome_in_three_passes() {
         peer(&mismatched, 1, hello_body(OUTER), 3),
         peer(&unanswered, 1, "{".to_owned(), 3),
     ];
-    fs::write(unreachable.socket_path.as_str(), b"not a socket").unwrap();
+    // A stream connection to a datagram socket fails, with EPROTOTYPE, on both platforms.
+    let _datagram = UnixDatagram::bind(unreachable.socket_path.as_str()).unwrap();
     let sessions_directory = home.join("sessions");
     let malformed = sessions_directory.join("not-a-session-id.pty");
     fs::write(&malformed, b"{}").unwrap();
@@ -437,7 +442,7 @@ fn assert_uncertain_and_invalid(pass: &Pass, malformed: &Path, corrupt: &Path, u
     let Outcome::Uncertain(_, Uncertainty::Unreachable(error)) = &pass.sessions[3] else {
         panic!("{pass:?}");
     };
-    assert_eq!(error.raw_os_error(), Some(libc::ENOTSOCK));
+    assert_eq!(error.raw_os_error(), Some(libc::EPROTOTYPE));
     assert!(matches!(
         pass.sessions[4],
         Outcome::Uncertain(_, Uncertainty::DaemonAlive)
@@ -647,4 +652,38 @@ fn linux_daemon_identity_alone_proves_a_session_stale() {
         [&alive, &unknown, &dead]
     );
     assert_eq!(files.map(|file| file.exists()), [true, true, false]);
+}
+
+/// DSC-04 Contract case (uncertain disappearance): a path that is not a socket is never
+/// unlinked as one. Linux refuses a connection to a regular file just as it refuses one to a
+/// dead daemon's socket, so with a dead identity the session is stale, but its cleanup fails
+/// before deleting anything; macOS reports the path unreachable. The metadata stays.
+#[test]
+fn a_regular_file_at_the_socket_path_is_never_deleted() {
+    let (_directory, home) = home();
+    let stale = record(&home, 0x71, CREATED);
+    let file = save(&home, &stale);
+    let socket = Path::new(stale.socket_path.as_str());
+    fs::write(socket, b"not a socket").unwrap();
+
+    let pass = discover(&home, REMOVE).unwrap();
+    let [outcome] = pass.sessions.as_slice() else {
+        panic!("{pass:?}");
+    };
+    assert_eq!(outcome.metadata(), &stale);
+    if cfg!(target_os = "linux") {
+        assert!(
+            matches!(outcome, Outcome::Stale(_, Cleanup::Failed(_))),
+            "{pass:?}"
+        );
+    } else {
+        assert!(
+            matches!(outcome, Outcome::Uncertain(_, Uncertainty::Unreachable(error))
+                if error.raw_os_error() == Some(libc::ENOTSOCK)),
+            "{pass:?}"
+        );
+    }
+    assert_eq!(fs::read(socket).unwrap(), b"not a socket");
+    assert!(file.exists());
+    fs::remove_file(socket).unwrap();
 }

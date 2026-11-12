@@ -6,7 +6,7 @@ use climon2_core::{
     metadata::SessionMetadata,
     protocol::HELLO_TIMEOUT,
 };
-use climon2_platform::{connection, process};
+use climon2_platform::{connection, process, runtime};
 use std::{fs, io, path::Path, time::Instant};
 
 /// A session whose daemon answered the frozen hello with this session's ID.
@@ -157,12 +157,16 @@ fn clean_up(home: &Path, metadata: &SessionMetadata, stale: StaleMetadata) -> Cl
     }
 }
 
+/// A path that is not a socket is never unlinked as one, so it is checked before anything
+/// is deleted.
 fn remove(home: &Path, metadata: &SessionMetadata) -> Cleanup {
     let path = home
         .join("sessions")
         .join(format!("{}.pty", metadata.session_id));
-    let result = remove_if_present(&path)
-        .and_then(|()| remove_if_present(Path::new(metadata.socket_path.as_str())));
+    let socket = Path::new(metadata.socket_path.as_str());
+    let result = runtime::validate_stale_socket(socket)
+        .and_then(|()| remove_if_present(&path))
+        .and_then(|()| remove_if_present(socket));
     match result {
         Ok(()) => Cleanup::Removed,
         Err(error) => Cleanup::Failed(error),

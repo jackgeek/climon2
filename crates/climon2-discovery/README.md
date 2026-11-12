@@ -38,7 +38,10 @@ pub fn discover(home: &Path, options: Options) -> io::Result<Pass>
 
 `Options::stale` is the only cleanup switch. With `StaleMetadata::Remove`, each
 stale session's metadata file and then its socket are deleted, and files that
-are already gone count as removed. Only CLI callers choose it. With
+are already gone count as removed. A socket path that exists but is not a
+socket is never unlinked as one: the cleanup fails before anything is deleted,
+and the session is `Stale(metadata, Cleanup::Failed(_))`. Only CLI callers
+choose `Remove`. With
 `StaleMetadata::Retain`, stale sessions are reported and nothing is deleted;
 monitor discovery never deletes metadata. Uncertain sessions and invalid
 metadata are never cleaned up.
@@ -83,6 +86,7 @@ hello peers.
 | DSC-04 Contract cases for one pass: mismatched hello IDs, failed probes, uncertain disappearance and malformed or unreadable metadata are structured outcomes and never cleaned up; a failed stale cleanup is reported; no pass prints | `every_outcome_is_structured_and_no_pass_prints` |
 | DSC-04 Contract case: oversized and too deeply nested metadata, at and one past each limit | `metadata_limits_accept_their_bound_and_reject_one_past_it` |
 | DSC-04 Contract case: a silent daemon is uncertain only after the frozen two-second hello deadline, and kept even when cleanup is requested | `a_silent_daemon_is_uncertain_after_the_two_second_hello_deadline` |
+| DSC-04 Contract case (uncertain disappearance): a regular file at a stale session's socket path is never deleted, and neither is its metadata; Linux reports the failed cleanup, macOS the unreachable path | `a_regular_file_at_the_socket_path_is_never_deleted` |
 | DSC-04 Contract case (uncertain disappearance), Linux: only the recorded boot ID and start ticks prove a session stale; a live identity with any start time, and a missing identity, are uncertain and kept even when cleanup is requested | `linux_daemon_identity_alone_proves_a_session_stale` |
 | Shared discovery order: newest created first, then ascending full session ID; a home without sessions is an empty pass | `sessions_are_newest_created_first_with_ascending_session_id_ties` |
 
