@@ -95,12 +95,12 @@ impl Bounded {
 
     /// Only what the live output policy forwards to a Direct host reaches
     /// the engine. The daemon already applied that policy, so a stripped
-    /// token can only be malformed input and is dropped whole.
+    /// token can only be malformed input; only the controls it executes
+    /// remain.
     fn token(&mut self, token: Token, room: Room) -> Result<(), Rejected> {
         let bytes = match classify(&token).live {
             Live::Forward => token.bytes,
             Live::Replace(bytes) => bytes,
-            Live::Strip => return Ok(()),
         };
         self.admit(self.growth(token.kind, &bytes), room)?;
         self.grow(bytes.len(), room);

@@ -30,7 +30,10 @@ the monitor never forwards parser replies or session bytes directly to its host.
   the PTY; `live` is the filtered output for a Direct controller (queries,
   host-dependent requests, keyboard negotiation, OSC 52, OSC 8 and every
   other OSC/DCS/SOS/PM/APC stripped; titles re-encoded; `CSI ? 47/1047`
-  removed because the engine implements only 1049).
+  removed because the engine implements only 1049). A token is classified
+  by the sequence vte dispatches, whatever C0 controls precede its
+  introducer, and the controls vte executes in a stripped or rewritten token
+  still reach the host, in order.
 - `Vt::sync_pending(now)` / `Vt::tick(now)`: the first-begin synchronized
   update latch (150 ms). Take no snapshot and derive nothing while pending;
   when `tick` returns true, commit `Presentation::end_sync()` for hosts that
