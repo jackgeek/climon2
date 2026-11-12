@@ -647,7 +647,9 @@ fn interactive_open_and_standalone_kill_are_refused_until_they_are_served() {
 /// the stream ends. Other connections receive everything.
 #[test]
 fn a_fatal_error_replaces_a_backlog_without_splitting_a_frame() {
-    const TITLES: u32 = 5000;
+    // Far more than a socket buffers as separate tiny frames, yet read back
+    // quickly, well inside the five seconds a stalled reader is allowed.
+    const TITLES: u32 = 2000;
     let session = Session::start("script");
     detached(&session);
     let (mut stalled, _) = monitor(&session, &["title-v1"]);
