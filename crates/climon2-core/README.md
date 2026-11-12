@@ -25,8 +25,8 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   `client-startup-v1`) and `SessionState` (lifecycle `starting`, `attached`,
   `detached` or `terminating`, attachment count, controlled) are parsed
   leniently: absent grants nothing, malformed is reported and never trusted,
-  unknown tokens are ignored. `advertise` builds the daemon's reply frame
-  with exactly those frozen tokens and state. `daemon_wire_v1` is `Valid`
+  unknown tokens are ignored. `advertise` builds a reply frame with exactly
+  those frozen tokens and state. `daemon_wire_v1` is `Valid`
   only when the capabilities include `daemon-wire-v1` and `daemon_wire_v1`
   holds positive u32 `max_request_frame_bytes` and `max_server_frame_bytes`;
   neither is `Absent`, anything else is `Malformed`, and none of these ever
@@ -50,6 +50,12 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     transport errors stay `WireError::Io`. A frame the limit refuses is
     never written. Otherwise the frame goes out in one `write_all`, so an I/O
     error can leave part of it written; close the connection on any error.
+  - `FrameLimit::frame_length([u8; 4])`: the length a prefix declares, under
+    the same rules as `read_frame`, so a nonblocking reader knows how many
+    bytes a frame still needs without parsing frames itself. `defines(type)`:
+    whether revision 1 defines a frame type in either direction (`0x30`–`0x39`
+    and `0x40`–`0x4d`); a daemon still speaking another post-hello protocol
+    selects revision 1 by the type of the first frame after hello.
   - `Request::from_frame` (daemon side: Open `0x30`, Leave `0x37`, Kill
     `0x38`) and `ServerMessage::from_frame` (client side: Response `0x40`,
     Initial metadata `0x41`, Title changed `0x42`, Status changed `0x43`,
@@ -181,8 +187,8 @@ Integration tests call only these public boundaries:
 | #17 / #20 exit mapping | `issue17_failures_remain_distinct_from_command_status_and_signal_mapping` |
 | DOC-01 (Contract case for the part-1 daemon wire pages and the hello reply): every published example decodes to its documented values and re-encodes byte-identically | `published_request_examples_round_trip_byte_identically`, `published_response_and_fatal_error_examples_round_trip_byte_identically`, `published_core_metadata_examples_round_trip_byte_identically`, `published_hello_advertisement_examples_round_trip_byte_identically` |
 | COM-01 (codec case): revision 1 needs its token and valid frame limits, otherwise unavailable; known families; unique, disjoint capability arrays; the daemon's frozen advertisement is unchanged; the published hello examples carry these advertisements | `a_revision1_advertisement_needs_its_token_and_valid_frame_limits`, `advertised_families_are_the_known_revision1_tokens`, `revision1_support_is_advertised_beside_the_frozen_tokens_and_state`, `capability_arrays_are_unique_case_sensitive_and_disjoint`, `the_daemon_advertises_the_frozen_tokens_and_a_state_beside_the_mandatory_reply`, `published_hello_advertisement_examples_round_trip_byte_identically` |
-| COM-02 (codec case): framing: partial I/O, the local frame ceiling at its limit and one past it, zero and type-only lengths, truncation and transport failures | `revision1_frames_survive_partial_io_and_end_cleanly_at_a_frame_boundary`, `the_local_frame_ceiling_admits_its_limit_and_rejects_one_byte_more`, `zero_length_is_invalid_and_a_type_only_frame_has_an_empty_body`, `a_stream_ending_inside_a_frame_is_truncated`, `transport_failures_are_reported_as_io_errors` |
-| LIM-01 (codec case): the local frame ceiling at its limit and one past it, decided from the length prefix before any body is read | `the_local_frame_ceiling_admits_its_limit_and_rejects_one_byte_more` |
+| COM-02 (codec case): framing: partial I/O, the local frame ceiling at its limit and one past it, zero and type-only lengths, truncation and transport failures; a prefix alone decides the admitted length; the frame types revision 1 defines | `revision1_frames_survive_partial_io_and_end_cleanly_at_a_frame_boundary`, `the_local_frame_ceiling_admits_its_limit_and_rejects_one_byte_more`, `zero_length_is_invalid_and_a_type_only_frame_has_an_empty_body`, `a_stream_ending_inside_a_frame_is_truncated`, `transport_failures_are_reported_as_io_errors`, `a_prefix_alone_decides_the_admitted_frame_length`, `revision1_defines_the_request_and_server_types_only` |
+| LIM-01 (codec case): the local frame ceiling at its limit and one past it, decided from the length prefix before any body is read | `the_local_frame_ceiling_admits_its_limit_and_rejects_one_byte_more`, `a_prefix_alone_decides_the_admitted_frame_length` |
 | COM-02 (codec case): types and directions, every member of every part-1 record at every depth (required even when null, unique, documented), JSON and UTF-8, request IDs, capability arrays, integers, geometry, GUIDs, UTC times, episodes, progress and notifications | `requests_are_identified_by_type_and_direction`, `server_messages_are_identified_by_type_and_direction`, `request_ids_are_canonical_decimal_counters`, `only_requests_and_responses_carry_request_ids`, `requests_reject_unknown_duplicate_and_missing_members`, `requests_must_be_complete_utf8_json_objects`, `unsigned_fields_are_plain_integer_tokens`, `open_geometry_is_null_for_monitor_and_positive_for_interactive`, `an_interactive_open_encodes_its_documented_members_in_order`, `every_member_of_every_part1_record_is_required_unique_and_documented`, `success_results_reject_undocumented_shapes`, `connection_ids_are_lowercase_canonical_guids`, `fatal_errors_carry_each_connection_fatal_code`, `utc_times_are_exact_calendar_milliseconds`, `status_episodes_belong_only_to_attention_states`, `progress_percent_matches_its_state`, `notifications_are_normalized_records_from_known_sources`, `capability_arrays_are_unique_case_sensitive_and_disjoint` |
 | COM-03 (codec case): every documented result variant; outcome, result and error pairing (a known final result only on a rejection; a failed or indeterminate outcome may carry the operation's known result or a Kill's partial termination, never a confirmed one); catalogue and unknown error codes | `every_documented_success_result_round_trips`, `responses_pair_each_outcome_with_its_result_and_error`, `error_codes_are_nonempty_and_unknown_codes_stay_non_successes` |
 | COM-06 (codec case): normal exit differs from signal; a final status agrees with the command result; Status changed never carries the final state; a partial Kill result or a known final result is never a successful confirmation | `command_results_distinguish_normal_exits_from_signals`, `command_final_status_is_terminal_and_agrees_with_the_result`, `initial_metadata_terminal_status_agrees_with_a_known_result`, `status_episodes_belong_only_to_attention_states`, `responses_pair_each_outcome_with_its_result_and_error` |
