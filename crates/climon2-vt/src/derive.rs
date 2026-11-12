@@ -154,6 +154,9 @@ pub(crate) fn derive(
     cache.modes(engine, &mut out);
     cache.retitle(title, &mut out);
     cache.ring(engine.bells(), &mut out);
+    if !presentation.alternate {
+        presentation.release_cursor = Some(position(engine.active()));
+    }
     out
 }
 
@@ -189,7 +192,13 @@ fn enter(alternate: bool, presentation: &mut Presentation, out: &mut Vec<u8>) {
 /// native scrollback: paint up to a host screenful at the top, then scroll it
 /// off from the bottom row. A run longer than retention starts with the
 /// notice, cut to the host's width so it never wraps.
-fn push(engine: &mut Engine, ledger: &Ledger, pushed: u64, host: &Presentation, out: &mut Vec<u8>) {
+fn push(
+    engine: &mut Engine,
+    ledger: &Ledger,
+    pushed: u64,
+    host: &mut Presentation,
+    out: &mut Vec<u8>,
+) {
     let host_rows = host.rows;
     let retained = pushed.min(ledger.max_rows as u64) as usize;
     let mut lines: Vec<Vec<u8>> = Vec::new();
@@ -211,5 +220,6 @@ fn push(engine: &mut Engine, ledger: &Ledger, pushed: u64, host: &Presentation, 
         }
         goto(out, usize::from(host_rows), 1);
         out.extend(std::iter::repeat_n(b'\n', chunk.len()));
+        host.release_cursor = Some((usize::from(host_rows), 1));
     }
 }

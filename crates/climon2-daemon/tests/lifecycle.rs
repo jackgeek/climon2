@@ -757,6 +757,12 @@ fn initial_fallback_and_resize_use_the_real_pty() {
     session.finish();
 }
 
+fn release_at(row: u16, col: u16) -> Vec<u8> {
+    let mut bytes = climon2_vt::Presentation::new(91, 37).release();
+    bytes.extend(format!("\x1b[{row};{col}H").bytes());
+    bytes
+}
+
 /// #20: Input/Output are raw bytes, including NUL and non-UTF8, at the data-frame bound.
 #[test]
 fn raw_input_output_are_byte_transparent() {
@@ -777,10 +783,7 @@ fn raw_input_output_are_byte_transparent() {
         }
     }
     assert_eq!(&actual[..payload.len()], payload);
-    assert_eq!(
-        &actual[payload.len()..],
-        climon2_vt::Presentation::new(91, 37).release()
-    );
+    assert_eq!(&actual[payload.len()..], release_at(37, 83));
     session.finish();
 }
 
@@ -1027,7 +1030,7 @@ fn detach_releases_then_confirms_and_a_reattachment_resumes() {
     send(&mut first, ClientMessage::Detach);
     let (released, confirmation) = until_terminal(&mut first);
     assert_eq!(confirmation, ServerMessage::Detached);
-    assert_eq!(released, climon2_vt::Presentation::new(91, 37).release());
+    assert_eq!(released, release_at(3, 14));
     assert!(read_frame(&mut first).is_err());
     assert_eq!(advertised_state(&session), (Lifecycle::Detached, 0, false));
 
@@ -1038,7 +1041,7 @@ fn detach_releases_then_confirms_and_a_reattachment_resumes() {
     send(&mut second, ClientMessage::Input(b"go\n".to_vec()));
     let (output, result) = until_terminal(&mut second);
     assert_eq!(result, ServerMessage::Exit { code: 42 });
-    assert!(output.ends_with(&climon2_vt::Presentation::new(91, 37).release()));
+    assert!(output.ends_with(&release_at(4, 12)));
     assert_eq!(count(&output, b"final-bytes"), 1);
     session.finish();
 }
@@ -1131,7 +1134,7 @@ fn the_controller_drives_the_size_and_input_outside_its_period_is_dropped() {
     let mut second = attach_at(&session, TerminalSize { cols: 80, rows: 24 });
     let (released, revoked) = until_terminal(&mut first);
     assert_eq!(revoked, ServerMessage::Revoked);
-    assert!(released.ends_with(&climon2_vt::Presentation::new(91, 37).release()));
+    assert!(released.ends_with(&release_at(4, 1)));
     send(&mut first, ClientMessage::Input(b"stale\n".to_vec()));
     let resized = TerminalSize {
         cols: 100,
@@ -1377,7 +1380,7 @@ fn attach_during_termination_is_refused() {
     assert!(matches!(receive(&mut late), ServerMessage::Error { .. }));
     let (released, result) = until_terminal(&mut controlling);
     assert!(matches!(result, ServerMessage::Exit { .. }));
-    assert_eq!(released, climon2_vt::Presentation::new(91, 37).release());
+    assert_eq!(released, release_at(3, 14));
     assert!(matches!(
         receive(&mut killer),
         ServerMessage::Terminated { .. }
@@ -1478,7 +1481,7 @@ fn a_pty_write_failure_releases_then_reports_error() {
     send(&mut stream, ClientMessage::Input(b"go\n".to_vec()));
     let (released, result) = until_terminal(&mut stream);
     assert!(matches!(result, ServerMessage::Error { .. }), "{result:?}");
-    assert_eq!(released, climon2_vt::Presentation::new(91, 37).release());
+    assert_eq!(released, release_at(3, 14));
     session.finish();
 }
 
@@ -1659,6 +1662,31 @@ fn repeated_sync_begins_do_not_hold_a_grant() {
     session.finish();
 }
 
+#[test]
+fn an_open_synchronized_update_is_not_released_before_its_deadline() {
+    let session = Session::start("retain-10");
+    let mut stream = session.attach();
+    session.wait_marker(&mut stream);
+    for _ in 0..3 {
+        let started = Instant::now();
+        script(&session, "sync");
+        let mut output = Vec::new();
+        while count(&output, b"\x1b[?2026l") == 0 {
+            match receive(&mut stream) {
+                ServerMessage::Output(bytes) => output.extend(bytes),
+                other => panic!("unexpected synchronized update frame: {other:?}"),
+            }
+        }
+        assert_eq!(count(&output, b"\x1b[?2026h"), 1);
+        assert!(
+            started.elapsed() >= Duration::from_millis(150),
+            "synchronized update ended early: {:?}",
+            started.elapsed()
+        );
+    }
+    kill(session);
+}
+
 /// A host beyond the session's size limits sees a derived presentation; a
 /// later host resize is presented without resizing the command.
 #[test]
@@ -1835,7 +1863,7 @@ fn saturation_backpressures_pty_without_blocking_probes_or_losing_bytes() {
     let elapsed = started.elapsed();
     let mut expected = b"go\r\n".to_vec();
     expected.resize(expected.len() + 8 * 1024 * 1024, b'x');
-    let release = climon2_vt::Presentation::new(91, 37).release();
+    let release = release_at(37, 47);
     let expected_len = expected.len();
     assert!(
         output.len() == expected_len + release.len()
@@ -2522,6 +2550,7 @@ fn follow_script() -> ! {
                     }
                 }
                 ["clear"] => write!(out, "\x1b[3J").unwrap(),
+                ["sync"] => write!(out, "\x1b[?2026h").unwrap(),
                 _ => panic!("unknown script command {command:?}"),
             }
             out.flush().unwrap();
