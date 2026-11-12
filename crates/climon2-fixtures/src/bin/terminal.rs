@@ -1,14 +1,11 @@
+use climon2_fixtures::BOUND;
 use std::{
     env, fs,
-    io::{self, Read, Write},
+    io::{self, Write},
     process::ExitCode,
     thread,
     time::{Duration, Instant},
 };
-
-/// The longest this fixture sleeps or awaits input: longer than any test waits
-/// on it under load, and short enough for a fixture a killed test left to end.
-const BOUND: Duration = Duration::from_secs(60);
 
 fn main() -> ExitCode {
     match run() {
@@ -36,7 +33,7 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
             let initial = climon2_fixtures::size()?;
             print!("resize-ready");
             io::stdout().flush()?;
-            let deadline = Instant::now() + Duration::from_secs(2);
+            let deadline = Instant::now() + BOUND;
             while climon2_fixtures::size()? == initial {
                 if Instant::now() >= deadline {
                     return Err("resize deadline exceeded".into());
@@ -100,18 +97,8 @@ fn report(path: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>>
 
 /// Reads raw input until `expected` arrives, so a test can hold this fixture's
 /// next output until the host has read everything before it.
-fn await_input(expected: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let deadline = Instant::now() + BOUND;
-    let mut input = Vec::new();
-    while !String::from_utf8_lossy(&input).contains(expected) {
-        if Instant::now() >= deadline {
-            return Err("input deadline exceeded".into());
-        }
-        // Raw mode returns from a read after at most 0.1 s without input.
-        let mut buffer = [0; 64];
-        let count = io::stdin().read(&mut buffer)?;
-        input.extend_from_slice(&buffer[..count]);
-    }
+fn await_input(expected: &str) -> io::Result<()> {
+    climon2_fixtures::read_until(|input| Ok(String::from_utf8_lossy(input).contains(expected)))?;
     Ok(())
 }
 
@@ -146,7 +133,7 @@ fn detach(script: &[&String]) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     // Until the child leads its own session, this fixture exiting would hang it up.
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + BOUND;
     while getsid(Some(child)) != Ok(child) {
         if Instant::now() >= deadline {
             return Err("detached child never started its session".into());
