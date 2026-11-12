@@ -26,7 +26,9 @@ pub use metadata::{
     Available, CommandResult, Percent, Progress, ProgressState, Status, StatusState,
 };
 pub use record::ControlRecord;
-pub use request::{Kill, Leave, Mode, Open, Request};
+pub use request::{
+    Acknowledge, Acquire, Focus, Kill, Leave, Mode, Open, Ready, Request, Resize, SetViewing,
+};
 pub use response::{
     Cleanup, Failure, FocusBytes, KnownResult, Outcome, PartialCleanup, PartialTermination,
     Rejection, Response, Success,

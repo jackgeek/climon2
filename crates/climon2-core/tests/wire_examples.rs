@@ -1,12 +1,13 @@
-//! DOC-01 (Contract case for the part-1 daemon wire pages): every published
-//! example decodes to the values its page documents and re-encodes to the
-//! same bytes. The examples are read from the pages themselves, so the
-//! published text and the codec cannot drift apart. The same examples seed
-//! the member strictness sweep (COM-02).
+//! DOC-01 (Contract case for the daemon wire pages): every published example
+//! decodes to the values its page documents and re-encodes to the same
+//! bytes. The examples are read from the pages themselves, so the published
+//! text and the codec cannot drift apart. The same examples seed the member
+//! strictness sweeps (COM-02).
 use climon2_core::wire::{
-    Available, CommandFinal, CommandResult, ControlRecord, Error, FatalCode, FatalError, Frame,
-    InitialMetadata, Kill, Leave, Mode, Notification, NotificationSource, Open, Outcome, Progress,
-    ProgressChanged, ProgressState, Request, Requested, Response, ServerMessage, Status,
+    Acknowledge, Acquire, Available, CommandFinal, CommandResult, ControlRecord, Error, FatalCode,
+    FatalError, Focus, FocusBytes, Frame, InitialMetadata, Kill, Leave, Mode, Notification,
+    NotificationSource, Open, OperationalCode, Outcome, Progress, ProgressChanged, ProgressState,
+    Ready, Rejection, Request, Requested, Resize, Response, ServerMessage, SetViewing, Status,
     StatusChanged, StatusState, Success, TitleChanged,
 };
 use climon2_core::{
@@ -20,7 +21,7 @@ use climon2_core::{
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
 use std::num::NonZeroU32;
-use support::{counter, families, page_examples};
+use support::{counter, families, geometry, page_examples};
 
 mod support;
 
@@ -67,6 +68,105 @@ fn published_request_examples_round_trip_byte_identically() {
         required_capabilities: families(&[]),
     };
     assert_eq!(kill, Request::Kill(expected.clone()));
+    assert_eq!(expected.to_frame(), frame);
+}
+
+/// DOC-01: Resize `0x32`, Acquire `0x33`, Ready `0x34`, Set viewing `0x35`
+/// and Acknowledge `0x36`.
+#[test]
+fn published_control_request_examples_round_trip_byte_identically() {
+    let (resize, frame) = request(0x32, "request-resize.md");
+    let expected = Resize {
+        request_id: counter(3),
+        period: counter(1),
+        restoration_id: counter(1),
+        geometry: geometry(100, 30),
+    };
+    assert_eq!(resize, Request::Resize(expected));
+    assert_eq!(expected.to_frame(), frame);
+
+    let (acquire, frame) = request(0x33, "request-acquire.md");
+    let expected = Acquire {
+        request_id: counter(4),
+    };
+    assert_eq!(acquire, Request::Acquire(expected));
+    assert_eq!(expected.to_frame(), frame);
+
+    let (ready, frame) = request(0x34, "request-ready.md");
+    let expected = Ready {
+        request_id: counter(5),
+        period: counter(1),
+        restoration_id: counter(1),
+    };
+    assert_eq!(ready, Request::Ready(expected));
+    assert_eq!(expected.to_frame(), frame);
+
+    let (viewing, frame) = request(0x35, "request-viewing.md");
+    let expected = SetViewing {
+        request_id: counter(6),
+        period: counter(1),
+        restoration_id: counter(1),
+        viewing: true,
+    };
+    assert_eq!(viewing, Request::SetViewing(expected));
+    assert_eq!(expected.to_frame(), frame);
+
+    let (acknowledge, frame) = request(0x36, "request-acknowledge.md");
+    let expected = Acknowledge {
+        request_id: counter(7),
+        period: counter(1),
+        restoration_id: counter(1),
+    };
+    assert_eq!(acknowledge, Request::Acknowledge(expected));
+    assert_eq!(expected.to_frame(), frame);
+}
+
+/// DOC-01: Focus `0x39` and its accepted and rejected Responses.
+#[test]
+fn published_focus_examples_round_trip_byte_identically() {
+    let [focus, accepted, rejected]: [String; 3] =
+        page_examples("request-focus.md").try_into().unwrap();
+
+    let frame = Frame::new(0x39, focus.into_bytes());
+    let expected = Focus {
+        request_id: counter(8),
+        period: counter(2),
+        restoration_id: counter(3),
+        focused: false,
+    };
+    assert_eq!(Request::from_frame(&frame), Ok(Request::Focus(expected)));
+    assert_eq!(expected.to_frame(), frame);
+
+    let frame = Frame::new(0x40, accepted.into_bytes());
+    let expected = Response {
+        request_id: counter(8),
+        outcome: Outcome::Ok(Success::Focus {
+            changed: true,
+            focused: false,
+            accepted_bytes: FocusBytes::None,
+        }),
+    };
+    assert_eq!(
+        ServerMessage::from_frame(&frame),
+        Ok(ServerMessage::Response(expected.clone()))
+    );
+    assert_eq!(expected.to_frame(), frame);
+
+    let frame = Frame::new(0x40, rejected.into_bytes());
+    let expected = Response {
+        request_id: counter(8),
+        outcome: Outcome::Rejected(Rejection {
+            error: Error {
+                code: OperationalCode::UnsupportedCapability.into(),
+                message: "focus-v1 was not selected".into(),
+            },
+            known_final: None,
+        }),
+    };
+    assert_eq!(
+        ServerMessage::from_frame(&frame),
+        Ok(ServerMessage::Response(expected.clone()))
+    );
     assert_eq!(expected.to_frame(), frame);
 }
 
@@ -263,22 +363,36 @@ fn ok(result: &str) -> String {
     format!(r#"{{"request_id":"1","outcome":"ok","result":{result},"error":null}}"#)
 }
 
-/// Valid part-1 records: every published example, then each documented shape
+/// Every daemon wire page that publishes JSON examples, with the type of each
+/// example in page order. The frozen hello pages have their own tests.
+const JSON_PAGES: [(&str, &[u8]); 17] = [
+    ("request-open.md", &[0x30]),
+    ("request-resize.md", &[0x32]),
+    ("request-acquire.md", &[0x33]),
+    ("request-ready.md", &[0x34]),
+    ("request-viewing.md", &[0x35]),
+    ("request-acknowledge.md", &[0x36]),
+    ("request-leave.md", &[0x37]),
+    ("request-kill.md", &[0x38]),
+    ("request-focus.md", &[0x39, 0x40, 0x40]),
+    ("response.md", &[0x40]),
+    ("event-initial-metadata.md", &[0x41]),
+    ("event-title-changed.md", &[0x42]),
+    ("event-status-changed.md", &[0x43]),
+    ("event-notification.md", &[0x44]),
+    ("event-progress-changed.md", &[0x45]),
+    ("event-command-final.md", &[0x4c]),
+    ("event-fatal-error.md", &[0x4d]),
+];
+
+/// Valid JSON records: every published example, then each documented shape
 /// that no page shows.
-fn part1_records() -> Vec<(u8, String)> {
-    let published = [
-        (0x30, "request-open.md"),
-        (0x37, "request-leave.md"),
-        (0x38, "request-kill.md"),
-        (0x40, "response.md"),
-        (0x41, "event-initial-metadata.md"),
-        (0x42, "event-title-changed.md"),
-        (0x43, "event-status-changed.md"),
-        (0x44, "event-notification.md"),
-        (0x45, "event-progress-changed.md"),
-        (0x4c, "event-command-final.md"),
-        (0x4d, "event-fatal-error.md"),
-    ];
+fn records() -> Vec<(u8, String)> {
+    let published = JSON_PAGES.iter().flat_map(|(page, codes)| {
+        let examples = page_examples(page);
+        assert_eq!(examples.len(), codes.len(), "{page}");
+        codes.iter().copied().zip(examples)
+    });
     let exit = r#"{"kind":"exit","code":0}"#;
     let unpublished = [
         (
@@ -338,11 +452,7 @@ fn part1_records() -> Vec<(u8, String)> {
             format!(r#"{{"command_result":{exit},"status":null}}"#),
         ),
     ];
-    published
-        .into_iter()
-        .map(|(code, page)| (code, example(page)))
-        .chain(unpublished)
-        .collect()
+    published.chain(unpublished).collect()
 }
 
 /// JSON pointers to `value` and every object nested inside it.
@@ -387,12 +497,12 @@ fn repeated(record: &Value, pointer: &str, key: &str) -> String {
     .replace(r#""\u0001""#, &format!(r#""{key}""#))
 }
 
-/// COM-02 (codec case): every member of every part-1 record, at every depth,
+/// COM-02 (codec case): every member of every JSON record, at every depth,
 /// is required even when null, appears once and is documented. Removing or
 /// repeating any member, or adding one to any object, is `invalid_record`.
 #[test]
-fn every_member_of_every_part1_record_is_required_unique_and_documented() {
-    for (code, body) in part1_records() {
+fn every_member_of_every_json_record_is_required_unique_and_documented() {
+    for (code, body) in records() {
         assert_eq!(decode(code, &body), Ok(()), "{body}");
         let record: Value = serde_json::from_str(&body).unwrap();
         for pointer in objects(&record, String::new()) {
@@ -428,7 +538,7 @@ fn every_member_of_every_part1_record_is_required_unique_and_documented() {
 /// `invalid_record`. Request IDs are swept with the other request-ID cases.
 #[test]
 fn string_members_accept_only_json_strings() {
-    for (code, body) in part1_records() {
+    for (code, body) in records() {
         let record: Value = serde_json::from_str(&body).unwrap();
         for pointer in objects(&record, String::new()) {
             let members = record.pointer(&pointer).unwrap().as_object().unwrap();
@@ -461,7 +571,7 @@ fn string_members_accept_only_json_strings() {
 #[test]
 fn only_requests_and_responses_carry_request_ids() {
     let mut correlated = BTreeSet::new();
-    for (code, body) in part1_records() {
+    for (code, body) in records() {
         let record: Value = serde_json::from_str(&body).unwrap();
         let with_id = |id: Value| {
             edited(&record, "", |object| {
@@ -499,7 +609,94 @@ fn only_requests_and_responses_carry_request_ids() {
     }
     assert_eq!(
         correlated,
-        BTreeSet::from([0x30, 0x37, 0x38, 0x40]),
-        "Open, Leave, Kill and Response"
+        BTreeSet::from([0x30, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x40]),
+        "every JSON request and the Response"
+    );
+}
+
+/// COM-02 (codec case): every control period and restoration ID, wherever a
+/// record carries one, is a counter: "1" and the largest decode, while "0",
+/// one past the largest, a number and null are `invalid_record`.
+#[test]
+fn every_period_and_restoration_id_is_a_counter_at_both_bounds() {
+    let mut carriers = BTreeSet::new();
+    for (code, body) in records() {
+        let record: Value = serde_json::from_str(&body).unwrap();
+        for pointer in objects(&record, String::new()) {
+            for key in ["period", "restoration_id"] {
+                if record.pointer(&pointer).unwrap().get(key).is_none() {
+                    continue;
+                }
+                carriers.insert(code);
+                let with = |value: Value| {
+                    edited(&record, &pointer, |object| {
+                        object.insert(key.into(), value);
+                    })
+                };
+                for valid in ["1", "18446744073709551615"] {
+                    let variant = with(json!(valid));
+                    assert_eq!(decode(code, &variant), Ok(()), "{variant}");
+                }
+                for invalid in [
+                    json!("0"),
+                    json!("18446744073709551616"),
+                    json!(1),
+                    Value::Null,
+                ] {
+                    let variant = with(invalid);
+                    assert_eq!(
+                        decode(code, &variant),
+                        Err(FatalCode::InvalidRecord),
+                        "{variant}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        carriers,
+        BTreeSet::from([0x32, 0x34, 0x35, 0x36, 0x39, 0x40]),
+        "Resize, Ready, Set viewing, Acknowledge, Focus and the Acquire and Ready results"
+    );
+}
+
+/// COM-02 (codec case): every geometry's columns and rows are positive
+/// unsigned 32-bit integer tokens: 1 and 4294967295 decode, while 0 and
+/// 4294967296 are `invalid_record`.
+#[test]
+fn every_geometry_has_positive_u32_columns_and_rows_at_both_bounds() {
+    let mut carriers = BTreeSet::new();
+    for (code, body) in records() {
+        let record: Value = serde_json::from_str(&body).unwrap();
+        for pointer in objects(&record, String::new()) {
+            if record.pointer(&pointer).unwrap().get("cols").is_none() {
+                continue;
+            }
+            carriers.insert(code);
+            for key in ["cols", "rows"] {
+                let with = |value: u64| {
+                    edited(&record, &pointer, |object| {
+                        object.insert(key.into(), json!(value));
+                    })
+                };
+                for valid in [1, 4_294_967_295] {
+                    let variant = with(valid);
+                    assert_eq!(decode(code, &variant), Ok(()), "{variant}");
+                }
+                for invalid in [0, 4_294_967_296] {
+                    let variant = with(invalid);
+                    assert_eq!(
+                        decode(code, &variant),
+                        Err(FatalCode::InvalidRecord),
+                        "{variant}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        carriers,
+        BTreeSet::from([0x30, 0x32]),
+        "interactive Open and Resize"
     );
 }
