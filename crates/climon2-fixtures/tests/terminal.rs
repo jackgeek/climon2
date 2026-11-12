@@ -169,7 +169,7 @@ fn generic_terminal_cursor_reports_position_visibility_shape_and_blink() {
         command.args(["print", output]);
         let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
         assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
-        assert_eq!(terminal.cursor_state(), expected, "{output:?}");
+        assert_eq!(terminal.cursor(), expected, "{output:?}");
     }
     isolation.assert_clean();
 }

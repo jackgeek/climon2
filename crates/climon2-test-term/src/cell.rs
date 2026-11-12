@@ -1,13 +1,11 @@
 //! What a user sees in one cell of the emulated host, and its cursor, in terms a
 //! test can specify from the SGR, DECSCUSR and DECTCEM definitions alone.
 
+use crate::terminal::Modes;
 use alacritty_terminal::{
     Term,
     event::EventListener,
-    term::{
-        TermMode,
-        cell::{self, Flags},
-    },
+    term::cell::{self, Flags},
     vte::ansi::{self, NamedColor},
 };
 
@@ -211,7 +209,7 @@ impl Cursor {
         Self {
             row: point.line.0 as usize,
             column: point.column.0,
-            visible: term.mode().contains(TermMode::SHOW_CURSOR),
+            visible: Modes::of(*term.mode()).cursor_visible,
             shape: CursorShape::of(style.shape),
             blinking: style.blinking,
         }

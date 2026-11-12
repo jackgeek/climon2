@@ -104,7 +104,7 @@ impl Modes {
         line_feed_new_line: false,
     };
 
-    fn of(mode: TermMode) -> Self {
+    pub(crate) fn of(mode: TermMode) -> Self {
         Self {
             alternate_screen: mode.contains(TermMode::ALT_SCREEN),
             cursor_visible: mode.contains(TermMode::SHOW_CURSOR),
@@ -405,22 +405,8 @@ impl Terminal {
         Modes::of(*self.screen.0.lock().expect("screen lock").term.mode())
     }
 
-    /// The cursor's visible-screen (row, column), 0-based.
-    pub fn cursor(&self) -> (usize, usize) {
-        let point = self
-            .screen
-            .0
-            .lock()
-            .expect("screen lock")
-            .term
-            .grid()
-            .cursor
-            .point;
-        (point.line.0 as usize, point.column.0)
-    }
-
     /// The cursor's position, visibility, shape and blink, read together.
-    pub fn cursor_state(&self) -> Cursor {
+    pub fn cursor(&self) -> Cursor {
         Cursor::of(&self.screen.0.lock().expect("screen lock").term)
     }
 
