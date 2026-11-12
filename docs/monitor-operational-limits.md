@@ -133,6 +133,9 @@ once; per-instance state counts separately. Successfully opened library handles,
 including later-rejected ones, and their reservations remain until process exit.
 A release without bounded qualified requirements is explicitly unsupported or
 resource-blocked; it is not assumed to use the default reservation.
+Qualified requirements are measured and recorded per platform, because a
+release's macOS and Linux libraries can differ, for example in notification
+descriptors.
 Qualified worker counts above the configured maximum require explicit rejection,
 not silently raising that ceiling. Greater reservations apply to actual
 stack/descriptor/shared-memory requirements, not permission to exceed a limit.
@@ -302,8 +305,11 @@ First attempts start newest-first; after eight newer starts, give the oldest
 waiting eligible candidate a turn. Retries share bounded capacity and must not
 monopolize first starts. Memory/descriptor/thread admission precedes execution.
 Continuous arrivals and one newer stalled release must not indefinitely prevent
-older eligible clients from starting. Progress and cleanup deadlines also apply
-to load/discovery workers; a stuck native loader is not forcibly cancelled.
+older eligible clients of already loaded releases from starting. Progress and
+cleanup deadlines also apply to discovery workers. Load workers have none: the
+system loader serializes loading and a load cannot be cancelled, so a load that
+never returns is a native fault, like a crash, and can block later loads
+([library embedding](protocol/library-embedding.md#loading-and-instance-lifetime)).
 Initial selection remains pinned under the status/lifecycle rules, independently
 of scheduling fairness; failure never silently selects/acquires another session.
 

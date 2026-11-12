@@ -2,7 +2,8 @@
 
 **Status:** agreed design, not implemented. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
-requirements. [Native revision 1](monitor-client/core-v1.md), confirmed in
+requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)
+adds x86-64 GNU/Linux. [Native revision 1](monitor-client/core-v1.md), confirmed in
 [#71](https://github.com/jackgeek/climon2/issues/71), publishes complete declarations,
 [native-path](TERMS.md#native-path) encoding, result codes and compilable examples
 as a specification, not a shipped library.
@@ -41,13 +42,13 @@ explicit availability errors, not evidence that a session ended.
 
 ## Artifact and dependency lookup
 
-On macOS, load the absolute path
-`<executable home>/<session version>/libclimon2_client.dylib` from the
-[install layout](../../GLOSSARY.md#installation). Never substitute `current`,
-another installed release, or a library found through a search path.
-The [client executable](../../GLOSSARY.md#sessions) loads the same filename
-beside itself and verifies its own exact release. Other platforms choose their
-filenames when supported.
+Load the absolute path `<executable home>/<session version>/<library file>`
+from the [install layout](../../GLOSSARY.md#installation). The library file is
+`libclimon2_client.dylib` on macOS and `libclimon2_client.so` on x86-64
+GNU/Linux; the version folder, not the file name, carries the release. Never
+substitute `current`, another installed release, or a library found through a
+search path. The [client executable](../../GLOSSARY.md#sessions) loads the same
+filename beside itself and verifies its own exact release.
 
 Load with eager symbol resolution and local symbol visibility. Bundled private
 dependencies resolve relative to the library, not the current working directory
@@ -55,6 +56,35 @@ or ambient library search paths. Give them release-distinct loader identities
 where needed to prevent cross-binding. System libraries remain system
 dependencies. Simultaneous releases must not accidentally resolve one another's
 private symbols or dependencies.
+
+On Linux, open the library with `dlopen(path, RTLD_NOW | RTLD_LOCAL)`. The
+[dynamic loader](TERMS.md#dynamic-loader) can reuse an already loaded library
+by name, [soname](TERMS.md#soname) or file, and same-named dependencies can
+bind across releases even with local visibility. Each release's library is
+therefore one self-contained file: it exports only
+`climon2_client_get_interface`, has no soname and no
+[RPATH or RUNPATH](TERMS.md#rpath-and-runpath), and needs no shared library
+beyond those of [glibc](TERMS.md#glibc). Release builds check every one of
+these rules. Do not use `RTLD_DEEPBIND` or separate `dlmopen` namespaces: each
+namespace loads its own glibc, so one release's memory could be freed by
+another release's allocator, and glibc allows only a few namespaces.
+
+`LD_LIBRARY_PATH` never redirects an absolute path. On Linux, the absolute
+path plus the release identity built into the library is the whole proof of
+the exact release. The monitor does not inspect the file before loading it,
+because the file could change between the inspection and the load.
+
+Classify Linux load failures from the loader's own checks, never from
+`dlerror()` text. A missing file is a missing library. An [ELF](TERMS.md#elf)
+header that is not x86-64 is an incompatible architecture. A `dlopen` failure
+after both checks pass is a missing dependency, reported with the `dlerror()`
+text only for diagnosis. A missing `climon2_client_get_interface` is a missing
+symbol.
+
+`LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` come from the
+user's environment and still affect the glibc libraries the client library
+uses. They are the user's own configuration: the monitor neither clears them
+nor refuses to run because they are set.
 
 Installed libraries are trusted native code. Initializers execute before
 identity validation; compatibility checks do not sandbox a malicious artifact.
@@ -64,8 +94,11 @@ A native crash during loading can terminate the whole monitor.
 
 Perform loading and validation away from the rendering/input thread. Share one
 load attempt per release and one loaded library among that release's instances.
-A stalled load must not freeze global monitor actions or indefinitely prevent
-other releases from starting.
+A stalled load must not freeze global monitor actions. It can still prevent
+other releases from starting: the system loader serializes loading, and glibc
+holds one process-wide lock while a library and its initializers load. A load
+that never returns is a native fault, like a crash. There is no load deadline,
+because a load cannot be cancelled.
 
 Retain every successfully opened library handle until monitor process exit,
 including handles rejected by later compatibility checks. Rejected libraries
@@ -189,7 +222,8 @@ These are obligations for later implementation, not tests already run:
 - Use different private dependency behavior in mixed-release fixtures to detect
   accidental symbol/dependency cross-binding.
 - Cover native paths, independent paths/settings/diagnostics/resources, and
-  continued progress when another instance or release stalls or fails.
+  continued progress when another instance stalls or fails, or another release
+  fails to load.
 - Check copying, borrowing and transferred-buffer lifetimes, allocator pairing,
   internal-worker cleanup, control-handle lifetime and actual thread joins,
   including partial startup and recoverable panics.
@@ -200,6 +234,10 @@ These are obligations for later implementation, not tests already run:
 - Exercise native crash/abort in a disposable monitor process. Report
   whole-monitor failure exposure; do not assert process-isolated client
   survival or guaranteed session survival.
+- Produce all of this evidence on x86-64 GNU/Linux and on both macOS
+  architectures. On Linux, also check that every release build's library
+  exports one symbol, has no soname, RPATH or RUNPATH, and depends only on
+  glibc.
 
 The agreed [communication decision](https://github.com/jackgeek/climon2/issues/66)
 owns [operation delivery and representation, ordering and correlation](README.md#shared-in-process-communication-contract).

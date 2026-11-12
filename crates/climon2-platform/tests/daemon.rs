@@ -1,4 +1,4 @@
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use climon2_platform::daemon::{self, Readiness, ReadinessWriter};
 use std::{
@@ -8,6 +8,95 @@ use std::{
     process::Command,
     time::{Duration, Instant},
 };
+
+/// #19: the readiness pipe goes no further than the daemon, whose own children never inherit it.
+#[test]
+fn issue19_an_inherited_readiness_pipe_closes_on_exec() {
+    let mut descriptors = [-1; 2];
+    assert_eq!(unsafe { libc::pipe(descriptors.as_mut_ptr()) }, 0);
+    let _reader = unsafe { File::from_raw_fd(descriptors[0]) };
+    let writer =
+        unsafe { ReadinessWriter::from_inherited(u32::try_from(descriptors[1]).unwrap()) }.unwrap();
+    let flags = unsafe { libc::fcntl(descriptors[1], libc::F_GETFD) };
+    assert_eq!(flags & libc::FD_CLOEXEC, libc::FD_CLOEXEC);
+    drop(writer);
+}
+
+/// #19: descriptor 3, the first after stdio, is a valid readiness descriptor.
+#[test]
+fn issue19_descriptor_3_carries_readiness() {
+    use std::os::{
+        fd::{AsRawFd, OwnedFd},
+        unix::process::CommandExt,
+    };
+    let (mut reader, writer) = std::io::pipe().unwrap();
+    let writer = OwnedFd::from(writer);
+    let inherited = writer.as_raw_fd();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "owned_daemon_fixture",
+            "--nocapture",
+        ])
+        .env("CLIMON2_DAEMON_FIXTURE", "ready")
+        .env("CLIMON2_READINESS_FIXTURE_FD", "3")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null());
+    unsafe {
+        command.pre_exec(move || {
+            // dup2 leaves the copy open across exec; the fixture expects its own session.
+            if libc::dup2(inherited, 3) == -1
+                || libc::fcntl(3, libc::F_SETFD, 0) == -1
+                || libc::setsid() == -1
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().unwrap();
+    drop(writer);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mut reply = Vec::new();
+    reader.read_to_end(&mut reply).unwrap();
+    assert_eq!(reply, b"R");
+}
+
+/// #19: a pending startup dropped before its readiness is read kills and reaps the daemon.
+#[test]
+fn issue19_dropping_a_pending_daemon_kills_and_reaps_it() {
+    let daemon = launch("partial");
+    let pid = daemon.id();
+    drop(daemon);
+    let reaped = climon2_platform::process::try_wait(pid);
+    if matches!(reaped, Ok(None)) {
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        let _ = climon2_platform::process::wait(pid);
+    }
+    assert_eq!(
+        reaped.err().and_then(|error| error.raw_os_error()),
+        Some(libc::ECHILD),
+        "the dropped daemon was not killed and reaped"
+    );
+}
+
+/// #19: an inherited readiness descriptor that is not open is refused, not adopted.
+#[test]
+fn issue19_a_readiness_descriptor_that_is_not_open_is_refused() {
+    let refused = unsafe { ReadinessWriter::from_inherited(i32::MAX as u32) };
+    assert_eq!(
+        refused.err().and_then(|error| error.raw_os_error()),
+        Some(libc::EBADF)
+    );
+}
 
 #[test]
 fn issue19_readiness_failure_writer_preserves_all_launch_codes_over_real_pipe() {
@@ -69,6 +158,12 @@ fn owned_daemon_fixture() {
                 message: "cannot run command".into(),
             })
             .unwrap(),
+        "longest" => writer
+            .send(&Readiness::Failed {
+                code: 125,
+                message: "x".repeat(LONGEST_MESSAGE),
+            })
+            .unwrap(),
         "empty" => return,
         "partial" => {
             assert_eq!(
@@ -90,6 +185,21 @@ fn owned_daemon_fixture() {
         return;
     }
     std::thread::sleep(Duration::from_secs(30));
+}
+
+/// The readiness protocol's longest failure message, in bytes.
+const LONGEST_MESSAGE: usize = 4096;
+
+/// #19: a failure message of the protocol's maximum length is written and read whole.
+#[test]
+fn issue19_the_longest_readiness_failure_message_arrives_whole() {
+    assert_eq!(
+        launch("longest").wait_ready(&[]).unwrap(),
+        Readiness::Failed {
+            code: 125,
+            message: "x".repeat(LONGEST_MESSAGE)
+        }
+    );
 }
 
 #[test]
@@ -189,6 +299,7 @@ fn issue19_interrupted_readiness_wait_keeps_its_deadline() {
     assert!(start.elapsed() < Duration::from_secs(8));
 }
 
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     /// libSystem's libnotify; the first call in a process initialises its globals.
     fn notify_register_check(name: *const libc::c_char, token: *mut libc::c_int) -> u32;
@@ -198,6 +309,7 @@ unsafe extern "C" {
 /// launches a burst of daemons. Exits 0 only if every daemon reported ready.
 #[test]
 #[ignore = "owned subprocess fixture"]
+#[cfg(target_os = "macos")]
 fn owned_fork_race_fixture() {
     use std::sync::atomic::{AtomicBool, Ordering};
     static STARTED: AtomicBool = AtomicBool::new(false);
@@ -230,6 +342,7 @@ fn owned_fork_race_fixture() {
 /// exec (macOS runs libnotify's fork handler in the child, which traps on a half-initialised
 /// once-gate). Each attempt is a fresh process, as the initialisation happens once.
 #[test]
+#[cfg(target_os = "macos")]
 fn issue19_daemon_spawn_survives_concurrent_libnotify_initialisation() {
     let failed = (0..60)
         .filter(|_| {

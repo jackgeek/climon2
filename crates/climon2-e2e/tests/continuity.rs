@@ -1,7 +1,7 @@
 //! Plan section 6.1: session continuity through the installed product, from
 //! controlled bash 5 outer terminals with isolated homes. Every scenario ends
 //! with `assert_clean()`.
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 #[allow(dead_code)]
 mod support;
@@ -74,6 +74,16 @@ fn prompt_after(terminal: &mut Terminal, marker: &str) {
         })
         .unwrap();
     terminal.wait_for_input_ready(TIMEOUT).unwrap();
+}
+
+/// Runs a foreground command that never reads the terminal, so a kill ends the
+/// shell with the hang-up signal rather than a prompt read failure (see
+/// `RECORDER`).
+fn hold_without_reading(terminal: &mut Terminal) {
+    terminal
+        .send("printf 'HOLD%s\\n' ING; sleep 1000\n")
+        .unwrap();
+    terminal.wait_for_text("HOLDING", TIMEOUT).unwrap();
 }
 
 /// An outer controlled bash that fills its host with sentinels, then becomes
@@ -394,6 +404,7 @@ fn installed_kill_ends_detached_and_attached_sessions() {
     drop(b);
     let mut c = climon2(&package, &["attach", &id[..8]], ROWS, COLS);
     prompt(&mut c);
+    hold_without_reading(&mut c);
     let mut kill = climon2(&package, &["kill", &id[..8]], ROWS, COLS);
     assert_eq!(kill.wait_exit(TIMEOUT).unwrap(), 0);
     assert_eq!(kill.screen().trim(), "", "kill is silent");
@@ -729,9 +740,12 @@ fn installed_detached_session_absorbs_a_large_write() {
 /// A TUI that sets mouse reporting, focus, bracketed paste, a hidden cursor,
 /// application keys and the alternate screen, then exits on any key without
 /// undoing any of them.
+/// Ends after one key; if its terminal closes first, it waits for the hang-up
+/// signal like `RECORDER`. `dd` reads the key because `read -s`/`-n` install
+/// bash's terminating-signal handlers, which can consume that signal.
 const TUI: &str = r#"printf '\e[?1049h\e[?1000h\e[?1006h\e[?1004h\e[?2004h\e[?25l\e[?1h\e=\e[H\e[2JTUI-READY'
 stty raw -echo
-IFS= read -rsn1 _
+dd bs=1 count=1 >/dev/null 2>&1 || exec sleep 1000
 "#;
 
 /// An outer non-interactive shell that records termios around `climon2
@@ -845,9 +859,14 @@ fn installed_client_releases_the_host_on_every_ending() {
 }
 
 /// Records every input byte in `$1` with bracketed paste enabled.
+/// Linux wakes a terminal reader before it signals the session leader when a
+/// killed session's terminal closes, so a leader still reading the terminal
+/// can end with its own status (ADR 0003). The shell therefore leaves reading
+/// to `cat` and waits for the hang-up signal once `cat` ends.
 const RECORDER: &str = r#"stty raw -echo
 printf '\e[?2004hREC-READY'
-exec cat > "$1"
+cat > "$1"
+exec sleep 1000
 "#;
 
 fn recorder(package: &Package, bash: &Path, name: &str) -> (Terminal, PathBuf) {
@@ -885,9 +904,9 @@ fn is_client(pid: i32) -> bool {
         .args(["-p", &pid.to_string(), "-o", "comm="])
         .output()
         .unwrap();
-    String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .ends_with("/climon2-client")
+    Path::new(String::from_utf8_lossy(&output.stdout).trim())
+        .file_name()
+        .is_some_and(|name| name == "climon2-client")
 }
 
 const PASTE_START: &str = "\x1b[200~first";
@@ -987,14 +1006,14 @@ fn installed_large_restoration_is_complete_and_ordered() {
     let mut first = exec_bash(&package, &bash);
     first
         .send(format!(
-            "until [ -e ~/go ]; do sleep 0.05; done; \
+            "echo $((6*7))-producer-ready; until [ -e ~/go ]; do sleep 0.05; done; \
              awk 'BEGIN {{ for (i = 1; i <= {ROWS_PRODUCED}; i++) {{ printf \"%06d\", i; \
              for (j = 0; j < 73; j++) printf \"€\"; printf \"\\n\" }} }}'; : > ~/done; \
              until [ -e ~/live ]; do sleep 0.01; done; \
              for i in $(seq 1 {LIVE}); do echo live-$i; done; echo LIVE-$((2+2))\n"
         ))
         .unwrap();
-    first.wait_for_text("LIVE-$((2+2))", TIMEOUT).unwrap();
+    first.wait_for_text("42-producer-ready", TIMEOUT).unwrap();
     first.wait_for_input_ready(TIMEOUT).unwrap();
     let id = session_id(&package);
     detach(&mut first, &id);

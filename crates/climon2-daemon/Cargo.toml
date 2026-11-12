@@ -19,6 +19,8 @@ tracing = "0.1.44"
 [dev-dependencies]
 serde_json.workspace = true
 tempfile = "3.27.0"
+vt100 = "0.18.1"
+climon2-test-term = { path = "../climon2-test-term" }
 
 [lints]
 workspace = true

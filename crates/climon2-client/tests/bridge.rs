@@ -1,4 +1,4 @@
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use climon2_core::{
     SessionId,
@@ -18,17 +18,33 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
 
 const ID: &str = "01234567-89ab-4cde-8fab-0123456789ab";
 
+/// Which open-file descriptions of the terminal the client gets as stdin and stdout.
+#[derive(Clone, Copy)]
+enum Descriptions {
+    Shared,
+    SeparateOutput,
+    /// Each open for one direction only: a read-only stdin whose file-status flags are
+    /// all clear, and a write-only stdout.
+    OneWay,
+}
+
 struct Pty {
     master: File,
     slave: File,
     child: Child,
     saved: libc::termios,
+    /// The open-file description the client gets as stdin: the slave's unless read-only.
+    input: File,
     /// The open-file description the client gets as stdout: the stdin one unless separate.
     output: File,
     /// F_GETFL of stdin's then stdout's description before the client started.
@@ -41,13 +57,26 @@ impl Pty {
     }
 
     fn configured(home: &Path, metadata: &Path, fault: Option<&str>, filter: Option<&str>) -> Self {
-        Self::launch(home, metadata, fault, filter, false, false)
+        Self::launch(home, metadata, fault, filter, false, Descriptions::Shared)
     }
 
     /// Gives the client a stdout that is a separate open-file description of the
     /// same terminal, so stdin's and stdout's file-status flags are independent.
     fn separate_output(home: &Path, metadata: &Path) -> Self {
-        Self::launch(home, metadata, None, None, false, true)
+        Self::launch(
+            home,
+            metadata,
+            None,
+            None,
+            false,
+            Descriptions::SeparateOutput,
+        )
+    }
+
+    /// Gives the client a read-only stdin whose file-status flags are all clear and a
+    /// write-only stdout.
+    fn one_way(home: &Path, metadata: &Path) -> Self {
+        Self::launch(home, metadata, None, None, false, Descriptions::OneWay)
     }
 
     /// Runs the client as a background job of a shell that owns the PTY as its
@@ -55,7 +84,7 @@ impl Pty {
     /// The shell records the client's status and stderr under `home`, then stays alive:
     /// a session leader's exit would revoke the PTY before termios could be checked.
     fn background(home: &Path, metadata: &Path) -> Self {
-        Self::launch(home, metadata, None, None, true, false)
+        Self::launch(home, metadata, None, None, true, Descriptions::Shared)
     }
 
     fn launch(
@@ -64,7 +93,7 @@ impl Pty {
         fault: Option<&str>,
         filter: Option<&str>,
         background: bool,
-        separate_output: bool,
+        descriptions: Descriptions,
     ) -> Self {
         let mut master = -1;
         let mut slave = -1;
@@ -82,7 +111,7 @@ impl Pty {
                     &mut slave,
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
-                    &mut size,
+                    &raw mut size,
                 )
             },
             0,
@@ -104,16 +133,19 @@ impl Pty {
                 0
             );
         }
-        let output = if separate_output {
-            reopen(&slave)
-        } else {
-            slave.try_clone().unwrap()
+        let (input, output) = match descriptions {
+            Descriptions::Shared => (slave.try_clone().unwrap(), slave.try_clone().unwrap()),
+            Descriptions::SeparateOutput => (slave.try_clone().unwrap(), reopen(&slave)),
+            Descriptions::OneWay => (
+                one_way(&master, &slave, libc::O_RDONLY),
+                one_way(&master, &slave, libc::O_WRONLY),
+            ),
         };
-        let status_flags = [status_flags(&slave), status_flags(&output)];
+        let status_flags = [status_flags(&input), status_flags(&output)];
         let mut command = if background {
             background_job()
         } else {
-            Command::new(env!("CARGO_BIN_EXE_climon2-client"))
+            climon2_test_term::process_command(env!("CARGO_BIN_EXE_climon2-client"))
         };
         command
             .args(["attach", "--metadata"])
@@ -125,7 +157,7 @@ impl Pty {
                 "CLIMON2_CLIENT_STARTUP",
                 r#"{"schema":1,"operation":"attach","settings":{"escape_prefix":29,"take_control_key":20}}"#,
             )
-            .stdin(slave.try_clone().unwrap())
+            .stdin(input.try_clone().unwrap())
             .stdout(output.try_clone().unwrap())
             .stderr(Stdio::piped());
         if let Some(fault) = fault {
@@ -148,9 +180,24 @@ impl Pty {
             slave,
             child,
             saved,
+            input,
             output,
             status_flags,
         }
+    }
+
+    /// Runs `action` while the client is stopped, so the client sees only its outcome.
+    fn while_stopped(&mut self, action: impl FnOnce(&mut Self)) {
+        let pid = self.child.id() as libc::pid_t;
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &raw mut status, libc::WUNTRACED) },
+            pid
+        );
+        assert!(libc::WIFSTOPPED(status));
+        action(self);
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGCONT) }, 0);
     }
 
     fn termios(&self) -> libc::termios {
@@ -254,7 +301,7 @@ impl Pty {
 
     fn assert_restored(&self) {
         assert_eq!(
-            [status_flags(&self.slave), status_flags(&self.output)],
+            [status_flags(&self.input), status_flags(&self.output)],
             self.status_flags,
             "terminal file-status flags (e.g. O_NONBLOCK) not restored"
         );
@@ -280,7 +327,10 @@ impl Pty {
 }
 
 /// Darwin's kernel-private FWASWRITTEN: set by any write, not settable by F_SETFL.
+#[cfg(target_os = "macos")]
 const WAS_WRITTEN: i32 = 0x0001_0000;
+#[cfg(target_os = "linux")]
+const WAS_WRITTEN: i32 = 0;
 
 /// Waits until `file` is ready for `events`, or `milliseconds` pass so the caller can
 /// recheck its own exit conditions. A blind sleep would move only the PTY's ~1 KiB queue
@@ -301,25 +351,84 @@ fn status_flags(file: &File) -> i32 {
     flags & !WAS_WRITTEN
 }
 
+/// A new read-only open-file description of the same terminal, with every
+/// file-status flag clear, as `climon2 attach < /dev/tty` gives on macOS.
+/// Opens the terminal again for `access` alone (O_RDONLY or O_WRONLY).
+fn one_way(master: &File, terminal: &File, access: i32) -> File {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = master;
+        let mut name = [0 as libc::c_char; libc::PATH_MAX as usize];
+        assert_ne!(
+            unsafe { libc::fcntl(terminal.as_raw_fd(), libc::F_GETPATH, name.as_mut_ptr()) },
+            -1
+        );
+        let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
+        let file = fs::OpenOptions::new()
+            .read(access == libc::O_RDONLY)
+            .write(access == libc::O_WRONLY)
+            .custom_flags(libc::O_NOCTTY)
+            .open(name.to_str().unwrap())
+            .unwrap();
+        close_on_exec(&file);
+        file
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // A path open adds O_LARGEFILE; the master's peer open keeps the flags as given.
+        let _ = terminal;
+        let fd = unsafe {
+            libc::ioctl(
+                master.as_raw_fd(),
+                libc::TIOCGPTPEER,
+                access | libc::O_NOCTTY,
+            )
+        };
+        assert!(fd >= 0, "{}", std::io::Error::last_os_error());
+        let file = unsafe { File::from_raw_fd(fd) };
+        close_on_exec(&file);
+        file
+    }
+}
+
+fn close_on_exec(file: &File) {
+    assert_eq!(
+        unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) },
+        0
+    );
+}
+
 /// A new open-file description of the same terminal device.
 fn reopen(terminal: &File) -> File {
-    // F_GETPATH, unlike Darwin's ttyname_r, never fails intermittently with ERANGE.
-    let mut name = [0 as libc::c_char; libc::PATH_MAX as usize];
-    assert_ne!(
-        unsafe { libc::fcntl(terminal.as_raw_fd(), libc::F_GETPATH, name.as_mut_ptr()) },
-        -1
-    );
-    let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
-    fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_NOCTTY)
-        .open(name.to_str().unwrap())
-        .unwrap()
+    #[cfg(target_os = "macos")]
+    {
+        // F_GETPATH, unlike Darwin's ttyname_r, never fails intermittently with ERANGE.
+        let mut name = [0 as libc::c_char; libc::PATH_MAX as usize];
+        assert_ne!(
+            unsafe { libc::fcntl(terminal.as_raw_fd(), libc::F_GETPATH, name.as_mut_ptr()) },
+            -1
+        );
+        let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(name.to_str().unwrap())
+            .unwrap()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(format!("/proc/self/fd/{}", terminal.as_raw_fd()))
+            .unwrap()
+    }
 }
 
 fn background_job() -> Command {
-    let mut command = Command::new("/bin/sh");
+    let mut command = climon2_test_term::process_command("/bin/sh");
     command.args([
         "-c",
         "trap '' TTIN TTOU; set -m; \"$0\" \"$@\" 2>\"$HOME/stderr\" & wait $!; \
@@ -328,7 +437,7 @@ fn background_job() -> Command {
     ]);
     unsafe {
         command.pre_exec(|| {
-            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY.into(), 0) < 0 {
+            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
@@ -347,7 +456,7 @@ impl Drop for Pty {
 fn setup() -> (tempfile::TempDir, PathBuf, UnixListener) {
     let home = tempfile::Builder::new()
         .prefix("client-")
-        .tempdir_in(std::env::current_dir().unwrap())
+        .tempdir_in("/tmp")
         .unwrap();
     let socket = home.path().join("peer.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -947,6 +1056,71 @@ fn separate_stdin_and_stdout_descriptions_both_get_their_flags_back() {
     }
 }
 
+/// #20: a read-only stdin whose file-status flags are all clear and a write-only
+/// stdout still bridge both ways (input is read from stdin, never stdout) and get
+/// their flags back.
+#[test]
+fn one_way_descriptors_are_bridged_and_restored() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::one_way(home.path(), &metadata);
+    assert_eq!(pty.status_flags[0], 0, "stdin must have no status flags");
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    begin_bridge(&mut stream);
+    pty.wait_raw();
+    pty.master.write_all(b"in").unwrap();
+    assert_eq!(receive(&mut stream), ClientMessage::Input(b"in".to_vec()));
+    send(&mut stream, ServerMessage::Output(b"out".to_vec()));
+    send(&mut stream, ServerMessage::Exit { code: 0 });
+    let (bytes, error) = pty.finish(0);
+    assert_eq!(bytes, b"out");
+    assert!(error.is_empty(), "{error}");
+}
+
+/// #20: input that another reader of the terminal consumed between the
+/// client's poll and its read is not a hang-up; later input still flows.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn input_consumed_by_another_reader_after_poll_is_not_a_hang_up() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    begin_bridge(&mut stream);
+    pty.wait_raw();
+    let terminal = fs::read_link(format!("/proc/self/fd/{}", pty.slave.as_raw_fd())).unwrap();
+    let tracer = climon2_test_term::ptrace::Tracer::seize(pty.child.id(), Duration::from_secs(5));
+    pty.master.write_all(b"taken").unwrap();
+    // Stop at the client's terminal read: read(<terminal>, _, 32768).
+    loop {
+        let call = tracer.next_entry();
+        if call.number == libc::SYS_read as u64
+            && call.arguments[2] == 32768
+            && tracer.descriptor(call.arguments[0]).as_ref() == Some(&terminal)
+        {
+            break;
+        }
+    }
+    // The slave shares the client's non-blocking stdin description.
+    let mut taken = Vec::new();
+    let mut buffer = [0; 16];
+    while taken.len() < 5 {
+        wait_ready(&pty.slave, libc::POLLIN, 5);
+        if let Ok(count) = pty.slave.read(&mut buffer) {
+            taken.extend_from_slice(&buffer[..count]);
+        }
+    }
+    assert_eq!(taken, b"taken");
+    assert_eq!(tracer.finish_syscall(), -i64::from(libc::EAGAIN));
+    tracer.detach();
+    pty.master.write_all(b"live").unwrap();
+    assert_eq!(receive(&mut stream), ClientMessage::Input(b"live".to_vec()));
+    send(&mut stream, ServerMessage::Exit { code: 0 });
+    let (bytes, error) = pty.finish(0);
+    assert!(bytes.is_empty(), "{bytes:?}");
+    assert!(error.is_empty(), "{error}");
+}
+
 /// #20: blocked stdout backpressures sockets and Exit cannot overtake output.
 #[test]
 fn bounded_output_backpressure_drains_every_byte_before_exit() {
@@ -986,10 +1160,33 @@ fn terminal_eof_or_eio_is_silent_status_129_and_closes_connection() {
     hello(&mut stream);
     begin_bridge(&mut stream);
     pty.wait_raw();
-    drop(std::mem::replace(
-        &mut pty.master,
-        File::open("/dev/null").unwrap(),
-    ));
+    #[cfg(target_os = "linux")]
+    let mut unrelated = {
+        // Reproduce another thread forking before openpty's descriptors get CLOEXEC.
+        assert_eq!(
+            unsafe { libc::fcntl(pty.master.as_raw_fd(), libc::F_SETFD, 0) },
+            0
+        );
+        let (home, metadata, listener) = setup();
+        let other = Pty::spawn(home.path(), &metadata, None);
+        assert_eq!(
+            unsafe { libc::fcntl(pty.master.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) },
+            0
+        );
+        let mut peer = accept(&listener);
+        hello(&mut peer);
+        begin_bridge(&mut peer);
+        other.wait_raw();
+        (home, other, peer)
+    };
+    // Linux wakes the client before it finishes hanging the terminal up; a stopped
+    // client sees the hang-up only once it is complete.
+    pty.while_stopped(|pty| {
+        drop(std::mem::replace(
+            &mut pty.master,
+            File::open("/dev/null").unwrap(),
+        ));
+    });
     let deadline = Instant::now() + Duration::from_secs(3);
     let status = loop {
         if let Some(status) = pty.child.try_wait().unwrap() {
@@ -1008,6 +1205,11 @@ fn terminal_eof_or_eio_is_silent_status_129_and_closes_connection() {
         .unwrap();
     assert!(error.is_empty());
     assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    #[cfg(target_os = "linux")]
+    {
+        send(&mut unrelated.2, ServerMessage::Exit { code: 0 });
+        unrelated.1.finish(0);
+    }
 }
 
 /// #20: a terminal read failing with EIO (lost terminal) is the same silent HUP as EOF.
@@ -1112,6 +1314,142 @@ fn hung_up_session_during_blocked_output_sleeps_then_delivers_everything() {
     }
 }
 
+/// #20: an attached client with nothing to do sleeps in poll rather than
+/// waiting to write to a session it has nothing to send.
+#[test]
+fn an_idle_client_sleeps() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    begin_bridge(&mut stream);
+    pty.wait_raw();
+    let before = cpu_time(pty.child.id());
+    thread::sleep(Duration::from_secs(1));
+    let used = cpu_time(pty.child.id()) - before;
+    assert!(
+        used < Duration::from_millis(200),
+        "idle client used {used:?} CPU in 1 s"
+    );
+    send(&mut stream, ServerMessage::Exit { code: 0 });
+    let (bytes, error) = pty.finish(0);
+    assert!(bytes.is_empty(), "{bytes:?}");
+    assert!(error.is_empty(), "{error}");
+}
+
+/// #19/#20: a session that hangs up while stdout is blocked and input is
+/// backpressured loses none of the output already sent, and the client reads
+/// no more keys: what it can no longer send stays for the next program.
+#[test]
+fn hang_up_behind_blocked_output_and_input_keeps_output_and_leaves_keys() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut stream = accept(&listener);
+    hello(&mut stream);
+    begin_bridge(&mut stream);
+    pty.wait_raw();
+    send(&mut stream, ServerMessage::Output(vec![b'X'; 60_000]));
+    send(&mut stream, ServerMessage::Output(b"later".to_vec()));
+    let typing = Typing::start(&pty.master);
+    wait_until_backpressured(&stream, &typing);
+    drop(stream);
+    thread::sleep(Duration::from_millis(300));
+    let before = typing.accepted();
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        typing.accepted(),
+        before,
+        "the client read keys after the session hung up"
+    );
+    drop(typing);
+    let (bytes, error) = pty.finish(125);
+    let mut expected = vec![b'X'; 60_000];
+    expected.extend(b"later");
+    expected.extend(CONSERVATIVE_RESET);
+    assert!(bytes == expected, "{:?}", &bytes[59_990.min(bytes.len())..]);
+    assert!(
+        error.contains(&format!("lost connection to session {ID}")),
+        "{error}"
+    );
+}
+
+/// Types into the terminal from another thread until dropped.
+struct Typing {
+    accepted: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Typing {
+    fn start(master: &File) -> Self {
+        let mut writer = master.try_clone().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = thread::spawn({
+            let (accepted, stop) = (accepted.clone(), stop.clone());
+            move || {
+                while !stop.load(Ordering::SeqCst) {
+                    match writer.write(&[b'k'; 4096]) {
+                        Ok(count) => {
+                            accepted.fetch_add(count, Ordering::SeqCst);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            wait_ready(&writer, libc::POLLOUT, 5);
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                }
+            }
+        });
+        Self {
+            accepted,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// Bytes the terminal has taken so far.
+    fn accepted(&self) -> usize {
+        self.accepted.load(Ordering::SeqCst)
+    }
+}
+
+/// Waits until the client's input fills the unread session socket and the
+/// terminal stops taking keys, so its next frame is waiting to be sent.
+fn wait_until_backpressured(stream: &std::os::unix::net::UnixStream, typing: &Typing) {
+    let queued = || {
+        let mut bytes: libc::c_int = 0;
+        assert_eq!(
+            unsafe { libc::ioctl(stream.as_raw_fd(), libc::FIONREAD, &mut bytes) },
+            0
+        );
+        bytes
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut last = (queued(), typing.accepted());
+    loop {
+        thread::sleep(Duration::from_millis(300));
+        let now = (queued(), typing.accepted());
+        if now == last && now.0 > 0 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the client never stopped reading"
+        );
+        last = now;
+    }
+}
+
+impl Drop for Typing {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+
 /// Waits for the client without ever reading its terminal, so stdout stays blocked.
 fn exit_while_blocked(pty: &mut Pty, bound: Duration) -> (i32, String) {
     let deadline = Instant::now() + bound;
@@ -1180,10 +1518,10 @@ fn pending_detach_while_stdout_is_blocked_ends_within_the_bound() {
 }
 
 /// Section 1.7.1: reading `Exit` starts the closing deadline. When stdout is
-/// already full, the placeholder's end can never be written; the client gives
+/// already blocked, the placeholder's end can never be written; the client gives
 /// up within the bound while the session connection stays open.
 #[test]
-fn exit_read_while_stdout_is_full_ends_within_the_closing_deadline() {
+fn exit_read_while_stdout_is_blocked_ends_within_the_closing_deadline() {
     let (_home, mut pty, mut stream) = observing();
     fill_output_queue(&pty.slave);
     let parsed = Instant::now();
@@ -1195,9 +1533,12 @@ fn exit_read_while_stdout_is_full_ends_within_the_closing_deadline() {
     drop(stream);
 }
 
-/// Writes through a separate description of the terminal until its output
-/// queue, which the test never reads, refuses more.
+/// Stop the driver draining between writes, then fill even its last byte.
 fn fill_output_queue(terminal: &File) {
+    assert_eq!(
+        unsafe { libc::tcflow(terminal.as_raw_fd(), libc::TCOOFF) },
+        0
+    );
     let mut writer = reopen(terminal);
     let flags = status_flags(&writer);
     assert_eq!(
@@ -1205,7 +1546,8 @@ fn fill_output_queue(terminal: &File) {
         0
     );
     loop {
-        match writer.write(&[b'Q'; 1024]) {
+        match writer.write(b"Q") {
+            Ok(0) => panic!("terminal write made no progress"),
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return,
             Err(error) => panic!("{error}"),
@@ -1214,8 +1556,9 @@ fn fill_output_queue(terminal: &File) {
 }
 
 /// CPU time (user + system) as reported by ps, e.g. `0:01.25`.
+#[cfg(target_os = "macos")]
 fn cpu_time(pid: u32) -> Duration {
-    let output = Command::new("/bin/ps")
+    let output = climon2_test_term::process_command("/bin/ps")
         .args(["-o", "time=", "-p", &pid.to_string()])
         .output()
         .unwrap();
@@ -1223,6 +1566,19 @@ fn cpu_time(pid: u32) -> Duration {
     let (minutes, seconds) = text.trim().rsplit_once(':').unwrap();
     let minutes: u64 = minutes.rsplit(':').next().unwrap().parse().unwrap();
     Duration::from_secs(minutes * 60) + Duration::from_secs_f64(seconds.parse().unwrap())
+}
+
+#[cfg(target_os = "linux")]
+fn cpu_time(pid: u32) -> Duration {
+    // procps's time= truncates to seconds, which would hide a busy loop.
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let (_, fields) = stat.rsplit_once(')').unwrap();
+    let fields: Vec<_> = fields.split_whitespace().collect();
+    let user: u64 = fields[11].parse().unwrap();
+    let system: u64 = fields[12].parse().unwrap();
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    assert!(ticks > 0);
+    Duration::from_secs_f64((user + system) as f64 / ticks as f64)
 }
 
 /// #19: disconnects during Attach identify the session, before entering raw.

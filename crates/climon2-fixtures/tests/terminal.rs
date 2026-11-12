@@ -322,6 +322,8 @@ fn generic_terminal_reports_its_contract_and_exits() {
         "7",
     ]);
     command.env("FIXTURE_VALUE", "spaces and unicode: \u{3bb}");
+    command.env("PWD", "literal-not-the-working-directory");
+    command.env("SHLVL", "41");
     let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
     terminal.wait_for_text("hello-pty", SECOND).unwrap();
     terminal.wait_for_bytes(b"hello-pty", SECOND).unwrap();
@@ -333,6 +335,8 @@ fn generic_terminal_reports_its_contract_and_exits() {
     );
     assert_eq!(value["env"]["CLIMON2_TEST_ID"], isolation.id());
     assert_eq!(value["env"]["FIXTURE_VALUE"], "spaces and unicode: \u{3bb}");
+    assert_eq!(value["env"]["PWD"], "literal-not-the-working-directory");
+    assert_eq!(value["env"]["SHLVL"], "41");
     assert_eq!(value["size"], serde_json::json!([24, 80]));
     assert_eq!(value["isatty"], serde_json::json!([true, true, true]));
     assert_eq!(value["pid"], value["pgid"]);
@@ -418,8 +422,15 @@ fn leak_check_rejects_metadata_and_sockets_but_keeps_logs() {
     assert!(std::panic::catch_unwind(|| isolation.assert_clean()).is_err());
     fs::remove_file(metadata).unwrap();
     // Independent system SHA-256 implementation supplies the #18 runtime-path oracle.
-    let mut digest = Command::new("/usr/bin/shasum")
-        .args(["-a", "256"])
+    #[cfg(target_os = "macos")]
+    let mut digest = {
+        let mut command = Command::new("/usr/bin/shasum");
+        command.args(["-a", "256"]);
+        command
+    };
+    #[cfg(target_os = "linux")]
+    let mut digest = Command::new("/usr/bin/sha256sum");
+    let mut digest = digest
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

@@ -2,28 +2,38 @@
 //!
 //! A test owns the terminal roots it spawns, every process carrying its environment marker,
 //! every process forked by an owned process image, and every member of a session led by an
-//! owned process. Identities are kernel unique ids and image versions, never reused within a
-//! boot, so pid reuse cannot make a stranger look owned. Orphans lose their parent pid, so a
-//! sampler records owned images while they live; their children stay linked after they exit.
+//! owned process. macOS supplies kernel unique ids and image versions; Linux supplies pid and
+//! start ticks plus a test-owned descriptor inherited by terminal descendants. Neither needs
+//! a short-lived orphan's parent to remain alive until the next sample.
 
+#[cfg(target_os = "macos")]
 use nix::libc;
 use std::{
     collections::{HashMap, HashSet},
-    ffi::CStr,
-    mem,
     sync::{LazyLock, Mutex, MutexGuard, Once},
     thread,
     time::Duration,
 };
+#[cfg(target_os = "macos")]
+use std::{ffi::CStr, mem};
+
+#[cfg(target_os = "linux")]
+#[path = "ownership/linux.rs"]
+mod linux;
+#[cfg(target_os = "linux")]
+use linux::{marker_of, pids, process};
 
 pub(crate) const MARKER: &str = "CLIMON2_TEST_ID";
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(25);
 // <sys/proc_info.h>: PROC_UID_ONLY and PROC_PIDT_BSDINFOWITHUNIQID.
+#[cfg(target_os = "macos")]
 const USER_ONLY: u32 = 4;
+#[cfg(target_os = "macos")]
 const BSD_INFO_WITH_UNIQUE_IDS: libc::c_int = 18;
 
 /// `struct proc_uniqidentifierinfo` from <sys/proc_info.h>.
 #[repr(C)]
+#[cfg(target_os = "macos")]
 struct UniqueIdentifiers {
     uuid: [u8; 16],
     unique: u64,
@@ -35,37 +45,41 @@ struct UniqueIdentifiers {
 
 /// `struct proc_bsdinfowithuniqid` from <sys/proc_info.h>.
 #[repr(C)]
+#[cfg(target_os = "macos")]
 struct BsdInfoWithUniqueIds {
     bsd: libc::proc_bsdinfo,
     ids: UniqueIdentifiers,
 }
 
-/// One live process image; zombies have no BSD info, so they never appear. `image`
-/// changes on every exec; `parent_image` is the image that forked the process and survives
-/// reparenting.
+/// One live process; zombies are excluded. macOS image ids change on exec, and the parent
+/// image id survives reparenting. Linux has no equivalent image ids.
 #[derive(Debug)]
 struct Process {
     pid: i32,
     parent: i32,
     session: i32,
-    unique: u64,
-    image: i32,
-    parent_image: i32,
+    unique: (u64, i32),
+    image: Option<i32>,
+    parent_image: Option<i32>,
     name: String,
     marker: Option<String>,
 }
 
 #[derive(Default)]
 struct Owned {
-    processes: HashSet<u64>,
+    processes: HashSet<(u64, i32)>,
     images: HashSet<i32>,
     sessions: HashSet<i32>,
+    #[cfg(target_os = "linux")]
+    lease: Option<linux::Lease>,
 }
 
 impl Owned {
     fn take(&mut self, process: &Process) -> bool {
         let mut grew = self.processes.insert(process.unique);
-        grew |= self.images.insert(process.image);
+        if let Some(image) = process.image {
+            grew |= self.images.insert(image);
+        }
         if process.session == process.pid {
             grew |= self.sessions.insert(process.pid);
         }
@@ -85,7 +99,9 @@ impl Owned {
                     .is_some_and(|parent| self.processes.contains(parent));
                 if self.processes.contains(&process.unique)
                     || parent_owned
-                    || self.images.contains(&process.parent_image)
+                    || process
+                        .parent_image
+                        .is_some_and(|image| self.images.contains(&image))
                     || self.sessions.contains(&process.session)
                     || process.marker.as_deref() == Some(marker)
                 {
@@ -109,6 +125,7 @@ impl Owned {
 #[derive(Default)]
 struct Tracker {
     tests: HashMap<String, Owned>,
+    #[cfg(target_os = "macos")]
     markers: HashMap<i32, Option<String>>,
     arguments: Vec<u8>,
 }
@@ -116,15 +133,37 @@ struct Tracker {
 impl Tracker {
     fn scan(&mut self) -> Vec<Process> {
         let mut table: Vec<_> = pids().into_iter().filter_map(process).collect();
+        #[cfg(target_os = "linux")]
+        let leases: HashMap<_, _> = self
+            .tests
+            .iter()
+            .filter_map(|(marker, owned)| {
+                owned
+                    .lease
+                    .as_ref()
+                    .map(|lease| (lease.identity, marker.clone()))
+            })
+            .collect();
         for process in &mut table {
-            process.marker = self
-                .markers
-                .entry(process.image)
-                .or_insert_with(|| marker_of(process.pid, &mut self.arguments))
-                .clone();
+            #[cfg(target_os = "macos")]
+            {
+                process.marker = self
+                    .markers
+                    .entry(process.image.expect("macOS process image"))
+                    .or_insert_with(|| marker_of(process.pid, &mut self.arguments))
+                    .clone();
+            }
+            #[cfg(target_os = "linux")]
+            {
+                process.marker = marker_of(process.pid, &mut self.arguments)
+                    .or_else(|| linux::lease_marker(process.pid, &leases));
+            }
         }
-        let images: HashSet<_> = table.iter().map(|process| process.image).collect();
-        self.markers.retain(|image, _| images.contains(image));
+        #[cfg(target_os = "macos")]
+        {
+            let images: HashSet<_> = table.iter().filter_map(|process| process.image).collect();
+            self.markers.retain(|image, _| images.contains(image));
+        }
         for (marker, owned) in &mut self.tests {
             owned.claim(marker, &table);
         }
@@ -139,8 +178,13 @@ fn tracker() -> MutexGuard<'static, Tracker> {
     TRACKER.lock().expect("process tracker lock")
 }
 
-pub(crate) fn register(marker: &str) {
-    tracker().tests.insert(marker.to_owned(), Owned::default());
+pub(crate) fn register(marker: &str, _directory: &std::path::Path) {
+    let owned = Owned {
+        #[cfg(target_os = "linux")]
+        lease: Some(linux::Lease::new(_directory)),
+        ..Owned::default()
+    };
+    tracker().tests.insert(marker.to_owned(), owned);
     SAMPLER.call_once(|| {
         thread::spawn(|| {
             loop {
@@ -154,6 +198,28 @@ pub(crate) fn register(marker: &str) {
             }
         });
     });
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn prepare(mut command: portable_pty::CommandBuilder) -> portable_pty::CommandBuilder {
+    let lease = command
+        .get_env(MARKER)
+        .and_then(|marker| marker.to_str())
+        .and_then(|marker| {
+            tracker()
+                .tests
+                .get(marker)
+                .and_then(|owned| owned.lease.as_ref().map(|lease| lease.path.clone()))
+        });
+    if let Some(lease) = lease {
+        let mut arguments = vec![
+            crate::isolation::bin_path("climon2-test-owned").into_os_string(),
+            lease.into_os_string(),
+        ];
+        arguments.append(command.get_argv_mut());
+        *command.get_argv_mut() = arguments;
+    }
+    command
 }
 
 pub(crate) fn forget(marker: &str) {
@@ -189,6 +255,7 @@ pub(crate) fn live(marker: &str) -> Vec<(i32, String)> {
 }
 
 /// Pids of this user's processes; test processes never change user.
+#[cfg(target_os = "macos")]
 fn pids() -> Vec<i32> {
     let user = nix::unistd::geteuid().as_raw();
     let pid_size = mem::size_of::<i32>();
@@ -220,6 +287,7 @@ fn pids() -> Vec<i32> {
 }
 
 /// The process, or `None` once it has exited.
+#[cfg(target_os = "macos")]
 fn process(pid: i32) -> Option<Process> {
     let mut info = mem::MaybeUninit::<BsdInfoWithUniqueIds>::zeroed();
     let size = i32::try_from(mem::size_of::<BsdInfoWithUniqueIds>()).expect("info size");
@@ -246,15 +314,16 @@ fn process(pid: i32) -> Option<Process> {
         pid,
         parent: info.bsd.pbi_ppid as i32,
         session,
-        unique: info.ids.unique,
-        image: info.ids.image,
-        parent_image: info.ids.parent_image,
+        unique: (info.ids.unique, pid),
+        image: Some(info.ids.image),
+        parent_image: Some(info.ids.parent_image),
         name: name.to_string_lossy().into_owned(),
         marker: None,
     })
 }
 
 /// The value of the environment marker this process image was exec'd with.
+#[cfg(target_os = "macos")]
 fn marker_of(pid: i32, buffer: &mut Vec<u8>) -> Option<String> {
     if buffer.is_empty() {
         buffer.resize(argument_limit(), 0);
@@ -279,6 +348,7 @@ fn marker_of(pid: i32, buffer: &mut Vec<u8>) -> Option<String> {
 }
 
 /// KERN_PROCARGS2 layout: argc, the exec path, NUL padding, argv, then the environment.
+#[cfg(target_os = "macos")]
 fn environment_marker(arguments: &[u8]) -> Option<String> {
     let argc = i32::from_ne_bytes(arguments.get(..4)?.try_into().ok()?);
     let rest = &arguments[4..];
@@ -292,6 +362,7 @@ fn environment_marker(arguments: &[u8]) -> Option<String> {
         .map(|value| String::from_utf8_lossy(value).into_owned())
 }
 
+#[cfg(target_os = "macos")]
 fn argument_limit() -> usize {
     let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
     let mut limit: libc::c_int = 0;

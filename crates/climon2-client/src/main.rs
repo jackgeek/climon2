@@ -1,5 +1,5 @@
-#[cfg(not(target_os = "macos"))]
-compile_error!("climon2-client currently supports macOS only");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("climon2-client requires macOS or Linux");
 
 fn main() -> std::process::ExitCode {
     climon2_core::test_hook_marker!();

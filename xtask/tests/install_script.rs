@@ -1,4 +1,4 @@
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use std::{
     fs,
@@ -17,9 +17,14 @@ struct Release {
 
 impl Release {
     fn new() -> Self {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
         let version = env!("CARGO_PKG_VERSION");
-        let name = format!("climon2-{version}-macos-universal");
+        let platform = if cfg!(target_os = "linux") {
+            "linux-x86_64-gnu"
+        } else {
+            "macos-universal"
+        };
+        let name = format!("climon2-{version}-{platform}");
         let assets = root.path().join("releases").join(format!("v{version}"));
         let payload = root.path().join("payload").join(&name);
         fs::create_dir_all(payload.join(version)).unwrap();
@@ -52,8 +57,14 @@ impl Release {
     }
 
     fn checksum(&self) {
-        let output = Command::new("shasum")
-            .args(["-a", "256"])
+        let mut checksum = if cfg!(target_os = "linux") {
+            Command::new("sha256sum")
+        } else {
+            let mut command = Command::new("shasum");
+            command.args(["-a", "256"]);
+            command
+        };
+        let output = checksum
             .arg(self.archive.file_name().unwrap())
             .current_dir(&self.assets)
             .output()
