@@ -4,6 +4,12 @@ This diagram covers every climon2-owned executable target and dynamic library,
 including development fixtures. Arrows run from consumer to consumed artifact;
 labels distinguish execution, communication, and loading.
 Solid relationships exist today; dashed relationships are planned.
+The current executable relationships apply on macOS and x86_64 GNU/Linux;
+native archives are described in [distribution](distribution.md).
+The development host owns shared/Linux CRAP and mutation; CI qualifies only
+macOS-exclusive source, while retaining native runtime/archive tests. This
+[quality split](distribution.md#release-gates) changes no artifact or
+consumption relationship.
 
 ```mermaid
 flowchart TB
@@ -14,7 +20,7 @@ flowchart TB
             cli["climon2-cli<br/>CLI executable"]
             client["climon2-client<br/>client executable"]
             daemon["climon2-daemon<br/>session daemon executable"]
-            library[["libclimon2_client.dylib<br/>planned Rust cdylib on macOS"]]
+            library[["libclimon2_client.dylib / .so<br/>planned Rust cdylib on macOS and Linux"]]
         end
         command(["Session command<br/>external executable"])
         monitor(["Monitor runtime: monitor / mon<br/>planned Ratatui TUI; executable placement undecided"])
@@ -43,14 +49,19 @@ flowchart TB
         daemon_fixture["climon2-daemon-fixture"]
         terminal_fixture["climon2-fixture"]
         tui_fixture["climon2-tui-fixture"]
+        owned_exec["climon2-test-owned<br/>Linux test ownership exec adapter"]
+        terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
         xtask -->|"runs builds and tests"| cargo
+        xtask -->|"install: runs verified production payload"| installer
         xtask -->|"runs runtime probes"| cli
         cargo -->|"runs"| tests
         tests -->|"uses directly or as a session command"| cli_fixture
         tests -->|"uses directly or as a session command"| daemon_fixture
         tests -->|"uses directly or as a session command"| terminal_fixture
         tests -->|"uses directly or as a session command"| tui_fixture
+        tests -->|"execs registered terminal roots through; Linux only"| owned_exec
+        owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
 
     style library stroke-dasharray: 5 5
@@ -67,10 +78,24 @@ Installation relationships are outside this consumption diagram.
 
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
 
+On Linux, `climon2-test-term` builds `climon2-test-owned` as test tooling, never
+as a release payload. It opens one test-owned file descriptor before execing
+the requested terminal root. Forked descendants inherit that descriptor across
+environment clearing and reparenting, so procfs leak checks do not depend on
+catching short-lived parents. Process identity, sampled ancestry, session
+membership and environment markers remain additional ownership evidence.
+Commands that explicitly close inherited descriptors cannot retain this
+additional evidence. macOS keeps its kernel process/image ancestry tracking
+and does not use this adapter.
+
 **Current:** no climon2 dynamic library is built or shipped. Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,
 are not separately loaded dynamic libraries. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
+The planned node names both platforms' library files: `.dylib` on macOS and
+`.so` on x86-64 GNU/Linux. The
+[monitor integration decision](https://github.com/jackgeek/climon2/issues/125)
+agreed Linux loading and release isolation; neither library is built yet.
 
 **Planned:** the [monitor](../GLOSSARY.md#sessions) loads version-matched
 [client libraries](../GLOSSARY.md#sessions) directly into
@@ -125,8 +150,8 @@ operations. The monitor node represents a runtime role, not a decision to ship
 an executable named `climon2-monitor`.
 
 The agreed [embedding design](protocol/library-embedding.md) loads
-`<executable home>/<session version>/libclimon2_client.dylib` on macOS with no
-release fallback. It uses a versioned C interface, per-instance client threads,
+`<executable home>/<session version>/libclimon2_client.dylib` on macOS, or
+`libclimon2_client.so` on x86-64 GNU/Linux, with no release fallback. It uses a versioned C interface, per-instance client threads,
 release-private dependency resolution, and explicit memory ownership.
 Every successfully opened library handle stays loaded until monitor exit,
 including handles rejected by later validation. Such releases remain in use

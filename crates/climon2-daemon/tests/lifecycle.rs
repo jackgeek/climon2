@@ -170,11 +170,10 @@ impl Session {
         let fixture = fs::read_to_string(self.directory.path().join("fixture-pid"))
             .ok()
             .and_then(|pid| pid.parse::<u32>().ok());
-        let status = process::wait(self.pid).unwrap();
-        self.pid = 0;
+        let status = exit_by(std::mem::take(&mut self.pid), after(FINISH_BOUND));
         assert_eq!(
-            status.code().unwrap(),
-            0,
+            status.map(|status| status.code().ok()),
+            Some(Some(0)),
             "daemon log: {:?}",
             fs::read_to_string(self.directory.path().join(format!("logs/{ID}/daemon.log")))
         );
@@ -224,9 +223,45 @@ impl Drop for Session {
             unsafe {
                 libc::kill(self.pid as i32, libc::SIGTERM);
             }
-            let _ = process::wait(self.pid);
+            exit_by(self.pid, after(FINISH_BOUND));
         }
     }
+}
+
+/// Generous for every orderly exit, the five-second leave grace included.
+const FINISH_BOUND: Duration = Duration::from_secs(20);
+
+fn after(bound: Duration) -> Instant {
+    Instant::now() + bound
+}
+
+/// Reaps the daemon; one still running at `deadline` is killed and reaped instead, so a wedged
+/// daemon fails its test rather than hanging it (and with it, every mutation run).
+fn exit_by(pid: u32, deadline: Instant) -> Option<climon2_core::exit::ExitStatus> {
+    while Instant::now() < deadline {
+        if let Some(status) = process::try_wait(pid).unwrap() {
+            return Some(status);
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    let _ = process::wait(pid);
+    None
+}
+
+/// Whether `file` turns readable before `deadline`.
+fn readable_by(file: &fs::File, deadline: Instant) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut descriptor = [libc::pollfd {
+        fd: file.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    }];
+    let milliseconds = deadline
+        .saturating_duration_since(Instant::now())
+        .as_millis();
+    let milliseconds = i32::try_from(milliseconds).unwrap_or(i32::MAX);
+    unsafe { libc::poll(descriptor.as_mut_ptr(), 1, milliseconds) > 0 }
 }
 
 struct Prepared {
@@ -274,7 +309,10 @@ impl Prepared {
         };
         let executable = if mode == "long-paths" {
             let executable = home.join("climon2-daemon");
-            fs::copy(env!("CARGO_BIN_EXE_climon2-daemon"), &executable).unwrap();
+            climon2_test_term::copy_executable(
+                Path::new(env!("CARGO_BIN_EXE_climon2-daemon")),
+                &executable,
+            );
             executable
         } else {
             PathBuf::from(env!("CARGO_BIN_EXE_climon2-daemon"))
@@ -472,6 +510,40 @@ fn early_exit_is_delivered_after_restore_readiness() {
     assert_exit_after_attachment("early", 43);
 }
 
+/// #20: a drained exit waits for the controller's `Ready`, however long it is withheld, so
+/// the controller is never handed a result before it confirmed its restoration.
+#[test]
+fn an_exit_waits_for_the_controllers_ready() {
+    let mut session = Session::start("early-after-restore");
+    let mut stream = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
+    let (period, _) = restoration(&mut stream);
+    fs::write(session.directory.path().join("finish-early"), b"").unwrap();
+    let mut output = Vec::new();
+    while !output.windows(11).any(|bytes| bytes == b"early-final") {
+        match receive(&mut stream) {
+            ServerMessage::Output(bytes) => output.extend(bytes),
+            other => panic!("a result before Ready: {other:?}"),
+        }
+    }
+    stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let withheld = read_frame(&mut stream).map(|frame| frame.type_code());
+    assert!(
+        withheld
+            .as_ref()
+            .is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock),
+        "a frame before Ready: {withheld:?}"
+    );
+    stream
+        .set_read_timeout(Some(Duration::from_secs(8)))
+        .unwrap();
+    send(&mut stream, ClientMessage::Ready { period });
+    let (_, result) = until_terminal(&mut stream);
+    assert_eq!(result, ServerMessage::Exit { code: 43 });
+    session.finish();
+}
+
 /// #20/#19: EOF/EIO may end drain before its idle/cap limits; no group member survives.
 #[test]
 fn final_drain_eof_or_deadline_is_bounded_and_leaves_no_descendants() {
@@ -522,7 +594,8 @@ fn daemon_ignores_hup_int_pipe_without_ending_the_command() {
     session.finish();
 }
 
-/// #20/#27: unfinished hellos and live probes never hold the controlling connection.
+/// #20/#27: unfinished hellos and live probes never hold the controlling connection, and a
+/// hello's deadline runs from accept however recently the peer wrote.
 #[test]
 fn concurrent_probes_absolute_hello_deadline_and_second_attach() {
     let mut session = Session::start("exit");
@@ -531,9 +604,10 @@ fn concurrent_probes_absolute_hello_deadline_and_second_attach() {
     let mut controlling = session.attach();
     session.wait_marker(&mut controlling);
     let mut slow = UnixStream::connect(&session.socket).unwrap();
-    slow.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-    slow.write_all(&[0]).unwrap();
     let accepted = Instant::now();
+    slow.set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let trickle = trickle(slow.try_clone().unwrap());
     for _ in 0..8 {
         drop(session.connect());
     }
@@ -544,12 +618,10 @@ fn concurrent_probes_absolute_hello_deadline_and_second_attach() {
     );
     assert_eq!(receive(&mut second), ServerMessage::Attached);
     session.ready(&mut second);
-    thread::sleep(Duration::from_millis(1200));
-    slow.write_all(&[0]).unwrap();
     let reply = receive(&mut slow);
     assert!(matches!(reply, ServerMessage::Error { .. }));
     assert!(accepted.elapsed() >= Duration::from_secs(2));
-    assert!(accepted.elapsed() < Duration::from_millis(2900));
+    trickle.join().unwrap();
     send(
         &mut controlling,
         ClientMessage::Input(b"ignored\n".to_vec()),
@@ -559,20 +631,44 @@ fn concurrent_probes_absolute_hello_deadline_and_second_attach() {
     session.finish();
 }
 
+/// Writes a hello that never finishes and never goes quiet: a 256-byte control frame's
+/// prefix and type, then a payload byte every 50 ms until the daemon closes the connection.
+/// A deadline that restarted on each byte would not expire within the reader's 10 seconds.
+fn trickle(mut stream: UnixStream) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        if stream.write_all(&[0, 0, 1, 0, 0x01]).is_err() {
+            return;
+        }
+        for _ in 0..254 {
+            thread::sleep(Duration::from_millis(50));
+            if stream.write_all(b" ").is_err() {
+                return;
+            }
+        }
+    })
+}
+
 /// #20: malformed probes are terminal but never end the session.
 #[test]
 fn malformed_unknown_oversized_and_out_of_state_messages_close_only_the_probe() {
     let mut session = Session::start("exit");
     let mut controlling = session.attach();
     session.wait_marker(&mut controlling);
-    for (hello, bytes) in [
-        (false, vec![0, 0, 0, 1, 0x11]),
-        (true, vec![0, 0, 0, 1, 0x11]),
-        (false, vec![0, 0, 0, 2, 0x01, b'[']),
-        (true, vec![0, 0, 0, 1, 0x66]),
-        (true, vec![0, 0, 0, 0]),
-        (true, vec![0, 16, 0, 1]),
-        (true, vec![0, 1, 0, 1, 0x11]),
+    // A decoding failure names itself; any other framing failure is generic.
+    let not_allowed = "message not allowed in connection state";
+    let generic = "invalid session protocol";
+    for (hello, bytes, message) in [
+        (false, vec![0, 0, 0, 1, 0x11], not_allowed),
+        (true, vec![0, 0, 0, 1, 0x11], not_allowed),
+        (
+            false,
+            vec![0, 0, 0, 2, 0x01, b'['],
+            "malformed control JSON",
+        ),
+        (true, vec![0, 0, 0, 1, 0x66], "unknown message type"),
+        (true, vec![0, 0, 0, 0], generic),
+        (true, vec![0, 16, 0, 1], generic),
+        (true, vec![0, 1, 0, 1, 0x11], generic),
         (
             true,
             ClientMessage::Hello { protocol: 1 }
@@ -583,6 +679,7 @@ fn malformed_unknown_oversized_and_out_of_state_messages_close_only_the_probe() 
                     bytes
                 })
                 .unwrap(),
+            not_allowed,
         ),
     ] {
         let mut probe = if hello {
@@ -594,9 +691,34 @@ fn malformed_unknown_oversized_and_out_of_state_messages_close_only_the_probe() 
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
         probe.write_all(&bytes).unwrap();
-        assert!(matches!(receive(&mut probe), ServerMessage::Error { .. }));
+        assert_eq!(
+            receive(&mut probe),
+            ServerMessage::Error {
+                message: message.into()
+            },
+            "{bytes:?}"
+        );
         assert!(read_frame(&mut probe).is_err());
     }
+    send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
+    while !matches!(receive(&mut controlling), ServerMessage::Exit { code: 42 }) {}
+    session.finish();
+}
+
+/// #20: the daemon serves at most 64 connections at a time; one more is closed unanswered
+/// and the session goes on.
+#[test]
+fn a_connection_beyond_the_cap_is_closed_unanswered() {
+    let mut session = Session::start("exit");
+    let mut controlling = session.attach();
+    session.wait_marker(&mut controlling);
+    let probes: Vec<_> = (1..64).map(|_| session.connect()).collect();
+    let mut extra = UnixStream::connect(&session.socket).unwrap();
+    extra
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    assert_eq!(extra.read(&mut [0]).unwrap(), 0);
+    drop(probes);
     send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
     while !matches!(receive(&mut controlling), ServerMessage::Exit { code: 42 }) {}
     session.finish();
@@ -874,6 +996,9 @@ fn count(haystack: &[u8], needle: &[u8]) -> usize {
 
 fn advertised_state(session: &Session) -> (Lifecycle, u32, bool) {
     let mut probe = UnixStream::connect(&session.socket).unwrap();
+    probe
+        .set_read_timeout(Some(Duration::from_secs(8)))
+        .unwrap();
     send(&mut probe, ClientMessage::Hello { protocol: 1 });
     let extensions = HelloExtensions::from_body(read_frame(&mut probe).unwrap().body());
     let capabilities = extensions.capabilities.valid().unwrap();
@@ -926,12 +1051,20 @@ fn takeover_revokes_with_release_and_exit_leaves_the_alternate_screen() {
     let mut session = Session::start("tui-restore");
     wait_file(&session.directory.path().join("tui-ready"));
     let mut first = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
-    let (period, _) = restoration(&mut first);
+    let mut host = vt100::Parser::new(
+        std::num::NonZeroU16::new(37).unwrap(),
+        std::num::NonZeroU16::new(91).unwrap(),
+        0,
+    );
+    let (period, restored) = restoration(&mut first);
+    host.process(&restored);
     send(&mut first, ClientMessage::Ready { period });
     let mut second = attach_at(&session, TerminalSize { cols: 80, rows: 24 });
     let (released, revoked) = until_terminal(&mut first);
     assert_eq!(revoked, ServerMessage::Revoked);
     assert_eq!(count(&released, b"\x1b[?1049l"), 1);
+    host.process(&released);
+    assert_ne!(host.screen().cursor_position(), (3, 20));
     let (period, restored) = restoration(&mut second);
     assert_eq!(count(&restored, b"RESTORED-DISPLAY"), 1);
     send(&mut second, ClientMessage::Ready { period });
@@ -940,7 +1073,9 @@ fn takeover_revokes_with_release_and_exit_leaves_the_alternate_screen() {
     let (released, revoked) = until_terminal(&mut second);
     assert_eq!(revoked, ServerMessage::Revoked);
     assert_eq!(count(&released, b"\x1b[?1049l"), 1);
-    let (period, _) = restoration(&mut first);
+    let (period, restored) = restoration(&mut first);
+    host.process(&restored);
+    assert_eq!(host.screen().cursor_position(), (3, 20));
     send(&mut first, ClientMessage::Ready { period });
     send(&mut first, ClientMessage::Input(vec![b'x']));
     let (output, result) = until_terminal(&mut first);
@@ -1164,6 +1299,64 @@ fn an_unfinished_token_still_restores_and_kill_confirms_termination() {
         ServerMessage::Terminated { .. }
     ));
     session.finish();
+}
+
+/// Section 3.3: hanging up closes the command's terminal without typing into
+/// it. A newline or end-of-file key written on the way out would reach the
+/// command as if a client had sent it, for example running a shell's
+/// half-typed command line.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn hanging_up_types_nothing_into_the_command_terminal() {
+    let mut session = Session::start("ignore-hup");
+    let mut controlling = session.attach();
+    session.wait_marker(&mut controlling);
+    let mut killer = session.connect();
+    // The hang-up scans every process's procfs entry; each call stops here.
+    let tracer = climon2_test_term::ptrace::Tracer::seize(session.pid, Duration::from_secs(60));
+    send(&mut killer, ClientMessage::Kill);
+    let master = Path::new("/dev/ptmx");
+    let (write, close) = (libc::SYS_write as u64, libc::SYS_close as u64);
+    let mut typed = Vec::new();
+    loop {
+        let call = tracer.next_entry();
+        if ![write, close].contains(&call.number)
+            || tracer.descriptor(call.arguments[0]).as_deref() != Some(master)
+        {
+            continue;
+        }
+        if call.number == write {
+            typed.push(tracer.memory(call.arguments[1], call.arguments[2]));
+            continue;
+        }
+        tracer.finish_syscall();
+        if !holds(session.pid, master) {
+            break;
+        }
+    }
+    tracer.detach();
+    assert!(
+        typed.is_empty(),
+        "hang-up typed {typed:?} into the terminal"
+    );
+    assert!(matches!(
+        until_terminal(&mut controlling).1,
+        ServerMessage::Exit { .. }
+    ));
+    assert!(matches!(
+        receive(&mut killer),
+        ServerMessage::Terminated { .. }
+    ));
+    session.finish();
+}
+
+/// Whether `pid` still has a descriptor open on `target`.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn holds(pid: u32, target: &Path) -> bool {
+    fs::read_dir(format!("/proc/{pid}/fd"))
+        .unwrap()
+        .filter_map(|entry| fs::read_link(entry.unwrap().path()).ok())
+        .any(|link| link == target)
 }
 
 /// Section 1.7: attaching while the session terminates is refused.
@@ -1453,19 +1646,14 @@ fn withheld_ready_is_an_unexpected_departure_after_the_restore_deadline() {
 }
 
 /// Section 6.2 sync latch: repeated synchronized-update begins never starve
-/// a grant; it is served through the latch, not after the command stops.
+/// a grant; it is served through the latch. The fixture never stops beginning
+/// and never ends an update, so a grant held until begins stop never arrives.
 #[test]
 fn repeated_sync_begins_do_not_hold_a_grant() {
     let mut session = Session::start("sync");
     wait_file(&session.directory.path().join("sync-ready"));
     let mut stream = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
-    let attached = Instant::now();
     let (period, _) = restoration(&mut stream);
-    assert!(
-        attached.elapsed() < Duration::from_secs(1),
-        "{:?}",
-        attached.elapsed()
-    );
     send(&mut stream, ClientMessage::Ready { period });
     drop(stream);
     session.finish();
@@ -1763,9 +1951,10 @@ fn run_unsupervised(
         .spawn()
         .unwrap();
     drop(writer);
+    let deadline = after(FINISH_BOUND);
     let mut readiness = Vec::new();
     let mut chunk = [0; 512];
-    loop {
+    while readable_by(&reader, deadline) {
         let count = reader.read(&mut chunk).unwrap();
         readiness.extend_from_slice(&chunk[..count]);
         if readiness == b"R" {
@@ -1775,7 +1964,18 @@ fn run_unsupervised(
             break;
         }
     }
-    (readiness, child.wait().unwrap())
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("daemon killed at its deadline after readiness {readiness:?}");
+        }
+        thread::sleep(Duration::from_millis(5));
+    };
+    (readiness, status)
 }
 
 fn failed_readiness(code: u32, message: &str) -> Vec<u8> {
@@ -1838,6 +2038,41 @@ fn startup_failure_reports_cleans_up_and_exits_with_the_reported_code() {
         assert_eq!(readiness, failed_readiness(code, message), "{message}");
         assert_eq!(status.code(), Some(code as i32), "{message}");
         assert_startup_files_removed(&prepared);
+        assert_startup_command_gone(&prepared.home);
+    }
+}
+
+/// #15/#17: a session file that already exists is someone else's. Publication fails, and the
+/// daemon removes only the temporary it created, leaving the existing file as it was.
+#[test]
+fn an_existing_session_file_fails_publication_and_is_left_in_place() {
+    for taken in ["pty", "publishing"] {
+        let name = format!("{ID}.{taken}");
+        let (prepared, readiness, status) = unsupervised(
+            "exit",
+            |_, home| {
+                let sessions = home.join("sessions");
+                fs::create_dir(&sessions).unwrap();
+                fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
+                fs::write(sessions.join(&name), "theirs").unwrap();
+            },
+            false,
+        );
+        assert_eq!(
+            readiness,
+            failed_readiness(125, "cannot publish session metadata"),
+            "{taken}"
+        );
+        assert_eq!(status.code(), Some(125), "{taken}");
+        let sessions = prepared.home.join("sessions");
+        let left: Vec<_> = fs::read_dir(&sessions)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(left, std::slice::from_ref(&name), "{taken}");
+        assert_eq!(fs::read_to_string(sessions.join(&name)).unwrap(), "theirs");
+        assert!(!prepared.socket.exists());
+        assert!(!prepared.startup_socket.exists());
         assert_startup_command_gone(&prepared.home);
     }
 }
@@ -1919,6 +2154,62 @@ fn startup_confirmation_decides_the_reported_launch_failure() {
         impostor.join().unwrap();
         assert_eq!(readiness, failed_readiness(code, message), "{reply:?}");
         assert_eq!(status.code(), Some(code as i32));
+        assert_startup_files_removed(&prepared);
+        assert_startup_command_gone(&prepared.home);
+    }
+}
+
+/// #15/#29: the startup deadline bounds a launch that never confirms, whether nothing
+/// connects (the helper finds no socket) or the first connection stays silent. Behind a
+/// silent connection the helper still starts the command, which ignores SIGHUP and never
+/// reads: only the failed daemon's kill ends it.
+#[test]
+fn an_unconfirmed_launch_fails_at_the_startup_deadline() {
+    for silent in [false, true] {
+        // Holding the allocation lock keeps the daemon from spawning its helper until the
+        // socket is gone, or this silent connection is first in its backlog.
+        let allocation = climon2_platform::pty::allocation().unwrap();
+        let (prepared, mut command) = Prepared::new("ignore-hup", |_, _| {}, false);
+        let startup_socket = prepared.startup_socket.clone();
+        let (finished, until_finished) = std::sync::mpsc::channel::<()>();
+        let interloper = thread::spawn(move || {
+            let started = Instant::now();
+            let held = loop {
+                // The socket path appears at bind, before it listens.
+                let attempt = if silent {
+                    UnixStream::connect(&startup_socket).map(Some)
+                } else {
+                    fs::remove_file(&startup_socket).map(|()| None)
+                };
+                if let Ok(held) = attempt {
+                    break held;
+                }
+                assert!(started.elapsed() < Duration::from_secs(5));
+                thread::sleep(Duration::from_millis(2));
+            };
+            drop(allocation);
+            let _ = until_finished.recv_timeout(Duration::from_secs(30));
+            drop(held);
+        });
+        let (readiness, status) = run_unsupervised(&mut command, &prepared, "ignore-hup");
+        finished.send(()).unwrap();
+        interloper.join().unwrap();
+        assert_eq!(
+            readiness,
+            failed_readiness(125, "command startup deadline exceeded"),
+            "silent: {silent}"
+        );
+        assert_eq!(status.code(), Some(125));
+        let started = fs::read_to_string(prepared.home.join("fixture-pid"));
+        assert_eq!(started.is_ok(), silent, "the command started: {started:?}");
+        if let Ok(pid) = started {
+            let pid: u32 = pid.parse().unwrap();
+            let survived = process::start_time(pid).unwrap().is_some();
+            if survived {
+                unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+            }
+            assert!(!survived, "the started command survived the failed startup");
+        }
         assert_startup_files_removed(&prepared);
         assert_startup_command_gone(&prepared.home);
     }
@@ -2050,7 +2341,8 @@ fn runtime_argv_cwd_and_inherited_environment_are_exact_not_display_metadata() {
             }
         });
         let mut controlling = session.attach();
-        let report = session.directory.path().join("report");
+        let home = fs::canonicalize(session.directory.path()).unwrap();
+        let report = home.join("report");
         let deadline = Instant::now() + Duration::from_secs(2);
         while !report.with_extension("ready").exists() {
             assert!(Instant::now() < deadline);
@@ -2066,9 +2358,7 @@ fn runtime_argv_cwd_and_inherited_environment_are_exact_not_display_metadata() {
             input.read_exact(&mut field).unwrap();
             fields.push(field);
         }
-        let cwd = fs::canonicalize(session.directory.path())
-            .unwrap()
-            .join("cwd space --literal é");
+        let cwd = home.join("cwd space --literal é");
         assert_eq!(fields[0], cwd.as_os_str().as_bytes());
         assert_eq!(fields[1], daemon_fixture().as_os_str().as_bytes());
         assert_eq!(
@@ -2175,6 +2465,7 @@ fn job_fixture(job: &str) -> ! {
 
 static WINCHES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// `COLSxROWS`, followed by any pixel size: clients send none, so none may be reported.
 fn terminal_size() -> String {
     let mut size = std::mem::MaybeUninit::<libc::winsize>::uninit();
     assert_eq!(
@@ -2182,7 +2473,11 @@ fn terminal_size() -> String {
         0
     );
     let size = unsafe { size.assume_init() };
-    format!("{}x{}", size.ws_col, size.ws_row)
+    let pixels = match (size.ws_xpixel, size.ws_ypixel) {
+        (0, 0) => String::new(),
+        (width, height) => format!(" {width}x{height}px"),
+    };
+    format!("{}x{}{pixels}", size.ws_col, size.ws_row)
 }
 
 /// Records each line it reads with the terminal size at that moment.
@@ -2295,22 +2590,13 @@ fn fixture_child() {
         std::process::exit(0);
     }
     fs::write("fixture-pid", std::process::id().to_string()).unwrap();
-    let mut size = std::mem::MaybeUninit::<libc::winsize>::uninit();
-    assert_eq!(
-        unsafe { libc::ioctl(0, libc::TIOCGWINSZ, size.as_mut_ptr()) },
-        0
-    );
-    let size = unsafe { size.assume_init() };
+    let size = terminal_size();
     if mode == "zero-size" {
         // Publish atomically: the test polls for the name, then reads the contents.
-        fs::write(
-            "initial-size.tmp",
-            format!("{}x{}", size.ws_col, size.ws_row),
-        )
-        .unwrap();
+        fs::write("initial-size.tmp", size).unwrap();
         fs::rename("initial-size.tmp", "initial-size").unwrap();
     } else {
-        assert_eq!((size.ws_col, size.ws_row), (91, 37));
+        assert_eq!(size, "91x37");
     }
     if mode == "raw" {
         let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
@@ -2332,7 +2618,8 @@ fn fixture_child() {
         thread::sleep(Duration::from_secs(45));
     }
     if mode == "sync" {
-        for frame in 0..200 {
+        // A begin every 20 ms for the fixture's 45-second life, and never an end.
+        for frame in 0..2250 {
             print!("\x1b[?2026hframe-{frame}\r");
             io::stdout().flush().unwrap();
             if frame == 0 {
@@ -2371,18 +2658,8 @@ fn fixture_child() {
         io::stdout().flush().unwrap();
         let mut line = String::new();
         io::stdin().read_line(&mut line).unwrap();
-        let mut size = std::mem::MaybeUninit::<libc::winsize>::uninit();
-        assert_eq!(
-            unsafe { libc::ioctl(0, libc::TIOCGWINSZ, size.as_mut_ptr()) },
-            0
-        );
-        let size = unsafe { size.assume_init() };
         let winches = WINCHES.load(std::sync::atomic::Ordering::SeqCst);
-        fs::write(
-            "resized",
-            format!("{winches} {}x{}", size.ws_col, size.ws_row),
-        )
-        .unwrap();
+        fs::write("resized", format!("{winches} {}", terminal_size())).unwrap();
         std::process::exit(0);
     }
     if mode == "tui-restore" {
@@ -2453,16 +2730,13 @@ fn fixture_child() {
     if mode == "zero-size" {
         let mut line = String::new();
         io::stdin().read_line(&mut line).unwrap();
-        let mut size = std::mem::MaybeUninit::<libc::winsize>::uninit();
-        assert_eq!(
-            unsafe { libc::ioctl(0, libc::TIOCGWINSZ, size.as_mut_ptr()) },
-            0
-        );
-        let size = unsafe { size.assume_init() };
-        fs::write("resized", format!("{}x{}", size.ws_col, size.ws_row)).unwrap();
+        fs::write("resized", terminal_size()).unwrap();
         std::process::exit(0);
     }
-    if mode == "early" {
+    if mode == "early" || mode == "early-after-restore" {
+        if mode == "early-after-restore" {
+            wait_file(Path::new("finish-early"));
+        }
         print!("early-final");
         std::process::exit(43);
     }

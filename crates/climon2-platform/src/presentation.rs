@@ -1,10 +1,10 @@
 use climon2_core::Timestamp;
 use std::io;
 
-#[cfg(not(target_os = "macos"))]
-compile_error!("climon2 local terminal presentation currently supports macOS only");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("climon2 local terminal presentation requires macOS or Linux");
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn local_datetime(timestamp: &Timestamp) -> io::Result<String> {
     let created = time::OffsetDateTime::parse(
         timestamp.as_str(),
@@ -29,7 +29,7 @@ pub fn local_datetime(timestamp: &Timestamp) -> io::Result<String> {
     ))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn columns() -> usize {
     let mut size = std::mem::MaybeUninit::<libc::winsize>::uninit();
     // Only the stdout terminal determines table width; redirected output defaults to 80.

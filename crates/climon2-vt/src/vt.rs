@@ -269,14 +269,12 @@ impl Vt {
         }
     }
 
-    /// Origin, autowrap, insert and new-line modes; origin may move the
-    /// cursor, so it is re-established after them.
+    /// Origin, autowrap, insert and new-line modes; setting or resetting
+    /// origin may move the cursor, so it is re-established after them.
     fn direct_modes(&self, out: &mut Vec<u8>) {
         let mode = self.engine.mode();
         transitions(None, mode, DIRECT, out);
-        if mode.contains(TermMode::ORIGIN) {
-            cursor(self.engine.active(), true, out);
-        }
+        cursor(self.engine.active(), true, out);
     }
 
     fn title(&self) -> Vec<u8> {
