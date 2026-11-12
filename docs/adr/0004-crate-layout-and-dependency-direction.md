@@ -5,9 +5,10 @@ requires directly loaded client libraries and client threads in the monitor.
 The [discovery decision](https://github.com/jackgeek/climon2/issues/59) retains a
 planned discovery crate shared by CLI and monitor. The monitor is its own shipped
 package and executable, `climon2-monitor` (spec #73, confirmed 2026-11-08): the
-CLI execs its own version's monitor for `climon2 monitor` and `climon2 mon`, as
-it execs the version-matched client, and that handoff between executables of
-one release is not frozen. The library artifact layout remains open.
+CLI execs its own version's monitor for `c2 monitor` and `c2 mon` (or their
+`climon2` spellings), as it execs the version-matched client, and that handoff
+between executables of one release is not frozen. The client library's `cdylib`
+artifact, agreed in spec #73, is recorded here once it is built (#75).
 The monitor is the one exception to the daemon-only `climon2-vt` rule: the
 [#63 terminal contract](../protocol/terminal-integration.md) has it keep its own
 `climon2-vt` models with read-only Rust views, and it already shares the
@@ -43,5 +44,5 @@ Shipped crates may use test-only crates only as dev-dependencies. A workspace te
 ## Consequences
 
 - Plain `cargo test` builds a package's real binaries only if that package has an integration test, and `CARGO_BIN_EXE_*` only covers binaries in the same package. Tests therefore find binaries from other packages as siblings of `current_exe().parent()`. Nested `cargo build` is ruled out: it silently overwrote feature-unified binaries.
-- `test-hooks` is turned on only through `climon2-test-term`'s normal dependencies, so the workspace-wide `cargo test` builds hooked binaries. A package without a `climon2-test-term` dev-dependency, such as the monitor, gets its plain binary from `cargo test -p` alone, at the same sibling path. Release builds must use `-p <package>` for each shipped package, never `--workspace`, and a release gate checks that no hook marker is present in the shipped binaries.
+- `test-hooks` is turned on only through `climon2-test-term`'s normal dependencies, so the workspace-wide `cargo test` builds hooked binaries. A package without a `climon2-test-term` dev-dependency, such as the monitor, gets its plain binary from `cargo test -p` alone, at the same sibling path; `cargo xtask test` runs the monitor's build test that way before the workspace tests, so every gate finds both. Release builds must use `-p <package>` for each shipped package, never `--workspace`, and a release gate checks that no hook marker is present in the shipped binaries.
 - CRAP and mutation gates run on the shipped packages only.

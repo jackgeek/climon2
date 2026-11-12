@@ -152,12 +152,13 @@ consumption arrow, and does not sandbox trusted native code.
 The client executable will also load its same-release library for ordinary
 operations.
 
-**Current (#74):** every version folder ships the `climon2-monitor` executable.
-`climon2 monitor` and `climon2 mon` reach it through the launcher and the
-current version's CLI, which execs its own version's monitor exactly as it
-execs a version-matched client, so the monitor is always the current version.
-That handoff between executables of one release is not frozen. The monitor
-does not yet discover sessions or load libraries.
+**Current (#74):** every version folder ships the `climon2-monitor` executable,
+on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 mon`, or their `climon2`
+spellings, reach it through the launcher and the current version's CLI, which
+execs its own version's monitor exactly as it execs a version-matched client,
+so the monitor is always the current version. That handoff between executables
+of one release is not frozen. The monitor does not yet discover sessions or
+load libraries.
 
 The agreed [embedding design](protocol/library-embedding.md) loads
 `<executable home>/<session version>/libclimon2_client.dylib` on macOS, or

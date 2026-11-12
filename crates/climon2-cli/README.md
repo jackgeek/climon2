@@ -103,10 +103,11 @@ client start.
 `kill_refuses_an_older_session_without_capabilities` and
 `kill_of_an_uninstalled_version_names_that_version_and_ignores_config`.
 
-The `monitor`/`mon` hand-off is proven through the installed launcher by
-`climon2-e2e` `tests/monitor.rs`: `installed_monitor_and_mon_open_the_same_monitor`
-(ENT-01), `installed_monitor_arguments_are_a_usage_error` (derived argument
-refusal) and `missing_installed_monitor_fails_naming_its_version`.
+The `monitor`/`mon` hand-off is proven through the installed launcher, as `c2`
+and `climon2`, by `climon2-e2e` `tests/monitor.rs`:
+`installed_monitor_and_mon_open_the_same_monitor` (ENT-01),
+`installed_monitor_arguments_are_a_usage_error` (derived argument refusal) and
+`missing_installed_monitor_fails_naming_its_version`.
 `tests/scaffold.rs` checks the exact usage line.
 
 `tests/list.rs` covers discovery, stale cleanup and presentation, including

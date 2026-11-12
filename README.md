@@ -161,7 +161,8 @@ per command; there is no environment override, auto-creation or live reload.
 The [agreed terminal integration](docs/protocol/terminal-integration.md) provides
 interactive terminal input/rendering, internal normal-screen history, one top
 status row, and explicit control/restoration gates. Of these, the
-[monitor](#monitor) implements only its top row, empty state and exits so far.
+[monitor](#monitor) implements only its top row, empty state and exits so far,
+and already treats pasted shortcuts as data.
 It already reuses the `client` bindings and rejects a null escape prefix before
 changing terminal state; the rest of its startup snapshot is planned. Null
 takeover is allowed because selector confirmation can acquire control. Lowercase prefix+s
@@ -260,13 +261,14 @@ operation fail with 125 and are left undisturbed. `list` needs no client.
 
 ## Monitor
 
-`climon2 monitor`, or `climon2 mon`, opens the monitor: one terminal that will
-track every live session. It takes no arguments (any is a usage error, 2) and
-needs a terminal on stdin and stdout. The launcher always runs the current
-version's monitor. It uses your `client.escape_prefix` and
-`client.take_control_key` settings and their defaults, but refuses a `null`
-escape prefix, the only way to reach its actions. Startup errors are reported,
-with status 125, before your terminal changes.
+`c2 monitor`, or `c2 mon`, opens the monitor: one terminal that will track
+every live session. It takes no arguments (any is a usage error, 2) and needs a
+terminal on stdin and stdout. The launcher always runs the current version's
+monitor, on macOS and x86-64 GNU/Linux alike. It uses your
+`client.escape_prefix` and `client.take_control_key` settings and their
+defaults, but refuses a `null` escape prefix, the only way to reach its
+actions. Startup errors are reported, with status 125, before your terminal
+changes.
 
 The monitor does not discover sessions yet. On its own alternate screen it shows
 one permanent top row and an empty state that names your escape prefix:
@@ -278,13 +280,15 @@ No session selected
 ```
 
 The escape prefix followed by `x` exits with status 0; any other key is
-discarded, and Ctrl+C is a key, not an exit. Pastes are not yet exempt, so a
-pasted prefix and `x` also exit. SIGINT, SIGTERM and SIGHUP leave
-the same way with status 128 + signal. Resizing redraws the screen. On every
-exit the monitor returns your terminal to the normal shell state described for
-clients above, restores its settings (termios) exactly and never changes its
-title; only then does it print any error, with status 125. It logs to the
-general log in the climon2 home, never your input.
+discarded, and Ctrl+C is a key, not an exit. Pasted text is never a key: a
+paste holding the prefix and `x` does not exit, and a paste cancels a pending
+prefix. SIGINT, SIGTERM and SIGHUP leave the same way with status 128 + signal.
+Resizing repaints the screen at the new size without blanking it. If your
+terminal hangs up or can no longer be read, the monitor leaves with status 125.
+On every exit the monitor returns your terminal to the normal shell state
+described for clients above, restores its settings (termios) exactly and never
+changes its title; only then does it print any error, with status 125. It logs
+to the general log in the climon2 home, never your input.
 
 ## Terminal compatibility
 
@@ -448,6 +452,9 @@ follows available CPUs, capped at 16.
 `xtask check` runs formatting, strict clippy, unit/integration/installer-built
 packaged tests, ShellCheck, append-only metadata fixtures, instrumentation and
 worker-isolation proofs, coverage-backed CRAP <= 5 and zero-survivor mutation.
+Its tests, like `cargo xtask test`, first run the monitor's build test alone,
+proving its plain binary carries no test hooks, before the workspace tests
+build it with hooks at the same path.
 The unchanged workspace must pass in a real mutation overlay before mutation;
 worker infrastructure failures cannot count as killed mutants.
 `cargo xtask check` also measures mutation load before mutating, even when no

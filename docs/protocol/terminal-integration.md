@@ -1,18 +1,30 @@
 # Monitor terminal integration
 
-**Status: agreed, unimplemented specification from [#63](https://github.com/jackgeek/climon2/issues/63).**
+**Status: agreed specification from [#63](https://github.com/jackgeek/climon2/issues/63), almost entirely unimplemented.**
 This also records the confirmed input/configuration amendments to
 [#64](https://github.com/jackgeek/climon2/issues/64) and attention-jump amendment to
-[#59](https://github.com/jackgeek/climon2/issues/59). No executable changes or
-automated implementation evidence are supplied by this document.
+[#59](https://github.com/jackgeek/climon2/issues/59). This document supplies no
+executable changes or evidence itself.
+
+**Implemented with packaged evidence ([#74](https://github.com/jackgeek/climon2/issues/74)):**
+only the empty [monitor](../../GLOSSARY.md#sessions), which has no sessions to
+show. It takes its own alternate screen with one permanent top row, enables
+host bracketed-paste, mouse and focus reporting, and never changes the
+[host](../../GLOSSARY.md#sessions) title. Only the typed
+[client escape prefix](../../GLOSSARY.md#attachment-and-control) followed by x
+acts: pasted bytes are data, never complete a pending prefix and leave none
+pending. A host resize repaints the whole frame without blanking it or showing
+the cursor. Every exit returns the host to the normal-shell baseline with the
+[release](../../GLOSSARY.md#restoration-and-presentation) bytes before any
+diagnostic. Everything else in this document remains agreed and unimplemented.
 
 The later [selector and attention-presentation decision](../monitor-selector.md)
 confirms the captionless double-bordered selector, always-focused search,
 explicit read-only disconnected/final history selection and animated toasts.
 It also adds the monitor's own
 [host program-status reports and configurable bell](README.md#monitor-to-host-status-and-bell).
-These are planned presentation/host signals, not session-byte passthrough, changed daemon
-[FSMs](TERMS.md#fsm) or a shipped monitor.
+These are planned presentation/host signals, not session-byte passthrough or changed daemon
+[FSMs](TERMS.md#fsm); the shipped empty monitor emits none of them.
 
 The [monitor](../../GLOSSARY.md#sessions) provides an
 [RDP-like](TERMS.md#rdp) remote terminal experience, not a read-only viewer.
@@ -41,8 +53,11 @@ cross-release cell [schema](TERMS.md#schema).
 The monitor parses those bytes into its own per-[session](../../GLOSSARY.md#sessions)
 [virtual terminal](../../GLOSSARY.md#sessions), using `climon2-vt`, and Ratatui
 paints its read-only Rust views. These views of cells, modes, cursor, and history
-are a planned addition; current `climon2-vt` is daemon-only and exposes no public
-cell views. No new workspace crate or executable placement is chosen.
+are a planned addition; current `climon2-vt` exposes no public cell views, and the
+monitor uses it only for the normal-shell baseline. The monitor runs as its own
+`climon2-monitor` executable, beside the other executables of its release
+([ADR 0004](../adr/0004-crate-layout-and-dependency-direction.md)); this contract
+chooses no workspace crate.
 The [allocation-aware prerequisite](../monitor-operational-limits.md#allocation-aware-terminal-prerequisite)
 explicitly reopens the unbounded combining-data/infallible-interface assumptions
 for future monitor qualification. Current engine behavior is unchanged.
