@@ -69,8 +69,19 @@ impl Signals {
 struct Acts {
     /// It executed BEL.
     bell: bool,
-    /// It ended an OSC string, which was an OSC 7501 report or not.
-    osc: Option<bool>,
+    /// Whether it ended an OSC string, and which.
+    osc: OscEnd,
+}
+
+/// Whether the parser ended an OSC string in a run, and which.
+#[derive(Default)]
+enum OscEnd {
+    #[default]
+    NotEnded,
+    /// An OSC string that is not an OSC 7501 report.
+    Other,
+    /// An OSC 7501 program-status report.
+    ProgramStatus,
 }
 
 impl Perform for Acts {
@@ -79,7 +90,11 @@ impl Perform for Acts {
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        self.osc = Some(params.first() == Some(&PROGRAM_STATUS));
+        self.osc = if params.first() == Some(&PROGRAM_STATUS) {
+            OscEnd::ProgramStatus
+        } else {
+            OscEnd::Other
+        };
     }
 }
 
@@ -139,19 +154,14 @@ impl Place {
         }
     }
 
-    /// In an OSC string with `bytes` so far, after `run`, which ended it if the
-    /// parser reported `ended`.
-    fn osc(
-        mut bytes: Vec<u8>,
-        run: &[u8],
-        ended: Option<bool>,
-        recorded: &mut Vec<HostSignal>,
-    ) -> Self {
+    /// In an OSC string with `bytes` so far, after `run`, in which the parser
+    /// ended it or not (`end`).
+    fn osc(mut bytes: Vec<u8>, run: &[u8], end: OscEnd, recorded: &mut Vec<HostSignal>) -> Self {
         bytes.extend_from_slice(run);
-        match ended {
-            None => Self::Osc(bytes),
-            Some(false) => Self::at(run[0]),
-            Some(true) if run[0] == ESC => {
+        match end {
+            OscEnd::NotEnded => Self::Osc(bytes),
+            OscEnd::Other => Self::at(run[0]),
+            OscEnd::ProgramStatus if run[0] == ESC => {
                 bytes.pop();
                 Self::Escape {
                     bytes: vec![ESC],
@@ -161,7 +171,7 @@ impl Place {
                     }),
                 }
             }
-            Some(true) => {
+            OscEnd::ProgramStatus => {
                 recorded.push(HostSignal::Osc7501(bytes));
                 Self::Other
             }
