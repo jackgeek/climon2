@@ -1,15 +1,21 @@
 name: Checks
 
+# Documentation-only changes skip checks, except protocol pages: core's tests
+# read their published examples. Later patterns override earlier ones.
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - LICENSE
+    paths:
+      - "**"
+      - "!**/*.md"
+      - "!LICENSE"
+      - "docs/protocol/**/*.md"
   pull_request:
-    paths-ignore:
-      - "**/*.md"
-      - LICENSE
+    paths:
+      - "**"
+      - "!**/*.md"
+      - "!LICENSE"
+      - "docs/protocol/**/*.md"
   workflow_call:
     inputs:
       mutate_all:
