@@ -1,7 +1,7 @@
 use climon2_core::{
     protocol::{
-        ClientMessage, ConnectionState, HELLO_TIMEOUT, MAX_FRAME_LENGTH, ServerMessage, read_frame,
-        write_frame,
+        ClientMessage, ConnectionState, MAX_FRAME_LENGTH, ServerMessage, hello_time_remaining,
+        read_frame, write_frame,
     },
     wire::{self, Counter, FatalCode, FrameLimit, Request},
 };
@@ -79,7 +79,6 @@ pub(crate) struct Connection {
     outgoing: VecDeque<PendingFrame>,
     queued_bytes: usize,
     last_progress: Instant,
-    terminal: bool,
     close_when_empty: bool,
 }
 
@@ -94,7 +93,6 @@ impl Connection {
             outgoing: VecDeque::new(),
             queued_bytes: 0,
             last_progress: Instant::now(),
-            terminal: false,
             close_when_empty: false,
         })
     }
@@ -108,7 +106,7 @@ impl Connection {
     }
 
     pub fn stalled(&self, now: Instant) -> bool {
-        self.queued_bytes > 0 && now.duration_since(self.last_progress) >= NO_PROGRESS
+        !self.available() && super::passed(self.last_progress + NO_PROGRESS, now)
     }
 
     pub fn should_close(&self) -> bool {
@@ -138,7 +136,8 @@ impl Connection {
     }
 
     fn queue_bytes(&mut self, bytes: Vec<u8>) -> io::Result<()> {
-        if self.queued_bytes.saturating_add(bytes.len()) > WRITE_WINDOW {
+        let queued = self.queued_bytes.saturating_add(bytes.len());
+        if WRITE_WINDOW.checked_sub(queued).is_none() {
             return Err(super::io_error("connection output queue is full"));
         }
         self.queued_bytes += bytes.len();
@@ -171,13 +170,13 @@ impl Connection {
         self.last(|connection| connection.queue_wire(&wire::ControlRecord::to_frame(&error)));
     }
 
-    /// Queues a connection's last frame. It may replace unsent output, but never
-    /// splices a partially written frame.
+    /// Queues a connection's last frame. It replaces output not yet started,
+    /// but never splices a partially written frame.
     fn last(&mut self, queue: impl FnOnce(&mut Self) -> io::Result<()>) {
-        self.terminal = true;
         if self.outgoing.front().is_none_or(|frame| frame.written == 0) {
-            self.queued_bytes = 0;
-            self.outgoing.clear();
+            for unsent in self.outgoing.drain(..) {
+                self.queued_bytes -= unsent.bytes.len();
+            }
         }
         let _ = queue(self);
         let _ = self.flush();
@@ -223,7 +222,7 @@ impl Connection {
 
     /// False once the connection failed or is closing.
     pub fn receiving(&self) -> bool {
-        !(self.terminal || self.close_when_empty)
+        !self.close_when_empty
     }
 
     /// `None` once nothing is readable; `Some(None)` after part of a frame.
@@ -233,11 +232,8 @@ impl Connection {
     }
 
     fn validate_receive(&self) -> io::Result<()> {
-        if self.terminal {
-            return Err(super::io_error("connection closed"));
-        }
         if self.protocol == Protocol::Private(ConnectionState::AwaitingHello)
-            && self.accepted.elapsed() >= HELLO_TIMEOUT
+            && hello_time_remaining(self.accepted.elapsed()).is_none()
         {
             return Err(super::io_error("hello deadline exceeded"));
         }
@@ -256,7 +252,10 @@ impl Connection {
     /// Never reads past the current frame, so each read holds at most one
     /// frame, and the first frame after hello decides how later ones are read.
     fn read_buffer(&self) -> Result<Vec<u8>, Failure> {
-        Ok(vec![0; (self.target()? - self.incoming.len()).min(8192)])
+        Ok(vec![
+            u8::default();
+            (self.target()? - self.incoming.len()).min(8192)
+        ])
     }
 
     fn received(&mut self, bytes: &[u8]) -> Result<Option<Received>, Failure> {

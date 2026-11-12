@@ -1,16 +1,16 @@
 //! Passive monitor connections (#86): monitor Open, core metadata, Leave and
 //! validation, beside the private protocol that still serves attach and kill.
 use super::{
-    assert_closed, assert_fatal, assert_rejected, counter, families, frame, leave, limit, monitor,
-    open, peer, request, send, title_changed,
+    assert_closed, assert_fatal, assert_rejected, counter, families, frame, leave, limit, message,
+    monitor, open, peer, request, send, title_changed,
 };
 use crate::{ID, Session};
 use climon2_core::{
     hello::Lifecycle,
     protocol::{self, ClientMessage, ServerMessage as PrivateMessage, TerminalSize},
     wire::{
-        self, Available, ControlRecord, Frame, Geometry, Kill, Leave, Mode, Outcome, Response,
-        ServerMessage, Success,
+        self, Available, ControlRecord, FatalError, Frame, Geometry, Kill, Leave, Mode, Outcome,
+        Response, ServerMessage, Success,
     },
 };
 use std::{
@@ -638,4 +638,41 @@ fn interactive_open_and_standalone_kill_are_refused_until_they_are_served() {
         (Lifecycle::Starting, 0, false)
     );
     end_through_attachment(session);
+}
+
+/// COM-02 (Contract, connection effects): a connection-fatal failure on a
+/// stream whose peer has stopped reading is reported without waiting for
+/// its backlog. Frames already started still arrive whole, so every record
+/// decodes, then the Fatal error replaces the output not yet started, and
+/// the stream ends. Other connections receive everything.
+#[test]
+fn a_fatal_error_replaces_a_backlog_without_splitting_a_frame() {
+    const TITLES: u32 = 5000;
+    let session = Session::start("script");
+    detached(&session);
+    let (mut stalled, _) = monitor(&session, &["title-v1"]);
+    let (mut reading, _) = monitor(&session, &["title-v1"]);
+    crate::script(&session, &format!("titles 1 {TITLES}"));
+    for number in 1..=TITLES {
+        assert_eq!(title_changed(&mut reading), Some(format!("t-{number}")));
+    }
+    stalled.write_all(&[0, 0, 0, 0]).unwrap();
+    let mut received = 0;
+    loop {
+        match message(&mut stalled) {
+            ServerMessage::TitleChanged(changed) => {
+                received += 1;
+                assert_eq!(changed.title, Some(format!("t-{received}")));
+            }
+            ServerMessage::FatalError(FatalError(error)) => {
+                assert_eq!(error.code.as_str(), "invalid_frame_length");
+                break;
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert!(received < TITLES, "the backlog was not replaced");
+    assert_closed(&mut stalled);
+    leave(&mut reading, 2);
+    end_script(session);
 }
