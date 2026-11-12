@@ -4,7 +4,7 @@ use climon2_core::{
     SessionId,
     hello::{Lifecycle, SessionState},
     layout::HomeLayout,
-    metadata::SessionMetadata,
+    metadata::{LinuxProcessIdentity, SessionMetadata},
     protocol::{
         ClientMessage, Frame, HANGUP_GRACE, HELLO_TIMEOUT, ServerMessage, TerminalSize, read_frame,
         write_frame,
@@ -48,7 +48,8 @@ fn home() -> (tempfile::TempDir, PathBuf) {
     (directory, home)
 }
 
-/// Valid metadata whose daemon identity is provably gone and whose socket is missing.
+/// Valid metadata whose socket is missing and whose daemon identity is provably gone: this
+/// process's PID, with a start time (macOS) and Linux start ticks it never had.
 fn record(home: &Path, suffix: u8, created: &str) -> SessionMetadata {
     let id: SessionId = format!("12345678-1234-4234-8234-123456789a{suffix:02x}")
         .parse()
@@ -57,13 +58,23 @@ fn record(home: &Path, suffix: u8, created: &str) -> SessionMetadata {
         .unwrap()
         .socket_path(&id)
         .unwrap();
-    serde_json::from_value(serde_json::json!({
+    let mut metadata: SessionMetadata = serde_json::from_value(serde_json::json!({
         "format_version":1,"session_id":id.as_str(),"socket_path":socket,
         "daemon_pid":std::process::id(),"daemon_start_time":0,
         "command":"bash","args":[],"cwd":home,"depth":1,"created_at":created,
         "climon2_version":"0.1.0"
     }))
-    .unwrap()
+    .unwrap();
+    metadata.daemon_linux_identity = own_identity().map(|identity| LinuxProcessIdentity {
+        start_ticks: 0,
+        ..identity
+    });
+    metadata
+}
+
+/// This process's Linux identity, as a daemon records its own; macOS records none.
+fn own_identity() -> Option<LinuxProcessIdentity> {
+    process::linux_identity(std::process::id()).unwrap()
 }
 
 fn path(home: &Path, metadata: &SessionMetadata) -> PathBuf {
@@ -604,4 +615,36 @@ fn a_silent_daemon_is_uncertain_after_the_two_second_hello_deadline() {
     assert_eq!(peer.join().unwrap().unwrap(), 0);
     assert!(file.exists());
     fs::remove_file(silent.socket_path.as_str()).unwrap();
+}
+
+/// DSC-04 Contract case (uncertain disappearance), Linux: a session whose socket is missing
+/// is stale only when its recorded boot ID and start ticks prove the daemon gone, never by
+/// its epoch start time. A live identity is a live daemon whatever start time it recorded,
+/// and metadata without an identity is uncertain; neither is cleaned up, even on request.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_daemon_identity_alone_proves_a_session_stale() {
+    let (_directory, home) = home();
+    let mut alive = record(&home, 0x61, CREATED);
+    alive.daemon_linux_identity = own_identity();
+    let mut unknown = record(&home, 0x62, CREATED);
+    unknown.daemon_linux_identity = None;
+    let mut dead = record(&home, 0x63, CREATED);
+    dead.daemon_start_time = process::start_time(std::process::id()).unwrap().unwrap();
+    let files = [&alive, &unknown, &dead].map(|metadata| save(&home, metadata));
+
+    let pass = discover(&home, REMOVE).unwrap();
+    let [
+        Outcome::Uncertain(found_alive, Uncertainty::DaemonAlive),
+        Outcome::Uncertain(found_unknown, Uncertainty::IdentityUnknown(_)),
+        Outcome::Stale(found_dead, Cleanup::Removed),
+    ] = pass.sessions.as_slice()
+    else {
+        panic!("{pass:?}");
+    };
+    assert_eq!(
+        [found_alive, found_unknown, found_dead],
+        [&alive, &unknown, &dead]
+    );
+    assert_eq!(files.map(|file| file.exists()), [true, true, false]);
 }

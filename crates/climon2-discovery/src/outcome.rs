@@ -140,7 +140,7 @@ fn connection_failed(
 
 /// Only a proven dead daemon identity makes such a session stale.
 fn identity(home: &Path, metadata: SessionMetadata, stale: StaleMetadata) -> Outcome {
-    match process::is_same_process(metadata.daemon_pid, metadata.daemon_start_time) {
+    match process::is_same_daemon(&metadata) {
         Ok(false) => {
             let cleanup = clean_up(home, &metadata, stale);
             Outcome::Stale(metadata, cleanup)

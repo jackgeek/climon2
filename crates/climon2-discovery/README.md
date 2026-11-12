@@ -5,7 +5,8 @@ the CLI's own session discovery, moved into a shipped library (#77, planned in
 [#59](https://github.com/jackgeek/climon2/issues/59)) so that `climon2 list`,
 `attach` and `kill`, and later the monitor, share one implementation. It depends
 only on `climon2-core` and `climon2-platform` (ADR 0004) and, like the platform
-seams, supports macOS only.
+seams, supports macOS and x86-64 GNU/Linux; it has no OS-specific code of its
+own.
 
 ```rust
 pub fn discover(home: &Path, options: Options) -> io::Result<Pass>
@@ -33,7 +34,7 @@ pub fn discover(home: &Path, options: Options) -> io::Result<Pass>
 |---|---|---|
 | `Live(LiveSession)` | The daemon answered the hello with this session's ID. | `metadata` and the hello `extensions`; `state()` only when `state-v1` is advertised with a valid snapshot |
 | `Uncertain(metadata, Uncertainty)` | Uncertain or unavailable: neither proven live nor proven stale. Never cleaned up. | `Mismatched`, `Unanswered(io::Error)`, `Unreachable(io::Error)`, `DaemonAlive` or `IdentityUnknown(io::Error)` |
-| `Stale(metadata, Cleanup)` | Definitively stale: the socket is missing or refuses (`ENOENT`, `ECONNREFUSED`) and the recorded daemon PID and start time no longer match a process. | `Retained`, `Removed` or `Failed(io::Error)` |
+| `Stale(metadata, Cleanup)` | Definitively stale: the socket is missing or refuses (`ENOENT`, `ECONNREFUSED`) and the recorded daemon identity provably no longer runs (ADR 0005): on Linux the boot ID and start ticks of `daemon_linux_identity`, never the epoch start time, and metadata without that identity is `IdentityUnknown`; on macOS the PID and start time. | `Retained`, `Removed` or `Failed(io::Error)` |
 
 `Options::stale` is the only cleanup switch. With `StaleMetadata::Remove`, each
 stale session's metadata file and then its socket are deleted, and files that
@@ -82,6 +83,7 @@ hello peers.
 | DSC-04 Contract cases for one pass: mismatched hello IDs, failed probes, uncertain disappearance and malformed or unreadable metadata are structured outcomes and never cleaned up; a failed stale cleanup is reported; no pass prints | `every_outcome_is_structured_and_no_pass_prints` |
 | DSC-04 Contract case: oversized and too deeply nested metadata, at and one past each limit | `metadata_limits_accept_their_bound_and_reject_one_past_it` |
 | DSC-04 Contract case: a silent daemon is uncertain only after the frozen two-second hello deadline, and kept even when cleanup is requested | `a_silent_daemon_is_uncertain_after_the_two_second_hello_deadline` |
+| DSC-04 Contract case (uncertain disappearance), Linux: only the recorded boot ID and start ticks prove a session stale; a live identity with any start time, and a missing identity, are uncertain and kept even when cleanup is requested | `linux_daemon_identity_alone_proves_a_session_stale` |
 | Shared discovery order: newest created first, then ascending full session ID; a home without sessions is an empty pass | `sessions_are_newest_created_first_with_ascending_session_id_ties` |
 
 The monitor's own DSC-01, DSC-03, DSC-04 and DSC-06 cases arrive with #106.
