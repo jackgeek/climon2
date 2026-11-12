@@ -96,14 +96,16 @@ impl Bounded {
     /// Only what the live output policy forwards to a Direct host reaches
     /// the engine. The daemon already applied that policy, so a stripped
     /// token can only be malformed input; only the controls it executes
-    /// remain.
+    /// remain. Growth and history are admitted from the policy's own parse
+    /// of the token.
     fn token(&mut self, token: Token, room: Room) -> Result<(), Rejected> {
-        let bytes = match classify(&token).live {
+        let policy = classify(&token);
+        let bytes = match policy.live {
             Live::Forward => token.bytes,
             Live::Replace(bytes) => bytes,
         };
-        self.admit(self.growth(token.kind, &bytes), room)?;
-        self.grow(bytes.len(), room);
+        self.admit(self.growth(token.kind, &bytes, policy.repeats), room)?;
+        self.grow(bytes.len() + policy.repeats, room);
         self.processor.advance(&mut self.term, &bytes);
         self.settle();
         Ok(())
@@ -129,8 +131,8 @@ impl Bounded {
     /// Before a token that could fill the history limit, admit the engine's
     /// next chunk of rows if it fits; otherwise the engine discards its
     /// oldest row for each new one.
-    fn grow(&mut self, length: usize, room: Room) {
-        let Some(next) = self.next_limit(length) else {
+    fn grow(&mut self, reach: usize, room: Room) {
+        let Some(next) = self.next_limit(reach) else {
             return;
         };
         let growth = cost::history(self.geometry, next) - cost::history(self.geometry, self.limit);
@@ -140,11 +142,12 @@ impl Bounded {
         }
     }
 
-    /// The next history limit, when a token of `length` bytes could fill the
-    /// current one and the model may show more. A token pushes at most a row
-    /// per byte or a screenful, except a long `CSI n b`.
-    fn next_limit(&self, length: usize) -> Option<usize> {
-        let reach = self.normal_history()? + length.max(usize::from(self.geometry.rows()));
+    /// The next history limit, when a token whose bytes and repetitions add
+    /// up to `reach` could fill the current one and the model may show more.
+    /// A token pushes at most a row per byte and per repetition, or a
+    /// screenful.
+    fn next_limit(&self, reach: usize) -> Option<usize> {
+        let reach = self.normal_history()? + reach.max(usize::from(self.geometry.rows()));
         (reach > self.limit && self.limit < self.rows).then_some(self.limit + cost::CHUNK)
     }
 
@@ -185,13 +188,14 @@ impl Bounded {
         self.extras[self.active()] = held;
     }
 
-    /// The most one token can make the engine allocate.
-    fn growth(&self, kind: Kind, bytes: &[u8]) -> usize {
+    /// The most one token can make the engine allocate: its printed text,
+    /// or the characters its sequence repeats.
+    fn growth(&self, kind: Kind, bytes: &[u8], repeats: usize) -> usize {
         let tinted = self.term.grid().cursor.template.extra.is_some();
-        match kind {
-            Kind::Text => cost::text(bytes, tinted),
-            Kind::Csi => cost::repeat(bytes, tinted),
-            _ => 0,
+        if kind == Kind::Text {
+            cost::text(bytes, tinted)
+        } else {
+            cost::repeat(repeats, tinted)
         }
     }
 

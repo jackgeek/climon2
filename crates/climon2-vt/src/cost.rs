@@ -104,25 +104,7 @@ fn printed(c: char, costs: &[usize; 3]) -> usize {
     c.width().map_or(0, |width| costs[width.min(2)])
 }
 
-/// `CSI n b` prints vte's preceding character `n` more times, whatever that
-/// character was.
-pub(crate) fn repeat(bytes: &[u8], tinted: bool) -> usize {
-    if bytes.last() != Some(&b'b') {
-        return 0;
-    }
-    count(bytes) * REPEATED[usize::from(tinted)]
-}
-
-/// The first parameter, saturating like vte's; zero or absent means one.
-fn count(bytes: &[u8]) -> usize {
-    let digits = bytes
-        .iter()
-        .skip(2)
-        .take_while(|byte| byte.is_ascii_digit());
-    let count = digits.fold(0u16, |count, digit| {
-        count
-            .saturating_mul(10)
-            .saturating_add(u16::from(digit - b'0'))
-    });
-    usize::from(count.max(1))
+/// The most repeating the preceding character `count` times can add.
+pub(crate) fn repeat(count: usize, tinted: bool) -> usize {
+    count * REPEATED[usize::from(tinted)]
 }

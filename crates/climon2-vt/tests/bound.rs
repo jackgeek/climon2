@@ -137,7 +137,12 @@ fn plain_text_fills_held_cells_without_growth() {
     assert_eq!(model.screen(), ["hello", "world", "\u{4e00}x"]);
 }
 
-const ROWS: usize = 100;
+/// History rows for tests about anything but history: none, so a charged but
+/// still unallocated history chunk cannot hide an undercharge.
+const ROWS: usize = 0;
+
+/// History rows for tests about history.
+const HISTORY: usize = 100;
 
 /// The bytes a model needs before any output.
 fn mandatory(at: Geometry) -> usize {
@@ -146,9 +151,14 @@ fn mandatory(at: Geometry) -> usize {
 
 /// A model with the smallest limit that accepts `bytes`, and that limit.
 fn fitted(at: Geometry, bytes: &[u8]) -> (Model, usize) {
-    let mut limit = mandatory(at);
+    fitted_with(at, ROWS, bytes)
+}
+
+/// [`fitted`] for a model keeping `rows` history rows.
+fn fitted_with(at: Geometry, rows: usize, bytes: &[u8]) -> (Model, usize) {
+    let mut limit = needed(Model::new(at, limits(0, rows)));
     loop {
-        let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+        let mut model = Model::new(at, limits(limit, rows)).unwrap();
         match model.feed(bytes) {
             Ok(()) => return (model, limit),
             Err(rejected) => limit = rejected.needed,
@@ -158,9 +168,11 @@ fn fitted(at: Geometry, bytes: &[u8]) -> (Model, usize) {
 
 /// Feed `before`, then `update`, into models whose limits sit exactly at the
 /// bytes `update` needs and one byte below. At the bound the update is
-/// accepted and the allocator never saw more than the limit; one byte below it
-/// is rejected before it reaches the engine, leaving the page `before`
-/// produced. Returns the accepted model's screen.
+/// accepted, the allocator never saw more than the limit, and what the update
+/// left allocated is no more than it was charged, so the reserve's unused
+/// room cannot hide an undercharge; one byte below it is rejected before it
+/// reaches the engine, leaving the page `before` produced. Returns the
+/// accepted model's screen.
 #[track_caller]
 fn assert_bound(at: Geometry, before: &[u8], update: &[u8]) -> Vec<String> {
     let bound = needed(fitted(at, before).0.feed(update));
@@ -168,8 +180,12 @@ fn assert_bound(at: Geometry, before: &[u8], update: &[u8]) -> Vec<String> {
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(bound, ROWS)).unwrap();
     model.feed(before).unwrap();
+    let (held, charged) = (meter.live(), model.footprint());
     model.feed(update).unwrap();
     assert!(meter.peak() <= bound, "{} > {bound}", meter.peak());
+    let kept = meter.live().saturating_sub(held);
+    let charge = model.footprint() - charged;
+    assert!(kept <= charge, "kept {kept} > charged {charge}");
     let accepted = model.screen();
 
     let mut model = Model::new(at, limits(bound - 1, ROWS)).unwrap();
@@ -323,20 +339,75 @@ fn repeated_marks_are_accepted_at_the_bound_and_rejected_one_byte_past_it() {
     );
 }
 
+/// LIM-03 Fault: a repeat count is the one the parser uses, wherever C0
+/// controls sit in the sequence: before the introducer, before the digits or
+/// among them; an absent or zero count repeats once. Each form is accepted
+/// at the bound, with every mark it repeats, and rejected one byte past it.
+#[test]
+fn repeat_counts_are_the_parsers_whatever_controls_sit_in_them() {
+    for (repeat, marks) in [
+        (&b"\x1b\x07[65535b"[..], 65536),
+        (b"\x1b[\x0765535b", 65536),
+        (b"\x1b[6\x075535b", 65536),
+        (b"\x1b[b", 2),
+        (b"\x1b[0b", 2),
+    ] {
+        let accepted = assert_bound(geometry(10, 3), "page\r\na\u{301}".as_bytes(), repeat);
+        assert_eq!(
+            accepted,
+            [
+                "page".to_owned(),
+                format!("a{}", "\u{301}".repeat(marks)),
+                String::new()
+            ],
+            "{repeat:?}"
+        );
+    }
+}
+
+/// LIM-03 Contract: a repeat scrolls one row per screen width it prints, more
+/// than its bytes or a screenful. The history chunk it could fill is admitted
+/// before it, so every row the model may show is kept.
+#[test]
+fn a_long_repeat_admits_the_history_chunk_it_could_fill() {
+    let at = geometry(8, 2);
+    let mut model = Model::new(at, limits(ROOMY, 2000)).unwrap();
+    model.feed("x\r\n".repeat(900).as_bytes()).unwrap();
+    assert_eq!(model.history().len(), 899);
+
+    model.feed(b"y\x1b[1599b").unwrap();
+
+    let history = model.history();
+    assert_eq!(history.len(), 899 + 199);
+    assert_eq!(history[..900], vec!["x".to_owned(); 900]);
+    assert_eq!(history[900..], vec!["y".repeat(8); 198]);
+}
+
 /// LIM-03 Fault: what the live output policy never forwards to a host
 /// (titles and the title stack, hyperlinks, device control strings, clipboard
-/// and queries) never reaches the engine. A model at its mandatory limit
-/// takes any amount of it, and the allocator never sees the limit exceeded.
+/// and queries) never reaches the engine, including after a C0 control
+/// between `ESC` and the introducer. A model with no history at its mandatory
+/// limit takes any amount of it, and the allocator never sees the limit
+/// exceeded.
 #[test]
 fn sequences_no_host_receives_never_grow_the_model() {
     let at = geometry(10, 3);
     let long = "t".repeat(4000);
+    let hostile = |esc: &str| {
+        [
+            format!("{esc}]2;{long}\x07").repeat(16),
+            format!("{esc}[22t").repeat(4096),
+            format!("{esc}]8;id={long};https://{long}\x1b\\"),
+            format!("{esc}P+q{long}\x1b\\{esc}]52;c;{long}\x07"),
+            format!("{esc}[c{esc}[>c{esc}[6n{esc}]11;?\x07{esc}[?2026$p{esc}[18t").repeat(256),
+        ]
+        .concat()
+    };
     let stream = [
-        format!("\x1b]2;{long}\x07").repeat(16),
-        "\x1b[22t".repeat(4096),
-        format!("\x1b]8;id={long};https://{long}\x1b\\link\x1b]8;;\x1b\\"),
-        format!("\x1bP+q{long}\x1b\\\x1b]52;c;{long}\x07"),
-        "\x1b[c\x1b[>c\x1b[6n\x1b]11;?\x07\x1b[?2026$p\x1b[18t".repeat(256),
+        hostile("\x1b"),
+        "link".to_owned(),
+        hostile("\x1b\x07"),
+        "LINK".to_owned(),
     ]
     .concat();
     let limit = mandatory(at);
@@ -348,7 +419,7 @@ fn sequences_no_host_receives_never_grow_the_model() {
     assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
     assert!(meter.live() <= limit);
     assert_eq!(model.footprint(), limit);
-    assert_eq!(model.screen(), ["link", "", ""]);
+    assert_eq!(model.screen(), ["linkLINK", "", ""]);
 }
 
 /// LIM-03 Contract: a restoration is staged into a separate model while the
@@ -590,9 +661,9 @@ fn a_cancelled_sequence_releasing_held_controls_stays_within_the_limit() {
 fn a_full_reset_releases_marks_and_history() {
     let at = geometry(10, 3);
     let heavy = format!("{}\r\n{}", marked(at, 20), marked(at, 20));
-    let limit = fitted(at, heavy.as_bytes()).1;
+    let limit = fitted_with(at, HISTORY, heavy.as_bytes()).1;
     let meter = Meter::watch();
-    let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+    let mut model = Model::new(at, limits(limit, HISTORY)).unwrap();
     model.feed(heavy.as_bytes()).unwrap();
 
     for _ in 0..3 {
@@ -634,9 +705,9 @@ fn history_storage_is_allocated_a_chunk_at_a_time() {
 fn cleared_history_releases_its_marks() {
     let at = geometry(100, 40);
     let screenful = format!("\x1b[H{}", marked(at, 1));
-    let limit = fitted(at, screenful.as_bytes()).1;
+    let limit = fitted_with(at, HISTORY, screenful.as_bytes()).1;
     let meter = Meter::watch();
-    let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+    let mut model = Model::new(at, limits(limit, HISTORY)).unwrap();
     model.feed(screenful.as_bytes()).unwrap();
 
     for _ in 0..8 {
@@ -666,47 +737,195 @@ fn history_never_grows_past_its_configured_rows() {
 /// normal screen's history is not shown over it.
 #[test]
 fn the_alternate_screen_shows_no_history() {
-    let mut model = Model::new(geometry(8, 2), limits(ROOMY, ROWS)).unwrap();
+    let mut model = Model::new(geometry(8, 2), limits(ROOMY, HISTORY)).unwrap();
     model.feed(b"one\r\ntwo\r\nthree\x1b[?1049h").unwrap();
     assert_eq!(model.history(), Vec::<String>::new());
     model.feed(b"\x1b[?1049l").unwrap();
     assert_eq!(model.history(), ["one"]);
 }
 
-/// The bytes charged for feeding `update` after `before` into a roomy model.
-fn charged(before: &[u8], update: &[u8]) -> usize {
-    let mut model = Model::new(geometry(80, 3), limits(ROOMY, ROWS)).unwrap();
-    model.feed(before).unwrap();
-    let footprint = model.footprint();
-    model.feed(update).unwrap();
-    model.footprint() - footprint
+/// A deterministic xorshift sequence, as the tokenizer tests use.
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, bound: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 % bound as u64) as usize
+    }
+
+    fn pick<'a>(&mut self, items: &[&'a [u8]]) -> &'a [u8] {
+        items[self.below(items.len())]
+    }
 }
 
-const TINT: &[u8] = b"\x1b[58;5;1m";
+/// The tokenizer tests' tricky bytes: controls the parser executes inside a
+/// sequence, CAN and SUB, ESC, and bytes it ignores.
+const TRICKY: &[&[u8]] = &[
+    b"\x07", b"\x08", b"\n", b"\r", b"\x00", b"\x1c", b"\x1f", b"\x18", b"\x1a", b"\x1b", b"\x7f",
+    b"\x9c",
+];
 
-/// LIM-03 Contract: what printing can grow depends on what it prints. Under
-/// an underline colour, an invalid byte prints one replacement cell like any
-/// narrow character and a wide character up to three cells; a combining mark
-/// costs the same with or without one, and `CSI n b` costs `n` repetitions of
-/// the worst character it could repeat, one when `n` is absent or zero.
+/// Narrow, wide, combining and invalid text, combining marks most often.
+const PRINTED: &[&[u8]] = &[
+    b"a",
+    b" ",
+    "\u{e9}".as_bytes(),
+    "\u{4e00}".as_bytes(),
+    "\u{301}".as_bytes(),
+    "\u{301}".as_bytes(),
+    "\u{301}".as_bytes(),
+    b"\xff",
+    b"\xf0\x80",
+];
+
+/// CSI parameters and finals that print, tint, scroll, erase, switch
+/// screens, push titles, query and negotiate.
+const PARAMETERS: &[&[u8]] = &[
+    b"",
+    b"1",
+    b"25",
+    b"58;5;1",
+    b"58:2::1:2:3",
+    b"4:3",
+    b"?1049",
+    b"?47;25",
+    b"?2026",
+    b"22",
+    b"3",
+    b">1",
+    b"=1;1",
+];
+const FINALS: &[&[u8]] = &[
+    b"m", b"t", b"h", b"l", b"J", b"K", b"S", b"L", b"@", b"P", b"X", b"H", b"r", b"c", b"n", b"q",
+    b"u",
+];
+
+/// Repeat counts for `CSI n b`: absent, zero, small, and past what `n`
+/// can hold.
+const COUNTS: &[&[u8]] = &[b"", b"0", b"1", b"25", b"8192", b"99999"];
+
+/// Escape sequences after `ESC`.
+const ESCAPES: &[&[u8]] = &[
+    b"7", b"8", b"c", b"#8", b"D", b"E", b"M", b"H", b"(B", b"=", b"Z", b"\\",
+];
+
+/// Control strings after `ESC`, and what ends them.
+const STRINGS: &[&[u8]] = &[
+    b"]0;title",
+    b"]8;;http://x/",
+    b"]8;id=1;http://y/",
+    b"]52;c;aGVsbG8=",
+    b"]11;?",
+    b"P$qm",
+    b"_Gi=1;AAAA",
+    b"^pm",
+    b"Xsos",
+];
+const ENDS: &[&[u8]] = &[b"\x07", b"\x1b\\", b"\x18", b"\x1a", b"\x1b7", b"\x9c"];
+
+/// Half the time, a tricky byte.
+fn slip(rng: &mut Rng, out: &mut Vec<u8>) {
+    if rng.below(2) == 0 {
+        out.extend(rng.pick(TRICKY));
+    }
+}
+
+/// `ESC`, perhaps a tricky byte, `[`, then `parameters` with perhaps a
+/// tricky byte among them, and `last`.
+fn csi(rng: &mut Rng, parameters: &[u8], last: &[u8], out: &mut Vec<u8>) {
+    out.push(0x1b);
+    slip(rng, out);
+    out.push(b'[');
+    let split = rng.below(parameters.len() + 1);
+    out.extend(&parameters[..split]);
+    slip(rng, out);
+    out.extend(&parameters[split..]);
+    out.extend(last);
+}
+
+/// One piece of an adversarial stream: text, a tricky byte, a repeat, or
+/// another CSI, an escape or a control string, with tricky bytes slipped
+/// after `ESC` and among parameters.
+fn piece(rng: &mut Rng, out: &mut Vec<u8>) {
+    match rng.below(6) {
+        0 => (0..=rng.below(6)).for_each(|_| out.extend(rng.pick(PRINTED))),
+        1 => out.extend(rng.pick(TRICKY)),
+        2 => {
+            let count = rng.pick(COUNTS);
+            csi(rng, count, b"b", out);
+        }
+        3 => {
+            let (parameters, last) = (rng.pick(PARAMETERS), rng.pick(FINALS));
+            csi(rng, parameters, last, out);
+        }
+        4 => {
+            out.push(0x1b);
+            slip(rng, out);
+            out.extend(rng.pick(ESCAPES));
+        }
+        _ => {
+            out.push(0x1b);
+            slip(rng, out);
+            out.extend(rng.pick(STRINGS));
+            out.extend(rng.pick(ENDS));
+        }
+    }
+}
+
+/// LIM-03 Fault: adversarial streams never take a model past its limit. They
+/// mix narrow, wide, combining and invalid text with sequences that print,
+/// repeat, tint, scroll, switch screens and carry strings, with the tokenizer
+/// tests' tricky bytes slipped between `ESC` and the introducer and among
+/// parameters, and arrive in reads of any size. A model with no history,
+/// from its mandatory limit up, rejects before the allocator sees the limit
+/// exceeded, and what it keeps between reads is charged: beyond the reserve,
+/// only the front filter's held partial token and the cursor templates' cell
+/// data, within `HELD`, go uncharged. After a rejection it keeps its page and
+/// refuses everything.
 #[test]
-fn growth_is_charged_by_what_printing_can_hold() {
-    let narrow = charged(TINT, b"x");
-    assert!(narrow > 0);
-    assert_eq!(charged(TINT, b"\xff"), narrow);
-    assert_eq!(charged(TINT, b"x\xffx"), 3 * narrow);
-    assert_eq!(charged(TINT, "\u{4e00}".as_bytes()), 3 * narrow);
-    assert_eq!(charged(b"", b"x\xff\x07"), 0);
-
-    let mark = charged(b"a", "\u{301}".as_bytes());
-    assert_eq!(charged(&[TINT, b"a"].concat(), "\u{301}".as_bytes()), mark);
-    assert_eq!(charged(b"a", b"\x1b[b"), mark);
-    assert_eq!(charged(b"a", b"\x1b[0b"), mark);
-    assert_eq!(charged(b"a", b"\x1b[25b"), 25 * mark);
-    assert_eq!(
-        charged(&[TINT, b"a"].concat(), b"\x1b[25b"),
-        25 * 3 * narrow
-    );
+fn adversarial_streams_never_take_a_model_past_its_limit() {
+    const HELD: usize = 16 << 10;
+    let at = geometry(10, 3);
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    for _ in 0..50 {
+        let mut stream = Vec::new();
+        (0..40).for_each(|_| piece(&mut rng, &mut stream));
+        for extra in [0, 4 << 10, 64 << 10, 1 << 20] {
+            let limit = mandatory(at) + extra;
+            let reads: Vec<usize> = (0..stream.len()).map(|_| 1 + rng.below(64)).collect();
+            let meter = Meter::watch();
+            let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+            let mut rest = &stream[..];
+            let mut sizes = reads.iter();
+            let rejected = loop {
+                let Some(&size) = sizes.next().filter(|_| !rest.is_empty()) else {
+                    break None;
+                };
+                let (read, next) = rest.split_at(size.min(rest.len()));
+                rest = next;
+                if let Err(rejected) = model.feed(read) {
+                    break Some(rejected);
+                }
+                let uncharged = meter
+                    .live()
+                    .saturating_sub(model.footprint() - Model::RESERVE);
+                assert!(uncharged <= HELD, "{uncharged} uncharged: {stream:?}");
+            };
+            assert!(
+                meter.peak() <= limit,
+                "{} > {limit}: {stream:?}",
+                meter.peak()
+            );
+            if let Some(rejected) = rejected {
+                let page = model.screen();
+                assert_eq!(model.feed(rest), Err(rejected));
+                assert_eq!(model.feed(b"x"), Err(rejected));
+                assert_eq!(model.screen(), page);
+            }
+        }
+    }
 }
 
 /// LIM-03 Contract: marks accumulating on every cell, a few per update, are
@@ -733,21 +952,26 @@ fn marks_accumulating_on_every_cell_stay_within_the_limit() {
 
 /// LIM-03 Fault: repeated `CSI 65535 b` of a combining mark is rejected as
 /// soon as one repetition would not fit, so marks never pile up past the
-/// limit on one cell.
+/// limit on one cell, wherever C0 controls sit in the sequence.
 #[test]
 fn repeated_repeats_stay_within_the_limit() {
     let at = geometry(10, 3);
     let limit = mandatory(at) + 2 * 1024 * 1024;
-    let meter = Meter::watch();
-    let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
-    model.feed("a\u{301}".as_bytes()).unwrap();
+    for repeat in [
+        &b"\x1b[65535b"[..],
+        b"\x1b\x07[65535b",
+        b"\x1b[\x0765535b",
+        b"\x1b[6\x075535b",
+    ] {
+        let meter = Meter::watch();
+        let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+        model.feed("a\u{301}".as_bytes()).unwrap();
 
-    let repeated = (0..20)
-        .take_while(|_| model.feed(b"\x1b[65535b").is_ok())
-        .count();
+        let repeated = (0..20).take_while(|_| model.feed(repeat).is_ok()).count();
 
-    assert_eq!(repeated, 0);
-    assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+        assert_eq!(repeated, 0, "{repeat:?}");
+        assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+    }
 }
 
 /// LIM-03 Contract: the largest limits never overflow the accounting: a
