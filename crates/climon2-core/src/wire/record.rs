@@ -2,7 +2,7 @@
 //! duplicate or undocumented members, where every listed member is required,
 //! even when it is null. Types whose wire form is an object decode only from
 //! an object (`json::Object`); derived structs would also take an array.
-use super::{Counter, FatalCode, Frame};
+use super::{Counter, FatalCode, Frame, Response};
 use crate::json::Object;
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -16,8 +16,6 @@ pub(crate) const SERVER_TYPES: RangeInclusive<u8> = 0x40..=0x4d;
 /// A JSON control record and its frame type.
 pub trait ControlRecord: Serialize + DeserializeOwned {
     const CODE: u8;
-    /// Records with a `request_id` report a malformed one as `invalid_request_id`.
-    const REQUEST_ID: bool = false;
 
     fn to_frame(&self) -> Frame {
         let body = serde_json::to_vec(self).expect("control records always serialize");
@@ -25,10 +23,17 @@ pub trait ControlRecord: Serialize + DeserializeOwned {
     }
 }
 
-/// Syntax is checked first, so broken JSON is never reported as a record error.
+/// Every request carries a `request_id` and a Response echoes one; no other
+/// record has one.
+fn correlated(code: u8) -> bool {
+    REQUEST_TYPES.contains(&code) || code == Response::CODE
+}
+
+/// Syntax is checked first, so broken JSON is never reported as a record
+/// error, and a malformed `request_id` is `invalid_request_id`.
 pub(crate) fn decode<T: ControlRecord>(body: &[u8]) -> Result<T, FatalCode> {
     let value: Value = serde_json::from_slice(body).map_err(|_| FatalCode::InvalidJson)?;
-    if T::REQUEST_ID {
+    if correlated(T::CODE) {
         request_id(&value)?;
     }
     serde_json::from_slice::<Object<T>>(body)

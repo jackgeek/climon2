@@ -17,9 +17,9 @@ use climon2_core::{
     protocol::{self, HelloReply},
     wire::{Advertisement, Family, FrameLimit, FrameLimits},
 };
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use std::num::NonZeroU32;
-use std::{fs, path::Path};
+use std::{collections::BTreeSet, fs, path::Path};
 
 /// Every JSON example on one daemon wire page, in page order.
 fn examples(page: &str) -> Vec<String> {
@@ -434,4 +434,54 @@ fn every_member_of_every_part1_record_is_required_unique_and_documented() {
             }
         }
     }
+}
+
+/// COM-02 (codec case): every request and the Response carry a `request_id`,
+/// so one that is malformed, just outside the counter range at either end or
+/// not a string, is `invalid_request_id`, while the largest counter decodes.
+/// No other record has one: there it is an undocumented member, whatever its
+/// value.
+#[test]
+fn only_requests_and_responses_carry_request_ids() {
+    let mut correlated = BTreeSet::new();
+    for (code, body) in part1_records() {
+        let record: Value = serde_json::from_str(&body).unwrap();
+        let with_id = |id: Value| {
+            edited(&record, "", |object| {
+                object.insert("request_id".into(), id);
+            })
+        };
+        if record.get("request_id").is_some() {
+            correlated.insert(code);
+            let largest = with_id(json!("18446744073709551615"));
+            assert_eq!(decode(code, &largest), Ok(()), "{largest}");
+            for id in [
+                json!("0"),
+                json!("18446744073709551616"),
+                json!(1),
+                Value::Null,
+            ] {
+                let variant = with_id(id);
+                assert_eq!(
+                    decode(code, &variant),
+                    Err(FatalCode::InvalidRequestId),
+                    "{variant}"
+                );
+            }
+        } else {
+            for id in [json!("1"), json!("0")] {
+                let variant = with_id(id);
+                assert_eq!(
+                    decode(code, &variant),
+                    Err(FatalCode::InvalidRecord),
+                    "{variant}"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        correlated,
+        BTreeSet::from([0x30, 0x37, 0x38, 0x40]),
+        "Open, Leave, Kill and Response"
+    );
 }

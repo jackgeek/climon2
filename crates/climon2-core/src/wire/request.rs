@@ -122,17 +122,14 @@ pub struct Kill {
 
 impl ControlRecord for Open {
     const CODE: u8 = 0x30;
-    const REQUEST_ID: bool = true;
 }
 
 impl ControlRecord for Leave {
     const CODE: u8 = 0x37;
-    const REQUEST_ID: bool = true;
 }
 
 impl ControlRecord for Kill {
     const CODE: u8 = 0x38;
-    const REQUEST_ID: bool = true;
 }
 
 /// Every request the session daemon decodes.

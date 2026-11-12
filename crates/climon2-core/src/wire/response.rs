@@ -304,5 +304,4 @@ impl Serialize for Response {
 
 impl ControlRecord for Response {
     const CODE: u8 = 0x40;
-    const REQUEST_ID: bool = true;
 }
