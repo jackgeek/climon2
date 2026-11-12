@@ -58,9 +58,7 @@ impl Resources {
 
     pub fn publish(&mut self, options: &Options) -> Result<(), Failure> {
         self.write_metadata(options)
-            .map_err(|_| Failure::own("cannot publish session metadata"))?;
-        self.published = true;
-        Ok(())
+            .map_err(|_| Failure::own("cannot publish session metadata"))
     }
 
     fn write_metadata(&mut self, options: &Options) -> io::Result<()> {
@@ -80,7 +78,8 @@ impl Resources {
             return Err(super::io_error("session metadata already exists"));
         }
         fs::rename(&self.temporary, &self.metadata)?;
-        self.temporary_owned = false;
+        // Ownership moves with the file.
+        self.published = std::mem::take(&mut self.temporary_owned);
         Ok(())
     }
 
@@ -132,10 +131,11 @@ fn listen(socket: &std::path::Path) -> Result<runtime::SocketListener, Failure> 
     Ok(listener)
 }
 
+/// Gives up ownership first: a file is removed at most once, so a later cleanup can never
+/// remove a file that has since appeared at the same path.
 fn remove_owned(path: &std::path::Path, owned: &mut bool) -> io::Result<()> {
-    if *owned {
+    if std::mem::take(owned) {
         remove(path)?;
-        *owned = false;
     }
     Ok(())
 }
@@ -155,12 +155,14 @@ fn metadata(options: &Options) -> io::Result<SessionMetadata> {
         .to_string_lossy()
         .parse()
         .map_err(io::Error::other)?;
+    let (daemon_start_time, daemon_linux_identity) = daemon_identity()?;
     Ok(SessionMetadata {
         format_version: NonZeroU32::MIN,
         session_id: options.id.clone(),
         socket_path,
         daemon_pid: std::process::id(),
-        daemon_start_time: daemon_start_time()?,
+        daemon_start_time,
+        daemon_linux_identity,
         command: display.command,
         args: display.args,
         cwd: display.cwd,
@@ -170,9 +172,11 @@ fn metadata(options: &Options) -> io::Result<SessionMetadata> {
     })
 }
 
-fn daemon_start_time() -> io::Result<u64> {
-    process::start_time(std::process::id())?
-        .ok_or_else(|| super::io_error("daemon process identity unavailable"))
+fn daemon_identity() -> io::Result<(u64, Option<climon2_core::metadata::LinuxProcessIdentity>)> {
+    let pid = std::process::id();
+    let start_time = process::start_time(pid)?
+        .ok_or_else(|| super::io_error("daemon process identity unavailable"))?;
+    Ok((start_time, process::linux_identity(pid)?))
 }
 
 fn inherited_depth() -> NonZeroU32 {

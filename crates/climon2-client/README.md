@@ -51,7 +51,7 @@ discarded through its closing marker, never replayed or read as keys.
 The event loop has one incremental incoming frame, one pending Input/Resize
 frame, and one pending Output payload. Core validates framing; no payload
 exceeds 65,535 bytes. Socket or terminal backpressure stops the corresponding
-producer, and no further frames are read while stdout has pending bytes. A
+producer, and no further frame is decoded while stdout has pending bytes. A
 pending detach or a hung-up session has a bounded five-second closing deadline
 (`detach not confirmed` or `session result not confirmed`), serviced even while
 terminal output is blocked.
@@ -156,8 +156,16 @@ builds (`cargo build --release -p climon2-client`) uplift the unhooked dylib.
 - `hello_deadline_is_absolute_across_partial_reply`
 - `fragmented_frames_and_coalesced_resize_preserve_the_stream`
 - `separate_stdin_and_stdout_descriptions_both_get_their_flags_back`
+- `one_way_descriptors_are_bridged_and_restored` (a read-only stdin whose
+  file-status flags are all clear, as `< /dev/tty` gives on macOS, and a
+  write-only stdout, so input is provably read from stdin)
+- `input_consumed_by_another_reader_after_poll_is_not_a_hang_up` (Linux: ptrace
+  stops the client between its poll and its terminal read while another reader
+  takes the input)
 - `bounded_output_backpressure_drains_every_byte_before_exit`
-- `terminal_eof_or_eio_is_silent_status_129_and_closes_connection`
+- `terminal_eof_or_eio_is_silent_status_129_and_closes_connection` (the client
+  is stopped while the terminal hangs up, so it sees only a finished hang-up:
+  Linux wakes terminal readers before it completes one)
 - `terminal_eio_is_silent_status_129_and_restores_termios` (background job of a
   `/bin/sh` session leader with SIGTTIN/SIGTTOU ignored, so reads fail with EIO)
 - `attach_refusal_or_unexpected_reply_fails_without_raw_mode`

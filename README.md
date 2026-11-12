@@ -4,13 +4,19 @@ Run any terminal command in a managed session, detach from it and reattach
 later, end it deliberately, or list live sessions:
 
 ```sh
-climon2 exec bash --noprofile --norc
-climon2 exec vim
-climon2 attach 3f2a9c1e
-climon2 kill 3f2a9c1e
-climon2 list
-climon2 list --json
+c2 exec bash --noprofile --norc
+c2 exec vim
+c2 attach 3f2a9c1e
+c2 kill 3f2a9c1e
+c2 list
+c2 list --json
+c2 monitor
 ```
+
+`c2` is the short command for climon2. The installer creates `c2 -> climon2`;
+the original `climon2` command remains supported without warnings. Both names
+run the same current version. Product names, version output, diagnostic prefixes,
+configuration/data paths and environment variables remain unchanged.
 
 The command keeps its arguments, working directory and environment, except that
 it always sees `TERM=xterm-256color` and `COLORTERM=truecolor`. Its exit status
@@ -24,19 +30,19 @@ It distinguishes implemented behavior from agreed plans and unresolved details.
 The planned [session status, attention, and activity mechanics](docs/session-status.md)
 include both daemon state machines and the monitor's ordering/recovery behavior.
 The agreed [monitor acceptance criteria](docs/monitor-acceptance.md) define
-required real-monitor, packaged-library and measured evidence, not tests
-already delivered.
+the required real-monitor, packaged-library and measured evidence; only the
+monitor's entry, startup refusals and exits have tests so far.
 
 ## Sessions
 
 `exec` starts the command and attaches to it. There is no start-detached option.
-Future `climon2 exec --headless <command> [args...]` is agreed but **not
+Future `c2 exec --headless <command> [args...]` is agreed but **not
 implemented**. It will return success only after daemon-confirmed creation,
 without an interactive client. A headless session will survive zero clients
 throughout its lifetime, including after later attachment loss, until command
 completion or explicit Kill. Ordinary leave policy below remains unchanged.
 The [lifecycle specification](docs/monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill)
-requires preserving existing `climon2 kill <session>` and automated headless
+requires preserving existing `c2 kill <session>` and automated headless
 termination tests, not adding another kill command.
 
 **Detach** with the escape prefix, Ctrl+], then `d`. The session keeps running
@@ -47,9 +53,9 @@ other key sends both. A lone Ctrl+] waits for the next key, without a timeout.
 Every other key, including Ctrl+C and Ctrl+D, goes to the command. No binding
 is interpreted inside a bracketed paste.
 
-**Attach** with `climon2 attach <session>`. It needs a terminal on stdin and
+**Attach** with `c2 attach <session>`. It needs a terminal on stdin and
 stdout, and takes control immediately. `<session>` is a full session ID or a
-unique prefix of at least 8 hex digits, case-insensitive, with or without
+unique prefix of at least 1 hex digit, case-insensitive, with or without
 hyphens, matching a live session. A malformed `<session>` is a usage error (2).
 No match, or more than one, fails with 125; an ambiguous prefix lists every
 matching ID. Attaching to the session you are running inside is refused.
@@ -90,13 +96,15 @@ control returns to the most recently controlling client that is still attached.
 - A session that no client attaches to within five seconds of starting ends.
 - When the command exits, every attached client exits with its status.
 
-**Kill** one session with `climon2 kill <session>` (same selector rules), whether
+**Kill** one session with `c2 kill <session>` (same selector rules), whether
 or not clients are attached. It needs no terminal and prints nothing. The
 session hangs up its terminal and always waits the full five-second grace
 before killing any remaining jobs, so a kill normally takes about five seconds.
 It exits 0 once the command has ended and the session is cleaned up, or 125 if
 that is not confirmed within 10 seconds. Attached clients exit with the
-command's signal-derived status.
+command's status, normally signal-derived. On Linux, as when a terminal window
+closes, a command reading the terminal can see it close before the hang-up
+signal arrives and end with its own status instead.
 
 When a client's view of a session ends (detach, exit, kill or takeover by
 another client), climon2 returns its terminal to a normal shell state: it ends
@@ -142,8 +150,8 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
   when the session starts; attaching never changes it. 0 disables retained
   history, but the screen is still restored.
 
-`exec` validates the whole file before starting the session, `attach` validates
-only `client`, and `list` and `kill` do not read it. Any error, including
+`exec` validates the whole file before starting the session, `attach` and
+`monitor` validate only `client`, and `list` and `kill` do not read it. Any error, including
 malformed JSONC, duplicate keys, wrong types, invalid keys, conflicting bindings
 and out-of-range values, exits 125 before anything starts. The file is read once
 per command; there is no environment override, auto-creation or live reload.
@@ -152,11 +160,12 @@ per command; there is no environment override, auto-creation or live reload.
 
 The [agreed terminal integration](docs/protocol/terminal-integration.md) provides
 interactive terminal input/rendering, internal normal-screen history, one top
-status row, and explicit control/restoration gates. There is no monitor command
-or automated monitor implementation evidence yet.
-The future monitor reads one startup snapshot, reusing `client` bindings; it
-rejects a null escape prefix before changing terminal state. Null takeover is
-allowed because selector confirmation can acquire control. Lowercase prefix+s
+status row, and explicit control/restoration gates. Of these, the
+[monitor](#monitor) implements only its top row, empty state and exits so far,
+and already treats pasted shortcuts as data.
+It already reuses the `client` bindings and rejects a null escape prefix before
+changing terminal state; the rest of its startup snapshot is planned. Null
+takeover is allowed because selector confirmation can acquire control. Lowercase prefix+s
 opens the selector, prefix+x exits, and **prefix+j** jumps to the most recent
 currently connected session needing attention, not necessarily a toast's session.
 Prefix+? opens the [key introduction/help dialog](docs/monitor-selector.md#key-introduction-and-help).
@@ -223,8 +232,7 @@ detach/join claim or thread kill. The agreed
 [operational limits](docs/monitor-operational-limits.md) define planned
 `monitor.limits` configuration, numerical budgets, deadlines and evidence.
 Under pressure, local history shrinks to its newest captured page, never
-disappears entirely; resource-blocked sessions remain visible. Complete native
-declarations (#71) and final automated acceptance (#62) remain open. All of this
+disappears entirely; resource-blocked sessions remain visible. All of this
 is unimplemented; no general session-survival or native-crash isolation is added.
 Planned explicit exit succeeds only after required Leave outcomes, local cleanup/
 joins and host restoration succeed, never with the selected command's status.
@@ -238,18 +246,49 @@ never raw session-sequence passthrough.
 
 ## Listing
 
-`climon2 list` shows live sessions, newest first, with the columns SESSION,
+`c2 list` shows live sessions, newest first, with the columns SESSION,
 CREATED, VERSION, STATE, CLIENTS, COMMAND and ARGS. STATE is `starting`,
 `attached`, `detached`, `terminating`, or `unknown` for a session that does not
 report it. CLIENTS counts attached clients, or shows `-` when unknown.
 
-`climon2 list --json` prints an array of session metadata objects. Each has a
+`c2 list --json` prints an array of session metadata objects. Each has a
 `state` key holding `{"lifecycle": …, "attachments": …, "controlled": …}`, or
 `null` when the session does not report a valid state.
 
 Each session is attached and killed through the client of its own climon2
 version, which must still be installed. Older sessions that do not support an
 operation fail with 125 and are left undisturbed. `list` needs no client.
+
+## Monitor
+
+`c2 monitor`, or `c2 mon`, opens the monitor: one terminal that will track
+every live session. It takes no arguments (any is a usage error, 2) and needs a
+terminal on stdin and stdout. The launcher always runs the current version's
+monitor, on macOS and x86-64 GNU/Linux alike. It uses your
+`client.escape_prefix` and `client.take_control_key` settings and their
+defaults, but refuses a `null` escape prefix, the only way to reach its
+actions. Startup errors are reported, with status 125, before your terminal
+changes.
+
+The monitor does not discover sessions yet. On its own alternate screen it shows
+one permanent top row and an empty state that names your escape prefix:
+
+```text
+No session selected
+                         No sessions to show.
+                     Press Ctrl+] then x to exit.
+```
+
+The escape prefix followed by `x` exits with status 0; any other key is
+discarded, and Ctrl+C is a key, not an exit. Pasted text is never a key: a
+paste holding the prefix and `x` does not exit, and a paste cancels a pending
+prefix. SIGINT, SIGTERM and SIGHUP leave the same way with status 128 + signal.
+Resizing repaints the screen at the new size without blanking it. If your
+terminal hangs up or can no longer be read, the monitor leaves with status 125.
+On every exit the monitor returns your terminal to the normal shell state
+described for clients above, restores its settings (termios) exactly and never
+changes its title; only then does it print any error, with status 125. It logs
+to the general log in the climon2 home, never your input.
 
 ## Terminal compatibility
 
@@ -305,8 +344,11 @@ not supported for interactive sessions. `install.sh` still runs under
 
 ## Install
 
-Requires **macOS 15 or newer**, Apple Silicon or Intel. Release binaries are
-universal and ad-hoc signed, without Developer ID signing or notarisation.
+Supports **macOS 15 or newer** on Apple Silicon and Intel, and **x86_64
+GNU/Linux** with glibc 2.39 or newer, qualified on Ubuntu 24.04. macOS binaries
+are universal and ad-hoc signed, without Developer ID signing or notarisation.
+Arch Linux is supported for native development; musl and Linux arm64 are not
+qualified. See [distribution](docs/distribution.md) for platform archives.
 
 Latest release:
 
@@ -336,9 +378,13 @@ export PATH="$HOME/.local/share/climon2:$PATH"
 
 The installer prints a matching hint for custom destinations and never modifies
 shell startup files. Upgrades preserve existing version folders and live sessions.
+Fresh installs and upgrades add `c2` in the same executable home, with no PATH
+change needed for existing users. An unrelated file or symlink named `c2` there
+blocks installation before publication; resolve the reported conflict and retry.
+An existing correct relative link is accepted on repeated installs.
 There is no `sudo` or Homebrew installation step.
 
-For browser downloads, verify `SHA256SUMS`, extract the archive, then remove
+For macOS browser downloads, verify `SHA256SUMS`, extract the archive, then remove
 quarantine from the extracted directory before running its installer:
 
 ```sh
@@ -347,6 +393,12 @@ tar -xzf climon2-0.1.0-macos-universal.tar.gz
 xattr -dr com.apple.quarantine climon2-0.1.0-macos-universal
 ./climon2-0.1.0-macos-universal/install
 ```
+
+For Linux manual installation, use the `linux-x86_64-gnu` archive and
+`sha256sum`; there is no quarantine-removal step. Linux requires procfs and a
+filesystem supporting `renameat2` directory exchange at the installation path.
+Processes sharing a climon2 home must share the same PID namespace; sharing
+session metadata across containers or PID namespaces is not supported.
 
 ## Diagnostics
 
@@ -369,33 +421,95 @@ cargo xtask setup-quality
 cargo xtask check
 cargo xtask check --mutate-all
 cargo xtask dist
+cargo xtask install
+cargo xtask install --dir "$HOME/tools/climon2"
 ```
 
-Install ShellCheck before `xtask check`. Full tests need GNU bash 5.x, vim and
-less. Interactive shells are qualified on bash 5.x only: tests use
-`CLIMON2_TEST_BASH`, else `/opt/homebrew/bin/bash`, else `/usr/local/bin/bash`,
-never macOS `/bin/bash` (3.2). A missing bash 5 fails in CI and is a reported
-local skip. `install.sh` stays compatible with, and is tested under, `/bin/bash`
-3.2. Linux and Windows run only neutral contracts (Linux also tests the Unix
-launcher), not the macOS product.
+Development needs the pinned Rust toolchain, a C compiler and libclang,
+ShellCheck, Python 3.11 or newer, GNU bash 5.x, vim and less. Interactive tests
+use `CLIMON2_TEST_BASH`, then platform defaults: Homebrew bash on macOS, or
+`/bin/bash` and `/usr/bin/bash` on Linux. macOS `/bin/bash` 3.2 is not used for
+interactive qualification. A missing bash 5 fails in CI and is a reported local
+skip; use `CLIMON2_TEST_BASH=/usr/bin/bash` on Arch Linux. `install.sh` remains
+compatible with macOS `/bin/bash` 3.2.
+
+On arm64 macOS, install both Rust targets before running workspace tests,
+`dist` or `install`: `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
+
+CI runs full runtime, real-terminal and packaged tests on Linux and both macOS
+architectures. Windows runs neutral contracts only. Shared and Linux-specific
+CRAP/mutation run on the dedicated Linux development host, with 8 mutation
+workers. CI does not repeat those quality checks.
+
+The macOS CI quality job uses `cargo xtask mutate --native-only`: CRAP scores
+only registered macOS-exclusive source, and mutation selects changed files
+within that set. Shared-only changes skip that quality run; release tags use
+`--native-only --mutate-all` to qualify every macOS-exclusive file. Coverage
+still executes the workspace to exercise real callers, and mutation still
+requires the unchanged full-workspace worker baseline. Native CI parallelism
+follows available CPUs, capped at 16.
 
 `xtask check` runs formatting, strict clippy, unit/integration/installer-built
 packaged tests, ShellCheck, append-only metadata fixtures, instrumentation and
 worker-isolation proofs, coverage-backed CRAP <= 5 and zero-survivor mutation.
+Its tests, like `cargo xtask test`, first run the monitor's build test alone,
+proving its plain binary carries no test hooks, before the workspace tests
+build it with hooks at the same path.
+The unchanged workspace must pass in a real mutation overlay before mutation;
+worker infrastructure failures cannot count as killed mutants.
+`cargo xtask check` also measures mutation load before mutating, even when no
+changed shipped source needs mutation; `cargo xtask mutate` does not. It warms
+`target/mutation-tests` and times one unloaded full-workspace run there, then
+runs five rounds of 8 full-workspace suites at once, each in a private copy of
+the warm build (copy-on-write where supported). As in mutation, each suite has
+its own session. A suite fails the measurement if any test fails or if it
+outlives the mutator's timeout (10 times the unloaded run, at least 2 s),
+because the mutator would count either outcome as a killed mutant and hide a
+survivor. A surviving mutant's run also stages library and crate tests within
+that timeout, so this catches stalled suites rather than every possible mutant
+timeout. A failure under load is a test defect; nothing is retried. The
+measurement stops after the failing round and names each failing test and test
+target with the number of suites it failed in. It then lists their logs. Logs
+from every run remain in a unique directory under `target/flake-logs/`. Worker
+builds are removed afterward, and the next measurement removes any that a killed
+one left.
+Each mutant first runs workspace library tests, then its crate's integration
+tests. A failing stage stops immediately; every mutant that passes both still
+runs the full workspace before it can count as a survivor. The unchanged
+baseline always runs the full workspace. Workers receive private copies of
+its warm build artifacts (copy-on-write where supported), rather than
+rebuilding dependencies from scratch for every changed file.
 `CLIMON2_MUTATION_BASE` selects the changed-source comparison (default `HEAD`).
+For committed work, set it to the target branch or merge base, for example
+`CLIMON2_MUTATION_BASE=origin/main cargo xtask check`.
+Native implementations must live in registered source files; shared files
+must not hide macOS-only bodies that Linux cannot qualify.
 
-`xtask dist` requires an **arm64 macOS host** and both Rust macOS targets. It
-builds isolated, unhooked packages with deployment target 15.0, merges and
-ad-hoc signs each executable and the client library `libclimon2_client.dylib`,
-and checks signatures, architectures and versions. The library must also export
-only its bootstrap and describe exactly the archive's version; `release-check`
-applies those two checks to the local per-package release build too.
-It writes the universal archive, version-stamped `install.sh` and `SHA256SUMS`
-to `target/dist/`. Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
+`xtask dist` requires an **arm64 macOS host** with both Rust macOS targets, or
+an **x86_64 GNU/Linux host**. macOS builds retain deployment target 15.0,
+universal slices and signature checks. Linux builds verify native ELF
+executables; published Linux artifacts are built on Ubuntu 24.04, not Arch,
+to establish the glibc baseline. Both builds isolate unhooked packages and
+write their native archive, stamped `install.sh` and `SHA256SUMS` to
+`target/dist/`. The macOS archive's version folder also holds the client
+library `libclimon2_client.dylib`, which must export only its bootstrap and
+describe exactly the archive's version; `release-check` applies those two
+checks to the local per-package release build too.
+Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
 
-A `v<workspace version>` tag runs full mutation and all gates. The same final
-archive must pass both architectures under bash 5, including vim and less,
-before a non-draft GitHub Release and provenance attestation are published.
+`xtask install` builds and verifies the same production payload as `dist`, then
+runs its installer without creating an archive. It has the same host and build
+requirements as `dist`. The default executable home is `~/.local/share/climon2`;
+`--dir <directory>` selects another destination. The installer preserves other
+versions and prints a PATH hint when needed; shell startup files are unchanged.
+
+A release requires a local `cargo xtask check --mutate-all` pass for the exact
+release commit; this is the maintainer's responsibility, not a duplicated CI
+job. A `v<workspace version>` tag runs full macOS-only mutation and the native
+runtime/archive gates. The same final
+macOS archive must pass both architectures, and the Linux archive must pass
+Ubuntu 24.04, under bash 5 including vim and less. Both platforms must pass
+before one GitHub Release and provenance attestation are published.
 `-rc.N` tags are prereleases. Starting with the second published release, actual
 previous-release compatibility is mandatory; the first release invents none.
 
@@ -403,4 +517,6 @@ previous-release compatibility is mandatory; the first release invents none.
 a replacement native Intel macOS 15+ runner must pass the same artifact tests.
 An unavailable runner or arm64-only success does not establish Intel support.
 
-MIT licensed; see [LICENSE](LICENSE).
+## License
+
+climon2 is open source software licensed under the [MIT License](LICENSE).

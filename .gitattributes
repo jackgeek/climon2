@@ -1,0 +1,3 @@
+# Tests embed Markdown with include_str! and parse LF-delimited fences, so Windows
+# checkouts (core.autocrlf) must keep LF for the neutral CI job to see the examples.
+*.md text eol=lf

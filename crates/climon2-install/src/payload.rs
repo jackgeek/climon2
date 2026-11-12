@@ -3,8 +3,15 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const LIBRARY: &str = "libclimon2_client.dylib";
-pub(crate) const COMPANIONS: [&str; 4] =
-    ["climon2-cli", "climon2-daemon", "climon2-client", LIBRARY];
+/// The files a release places in its version folder: its executables and the
+/// client library.
+pub const COMPANIONS: [&str; 5] = [
+    "climon2-cli",
+    "climon2-daemon",
+    "climon2-client",
+    "climon2-monitor",
+    LIBRARY,
+];
 
 /// Sources are read in place, preserving instrumented binaries without Cargo builds.
 #[derive(Debug)]

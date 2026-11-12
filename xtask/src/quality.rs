@@ -11,7 +11,12 @@ use std::{
 const CRAPPER: &str = "6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d";
 const MUTATOR: &str = "a5a0cb803b66e0cdb8bf471b3b08af701d424a41";
 const LLVM_COV: &str = "0.9.1";
-const MUTATION_WORKERS: &str = "2";
+/// Full-host mutation workers, and so the suites the mutation-load measurement runs at once;
+/// 8 leaves room for another agent's tests on the shared development host.
+const MUTATION_WORKERS: &str = "8";
+const MUTATION_LOAD_ROUNDS: &str = "5";
+/// A mutant's test run times out, counting as killed, after this multiple of the baseline run.
+const MUTATION_TIMEOUT_FACTOR: &str = "10";
 /// Owner-set maximum CRAP score for every shipped function (#21, amended to 5).
 pub(crate) const CRAP_THRESHOLD: &str = "5";
 const SHIPPED: &[&str] = &[
@@ -22,9 +27,44 @@ const SHIPPED: &[&str] = &[
     "crates/climon2-daemon/src",
     "crates/climon2-client/src",
     "crates/climon2-install/src",
+    "crates/climon2-monitor/src",
     "crates/climon2-vt/src",
 ];
-const TEST_COMMAND: &str = "cargo test --workspace --locked --target-dir target/mutation-tests";
+const TEST_COMMAND: &str = r#""$CLIMON2_MUTATION_PYTHON" tools/test-mutation.py"#;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum Scope {
+    /// `cargo xtask check`: host source, after the unchanged workspace passes under mutation load.
+    Complete,
+    /// `cargo xtask mutate`: host source.
+    Host,
+    /// `cargo xtask mutate --native-only`: only host-exclusive native source.
+    Native,
+}
+
+impl Scope {
+    fn select(self, sources: Vec<PathBuf>) -> Vec<PathBuf> {
+        sources
+            .into_iter()
+            .filter(|path| self != Self::Native || native_source_os(path).is_some())
+            .collect()
+    }
+
+    fn workers(self) -> io::Result<String> {
+        match self {
+            Self::Complete | Self::Host => Ok(MUTATION_WORKERS.to_owned()),
+            Self::Native => Ok(std::thread::available_parallelism()?
+                .get()
+                .min(16)
+                .to_string()),
+        }
+    }
+
+    /// Rounds of the mutation-load measurement required before mutation, if any.
+    fn load_rounds(self) -> Option<&'static str> {
+        (self == Self::Complete).then_some(MUTATION_LOAD_ROUNDS)
+    }
+}
 
 pub(crate) fn run(command: &mut Command) -> io::Result<()> {
     eprintln!("> {command:?}");
@@ -153,7 +193,12 @@ fn mutation_command(root: &Path) -> io::Result<Command> {
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("CARGO_BUILD_TARGET_DIR")
         .env_remove("CARGO_BUILD_BUILD_DIR")
-        .args(["--test-command", TEST_COMMAND]);
+        .env(
+            "CLIMON2_MUTATION_PYTHON",
+            tool_root(root).join("venv/bin/python"),
+        )
+        .args(["--test-command", TEST_COMMAND])
+        .args(["--timeout-factor", MUTATION_TIMEOUT_FACTOR]);
     Ok(command)
 }
 
@@ -179,8 +224,47 @@ fn changed_sources(root: &Path, base: &OsStr) -> io::Result<Vec<PathBuf>> {
             .args(["ls-files", "--others", "--exclude-standard", "-z", "--"])
             .args(SHIPPED),
     )?;
+    source_paths(root, &[changed.stdout, untracked.stdout])
+}
+
+fn shipped_sources(root: &Path) -> io::Result<Vec<PathBuf>> {
+    let sources = output(
+        Command::new("git")
+            .current_dir(root)
+            .args([
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+            ])
+            .args(SHIPPED),
+    )?;
+    source_paths(root, &[sources.stdout])
+}
+
+fn native_source_os(path: &Path) -> Option<&'static str> {
+    match path.to_str() {
+        Some("crates/climon2-platform/src/process/linux.rs")
+        | Some("crates/climon2-platform/src/peer/linux.rs")
+        | Some("crates/climon2-platform/src/runtime/linux.rs")
+        | Some("crates/climon2-install/src/platform/linux.rs") => Some("linux"),
+        Some("crates/climon2-platform/src/process/macos.rs")
+        | Some("crates/climon2-platform/src/peer/macos.rs")
+        | Some("crates/climon2-platform/src/runtime/macos.rs")
+        | Some("crates/climon2-install/src/platform/macos.rs") => Some("macos"),
+        _ => None,
+    }
+}
+
+fn native_source_is_active(path: &Path) -> bool {
+    native_source_os(path).is_none_or(|os| os == env::consts::OS)
+}
+
+fn source_paths(root: &Path, outputs: &[Vec<u8>]) -> io::Result<Vec<PathBuf>> {
     let mut paths = BTreeSet::new();
-    for bytes in [&changed.stdout, &untracked.stdout] {
+    for bytes in outputs {
         for path in bytes
             .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())
@@ -188,6 +272,7 @@ fn changed_sources(root: &Path, base: &OsStr) -> io::Result<Vec<PathBuf>> {
             let path = PathBuf::from(std::str::from_utf8(path).map_err(io::Error::other)?);
             if path.extension().is_some_and(|extension| extension == "rs")
                 && root.join(&path).is_file()
+                && native_source_is_active(&path)
             {
                 paths.insert(path);
             }
@@ -196,7 +281,37 @@ fn changed_sources(root: &Path, base: &OsStr) -> io::Result<Vec<PathBuf>> {
     Ok(paths.into_iter().collect())
 }
 
-pub fn check(root: &Path, all: bool) -> io::Result<()> {
+fn verify_native_coverage(root: &Path, report: &Path) -> io::Result<()> {
+    for file in fs::read_to_string(report)?
+        .lines()
+        .filter_map(|line| line.strip_prefix("SF:"))
+    {
+        let path = Path::new(file);
+        let relative = path.strip_prefix(root).unwrap_or(path);
+        if !native_source_is_active(relative) {
+            return Err(io::Error::other(format!(
+                "compiled native source would escape quality gates: {}",
+                relative.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
+    let sources = shipped_sources(root)?;
+    let scored = scope.select(sources.clone());
+    let paths = if all {
+        scored.clone()
+    } else {
+        // Upstream --changed reads only git status and cannot limit itself to shipped crates.
+        let base = env::var_os("CLIMON2_MUTATION_BASE").unwrap_or_else(|| "HEAD".into());
+        scope.select(changed_sources(root, &base)?)
+    };
+    if scope == Scope::Native && paths.is_empty() {
+        eprintln!("No selected native Rust source to qualify; shared source is checked locally.");
+        return Ok(());
+    }
     verify_llvm_cov()?;
     let mut mutation = mutation_command(root)?;
     let report = root.join("target/coverage/rust/lcov.info");
@@ -210,28 +325,53 @@ pub fn check(root: &Path, all: bool) -> io::Result<()> {
     if fs::metadata(&report)?.len() == 0 {
         return Err(io::Error::other("coverage report is empty"));
     }
+    verify_native_coverage(root, &report)?;
     run(tool(root, "crapper")?
         .args(["--use-existing-coverage", "--threshold", CRAP_THRESHOLD])
-        .args(SHIPPED))?;
+        .args(&scored))?;
+    let workers = scope.workers()?;
     mutation.args([
         "--use-existing-coverage",
         "--mutate-all",
         "--max-workers",
-        MUTATION_WORKERS,
+        &workers,
     ]);
-    if all {
-        mutation.args(SHIPPED);
-    } else {
-        // Upstream --changed reads only git status and cannot limit itself to shipped crates.
-        let base = env::var_os("CLIMON2_MUTATION_BASE").unwrap_or_else(|| "HEAD".into());
-        let paths = changed_sources(root, &base)?;
-        if paths.is_empty() {
-            eprintln!("No changed shipped Rust source to mutate.");
-            return Ok(());
-        }
-        mutation.args(paths);
+    if let Some(rounds) = scope.load_rounds() {
+        run(python_script(root, "check-mutation-load.py").args([
+            "--workers",
+            &workers,
+            "--rounds",
+            rounds,
+            "--timeout-factor",
+            MUTATION_TIMEOUT_FACTOR,
+        ]))?;
     }
+    if paths.is_empty() {
+        eprintln!("No changed shipped Rust source to mutate.");
+        return Ok(());
+    }
+    mutation.args(paths);
+    verify_worker_baseline(root, &sources)?;
     run(&mut mutation)
+}
+
+/// A repository quality script, run by the pinned tools' Python with the workspace and Cargo.
+fn python_script(root: &Path, script: &str) -> Command {
+    let mut command = Command::new(tool_root(root).join("venv/bin/python"));
+    command
+        .arg(root.join("tools").join(script))
+        .arg(root)
+        .arg(env!("CARGO"))
+        .current_dir(root);
+    command
+}
+
+fn verify_worker_baseline(root: &Path, sources: &[PathBuf]) -> io::Result<()> {
+    run(python_script(root, "check-mutation-workspace.py")
+        .args(sources)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env_remove("CARGO_BUILD_BUILD_DIR"))
 }
 
 pub fn probe(root: &Path) -> io::Result<()> {
@@ -282,6 +422,11 @@ fn probe_workspace(root: &Path) -> io::Result<tempfile::TempDir> {
     }
     let observations = scratch.path().join("observations");
     fs::create_dir(&observations)?;
+    fs::create_dir(scratch.path().join("tools"))?;
+    fs::copy(
+        root.join("tools/test-mutation.py"),
+        scratch.path().join("tools/test-mutation.py"),
+    )?;
     Ok(scratch)
 }
 
@@ -379,11 +524,12 @@ pub fn tooling_probe(root: &Path) -> io::Result<()> {
             "exec-replaced staged binary returned the wrong observation",
         ));
     }
+    prove_killed_profile(&staged, profile)?;
     export()?;
     let count = staged_count(&report)?;
-    if count != 2 {
+    if count != 3 {
         return Err(io::Error::other(format!(
-            "normal and exec-replaced staged runs must contribute two coverage hits, got {count}"
+            "normal, exec-replaced and killed staged runs must contribute three coverage hits, got {count}"
         )));
     }
     prove_crapper(root, workspace)?;
@@ -394,10 +540,34 @@ pub fn tooling_probe(root: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn prove_killed_profile(staged: &Path, profile: &str) -> io::Result<()> {
+    use std::{
+        io::{BufRead, BufReader},
+        process::Stdio,
+    };
+    let mut child = Command::new(staged.join(env!("CARGO_PKG_VERSION")).join("climon2-cli"))
+        .arg("--staged-kill")
+        .env("LLVM_PROFILE_FILE", profile)
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let mut line = String::new();
+    let observation =
+        BufReader::new(child.stdout.take().expect("piped output")).read_line(&mut line);
+    child.kill()?;
+    child.wait()?;
+    observation?;
+    if line != "42\n" {
+        return Err(io::Error::other(
+            "killed staged binary returned the wrong observation",
+        ));
+    }
+    Ok(())
+}
+
 fn install_instrumented_probe(workspace: &Path, build: &Path) -> io::Result<PathBuf> {
     let payload = workspace.join("payload");
     fs::create_dir(&payload)?;
-    for binary in ["climon2", "climon2-cli", "climon2-daemon", "climon2-client"] {
+    for binary in std::iter::once("climon2").chain(climon2_install::COMPANIONS) {
         fs::copy(build.join("debug/isolation-cli"), payload.join(binary))?;
     }
     fs::create_dir(payload.join("deps"))?;
@@ -582,6 +752,252 @@ fn verify_observation(text: &str) -> io::Result<&'static str> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "owned subprocess fixture"]
+    fn owned_load_gate_fixture() {
+        let root = env::var_os("CLIMON2_LOAD_GATE_FIXTURE").unwrap();
+        let scope = match env::var("LOAD_GATE_SCOPE").unwrap().as_str() {
+            "complete" => Scope::Complete,
+            "host" => Scope::Host,
+            "native" => Scope::Native,
+            other => panic!("unknown load-gate scope {other}"),
+        };
+        check(Path::new(&root), false, scope).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn executable(path: &Path, text: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A `quality::check` run whose git, coverage and Python quality tools are controlled.
+    #[cfg(unix)]
+    struct Gate {
+        scope: &'static str,
+        load_fails: bool,
+        changed: bool,
+    }
+
+    #[cfg(unix)]
+    struct GateRun {
+        success: bool,
+        output: String,
+        /// Each quality tool started, in order, with its arguments.
+        events: Vec<String>,
+    }
+
+    #[cfg(unix)]
+    impl GateRun {
+        fn started(&self, tool: &str) -> Option<usize> {
+            self.events
+                .iter()
+                .position(|event| event.split(' ').next() == Some(tool))
+        }
+
+        /// The value a quality tool was given for `option`.
+        fn option(&self, tool: &str, option: &str) -> &str {
+            let event = &self.events[self.started(tool).unwrap()];
+            let mut arguments = event.split(' ');
+            arguments.find(|argument| *argument == option).unwrap();
+            arguments.next().unwrap()
+        }
+    }
+
+    #[cfg(unix)]
+    fn run_gate(gate: Gate) -> GateRun {
+        use std::{
+            process::Stdio,
+            thread,
+            time::{Duration, Instant},
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        let source = if gate.scope == "native" {
+            format!("crates/climon2-platform/src/process/{}.rs", env::consts::OS)
+        } else {
+            "crates/climon2-core/src/lib.rs".to_owned()
+        };
+        fs::create_dir_all(root.join(&source).parent().unwrap()).unwrap();
+        fs::write(root.join(&source), "").unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"gate-fixture\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
+             [lib]\npath = \"{source}\"\n[workspace]\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("Cargo.lock"),
+            "version = 4\n[[package]]\nname = \"gate-fixture\"\nversion = \"0.0.0\"\n",
+        )
+        .unwrap();
+        executable(
+            &root.join("bin/git"),
+            &format!(
+                "#!/bin/sh\ncase \"$*\" in\n\
+             *crapper*rev-parse*) echo {CRAPPER} ;;\n\
+             *mutator*rev-parse*) echo {MUTATOR} ;;\n\
+             *'rev-parse --verify'*) echo fixture ;;\n\
+             *'ls-files --cached'*) printf '%s\\0' \"$LOAD_GATE_SOURCE\" ;;\n\
+             *'diff --name-only'*) if [ \"$LOAD_GATE_CHANGED\" = yes ]; then printf '%s\\0' \"$LOAD_GATE_SOURCE\"; fi ;;\n\
+             esac\n"
+            ),
+        );
+        executable(
+            &root.join("bin/cargo-llvm-cov"),
+            r#"#!/bin/sh
+case "$2" in
+    --version) echo 'cargo-llvm-cov 0.9.1' ;;
+    show-env) echo "LLVM_PROFILE_FILE='$CLIMON2_LOAD_GATE_FIXTURE/target/profile.profraw'" ;;
+    report)
+        for last do :; done
+        printf 'SF:%s\nDA:1,1\n' "$LOAD_GATE_SOURCE" > "$last"
+        ;;
+esac
+"#,
+        );
+        executable(
+            &root.join(".metrics/tools/venv/bin/python"),
+            r#"#!/bin/sh
+events="$CLIMON2_LOAD_GATE_FIXTURE/events"
+case "$*" in
+    *check-mutation-load.py*)
+        shift
+        printf 'load %s\n' "$*" >> "$events"
+        if [ "$LOAD_GATE_FAIL" = yes ]; then
+            echo 'test flaky_fixture ... FAILED' >&2
+            exit 1
+        fi
+        ;;
+    *check-mutation-workspace.py*) echo baseline >> "$events" ;;
+    *'-m mutator'*) shift 2; printf 'mutation %s\n' "$*" >> "$events" ;;
+esac
+"#,
+        );
+        let output = root.join("output");
+        let file = fs::File::create(&output).unwrap();
+        let mut path = vec![root.join("bin")];
+        path.extend(env::split_paths(&env::var_os("PATH").unwrap()));
+        let mut child = Command::new(env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "quality::tests::owned_load_gate_fixture",
+                "--nocapture",
+            ])
+            .env("CLIMON2_LOAD_GATE_FIXTURE", root)
+            .env("LOAD_GATE_SCOPE", gate.scope)
+            .env("LOAD_GATE_SOURCE", &source)
+            .env("LOAD_GATE_CHANGED", if gate.changed { "yes" } else { "no" })
+            .env("LOAD_GATE_FAIL", if gate.load_fails { "yes" } else { "no" })
+            .env("PATH", env::join_paths(path).unwrap())
+            .env_remove("CLIMON2_MUTATION_BASE")
+            .stdout(Stdio::from(file.try_clone().unwrap()))
+            .stderr(Stdio::from(file))
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!(
+                    "gate fixture timed out: {}",
+                    fs::read_to_string(&output).unwrap()
+                );
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
+        let events = fs::read_to_string(root.join("events")).unwrap_or_default();
+        GateRun {
+            success: status.success(),
+            output: fs::read_to_string(output).unwrap(),
+            events: events.lines().map(str::to_owned).collect(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn complete_qualification_measures_load_with_mutations_workers_before_mutating() {
+        let run = run_gate(Gate {
+            scope: "complete",
+            load_fails: false,
+            changed: true,
+        });
+        assert!(run.success, "{}", run.output);
+        let load = run.started("load").unwrap();
+        assert!(load < run.started("mutation").unwrap(), "{:?}", run.events);
+        assert_eq!(
+            run.option("load", "--workers"),
+            run.option("mutation", "--max-workers")
+        );
+        assert_eq!(
+            run.option("load", "--timeout-factor"),
+            run.option("mutation", "--timeout-factor")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_load_measurement_prevents_mutation() {
+        let run = run_gate(Gate {
+            scope: "complete",
+            load_fails: true,
+            changed: true,
+        });
+        assert!(!run.success, "{}", run.output);
+        assert!(run.output.contains("flaky_fixture"), "{}", run.output);
+        assert_eq!(run.started("mutation"), None, "{:?}", run.events);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn complete_qualification_measures_load_even_without_mutation_candidates() {
+        let run = run_gate(Gate {
+            scope: "complete",
+            load_fails: true,
+            changed: false,
+        });
+        assert!(!run.success, "{}", run.output);
+        assert!(run.output.contains("flaky_fixture"), "{}", run.output);
+        let run = run_gate(Gate {
+            scope: "complete",
+            load_fails: false,
+            changed: false,
+        });
+        assert!(run.success, "{}", run.output);
+        assert!(run.started("load").is_some(), "{:?}", run.events);
+        assert_eq!(run.started("mutation"), None, "{:?}", run.events);
+    }
+
+    /// #135 owner decision: only `cargo xtask check` measures load; `mutate` stays incremental.
+    #[cfg(unix)]
+    #[test]
+    fn mutate_does_not_measure_load() {
+        for scope in ["host", "native"] {
+            let run = run_gate(Gate {
+                scope,
+                load_fails: true,
+                changed: true,
+            });
+            assert!(run.success, "{scope}: {}", run.output);
+            assert_eq!(run.started("load"), None, "{scope}: {:?}", run.events);
+            assert!(
+                run.started("mutation").is_some(),
+                "{scope}: {:?}",
+                run.events
+            );
+        }
+    }
+
     /// #21 isolation amendment: a reported kill cannot stand in for the selected binary.
     #[test]
     fn observation_audit_rejects_a_paired_workers_executable() {
@@ -663,5 +1079,102 @@ mod tests {
             vec![core.to_owned()]
         );
         assert!(changed_sources(root, OsStr::new("missing-base")).is_err());
+    }
+
+    #[test]
+    fn native_selection_keeps_uncovered_shared_sources_and_only_the_current_os() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        run(Command::new("git")
+            .current_dir(root)
+            .args(["init", "--quiet"]))
+        .unwrap();
+        let sources = [
+            ("crates/climon2-platform/src/process.rs", true),
+            (
+                "crates/climon2-platform/src/process/linux.rs",
+                cfg!(target_os = "linux"),
+            ),
+            (
+                "crates/climon2-platform/src/process/macos.rs",
+                cfg!(target_os = "macos"),
+            ),
+            (
+                "crates/climon2-platform/src/peer/linux.rs",
+                cfg!(target_os = "linux"),
+            ),
+            (
+                "crates/climon2-platform/src/peer/macos.rs",
+                cfg!(target_os = "macos"),
+            ),
+            (
+                "crates/climon2-platform/src/runtime/linux.rs",
+                cfg!(target_os = "linux"),
+            ),
+            (
+                "crates/climon2-platform/src/runtime/macos.rs",
+                cfg!(target_os = "macos"),
+            ),
+            (
+                "crates/climon2-install/src/platform/linux.rs",
+                cfg!(target_os = "linux"),
+            ),
+            (
+                "crates/climon2-install/src/platform/macos.rs",
+                cfg!(target_os = "macos"),
+            ),
+        ];
+        for (path, _) in sources {
+            fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            fs::write(root.join(path), "pub fn never_called() { if true {} }").unwrap();
+        }
+        let selected = shipped_sources(root).unwrap();
+        for (path, active) in sources {
+            assert_eq!(selected.contains(&PathBuf::from(path)), active, "{path}");
+        }
+        let native = Scope::Native.select(selected.clone());
+        assert_eq!(
+            native,
+            selected
+                .iter()
+                .filter(|path| path.as_path() != Path::new("crates/climon2-platform/src/process.rs"))
+                .cloned()
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(Scope::Host.select(selected.clone()), selected);
+        commit(root);
+        for (path, _) in sources {
+            fs::write(root.join(path), "pub fn never_called() { if false {} }").unwrap();
+        }
+        assert_eq!(changed_sources(root, OsStr::new("HEAD")).unwrap(), selected);
+        fs::write(
+            root.join("crates/climon2-platform/src/process.rs"),
+            "shared-only committed change",
+        )
+        .unwrap();
+        commit(root);
+        fs::write(
+            root.join("crates/climon2-platform/src/process.rs"),
+            "another shared-only change",
+        )
+        .unwrap();
+        assert!(
+            Scope::Native
+                .select(changed_sources(root, OsStr::new("HEAD")).unwrap())
+                .is_empty()
+        );
+        let report = root.join("coverage.info");
+        for (path, active) in sources {
+            fs::write(
+                &report,
+                format!("SF:{}\nDA:1,0\n", root.join(path).display()),
+            )
+            .unwrap();
+            assert_eq!(
+                verify_native_coverage(root, &report).is_ok(),
+                active,
+                "{path}"
+            );
+        }
     }
 }

@@ -30,6 +30,8 @@ pub(super) struct Delivery {
     presentation: Presentation,
     granted: Option<Granted>,
     backlog: Vec<u8>,
+    /// Output arrived since the last derived update. A derive with nothing new emits
+    /// nothing, so this only spares an unchanged screen its diff every tick.
     stale: bool,
     resized: Option<TerminalSize>,
 }
@@ -47,7 +49,8 @@ impl Delivery {
             presentation: Presentation::new(host.cols, host.rows),
             granted: None,
             backlog: Vec::new(),
-            stale: false,
+            // A grant's restoration starts from the current screen, not from this.
+            stale: Default::default(),
             resized: None,
         }
     }
@@ -83,7 +86,6 @@ impl Delivery {
     pub fn retire(&mut self) {
         self.granted = None;
         self.backlog.clear();
-        self.stale = false;
     }
 
     /// Retires the period and returns the bytes that hand the host back.
@@ -94,7 +96,6 @@ impl Delivery {
 
     /// The synchronized-update latch expired: end any update open on the host.
     pub fn end_sync(&mut self) -> Vec<u8> {
-        self.stale = true;
         self.presentation.end_sync()
     }
 
@@ -107,7 +108,7 @@ impl Delivery {
     /// Routes one read's live output. Direct output is committed unless a
     /// restoration is in progress, when it waits in the backlog; Derived
     /// output is rendered later by [`Delivery::produce`].
-    pub fn live(&mut self, live: Vec<u8>, queued: usize) -> Result<Vec<u8>, Overflow> {
+    pub fn live(&mut self, vt: &Vt, live: Vec<u8>, queued: usize) -> Result<Vec<u8>, Overflow> {
         if self.granted.is_none() {
             return Ok(Vec::new());
         }
@@ -115,15 +116,15 @@ impl Delivery {
         if self.presentation.mode() == Mode::Derived {
             return Ok(Vec::new());
         }
-        self.direct(live, queued)
+        self.direct(vt, live, queued)
     }
 
-    fn direct(&mut self, live: Vec<u8>, queued: usize) -> Result<Vec<u8>, Overflow> {
+    fn direct(&mut self, vt: &Vt, live: Vec<u8>, queued: usize) -> Result<Vec<u8>, Overflow> {
         if self.restoring() {
             self.backlog.extend(live);
             return within_limit(queued + self.backlog.len()).map(|()| Vec::new());
         }
-        self.presentation.commit_live(&live);
+        vt.commit_live(&mut self.presentation, &live);
         Ok(live)
     }
 
@@ -140,7 +141,6 @@ impl Delivery {
             self.restore(vt, &mut out);
         }
         if self.derives(sync_pending) {
-            self.stale = false;
             out.push(Out::Live(vt.derive(&mut self.presentation)));
         }
         out.retain(|out| !matches!(out, Out::Prefix(bytes) | Out::Live(bytes) if bytes.is_empty()));
@@ -167,25 +167,29 @@ impl Delivery {
         if chunk.done {
             granted.restoration = None;
             out.push(Out::RestoreEnd(granted.period));
-            self.flush_backlog(out);
+            self.flush_backlog(vt, out);
         }
     }
 
-    fn flush_backlog(&mut self, out: &mut Vec<Out>) {
+    fn flush_backlog(&mut self, vt: &Vt, out: &mut Vec<Out>) {
         let backlog = std::mem::take(&mut self.backlog);
-        self.presentation.commit_live(&backlog);
+        if !backlog.is_empty() {
+            vt.commit_live(&mut self.presentation, &backlog);
+        }
         out.push(Out::Live(backlog));
-        self.stale = true;
     }
 
-    fn derives(&self, sync_pending: bool) -> bool {
-        self.stale
-            && !sync_pending
+    /// A Derived controller past its restoration gets one update for the output since its
+    /// last, never during a synchronized update. Output during a restoration or an update
+    /// keeps the screen stale until then.
+    fn derives(&mut self, sync_pending: bool) -> bool {
+        !sync_pending
             && self.presentation.mode() == Mode::Derived
             && self
                 .granted
                 .as_ref()
                 .is_some_and(|granted| granted.restoration.is_none())
+            && std::mem::take(&mut self.stale)
     }
 
     fn restoring(&self) -> bool {
@@ -209,7 +213,8 @@ fn deadline(started: Instant, prefix_bytes: usize) -> Instant {
     started + RESTORE_TIMEOUT + allowance
 }
 
-fn within_limit(bytes: usize) -> Result<(), Overflow> {
+/// The one live queue limit: queued bytes up to `LIVE_LIMIT` are within it.
+pub(super) fn within_limit(bytes: usize) -> Result<(), Overflow> {
     if bytes > LIVE_LIMIT {
         return Err(Overflow);
     }
@@ -248,13 +253,20 @@ mod tests {
             .collect()
     }
 
+    /// These restorations take a few frames; the bound turns a lost `RestoreEnd` into a
+    /// failure instead of a hang.
+    const MAX_FRAMES: usize = 1000;
+
     /// Produces until `RestoreEnd`, returning everything produced.
     fn restore(delivery: &mut Delivery, vt: &mut Vt) -> Vec<Out> {
         let mut all = Vec::new();
-        while !all.iter().any(|out| matches!(out, Out::RestoreEnd(_))) {
+        for _ in 0..MAX_FRAMES {
             all.extend(delivery.produce(vt, 0, false));
+            if all.iter().any(|out| matches!(out, Out::RestoreEnd(_))) {
+                return all;
+            }
         }
-        all
+        panic!("no RestoreEnd in {MAX_FRAMES} frames: {}", text(&all));
     }
 
     fn granted(vt: &mut Vt, host: TerminalSize) -> Delivery {
@@ -267,12 +279,15 @@ mod tests {
     fn live_output_waits_in_the_backlog_until_restore_end() {
         let mut vt = vt(20, 4);
         let mut delivery = granted(&mut vt, size(20, 4));
-        assert_eq!(delivery.live(b"one".to_vec(), 0), Ok(Vec::new()));
-        assert_eq!(delivery.live(b"two".to_vec(), 0), Ok(Vec::new()));
+        assert_eq!(delivery.live(&vt, b"one".to_vec(), 0), Ok(Vec::new()));
+        assert_eq!(delivery.live(&vt, b"two".to_vec(), 0), Ok(Vec::new()));
         let restored = text(&restore(&mut delivery, &mut vt));
         assert!(restored.starts_with("P["), "{restored}");
         assert!(restored.ends_with("]E1L[onetwo]"), "{restored}");
-        assert_eq!(delivery.live(b"three".to_vec(), 0), Ok(b"three".to_vec()));
+        assert_eq!(
+            delivery.live(&vt, b"three".to_vec(), 0),
+            Ok(b"three".to_vec())
+        );
         assert!(delivery.produce(&mut vt, 0, false).is_empty());
     }
 
@@ -280,7 +295,7 @@ mod tests {
     fn without_a_grant_nothing_is_delivered() {
         let mut vt = vt(20, 4);
         let mut delivery = Delivery::new(size(20, 4));
-        assert_eq!(delivery.live(b"x".to_vec(), 0), Ok(Vec::new()));
+        assert_eq!(delivery.live(&vt, b"x".to_vec(), 0), Ok(Vec::new()));
         assert!(delivery.produce(&mut vt, 0, false).is_empty());
         assert_eq!(delivery.expired(NOW() + Duration::from_secs(3600)), None);
     }
@@ -290,11 +305,17 @@ mod tests {
         let mut vt = vt(20, 4);
         let mut delivery = granted(&mut vt, size(20, 4));
         assert_eq!(
-            delivery.live(vec![b'x'; 10], LIVE_LIMIT - 10),
+            delivery.live(&vt, vec![b'x'; 10], LIVE_LIMIT - 10),
             Ok(Vec::new())
         );
-        assert_eq!(delivery.live(vec![b'x'], LIVE_LIMIT - 20), Ok(Vec::new()));
-        assert_eq!(delivery.live(vec![b'x'], LIVE_LIMIT - 11), Err(Overflow));
+        assert_eq!(
+            delivery.live(&vt, vec![b'x'], LIVE_LIMIT - 20),
+            Ok(Vec::new())
+        );
+        assert_eq!(
+            delivery.live(&vt, vec![b'x'], LIVE_LIMIT - 11),
+            Err(Overflow)
+        );
     }
 
     #[test]
@@ -314,7 +335,7 @@ mod tests {
         let mut vt = vt(20, 4);
         let mut delivery = granted(&mut vt, size(20, 4));
         restore(&mut delivery, &mut vt);
-        delivery.live(b"\x1b[?1049h".to_vec(), 0).unwrap();
+        delivery.live(&vt, b"\x1b[?1049h".to_vec(), 0).unwrap();
         let leaves = |lead: Vec<u8>| {
             String::from_utf8_lossy(&lead)
                 .matches("\x1b[?1049l")
@@ -324,7 +345,7 @@ mod tests {
             leaves(delivery.grant(&mut vt, Period(2), size(20, 4), NOW())),
             1
         );
-        delivery.live(b"dropped".to_vec(), 0).unwrap();
+        delivery.live(&vt, b"dropped".to_vec(), 0).unwrap();
         assert_eq!(
             leaves(delivery.grant(&mut vt, Period(3), size(20, 4), NOW())),
             0
@@ -342,19 +363,19 @@ mod tests {
         assert!(!String::from_utf8_lossy(&delivery.release()).contains("1049"));
         let mut delivery = granted(&mut vt, size(20, 4));
         restore(&mut delivery, &mut vt);
-        delivery.live(b"\x1b[?1049h".to_vec(), 0).unwrap();
+        delivery.live(&vt, b"\x1b[?1049h".to_vec(), 0).unwrap();
         assert!(String::from_utf8_lossy(&delivery.release()).contains("\x1b[?1049l"));
-        assert_eq!(delivery.live(b"after".to_vec(), 0), Ok(Vec::new()));
+        assert_eq!(delivery.live(&vt, b"after".to_vec(), 0), Ok(Vec::new()));
     }
 
     #[test]
     fn a_derived_controller_is_rendered_after_restore_end_and_never_while_synchronized() {
         let mut vt = vt(20, 4);
         let mut delivery = granted(&mut vt, size(30, 6));
-        assert_eq!(delivery.live(b"x".to_vec(), 0), Ok(Vec::new()));
+        assert_eq!(delivery.live(&vt, b"x".to_vec(), 0), Ok(Vec::new()));
         restore(&mut delivery, &mut vt);
         vt.feed(b"derived", NOW());
-        delivery.live(b"derived".to_vec(), 0).unwrap();
+        delivery.live(&vt, b"derived".to_vec(), 0).unwrap();
         assert!(delivery.produce(&mut vt, 0, true).is_empty());
         let derived = text(&delivery.produce(&mut vt, 0, false));
         assert!(
@@ -367,11 +388,23 @@ mod tests {
     }
 
     #[test]
+    fn a_derived_restoration_does_not_commit_a_cursor_from_unpainted_output() {
+        let mut vt = vt(20, 6);
+        vt.feed(b"\x1b[3;7H", NOW());
+        let mut delivery = granted(&mut vt, size(30, 8));
+        let live = vt.feed(b"\x1b[?2026h\x1b[5;11H", NOW()).live;
+        assert!(delivery.live(&vt, live, 0).unwrap().is_empty());
+        let out = delivery.produce(&mut vt, 0, true);
+        assert!(out.contains(&Out::RestoreEnd(Period(1))));
+        assert!(delivery.release().ends_with(b"\x1b[3;7H"));
+    }
+
+    #[test]
     fn end_sync_closes_an_update_open_on_a_direct_host() {
         let mut vt = vt(20, 4);
         let mut delivery = granted(&mut vt, size(20, 4));
         restore(&mut delivery, &mut vt);
-        delivery.live(b"\x1b[?2026h".to_vec(), 0).unwrap();
+        delivery.live(&vt, b"\x1b[?2026h".to_vec(), 0).unwrap();
         assert_eq!(delivery.end_sync(), b"\x1b[?2026l");
         assert!(delivery.end_sync().is_empty());
     }
@@ -387,7 +420,7 @@ mod tests {
         assert!(delivery.produce(&mut vt, 0, true).is_empty());
         let presented = text(&delivery.produce(&mut vt, 0, false));
         assert!(presented.starts_with("L[\x1b[?2026l"), "{presented}");
-        assert_eq!(delivery.live(b"x".to_vec(), 0), Ok(Vec::new()));
+        assert_eq!(delivery.live(&vt, b"x".to_vec(), 0), Ok(Vec::new()));
     }
 
     #[test]

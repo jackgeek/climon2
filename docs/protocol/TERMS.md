@@ -92,6 +92,12 @@ A field or code identifying which message variant is being sent.
 One column position in a terminal grid. Wide characters span cells; combining
 characters can share a cell. Byte or character offsets are not cell offsets.
 
+## Dynamic loader
+
+The operating-system component that maps a shared library into a running
+process and connects its symbols: [glibc](#glibc)'s on Linux, dyld on macOS.
+`dlopen` asks it to load a library.
+
 ## Counter
 
 An increasing identifier or sequence value. Its range, representation and
@@ -106,6 +112,11 @@ Representable values do not determine operational sizing or clamping policy.
 
 Whether an interface can supply a value, distinct from a supported value being
 unset or empty. The owning interface specifies its explicit representation.
+
+## ELF
+
+Executable and Linkable Format: the binary format of Linux executables and
+shared libraries. Its header records the target architecture.
 
 ## Envelope
 
@@ -140,6 +151,11 @@ of a native-library interface.
 
 A finite state machine: a set of states and the event-driven transitions
 between them.
+
+## glibc
+
+The GNU C Library: the standard C library and [dynamic loader](#dynamic-loader)
+of Ubuntu and most other Linux distributions.
 
 ## GUID
 
@@ -254,6 +270,11 @@ A message asking another participant to perform an operation.
 Remote Desktop Protocol. “RDP-like” describes interactive remote presentation
 and input, not use of that protocol or a compatibility claim.
 
+## RPATH and RUNPATH
+
+Directory lists stored in a Linux shared library that tell the
+[dynamic loader](#dynamic-loader) where to search for the libraries it depends on.
+
 ## Request ID
 
 An identifier matching a [request](#request) with its response in a conversation.
@@ -271,6 +292,12 @@ The future plugin system's isolation model is not specified by this reference.
 ## Schema
 
 The permitted structure, fields, types, and values of a message.
+
+## Soname
+
+A name stored in a Linux shared library that identifies it to the
+[dynamic loader](#dynamic-loader). The loader can treat libraries with the same
+soname as one library.
 
 ## Standard streams
 

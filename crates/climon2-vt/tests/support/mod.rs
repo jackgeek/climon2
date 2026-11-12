@@ -27,6 +27,11 @@ pub fn feed(vt: &mut Vt, bytes: &[u8]) -> Vec<u8> {
     vt.feed(bytes, Instant::now()).live
 }
 
+pub fn commit(vt: &mut Vt, presentation: &mut Presentation, bytes: &[u8]) {
+    let live = feed(vt, bytes);
+    vt.commit_live(presentation, &live);
+}
+
 /// Grant and produce a whole restoration with a generous budget.
 pub fn restore(vt: &mut Vt, presentation: &mut Presentation) -> Vec<u8> {
     let (mut bytes, mut restoration) = vt.grant(presentation);

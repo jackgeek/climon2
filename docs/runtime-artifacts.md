@@ -4,20 +4,26 @@ This diagram covers every climon2-owned executable target and dynamic library,
 including development fixtures. Arrows run from consumer to consumed artifact;
 labels distinguish execution, communication, and loading.
 Solid relationships exist today; dashed relationships are planned.
+The current executable relationships apply on macOS and x86_64 GNU/Linux;
+native archives are described in [distribution](distribution.md).
+The development host owns shared/Linux CRAP and mutation; CI qualifies only
+macOS-exclusive source, while retaining native runtime/archive tests. This
+[quality split](distribution.md#release-gates) changes no artifact or
+consumption relationship.
 
 ```mermaid
 flowchart TB
     subgraph runtime["Shipped runtime"]
-        launcher["climon2<br/>launcher executable"]
+        launcher["c2 / climon2<br/>same launcher executable"]
         installer["install<br/>built as climon2-install"]
         subgraph version["Installed version v; versions coexist"]
             cli["climon2-cli<br/>CLI executable"]
             client["climon2-client<br/>client executable"]
             daemon["climon2-daemon<br/>session daemon executable"]
-            library[["libclimon2_client.dylib<br/>Rust cdylib on macOS; C ABI bootstrap"]]
+            monitor["climon2-monitor<br/>monitor executable; Ratatui TUI"]
+            library[["libclimon2_client.dylib / .so<br/>Rust cdylib; C ABI bootstrap"]]
         end
         command(["Session command<br/>external executable"])
-        monitor(["Monitor runtime: monitor / mon<br/>planned Ratatui TUI; executable placement undecided"])
         source_monitor(["Source monitor runtime<br/>future forwarding provider"])
         browser(["Browser with xterm.js<br/>future external consumer"])
 
@@ -27,9 +33,10 @@ flowchart TB
         cli -->|"hello probes for discovery"| daemon
         client -->|"daemon-client communication; current"| daemon
         daemon -->|"runs on session PTY"| command
-        cli -.->|"monitor / mon; planned"| monitor
-        monitor -.->|"loads session-version library; one client thread per live session"| library
-        client -.->|"loads same-release library; planned"| library
+        cli -->|"monitor / mon: execs own version"| monitor
+        monitor -.->|"hello probes for discovery; planned"| daemon
+        monitor -.->|"loads session-version library; one client thread per live session; planned"| library
+        client -.->|"loads same-release library; versioned C interface planned"| library
         library -.->|"daemon-client communication; planned"| daemon
         monitor -.->|"consumes forwarded sessions over TCP/IP; future"| source_monitor
         browser -.->|"consumes forwarded terminal traffic over WebSocket; future"| monitor
@@ -44,8 +51,11 @@ flowchart TB
         terminal_fixture["climon2-fixture"]
         tui_fixture["climon2-tui-fixture"]
         library_host["climon2-library-host"]
+        owned_exec["climon2-test-owned<br/>Linux test ownership exec adapter"]
+        terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
         xtask -->|"runs builds and tests"| cargo
+        xtask -->|"install: runs verified production payload"| installer
         xtask -->|"runs runtime probes"| cli
         xtask -->|"loads in release checks"| library
         cargo -->|"runs"| tests
@@ -55,9 +65,10 @@ flowchart TB
         tests -->|"uses directly or as a session command"| tui_fixture
         tests -->|"runs as the Library-layer host"| library_host
         library_host -->|"loads through the C ABI"| library
+        tests -->|"execs registered terminal roots through; Linux only"| owned_exec
+        owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
 
-    style monitor stroke-dasharray: 5 5
     style source_monitor stroke-dasharray: 5 5
     style browser stroke-dasharray: 5 5
 ```
@@ -65,10 +76,23 @@ flowchart TB
 `v` represents a [session](../GLOSSARY.md#sessions)'s installed version, not necessarily the current
 version selected by the launcher. The CLI starts a new session using its own
 version; [attachment](../GLOSSARY.md#attachment-and-control) and termination use the existing session's version.
-The installer is a release-payload executable, not a `climon2 install` command.
+The installed `c2` command is a relative symlink to `climon2` in the same
+executable home. Both names consume the same current-version CLI through the
+unchanged launcher; `climon2` remains supported without deprecation warnings.
+The installer is a release-payload executable, not a `c2 install` command.
 Installation relationships are outside this consumption diagram.
 
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
+
+On Linux, `climon2-test-term` builds `climon2-test-owned` as test tooling, never
+as a release payload. It opens one test-owned file descriptor before execing
+the requested terminal root. Forked descendants inherit that descriptor across
+environment clearing and reparenting, so procfs leak checks do not depend on
+catching short-lived parents. Process identity, sampled ancestry, session
+membership and environment markers remain additional ownership evidence.
+Commands that explicitly close inherited descriptors cannot retain this
+additional evidence. macOS keeps its kernel process/image ancestry tracking
+and does not use this adapter.
 
 **Current:** every release builds and ships `libclimon2_client.dylib` in its
 version folder: a Rust cdylib artifact of `climon2-client` that exports only
@@ -80,6 +104,10 @@ client executable's loading remain planned. Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,
 are not separately loaded dynamic libraries. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
+The planned node names both platforms' library files: `.dylib` on macOS and
+`.so` on x86-64 GNU/Linux. The
+[monitor integration decision](https://github.com/jackgeek/climon2/issues/125)
+agreed Linux loading and release isolation; neither library is built yet.
 
 **Planned:** the [monitor](../GLOSSARY.md#sessions) loads version-matched
 [client libraries](../GLOSSARY.md#sessions) directly into
@@ -88,15 +116,16 @@ Each live session has its own client thread. Clients start eagerly, newest
 first, with bounded concurrent progress; continuous discovery adds clients for
 new sessions. Background clients relay negotiated plugin data without taking
 control. Native client crashes can terminate the entire monitor. Ratatui powers
-the planned monitor's rendering; its terminal integration is agreed, unimplemented.
+the monitor's rendering; today it draws only the permanent top row and the empty
+state, and the rest of its terminal integration is agreed, unimplemented.
 The [agreed terminal contract](protocol/terminal-integration.md), not implemented,
 selects exact ordered terminal bytes/control/restoration through existing
 in-process record queues and monitor-owned `climon2-vt` models, with planned
 read-only Rust views for Ratatui. Session bytes never go directly to the host;
 daemon query authority stays unique. Monitor-mode daemon presentation uses
 effective session geometry, not host/requested dimensions, including background
-promotion. Optional core Focus is not a plugin/artifact addition. No executable
-placement or new dynamic library is chosen by this amendment.
+promotion. Optional core Focus is not a plugin/artifact addition. No new dynamic
+library is chosen by this amendment.
 
 The [status/activity revision](session-status.md) puts title detection and both
 state machines and terminal-signal interpretation in
@@ -130,12 +159,19 @@ narrow unbounded-engine assumption; it chooses no new executable/library or
 consumption arrow, and does not sandbox trusted native code.
 
 The client executable will also load its same-release library for ordinary
-operations. The monitor node represents a runtime role, not a decision to ship
-an executable named `climon2-monitor`.
+operations.
+
+**Current (#74):** every version folder ships the `climon2-monitor` executable,
+on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 mon`, or their `climon2`
+spellings, reach it through the launcher and the current version's CLI, which
+execs its own version's monitor exactly as it execs a version-matched client,
+so the monitor is always the current version. That handoff between executables
+of one release is not frozen. The monitor does not yet discover sessions or
+load libraries.
 
 The agreed [embedding design](protocol/library-embedding.md) loads
-`<executable home>/<session version>/libclimon2_client.dylib` on macOS with no
-release fallback. It uses a versioned C interface, per-instance client threads,
+`<executable home>/<session version>/libclimon2_client.dylib` on macOS, or
+`libclimon2_client.so` on x86-64 GNU/Linux, with no release fallback. It uses a versioned C interface, per-instance client threads,
 release-private dependency resolution, and explicit memory ownership.
 Every successfully opened library handle stays loaded until monitor exit,
 including handles rejected by later validation. Such releases remain in use
@@ -158,7 +194,7 @@ discovery and remote authentication/security remain deliberately unresolved;
 same-[UID](protocol/TERMS.md#uid)/private-directory local checks do not define
 future transport security. No forwarding implementation is claimed.
 
-Future `climon2 exec --headless` returns after daemon-confirmed creation without
+Future `c2 exec --headless` returns after daemon-confirmed creation without
 starting an interactive client. A [headless session](../GLOSSARY.md#sessions)
 keeps its explicit zero-client survival policy throughout its lifetime, including
 after later clients unexpectedly leave; command completion or existing CLI Kill

@@ -174,7 +174,8 @@ mod tests {
     fn release_checks_accept_the_exact_universal_library() {
         let scratch = scratch();
         let library = fixture(scratch.path(), "library.dylib", VERSION, UNIVERSAL, &[]);
-        crate::dist::verify_binary(&library).unwrap();
+        crate::dist::verify_macos_binary(&library).unwrap();
+        crate::dist::unhooked(&library).unwrap();
         verify(&library, VERSION).unwrap();
     }
 
@@ -183,7 +184,7 @@ mod tests {
     fn release_checks_reject_a_wrong_architecture() {
         let scratch = scratch();
         let library = fixture(scratch.path(), "thin.dylib", VERSION, &["x86_64"], &[]);
-        let error = crate::dist::verify_binary(&library).unwrap_err();
+        let error = crate::dist::verify_macos_binary(&library).unwrap_err();
         assert!(
             error.to_string().contains("is not exactly arm64 + x86_64"),
             "{error}"
@@ -201,7 +202,7 @@ mod tests {
             UNIVERSAL,
             &["HOOK_MARKER"],
         );
-        let error = crate::dist::verify_binary(&library).unwrap_err();
+        let error = crate::dist::unhooked(&library).unwrap_err();
         assert!(error.to_string().contains("contains test hooks"), "{error}");
     }
 

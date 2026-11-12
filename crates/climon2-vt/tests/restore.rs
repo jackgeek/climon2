@@ -40,6 +40,7 @@ fn a_normal_only_restoration_is_lead_history_scroll_off_screen_then_suffix() {
         "\x1b[1;1H\x1b[0m\x1b7\x1b[3;2H\x1b[0m",
         MODES,
         DIRECT_MODES,
+        "\x1b[3;2H\x1b[0m",
         "\x1b]2;climon2 exec app\x1b\\",
     ]
     .concat();
@@ -87,7 +88,7 @@ fn without_history_there_is_no_scroll_off_before_the_screen() {
 fn a_replacement_restoration_leaves_this_attachments_alternate_screen_first() {
     let mut vt = vt(10, 3, 10);
     let mut presentation = Presentation::new(10, 3);
-    presentation.commit_live(b"\x1b[?1049h\x1b[?2026h");
+    vt.commit_live(&mut presentation, b"\x1b[?1049h\x1b[?2026h");
     let (lead, _) = vt.grant(&mut presentation);
     assert!(text(&lead).starts_with(&format!("\x1b[?1049l{PROLOGUE}")));
     assert_eq!(presentation.end_sync(), b"");
@@ -98,7 +99,7 @@ fn a_replacement_restoration_leaves_this_attachments_alternate_screen_first() {
 fn a_replacement_grant_at_a_new_host_size_keeps_what_the_host_was_put_into() {
     let mut vt = vt(10, 3, 10);
     let mut presentation = Presentation::new(10, 3);
-    presentation.commit_live(b"\x1b[?1049h");
+    vt.commit_live(&mut presentation, b"\x1b[?1049h");
     presentation.resize_host(12, 5);
     let (lead, _) = vt.grant(&mut presentation);
     let lead = text(&lead);
@@ -116,6 +117,14 @@ fn retained_history_is_the_newest_max_rows_rows() {
         restored_history(60, 2, &prefix),
         [NOTICE_TEXT, "3", "4", "5"]
     );
+}
+
+#[test]
+fn a_single_retained_history_row_still_reports_truncation() {
+    let mut vt = vt(60, 2, 1);
+    feed(&mut vt, &lines(1..=6));
+    let prefix = text(&restored(&mut vt));
+    assert_eq!(restored_history(60, 2, &prefix), [NOTICE_TEXT, "5"]);
 }
 
 #[test]
@@ -321,7 +330,13 @@ fn a_resize_that_may_drop_full_history_sets_the_eviction_flag() {
 
 #[test]
 fn shrinking_while_on_the_alternate_screen_sets_the_eviction_flag() {
-    for (cols, rows, notice) in [(9, 4, true), (10, 3, true), (11, 5, false), (10, 5, false)] {
+    for (cols, rows, notice) in [
+        (9, 4, true),
+        (10, 3, true),
+        (11, 5, false),
+        (10, 5, false),
+        (11, 4, false),
+    ] {
         let mut vt = vt(10, 4, 10);
         feed(&mut vt, &lines(1..=6));
         feed(&mut vt, b"\x1b[?1049h");
@@ -347,6 +362,53 @@ fn a_resize_retires_history_production_and_an_equal_size_does_not() {
     let rest = text(&vt.produce(&mut restoration, &mut presentation, 1).bytes);
     assert!(rest.starts_with("\x1b[2;1H\n\x1b[1;1H\x1b[0m4"), "{rest:?}");
     assert_eq!(vt.geometry(), Geometry::for_host(12, 2).unwrap());
+}
+
+#[test]
+fn taking_control_restores_the_cursor_before_any_further_output() {
+    for source in [
+        "\x1b[3;7H",
+        "\x1b[?1049h\x1b[3;7H",
+        "\x1b[3;1H01234567890123456789",
+        "\x1b[?1049h\x1b[3;1H01234567890123456789",
+        "\x1b[?7l\x1b[3;20HX",
+        "\x1b[?6h\x1b[3;7H",
+        "\x1b[2;5r\x1b[?6h\x1b[2;7H",
+        "\x1b[?1049h\x1b[2;5r\x1b[?6h\x1b[2;7H",
+    ] {
+        let mut vt = vt(20, 6, 10);
+        let mut presentation = Presentation::new(20, 6);
+        let mut bytes = restore(&mut vt, &mut presentation);
+        bytes.extend(presentation.release());
+        // The revoked host stays elsewhere while the session's cursor moves.
+        bytes.extend_from_slice(b"\x1b[5;12H");
+        feed(&mut vt, source.as_bytes());
+        bytes.extend(restore(&mut vt, &mut presentation));
+        let rows = std::num::NonZeroU16::new(6).unwrap();
+        let cols = std::num::NonZeroU16::new(20).unwrap();
+        // Alacritty does not home on a redundant origin-mode reset; other hosts do.
+        let mut host = vt100::Parser::new(rows, cols, 0);
+        host.process(&bytes);
+        let mut reference = vt100::Parser::new(rows, cols, 0);
+        reference.process(source.as_bytes());
+        assert_eq!(
+            host.screen().cursor_position(),
+            reference.screen().cursor_position(),
+            "{source:?}"
+        );
+        assert_eq!(
+            host.screen().contents(),
+            reference.screen().contents(),
+            "{source:?}"
+        );
+        host.process(b"X");
+        reference.process(b"X");
+        assert_eq!(
+            host.screen().contents(),
+            reference.screen().contents(),
+            "{source:?}"
+        );
+    }
 }
 
 #[test]

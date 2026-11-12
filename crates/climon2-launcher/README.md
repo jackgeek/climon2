@@ -1,6 +1,8 @@
 # climon2-launcher
 
 The dependency-free `climon2` executable implements ADR 0002's frozen contract.
+The installer also exposes it as `c2` through a relative symlink; both command
+names select the same current version without changing the launcher contract.
 It canonicalizes its own path, reads sibling `current`, validates an exact
 SemVer version (optional single LF or CRLF), then Unix-execs
 `<executable home>/<version>/climon2-cli`.

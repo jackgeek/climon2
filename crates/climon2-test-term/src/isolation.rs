@@ -10,6 +10,29 @@ use tempfile::TempDir;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
+/// Builds a test command without inheriting unrelated PTY descriptors.
+pub fn process_command(executable: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let command = std::process::Command::new(executable);
+    #[cfg(target_os = "linux")]
+    let mut command = command;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // openpty sets CLOEXEC after allocation; another thread can fork in between.
+        // Mark only the child's copies, preserving stdio and spawn's error pipe.
+        unsafe {
+            command.pre_exec(|| {
+                if nix::libc::close_range(3, u32::MAX, nix::libc::CLOSE_RANGE_CLOEXEC as i32) == -1
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    command
+}
+
 pub fn bin_path(name: &str) -> PathBuf {
     let executable = env::current_exe().expect("locate test executable");
     let path = executable
@@ -24,6 +47,24 @@ pub fn bin_path(name: &str) -> PathBuf {
         path.display()
     );
     path
+}
+
+/// Copies an executable a test will run. `cp` writes the copy, so this process never holds
+/// it open: Linux refuses to execute a file any process holds open for writing (ETXTBSY),
+/// and a child forked by another test thread holds every descriptor it inherited until it
+/// execs.
+pub fn copy_executable(from: &Path, to: &Path) {
+    let status = std::process::Command::new("cp")
+        .arg(from)
+        .arg(to)
+        .status()
+        .expect("run cp");
+    assert!(
+        status.success(),
+        "cp {} {}: {status}",
+        from.display(),
+        to.display()
+    );
 }
 
 pub struct Isolation {
@@ -46,7 +87,7 @@ impl Isolation {
             std::process::id(),
             NEXT_ID.fetch_add(1, Ordering::Relaxed)
         );
-        ownership::register(&id);
+        ownership::register(&id, directory.path());
         Self { directory, id }
     }
 

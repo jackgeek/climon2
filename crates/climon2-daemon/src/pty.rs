@@ -3,8 +3,12 @@ use climon2_platform::{peer, process, runtime};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::{
     ffi::OsString,
+    fs::File,
     io::{self, Read, Write},
-    os::unix::{net::UnixStream, process::CommandExt},
+    os::{
+        fd::BorrowedFd,
+        unix::{net::UnixStream, process::CommandExt},
+    },
     path::PathBuf,
     process::Command,
     time::{Duration, Instant},
@@ -14,7 +18,9 @@ const OBSERVE_JOBS: Duration = Duration::from_millis(100);
 
 pub(crate) struct Pty {
     master: Option<Box<dyn MasterPty + Send>>,
-    writer: Option<Box<dyn Write + Send>>,
+    /// The command's output and input, through an owned duplicate of the master. Not
+    /// portable-pty's writer, whose drop types a newline and end-of-file key.
+    master_io: Option<File>,
     pid: u32,
     session: process::TerminalSession,
     observed: Instant,
@@ -41,18 +47,20 @@ impl Pty {
             .map_err(|_| Failure::own("cannot identify command session"))?;
         let mut pty = Self {
             master: Some(master),
-            writer: None,
+            master_io: None,
             pid,
             session,
             observed: Instant::now(),
             reaped: false,
             status: None,
         };
-        pty.writer = Some(
-            pty.master()
-                .take_writer()
+        // The master stays open as long as `pty` holds it, so the borrow is valid.
+        let master = unsafe { BorrowedFd::borrow_raw(pty.fd()) };
+        pty.master_io = Some(File::from(
+            master
+                .try_clone_to_owned()
                 .map_err(|_| Failure::own("cannot open terminal input"))?,
-        );
+        ));
         nonblocking(pty.fd()).map_err(|_| Failure::own("cannot configure command terminal"))?;
         Ok(pty)
     }
@@ -83,10 +91,10 @@ impl Pty {
         #[cfg(feature = "test-hooks")]
         let bytes = trickle(bytes);
         // After hang-up nothing reads the terminal; pending bytes are dropped.
-        let Some(writer) = &mut self.writer else {
+        let Some(master_io) = &mut self.master_io else {
             return Ok(bytes.len());
         };
-        writer.write(bytes)
+        master_io.write(bytes)
     }
     /// Waits at most `timeout` for output (or hangup) without reading it.
     pub fn wait_readable(&self, timeout: std::time::Duration) {
@@ -94,38 +102,44 @@ impl Pty {
             std::thread::sleep(timeout);
             return;
         }
-        let mut descriptor = libc::pollfd {
+        let mut descriptors = [libc::pollfd {
             fd: self.fd(),
             events: libc::POLLIN,
-            revents: 0,
-        };
+            // Output-only.
+            revents: Default::default(),
+        }];
         let milliseconds = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
         // An interrupted or failed poll only ends this wait early; the next read reports errors.
-        unsafe { libc::poll(&mut descriptor, 1, milliseconds) };
+        let count = descriptors.len() as libc::nfds_t;
+        unsafe { libc::poll(descriptors.as_mut_ptr(), count, milliseconds) };
     }
-    /// Only the session output pump calls this. No cloned PTY readers exist.
+    /// Only the session output pump calls this, while the terminal is open. Reading through
+    /// the input duplicate adds no master handle that hanging up would have to close.
     pub fn read_output(&self, bytes: &mut [u8]) -> io::Result<usize> {
-        let count = unsafe { libc::read(self.fd(), bytes.as_mut_ptr().cast(), bytes.len()) };
-        if count < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(count as usize)
+        let mut master_io = self.master_io.as_ref().expect("live PTY");
+        master_io.read(bytes)
     }
     pub fn try_wait(&mut self) -> io::Result<Option<u32>> {
         if self.status.is_none() {
-            self.status = self.reap()?;
+            self.reap()?;
         }
         Ok(self.status)
     }
-    fn reap(&mut self) -> io::Result<Option<u32>> {
-        let Some(status) = process::try_wait(self.pid)? else {
-            return Ok(None);
-        };
+    fn reap(&mut self) -> io::Result<()> {
+        if let Some(status) = process::try_wait(self.pid)? {
+            self.exited(status)?;
+        }
+        Ok(())
+    }
+    /// Records the reaped command, which stays reaped even if its status has no code.
+    fn exited(&mut self, status: climon2_core::exit::ExitStatus) -> io::Result<u32> {
         self.reaped = true;
-        status.code().map(Some).map_err(io::Error::other)
+        let code = status.code().map_err(io::Error::other)?;
+        self.status = Some(code);
+        Ok(code)
     }
     fn close_master(&mut self) {
-        close(&mut self.master, &mut self.writer);
+        close(&mut self.master, &mut self.master_io);
     }
     /// Closes the terminal without waiting; `end_hangup` follows once the
     /// hang-up grace has elapsed.
@@ -143,12 +157,8 @@ impl Pty {
             self.session.kill()?;
             return Ok(self.status.unwrap_or(129));
         }
-        let code = process::end_hangup(&mut self.session)?
-            .code()
-            .map_err(io::Error::other)?;
-        self.reaped = true;
-        self.status = Some(code);
-        Ok(code)
+        let status = process::end_hangup(&mut self.session)?;
+        self.exited(status)
     }
 
     /// The daemon loop failed, so the command session gets its grace here.
@@ -166,7 +176,7 @@ impl Pty {
     /// Records the command session's job groups while its leader may still hold the terminal;
     /// at most every `OBSERVE_JOBS`, as each look lists the terminal's processes.
     pub fn observe_jobs(&mut self) -> io::Result<()> {
-        if self.observed.elapsed() < OBSERVE_JOBS {
+        if !super::due(self.observed, OBSERVE_JOBS) {
             return Ok(());
         }
         self.observed = Instant::now();
@@ -174,12 +184,9 @@ impl Pty {
     }
 }
 
-/// Drops every master handle: portable-pty's writer, then the master itself.
-fn close(
-    master: &mut Option<Box<dyn MasterPty + Send>>,
-    writer: &mut Option<Box<dyn Write + Send>>,
-) {
-    writer.take();
+/// Closes every master handle, the input duplicate first, without writing to it.
+fn close(master: &mut Option<Box<dyn MasterPty + Send>>, master_io: &mut Option<File>) {
+    master_io.take();
     master.take();
 }
 
@@ -332,7 +339,7 @@ impl ExecListener {
     }
 
     fn accept(&self) -> Result<UnixStream, Failure> {
-        while Instant::now() < self.deadline {
+        while !super::passed(self.deadline, Instant::now()) {
             if let Some(stream) = super::unless_would_block(peer::accept(&self.listener))
                 .map_err(|_| Failure::own("command startup connection failed"))?
             {
@@ -391,9 +398,9 @@ fn launch_code(error: &io::Error, cwd: &std::path::Path) -> u8 {
 }
 
 fn confirm_exec(stream: &mut UnixStream, deadline: Instant) -> Result<(), Failure> {
-    let mut bytes = [0; 2];
+    let mut bytes = [u8::default(); 2];
     let mut length = 0;
-    while Instant::now() < deadline {
+    while !super::passed(deadline, Instant::now()) {
         let code = confirmation_read(stream, &mut bytes, &mut length)
             .map_err(|_| Failure::own("command startup confirmation failed"))?;
         if let Some(code) = code {
@@ -443,4 +450,23 @@ fn trickle(bytes: &[u8]) -> &[u8] {
     }
     std::thread::sleep(std::time::Duration::from_millis(5));
     &bytes[..bytes.len().min(1)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nonblocking;
+    use std::os::fd::AsRawFd;
+
+    /// A read-only descriptor's status flags read as zero, which is not a failure.
+    #[test]
+    fn a_read_only_descriptor_becomes_nonblocking() {
+        let (reader, _writer) = std::io::pipe().unwrap();
+        let fd = reader.as_raw_fd();
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFL) }, libc::O_RDONLY);
+        nonblocking(fd).unwrap();
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_GETFL) },
+            libc::O_RDONLY | libc::O_NONBLOCK
+        );
+    }
 }

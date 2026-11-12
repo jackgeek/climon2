@@ -3,6 +3,7 @@
 import pathlib
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -31,11 +32,20 @@ class NativeDeclarations(unittest.TestCase):
                         + "\n}\n"
                     )
                     sources.append(source)
-            for target in ("arm64-apple-macos11", "x86_64-apple-macos11"):
-                for source in sources:
+            checks = [(None, sources)]
+            for target, system in (
+                ("arm64-apple-macos11", "darwin"),
+                ("x86_64-apple-macos11", "darwin"),
+                ("x86_64-linux-gnu", "linux"),
+            ):
+                # Layout uses only compiler headers; examples need the target's libc headers.
+                checks.append((target, sources if sys.platform == system else sources[:1]))
+            for target, target_sources in checks:
+                options = ["-target", target, "-ffreestanding"] if target else []
+                for source in target_sources:
                     result = subprocess.run(
                         [
-                            "clang", "-target", target, "-std=c11",
+                            "clang", *options, "-std=c11",
                             "-Wall", "-Wextra", "-Werror", "-fsyntax-only",
                             "-I", str(HERE), str(source),
                         ],

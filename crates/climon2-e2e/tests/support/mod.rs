@@ -1,5 +1,5 @@
 use climon2_install::{Payload, install};
-use climon2_test_term::{Isolation, Terminal, bin_path};
+use climon2_test_term::{Isolation, Modes, Terminal, bin_path};
 use portable_pty::CommandBuilder;
 use serde_json::Value;
 use std::{
@@ -147,9 +147,9 @@ impl Package {
                     .args(["-p", &pid.to_string(), "-o", "comm="])
                     .output()
                     .unwrap();
-                String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .ends_with("/climon2-client")
+                Path::new(String::from_utf8_lossy(&output.stdout).trim())
+                    .file_name()
+                    .is_some_and(|name| name == "climon2-client")
             })
             .expect("installed client owns the outer PTY")
     }
@@ -288,6 +288,62 @@ pub fn quote(path: &Path) -> String {
     format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"))
 }
 
+/// An outer non-interactive `bash` on a `rows` x `cols` terminal that records
+/// termios around `command`, reports its status as `OUTER-DONE=<status>`,
+/// then echoes one ordinary typed line as `TYPED=<line>`. The continuity and
+/// monitor scenarios run climon2 from it; packaged.rs does not.
+#[allow(dead_code)]
+pub fn outer(package: &Package, bash: &Path, command: &str, rows: u16, cols: u16) -> Terminal {
+    let mut shell = package.command(bash);
+    shell.args(["--noprofile", "--norc", "-c"]);
+    shell.arg(format!(
+        "stty -g > ~/before; {command}; s=$?; stty -g > ~/after; \
+         printf 'OUTER-DONE=%s\\n' \"$s\"; IFS= read -r line; printf 'TYPED=%s\\n' \"$line\""
+    ));
+    Terminal::spawn(shell, rows, cols).unwrap()
+}
+
+/// After the [`outer`] shell's `command` returned `status`: the documented
+/// normal-shell baseline, exact termios and ordinary shell input.
+#[allow(dead_code)]
+pub fn assert_released(package: &Package, terminal: &mut Terminal, status: i32) {
+    terminal
+        .wait_for_text(&format!("OUTER-DONE={status}"), TIMEOUT)
+        .unwrap();
+    assert_eq!(terminal.modes(), Modes::BASELINE, "{}", terminal.screen());
+    let home = package.isolation.home();
+    assert_eq!(
+        termios(&home.join("after")),
+        termios(&home.join("before")),
+        "termios restored"
+    );
+    terminal.send("plain words\n").unwrap();
+    terminal
+        .wait_for_text("TYPED=plain words", TIMEOUT)
+        .unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+}
+
+/// `stty -g` settings without macOS's transient `PENDIN`, which the kernel
+/// sets whenever a terminal returns to canonical mode.
+#[allow(dead_code)]
+fn termios(path: &Path) -> String {
+    const PENDIN: u64 = 0x2000_0000;
+    fs::read_to_string(path)
+        .unwrap()
+        .trim_end()
+        .split(':')
+        .map(|field| match field.strip_prefix("lflag=") {
+            Some(flags) => {
+                let flags = u64::from_str_radix(flags, 16).unwrap() & !PENDIN;
+                format!("lflag={flags:x}")
+            }
+            None => field.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 fn extract_payload(archive: &std::ffi::OsStr, directory: &Path) -> (PathBuf, String) {
     let archive = PathBuf::from(archive).canonicalize().unwrap();
     assert!(
@@ -302,9 +358,14 @@ fn extract_payload(archive: &std::ffi::OsStr, directory: &Path) -> (PathBuf, Str
     assert!(listing.status.success(), "{listing:?}");
     let listing = String::from_utf8(listing.stdout).unwrap();
     let root = listing.lines().next().unwrap().split('/').next().unwrap();
+    let suffix = if cfg!(target_os = "linux") {
+        "-linux-x86_64-gnu"
+    } else {
+        "-macos-universal"
+    };
     let version = root
         .strip_prefix("climon2-")
-        .and_then(|root| root.strip_suffix("-macos-universal"))
+        .and_then(|root| root.strip_suffix(suffix))
         .expect("release archive's versioned root");
     version.parse::<climon2_core::VersionName>().unwrap();
     let expected = [
@@ -313,6 +374,7 @@ fn extract_payload(archive: &std::ffi::OsStr, directory: &Path) -> (PathBuf, Str
         format!("{root}/{version}/climon2-cli"),
         format!("{root}/{version}/climon2-daemon"),
         format!("{root}/{version}/climon2-client"),
+        format!("{root}/{version}/climon2-monitor"),
         format!("{root}/{version}/libclimon2_client.dylib"),
         format!("{root}/LICENSE"),
         format!("{root}/README.md"),
