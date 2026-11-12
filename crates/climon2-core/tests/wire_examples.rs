@@ -422,6 +422,37 @@ fn every_member_of_every_part1_record_is_required_unique_and_documented() {
     }
 }
 
+/// COM-02 (codec case): every member written as a JSON string, at every
+/// depth, accepts only a string. A one-member object naming the value, the
+/// form serde's derived enums would also take (`{"monitor":null}`), is
+/// `invalid_record`. Request IDs are swept with the other request-ID cases.
+#[test]
+fn string_members_accept_only_json_strings() {
+    for (code, body) in part1_records() {
+        let record: Value = serde_json::from_str(&body).unwrap();
+        for pointer in objects(&record, String::new()) {
+            let members = record.pointer(&pointer).unwrap().as_object().unwrap();
+            for (key, value) in members {
+                let Value::String(text) = value else { continue };
+                if pointer.is_empty() && key == "request_id" {
+                    continue;
+                }
+                let variant = edited(&record, &pointer, |object| {
+                    object.insert(
+                        key.clone(),
+                        Value::Object(Map::from_iter([(text.clone(), Value::Null)])),
+                    );
+                });
+                assert_eq!(
+                    decode(code, &variant),
+                    Err(FatalCode::InvalidRecord),
+                    "{variant}"
+                );
+            }
+        }
+    }
+}
+
 /// COM-02 (codec case): every request and the Response carry a `request_id`,
 /// so one that is malformed, just outside the counter range at either end or
 /// not a string, is `invalid_request_id`, while the largest counter decodes.
@@ -445,6 +476,7 @@ fn only_requests_and_responses_carry_request_ids() {
                 json!("0"),
                 json!("18446744073709551616"),
                 json!(1),
+                json!({"1": null}),
                 Value::Null,
             ] {
                 let variant = with_id(id);

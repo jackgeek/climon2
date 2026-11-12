@@ -2,7 +2,7 @@
 //! Core metadata flows to every selected family regardless of control.
 use super::{
     Available, CommandResult, Counter, Error, FatalCode, Frame, Progress, Response, Status,
-    record::{self, ControlRecord, Decoder, nullable},
+    record::{self, ControlRecord, Decoder, by_name, nullable},
 };
 use crate::ContractError;
 use serde::{Deserialize, Serialize};
@@ -137,6 +137,7 @@ impl TryFrom<StatusChangedFields> for StatusChanged {
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Notification {
+    #[serde(deserialize_with = "by_name")]
     pub source: NotificationSource,
     #[serde(deserialize_with = "nullable")]
     pub source_id: Option<String>,

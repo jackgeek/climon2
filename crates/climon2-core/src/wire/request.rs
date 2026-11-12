@@ -1,7 +1,7 @@
 //! Requests: client to session daemon, types `0x30` through `0x39`.
 use super::{
     Counter, Families, FatalCode, Frame, Geometry, Requested,
-    record::{self, ControlRecord, Decoder, nullable},
+    record::{self, ControlRecord, Decoder, by_name, nullable},
 };
 use crate::ContractError;
 use serde::{Deserialize, Serialize, Serializer};
@@ -56,6 +56,7 @@ struct OpenFields {
     revision: u32,
     required_capabilities: Families,
     optional_capabilities: Families,
+    #[serde(deserialize_with = "by_name")]
     mode: ModeName,
     #[serde(deserialize_with = "nullable")]
     geometry: Option<Geometry>,

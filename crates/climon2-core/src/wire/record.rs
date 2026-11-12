@@ -4,7 +4,10 @@
 //! an object (`json::Object`); derived structs would also take an array.
 use super::{Counter, FatalCode, Frame, Response};
 use crate::json::Object;
-use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{DeserializeOwned, IntoDeserializer},
+};
 use serde_json::Value;
 use std::ops::RangeInclusive;
 
@@ -72,4 +75,15 @@ where
     T: Deserialize<'de>,
 {
     Option::deserialize(deserializer)
+}
+
+/// An enum member named only by a JSON string: serde's derived enums would
+/// also take a one-member object such as `{"monitor":null}`.
+pub(crate) fn by_name<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let name = String::deserialize(deserializer)?;
+    T::deserialize(name.into_deserializer())
 }
