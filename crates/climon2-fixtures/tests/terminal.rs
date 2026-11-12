@@ -382,7 +382,7 @@ fn timed_waits_dump_screen_signals_and_bytes_and_drop_cleans_ignored_sighup() {
         "print",
         "\x07still-alive",
         "sleep",
-        "5000",
+        "60000",
     ]);
     let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
     terminal.wait_for_text("still-alive", TIMEOUT).unwrap();
