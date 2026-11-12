@@ -1,5 +1,5 @@
 //! Daemon wire revision 1 server messages (session daemon to client):
-//! Response, Fatal error and the session metadata events. Each test is the
+//! Response, Fatal error and the core metadata events. Each test is the
 //! codec case of the matrix scenarios it cites; the daemon and library cases
 //! come with their own tickets.
 use climon2_core::wire::{

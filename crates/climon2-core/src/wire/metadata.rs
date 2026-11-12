@@ -1,4 +1,4 @@
-//! Session metadata shapes: status, progress, command results and
+//! Core metadata shapes: status, progress, command results and
 //! availability.
 use super::{Counter, Utc, record::nullable};
 use crate::{ContractError, json::Object};

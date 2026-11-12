@@ -11,8 +11,9 @@ and [technical terms](../TERMS.md) alongside each message page.
 
 An encoder and validator for the [framing](../TERMS.md#frame), shared types,
 [Open](request-open.md), [Leave](request-leave.md), [Kill](request-kill.md),
-[Response](response.md), [Fatal error](event-fatal-error.md) and the session
-metadata events now exists in
+[Response](response.md), [Fatal error](event-fatal-error.md) and the
+[core metadata](../README.md#capabilities-and-connection-generations) events
+now exists in
 [`climon2-core`](../../../crates/climon2-core/README.md). Its tests decode
 every published example on those pages and re-encode it to identical
 [bytes](../TERMS.md#byte). No [session daemon](../../../GLOSSARY.md#sessions)

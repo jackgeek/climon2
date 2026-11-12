@@ -120,7 +120,7 @@ fn published_response_and_fatal_error_examples_round_trip_byte_identically() {
 /// DOC-01: Initial metadata `0x41`, Title changed `0x42`, Status changed
 /// `0x43`, Notification `0x44`, Progress changed `0x45` and Command final `0x4c`.
 #[test]
-fn published_session_metadata_examples_round_trip_byte_identically() {
+fn published_core_metadata_examples_round_trip_byte_identically() {
     let (metadata, frame) = server(0x41, "event-initial-metadata.md");
     let expected = InitialMetadata::new(
         Available::Available(None),

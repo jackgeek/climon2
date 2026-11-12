@@ -1,5 +1,5 @@
 //! Server messages: session daemon to client, types `0x40` through `0x4d`.
-//! Session metadata flows to every selected family regardless of control.
+//! Core metadata flows to every selected family regardless of control.
 use super::{
     Available, CommandResult, Counter, Error, FatalCode, Frame, Progress, Response, Status,
     record::{self, ControlRecord, Decoder, nullable},
