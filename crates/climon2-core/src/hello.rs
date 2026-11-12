@@ -6,7 +6,7 @@ use crate::{
     json::Object,
     names,
     protocol::{self, Frame, HelloReply},
-    wire::{Advertisement, FrameLimits},
+    wire::{Advertisement, Family, FrameLimits},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -172,7 +172,7 @@ impl HelloExtensions {
         Self {
             capabilities: advertised(reply, "capabilities", capabilities),
             state: advertised(reply, "state", state),
-            daemon_wire_v1: Advertisement::advertised(reply),
+            daemon_wire_v1: revision1(reply),
         }
     }
 }
@@ -184,12 +184,44 @@ fn advertised<T>(reply: &Value, field: &str, parse: fn(&Value) -> Option<T>) -> 
     }
 }
 
+/// The tokens of a capability array that `from_token` knows; others are
+/// ignored.
+fn known<T: Ord>(tokens: &Value, from_token: fn(&str) -> Option<T>) -> Option<BTreeSet<T>> {
+    let tokens = Vec::<String>::deserialize(tokens).ok()?;
+    Some(
+        tokens
+            .iter()
+            .filter_map(|token| from_token(token))
+            .collect(),
+    )
+}
+
 fn capabilities(value: &Value) -> Option<Capabilities> {
-    let tokens = Vec::<String>::deserialize(value).ok()?;
-    let known = tokens
-        .iter()
-        .filter_map(|token| Capability::from_token(token));
-    Some(Capabilities(known.collect()))
+    known(value, Capability::from_token).map(Capabilities)
+}
+
+/// Both the `daemon-wire-v1` token and valid limits make revision 1
+/// available. A missing or malformed advertisement makes it unavailable,
+/// never the session stale; unknown tokens and members are ignored.
+fn revision1(reply: &Value) -> Advertised<Advertisement> {
+    let families = reply
+        .get("capabilities")
+        .and_then(|tokens| known(tokens, Family::from_token))
+        .unwrap_or_default();
+    let limits = advertised(reply, "daemon_wire_v1", frame_limits);
+    match (families.contains(&Family::DaemonWireV1), limits) {
+        (false, Advertised::Absent) => Advertised::Absent,
+        (true, Advertised::Valid(limits)) => {
+            Advertised::Valid(Advertisement::new(families, limits))
+        }
+        _ => Advertised::Malformed,
+    }
+}
+
+fn frame_limits(value: &Value) -> Option<FrameLimits> {
+    Object::<FrameLimits>::deserialize(value)
+        .ok()
+        .map(|Object(limits)| limits)
 }
 
 #[derive(Deserialize)]

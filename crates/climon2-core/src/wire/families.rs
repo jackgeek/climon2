@@ -2,12 +2,9 @@
 use super::FrameLimit;
 use crate::{
     ContractError,
-    hello::Advertised,
-    json::Object,
     names::{name, named},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::BTreeSet;
 
 /// A revision-1 capability family. Support is advertised, never inferred
@@ -87,36 +84,6 @@ impl Advertisement {
     pub(crate) fn tokens(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.families().map(Family::token)
     }
-
-    /// Both the token and valid limits make revision 1 available. A missing
-    /// or malformed advertisement makes it unavailable, never the session
-    /// stale. Hello stays lenient: unknown tokens and members are ignored.
-    pub(crate) fn advertised(reply: &Value) -> Advertised<Self> {
-        let families = advertised_families(reply);
-        let limits = reply.get("daemon_wire_v1").map(frame_limits);
-        match (families.contains(&Family::DaemonWireV1), limits) {
-            (false, None) => Advertised::Absent,
-            (true, Some(Some(limits))) => Advertised::Valid(Self { families, limits }),
-            _ => Advertised::Malformed,
-        }
-    }
-}
-
-fn advertised_families(reply: &Value) -> BTreeSet<Family> {
-    let tokens = reply
-        .get("capabilities")
-        .and_then(|tokens| Vec::<String>::deserialize(tokens).ok());
-    tokens
-        .into_iter()
-        .flatten()
-        .filter_map(|text| Family::from_token(&text))
-        .collect()
-}
-
-fn frame_limits(value: &Value) -> Option<FrameLimits> {
-    Object::<FrameLimits>::deserialize(value)
-        .ok()
-        .map(|Object(limits)| limits)
 }
 
 /// A capability array: unique, case-sensitive tokens in the order sent.
