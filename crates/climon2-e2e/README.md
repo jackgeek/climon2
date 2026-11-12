@@ -47,8 +47,9 @@ On Linux use `climon2-0.1.0-linux-x86_64-gnu.tar.gz` instead. Archive payload
 validation requires the host platform's suffix; a Darwin archive cannot stand
 in for Linux runtime qualification. See [distribution](../../docs/distribution.md).
 
-Internal-only fault injections (including the CLI's `CLIMON2_CLI_HOLD` and the
-daemon's `pty-write` and `pty-write-partial`) and the explicitly synthetic client-invocation
+Internal-only fault injections (including the CLI's `CLIMON2_CLI_HOLD`, the
+daemon's `pty-write` and `pty-write-partial`, and the monitor's
+`CLIMON2_MONITOR_FAULT=draw` and `poll`) and the explicitly synthetic client-invocation
 fixture are debug-sibling scenarios, not applicable to an unmodified no-hooks
 archive. All black-box terminal, lifecycle, missing-client, privacy, logging and
 raw-socket cases run against the archive. A removed client is restored by
@@ -117,6 +118,33 @@ session continuity (plan section 6.1), `tests/continuity.rs`.
 | 6.1.14 wide and tall hosts present the session rectangle | `installed_wide_host_presents_the_session_rectangle`, `installed_tall_host_scrolls_the_session_rectangle` |
 | 6.1.15 `TERM`/`COLORTERM` overrides | `installed_generic_fixture_preserves_runtime_contract_and_log_privacy` (`tests/packaged.rs`) |
 | 6.1.17 previous-release compatibility | `actual_previous_release_remains_live_across_current_archive_install` (`tests/packaged.rs`) |
+
+### Monitor (#74, spec #73)
+
+`tests/monitor.rs` drives the installed `c2 monitor`/`mon` (and the `climon2`
+spellings) on macOS and Linux, from outer shells that title the host and record
+termios around it. Each case checks the documented baseline, exact termios,
+the untouched title, no OSC output and ordinary shell input afterwards. Cases
+that depend on how keystrokes or pastes are read stop the monitor (SIGSTOP):
+`wait_for_unread_input` shows when every byte sent has reached the terminal,
+then, after SIGCONT, when the monitor has read them all in one read of their
+own. The hang-up case completes its hang-up while the monitor is stopped.
+
+| Scenario | Named packaged test (`tests/monitor.rs`) |
+|---|---|
+| ENT-01 `c2 monitor`, `c2 mon`, `climon2 monitor` and `climon2 mon` open the same installed monitor through the launcher: top row, empty state, exact host modes, prefix+x exits 0 with the prefix read alone | `installed_monitor_and_mon_open_the_same_monitor` |
+| INP-01 configured prefix hint and exit 0, null take-control key accepted; once read, Ctrl+C and the default prefix+x are not exits (SIGTERM then gives 143) | `installed_monitor_hints_and_exits_with_the_configured_prefix` |
+| INP-01 null escape prefix and invalid keys refused before terminal changes | `installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys` |
+| INP-03 (empty monitor) pastes never exit, never complete a pending prefix and leave none pending | `pastes_never_exit_or_leave_a_pending_prefix` |
+| Derived scenario: monitor argument refusal, usage and 2 | `installed_monitor_arguments_are_a_usage_error` |
+| Derived scenario: monitor non-TTY stdin or stdout refusal | `installed_monitor_refuses_a_non_terminal_stdin_or_stdout` |
+| Spec #73 entry: missing monitor fails with 125 naming the version | `missing_installed_monitor_fails_naming_its_version` |
+| Spec #73 startup: no executable home outside a version folder | `a_monitor_outside_a_version_folder_refuses_to_start` |
+| EXT-03 (Monitor, empty monitor) SIGINT/SIGTERM/SIGHUP give 130/143/129 | `signals_release_the_host_with_signal_style_status` |
+| EXT-03 (Monitor, empty monitor) hung-up host input releases the host before its one diagnostic, logged, 125 | `a_hung_up_host_input_releases_the_host_before_its_diagnostic` |
+| EXT-03 (Fault, empty monitor) render failure or failed wait for host input releases the host before its one diagnostic, 125 | `debug_hook_render_failure_restores_the_host_before_its_diagnostic`, `debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic` |
+| Spec #73 host terminal; TRM-04 (empty monitor): SIGWINCH repaints exactly at the new size without erasing or showing the cursor | `resizing_the_host_redraws_the_monitor_at_the_new_size` |
+| Spec #73 exit: content-free monitor general log | `installed_monitor_logs_content_free_records_to_its_general_log` |
 
 Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
 holds a packaged client between `Granted` and `Ready`; daemon

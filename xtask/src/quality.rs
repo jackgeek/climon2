@@ -27,6 +27,7 @@ const SHIPPED: &[&str] = &[
     "crates/climon2-daemon/src",
     "crates/climon2-client/src",
     "crates/climon2-install/src",
+    "crates/climon2-monitor/src",
     "crates/climon2-vt/src",
 ];
 const TEST_COMMAND: &str = r#""$CLIMON2_MUTATION_PYTHON" tools/test-mutation.py"#;
@@ -566,7 +567,7 @@ fn prove_killed_profile(staged: &Path, profile: &str) -> io::Result<()> {
 fn install_instrumented_probe(workspace: &Path, build: &Path) -> io::Result<PathBuf> {
     let payload = workspace.join("payload");
     fs::create_dir(&payload)?;
-    for binary in ["climon2", "climon2-cli", "climon2-daemon", "climon2-client"] {
+    for binary in std::iter::once("climon2").chain(climon2_install::COMPANIONS) {
         fs::copy(build.join("debug/isolation-cli"), payload.join(binary))?;
     }
     let payload = climon2_install::Payload::from_siblings(&payload, env!("CARGO_PKG_VERSION"))?;

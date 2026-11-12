@@ -13,8 +13,10 @@ fn value<'a>(env: &'a SessionEnvironment, name: &str) -> &'a OsStr {
     &env.values.iter().find(|(key, _)| key == name).unwrap().1
 }
 
+/// #29: exec keeps its OS arguments literally, list, attach and kill parse
+/// exactly, and anything else they are given is a usage error (2).
 #[test]
-fn issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors() {
+fn issue29_exec_list_attach_and_kill_parse_exact_arguments_and_reject_usage_errors() {
     let args = ["exec", "some command", "--flag", "", "a b", "日本語", "--"];
     let CliArgs::Exec(command) = CliArgs::parse(args.map(OsString::from)).unwrap() else {
         panic!("exec")
@@ -106,6 +108,26 @@ fn attach_and_kill_accept_short_selectors_but_not_empty_or_extra_arguments() {
                 2
             );
         }
+    }
+}
+
+/// #74 (INP-01 derived refusal): `monitor` and its alias `mon` take no
+/// arguments; anything after either word is a usage error (2).
+#[test]
+fn issue74_monitor_and_mon_take_no_arguments() {
+    for monitor in ["monitor", "mon"] {
+        assert_eq!(
+            CliArgs::parse([monitor].map(OsString::from)).unwrap(),
+            CliArgs::Monitor
+        );
+    }
+    for bad in [["monitor", "extra"], ["mon", ""], ["mon", "--help"]] {
+        assert_eq!(
+            CliArgs::parse(bad.map(OsString::from))
+                .unwrap_err()
+                .exit_code(),
+            2
+        );
     }
 }
 

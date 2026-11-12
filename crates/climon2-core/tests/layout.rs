@@ -83,6 +83,40 @@ fn adr0001_version_matched_client_has_exact_frozen_invocation() {
     );
 }
 
+/// #74: the monitor finds its executable home and version folder from its own
+/// canonical path exactly as the CLI does, and the CLI names its own version's
+/// monitor with the same layout code.
+#[test]
+fn issue74_monitor_resolves_the_same_layout_as_the_cli() {
+    let root = std::env::current_dir().unwrap().join("install");
+    let monitor = root.join("2.0.0/climon2-monitor");
+    let layout = ExecutableLayout::from_binary_path(&monitor, VersionBinary::Monitor).unwrap();
+    assert_eq!(layout.root(), root);
+    assert_eq!(layout.version().as_str(), "2.0.0");
+    let cli = ExecutableLayout::from_cli_path(&root.join("2.0.0/climon2-cli")).unwrap();
+    assert_eq!(cli.binary(cli.version(), VersionBinary::Monitor), monitor);
+    for bad in [
+        "2.0.0/climon2-cli",
+        "2.0.0/climon2-monitor.app",
+        "debug/climon2-monitor",
+        "2.0.0/../climon2-monitor",
+    ] {
+        assert!(
+            ExecutableLayout::from_binary_path(&root.join(bad), VersionBinary::Monitor).is_err(),
+            "{bad}"
+        );
+    }
+    let windows = ExecutableLayout::from_binary_path(
+        &root.join("1.2.3/climon2-monitor.exe"),
+        VersionBinary::Monitor,
+    )
+    .unwrap();
+    assert_eq!(
+        windows.binary(windows.version(), VersionBinary::Cli),
+        root.join("1.2.3/climon2-cli.exe")
+    );
+}
+
 #[test]
 fn issue18_runtime_hash_is_sha256_of_exact_canonical_home_and_socket_is_bounded() {
     assert_eq!(home_hash8(b"/home/example/.climon2"), "64c3a98c");

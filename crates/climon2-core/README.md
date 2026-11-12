@@ -116,12 +116,14 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   `<user-home>/.climon2`. Explicit empty/relative overrides fail.
   `root`, `sessions`, `metadata`, `session_logs`, `general_logs` return paths.
 - `layout::ExecutableLayout::from_cli_path`: accepts a caller-canonicalized
-  absolute CLI path with a validated SemVer parent. `root`, `version`, `binary`
+  absolute CLI path with a validated SemVer parent; `from_binary_path` does the
+  same for any `VersionBinary`, so the monitor resolves its executable home
+  exactly as the CLI does. `root`, `version`, `binary`
   and `client_invocation` locate version-matched companions. The latter returns
   `Invocation { program, args }`, exactly `attach --metadata <absolute-path>`;
   other client configuration belongs in environment. `.exe` naming is inferred
   from the explicit input, never from a target cfg.
-  `VersionBinary` enumerates CLI/daemon/client; `parse_current` validates the
+  `VersionBinary` enumerates CLI/daemon/client/monitor; `parse_current` validates the
   current file, permitting one LF or CRLF terminator, not arbitrary trimming.
 - `layout::home_hash8` hashes exact canonical-home encoded bytes, not lossy
   text. `RuntimeLayout::{new,directory,socket_path}` supplies naming and a
@@ -131,7 +133,8 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   `CommandArgs { command: OsString, args: Vec<OsString> }`, including empty
   trailing arguments and option-looking tokens. Optional `--` separates exec
   from a command. Attach and kill take exactly one `selector::Selector`. List
-  permits only `--json`; top-level help/version take no arguments.
+  permits only `--json`; `monitor`, its alias `mon` and top-level help/version
+  take no arguments.
   `UsageError::exit_code` returns 2; `cli::USAGE` is the usage line.
 - `selector::Selector`: 1 to 32 hex digits after removing hyphens and folding
   case; anything else is a `UsageError`. `select` picks exactly one candidate by
@@ -176,7 +179,9 @@ Integration tests call only these public boundaries:
 | ADR 0005 GUID/SemVer/time validation | `adr0005_guid_and_version_are_validated_without_normalizing_untrusted_paths`, `adr0005_created_at_requires_real_utc_calendar_time_with_exact_milliseconds` |
 | ADR 0005 / #26 frozen fields, future999 and one-way display | `adr0005_append_only_goldens_include_future999_and_unknown_fields`, `adr0005_frozen_fields_reject_missing_wrong_types_invalid_values_and_filename_mismatch`, `adr0005_metadata_requires_a_json_object_not_a_positional_array`, `adr0005_metadata_paths_are_absolute_cross_os_display_strings_not_native_paths`, `adr0005_display_is_lossy_only_and_never_used_as_runtime_argv` |
 | #17/#18/#28 home, layout, hash and frozen invocation | `issue17_home_defaults_only_when_unset_and_never_accepts_empty_or_relative`, `adr0001_version_matched_client_has_exact_frozen_invocation`, `issue18_runtime_hash_is_sha256_of_exact_canonical_home_and_socket_is_bounded` |
-| #29 recovered argv/environment/depth/ordinal rules | `issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors`, `issue29_help_and_version_flags_take_no_arguments`, `issue29_top_level_ignores_stray_depth_and_sets_session_vars_and_terminal_identity`, `projected_environment_replaces_term_and_colorterm_and_drops_startup_envelope`, `issue29_nested_depth_defaults_malformed_enclosing_to_one_and_replaces_empty_term`, `issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow` |
+| #74 monitor executable home and the CLI's own-version monitor | `issue74_monitor_resolves_the_same_layout_as_the_cli` |
+| #74 `monitor`/`mon` take no arguments (INP-01 derived refusal) | `issue74_monitor_and_mon_take_no_arguments` |
+| #29 recovered argv/environment/depth/ordinal rules | `issue29_exec_list_attach_and_kill_parse_exact_arguments_and_reject_usage_errors`, `issue29_help_and_version_flags_take_no_arguments`, `issue29_top_level_ignores_stray_depth_and_sets_session_vars_and_terminal_identity`, `projected_environment_replaces_term_and_colorterm_and_drops_startup_envelope`, `issue29_nested_depth_defaults_malformed_enclosing_to_one_and_replaces_empty_term`, `issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow` |
 | Continuity messages and connection choice | `continuity_messages_have_exact_wire_codes_and_json`, `continuity_bodies_are_typed_objects_and_each_code_has_one_direction`, `a_connection_chooses_attach_or_kill_once_and_attachment_requests_need_attach` |
 | #17 / #20 exit mapping | `issue17_failures_remain_distinct_from_command_status_and_signal_mapping` |
 | DOC-01 (Contract case for the part-1 daemon wire pages and the hello reply): every published example decodes to its documented values and re-encodes byte-identically | `published_request_examples_round_trip_byte_identically`, `published_response_and_fatal_error_examples_round_trip_byte_identically`, `published_core_metadata_examples_round_trip_byte_identically`, `published_hello_advertisement_examples_round_trip_byte_identically` |

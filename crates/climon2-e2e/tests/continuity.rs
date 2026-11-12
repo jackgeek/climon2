@@ -14,7 +14,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use support::{Package, TIMEOUT, quote};
+use support::{Package, TIMEOUT, assert_released, outer, quote};
 
 const DETACH: &[u8] = b"\x1dd";
 const TAKE_CONTROL: &[u8] = b"\x14";
@@ -811,57 +811,6 @@ stty raw -echo
 dd bs=1 count=1 >/dev/null 2>&1 || exec sleep 1000
 "#;
 
-/// An outer non-interactive shell that records termios around `climon2
-/// <args>`, then reports the status and echoes one ordinary input line.
-fn released(package: &Package, bash: &Path, args: &str) -> Terminal {
-    let mut command = package.command(bash);
-    command.args(["--noprofile", "--norc", "-c"]);
-    command.arg(format!(
-        "stty -g > ~/before; climon2 {args}; s=$?; stty -g > ~/after; \
-         printf 'OUTER-DONE=%s\\n' $s; IFS= read -r line; echo TYPED=$line"
-    ));
-    Terminal::spawn(command, ROWS, COLS).unwrap()
-}
-
-/// After the client returned `status`: the documented baseline, exact
-/// termios and ordinary shell input.
-fn assert_released(package: &Package, terminal: &mut Terminal, status: i32) {
-    terminal
-        .wait_for_text(&format!("OUTER-DONE={status}"), TIMEOUT)
-        .unwrap();
-    assert_eq!(terminal.modes(), Modes::BASELINE, "{}", terminal.screen());
-    let home = package.isolation.home();
-    assert_eq!(
-        termios(&home.join("after")),
-        termios(&home.join("before")),
-        "termios restored"
-    );
-    terminal.send("plain words\n").unwrap();
-    terminal
-        .wait_for_text("TYPED=plain words", TIMEOUT)
-        .unwrap();
-    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
-}
-
-/// `stty -g` settings without macOS's transient `PENDIN`, which the kernel
-/// sets whenever a terminal returns to canonical mode.
-fn termios(path: &Path) -> String {
-    const PENDIN: u64 = 0x2000_0000;
-    fs::read_to_string(path)
-        .unwrap()
-        .trim_end()
-        .split(':')
-        .map(|field| match field.strip_prefix("lflag=") {
-            Some(flags) => {
-                let flags = u64::from_str_radix(flags, 16).unwrap() & !PENDIN;
-                format!("lflag={flags:x}")
-            }
-            None => field.to_owned(),
-        })
-        .collect::<Vec<_>>()
-        .join(":")
-}
-
 fn kill_session(package: &Package, id: &str) {
     let mut kill = climon2(package, &["kill", id], ROWS, COLS);
     assert_eq!(kill.wait_exit(TIMEOUT).unwrap(), 0);
@@ -877,14 +826,14 @@ fn installed_client_releases_the_host_on_every_ending() {
     };
     let package = Package::new();
     let tui = script(&package, &bash, "tui.sh", TUI);
-    let exec = format!("exec {}", quote(&tui));
+    let exec = format!("climon2 exec {}", quote(&tui));
     let ready = |terminal: &mut Terminal| {
         terminal.wait_for_text("TUI-READY", TIMEOUT).unwrap();
         terminal.wait_for_input_ready(TIMEOUT).unwrap();
         assert!(terminal.modes().alternate_screen && terminal.modes().mouse);
     };
 
-    let mut detached = released(&package, &bash, &exec);
+    let mut detached = outer(&package, &bash, &exec, ROWS, COLS);
     ready(&mut detached);
     let id = session_id(&package);
     detached.send(DETACH).unwrap();
@@ -892,20 +841,20 @@ fn installed_client_releases_the_host_on_every_ending() {
     drop(detached);
     kill_session(&package, &id);
 
-    let mut natural = released(&package, &bash, &exec);
+    let mut natural = outer(&package, &bash, &exec, ROWS, COLS);
     ready(&mut natural);
     natural.send("q").unwrap();
     assert_released(&package, &mut natural, 0);
     drop(natural);
 
-    let mut killed = released(&package, &bash, &exec);
+    let mut killed = outer(&package, &bash, &exec, ROWS, COLS);
     ready(&mut killed);
     let id = session_id(&package);
     kill_session(&package, &id);
     assert_released(&package, &mut killed, 129);
     drop(killed);
 
-    let mut observer = released(&package, &bash, &exec);
+    let mut observer = outer(&package, &bash, &exec, ROWS, COLS);
     ready(&mut observer);
     let id = session_id(&package);
     let mut controller = climon2(&package, &["attach", &id], ROWS, COLS);

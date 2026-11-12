@@ -3,7 +3,8 @@
 **Status: developer-confirmed specification for
 [Define automated monitor acceptance criteria](https://github.com/jackgeek/climon2/issues/62),
 not implementation or executed acceptance evidence.** The
-[monitor](../GLOSSARY.md#sessions), packaged
+[monitor](../GLOSSARY.md#sessions) exists only as the empty walking skeleton of
+[#74](https://github.com/jackgeek/climon2/issues/74); packaged
 [client libraries](../GLOSSARY.md#sessions), new daemon wire and headless
 creation remain unimplemented. Resolving this specification does not pass a
 [release gate](../GLOSSARY.md#testing).

@@ -3,7 +3,7 @@ mod support;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
-use support::{Workspace, script};
+use support::{COMPANIONS, Workspace, script};
 
 /// Linux must replace a same-version executable without modifying its open inode.
 #[cfg(target_os = "linux")]
@@ -44,7 +44,8 @@ impl IsolatedCommand for Command {
     }
 }
 
-/// #21 / #24 / #33: the public library builds runnable layouts from release payloads.
+/// #21 / #24 / #33 / #74: the public library builds runnable layouts from release
+/// payloads, publishing every companion, including the monitor, in the version folder.
 #[test]
 fn fresh_install_publishes_complete_version_launcher_and_current() {
     let workspace = Workspace::new();
@@ -54,7 +55,7 @@ fn fresh_install_publishes_complete_version_launcher_and_current() {
     let report = climon2_install::install(&payload, &destination).unwrap();
     assert_eq!(report.executable_home, destination.canonicalize().unwrap());
     assert_eq!(fs::read(destination.join("current")).unwrap(), b"1.2.3\n");
-    for binary in ["climon2-cli", "climon2-daemon", "climon2-client"] {
+    for binary in COMPANIONS {
         let output = Command::new(destination.join("1.2.3").join(binary))
             .output()
             .unwrap();
@@ -419,7 +420,7 @@ fn interruption_cleans_only_own_staging_and_rerun_recovers() {
             if ["copy-cli", "version-staged"].contains(&boundary) {
                 assert!(!version.exists());
             } else {
-                assert_eq!(fs::read_dir(&version).unwrap().count(), 3);
+                assert_eq!(fs::read_dir(&version).unwrap().count(), COMPANIONS.len());
                 assert_eq!(
                     Command::new(version.join("climon2-cli"))
                         .status()
@@ -472,7 +473,7 @@ fn interruption_cleans_only_own_staging_and_rerun_recovers() {
 fn sibling_payload_runs_real_installed_launcher_with_literal_arguments() {
     let workspace = Workspace::new();
     let source = workspace.payload("payload", "3.2.1", 0);
-    for binary in ["climon2-cli", "climon2-daemon", "climon2-client"] {
+    for binary in COMPANIONS {
         fs::copy(source.join("3.2.1").join(binary), source.join(binary)).unwrap();
     }
     let launcher = std::env::current_exe()
@@ -543,7 +544,10 @@ fn publication_failures_do_not_advance_current_and_keep_unrelated_files() {
             b"untouched"
         );
         assert!(!destination.join(".climon2-install-stage").exists());
-        assert_eq!(fs::read_dir(destination.join("1.2.3")).unwrap().count(), 3);
+        assert_eq!(
+            fs::read_dir(destination.join("1.2.3")).unwrap().count(),
+            COMPANIONS.len()
+        );
         if blocked == "climon2" {
             assert_eq!(fs::read(destination.join("current")).unwrap(), b"0.0.1\n");
         }

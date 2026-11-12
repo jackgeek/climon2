@@ -26,8 +26,8 @@ signatures), and rejects hook markers. Outputs go to `target/dist`:
 - `SHA256SUMS`, covering both files.
 
 Each archive contains the installer `install`, launcher `climon2`, license,
-README and `<version>/{climon2-cli,climon2-daemon,climon2-client}`. There are no
-test fixtures or Cargo dependencies inside the archive.
+README and `<version>/{climon2-cli,climon2-daemon,climon2-client,climon2-monitor}`.
+There are no test fixtures or Cargo dependencies inside the archive.
 
 ## Installation
 
