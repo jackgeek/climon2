@@ -1,8 +1,10 @@
 //! Command final and standalone Kill (#88): how the end of a session reaches
 //! revision-1 connections, beside the private protocol's results.
 use super::{
-    assert_closed, assert_final_then_closed, assert_rejected, counter, exited,
-    interactive::ready_attachment, kill, message, monitor, open, peer, request, signalled,
+    assert_closed, assert_final_then_closed, assert_rejected, command_final, counter, exited,
+    frame,
+    interactive::{Attached, geometry, ready_attachment},
+    kill, message, monitor, open, peer, request, signalled,
 };
 use crate::Session;
 use climon2_core::{
@@ -15,7 +17,9 @@ use climon2_core::{
 };
 use climon2_platform::process;
 use std::{
-    fs, thread,
+    fs,
+    os::unix::net::UnixStream,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -30,6 +34,21 @@ fn terminated(request_id: u64, result: &CommandResult) -> ServerMessage {
         request_id: counter(request_id),
         outcome: Outcome::Ok(termination),
     })
+}
+
+/// The next record rejects first-role request 1 with `code`, carrying the
+/// command's known result, and the stream then ends.
+fn assert_refused_knowing(stream: &mut UnixStream, code: &str, result: &CommandResult) {
+    let rejection = match message(stream) {
+        ServerMessage::Response(Response {
+            request_id,
+            outcome: Outcome::Rejected(rejection),
+        }) if request_id == counter(1) => rejection,
+        other => panic!("expected the rejection of request 1, got {other:?}"),
+    };
+    assert_eq!(rejection.error.code.as_str(), code);
+    assert_eq!(rejection.known_final.as_ref(), Some(result));
+    assert_closed(stream);
 }
 
 /// The command fixture's process ID, which it records as it starts.
@@ -156,5 +175,69 @@ fn a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_j
     );
     assert_final_then_closed(&mut watching, &killed);
     attached.ended(&killed);
+    session.finish();
+}
+
+/// COM-06 (Contract, known-final result) and COM-05 (Contract, Initial
+/// metadata case): once the daemon knows the command's result, a later
+/// Open's Initial metadata carries it and no Command final follows, and a
+/// rejected first role carries it as `known_final`. Here the command exits
+/// while its only controller withholds Ready, so the session lives on.
+/// During the grace of a Kill that follows, an interactive Open is
+/// `session_terminating` and a Kill requiring an unknown family
+/// `unsupported_capability`, each with the result. The Kill then confirms
+/// the same result, and no connection gets a second Command final.
+#[test]
+fn a_known_result_reaches_later_opens_and_rejected_first_roles() {
+    let mut session = Session::start("script");
+    let mut attached = Attached::open(&session, geometry(91, 37), &[], geometry(91, 37));
+    let (mut early, _) = monitor(&session, &[]);
+    crate::issue(&session, "exit 7");
+    let result = exited(7);
+    assert_eq!(message(&mut early), command_final(&result));
+
+    let mut late = peer(&session);
+    request(&mut late, &open(1, &[], &[], Mode::Monitor));
+    assert!(matches!(
+        message(&mut late),
+        ServerMessage::Response(Response {
+            outcome: Outcome::Ok(Success::Opened { .. }),
+            ..
+        })
+    ));
+    let metadata = frame(&mut late);
+    assert_eq!(metadata.code(), 0x41);
+    assert_eq!(
+        std::str::from_utf8(metadata.body()).unwrap(),
+        concat!(
+            r#"{"title":{"available":false,"value":null},"#,
+            r#""status":{"available":false,"value":null},"#,
+            r#""progress":{"available":false,"value":null},"#,
+            r#""command_result":{"kind":"exit","code":7}}"#
+        )
+    );
+    let mut later_revision = open(1, &[], &[], Mode::Monitor);
+    later_revision.revision = 2;
+    let mut refused = peer(&session);
+    request(&mut refused, &later_revision);
+    assert_refused_knowing(&mut refused, "unsupported_revision", &result);
+
+    let mut killer = peer(&session);
+    request(&mut killer, &kill(1, 1, &[]));
+    terminating(&session);
+    let mut refused = peer(&session);
+    request(
+        &mut refused,
+        &open(1, &[], &[], Mode::Interactive(geometry(91, 37))),
+    );
+    assert_refused_knowing(&mut refused, "session_terminating", &result);
+    let mut refused = peer(&session);
+    request(&mut refused, &kill(1, 1, &["future-v9"]));
+    assert_refused_knowing(&mut refused, "unsupported_capability", &result);
+    assert_eq!(message(&mut killer), terminated(1, &result));
+    assert_closed(&mut killer);
+    assert_closed(&mut early);
+    assert_closed(&mut late);
+    attached.ended(&result);
     session.finish();
 }

@@ -61,6 +61,8 @@ struct Session<'a, C> {
     /// Revision-1 connections after their first role: passive monitor
     /// connections, interactive attachments and standalone Kills.
     opened: BTreeMap<u64, wire::Opened>,
+    /// The command's result, once the daemon knows it.
+    command_result: Option<CommandResult>,
     control: Control,
     vt: Vt,
     next_id: u64,
@@ -93,6 +95,7 @@ pub(crate) fn serve(
         connections: BTreeMap::new(),
         deliveries: BTreeMap::new(),
         opened: BTreeMap::new(),
+        command_result: None,
         control: Control::new(options.size),
         vt,
         next_id: Default::default(),

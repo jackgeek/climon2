@@ -18,7 +18,7 @@ use climon2_core::{
 };
 use std::{fs, io::Write, num::NonZeroU32, os::unix::net::UnixStream, time::Duration};
 
-fn geometry(cols: u32, rows: u32) -> Geometry {
+pub(super) fn geometry(cols: u32, rows: u32) -> Geometry {
     Geometry {
         cols: NonZeroU32::new(cols).unwrap(),
         rows: NonZeroU32::new(rows).unwrap(),
@@ -45,7 +45,12 @@ impl Attached {
     /// `optional`, and checks every record of the documented order: the
     /// Response, Initial metadata, Control granted (`attach`) at the session
     /// geometry `granted`, then the restoration.
-    fn open(session: &Session, host: Geometry, optional: &[&str], granted: Geometry) -> Self {
+    pub(super) fn open(
+        session: &Session,
+        host: Geometry,
+        optional: &[&str],
+        granted: Geometry,
+    ) -> Self {
         let mut stream = peer(session);
         request(
             &mut stream,

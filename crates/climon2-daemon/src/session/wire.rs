@@ -219,7 +219,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     pub(super) fn refused(&mut self, id: u64) {
         if let Some(request_id) = self.open_request(id) {
             let error = error(OperationalCode::SessionTerminating, TERMINATING);
-            self.reject_with(id, request_id, error);
+            self.refuse_role(id, request_id, error);
         }
     }
 
@@ -246,7 +246,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             selected_capabilities: tokens(&opened.selected),
         };
         self.respond(id, request_id, Outcome::Ok(success));
-        self.send_wire(id, &initial_metadata(title).to_frame());
+        let metadata = initial_metadata(title, self.command_result.clone());
+        self.send_wire(id, &metadata.to_frame());
     }
 
     /// Leave removes the role in one step and reports whether an attachment
@@ -610,10 +611,15 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.end_stream(id);
     }
 
-    /// The command's result, once the daemon knows it: every opened
+    /// The command's result, once the daemon first knows it: every opened
     /// connection receives it as Command final, a standalone Kill's in its
-    /// answer instead.
+    /// answer instead, and later Opens in their Initial metadata. Knowing it
+    /// again publishes nothing.
     pub(super) fn publish(&mut self, result: &CommandResult) {
+        if self.command_result.is_some() {
+            return;
+        }
+        self.command_result = Some(result.clone());
         let frame = CommandFinal::new(result.clone(), None)
             .expect("no status disagrees with a result")
             .to_frame();
@@ -663,8 +669,18 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// A rejected first role has no effects and ends its stream.
     fn reject_role(&mut self, id: u64, request_id: Counter, error: Error) {
-        self.reject_with(id, request_id, error);
+        self.refuse_role(id, request_id, error);
         self.end_stream(id);
+    }
+
+    /// A first role's rejection carries the command's result once the
+    /// daemon knows it.
+    fn refuse_role(&mut self, id: u64, request_id: Counter, error: Error) {
+        let rejection = Rejection {
+            error,
+            known_final: self.command_result.clone(),
+        };
+        self.respond(id, request_id, Outcome::Rejected(rejection));
     }
 
     fn answer(&mut self, id: u64, request_id: Counter, result: Result<Success, OperationalCode>) {
@@ -824,10 +840,14 @@ fn tokens(selected: &BTreeSet<Family>) -> Families {
 }
 
 /// The title by value when `title-v1` is selected (an available `None` is
-/// unset), with status and progress explicitly unavailable. No command result
-/// is reported: the exit-or-signal result it needs arrives with #88.
-fn initial_metadata(title: Available<Option<String>>) -> InitialMetadata {
-    InitialMetadata::new(title, Available::Unavailable, Available::Unavailable, None)
+/// unset), with status and progress explicitly unavailable, and the
+/// command's result once known.
+fn initial_metadata(
+    title: Available<Option<String>>,
+    command_result: Option<CommandResult>,
+) -> InitialMetadata {
+    let unavailable = Available::Unavailable;
+    InitialMetadata::new(title, unavailable, Available::Unavailable, command_result)
         .expect("unavailable status agrees with any command result")
 }
 
