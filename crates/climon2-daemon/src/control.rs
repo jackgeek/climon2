@@ -4,8 +4,9 @@
 //! recency order, the control period, the restoration and readiness, the
 //! controller's desired application focus, each attachment's latest host
 //! size, the applied session geometry, the end of input admission and the
-//! shutdown sequence. It performs no I/O: each method takes one event and
-//! returns the effects the daemon loop must perform, in order.
+//! shutdown sequence, and it authorizes requests against them. It performs
+//! no I/O: each method takes one event and returns the effects the daemon
+//! loop must perform, in order.
 //!
 //! Call protocol for one loop iteration:
 //!
@@ -24,9 +25,12 @@
 mod attachments;
 mod shutdown;
 
-pub use attachments::Phase;
-use attachments::{Attachment, Attachments, Departure};
-use climon2_core::{protocol::TerminalSize, wire::GrantReason};
+pub use attachments::Needs;
+use attachments::{Attachment, Attachments, Departure, Phase};
+use climon2_core::{
+    protocol::TerminalSize,
+    wire::{GrantReason, OperationalCode},
+};
 use shutdown::{Members, Shutdown};
 
 /// Identifies one daemon connection: an attachment, a probe or a kill requester.
@@ -50,17 +54,48 @@ pub struct Authority {
     pub restoration: Restoration,
 }
 
-/// Where a connection stands in control, for a request that needs it.
+/// The controller's current authority and how far its restoration is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Standing {
-    /// Not an attachment of this session.
-    Absent,
-    /// An attachment of a terminating session, which takes on no new work.
-    Ending,
-    /// A non-controlling attachment.
-    Other,
-    /// The controller, under `authority`, with its restoration in `phase`.
-    Controller { authority: Authority, phase: Phase },
+struct Controlling {
+    authority: Authority,
+    phase: Phase,
+}
+
+impl Controlling {
+    /// A request's authority must be current: an earlier period is stale, as
+    /// is a superseded restoration of the current period. Then the
+    /// restoration must be far enough along for what the request needs.
+    fn authorize(self, requested: Authority, needs: Needs) -> Result<Authorized, OperationalCode> {
+        if requested.period != self.authority.period {
+            return Err(OperationalCode::StalePeriod);
+        }
+        if requested.restoration != self.authority.restoration {
+            return Err(OperationalCode::StaleRestoration);
+        }
+        if !needs.met(self.phase) {
+            return Err(OperationalCode::NotReady);
+        }
+        Ok(Authorized {
+            authority: self.authority,
+            ready: self.phase == Phase::Ready,
+        })
+    }
+}
+
+/// The control a request has: the controller's current authority, and
+/// whether it already confirmed readiness for that restoration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Authorized {
+    pub authority: Authority,
+    pub ready: bool,
+}
+
+/// An accepted Acquire: whether control changed hands, and the authority
+/// the requester holds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Acquisition {
+    pub changed: bool,
+    pub authority: Authority,
 }
 
 /// Work the daemon loop performs for the state machine, in the order given.
@@ -339,12 +374,27 @@ impl Control {
         }
     }
 
-    pub fn standing(&self, conn: ConnectionId) -> Standing {
+    /// The control `conn` holds, or why it holds none: membership,
+    /// termination and control come first.
+    fn controlling(&self, conn: ConnectionId) -> Result<Controlling, OperationalCode> {
         match &self.stage {
-            Stage::Open(Open::Attached(attachments)) => attachments.standing(conn),
-            Stage::Open(_) => Standing::Absent,
-            Stage::Terminating(shutdown) => shutdown.standing(conn),
+            Stage::Open(Open::Attached(attachments)) => attachments.controlling(conn),
+            Stage::Open(_) => Err(OperationalCode::NotAttached),
+            Stage::Terminating(shutdown) => Err(shutdown.refusal(conn)),
         }
+    }
+
+    /// The control a request from `conn` under `requested` authority has,
+    /// or why it has none: `not_attached`, `session_terminating`,
+    /// `not_controller`, `stale_period`, `stale_restoration`, then
+    /// `not_ready` when the current restoration does not meet `needs`.
+    pub fn authorize(
+        &self,
+        conn: ConnectionId,
+        requested: Authority,
+        needs: Needs,
+    ) -> Result<Authorized, OperationalCode> {
+        self.controlling(conn)?.authorize(requested, needs)
     }
 
     /// An accepted attach request, granted at once. Each connection attaches
@@ -361,13 +411,25 @@ impl Control {
         }
     }
 
-    /// A non-controlling attachment takes control at once; anyone else
-    /// changes nothing.
-    pub fn take_control(&mut self, conn: ConnectionId) -> Vec<Effect> {
+    /// Acquire: a non-controlling attachment takes control at once, and the
+    /// controller's own changes nothing. Its outcome, then its effects.
+    pub fn acquire(
+        &mut self,
+        conn: ConnectionId,
+    ) -> (Result<Acquisition, OperationalCode>, Vec<Effect>) {
         let issued = &mut self.issued;
-        attached(&mut self.stage)
-            .map(|attachments| attachments.take_control(conn, issued))
-            .unwrap_or_default()
+        let taken = attached(&mut self.stage)
+            .and_then(|attachments| attachments.take_control(conn, issued));
+        let acquisition = self.controlling(conn).map(|controlling| Acquisition {
+            changed: taken.is_some(),
+            authority: controlling.authority,
+        });
+        (acquisition, taken.unwrap_or_default())
+    }
+
+    /// The private protocol's take-control: an Acquire's effects.
+    pub fn take_control(&mut self, conn: ConnectionId) -> Vec<Effect> {
+        self.acquire(conn).1
     }
 
     /// Every byte of the restoration of `authority` was sent to `conn`.
@@ -553,11 +615,15 @@ mod tests {
         }
     }
 
-    fn controlling(period: u64, restoration: u64, phase: Phase) -> Standing {
-        Standing::Controller {
+    fn controlling(
+        period: u64,
+        restoration: u64,
+        phase: Phase,
+    ) -> Result<Controlling, OperationalCode> {
+        Ok(Controlling {
             authority: authority(period, restoration),
             phase,
-        }
+        })
     }
 
     const RESTORING: Phase = Phase::Restoring { complete: false };
@@ -595,7 +661,7 @@ mod tests {
         let control = Control::new(size(100, 30));
         assert_eq!(control.snapshot(), state(Starting, 0, false));
         assert_eq!(control.session_size(), size(100, 30));
-        assert_eq!(control.standing(A), Standing::Absent);
+        assert_eq!(control.controlling(A), Err(OperationalCode::NotAttached));
     }
 
     #[test]
@@ -618,7 +684,7 @@ mod tests {
             [Admit { conn: A }, grant(A, (1, 1), host(), Attach)]
         );
         assert_eq!(control.snapshot(), state(Attached, 1, true));
-        assert_eq!(control.standing(A), controlling(1, 1, RESTORING));
+        assert_eq!(control.controlling(A), controlling(1, 1, RESTORING));
         assert_eq!(control.apply_pending(), NONE);
     }
 
@@ -654,7 +720,7 @@ mod tests {
         let authority = granted(control.attach(A, host()));
         assert_eq!(control.ready(A, authority.restoration), NONE);
         control.restored(A, authority);
-        assert_eq!(control.standing(A), controlling(1, 1, RESTORED));
+        assert_eq!(control.controlling(A), controlling(1, 1, RESTORED));
         assert!(!control.admits_input(A));
         assert_eq!(control.ready(A, Restoration(2)), NONE);
         assert_eq!(control.ready(B, authority.restoration), NONE);
@@ -665,7 +731,7 @@ mod tests {
         assert!(control.admits_input(A));
         assert!(!control.admits_input(B));
         assert_eq!(control.ready(A, authority.restoration), NONE);
-        assert_eq!(control.standing(A), controlling(1, 1, Phase::Ready));
+        assert_eq!(control.controlling(A), controlling(1, 1, Phase::Ready));
     }
 
     #[test]
@@ -675,9 +741,9 @@ mod tests {
         control.restored(B, current);
         control.restored(A, authority(1, 2));
         control.restored(A, authority(2, 1));
-        assert_eq!(control.standing(A), controlling(1, 1, RESTORING));
+        assert_eq!(control.controlling(A), controlling(1, 1, RESTORING));
         control.restored(A, current);
-        assert_eq!(control.standing(A), controlling(1, 1, RESTORED));
+        assert_eq!(control.controlling(A), controlling(1, 1, RESTORED));
     }
 
     #[test]
@@ -693,15 +759,15 @@ mod tests {
     }
 
     #[test]
-    fn standing_tells_absent_other_and_controlling_attachments_apart() {
+    fn control_tells_absent_other_and_controlling_attachments_apart() {
         let mut control = session(&[A, B]);
-        assert_eq!(control.standing(A), Standing::Other);
-        assert_eq!(control.standing(B), controlling(2, 2, Phase::Ready));
-        assert_eq!(control.standing(C), Standing::Absent);
+        assert_eq!(control.controlling(A), Err(OperationalCode::NotController));
+        assert_eq!(control.controlling(B), controlling(2, 2, Phase::Ready));
+        assert_eq!(control.controlling(C), Err(OperationalCode::NotAttached));
         control.detach(A);
         control.detach(B);
-        assert_eq!(control.standing(A), Standing::Absent);
-        assert_eq!(control.standing(B), Standing::Absent);
+        assert_eq!(control.controlling(A), Err(OperationalCode::NotAttached));
+        assert_eq!(control.controlling(B), Err(OperationalCode::NotAttached));
     }
 
     #[test]
@@ -720,7 +786,7 @@ mod tests {
         );
         assert!(!control.admits_input(A));
         assert_eq!(control.snapshot(), state(Attached, 2, true));
-        assert_eq!(control.standing(A), Standing::Other);
+        assert_eq!(control.controlling(A), Err(OperationalCode::NotController));
         assert_eq!(control.apply_pending(), NONE);
     }
 
@@ -757,7 +823,7 @@ mod tests {
             ]
         );
         assert_eq!(control.apply_pending(), NONE);
-        assert_eq!(control.standing(B), controlling(2, 2, RESTORING));
+        assert_eq!(control.controlling(B), controlling(2, 2, RESTORING));
     }
 
     #[test]
@@ -785,7 +851,7 @@ mod tests {
         assert_eq!(control.take_control(A), NONE);
         assert_eq!(control.apply_pending(), NONE);
         assert!(control.admits_input(A));
-        assert_eq!(control.standing(A), controlling(1, 1, Phase::Ready));
+        assert_eq!(control.controlling(A), controlling(1, 1, Phase::Ready));
     }
 
     #[test]
@@ -795,6 +861,120 @@ mod tests {
         assert_eq!(control.take_control(C), NONE);
         assert_eq!(control.apply_pending(), NONE);
         assert_eq!(control.snapshot(), state(Attached, 1, true));
+    }
+
+    fn authorized(
+        period: u64,
+        restoration: u64,
+        ready: bool,
+    ) -> Result<Authorized, OperationalCode> {
+        Ok(Authorized {
+            authority: authority(period, restoration),
+            ready,
+        })
+    }
+
+    #[test]
+    fn authorize_checks_membership_control_period_restoration_then_needs() {
+        let mut control = session(&[A, B]);
+        let current = authority(2, 2);
+        let refused = |code| Err::<Authorized, _>(code);
+        assert_eq!(
+            control.authorize(C, current, Needs::Control),
+            refused(OperationalCode::NotAttached)
+        );
+        assert_eq!(
+            control.authorize(A, current, Needs::Control),
+            refused(OperationalCode::NotController)
+        );
+        for stale in [authority(1, 1), authority(1, 2)] {
+            assert_eq!(
+                control.authorize(B, stale, Needs::Control),
+                refused(OperationalCode::StalePeriod)
+            );
+        }
+        assert_eq!(
+            control.authorize(B, authority(2, 1), Needs::Control),
+            refused(OperationalCode::StaleRestoration)
+        );
+        assert_eq!(
+            control.authorize(B, current, Needs::Readiness),
+            authorized(2, 2, true)
+        );
+
+        let restoring = granted(control.attach(C, host()));
+        assert_eq!(
+            control.authorize(C, restoring, Needs::Control),
+            authorized(3, 3, false)
+        );
+        for needs in [Needs::Restored, Needs::Readiness] {
+            assert_eq!(
+                control.authorize(C, restoring, needs),
+                refused(OperationalCode::NotReady)
+            );
+        }
+        control.restored(C, restoring);
+        assert_eq!(
+            control.authorize(C, restoring, Needs::Restored),
+            authorized(3, 3, false)
+        );
+        assert_eq!(
+            control.authorize(C, restoring, Needs::Readiness),
+            refused(OperationalCode::NotReady)
+        );
+        assert_eq!(
+            control.ready(C, restoring.restoration),
+            [EnableInput { conn: C }]
+        );
+        assert_eq!(
+            control.authorize(C, restoring, Needs::Restored),
+            authorized(3, 3, true)
+        );
+
+        control.kill(K);
+        assert_eq!(
+            control.authorize(C, restoring, Needs::Control),
+            refused(OperationalCode::SessionTerminating)
+        );
+        assert_eq!(
+            control.authorize(K, restoring, Needs::Control),
+            refused(OperationalCode::NotAttached)
+        );
+    }
+
+    #[test]
+    fn acquire_takes_control_or_keeps_it_and_says_whether_it_changed_hands() {
+        let mut control = session(&[A, B]);
+        let (acquired, effects) = control.acquire(A);
+        let changed = Acquisition {
+            changed: true,
+            authority: authority(3, 3),
+        };
+        assert_eq!(acquired, Ok(changed));
+        assert_eq!(
+            effects,
+            [
+                DiscardPendingInput { conn: B },
+                ClosePaste,
+                Release { conn: B },
+                Revoke { conn: B },
+                grant(A, (3, 3), host(), Acquire)
+            ]
+        );
+        let kept = Acquisition {
+            changed: false,
+            authority: authority(3, 3),
+        };
+        assert_eq!(control.acquire(A), (Ok(kept), Vec::new()));
+        assert_eq!(
+            control.acquire(C),
+            (Err(OperationalCode::NotAttached), Vec::new())
+        );
+        control.kill(K);
+        assert_eq!(
+            control.acquire(B),
+            (Err(OperationalCode::SessionTerminating), Vec::new())
+        );
     }
 
     #[test]
@@ -934,9 +1114,15 @@ mod tests {
     fn leaving_a_terminating_session_releases_a_presentation_then_confirms() {
         let mut control = session(&[A, B]);
         control.kill(K);
-        assert_eq!(control.standing(A), Standing::Ending);
-        assert_eq!(control.standing(B), Standing::Ending);
-        assert_eq!(control.standing(C), Standing::Absent);
+        assert_eq!(
+            control.controlling(A),
+            Err(OperationalCode::SessionTerminating)
+        );
+        assert_eq!(
+            control.controlling(B),
+            Err(OperationalCode::SessionTerminating)
+        );
+        assert_eq!(control.controlling(C), Err(OperationalCode::NotAttached));
         assert_eq!(control.leave(C), NONE);
         assert_eq!(
             control.leave(B),
@@ -944,7 +1130,7 @@ mod tests {
         );
         assert_eq!(control.leave(A), [AcceptDetach { conn: A }]);
         assert_eq!(control.leave(A), NONE);
-        assert_eq!(control.standing(A), Standing::Absent);
+        assert_eq!(control.controlling(A), Err(OperationalCode::NotAttached));
         assert_eq!(control.snapshot(), state(Terminating, 0, false));
         control.command_exited(0);
         assert_eq!(
@@ -987,7 +1173,7 @@ mod tests {
         );
         assert_eq!(control.session_size(), size(100, 30));
         assert!(control.admits_input(A));
-        assert_eq!(control.standing(A), controlling(1, 1, Phase::Ready));
+        assert_eq!(control.controlling(A), controlling(1, 1, Phase::Ready));
     }
 
     #[test]
@@ -1088,9 +1274,9 @@ mod tests {
         control.apply_pending();
         control.restored(A, first);
         control.resize(A, size(100, 30));
-        assert_eq!(control.standing(A), controlling(1, 1, Phase::Replacing));
+        assert_eq!(control.controlling(A), controlling(1, 1, Phase::Replacing));
         control.restored(A, first);
-        assert_eq!(control.standing(A), controlling(1, 1, Phase::Replacing));
+        assert_eq!(control.controlling(A), controlling(1, 1, Phase::Replacing));
         assert_eq!(control.ready(A, first.restoration), NONE);
         assert_eq!(
             control.apply_pending(),
@@ -1185,7 +1371,7 @@ mod tests {
         ));
         assert_eq!(control.desired_focus(), Some(false));
         assert_eq!(
-            control.standing(A),
+            control.controlling(A),
             controlling(authority.period.0, 4, RESTORING)
         );
     }

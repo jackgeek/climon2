@@ -1,5 +1,8 @@
-use super::{Authority, ConnectionId, Effect, Issued, Standing, shutdown::Members};
-use climon2_core::{protocol::TerminalSize, wire::GrantReason};
+use super::{Authority, ConnectionId, Controlling, Effect, Issued, shutdown::Members};
+use climon2_core::{
+    protocol::TerminalSize,
+    wire::{GrantReason, OperationalCode},
+};
 use std::mem;
 
 /// One accepted attachment and its latest valid host size.
@@ -9,9 +12,31 @@ pub(super) struct Attachment {
     pub host: TerminalSize,
 }
 
+/// What a request needs of its connection's control beyond current
+/// authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Needs {
+    /// Control, even before readiness: Resize.
+    Control,
+    /// A complete restoration: Ready.
+    Restored,
+    /// Readiness: Input and Focus.
+    Readiness,
+}
+
+impl Needs {
+    pub(super) fn met(self, phase: Phase) -> bool {
+        match (self, phase) {
+            (Self::Control, _) | (_, Phase::Ready) => true,
+            (Self::Restored, Phase::Restoring { complete }) => complete,
+            _ => false,
+        }
+    }
+}
+
 /// What the controller's current restoration awaits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Phase {
+pub(super) enum Phase {
     /// Its bytes are being sent; `complete` once every one of them was.
     Restoring { complete: bool },
     /// Its host changed before readiness: the next apply step replaces it
@@ -55,15 +80,15 @@ impl Controller {
         self.attachment.conn
     }
 
-    pub fn standing(&self) -> Standing {
-        Standing::Controller {
+    fn controlling(&self) -> Controlling {
+        Controlling {
             authority: self.authority,
             phase: self.phase,
         }
     }
 
     pub fn admits(&self, conn: ConnectionId) -> bool {
-        self.conn() == conn && self.phase == Phase::Ready
+        self.conn() == conn && Needs::Readiness.met(self.phase)
     }
 
     /// Whether `conn` controls under `authority` and has not confirmed
@@ -206,24 +231,22 @@ impl Attachments {
         1 + self.others.len()
     }
 
-    pub fn standing(&self, conn: ConnectionId) -> Standing {
+    pub fn controlling(&self, conn: ConnectionId) -> Result<Controlling, OperationalCode> {
         if self.controller.conn() == conn {
-            return self.controller.standing();
+            return Ok(self.controller.controlling());
         }
         match self.position(conn) {
-            Some(_) => Standing::Other,
-            None => Standing::Absent,
+            Some(_) => Err(OperationalCode::NotController),
+            None => Err(OperationalCode::NotAttached),
         }
     }
 
-    pub fn take_control(&mut self, conn: ConnectionId, issued: &mut Issued) -> Vec<Effect> {
-        match self.position(conn) {
-            Some(index) => {
-                let attachment = self.others.remove(index);
-                self.promote(attachment, GrantReason::Acquire, issued)
-            }
-            None => Vec::new(),
-        }
+    /// A non-controlling attachment takes control at once; `None` for
+    /// anyone else.
+    pub fn take_control(&mut self, conn: ConnectionId, issued: &mut Issued) -> Option<Vec<Effect>> {
+        let index = self.position(conn)?;
+        let attachment = self.others.remove(index);
+        Some(self.promote(attachment, GrantReason::Acquire, issued))
     }
 
     /// Makes `attachment` the controller at once; the previous one stays,

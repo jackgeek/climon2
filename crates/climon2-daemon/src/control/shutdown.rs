@@ -1,4 +1,5 @@
-use super::{ConnectionId, Effect, Standing};
+use super::{ConnectionId, Effect};
+use climon2_core::wire::OperationalCode;
 
 /// Attachments still present while the session terminates.
 #[derive(Debug, Default)]
@@ -121,12 +122,13 @@ impl Shutdown {
         self.killers.retain(|killer| *killer != conn);
     }
 
-    /// A remaining attachment can still leave, but takes on no new work.
-    pub fn standing(&self, conn: ConnectionId) -> Standing {
+    /// Why a request needing control is refused: a remaining attachment
+    /// can still leave, but takes on no new work.
+    pub fn refusal(&self, conn: ConnectionId) -> OperationalCode {
         if self.members.contains(conn) {
-            Standing::Ending
+            OperationalCode::SessionTerminating
         } else {
-            Standing::Absent
+            OperationalCode::NotAttached
         }
     }
 

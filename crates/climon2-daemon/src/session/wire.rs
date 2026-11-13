@@ -4,7 +4,7 @@
 use super::Session;
 use crate::{
     connection::{Connection, frame_limit},
-    control::{self, Authority, ConnectionId, Period, Phase, Restoration, Standing},
+    control::{self, Authority, Authorized, ConnectionId, Needs, Period, Restoration},
 };
 use climon2_core::{
     protocol::TerminalSize,
@@ -76,28 +76,6 @@ struct Attachment {
 struct Held {
     authority: Authority,
     geometry: TerminalSize,
-}
-
-/// What a request needs of its connection's control, beyond current
-/// authority.
-#[derive(Clone, Copy)]
-enum Needs {
-    /// Control, even before readiness: Resize.
-    Control,
-    /// A complete restoration: Ready.
-    Restored,
-    /// Readiness: Input and Focus.
-    Readiness,
-}
-
-impl Needs {
-    fn met(self, phase: Phase) -> bool {
-        match (self, phase) {
-            (Self::Control, _) | (_, Phase::Ready) => true,
-            (Self::Restored, Phase::Restoring { complete }) => complete,
-            _ => false,
-        }
-    }
 }
 
 impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
@@ -319,16 +297,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// The grant, its restoration's beginning and the revocation of the
     /// previous controller precede the success.
     fn take_control(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
-        let conn = ConnectionId(id);
-        let changed = self.control.standing(conn) == Standing::Other;
-        let effects = self.control.take_control(conn);
+        let (acquired, effects) = self.control.acquire(ConnectionId(id));
         self.effects(effects)?;
-        let acquired =
-            controlling(self.control.standing(conn)).map(|(authority, _)| Success::Acquired {
-                changed,
-                period: period(authority),
-                restoration_id: restoration(authority),
-            });
+        let acquired = acquired.map(|acquisition| Success::Acquired {
+            changed: acquisition.changed,
+            period: period(acquisition.authority),
+            restoration_id: restoration(acquisition.authority),
+        });
         self.answer(id, request_id, acquired);
         Ok(())
     }
@@ -370,13 +345,17 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// is an explicit no-op.
     fn ready(&mut self, id: u64, ready: Ready) -> io::Result<()> {
         let needs = (ready.period, ready.restoration_id, Needs::Restored);
-        let Some((authority, phase)) = self.authorized(id, ready.request_id, needs) else {
+        let Some(Authorized {
+            authority,
+            ready: was_ready,
+        }) = self.authorized(id, ready.request_id, needs)
+        else {
             return Ok(());
         };
         let effects = self.control.ready(ConnectionId(id), authority.restoration);
         self.effects(effects)?;
         let confirmed = Success::Ready {
-            changed: phase != Phase::Ready,
+            changed: !was_ready,
             period: period(authority),
             restoration_id: restoration(authority),
         };
@@ -436,14 +415,16 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         id: u64,
         request_id: Counter,
         (period, restoration, needs): (Counter, Counter, Needs),
-    ) -> Option<(Authority, Phase)> {
+    ) -> Option<Authorized> {
         let requested = Authority {
             period: Period(period.get()),
             restoration: Restoration(restoration.get()),
         };
         let authorized = match self.kind(id) {
             None => Err(error(OperationalCode::InvalidState, NO_ROLE)),
-            Some(_) => authorize(self.control.standing(ConnectionId(id)), requested, needs)
+            Some(_) => self
+                .control
+                .authorize(ConnectionId(id), requested, needs)
                 .map_err(refusal),
         };
         authorized
@@ -678,38 +659,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let queued = connection.queue_wire(frame);
         self.queued_or_lost(id, queued);
     }
-}
-
-/// The control a standing gives, or why it gives none: membership,
-/// termination and control come before authority.
-fn controlling(standing: Standing) -> Result<(Authority, Phase), OperationalCode> {
-    match standing {
-        Standing::Absent => Err(OperationalCode::NotAttached),
-        Standing::Ending => Err(OperationalCode::SessionTerminating),
-        Standing::Other => Err(OperationalCode::NotController),
-        Standing::Controller { authority, phase } => Ok((authority, phase)),
-    }
-}
-
-/// A request's authority must be current: an earlier period is stale, as is
-/// a superseded restoration of the current period. Then the restoration's
-/// phase must meet the request's needs.
-fn authorize(
-    standing: Standing,
-    requested: Authority,
-    needs: Needs,
-) -> Result<(Authority, Phase), OperationalCode> {
-    let (current, phase) = controlling(standing)?;
-    if requested.period != current.period {
-        return Err(OperationalCode::StalePeriod);
-    }
-    if requested.restoration != current.restoration {
-        return Err(OperationalCode::StaleRestoration);
-    }
-    needs
-        .met(phase)
-        .then_some((current, phase))
-        .ok_or(OperationalCode::NotReady)
 }
 
 /// The application's focus report: `ESC [ I` for focus in, `ESC [ O` out.
