@@ -10,8 +10,9 @@ use crate::Session;
 use climon2_core::{
     protocol::{ClientMessage, HANGUP_GRACE, ServerMessage as PrivateMessage},
     wire::{
-        Acquire, AuthorityIds, Cleanup, CommandResult, Input, KnownResult, Leave, Mode, Outcome,
-        PartialCleanup, PartialTermination, Response, ServerMessage, Success,
+        Acquire, AuthorityIds, Cleanup, CommandResult, Focus, Input, KnownResult, Leave, Mode,
+        Outcome, PartialCleanup, PartialTermination, Ready, Resize, Response, ServerMessage,
+        Success,
     },
 };
 use climon2_platform::process;
@@ -101,14 +102,15 @@ fn command_final_reports_each_exit_and_signal_once() {
 /// standalone Kill is a role of its own connection, not an attachment. It
 /// commits the session's termination at once and is answered only after
 /// the command's termination is confirmed and the daemon cleaned up: after
-/// the real five-second hang-up grace, with the session's files removed
-/// and the command gone. A second standalone Kill and a private kill, sent
-/// halfway through the grace, join the same termination without restarting
-/// it, and all three are answered together. On the Kill's connection, a later
-/// Kill or Open is `invalid_state`, as are Leave and Acquire, with nothing
-/// opened, and Input is `not_attached`. The command ignores SIGHUP, so
-/// SIGKILL ends it: the Kills and every Command final say signal 9, while
-/// the private kill gets `Terminated` 137.
+/// the real five-second hang-up grace, with its session metadata and socket
+/// removed and the command gone. A second standalone Kill and a private
+/// kill, sent late in the grace, join the same termination without
+/// restarting it, and all three are answered together. On the Kill's
+/// connection, a later Kill or Open is `invalid_state`, as are Leave and
+/// Acquire, with nothing opened; Input, Resize and Ready are `not_attached`,
+/// and Focus, never selected, is `unsupported_capability`. The command
+/// ignores SIGHUP, so SIGKILL ends it: the Kills and every Command final say
+/// signal 9, while the private kill gets `Terminated` 137.
 #[test]
 fn a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_join_it() {
     let mut session = Session::start("ignore-hup");
@@ -119,6 +121,7 @@ fn a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_j
     let started = Instant::now();
     request(&mut first, &kill(1, 1, &[]));
     terminating(&session);
+    let committed = Instant::now();
     request(&mut first, &kill(2, 1, &[]));
     assert_rejected(&mut first, 2, "invalid_state");
     request(&mut first, &open(3, &[], &[], Mode::Monitor));
@@ -137,23 +140,47 @@ fn a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_j
         },
     );
     assert_rejected(&mut first, 5, "invalid_state");
+    let authority = AuthorityIds {
+        period: counter(1),
+        restoration_id: counter(1),
+    };
     let input = Input {
         request_id: counter(6),
-        authority: AuthorityIds {
-            period: counter(1),
-            restoration_id: counter(1),
-        },
+        authority,
         payload: b"x".to_vec(),
     };
     super::send(&mut first, &input.to_frame());
     assert_rejected(&mut first, 6, "not_attached");
-    // Half the grace between the first Kill and the joining ones, so a
-    // restarted grace would show; not an ordering step.
-    thread::sleep(HANGUP_GRACE.div_f64(2.0).saturating_sub(started.elapsed()));
+    let resize = Resize {
+        request_id: counter(7),
+        authority,
+        geometry: geometry(100, 30),
+    };
+    request(&mut first, &resize);
+    assert_rejected(&mut first, 7, "not_attached");
+    let ready = Ready {
+        request_id: counter(8),
+        authority,
+    };
+    request(&mut first, &ready);
+    assert_rejected(&mut first, 8, "not_attached");
+    let focus = Focus {
+        request_id: counter(9),
+        authority,
+        focused: true,
+    };
+    request(&mut first, &focus);
+    assert_rejected(&mut first, 9, "unsupported_capability");
+    // Connected before the grace can end, so both are served after cleanup
+    // removes the socket too.
     let mut second = peer(&session);
+    let mut private = session.connect();
+    // The joining Kills go out late in the grace, which leaves the most
+    // room the five-second grace allows between a restarted grace and the
+    // end-of-grace work of a loaded host; not an ordering step.
+    thread::sleep((committed + Duration::from_secs(4)).saturating_duration_since(Instant::now()));
     let joined = Instant::now();
     request(&mut second, &kill(1, 1, &["daemon-wire-v1"]));
-    let mut private = session.connect();
     crate::send(&mut private, ClientMessage::Kill);
 
     let killed = signalled(9);
