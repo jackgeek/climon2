@@ -412,6 +412,8 @@ fn packaged_exec_preserves_runtime_argv_cwd_environment_and_initial_size() {
     command.env("SHELL", "");
     let report_path = layout.directory.path().join("runtime-report.json");
     command.env("FIXTURE_REPORT_PATH", &report_path);
+    let release = layout.directory.path().join("release-report");
+    command.env("FIXTURE_REPORT_RELEASE", &release);
     command.args(["exec"]);
     command.arg(layout.fixture());
     command.args(["report", "", "--looks-like-option", "literal $ ; ' \""]);
@@ -445,6 +447,7 @@ fn packaged_exec_preserves_runtime_argv_cwd_environment_and_initial_size() {
         ("CLIMON2_SESSION_ID", metadata.session_id.as_str().into()),
         ("CLIMON2_SESSION_DEPTH", "1".into()),
         ("FIXTURE_REPORT_PATH", report_path.as_os_str().to_owned()),
+        ("FIXTURE_REPORT_RELEASE", release.as_os_str().to_owned()),
     ]
     .into_iter()
     .map(|(key, value)| (hex(OsStr::new(key)), hex(&value)))
@@ -454,7 +457,7 @@ fn packaged_exec_preserves_runtime_argv_cwd_environment_and_initial_size() {
         report["env"],
         serde_json::to_value(expected_environment).unwrap()
     );
-    terminal.send(b"\n").unwrap();
+    fs::write(&release, b"").unwrap();
     assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
     let logs = layout
         .home()
@@ -539,7 +542,6 @@ fn actual_nested_bash_session_increments_depth_and_sees_the_fixed_terminal_ident
     let mut command = layout.command();
     command.env("TERM", "dumb");
     command.env("COLORTERM", "24bit");
-    command.env("FIXTURE_REPORT_NO_WAIT", "1");
     let report_path = layout.directory.path().join("nested-report.json");
     command.env("FIXTURE_REPORT_PATH", &report_path);
     command.args([
@@ -867,6 +869,8 @@ fn log_filter_is_forwarded_to_companions_without_changing_command_environment() 
     let layout = Layout::new();
     let mut command = layout.command();
     command.env("CLIMON2_LOG", "warn");
+    let release = layout.directory.path().join("release-report");
+    command.env("FIXTURE_REPORT_RELEASE", &release);
     command.arg("exec");
     command.arg(layout.fixture());
     command.arg("report");
@@ -882,7 +886,7 @@ fn log_filter_is_forwarded_to_companions_without_changing_command_environment() 
     let report = unwrapped(&terminal.screen());
     assert!(report.contains(&pair), "{report}");
     let metadata = only_metadata(&layout);
-    terminal.send(b"\n").unwrap();
+    fs::write(&release, b"").unwrap();
     assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
     for role in ["cli", "daemon", "client"] {
         let log = role_log(
