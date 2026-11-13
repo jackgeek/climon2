@@ -67,9 +67,10 @@ terminal model there
 the current model (vte's 2 MiB buffer, the 32 KiB reserve and both screens,
 6,948,039 bytes) and the first 1000-row history chunk, which holds its recent
 page (12,115,200 bytes). `memory.total_bytes`, then `memory.client_bytes`,
-must each hold both, 19,063,239 bytes; `memory.history_bytes_per_session`,
-and so `history_bytes_total`, must hold the page. A refusal names the budget
-and both byte counts. `exec` does not make this check: only the monitor has
+must each hold both, 19,063,239 bytes; `memory.history_bytes_total`, then
+`history_bytes_per_session`, must hold the page. Each total is checked before
+the budgets it contains, so a refusal names the limit to raise, with both
+byte counts. `exec` does not make this check: only the monitor has
 terminal models.
 
 Report effective configured values, qualified reservations and exhaustion

@@ -866,9 +866,31 @@ fn cfg01_the_client_budget_holds_the_largest_current_model_and_recent_page() {
     );
 }
 
+/// CFG-01 (Contract): the history total holds the history that keeps the
+/// largest session's recent page, and is checked before each session's
+/// history budget, which it contains, so a refusal names the limit to raise:
+/// accepted at the limit and refused one byte short.
+#[test]
+fn cfg01_the_history_total_holds_the_largest_recent_page() {
+    let page = 12_115_200;
+    let history = |bytes| {
+        [
+            at("memory.history_bytes_total", bytes),
+            at("memory.history_bytes_per_session", bytes),
+        ]
+    };
+    assert_eq!(hold(&history(page)), Ok(()));
+    assert_eq!(
+        hold(&history(page - 1)),
+        short(
+            "the recent page of a 500x200 session (12115200) may not exceed monitor.limits.memory.history_bytes_total (12115199)"
+        )
+    );
+}
+
 /// CFG-01 (Contract): each session's history budget holds the history that
-/// keeps the largest session's recent page, so the history total containing
-/// it does too: accepted at the limit and refused one byte short.
+/// keeps the largest session's recent page: accepted at the limit and refused
+/// one byte short.
 #[test]
 fn cfg01_the_history_budget_holds_the_largest_recent_page() {
     let page = 12_115_200;

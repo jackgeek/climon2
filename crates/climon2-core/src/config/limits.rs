@@ -581,9 +581,9 @@ impl Limits {
 
     /// Refuses limits that cannot hold one session's `mandatory` allocation:
     /// the total, then the client budget, must each hold its current model and
-    /// recent page together, and the per-session history budget the page, so
-    /// the history total containing it does too. The total comes first
-    /// because it contains the client budget.
+    /// recent page together, and the history total, then the per-session
+    /// history budget, the page. Each total comes before the budgets it
+    /// contains, so a refusal names the limit to raise.
     pub fn hold(&self, mandatory: MandatoryAllocation) -> Result<(), ConfigError> {
         let memory = &self.0.memory;
         let TerminalSize { cols, rows } = mandatory.size;
@@ -600,6 +600,7 @@ impl Limits {
         [
             at_most(both, named!(memory.total_bytes)),
             at_most(both, named!(memory.client_bytes)),
+            at_most(page, named!(memory.history_bytes_total)),
             at_most(page, named!(memory.history_bytes_per_session)),
         ]
         .into_iter()

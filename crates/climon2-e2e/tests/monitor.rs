@@ -253,16 +253,16 @@ fn installed_monitor_refuses_every_invalid_configuration_before_the_terminal_cha
 const MODEL_AND_PAGE: u64 = 19_063_239;
 const PAGE: u64 = 12_115_200;
 
-/// Memory limits of `total` bytes, `client` bytes per client and
-/// `per_session` bytes of each session's history, with every other budget
-/// the total contains small enough to fit it.
-fn memory(total: u64, client: u64, per_session: u64) -> String {
+/// Memory limits of `total` bytes, `client` bytes per client, `history`
+/// bytes of history in all and `per_session` bytes of each session's, with
+/// every other budget the total contains small enough to fit it.
+fn memory([total, client, history, per_session]: [u64; 4]) -> String {
     json!({"monitor": {"limits": {
         "memory": {
             "total_bytes": total,
             "client_bytes": client,
+            "history_bytes_total": history,
             "history_bytes_per_session": per_session,
-            "history_bytes_total": per_session,
             "queue_bytes_total": 1_048_576
         },
         "resources": {"release_bytes": 1_048_576}
@@ -273,27 +273,33 @@ fn memory(total: u64, client: u64, per_session: u64) -> String {
 /// CFG-01 (Monitor): limits that cannot hold one session's mandatory
 /// allocation at the largest session geometry, 500x200, are refused like
 /// every other invalid configuration: one byte short of the total, a client's
-/// budget or a session's history budget, the monitor prints one diagnostic
-/// naming the budget and exits with the climon2 error code before any
-/// terminal change. At exactly those limits it opens, and prefix+x exits 0.
+/// budget, the history total or a session's history budget, the monitor
+/// prints one diagnostic naming that limit and exits with the climon2 error
+/// code before any terminal change. At exactly those limits it opens, and
+/// prefix+x exits 0.
 #[test]
 fn installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model() {
     let package = Package::new();
     let config = config_file(&package);
-    for (text, expected) in [
+    for (limits, expected) in [
         (
-            memory(MODEL_AND_PAGE - 1, MODEL_AND_PAGE - 1, PAGE),
+            [MODEL_AND_PAGE - 1, MODEL_AND_PAGE - 1, PAGE, PAGE],
             "the current model and recent page of a 500x200 session (19063239) may not exceed monitor.limits.memory.total_bytes (19063238)",
         ),
         (
-            memory(MODEL_AND_PAGE, MODEL_AND_PAGE - 1, PAGE),
+            [MODEL_AND_PAGE, MODEL_AND_PAGE - 1, PAGE, PAGE],
             "the current model and recent page of a 500x200 session (19063239) may not exceed monitor.limits.memory.client_bytes (19063238)",
         ),
         (
-            memory(MODEL_AND_PAGE, MODEL_AND_PAGE, PAGE - 1),
+            [MODEL_AND_PAGE, MODEL_AND_PAGE, PAGE - 1, PAGE - 1],
+            "the recent page of a 500x200 session (12115200) may not exceed monitor.limits.memory.history_bytes_total (12115199)",
+        ),
+        (
+            [MODEL_AND_PAGE, MODEL_AND_PAGE, PAGE, PAGE - 1],
             "the recent page of a 500x200 session (12115200) may not exceed monitor.limits.memory.history_bytes_per_session (12115199)",
         ),
     ] {
+        let text = memory(limits);
         fs::write(&config, &text).unwrap();
         let mut terminal = outer(&package, "climon2 monitor");
         let diagnostic = refusal(&mut terminal);
@@ -305,7 +311,11 @@ fn installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model()
         );
         assert_released(&package, &mut terminal, 125);
     }
-    fs::write(&config, memory(MODEL_AND_PAGE, MODEL_AND_PAGE, PAGE)).unwrap();
+    fs::write(
+        &config,
+        memory([MODEL_AND_PAGE, MODEL_AND_PAGE, PAGE, PAGE]),
+    )
+    .unwrap();
     let mut terminal = outer(&package, "climon2 monitor");
     opened(&mut terminal);
     terminal.send(b"\x1dx").unwrap();
