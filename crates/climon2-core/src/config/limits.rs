@@ -304,7 +304,8 @@ impl Default for Ui {
     }
 }
 
-/// Every group as read, before the groups are checked against each other.
+/// Every group as read, before its settings are checked against their ranges
+/// and against each other.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 struct Groups {
@@ -332,7 +333,8 @@ struct Groups {
     ui: Ui,
 }
 
-/// `monitor.limits`: the groups, once they are consistent with each other.
+/// `monitor.limits`: the groups, once every setting is within its range and
+/// consistent with the others.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "Groups")]
 pub struct Limits(Groups);
