@@ -167,8 +167,9 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     refusal has `MaxRows`'s shape, `<setting> must be an integer from <min> to
     <max>`, from the same range type; a broken rule names both settings and
     their values. Its fields are private: it is only reported so far, and
-    gains accessors with the code that enforces it. The mandatory current
-    model and recent page, and operating-system limits, are not checked.
+    gains accessors with the code that enforces it. Whether the mandatory
+    current model and recent page fit is not checked yet (#167), and
+    operating-system limits are left to admission (#120).
 - `keys`: `ControlKey` is one C0 control byte named in the `Ctrl+` vocabulary.
   `ClientSettings` holds the escape prefix (default `Ctrl+]`) and take-control
   key (default `Ctrl+T`); either may be disabled, take-control may not be
