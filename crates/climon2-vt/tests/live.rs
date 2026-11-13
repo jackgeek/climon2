@@ -127,10 +127,10 @@ fn titles_and_links_after_a_control_are_still_reencoded_or_plain() {
 }
 
 /// Plan sections 1.7.1 and 1.9: an alternate screen and a synchronized update
-/// begun after a control are tracked, so the latch holds snapshots and the
-/// release leaves what the host entered.
+/// begun after a control are tracked by the presentation and the latch, so the
+/// latch holds snapshots and the release leaves what the host entered.
 #[test]
-fn modes_set_after_a_control_are_tracked_for_the_host() {
+fn modes_set_after_a_control_are_tracked_by_the_presentation_and_the_latch() {
     let mut vt = vt();
     let now = Instant::now();
     let mut presentation = Presentation::new(80, 24);
