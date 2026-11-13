@@ -1,20 +1,35 @@
 //! The client library's frozen C ABI (native revision 1): the exported
-//! bootstrap and the immutable description it returns.
+//! bootstrap, the immutable description it returns, and the function table's
+//! instance lifecycle (#85).
 //!
 //! Only `climon2_client_get_interface` is exported; Rust layouts, unwinding and
-//! allocators never cross it. The bootstrap and the table entries do no
-//! fallible work and allocate nothing. Instance calls are not implemented yet
-//! (#85, #93): every table entry fails with `CM1_UNSUPPORTED_OPERATION`.
+//! allocators never cross it. Every entry contains panics and reports them as
+//! an explicit `CM1_INTERNAL_ERROR`; the library's own panic hook is silent, so
+//! nothing reaches the standard streams. `submit` is not implemented yet (Open
+//! arrives in #93): it fails with `CM1_UNSUPPORTED_OPERATION`.
 
 use climon2_core::native::{
-    self, Bytes, Call, Communication, Control, Created, Delivery, Description, Drained, Error,
-    Instance, Interface, Metrics, Request, Requirements, RunReport, Startup, Tokens,
+    self, Bytes, Call, Communication, Control, Created, Delivery, Description, Drained, Instance,
+    Interface, Metrics, Request, Requirements, RunReport, Startup, Tokens,
 };
-use std::ptr;
+use failure::{Failure, INVALID_ARGUMENT, PANIC, UNSUPPORTED_OPERATION};
+use std::{
+    panic::{self, AssertUnwindSafe},
+    ptr,
+    sync::{Arc, Once},
+};
 
+mod failure;
+#[cfg(feature = "test-hooks")]
+mod hooks;
+mod instance;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[path = "library/linux.rs"]
-mod linux;
+mod platform;
+#[cfg(target_os = "macos")]
+#[path = "library/macos.rs"]
+mod platform;
+mod startup;
 
 /// The release identity: the version folder name, compiled in.
 const RELEASE: &str = env!("CARGO_PKG_VERSION");
@@ -35,40 +50,19 @@ const REQUIREMENTS: Requirements = Requirements {
     reserved: 0,
 };
 
-const UNSUPPORTED_CODE: &str = "unsupported_operation";
-const UNSUPPORTED_MESSAGE: &str =
-    "this client library implements only the revision 1 bootstrap and description";
-
-const UNSUPPORTED: Call = Call {
-    code: native::UNSUPPORTED_OPERATION,
-    reserved: 0,
-    error: Error {
-        origin: native::ORIGIN_LIBRARY,
-        reserved: 0,
-        code: Bytes {
-            data: UNSUPPORTED_CODE.as_ptr(),
-            length: UNSUPPORTED_CODE.len() as u64,
-        },
-        message: Bytes {
-            data: UNSUPPORTED_MESSAGE.as_ptr(),
-            length: UNSUPPORTED_MESSAGE.len() as u64,
-        },
-    },
-};
-
-struct Shared(Description);
+struct Immutable(Description);
 
 // SAFETY: the description is immutable and points only to static data.
-unsafe impl Sync for Shared {}
+unsafe impl Sync for Immutable {}
 
-static DESCRIPTION: Shared = Shared(Description {
+static DESCRIPTION: Immutable = Immutable(Description {
     revision: native::REVISION,
     reserved: 0,
     release: Bytes {
         data: RELEASE.as_ptr(),
         length: RELEASE.len() as u64,
     },
-    // No instance behaviour is implemented yet, so no capability is advertised.
+    // No connection can be opened yet (#93), so no capability is advertised.
     capabilities: Tokens {
         data: ptr::null(),
         count: 0,
@@ -89,6 +83,32 @@ static DESCRIPTION: Shared = Shared(Description {
     },
 });
 
+/// A null handle or output pointer: the one invalid native address the library
+/// can detect. Other stale or wrong pointers remain caller misuse.
+const NULL: Failure = Failure::new(
+    INVALID_ARGUMENT,
+    "a required handle or output pointer is null",
+);
+
+static SILENT_PANICS: Once = Once::new();
+
+/// The library's panics are contained and reported as results, so its own
+/// panic hook (this image's, not the host's) writes nothing.
+fn silence_panics() {
+    panic::set_hook(Box::new(|_| {}));
+}
+
+/// The `test-hooks` panic point at an exported call's boundary.
+fn hook(_call: &'static str) {
+    #[cfg(feature = "test-hooks")]
+    hooks::panic_at(_call);
+}
+
+/// An exported call's work with every panic contained: no unwinding leaves.
+fn contained(work: impl FnOnce() -> Result<(), Failure>) -> Call {
+    failure::call(panic::catch_unwind(AssertUnwindSafe(work)).unwrap_or(Err(PANIC)))
+}
+
 /// Returns revision 1's immutable description, which lives until process exit.
 ///
 /// # Safety
@@ -100,17 +120,28 @@ pub unsafe extern "C" fn climon2_client_get_interface(
     description: *mut *const Description,
 ) -> u32 {
     climon2_core::test_hook_marker!();
-    if description.is_null() {
+    SILENT_PANICS.call_once(silence_panics);
+    // SAFETY: the caller supplies null or writable storage for one pointer.
+    let Some(output) = (unsafe { description.as_mut() }) else {
         return native::INVALID_ARGUMENT;
-    }
-    let (status, value) = if requested_revision == native::REVISION {
-        (native::SUCCESS, &DESCRIPTION.0 as *const Description)
+    };
+    *output = ptr::null();
+    panic::catch_unwind(|| {
+        hook("bootstrap");
+        describe(requested_revision)
+    })
+    .map_or(native::INTERNAL_ERROR, |(status, value)| {
+        *output = value;
+        status
+    })
+}
+
+fn describe(requested_revision: u32) -> (u32, *const Description) {
+    if requested_revision == native::REVISION {
+        (native::SUCCESS, &raw const DESCRIPTION.0)
     } else {
         (native::UNSUPPORTED_REVISION, ptr::null())
-    };
-    // SAFETY: the caller supplies writable storage for one pointer.
-    unsafe { description.write(value) };
-    status
+    }
 }
 
 /// Failed calls clear their output structs; a null output is never written.
@@ -125,59 +156,214 @@ unsafe fn clear<T>(output: *mut T) {
     }
 }
 
-unsafe extern "C" fn create(_: *const Startup, created: *mut Created) -> Call {
+/// # Safety
+///
+/// `startup` must be null or a valid startup whose buffers cover their
+/// lengths; `created` null or writable storage.
+unsafe extern "C" fn create(startup: *const Startup, created: *mut Created) -> Call {
     // SAFETY: the caller supplies null or writable output storage.
     unsafe { clear(created) };
-    UNSUPPORTED
+    contained(|| {
+        hook("create");
+        // SAFETY: the caller supplies null or valid pointers.
+        let (Some(startup), Some(created)) =
+            (unsafe { startup.as_ref() }, unsafe { created.as_mut() })
+        else {
+            return Err(NULL);
+        };
+        // SAFETY: the startup's buffers cover their lengths for this call.
+        let startup = unsafe { startup::Startup::parse(startup) }?;
+        let effective_limits = startup.limits;
+        let (owner, communication, control) = instance::create(startup)?;
+        *created = Created {
+            instance: Box::into_raw(owner).cast(),
+            communication: Box::into_raw(communication).cast(),
+            control: Box::into_raw(control).cast(),
+            effective_limits,
+        };
+        Ok(())
+    })
 }
 
-unsafe extern "C" fn run(_: *mut Instance, report: *mut RunReport) -> Call {
+/// # Safety
+///
+/// `instance` must be null or this library's live instance; `report` null or
+/// writable storage.
+unsafe extern "C" fn run(instance: *mut Instance, report: *mut RunReport) -> Call {
     // SAFETY: the caller supplies null or writable output storage.
     unsafe { clear(report) };
-    UNSUPPORTED
+    contained(|| {
+        // SAFETY: the caller supplies null or valid pointers.
+        let (Some(owner), Some(report)) = (
+            unsafe { instance.cast::<instance::Owner>().as_mut() },
+            unsafe { report.as_mut() },
+        ) else {
+            return Err(NULL);
+        };
+        let (result, value) = owner.run()?;
+        *report = value;
+        result
+    })
 }
 
-unsafe extern "C" fn destroy(_: *mut Instance) -> Call {
-    UNSUPPORTED
+/// # Safety
+///
+/// `instance` must be null or this library's live instance.
+unsafe extern "C" fn destroy(instance: *mut Instance) -> Call {
+    contained(|| {
+        let owner = instance.cast::<instance::Owner>();
+        // SAFETY: the caller supplies null or a live instance.
+        let shared = unsafe { owner.as_ref() }.map(|owner| Arc::clone(&owner.shared));
+        // SAFETY: as above; only the owner thread passes `destroy`'s check.
+        shared
+            .ok_or(NULL)?
+            .guard("destroy", || unsafe { &*owner }.destroy())?;
+        // SAFETY: destroy succeeded, so nothing else uses the instance.
+        drop(unsafe { Box::from_raw(owner) });
+        Ok(())
+    })
 }
 
+/// Open arrives in #93; until then no request is accepted.
 unsafe extern "C" fn submit(_: *mut Communication, _: *const Request) -> Call {
-    UNSUPPORTED
+    contained(|| {
+        hook("submit");
+        Err(Failure::new(
+            UNSUPPORTED_OPERATION,
+            "this client library cannot submit requests yet",
+        ))
+    })
 }
 
-unsafe extern "C" fn drain(_: *mut Communication, drained: *mut Drained) -> Call {
+/// # Safety
+///
+/// `communication` must be null or this library's live handle; `drained` null
+/// or writable storage.
+unsafe extern "C" fn drain(communication: *mut Communication, drained: *mut Drained) -> Call {
     // SAFETY: the caller supplies null or writable output storage.
     unsafe { clear(drained) };
-    UNSUPPORTED
+    contained(|| {
+        // SAFETY: the caller supplies null or valid pointers.
+        let (Some(handle), Some(drained)) = (
+            unsafe { communication.cast::<instance::Communication>().as_ref() },
+            unsafe { drained.as_mut() },
+        ) else {
+            return Err(NULL);
+        };
+        *drained = handle.shared.guard("drain", || Ok(handle.shared.drain()))?;
+        Ok(())
+    })
 }
 
-unsafe extern "C" fn release_delivery(_: *mut Delivery) -> Call {
-    UNSUPPORTED
+/// # Safety
+///
+/// `delivery` must be null or this library's unreleased delivery.
+unsafe extern "C" fn release_delivery(delivery: *mut Delivery) -> Call {
+    contained(|| {
+        let delivery = delivery.cast::<instance::Delivery>();
+        // SAFETY: the caller supplies null or an unreleased delivery.
+        let shared = unsafe { delivery.as_ref() }.map(|delivery| Arc::clone(&delivery.shared));
+        shared.ok_or(NULL)?.guard("release_delivery", || {
+            // SAFETY: released exactly once, after its readers finished.
+            instance::release(unsafe { Box::from_raw(delivery) });
+            Ok(())
+        })
+    })
 }
 
-unsafe extern "C" fn shutdown(_: *mut Control) -> Call {
-    UNSUPPORTED
+/// # Safety
+///
+/// `control` must be null or this library's live handle.
+unsafe extern "C" fn shutdown(control: *mut Control) -> Call {
+    contained(|| {
+        // SAFETY: the caller supplies null or a live handle.
+        let handle = unsafe { control.cast::<instance::Control>().as_ref() }.ok_or(NULL)?;
+        handle.shared.guard("shutdown", || handle.shared.shutdown())
+    })
 }
 
-unsafe extern "C" fn release_communication(_: *mut Communication) -> Call {
-    UNSUPPORTED
+/// # Safety
+///
+/// `communication` must be null or this library's live handle, no longer in
+/// concurrent use.
+unsafe extern "C" fn release_communication(communication: *mut Communication) -> Call {
+    contained(|| {
+        let handle = communication.cast::<instance::Communication>();
+        // SAFETY: the caller supplies null or a live handle.
+        let shared = unsafe { handle.as_ref() }.map(|handle| Arc::clone(&handle.shared));
+        shared.ok_or(NULL)?.guard("release_communication", || {
+            // SAFETY: as above.
+            unsafe { &*handle }.shared.release_communication()
+        })?;
+        // SAFETY: released, so the caller makes no later call with it.
+        drop(unsafe { Box::from_raw(handle) });
+        Ok(())
+    })
 }
 
-unsafe extern "C" fn release_control(_: *mut Control) -> Call {
-    UNSUPPORTED
+/// # Safety
+///
+/// `control` must be null or this library's live handle, no longer in
+/// concurrent use.
+unsafe extern "C" fn release_control(control: *mut Control) -> Call {
+    contained(|| {
+        let handle = control.cast::<instance::Control>();
+        // SAFETY: the caller supplies null or a live handle.
+        let shared = unsafe { handle.as_ref() }.map(|handle| Arc::clone(&handle.shared));
+        shared.ok_or(NULL)?.guard("release_control", || {
+            // SAFETY: as above.
+            unsafe { &*handle }.shared.release_control()
+        })?;
+        // SAFETY: released, so the caller makes no later call with it.
+        drop(unsafe { Box::from_raw(handle) });
+        Ok(())
+    })
 }
 
 /// A failed notification lookup writes -1.
-unsafe extern "C" fn notification(_: *mut Communication, descriptor: *mut i32) -> Call {
-    if !descriptor.is_null() {
-        // SAFETY: the caller supplies writable storage for one descriptor.
-        unsafe { descriptor.write(-1) };
+///
+/// # Safety
+///
+/// `communication` must be null or this library's live handle; `descriptor`
+/// null or writable storage.
+unsafe extern "C" fn notification(communication: *mut Communication, descriptor: *mut i32) -> Call {
+    // SAFETY: the caller supplies null or writable storage for one descriptor.
+    if let Some(descriptor) = unsafe { descriptor.as_mut() } {
+        *descriptor = -1;
     }
-    UNSUPPORTED
+    contained(|| {
+        // SAFETY: the caller supplies null or valid pointers.
+        let (Some(handle), Some(descriptor)) = (
+            unsafe { communication.cast::<instance::Communication>().as_ref() },
+            unsafe { descriptor.as_mut() },
+        ) else {
+            return Err(NULL);
+        };
+        *descriptor = handle
+            .shared
+            .guard("notification", || Ok(handle.shared.descriptor()))?;
+        Ok(())
+    })
 }
 
-unsafe extern "C" fn snapshot(_: *mut Communication, metrics: *mut Metrics) -> Call {
+/// # Safety
+///
+/// `communication` must be null or this library's live handle; `metrics` null
+/// or writable storage.
+unsafe extern "C" fn snapshot(communication: *mut Communication, metrics: *mut Metrics) -> Call {
     // SAFETY: the caller supplies null or writable output storage.
     unsafe { clear(metrics) };
-    UNSUPPORTED
+    contained(|| {
+        // SAFETY: the caller supplies null or valid pointers.
+        let (Some(handle), Some(metrics)) = (
+            unsafe { communication.cast::<instance::Communication>().as_ref() },
+            unsafe { metrics.as_mut() },
+        ) else {
+            return Err(NULL);
+        };
+        *metrics = handle
+            .shared
+            .guard("snapshot", || Ok(handle.shared.snapshot()))?;
+        Ok(())
+    })
 }

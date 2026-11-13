@@ -118,13 +118,14 @@ fn installed_library_rejects_other_revisions_without_a_description() {
 }
 
 /// DOC-01 named case (implemented table versus the frozen call rules): all
-/// eleven function-table entries exist. Until #85 and #93 implement them, each
-/// fails with `CM1_UNSUPPORTED_OPERATION`, library origin, zero reserved
-/// fields and a nonempty stable error code and message; failed calls clear
-/// their output structs, notification writes -1, and null outputs are not
-/// written.
+/// eleven function-table entries exist. A null handle or output pointer, the
+/// one invalid address the library can detect, fails with
+/// `CM1_INVALID_ARGUMENT`, library origin, zero reserved fields and a
+/// nonempty stable error code and message; failed calls clear their output
+/// structs and notification writes -1. `submit` fails with
+/// `CM1_UNSUPPORTED_OPERATION` until Open (#93).
 #[test]
-fn installed_library_table_reports_every_instance_call_unsupported() {
+fn installed_library_table_rejects_null_arguments_and_cannot_submit_yet() {
     let package = Package::new();
     let library = installed_library(&package);
     let report = observe(host(&library, package.isolation.home()));
@@ -146,11 +147,16 @@ fn installed_library_table_reports_every_instance_call_unsupported() {
     assert_eq!(entries.len(), names.len(), "{functions:#}");
     for name in names {
         let entry = &entries[name];
-        assert_eq!(entry["code"], UNSUPPORTED_OPERATION, "{name}: {entry}");
+        let (code, error_code) = if name == "submit" {
+            (UNSUPPORTED_OPERATION, "unsupported_operation")
+        } else {
+            (INVALID_ARGUMENT, "invalid_argument")
+        };
+        assert_eq!(entry["code"], code, "{name}: {entry}");
         assert_eq!(entry["reserved"], 0, "{name}: {entry}");
         assert_eq!(entry["origin"], ORIGIN_LIBRARY, "{name}: {entry}");
         assert_eq!(entry["error_reserved"], 0, "{name}: {entry}");
-        assert_eq!(entry["error_code"], "unsupported_operation", "{name}");
+        assert_eq!(entry["error_code"], error_code, "{name}");
         assert!(!entry["message"].as_str().unwrap().is_empty(), "{name}");
     }
     for name in ["create", "run", "drain", "snapshot"] {
@@ -160,11 +166,11 @@ fn installed_library_table_reports_every_instance_call_unsupported() {
     assert_eq!(
         functions["null_outputs"],
         json!({
-            "create": UNSUPPORTED_OPERATION,
-            "run": UNSUPPORTED_OPERATION,
-            "drain": UNSUPPORTED_OPERATION,
-            "notification": UNSUPPORTED_OPERATION,
-            "snapshot": UNSUPPORTED_OPERATION,
+            "create": INVALID_ARGUMENT,
+            "run": INVALID_ARGUMENT,
+            "drain": INVALID_ARGUMENT,
+            "notification": INVALID_ARGUMENT,
+            "snapshot": INVALID_ARGUMENT,
         })
     );
     package.assert_clean();

@@ -309,7 +309,8 @@ fn native_source_os(path: &Path) -> Option<&'static str> {
         Some("crates/climon2-platform/src/process/macos.rs")
         | Some("crates/climon2-platform/src/peer/macos.rs")
         | Some("crates/climon2-platform/src/runtime/macos.rs")
-        | Some("crates/climon2-install/src/platform/macos.rs") => Some("macos"),
+        | Some("crates/climon2-install/src/platform/macos.rs")
+        | Some("crates/climon2-client/src/library/macos.rs") => Some("macos"),
         _ => None,
     }
 }
@@ -1226,6 +1227,10 @@ esac
             (
                 "crates/climon2-client/src/library/linux.rs",
                 cfg!(target_os = "linux"),
+            ),
+            (
+                "crates/climon2-client/src/library/macos.rs",
+                cfg!(target_os = "macos"),
             ),
         ];
         for (path, _) in sources {
