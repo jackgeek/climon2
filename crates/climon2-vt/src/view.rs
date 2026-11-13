@@ -30,16 +30,17 @@ fn lookup<K, V: Copy>(table: &[(K, V)], matches: impl Fn(&K) -> bool) -> Option<
 #[derive(Clone, Copy)]
 pub struct View<'a> {
     core: &'a Core<VoidListener>,
-    /// How many of the normal screen's history rows are shown.
-    history: usize,
+    /// How many of the normal screen's history rows the model shows.
+    history_len: usize,
+    /// Whether that history is truncated.
     truncated: bool,
 }
 
 impl<'a> View<'a> {
-    pub(crate) fn new(core: &'a Core<VoidListener>, history: usize, truncated: bool) -> Self {
+    pub(crate) fn new(core: &'a Core<VoidListener>, history_len: usize, truncated: bool) -> Self {
         Self {
             core,
-            history,
+            history_len,
             truncated,
         }
     }
@@ -56,17 +57,29 @@ impl<'a> View<'a> {
         if self.core.alternate() {
             return Screen::Alternate { rows };
         }
-        let history = Rows {
-            grid,
-            top: -(self.history as i32),
-            len: self.history,
-        };
-        Screen::Normal {
-            rows,
-            history: History {
-                rows: history,
-                truncated: self.truncated,
+        let history = History {
+            rows: Rows {
+                grid,
+                top: -(self.history_len as i32),
+                len: self.history_len,
             },
+            truncated: self.truncated,
+        };
+        Screen::Normal { rows, history }
+    }
+
+    /// The active screen's rows as text, top first.
+    pub(crate) fn screen_text(&self) -> Vec<String> {
+        let (Screen::Normal { rows, .. } | Screen::Alternate { rows }) = self.screen();
+        rows.text()
+    }
+
+    /// The normal screen's history as text, oldest first; none while the
+    /// alternate screen is active.
+    pub(crate) fn history_text(&self) -> Vec<String> {
+        match self.screen() {
+            Screen::Normal { history, .. } => history.rows.text(),
+            Screen::Alternate { .. } => Vec::new(),
         }
     }
 
@@ -151,6 +164,10 @@ impl<'a> Rows<'a> {
             cells: cells(self.grid, self.top + index as i32),
         }
     }
+
+    fn text(&self) -> Vec<String> {
+        self.iter().map(|row| row.text()).collect()
+    }
 }
 
 /// One row's cells, left to right.
@@ -163,5 +180,19 @@ impl<'a> Row<'a> {
     /// Each cell, left to right, one per column.
     pub fn cells(&self) -> impl ExactSizeIterator<Item = Cell<'a>> + DoubleEndedIterator + use<'a> {
         self.cells.iter().map(Cell::of)
+    }
+
+    /// The row as text: each character with its combining marks, a wide
+    /// character's spacer skipped, trailing blanks trimmed.
+    fn text(&self) -> String {
+        let mut text = String::new();
+        for cell in self.cells() {
+            if let Content::Narrow(glyph) | Content::Wide(glyph) = cell.content {
+                text.push(glyph.character);
+                text.extend(glyph.combining);
+            }
+        }
+        text.truncate(text.trim_end().len());
+        text
     }
 }

@@ -11,15 +11,7 @@ use crate::{
     token::{Kind, Token, Tokenizer},
     view::{UNSET, View},
 };
-use alacritty_terminal::{
-    Grid,
-    event::VoidListener,
-    grid::Dimensions,
-    term::cell::{Cell, Flags},
-};
-use std::iter::once;
-
-const SPACERS: Flags = Flags::WIDE_CHAR_SPACER.union(Flags::LEADING_WIDE_CHAR_SPACER);
+use alacritty_terminal::{Grid, event::VoidListener, grid::Dimensions, term::cell::Cell};
 
 pub(crate) struct Bounded {
     core: Core<VoidListener>,
@@ -356,16 +348,6 @@ impl Bounded {
         self.geometry
     }
 
-    /// The normal screen's newest history rows the model shows, as text,
-    /// oldest first; empty while the alternate screen is active.
-    pub(crate) fn history(&self) -> Vec<String> {
-        let grid = self.core.active();
-        (1..=self.shown())
-            .rev()
-            .map(|age| text(cells(grid, -(age as i32))))
-            .collect()
-    }
-
     /// How many of the normal screen's newest history rows the model shows:
     /// none while the alternate screen is active.
     fn shown(&self) -> usize {
@@ -373,14 +355,6 @@ impl Bounded {
             .normal_history()
             .unwrap_or(0)
             .min(self.history.shown)
-    }
-
-    /// The active screen's rows as text.
-    pub(crate) fn screen(&self) -> Vec<String> {
-        let grid = self.core.active();
-        (0..self.geometry.rows())
-            .map(|line| text(cells(grid, i32::from(line))))
-            .collect()
     }
 
     /// What this instance shows, for painting.
@@ -396,15 +370,4 @@ fn held(grid: &Grid<Cell>) -> usize {
         .flat_map(|line| cells(grid, line))
         .map(cost::cell)
         .sum()
-}
-
-/// A row's characters with each one's combining marks; spacers are skipped
-/// and trailing blanks trimmed.
-fn text(cells: &[Cell]) -> String {
-    let text: String = cells
-        .iter()
-        .filter(|cell| !cell.flags.intersects(SPACERS))
-        .flat_map(|cell| once(cell.c).chain(cell.zerowidth().unwrap_or_default().iter().copied()))
-        .collect();
-    text.trim_end().to_owned()
 }

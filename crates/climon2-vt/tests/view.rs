@@ -333,20 +333,25 @@ fn cells_keep_the_rendition_sgr_selected() {
 }
 
 /// TRM-01 (crate case): a horizontal tab moves the cursor to the next tab
-/// stop, every eighth column, and draws nothing in the cells it passes.
+/// stop, every eighth column, and draws nothing in the cells it passes. The
+/// model's text views read the same cells, so on the screen and in history
+/// they show those cells as spaces too.
 #[test]
 fn a_tab_leaves_the_cells_it_passes_blank() {
-    let model = fed(10, 1, "a\tb");
+    let tabbed = [
+        vec![narrow('a')],
+        vec![blank(); 7],
+        vec![narrow('b'), blank()],
+    ]
+    .concat();
 
-    assert_eq!(
-        screen(&model.view()),
-        [[
-            vec![narrow('a')],
-            vec![blank(); 7],
-            vec![narrow('b'), blank()]
-        ]
-        .concat()]
-    );
+    let model = fed(10, 1, "a\tb");
+    assert_eq!(screen(&model.view()), std::slice::from_ref(&tabbed));
+    assert_eq!(model.screen(), ["a       b"]);
+
+    let model = fed(10, 1, "a\tb\r\nc");
+    assert_eq!(cells(normal_history(&model.view()).rows), [tabbed]);
+    assert_eq!(model.history(), ["a       b"]);
 }
 
 /// The cursor of a fresh model: home, visible, in the host's default shape
