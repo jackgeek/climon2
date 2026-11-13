@@ -62,6 +62,45 @@ fn diagnostic_roles_have_private_files_and_required_headers() {
     assert_eq!(now.as_str().len(), 24);
 }
 
+/// #25, #74: the CLI's general log is named by its UTC second and pid; the
+/// monitor's, written under the pid of the CLI that exec'd it, starts with its
+/// role. Both are private files headed by their role.
+#[test]
+fn general_logs_are_named_and_headed_by_their_roles() {
+    let home = tempfile::tempdir().unwrap();
+    let pid = std::process::id();
+    for (log, role, prefix) in [
+        (LogFile::general(home.path()).unwrap(), "cli", ""),
+        (
+            LogFile::monitor(home.path()).unwrap(),
+            "monitor",
+            "monitor-",
+        ),
+    ] {
+        let name = log.path().file_name().unwrap().to_str().unwrap();
+        let stamp = name
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(&format!("Z-{pid}.log")))
+            .unwrap_or_else(|| panic!("{name}"));
+        let shape: String = stamp
+            .chars()
+            .map(|c| if c.is_ascii_digit() { 'd' } else { c })
+            .collect();
+        assert_eq!(shape, "ddddddddTdddddd", "{name}");
+        let header = fs::read_to_string(log.path()).unwrap();
+        assert!(
+            header.contains(&format!(
+                " INFO climon2: role={role} pid={pid} version=0.1.0"
+            )),
+            "{header}"
+        );
+        assert_eq!(
+            fs::metadata(log.path()).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
 /// #25: a role log is created once per session and never reopened or overwritten.
 #[test]
 fn session_role_log_is_never_reopened() {
@@ -115,6 +154,31 @@ fn pruning_retains_live_recent_and_unknown_artifacts() {
     filetime::set_file_mtime(recent.path(), ancient).unwrap();
     prune(home.path(), SystemTime::now());
     assert!(!old.path().parent().unwrap().exists());
+}
+
+/// #25, #74: general logs, the monitor's included, are kept for exactly seven
+/// days and pruned one nanosecond later.
+#[test]
+fn general_logs_are_pruned_only_after_exactly_seven_days() {
+    let home = tempfile::tempdir().unwrap();
+    let logs = [
+        LogFile::general(home.path()).unwrap(),
+        LogFile::monitor(home.path()).unwrap(),
+    ];
+    let written = SystemTime::UNIX_EPOCH + Duration::from_secs(1_793_232_245);
+    for log in &logs {
+        filetime::set_file_mtime(log.path(), filetime::FileTime::from_system_time(written))
+            .unwrap();
+    }
+    let seven_days = Duration::from_secs(604_800);
+    prune(home.path(), written + seven_days);
+    for log in &logs {
+        assert!(log.path().exists(), "{:?} pruned at the limit", log.path());
+    }
+    prune(home.path(), written + seven_days + Duration::from_nanos(1));
+    for log in &logs {
+        assert!(!log.path().exists(), "{:?} kept past the limit", log.path());
+    }
 }
 
 /// #25/#26: invalid metadata entries still protect their logs from pruning.

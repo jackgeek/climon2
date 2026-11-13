@@ -20,10 +20,10 @@ flowchart TB
             cli["climon2-cli<br/>CLI executable"]
             client["climon2-client<br/>client executable"]
             daemon["climon2-daemon<br/>session daemon executable"]
+            monitor["climon2-monitor<br/>monitor executable; Ratatui TUI"]
             library[["libclimon2_client.dylib / .so<br/>planned Rust cdylib on macOS and Linux"]]
         end
         command(["Session command<br/>external executable"])
-        monitor(["Monitor runtime: monitor / mon<br/>planned Ratatui TUI; executable placement undecided"])
         source_monitor(["Source monitor runtime<br/>future forwarding provider"])
         browser(["Browser with xterm.js<br/>future external consumer"])
 
@@ -33,8 +33,9 @@ flowchart TB
         cli -->|"hello probes for discovery"| daemon
         client -->|"daemon-client communication; current"| daemon
         daemon -->|"runs on session PTY"| command
-        cli -.->|"monitor / mon; planned"| monitor
-        monitor -.->|"loads session-version library; one client thread per live session"| library
+        cli -->|"monitor / mon: execs own version"| monitor
+        monitor -.->|"hello probes for discovery; planned"| daemon
+        monitor -.->|"loads session-version library; one client thread per live session; planned"| library
         client -.->|"loads same-release library; versioned C interface planned"| library
         library -.->|"daemon-client communication; planned"| daemon
         monitor -.->|"consumes forwarded sessions over TCP/IP; future"| source_monitor
@@ -65,7 +66,6 @@ flowchart TB
     end
 
     style library stroke-dasharray: 5 5
-    style monitor stroke-dasharray: 5 5
     style source_monitor stroke-dasharray: 5 5
     style browser stroke-dasharray: 5 5
 ```
@@ -107,15 +107,16 @@ Each live session has its own client thread. Clients start eagerly, newest
 first, with bounded concurrent progress; continuous discovery adds clients for
 new sessions. Background clients relay negotiated plugin data without taking
 control. Native client crashes can terminate the entire monitor. Ratatui powers
-the planned monitor's rendering; its terminal integration is agreed, unimplemented.
+the monitor's rendering; today it draws only the permanent top row and the empty
+state, and the rest of its terminal integration is agreed, unimplemented.
 The [agreed terminal contract](protocol/terminal-integration.md), not implemented,
 selects exact ordered terminal bytes/control/restoration through existing
 in-process record queues and monitor-owned `climon2-vt` models, with planned
 read-only Rust views for Ratatui. Session bytes never go directly to the host;
 daemon query authority stays unique. Monitor-mode daemon presentation uses
 effective session geometry, not host/requested dimensions, including background
-promotion. Optional core Focus is not a plugin/artifact addition. No executable
-placement or new dynamic library is chosen by this amendment.
+promotion. Optional core Focus is not a plugin/artifact addition. No new dynamic
+library is chosen by this amendment.
 
 The [status/activity revision](session-status.md) puts title detection and both
 state machines and terminal-signal interpretation in
@@ -149,8 +150,15 @@ narrow unbounded-engine assumption; it chooses no new executable/library or
 consumption arrow, and does not sandbox trusted native code.
 
 The client executable will also load its same-release library for ordinary
-operations. The monitor node represents a runtime role, not a decision to ship
-an executable named `climon2-monitor`.
+operations.
+
+**Current (#74):** every version folder ships the `climon2-monitor` executable,
+on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 mon`, or their `climon2`
+spellings, reach it through the launcher and the current version's CLI, which
+execs its own version's monitor exactly as it execs a version-matched client,
+so the monitor is always the current version. That handoff between executables
+of one release is not frozen. The monitor does not yet discover sessions or
+load libraries.
 
 The agreed [embedding design](protocol/library-embedding.md) loads
 `<executable home>/<session version>/libclimon2_client.dylib` on macOS, or

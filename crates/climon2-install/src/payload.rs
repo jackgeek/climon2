@@ -2,14 +2,20 @@ use climon2_core::VersionName;
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub(crate) const COMPANIONS: [&str; 3] = ["climon2-cli", "climon2-daemon", "climon2-client"];
+/// The executables a release places in its version folder.
+pub const COMPANIONS: [&str; 4] = [
+    "climon2-cli",
+    "climon2-daemon",
+    "climon2-client",
+    "climon2-monitor",
+];
 
 /// Sources are read in place, preserving instrumented binaries without Cargo builds.
 #[derive(Debug)]
 pub struct Payload {
     version: VersionName,
     pub(crate) launcher: PathBuf,
-    pub(crate) companions: [PathBuf; 3],
+    pub(crate) companions: [PathBuf; COMPANIONS.len()],
 }
 
 impl Payload {
@@ -43,7 +49,11 @@ impl Payload {
         )
     }
 
-    fn from_paths(version: &str, launcher: PathBuf, companions: [PathBuf; 3]) -> io::Result<Self> {
+    fn from_paths(
+        version: &str,
+        launcher: PathBuf,
+        companions: [PathBuf; COMPANIONS.len()],
+    ) -> io::Result<Self> {
         let version = version
             .parse()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
