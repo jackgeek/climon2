@@ -3,12 +3,17 @@
 The default macOS and GNU/Linux packaged acceptance tier (#38), using the public installer,
 the PATH launcher, real sibling binaries and `climon2-test-term` PTYs.
 There are no nested Cargo builds, ignored packaged tests, test retries, or shortened
-production deadlines. A client discards keys typed during its restoration and
-nothing on the screen marks its end, so typed input is ordered by observed output:
+production deadlines. A client discards keys typed during a restoration, which every
+grant starts (a new attachment, take control or hand-back), and nothing on the screen
+marks its end, so typed input is ordered by observed output:
 before input that must reach the session, `type_until` retypes a harmless command
 until its output (or echo) appears, and the input itself is then sent exactly once.
 That orders the input; it does not retry an assertion. Where typing would only end
 the command, the command instead waits for an acknowledgement file the test creates.
+A command that cannot answer a harmless key, because it records every byte or any key
+ends it, answers an acknowledgement file with output instead: created only once the
+client shows restored output, the file's answer is live output, which a client writes
+only after its restoration.
 Each scenario has an isolated HOME and climon2 home;
 normal completion checks owned processes, session metadata and runtime sockets.
 Logs intentionally survive until the isolated home is dropped.
