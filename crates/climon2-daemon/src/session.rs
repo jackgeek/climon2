@@ -58,8 +58,8 @@ struct Session<'a, C> {
     cleanup: C,
     connections: BTreeMap<u64, Connection>,
     deliveries: BTreeMap<u64, Delivery>,
-    /// Revision-1 connections after their Open: passive monitor connections
-    /// and interactive attachments.
+    /// Revision-1 connections after their first role: passive monitor
+    /// connections, interactive attachments and standalone Kills.
     opened: BTreeMap<u64, wire::Opened>,
     control: Control,
     vt: Vt,
@@ -844,14 +844,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.report_revocation(id, RevocationReason::Takeover);
     }
 
-    /// A kill requester's confirmation: `Terminated` with the private
-    /// protocol's status, or `Error`.
+    /// A kill requester's answer: a standalone Kill's Response, or the
+    /// private protocol's confirmation.
     fn confirm_kill(&mut self, id: u64, outcome: &Outcome) {
-        let message = match outcome.private_code() {
-            Some(code) => ServerMessage::Terminated { code },
-            None => failure_message(),
-        };
-        self.terminal(id, message);
+        match self.kill_request(id) {
+            Some(request_id) => self.answer_kill(id, request_id, outcome),
+            None => self.terminal(id, private_confirmation(outcome)),
+        }
     }
 
     /// An attachment's result: control it still holds ends as the session
@@ -994,6 +993,14 @@ fn ending_effects(
         return control.kill(conn);
     }
     control.lost(conn)
+}
+
+/// `Terminated` with the private protocol's status, or `Error`.
+fn private_confirmation(outcome: &Outcome) -> ServerMessage {
+    match outcome.private_code() {
+        Some(code) => ServerMessage::Terminated { code },
+        None => failure_message(),
+    }
 }
 
 fn failure_message() -> ServerMessage {

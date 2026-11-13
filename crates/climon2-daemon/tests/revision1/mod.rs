@@ -12,7 +12,8 @@ use climon2_core::{
     protocol::ClientMessage,
     wire::{
         self, Available, CommandFinal, CommandResult, ControlRecord, Counter, Families, FatalError,
-        Frame, FrameLimit, Leave, Mode, Open, Outcome, Requested, Response, ServerMessage, Success,
+        Frame, FrameLimit, Kill, Leave, Mode, Open, Outcome, Requested, Response, ServerMessage,
+        Success,
     },
 };
 use std::{
@@ -68,6 +69,15 @@ fn counter(value: u64) -> Counter {
 
 fn families(tokens: &[&str]) -> Families {
     Families::new(tokens.iter().map(|token| (*token).to_owned()).collect()).unwrap()
+}
+
+/// A standalone Kill request.
+fn kill(request_id: u64, revision: u32, required: &[&str]) -> Kill {
+    Kill {
+        request_id: counter(request_id),
+        revision,
+        required_capabilities: families(required),
+    }
 }
 
 fn open(request_id: u64, required: &[&str], optional: &[&str], mode: Mode) -> Open {

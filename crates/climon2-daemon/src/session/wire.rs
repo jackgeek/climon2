@@ -1,6 +1,7 @@
 //! Daemon wire revision 1 on the session loop, beside the private protocol:
-//! passive monitor connections and ordinary interactive attachments, their
-//! requests, their control and terminal records and their core metadata.
+//! passive monitor connections, ordinary interactive attachments and
+//! standalone Kills, their requests, their control and terminal records and
+//! their core metadata.
 use super::Session;
 use crate::{
     connection::{Connection, frame_limit},
@@ -9,26 +10,28 @@ use crate::{
 use climon2_core::{
     protocol::TerminalSize,
     wire::{
-        ActualGeometry, Advertisement, AuthorityIds, AuthorityResult, Available, CommandFinal,
-        CommandResult, ControlGranted, ControlRecord, ControlRevoked, Counter, Display, Error,
-        Families, Family, Focus, FocusBytes, Frame, FrameLimits, Geometry, GrantReason, Guid,
-        InitialMetadata, Input, Kill, Mode, Open, OperationalCode, Outcome, Ready, Rejection,
-        Request, Resize, Response, RestorationBegin, RestorationComplete, RevocationReason,
-        Success, TitleChanged,
+        ActualGeometry, Advertisement, AuthorityIds, AuthorityResult, Available, Cleanup,
+        CommandFinal, CommandResult, ControlGranted, ControlRecord, ControlRevoked, Counter,
+        Display, Error, Failure, Families, Family, Focus, FocusBytes, Frame, FrameLimits, Geometry,
+        GrantReason, Guid, InitialMetadata, Input, Kill, KnownResult, Mode, Open, OperationalCode,
+        Outcome, PartialCleanup, PartialTermination, Ready, Rejection, Request, Resize, Response,
+        RestorationBegin, RestorationComplete, RevocationReason, Success, TitleChanged,
     },
 };
 use std::{collections::BTreeSet, io, num::NonZeroU32};
 
 const HAS_ROLE: &str = "this connection already has a role";
 const NO_ROLE: &str = "this connection has no role";
+const NOT_OPENED: &str = "this connection opened nothing";
 const UNSUPPORTED_REVISION: &str = "this daemon supports revision 1 only";
 const UNSUPPORTED_CAPABILITY: &str = "a required capability is not supported";
 const FOCUS_NOT_SELECTED: &str = "focus-v1 was not selected";
 const UNSUPPORTED_GEOMETRY: &str = "the geometry exceeds the supported terminal size";
 const EMPTY_INPUT: &str = "Input carries no bytes";
 const TERMINATING: &str = "the session is terminating";
-/// Standalone Kill (#88), Acquire by a passive monitor connection (#89),
-/// and Set viewing and Acknowledge (#91) are not served yet.
+const CLEANUP_INCOMPLETE: &str = "the session's termination or cleanup did not complete";
+/// Acquire by a passive monitor connection (#89), and Set viewing and
+/// Acknowledge (#91) are not served yet.
 const NOT_YET_SERVED: &str = "this daemon does not serve this request yet";
 
 /// What hello advertises: only the families this daemon implements.
@@ -43,8 +46,9 @@ pub(super) fn advertisement() -> Advertisement {
     )
 }
 
-/// A revision-1 connection after its successful Open: the families it
-/// selected, which decide the core metadata it receives, and its role.
+/// A revision-1 connection after its first role: an Open's, with the
+/// families it selected, which decide the core metadata it receives, or a
+/// standalone Kill's, which selects none.
 pub(super) struct Opened {
     selected: BTreeSet<Family>,
     role: Role,
@@ -55,6 +59,9 @@ enum Role {
     Monitor,
     /// An ordinary interactive attachment.
     Attachment(Attachment),
+    /// A standalone Kill, answered once the session ended: never an
+    /// attachment, and it receives no core metadata.
+    Kill(Counter),
 }
 
 /// The connection's role, for requests that depend on it.
@@ -62,6 +69,7 @@ enum Role {
 enum Kind {
     Monitor,
     Attachment,
+    Kill,
 }
 
 struct Attachment {
@@ -101,10 +109,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn control_request(&mut self, id: u64, request: Request) -> io::Result<()> {
         match request {
             Request::Ready(ready) => self.ready(id, ready),
-            Request::Kill(kill) => {
-                self.wire_kill(id, kill);
-                Ok(())
-            }
+            Request::Kill(kill) => self.wire_kill(id, kill),
             other => {
                 self.attachment_request(id, other);
                 Ok(())
@@ -221,7 +226,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn open_request(&self, id: u64) -> Option<Counter> {
         match &self.opened.get(&id)?.role {
             Role::Attachment(attachment) => Some(attachment.open),
-            Role::Monitor => None,
+            _ => None,
         }
     }
 
@@ -245,11 +250,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// Leave removes the role in one step and reports whether an attachment
-    /// was detached, then closes the stream.
+    /// was detached, then closes the stream. A connection that opened
+    /// nothing has nothing to leave.
     fn leave(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
         match self.kind(id) {
-            None => {
-                self.reject(id, request_id, OperationalCode::InvalidState, NO_ROLE);
+            None | Some(Kind::Kill) => {
+                self.reject(id, request_id, OperationalCode::InvalidState, NOT_OPENED);
                 Ok(())
             }
             Some(Kind::Monitor) => {
@@ -280,11 +286,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// Acquire takes control for a non-controlling attachment and is an
     /// explicit no-op for the controller. A passive monitor connection
-    /// cannot acquire until #89 serves it.
+    /// cannot acquire until #89 serves it, and a connection that opened
+    /// nothing has nothing to convert.
     fn acquire(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
         match self.kind(id) {
-            None => {
-                self.reject(id, request_id, OperationalCode::InvalidState, NO_ROLE);
+            None | Some(Kind::Kill) => {
+                self.reject(id, request_id, OperationalCode::InvalidState, NOT_OPENED);
                 Ok(())
             }
             Some(Kind::Monitor) => {
@@ -433,6 +440,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let kind = match self.opened.get(&id)?.role {
             Role::Monitor => Kind::Monitor,
             Role::Attachment(_) => Kind::Attachment,
+            Role::Kill(_) => Kind::Kill,
         };
         Some(kind)
     }
@@ -446,7 +454,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn attachment_mut(&mut self, id: u64) -> Option<&mut Attachment> {
         match &mut self.opened.get_mut(&id)?.role {
             Role::Attachment(attachment) => Some(attachment),
-            Role::Monitor => None,
+            _ => None,
         }
     }
 
@@ -455,7 +463,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     pub(super) fn display_authority(&self, id: u64) -> Option<Authority> {
         match &self.opened.get(&id)?.role {
             Role::Attachment(attachment) => attachment.held.map(|held| held.authority),
-            Role::Monitor => None,
+            _ => None,
         }
     }
 
@@ -567,26 +575,61 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// Standalone Kill is validated like any first role; a later Kill never
-    /// repurposes an existing role.
-    fn wire_kill(&mut self, id: u64, kill: Kill) {
+    /// repurposes an existing role. A valid one commits the session's
+    /// termination, or joins the one under way.
+    fn wire_kill(&mut self, id: u64, kill: Kill) -> io::Result<()> {
         if self.opened.contains_key(&id) {
-            return self.has_role(id, kill.request_id);
+            self.has_role(id, kill.request_id);
+            return Ok(());
         }
         let none = Families::default();
-        let selected = select(kill.revision, &kill.required_capabilities, &none);
-        self.reject_role(id, kill.request_id, selected.err().unwrap_or_else(not_yet));
+        if let Err(error) = select(kill.revision, &kill.required_capabilities, &none) {
+            self.reject_role(id, kill.request_id, error);
+            return Ok(());
+        }
+        let killing = Opened {
+            selected: BTreeSet::new(),
+            role: Role::Kill(kill.request_id),
+        };
+        self.opened.insert(id, killing);
+        self.react(|control| control.kill(ConnectionId(id)))
+    }
+
+    /// The request a standalone Kill connection awaits the answer to.
+    pub(super) fn kill_request(&self, id: u64) -> Option<Counter> {
+        match self.opened.get(&id)?.role {
+            Role::Kill(request_id) => Some(request_id),
+            _ => None,
+        }
+    }
+
+    /// A standalone Kill's answer once the session ended, then the end of
+    /// its stream.
+    pub(super) fn answer_kill(&mut self, id: u64, request_id: Counter, ended: &control::Outcome) {
+        self.respond(id, request_id, termination(ended));
+        self.end_stream(id);
     }
 
     /// The command's result, once the daemon knows it: every opened
-    /// connection receives it as Command final.
+    /// connection receives it as Command final, a standalone Kill's in its
+    /// answer instead.
     pub(super) fn publish(&mut self, result: &CommandResult) {
         let frame = CommandFinal::new(result.clone(), None)
             .expect("no status disagrees with a result")
             .to_frame();
-        let opened: Vec<u64> = self.opened.keys().copied().collect();
-        for id in opened {
+        for id in self.subscribed() {
             self.send_wire(id, &frame);
         }
+    }
+
+    /// The connections that opened: passive monitor connections and
+    /// interactive attachments.
+    fn subscribed(&self) -> Vec<u64> {
+        self.opened
+            .iter()
+            .filter(|(_, opened)| !matches!(opened.role, Role::Kill(_)))
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     /// Sends a Title changed to every connection that selected `title-v1`,
@@ -663,6 +706,28 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let queued = connection.queue_wire(frame);
         self.queued_or_lost(id, queued);
     }
+}
+
+/// A Kill succeeds only with the command's confirmed result after complete
+/// cleanup. Otherwise it failed: its termination or cleanup did not
+/// complete, and the result is reported if it was confirmed.
+fn termination(ended: &control::Outcome) -> Outcome {
+    match (&ended.command, ended.cleaned) {
+        (Some(command_result), true) => Outcome::Ok(Success::Termination {
+            command_result: command_result.clone(),
+            cleanup: Cleanup::Complete,
+        }),
+        (command_result, _) => Outcome::Failed(incomplete(command_result.clone())),
+    }
+}
+
+fn incomplete(command_result: Option<CommandResult>) -> Failure {
+    let known = KnownResult::Termination(PartialTermination {
+        command_result,
+        cleanup: PartialCleanup::Incomplete,
+    });
+    let error = error(OperationalCode::CleanupFailed, CLEANUP_INCOMPLETE);
+    Failure::new(error, Some(known)).expect("a partial termination confirms nothing")
 }
 
 /// The application's focus report: `ESC [ I` for focus in, `ESC [ O` out.

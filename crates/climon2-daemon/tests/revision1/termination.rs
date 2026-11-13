@@ -1,8 +1,51 @@
 //! Command final and standalone Kill (#88): how the end of a session reaches
 //! revision-1 connections, beside the private protocol's results.
-use super::{assert_final_then_closed, exited, interactive::ready_attachment, monitor, signalled};
+use super::{
+    assert_closed, assert_final_then_closed, assert_rejected, counter, exited,
+    interactive::ready_attachment, kill, message, monitor, open, peer, request, signalled,
+};
 use crate::Session;
-use climon2_core::protocol::ServerMessage as PrivateMessage;
+use climon2_core::{
+    hello::Lifecycle,
+    protocol::{ClientMessage, HANGUP_GRACE, ServerMessage as PrivateMessage},
+    wire::{
+        Acquire, AuthorityIds, Cleanup, CommandResult, Input, Leave, Mode, Outcome, Response,
+        ServerMessage, Success,
+    },
+};
+use climon2_platform::process;
+use std::{
+    fs, thread,
+    time::{Duration, Instant},
+};
+
+/// A standalone Kill's success: termination confirmed with `result` after
+/// complete daemon cleanup.
+fn terminated(request_id: u64, result: &CommandResult) -> ServerMessage {
+    let termination = Success::Termination {
+        command_result: result.clone(),
+        cleanup: Cleanup::Complete,
+    };
+    ServerMessage::Response(Response {
+        request_id: counter(request_id),
+        outcome: Outcome::Ok(termination),
+    })
+}
+
+/// The command fixture's process ID, which it records as it starts.
+fn fixture_pid(session: &Session) -> u32 {
+    let pid = fs::read_to_string(session.directory.path().join("fixture-pid")).unwrap();
+    pid.parse().unwrap()
+}
+
+/// Waits until the hello `state` reports the session terminating.
+fn terminating(session: &Session) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while crate::advertised_state(session).0 != Lifecycle::Terminating {
+        assert!(Instant::now() < deadline, "termination never committed");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
 
 /// COM-06 (Contract): exit zero, an arbitrary nonzero exit and a signal each
 /// reach every opened revision-1 connection as exactly one Command final
@@ -38,4 +81,80 @@ fn command_final_reports_each_exit_and_signal_once() {
         );
         session.finish();
     }
+}
+
+/// COM-03 (Contract, Kill cases) and COM-06 (Contract, signal): a
+/// standalone Kill is a role of its own connection, not an attachment. It
+/// commits the session's termination at once and is answered only after
+/// the command's termination is confirmed and the daemon cleaned up: after
+/// the real five-second hang-up grace, with the session's files removed
+/// and the command gone. A second standalone Kill and a private kill, sent
+/// a second later, join the same termination without restarting the grace,
+/// and all three are answered together. On the Kill's connection, a later
+/// Kill or Open is `invalid_state`, as are Leave and Acquire, with nothing
+/// opened, and Input is `not_attached`. The command ignores SIGHUP, so
+/// SIGKILL ends it: the Kills and every Command final say signal 9, while
+/// the private kill gets `Terminated` 137.
+#[test]
+fn a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_join_it() {
+    let mut session = Session::start("ignore-hup");
+    let mut attached = ready_attachment(&session, &[]);
+    let (mut watching, _) = monitor(&session, &[]);
+    let command = fixture_pid(&session);
+    let mut first = peer(&session);
+    let started = Instant::now();
+    request(&mut first, &kill(1, 1, &[]));
+    terminating(&session);
+    request(&mut first, &kill(2, 1, &[]));
+    assert_rejected(&mut first, 2, "invalid_state");
+    request(&mut first, &open(3, &[], &[], Mode::Monitor));
+    assert_rejected(&mut first, 3, "invalid_state");
+    request(
+        &mut first,
+        &Leave {
+            request_id: counter(4),
+        },
+    );
+    assert_rejected(&mut first, 4, "invalid_state");
+    request(
+        &mut first,
+        &Acquire {
+            request_id: counter(5),
+        },
+    );
+    assert_rejected(&mut first, 5, "invalid_state");
+    let input = Input {
+        request_id: counter(6),
+        authority: AuthorityIds {
+            period: counter(1),
+            restoration_id: counter(1),
+        },
+        payload: b"x".to_vec(),
+    };
+    super::send(&mut first, &input.to_frame());
+    assert_rejected(&mut first, 6, "not_attached");
+    // A gap a restarted grace would show, not an ordering step.
+    thread::sleep(Duration::from_secs(1));
+    let mut second = peer(&session);
+    let joined = Instant::now();
+    request(&mut second, &kill(1, 1, &["daemon-wire-v1"]));
+    let mut private = session.connect();
+    crate::send(&mut private, ClientMessage::Kill);
+
+    let killed = signalled(9);
+    assert_eq!(message(&mut first), terminated(1, &killed));
+    assert!(started.elapsed() >= HANGUP_GRACE, "{:?}", started.elapsed());
+    assert!(joined.elapsed() < HANGUP_GRACE, "the grace restarted");
+    assert!(!session.metadata.exists() && !session.socket.exists());
+    assert_eq!(process::start_time(command).unwrap(), None);
+    assert_closed(&mut first);
+    assert_eq!(message(&mut second), terminated(1, &killed));
+    assert_closed(&mut second);
+    assert_eq!(
+        crate::receive(&mut private),
+        PrivateMessage::Terminated { code: 137 }
+    );
+    assert_final_then_closed(&mut watching, &killed);
+    attached.ended(&killed);
+    session.finish();
 }
