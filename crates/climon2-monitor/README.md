@@ -32,7 +32,7 @@ help (#105). It discovers no sessions and loads no client libraries yet.
    schema `climon2_core::preferences`). A missing file saves nothing; an
    unreadable or malformed one means not suppressed and keeps its reason
    (`cannot read monitor-preferences.json: …` or `monitor-preferences.json is
-   malformed: …`) for the dialog. It never refuses the monitor.
+   malformed: …`) for the screen. It never refuses the monitor.
 
 Every failure prints one escaped line, with the general-log suffix once that log
 exists, and exits 125 before raw mode, the alternate screen or any OSC output.
@@ -50,8 +50,10 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   top row reads `No session selected`; below it the centred empty state reads
   `No sessions to show.` and, unless `monitor.show_key_hints` is false, the key
   hint `Press <prefix> then x to exit.` with the configured prefix. Hiding the
-  hint changes no binding. SIGWINCH repaints the whole frame at the new size
-  over the old one, so no blank screen or cursor flashes between them.
+  hint changes no binding. With it false, any problem with the key
+  introduction's saved choice takes the hint's place: a diagnostic, not a
+  hint. SIGWINCH repaints the whole frame at the new size over the old one,
+  so no blank screen or cursor flashes between them.
 - The key introduction (`introduction.rs`) opens at startup only when
   `monitor.show_key_hints` is true and **Don't show again** is not saved, and
   on prefix+? whatever either says (a no-op while open). It is a box titled
@@ -60,9 +62,9 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   `<prefix> then x  Exit the monitor`, `… s  Open
   the session list`, `… ?  Show this dialog`, a blank line, `[ ] Don't show
   again (Space)` (`[x]` once saved), any problem with the saved choice, a
-  blank line and `Continue (Enter)`. With key hints off, the problem shows
-  only once prefix+? opens the dialog (and in the general log). The screen
-  repaints only when its frame changes, and a resize always repaints it.
+  blank line and `Continue (Enter)`. With key hints off, the empty state shows
+  the same problem, until a save succeeds. The screen repaints only when its
+  frame changes, and a resize always repaints it.
 - One table of prefix actions (`keys.rs`, `BINDINGS`: key, action, label)
   completes the actions after the prefix and gives the key introduction its
   lines and the empty state's hint its key. Prefix+s is listed as the
@@ -146,6 +148,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | HLP-01 (Monitor): hints off or the choice saved keep it closed; prefix+? opens it regardless, showing the saved choice; prefix+? while open is a no-op; a later version's file with unknown fields is honoured | `the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say` (e2e) |
 | HLP-01 (Monitor): Space saves and reverses the choice per climon2 home, exact version 1 bytes, mode 0600 under umask 000, by rename (a hard link keeps the old bytes), nothing left behind, a file already under the temporary name replaced; restarts and another home | `dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible` (e2e) |
 | HLP-01 (Monitor; derived scenario: unreadable or malformed preference file): not suppressed, the reason under the box and in the log, the file never rewritten implicitly | `an_unreadable_or_malformed_preference_file_shows_why_beside_the_introduction` (e2e) |
+| HLP-01 (Monitor, Fault; derived scenario: unreadable or malformed preference file, key hints off): the introduction stays closed and the empty state shows the reason in place of the hint, a diagnostic; prefix+? shows it under the box; a failing save shows its failure in both places; a successful save over the file clears them | `without_key_hints_the_empty_state_shows_problems_with_the_saved_choice` (e2e) |
 | HLP-01 (Fault): a save that cannot create its temporary file or replace the preference file is reported in the key introduction and logged, saves nothing and leaves nothing behind | `a_failing_save_is_reported_in_the_key_introduction_and_saves_nothing` (e2e) |
 | HLP-02 (Monitor, over the empty monitor): the key introduction owns typed keys, prefixed keys, reports and pastes, none acts; Enter closes, prefix+? reopens, prefix+x exits | `the_key_introduction_is_modal_and_prefix_x_still_exits_from_it` (e2e) |
 | HLP-02 (Monitor, over the empty monitor): with Ctrl+[ as the prefix, Escape cannot close the key introduction and prefix+x still exits | `with_escape_as_the_prefix_escape_cannot_close_the_key_introduction_and_prefix_x_still_exits` (e2e) |

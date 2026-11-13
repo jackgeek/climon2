@@ -20,7 +20,8 @@ const EMPTY: &str = "No sessions to show.";
 /// asked the host's size or cursor, and the cursor stays hidden.
 pub(crate) struct Screen {
     backend: CrosstermBackend<Stdout>,
-    lines: Vec<Line<'static>>,
+    /// The empty state's key hint, unless key hints are off.
+    hint: Option<String>,
     size: TerminalSize,
     /// The frame last painted.
     painted: Buffer,
@@ -36,10 +37,9 @@ impl Screen {
         introduction: &KeyIntroduction,
     ) -> io::Result<Self> {
         let exit = char::from(EXIT.key);
-        let hint = hints.then(|| Line::from(format!("Press {prefix} then {exit} to exit.")));
         let mut screen = Self {
             backend: CrosstermBackend::new(io::stdout()),
-            lines: std::iter::once(Line::from(EMPTY)).chain(hint).collect(),
+            hint: hints.then(|| format!("Press {prefix} then {exit} to exit.")),
             size,
             painted: Buffer::default(),
         };
@@ -84,7 +84,9 @@ impl Screen {
     }
 
     /// The permanent top row, and below it the empty state, centred, under
-    /// the key introduction while it is open.
+    /// the key introduction while it is open. With key hints off, the empty
+    /// state names any problem with the saved choice where its hint would be:
+    /// a diagnostic, not a hint.
     fn frame(&self, introduction: &KeyIntroduction) -> Buffer {
         let area = Rect::new(0, 0, self.size.cols, self.size.rows);
         let mut frame = Buffer::empty(area);
@@ -100,8 +102,10 @@ impl Screen {
         Paragraph::new(NO_SELECTION)
             .reversed()
             .render(top, &mut frame);
-        let height = Constraint::Length(self.lines.len() as u16);
-        Paragraph::new(self.lines.clone())
+        let note = self.hint.as_deref().or(introduction.problem());
+        let lines: Vec<_> = std::iter::once(EMPTY).chain(note).map(Line::from).collect();
+        let height = Constraint::Length(lines.len() as u16);
+        Paragraph::new(lines)
             .centered()
             .render(below.centered_vertically(height), &mut frame);
         introduction.render(below, &mut frame);

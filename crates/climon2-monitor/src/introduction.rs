@@ -52,6 +52,11 @@ impl KeyIntroduction {
         }
     }
 
+    /// Why the saved choice is unknown, or was not saved, if it is.
+    pub(crate) fn problem(&self) -> Option<&str> {
+        self.preference.problem()
+    }
+
     /// Draws the dialog centred in `area`, over whatever `buffer` holds there,
     /// while the key introduction is open.
     pub(crate) fn render(&self, area: Rect, buffer: &mut Buffer) {

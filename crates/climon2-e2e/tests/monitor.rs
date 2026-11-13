@@ -442,8 +442,9 @@ fn a_monitor_outside_a_version_folder_refuses_to_start() {
 }
 
 /// The empty monitor as specified: the permanent top row, then the empty
-/// state's `lines` centred in the rows below it; an odd spare row falls above
-/// the text and an odd spare column after it.
+/// state's `lines` centred in the rows below it, an odd spare row above the
+/// text. Each line is centred on the middle column: it starts half the
+/// columns less half its width from the left, both halves rounded down.
 fn empty_monitor(rows: u16, cols: u16, lines: &[&str]) -> String {
     let (rows, cols) = (usize::from(rows), usize::from(cols));
     let first = 1 + (rows - lines.len()) / 2;
@@ -451,7 +452,9 @@ fn empty_monitor(rows: u16, cols: u16, lines: &[&str]) -> String {
         .map(|row| match row {
             0 => format!("{TOP_ROW:<cols$}"),
             _ if (first..first + lines.len()).contains(&row) => {
-                format!("{:^cols$}", lines[row - first])
+                let line = lines[row - first];
+                let left = cols / 2 - line.chars().count() / 2;
+                format!("{:left$}{line:<width$}", "", width = cols - left)
             }
             _ => " ".repeat(cols),
         })
@@ -1078,6 +1081,64 @@ fn an_unreadable_or_malformed_preference_file_shows_why_beside_the_introduction(
     terminal.send(b"\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
     assert!(preferences_file(&package).is_dir());
+    package.assert_clean();
+}
+
+/// HLP-01 (Monitor, Fault; derived scenario: an unreadable or malformed
+/// preference file, with key hints off): the key introduction stays closed,
+/// and the empty state shows why the saved choice is unknown where its key
+/// hint would be: a visible diagnostic, not a hint. Prefix+? shows the reason
+/// under the box too. A save that fails replaces it with the failure in both
+/// places, and once a save succeeds over the file no problem is shown.
+#[test]
+fn without_key_hints_the_empty_state_shows_problems_with_the_saved_choice() {
+    let package = Package::new();
+    fs::write(
+        config_file(&package),
+        r#"{"monitor": {"show_key_hints": false}}"#,
+    )
+    .unwrap();
+    fs::write(
+        preferences_file(&package),
+        r#"{"suppress_key_introduction":true}"#,
+    )
+    .unwrap();
+    let reason =
+        "monitor-preferences.json is malformed: missing field `version` at line 1 column 34";
+    let diagnosed = empty_monitor(ROWS, COLS, &[EMPTY, reason]);
+    let mut terminal = outer(&package, "climon2 monitor");
+    opened_on(&mut terminal, &diagnosed);
+    terminal.send(b"\x1d?").unwrap();
+    shows(
+        &mut terminal,
+        &overlaid(&diagnosed, &key_introduction("Ctrl+]", false, Some(reason))),
+    );
+    let temporary = temporary_file(&package);
+    fs::create_dir(&temporary).unwrap();
+    terminal.send(b" ").unwrap();
+    let exists = "cannot save monitor-preferences.json: File exists (os error 17)";
+    let unsaved = empty_monitor(ROWS, COLS, &[EMPTY, exists]);
+    shows(
+        &mut terminal,
+        &overlaid(&unsaved, &key_introduction("Ctrl+]", false, Some(exists))),
+    );
+    terminal.send(b"\r").unwrap();
+    shows(&mut terminal, &unsaved);
+    fs::remove_dir(&temporary).unwrap();
+    terminal.send(b"\x1d? ").unwrap();
+    let quiet = empty_monitor(ROWS, COLS, &[EMPTY]);
+    shows(
+        &mut terminal,
+        &overlaid(&quiet, &key_introduction("Ctrl+]", true, None)),
+    );
+    terminal.send(b"\r").unwrap();
+    shows(&mut terminal, &quiet);
+    terminal.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(
+        fs::read_to_string(preferences_file(&package)).unwrap(),
+        SUPPRESSED
+    );
     package.assert_clean();
 }
 
