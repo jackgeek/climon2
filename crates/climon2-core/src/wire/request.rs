@@ -1,7 +1,7 @@
 //! Requests: client to session daemon, types `0x30` through `0x39`.
 use super::{
-    Counter, Families, FatalCode, Frame, Geometry, Input, Requested,
-    record::{self, ControlRecord, Decoder, by_name, nullable},
+    AuthorityIds, Counter, Families, FatalCode, Frame, Geometry, Input, Requested,
+    record::{self, ControlRecord, Decoder, by_name, flat_authority, nullable},
 };
 use crate::ContractError;
 use serde::{Deserialize, Serialize, Serializer};
@@ -109,13 +109,29 @@ impl Serialize for Open {
 /// restoration, even before readiness. Acceptance is not the actual geometry,
 /// which the Geometry event reports.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "ResizeFields", into = "ResizeFields")]
 pub struct Resize {
     pub request_id: Counter,
-    pub period: Counter,
-    pub restoration_id: Counter,
+    pub authority: AuthorityIds,
     pub geometry: Geometry,
 }
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResizeFields {
+    request_id: Counter,
+    period: Counter,
+    restoration_id: Counter,
+    geometry: Geometry,
+}
+
+flat_authority!(
+    Resize,
+    ResizeFields {
+        request_id,
+        geometry
+    }
+);
 
 /// Acquire `0x33`: an explicit request for control. While already
 /// controlling it is a no-op that keeps the period and restoration.
@@ -128,33 +144,67 @@ pub struct Acquire {
 /// Ready `0x34`: the complete current restoration is applied, not merely
 /// received.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "ReadyFields", into = "ReadyFields")]
 pub struct Ready {
     pub request_id: Counter,
-    pub period: Counter,
-    pub restoration_id: Counter,
+    pub authority: AuthorityIds,
 }
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadyFields {
+    request_id: Counter,
+    period: Counter,
+    restoration_id: Counter,
+}
+
+flat_authority!(Ready, ReadyFields { request_id });
 
 /// Set viewing `0x35`: whether this attachment is viewing; true requires
 /// readiness. It is a fact report, never an acknowledgement.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "SetViewingFields", into = "SetViewingFields")]
 pub struct SetViewing {
     pub request_id: Counter,
-    pub period: Counter,
-    pub restoration_id: Counter,
+    pub authority: AuthorityIds,
     pub viewing: bool,
 }
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetViewingFields {
+    request_id: Counter,
+    period: Counter,
+    restoration_id: Counter,
+    viewing: bool,
+}
+
+flat_authority!(
+    SetViewing,
+    SetViewingFields {
+        request_id,
+        viewing
+    }
+);
 
 /// Acknowledge attention `0x36`: acknowledges whatever attention is pending.
 /// It names no episode.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "AcknowledgeFields", into = "AcknowledgeFields")]
 pub struct Acknowledge {
     pub request_id: Counter,
-    pub period: Counter,
-    pub restoration_id: Counter,
+    pub authority: AuthorityIds,
 }
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcknowledgeFields {
+    request_id: Counter,
+    period: Counter,
+    restoration_id: Counter,
+}
+
+flat_authority!(Acknowledge, AcknowledgeFields { request_id });
 
 /// Accepted departure: removes a passive registration and any attachment.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -175,13 +225,29 @@ pub struct Kill {
 /// Focus `0x39`: the desired application focus, which needs `focus-v1`. It
 /// is non-user traffic: never Input, never an acknowledgement.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "FocusFields", into = "FocusFields")]
 pub struct Focus {
     pub request_id: Counter,
-    pub period: Counter,
-    pub restoration_id: Counter,
+    pub authority: AuthorityIds,
     pub focused: bool,
 }
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FocusFields {
+    request_id: Counter,
+    period: Counter,
+    restoration_id: Counter,
+    focused: bool,
+}
+
+flat_authority!(
+    Focus,
+    FocusFields {
+        request_id,
+        focused
+    }
+);
 
 impl ControlRecord for Open {
     const CODE: u8 = 0x30;

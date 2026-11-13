@@ -7,10 +7,10 @@ use climon2_core::{
     hello::Lifecycle,
     protocol::{self, ClientMessage, ServerMessage as PrivateMessage, TerminalSize},
     wire::{
-        self, Acknowledge, Acquire, ControlRecord, ControlRevoked, Counter, Display, Focus,
-        FocusBytes, Frame, Geometry, GrantReason, Input, Kill, Leave, Mode, Outcome, Ready, Resize,
-        Response, RestorationBegin, RestorationComplete, RevocationReason, ServerMessage,
-        SetViewing, Success,
+        self, Acknowledge, Acquire, AuthorityIds, AuthorityResult, ControlRecord, ControlRevoked,
+        Counter, Display, Focus, FocusBytes, Frame, Geometry, GrantReason, Input, Kill, Leave,
+        Mode, Outcome, Ready, Resize, Response, RestorationBegin, RestorationComplete,
+        RevocationReason, ServerMessage, SetViewing, Success,
     },
 };
 use std::{
@@ -116,10 +116,14 @@ impl Attached {
             (geometry, reason),
             "{granted:?}"
         );
-        assert!(granted.period.get() > self.period, "{granted:?}");
-        self.period = granted.period.get();
+        let AuthorityIds {
+            period,
+            restoration_id,
+        } = granted.authority;
+        assert!(period.get() > self.period, "{granted:?}");
+        self.period = period.get();
         self.controlling = true;
-        self.begun(granted.restoration_id.get(), geometry);
+        self.begun(restoration_id.get(), geometry);
     }
 
     /// A replacement restoration of the current period at `geometry`.
@@ -131,25 +135,22 @@ impl Attached {
     /// Restoration begin for `restoration` of the current period at
     /// `geometry`.
     fn begun(&mut self, restoration: u64, geometry: Geometry) {
+        self.restoration = restoration;
         let begin = RestorationBegin {
-            period: counter(self.period),
-            restoration_id: counter(restoration),
+            authority: self.authority(),
             geometry,
         };
         assert_eq!(
             message(&mut self.stream),
             ServerMessage::RestorationBegin(begin)
         );
-        self.restoration = restoration;
     }
 
     /// The current restoration's Display chunks, then its Restoration
     /// complete.
     fn completed(&mut self) {
-        let (period, restoration_id) = self.authority();
         let complete = RestorationComplete {
-            period,
-            restoration_id,
+            authority: self.authority(),
         };
         assert_eq!(
             self.next_after_display(),
@@ -174,7 +175,7 @@ impl Attached {
     fn displayed(&mut self, display: Display) {
         assert!(self.controlling, "Display after Control revoked");
         assert_eq!(
-            (display.period, display.restoration_id),
+            display.authority,
             self.authority(),
             "Display under another authority"
         );
@@ -199,8 +200,11 @@ impl Attached {
         counter(self.request)
     }
 
-    fn authority(&self) -> (Counter, Counter) {
-        (counter(self.period), counter(self.restoration))
+    fn authority(&self) -> AuthorityIds {
+        AuthorityIds {
+            period: counter(self.period),
+            restoration_id: counter(self.restoration),
+        }
     }
 
     /// The Response to the latest request, after any Display.
@@ -218,21 +222,19 @@ impl Attached {
     /// `authority`, and returns its outcome.
     fn ask(
         &mut self,
-        authority: (Counter, Counter),
-        record: impl FnOnce(Counter, Counter, Counter) -> Frame,
+        authority: AuthorityIds,
+        record: impl FnOnce(Counter, AuthorityIds) -> Frame,
     ) -> Outcome {
-        let (period, restoration_id) = authority;
-        let frame = record(self.next(), period, restoration_id);
+        let frame = record(self.next(), authority);
         send(&mut self.stream, &frame);
         self.response()
     }
 
-    fn ready_as(&mut self, authority: (Counter, Counter)) -> Outcome {
-        self.ask(authority, |request_id, period, restoration_id| {
+    fn ready_as(&mut self, authority: AuthorityIds) -> Outcome {
+        self.ask(authority, |request_id, authority| {
             Ready {
                 request_id,
-                period,
-                restoration_id,
+                authority,
             }
             .to_frame()
         })
@@ -244,21 +246,19 @@ impl Attached {
 
     /// Confirms readiness for the first time under this authority.
     fn confirm_ready(&mut self) {
-        let (period, restoration_id) = self.authority();
-        let ready = Success::Ready {
+        let authority = self.authority();
+        let ready = Success::Ready(AuthorityResult {
             changed: true,
-            period,
-            restoration_id,
-        };
+            authority,
+        });
         assert_eq!(self.ready(), Outcome::Ok(ready));
     }
 
-    fn input_as(&mut self, authority: (Counter, Counter), payload: &[u8]) -> Outcome {
-        self.ask(authority, |request_id, period, restoration_id| {
+    fn input_as(&mut self, authority: AuthorityIds, payload: &[u8]) -> Outcome {
+        self.ask(authority, |request_id, authority| {
             Input {
                 request_id,
-                period,
-                restoration_id,
+                authority,
                 payload: payload.to_vec(),
             }
             .to_frame()
@@ -278,12 +278,11 @@ impl Attached {
         );
     }
 
-    fn resize_as(&mut self, authority: (Counter, Counter), cols: u32, rows: u32) -> Outcome {
-        self.ask(authority, |request_id, period, restoration_id| {
+    fn resize_as(&mut self, authority: AuthorityIds, cols: u32, rows: u32) -> Outcome {
+        self.ask(authority, |request_id, authority| {
             Resize {
                 request_id,
-                period,
-                restoration_id,
+                authority,
                 geometry: geometry(cols, rows),
             }
             .to_frame()
@@ -294,12 +293,11 @@ impl Attached {
         self.resize_as(self.authority(), cols, rows)
     }
 
-    fn focus_as(&mut self, authority: (Counter, Counter), focused: bool) -> Outcome {
-        self.ask(authority, |request_id, period, restoration_id| {
+    fn focus_as(&mut self, authority: AuthorityIds, focused: bool) -> Outcome {
+        self.ask(authority, |request_id, authority| {
             Focus {
                 request_id,
-                period,
-                restoration_id,
+                authority,
                 focused,
             }
             .to_frame()
@@ -314,19 +312,17 @@ impl Attached {
     /// `focused`, in one write; both are accepted, the Focus with its
     /// sequence.
     fn type_then_focus(&mut self, payload: &[u8], focused: bool) {
-        let (period, restoration_id) = self.authority();
+        let authority = self.authority();
         let typed = self.next();
         let reported = self.next();
         let input = Input {
             request_id: typed,
-            period,
-            restoration_id,
+            authority,
             payload: payload.to_vec(),
         };
         let focus = Focus {
             request_id: reported,
-            period,
-            restoration_id,
+            authority,
             focused,
         };
         let bytes = [
@@ -355,12 +351,11 @@ impl Attached {
         let request_id = self.next();
         request(&mut self.stream, &Acquire { request_id });
         self.grant(GrantReason::Acquire, geometry);
-        let (period, restoration_id) = self.authority();
-        let acquired = Success::Acquired {
+        let authority = self.authority();
+        let acquired = Success::Acquired(AuthorityResult {
             changed: true,
-            period,
-            restoration_id,
-        };
+            authority,
+        });
         assert_eq!(self.response(), Outcome::Ok(acquired));
         self.completed();
     }
@@ -368,12 +363,8 @@ impl Attached {
     /// Any release Display, then Control revoked for `reason` under the
     /// current authority; no Display may follow it.
     fn revoked(&mut self, reason: RevocationReason) {
-        let (period, restoration_id) = self.authority();
-        let revoked = ControlRevoked {
-            period,
-            restoration_id,
-            reason,
-        };
+        let authority = self.authority();
+        let revoked = ControlRevoked { authority, reason };
         assert_eq!(
             self.next_after_display(),
             ServerMessage::ControlRevoked(revoked)
@@ -492,31 +483,28 @@ fn interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order
         (Lifecycle::Attached, 1, true)
     );
 
-    let (period, restoration_id) = attached.authority();
+    let authority = attached.authority();
     let mut coalesced = frame_bytes(
         &Ready {
             request_id: counter(2),
-            period,
-            restoration_id,
+            authority,
         }
         .to_frame(),
     );
     coalesced.extend(frame_bytes(
         &Input {
             request_id: counter(3),
-            period,
-            restoration_id,
+            authority,
             payload: b"go\n".to_vec(),
         }
         .to_frame(),
     ));
     attached.stream.write_all(&coalesced).unwrap();
     attached.request = 2;
-    let ready = Success::Ready {
+    let ready = Success::Ready(AuthorityResult {
         changed: true,
-        period,
-        restoration_id,
-    };
+        authority,
+    });
     assert_eq!(attached.response(), Outcome::Ok(ready));
     attached.request = 3;
     let accepted_bytes = NonZeroU32::new(3).unwrap();
@@ -702,8 +690,12 @@ fn malformed_binary_input_is_connection_fatal() {
     let mut attached = ready_attachment(&session, &[]);
     attached.typed(b"a1\n");
     crate::wait_line(&session, "a1 91x37");
-    let (period, restoration) = attached.authority();
-    let repeated = input_header(attached.request, period.get(), restoration.get());
+    let authority = attached.authority();
+    let repeated = input_header(
+        attached.request,
+        authority.period.get(),
+        authority.restoration_id.get(),
+    );
     let body = [repeated, b"never\n".to_vec()].concat();
     attached.stream.write_all(&raw_frame(0x31, &body)).unwrap();
     match attached.next_after_display() {
@@ -997,7 +989,7 @@ fn interactive_open_selects_supported_families_and_rejects_without_effects() {
 fn requests_on_an_interactive_attachment_get_their_documented_results() {
     let mut session = Session::start("exit");
     let mut attached = ready_attachment(&session, &[]);
-    let (period, restoration_id) = attached.authority();
+    let authority = attached.authority();
     let request_id = attached.next();
     request(
         &mut attached.stream,
@@ -1014,48 +1006,38 @@ fn requests_on_an_interactive_attachment_get_their_documented_results() {
         },
     );
     rejected(attached.response(), "invalid_state");
-    let viewing = attached.ask(
-        attached.authority(),
-        |request_id, period, restoration_id| {
-            SetViewing {
-                request_id,
-                period,
-                restoration_id,
-                viewing: true,
-            }
-            .to_frame()
-        },
-    );
+    let viewing = attached.ask(attached.authority(), |request_id, authority| {
+        SetViewing {
+            request_id,
+            authority,
+            viewing: true,
+        }
+        .to_frame()
+    });
     rejected(viewing, "invalid_state");
-    let acknowledged = attached.ask(
-        attached.authority(),
-        |request_id, period, restoration_id| {
-            Acknowledge {
-                request_id,
-                period,
-                restoration_id,
-            }
-            .to_frame()
-        },
-    );
+    let acknowledged = attached.ask(attached.authority(), |request_id, authority| {
+        Acknowledge {
+            request_id,
+            authority,
+        }
+        .to_frame()
+    });
     rejected(acknowledged, "invalid_state");
     rejected(attached.input(b""), "invalid_argument");
     rejected(attached.resize(65536, 30), "invalid_geometry");
     rejected(attached.resize(100, 65536), "invalid_geometry");
     rejected(attached.focus(true), "unsupported_capability");
-    let again = Success::Ready {
+    let again = Success::Ready(AuthorityResult {
         changed: false,
-        period,
-        restoration_id,
-    };
+        authority,
+    });
     assert_eq!(attached.ready(), Outcome::Ok(again));
     let request_id = attached.next();
     request(&mut attached.stream, &Acquire { request_id });
-    let unchanged = Success::Acquired {
+    let unchanged = Success::Acquired(AuthorityResult {
         changed: false,
-        period,
-        restoration_id,
-    };
+        authority,
+    });
     assert_eq!(attached.response(), Outcome::Ok(unchanged));
     let mark = attached.display.len();
     attached.leave();

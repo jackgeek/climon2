@@ -9,9 +9,9 @@ use climon2_core::{
     hello::Lifecycle,
     protocol::{self, ClientMessage, ServerMessage as PrivateMessage, TerminalSize},
     wire::{
-        self, Acknowledge, Acquire, Available, ControlRecord, FatalError, Focus, Frame, Geometry,
-        Input, Kill, Leave, Mode, Outcome, Ready, Resize, Response, ServerMessage, SetViewing,
-        Success,
+        self, Acknowledge, Acquire, AuthorityIds, Available, ControlRecord, FatalError, Focus,
+        Frame, Geometry, Input, Kill, Leave, Mode, Outcome, Ready, Resize, Response, ServerMessage,
+        SetViewing, Success,
     },
 };
 use std::{
@@ -642,7 +642,11 @@ fn standalone_kill_is_refused_until_it_is_served() {
 /// tests send, and its input, size and focus would each show in the `lines`
 /// fixture's record.
 fn needing_an_attachment(id: u64) -> [Frame; 6] {
-    let (request_id, period, restoration_id) = (counter(id), counter(70), counter(90));
+    let request_id = counter(id);
+    let authority = AuthorityIds {
+        period: counter(70),
+        restoration_id: counter(90),
+    };
     let geometry = Geometry {
         cols: NonZeroU32::new(100).unwrap(),
         rows: NonZeroU32::new(30).unwrap(),
@@ -650,41 +654,35 @@ fn needing_an_attachment(id: u64) -> [Frame; 6] {
     [
         Input {
             request_id,
-            period,
-            restoration_id,
+            authority,
             payload: b"leaked\n".to_vec(),
         }
         .to_frame(),
         Resize {
             request_id,
-            period,
-            restoration_id,
+            authority,
             geometry,
         }
         .to_frame(),
         Ready {
             request_id,
-            period,
-            restoration_id,
+            authority,
         }
         .to_frame(),
         SetViewing {
             request_id,
-            period,
-            restoration_id,
+            authority,
             viewing: true,
         }
         .to_frame(),
         Acknowledge {
             request_id,
-            period,
-            restoration_id,
+            authority,
         }
         .to_frame(),
         Focus {
             request_id,
-            period,
-            restoration_id,
+            authority,
             focused: true,
         }
         .to_frame(),

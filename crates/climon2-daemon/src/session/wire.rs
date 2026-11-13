@@ -9,11 +9,11 @@ use crate::{
 use climon2_core::{
     protocol::TerminalSize,
     wire::{
-        ActualGeometry, Advertisement, Available, ControlGranted, ControlRecord, ControlRevoked,
-        Counter, Display, Error, Families, Family, Focus, FocusBytes, Frame, FrameLimits, Geometry,
-        GrantReason, Guid, InitialMetadata, Input, Kill, Mode, Open, OperationalCode, Outcome,
-        Ready, Rejection, Request, Resize, Response, RestorationBegin, RestorationComplete,
-        RevocationReason, Success, TitleChanged,
+        ActualGeometry, Advertisement, AuthorityIds, AuthorityResult, Available, ControlGranted,
+        ControlRecord, ControlRevoked, Counter, Display, Error, Families, Family, Focus,
+        FocusBytes, Frame, FrameLimits, Geometry, GrantReason, Guid, InitialMetadata, Input, Kill,
+        Mode, Open, OperationalCode, Outcome, Ready, Rejection, Request, Resize, Response,
+        RestorationBegin, RestorationComplete, RevocationReason, Success, TitleChanged,
     },
 };
 use std::{collections::BTreeSet, io, num::NonZeroU32};
@@ -299,10 +299,11 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn take_control(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
         let (acquired, effects) = self.control.acquire(ConnectionId(id));
         self.effects(effects)?;
-        let acquired = acquired.map(|acquisition| Success::Acquired {
-            changed: acquisition.changed,
-            period: period(acquisition.authority),
-            restoration_id: restoration(acquisition.authority),
+        let acquired = acquired.map(|acquisition| {
+            Success::Acquired(AuthorityResult {
+                changed: acquisition.changed,
+                authority: ids(acquisition.authority),
+            })
         });
         self.answer(id, request_id, acquired);
         Ok(())
@@ -311,7 +312,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// Input is accepted whole for forwarding from the ready controller
     /// under its current authority, or rejected.
     fn wire_input(&mut self, id: u64, input: Input) {
-        let needs = (input.period, input.restoration_id, Needs::Readiness);
+        let needs = (input.authority, Needs::Readiness);
         if self.authorized(id, input.request_id, needs).is_none() {
             return;
         }
@@ -328,7 +329,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// the next apply step applies it. Acceptance is not the actual
     /// geometry, which a Geometry or a new restoration reports.
     fn resize(&mut self, id: u64, resize: Resize) {
-        let needs = (resize.period, resize.restoration_id, Needs::Control);
+        let needs = (resize.authority, Needs::Control);
         if self.authorized(id, resize.request_id, needs).is_none() {
             return;
         }
@@ -344,7 +345,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// Ready confirms the complete current restoration; once ready again it
     /// is an explicit no-op.
     fn ready(&mut self, id: u64, ready: Ready) -> io::Result<()> {
-        let needs = (ready.period, ready.restoration_id, Needs::Restored);
+        let needs = (ready.authority, Needs::Restored);
         let Some(Authorized {
             authority,
             ready: was_ready,
@@ -354,11 +355,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         };
         let effects = self.control.ready(ConnectionId(id), authority.restoration);
         self.effects(effects)?;
-        let confirmed = Success::Ready {
+        let confirmed = Success::Ready(AuthorityResult {
             changed: !was_ready,
-            period: period(authority),
-            restoration_id: restoration(authority),
-        };
+            authority: ids(authority),
+        });
         self.respond(id, ready.request_id, Outcome::Ok(confirmed));
         Ok(())
     }
@@ -372,7 +372,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             let code = OperationalCode::UnsupportedCapability;
             return self.reject(id, focus.request_id, code, FOCUS_NOT_SELECTED);
         }
-        let needs = (focus.period, focus.restoration_id, Needs::Readiness);
+        let needs = (focus.authority, Needs::Readiness);
         if self.authorized(id, focus.request_id, needs).is_none() {
             return;
         }
@@ -407,24 +407,20 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
-    /// The control a request under `(period, restoration, needs)` has, or
-    /// its rejection, already answered. A connection without a role cannot
-    /// have any; the control state decides the rest.
+    /// The control a request under `(requested, needs)` has, or its
+    /// rejection, already answered. A connection without a role cannot have
+    /// any; the control state decides the rest.
     fn authorized(
         &mut self,
         id: u64,
         request_id: Counter,
-        (period, restoration, needs): (Counter, Counter, Needs),
+        (requested, needs): (AuthorityIds, Needs),
     ) -> Option<Authorized> {
-        let requested = Authority {
-            period: Period(period.get()),
-            restoration: Restoration(restoration.get()),
-        };
         let authorized = match self.kind(id) {
             None => Err(error(OperationalCode::InvalidState, NO_ROLE)),
             Some(_) => self
                 .control
-                .authorize(ConnectionId(id), requested, needs)
+                .authorize(ConnectionId(id), authority(requested), needs)
                 .map_err(refusal),
         };
         authorized
@@ -476,8 +472,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             return;
         }
         let granted = ControlGranted {
-            period: period(authority),
-            restoration_id: restoration(authority),
+            authority: ids(authority),
             geometry: wire_geometry(geometry),
             reason,
         };
@@ -508,8 +503,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn begin_restoration(&mut self, id: u64, authority: Authority, geometry: TerminalSize) {
         let begin = RestorationBegin {
-            period: period(authority),
-            restoration_id: restoration(authority),
+            authority: ids(authority),
             geometry: wire_geometry(geometry),
         };
         self.send_wire(id, &begin.to_frame());
@@ -519,8 +513,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     pub(super) fn report_restored(&mut self, id: u64, authority: Authority) {
         if self.display_authority(id) == Some(authority) {
             let complete = RestorationComplete {
-                period: period(authority),
-                restoration_id: restoration(authority),
+                authority: ids(authority),
             };
             self.send_wire(id, &complete.to_frame());
         }
@@ -536,8 +529,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             return;
         };
         let revoked = ControlRevoked {
-            period: period(held.authority),
-            restoration_id: restoration(held.authority),
+            authority: ids(held.authority),
             reason,
         };
         self.send_wire(id, &revoked.to_frame());
@@ -567,8 +559,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// Terminal bytes as Display chunks under `authority`.
     pub(super) fn display(&mut self, id: u64, authority: Authority, bytes: &[u8]) {
         let display = Display {
-            period: period(authority),
-            restoration_id: restoration(authority),
+            authority: ids(authority),
             payload: bytes.to_vec(),
         };
         self.send_wire(id, &display.to_frame());
@@ -692,8 +683,20 @@ fn period(authority: Authority) -> Counter {
     counter(authority.period.0)
 }
 
-fn restoration(authority: Authority) -> Counter {
-    counter(authority.restoration.0)
+/// The authority IDs a record carries.
+fn ids(authority: Authority) -> AuthorityIds {
+    AuthorityIds {
+        period: period(authority),
+        restoration_id: counter(authority.restoration.0),
+    }
+}
+
+/// The authority a request's IDs name.
+fn authority(ids: AuthorityIds) -> Authority {
+    Authority {
+        period: Period(ids.period.get()),
+        restoration: Restoration(ids.restoration_id.get()),
+    }
 }
 
 /// Periods and restorations are issued from 1.
