@@ -83,13 +83,11 @@ impl Printed {
         if tinted { TINTED } else { PLAIN }
     }
 
-    /// Controls (C0, C1 and DEL) have no width: vte executes or ignores them.
+    /// By display width: 0, 1 or 2. Controls (C0, C1 and DEL) have none:
+    /// vte executes or ignores them.
     fn character(self, c: char) -> usize {
-        c.width().map_or(0, |width| match width {
-            0 => self.combining,
-            1 => self.narrow,
-            _ => self.wide,
-        })
+        let by_width = [self.combining, self.narrow, self.wide];
+        c.width().map_or(0, |width| by_width[width.min(2)])
     }
 
     /// The most any one character adds, which is what repeating the
