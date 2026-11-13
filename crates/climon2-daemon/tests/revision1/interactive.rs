@@ -1204,21 +1204,27 @@ fn takeover_hand_back_and_leave_policy_match_the_private_protocol() {
 
 /// CTL-05 (Contract, restoring) and COM-05 (Contract, restoration chunks):
 /// Ready needs the complete current restoration, not merely its beginning.
-/// A restoration far larger than the attachment has read is produced as
-/// the attachment drains it, in Display chunks of its authority; Ready sent
-/// before its Restoration complete is `not_ready` and changes nothing, so
-/// Input stays `not_ready`, while Resize is already accepted. Once the
-/// restoration is complete, Ready succeeds and Input is admitted.
+/// A first attachment takes the 2 MB of coloured rows live, so the session
+/// is attached within its initial window however long they take; a second
+/// attachment then takes over, and its restoration, far larger than it has
+/// read, is produced as it drains it, in Display chunks of its authority.
+/// Ready sent before its Restoration complete is `not_ready` and changes
+/// nothing, so Input stays `not_ready`, while Resize is already accepted.
+/// Once the restoration is complete, Ready succeeds and Input is admitted.
 #[test]
 fn ready_needs_the_complete_current_restoration() {
     let mut session = Session::start("script");
-    crate::script_within(&session, "colors 4000", Duration::from_secs(60));
+    let mut first = ready_attachment(&session, &[]);
+    crate::issue(&session, "colors 4000");
+    crate::issue(&session, "text colors-done");
+    first.until_displayed(b"colors-done", 1);
     let mut stream = peer(&session);
     request(
         &mut stream,
         &open(1, &[], &[], Mode::Interactive(geometry(91, 37))),
     );
     let mut attached = Attached::opened_begun(stream, geometry(91, 37));
+    first.revoked(RevocationReason::Takeover);
     rejected(attached.ready(), "not_ready");
     rejected(attached.input(b"early"), "not_ready");
     assert_eq!(
@@ -1235,5 +1241,6 @@ fn ready_needs_the_complete_current_restoration() {
     attached.typed(b"x");
     crate::issue(&session, "exit");
     attached.ended();
+    assert_closed(&mut first.stream);
     session.finish();
 }

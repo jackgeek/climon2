@@ -1098,12 +1098,7 @@ fn takeover_revokes_with_release_and_exit_leaves_the_alternate_screen() {
 }
 
 fn wait_contents(path: &Path, done: impl Fn(&[u8]) -> bool) -> Vec<u8> {
-    wait_contents_within(path, Duration::from_secs(8), done)
-}
-
-/// [`wait_contents`] with its own bound.
-fn wait_contents_within(path: &Path, bound: Duration, done: impl Fn(&[u8]) -> bool) -> Vec<u8> {
-    let deadline = Instant::now() + bound;
+    let deadline = Instant::now() + Duration::from_secs(8);
     loop {
         let contents = fs::read(path).unwrap_or_default();
         if done(&contents) {
@@ -1548,14 +1543,8 @@ fn a_stalled_reader_is_dropped_after_five_seconds_without_progress() {
 /// Appends one command for [`follow_script`] and waits for the fixture to
 /// have written its output.
 fn script(session: &Session, command: &str) {
-    script_within(session, command, Duration::from_secs(8));
-}
-
-/// [`script`] with its own bound, for a command whose output takes the
-/// daemon long to read under load.
-fn script_within(session: &Session, command: &str, bound: Duration) {
     let issued = issue(session, command);
-    wait_contents_within(&session.directory.path().join("acks"), bound, |acks| {
+    wait_contents(&session.directory.path().join("acks"), |acks| {
         String::from_utf8_lossy(acks).lines().count() == issued
     });
 }
