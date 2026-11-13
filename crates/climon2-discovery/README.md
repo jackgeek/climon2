@@ -81,13 +81,13 @@ hello peers.
 
 | Scenario | Named test |
 |---|---|
-| DSC-06 Contract case: a nested session and a session controlled elsewhere, in independent resolved homes, are live in their own home's pass only; stale metadata is removed only when the caller opts in | `independent_homes_each_discover_their_own_nested_and_controlled_sessions` |
-| DSC-06: CLI `list`, `attach` and `kill` discovery is unchanged after the extraction | the unchanged `climon2-cli` tests in `tests/list.rs`, `tests/attach.rs` and `tests/exec.rs` |
-| DSC-04 Contract cases for one pass: mismatched hello IDs, failed probes, uncertain disappearance and malformed or unreadable metadata are structured outcomes and never cleaned up; a failed stale cleanup is reported; no pass prints | `every_outcome_is_structured_and_no_pass_prints` |
+| DSC-06 Contract case: a nested session and a session controlled elsewhere, in independent resolved homes, are live in their own home's pass only, with their hello capabilities, state and depth; stale metadata is removed only when the caller opts in | `independent_homes_each_discover_their_own_nested_and_controlled_sessions` |
+| DSC-06 Contract case (structured pass outcomes, no presentation) with DSC-04 Contract cases for one pass: mismatched hello IDs, failed probes, uncertain disappearance and malformed or unreadable metadata are structured outcomes and never cleaned up; a failed stale cleanup is reported; no pass prints | `every_outcome_is_structured_and_no_pass_prints` |
+| DSC-06 (CLI part): `list`, `attach` and `kill` discovery, cleanup and logging are unchanged after the extraction | the unchanged `climon2-cli` tests in `tests/list.rs`, `tests/attach.rs` and `tests/exec.rs`, and `every_probe_diagnostic_is_logged_once_with_its_errno` ([CLI README](../climon2-cli/README.md#specification-mapping)) |
 | DSC-04 Contract case: oversized and too deeply nested metadata, at and one past each limit | `metadata_limits_accept_their_bound_and_reject_one_past_it` |
 | DSC-04 Contract case: a silent daemon is uncertain only after the frozen two-second hello deadline, and kept even when cleanup is requested | `a_silent_daemon_is_uncertain_after_the_two_second_hello_deadline` |
 | DSC-04 Contract case (uncertain disappearance): a regular file at a stale session's socket path is never deleted, and neither is its metadata; Linux reports the failed cleanup, macOS the unreachable path | `a_regular_file_at_the_socket_path_is_never_deleted` |
 | DSC-04 Contract case (uncertain disappearance), Linux: only the recorded boot ID and start ticks prove a session stale; a live identity with any start time, and a missing identity, are uncertain and kept even when cleanup is requested | `linux_daemon_identity_alone_proves_a_session_stale` |
-| Shared discovery order: newest created first, then ascending full session ID; a home without sessions is an empty pass | `sessions_are_newest_created_first_with_ascending_session_id_ties` |
+| DSC-01 Contract case (discovery order): newest created first, then ascending full session ID; a home without sessions is an empty pass | `sessions_are_newest_created_first_with_ascending_session_id_ties` |
 
 The monitor's own DSC-01, DSC-03, DSC-04 and DSC-06 cases arrive with #106.

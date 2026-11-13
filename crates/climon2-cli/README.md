@@ -152,3 +152,10 @@ Ordinary cases share one immutable copied install layout with isolated data
 homes. Cases that remove or change executable permissions get private copies.
 Leak checks await asynchronous daemon cleanup and inspect unique process markers,
 metadata and sockets; fixture cleanup also terminates owned processes on panic.
+
+## Specification mapping
+
+| Scenario | Named test |
+|---|---|
+| DSC-06 (CLI part): `list`, `attach` and `kill` output, statuses, stale cleanup and logging are unchanged after discovery moved into `climon2-discovery` | the pre-existing tests in `tests/list.rs` and `tests/attach.rs`, and the attach and kill cases of `tests/exec.rs`, all unchanged |
+| DSC-06 (CLI part): the general log keeps each probe diagnostic, once per session, with its level, target and errno | `every_probe_diagnostic_is_logged_once_with_its_errno` |

@@ -349,8 +349,9 @@ fn independent_homes_each_discover_their_own_nested_and_controlled_sessions() {
     nested_isolation.assert_clean();
 }
 
-/// #77: a home without a sessions directory is an empty pass. Sessions are ordered newest
-/// created first, with ascending full session ID for ties, whatever their outcome.
+/// DSC-01 Contract case (discovery order) and #77: sessions are ordered newest created
+/// first, with ascending full session ID for ties, whatever their outcome. A home without a
+/// sessions directory is an empty pass.
 #[test]
 fn sessions_are_newest_created_first_with_ascending_session_id_ties() {
     let (_directory, home) = home();
@@ -506,11 +507,11 @@ fn assert_uncertain_and_invalid(pass: &Pass, malformed: &Path, corrupt: &Path, u
     assert_eq!(error.raw_os_error(), Some(libc::EISDIR));
 }
 
-/// #77 and DSC-04 Contract cases (mismatched hello IDs, failed probes, uncertain
-/// disappearance, malformed metadata): every outcome is returned as structured data with
-/// its diagnostic, ordered newest first. Uncertainty and invalid metadata are never
-/// cleaned, a stale session's cleanup is opt-in and reports its failure, and no pass
-/// prints anything.
+/// DSC-06 Contract case (structured pass outcomes, no presentation) and DSC-04 Contract
+/// cases (mismatched hello IDs, failed probes, uncertain disappearance, malformed metadata):
+/// every outcome is returned as structured data with its diagnostic, ordered newest first.
+/// Uncertainty and invalid metadata are never cleaned, a stale session's cleanup is opt-in
+/// and reports its failure, and no pass prints anything.
 #[test]
 fn every_outcome_is_structured_and_no_pass_prints() {
     if std::env::var_os(CHILD).is_some() {
