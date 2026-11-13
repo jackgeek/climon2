@@ -61,6 +61,14 @@ pub(super) enum Presentation {
     Granted(AuthorityIds, Geometry, GrantReason),
     /// Control revoked under the authority it ends.
     Revoked(AuthorityIds, RevocationReason),
+    /// What the held period shows.
+    Screen(Screen),
+}
+
+/// The records of a held period: its restorations, terminal bytes and
+/// geometry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Screen {
     /// A restoration's beginning, at the geometry its bytes use.
     Begin(AuthorityIds, Geometry),
     /// Nonempty exact terminal bytes, of a restoration or live.
@@ -135,6 +143,13 @@ pub(super) enum Answer {
     },
     /// An initial role rejection's known command result.
     KnownFinal(Command),
+    /// A command's result (#94).
+    Done(Done),
+}
+
+/// What a command did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Done {
     /// Input accepted, all of its bytes.
     Input(u32),
     Resized,
@@ -247,8 +262,7 @@ impl Event {
                 metadata.title.bytes() + metadata.command.as_ref().map_or(0, Command::bytes)
             }
             Self::Title(title) => title.bytes(),
-            Self::Presentation(Presentation::Display(_, bytes)) => bytes.len() as u64,
-            Self::Presentation(_) => 0,
+            Self::Presentation(presentation) => presentation.bytes(),
             Self::Diagnostic(fault) => fault.bytes(),
         }
     }
@@ -367,6 +381,14 @@ fn revoked(reason: RevocationReason) -> u32 {
 }
 
 impl Presentation {
+    /// The bytes it owns: a Display's.
+    fn bytes(&self) -> u64 {
+        match self {
+            Self::Screen(Screen::Display(_, bytes)) => bytes.len() as u64,
+            _ => 0,
+        }
+    }
+
     /// Its tag and data, pointing into its own bytes.
     fn native(&self) -> (u32, native::RecordData) {
         match self {
@@ -393,6 +415,14 @@ impl Presentation {
                     },
                 },
             ),
+            Self::Screen(screen) => screen.native(),
+        }
+    }
+}
+
+impl Screen {
+    fn native(&self) -> (u32, native::RecordData) {
+        match self {
             Self::Begin(ids, size) => (
                 native::RESTORATION_BEGIN,
                 native::RecordData {
@@ -479,34 +509,44 @@ impl Response {
                 response.result_tag = native::KNOWN_FINAL;
                 response.result.known_final = command.native();
             }
-            Answer::Input(bytes) => {
+            Answer::Done(done) => done.native(&mut response),
+        }
+        response
+    }
+}
+
+impl Done {
+    /// Writes its result tag and active result into `response`, whose
+    /// other bytes stay zero.
+    fn native(self, response: &mut native::Response) {
+        match self {
+            Self::Input(accepted_bytes) => {
                 response.result_tag = native::INPUT_ACCEPTED;
-                response.result.accepted_bytes = *bytes;
+                response.result.accepted_bytes = accepted_bytes;
             }
-            Answer::Resized => response.result_tag = native::RESIZE_ACCEPTED,
-            Answer::Acquired(result) => {
+            Self::Resized => response.result_tag = native::RESIZE_ACCEPTED,
+            Self::Acquired(acquired) => {
                 response.result_tag = native::ACQUIRED;
-                response.result.authority = authority(result);
+                response.result.authority = authority(&acquired);
             }
-            Answer::Ready(result) => {
+            Self::Ready(ready) => {
                 response.result_tag = native::READY_RESULT;
-                response.result.authority = authority(result);
+                response.result.authority = authority(&ready);
             }
-            Answer::Focus {
+            Self::Focus {
                 changed,
                 focused,
                 bytes,
             } => {
                 response.result_tag = native::FOCUS_RESULT;
                 response.result.flag = native::FlagResult {
-                    changed: u8::from(*changed),
-                    value: u8::from(*focused),
+                    changed: u8::from(changed),
+                    value: u8::from(focused),
                     reserved: [0; 2],
-                    accepted_bytes: *bytes,
+                    accepted_bytes: bytes,
                 };
             }
         }
-        response
     }
 }
 

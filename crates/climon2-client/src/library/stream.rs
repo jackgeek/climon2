@@ -10,7 +10,9 @@ use super::{
     failure::{Failed, Fault, Retry, require},
     families::{self, Selection},
     link::fatal,
-    records::{Answer, Command, Event, Metadata, Outcome, Presentation, Response, Title},
+    records::{
+        Answer, Command, Done, Event, Metadata, Outcome, Presentation, Response, Screen, Title,
+    },
     request::Act,
 };
 use climon2_core::{
@@ -65,41 +67,105 @@ enum Sent {
     },
 }
 
-/// The result a command's success must carry.
+/// The result a command's success must carry: its own kind and, for
+/// Input, every byte it carried.
 #[derive(Clone, Copy, Debug)]
-enum Expects {
-    Acquired,
-    /// All of the Input's bytes, never part of them.
-    Input(u32),
-    Resized,
-    Ready,
-    Focus,
+struct Expects {
+    result: fn(Success) -> Option<Done>,
+    input: Option<u32>,
 }
 
 impl Expects {
     fn answer(self, success: Success) -> Result<Answer, Fault> {
-        match (self, success) {
-            (Self::Acquired, Success::Acquired(result)) => Ok(Answer::Acquired(result)),
-            (Self::Input(length), Success::InputAccepted { accepted_bytes })
-                if accepted_bytes.get() == length =>
-            {
-                Ok(Answer::Input(length))
+        let done = (self.result)(success).ok_or(MISMATCHED)?;
+        let whole = self.input.is_none_or(|length| done == Done::Input(length));
+        whole.then_some(Answer::Done(done)).ok_or(MISMATCHED)
+    }
+}
+
+fn acquired(success: Success) -> Option<Done> {
+    match success {
+        Success::Acquired(result) => Some(Done::Acquired(result)),
+        _ => None,
+    }
+}
+
+fn accepted(success: Success) -> Option<Done> {
+    match success {
+        Success::InputAccepted { accepted_bytes } => Some(Done::Input(accepted_bytes.get())),
+        _ => None,
+    }
+}
+
+fn resized(success: Success) -> Option<Done> {
+    match success {
+        Success::ResizeAccepted {} => Some(Done::Resized),
+        _ => None,
+    }
+}
+
+fn readied(success: Success) -> Option<Done> {
+    match success {
+        Success::Ready(result) => Some(Done::Ready(result)),
+        _ => None,
+    }
+}
+
+fn focused(success: Success) -> Option<Done> {
+    match success {
+        Success::Focus {
+            changed,
+            focused,
+            accepted_bytes,
+        } => Some(Done::Focus {
+            changed,
+            focused,
+            bytes: accepted_bytes.into(),
+        }),
+        _ => None,
+    }
+}
+
+impl Act {
+    /// The result its success must carry.
+    fn expects(&self) -> Expects {
+        let (result, input): (fn(Success) -> Option<Done>, _) = match self {
+            Self::Acquire => (acquired, None),
+            Self::Input(_, payload) => (accepted, Some(payload.len() as u32)),
+            Self::Resize(..) => (resized, None),
+            Self::Ready(_) => (readied, None),
+            Self::Focus(..) => (focused, None),
+        };
+        Expects { result, input }
+    }
+
+    /// Its wire request, as `request_id`.
+    fn frame(self, request_id: Counter) -> Frame {
+        match self {
+            Self::Acquire => wire::Acquire { request_id }.to_frame(),
+            Self::Input(authority, payload) => wire::Input {
+                request_id,
+                authority,
+                payload: payload.into_vec(),
             }
-            (Self::Resized, Success::ResizeAccepted {}) => Ok(Answer::Resized),
-            (Self::Ready, Success::Ready(result)) => Ok(Answer::Ready(result)),
-            (
-                Self::Focus,
-                Success::Focus {
-                    changed,
-                    focused,
-                    accepted_bytes,
-                },
-            ) => Ok(Answer::Focus {
-                changed,
+            .to_frame(),
+            Self::Resize(authority, geometry) => wire::Resize {
+                request_id,
+                authority,
+                geometry,
+            }
+            .to_frame(),
+            Self::Ready(authority) => wire::Ready {
+                request_id,
+                authority,
+            }
+            .to_frame(),
+            Self::Focus(authority, focused) => wire::Focus {
+                request_id,
+                authority,
                 focused,
-                bytes: accepted_bytes.into(),
-            }),
-            _ => Err(MISMATCHED),
+            }
+            .to_frame(),
         }
     }
 }
@@ -285,57 +351,15 @@ impl Stream {
         limit: FrameLimit,
         deadline: Instant,
     ) -> Result<Vec<u8>, Fault> {
-        let (expects, record): (Expects, Box<dyn FnOnce(Counter) -> Frame>) = match act {
-            Act::Acquire => (
-                Expects::Acquired,
-                Box::new(|request_id| wire::Acquire { request_id }.to_frame()),
-            ),
-            Act::Input(authority, payload) => (
-                Expects::Input(payload.len() as u32),
-                Box::new(move |request_id| {
-                    wire::Input {
-                        request_id,
-                        authority,
-                        payload: payload.into_vec(),
-                    }
-                    .to_frame()
-                }),
-            ),
-            Act::Resize(authority, geometry) => (
-                Expects::Resized,
-                Box::new(move |request_id| {
-                    wire::Resize {
-                        request_id,
-                        authority,
-                        geometry,
-                    }
-                    .to_frame()
-                }),
-            ),
-            Act::Ready(authority) => (
-                Expects::Ready,
-                Box::new(move |request_id| {
-                    wire::Ready {
-                        request_id,
-                        authority,
-                    }
-                    .to_frame()
-                }),
-            ),
-            Act::Focus(authority, focused) => (
-                Expects::Focus,
-                Box::new(move |request_id| {
-                    wire::Focus {
-                        request_id,
-                        authority,
-                        focused,
-                    }
-                    .to_frame()
-                }),
-            ),
+        let sent = Sent::Command {
+            id,
+            expects: act.expects(),
         };
-        let sent = Sent::Command { id, expects };
-        self.send(sent, record, (limit, Some(deadline)))
+        self.send(
+            sent,
+            |request_id| act.frame(request_id),
+            (limit, Some(deadline)),
+        )
     }
 
     /// The earliest deadline an unanswered request must meet.
@@ -416,49 +440,62 @@ impl Stream {
         }
     }
 
-    /// A grant starts a period when none is held; every other presentation
-    /// record names the held period, and all but a beginning or a Geometry
-    /// its current restoration too. A beginning makes its restoration
-    /// current; a revocation ends what was held.
+    /// A grant starts a period when none is held; a revocation ends the
+    /// one held; every other record shows the held period.
     fn present(&mut self, message: ServerMessage) -> Result<Presentation, Fault> {
         match message {
-            ServerMessage::ControlGranted(granted) => {
-                require(self.held.is_none(), UNHELD)?;
-                self.held = Some(granted.authority);
-                Ok(Presentation::Granted(
-                    granted.authority,
-                    granted.geometry,
-                    granted.reason,
-                ))
-            }
-            ServerMessage::ControlRevoked(revoked) => {
-                self.holds(revoked.authority)?;
-                self.held = None;
-                Ok(Presentation::Revoked(revoked.authority, revoked.reason))
-            }
-            ServerMessage::RestorationBegin(begin) => {
-                self.in_period(begin.authority.period)?;
-                self.held = Some(begin.authority);
-                Ok(Presentation::Begin(begin.authority, begin.geometry))
-            }
-            ServerMessage::Display(display) => {
-                self.holds(display.authority)?;
-                require(!display.payload.is_empty(), EMPTY_DISPLAY)?;
-                Ok(Presentation::Display(
-                    display.authority,
-                    display.payload.into_boxed_slice(),
-                ))
-            }
-            ServerMessage::RestorationComplete(complete) => {
-                self.holds(complete.authority)?;
-                Ok(Presentation::Complete(complete.authority))
-            }
-            ServerMessage::Geometry(actual) => {
-                self.in_period(actual.period)?;
-                Ok(Presentation::Geometry(actual.period, actual.geometry))
-            }
+            ServerMessage::ControlGranted(granted) => self.grant(granted),
+            ServerMessage::ControlRevoked(revoked) => self.revoke(revoked),
+            message => self.screen(message).map(Presentation::Screen),
+        }
+    }
+
+    fn grant(&mut self, granted: wire::ControlGranted) -> Result<Presentation, Fault> {
+        require(self.held.is_none(), UNHELD)?;
+        self.held = Some(granted.authority);
+        Ok(Presentation::Granted(
+            granted.authority,
+            granted.geometry,
+            granted.reason,
+        ))
+    }
+
+    fn revoke(&mut self, revoked: wire::ControlRevoked) -> Result<Presentation, Fault> {
+        self.holds(revoked.authority)?;
+        self.held = None;
+        Ok(Presentation::Revoked(revoked.authority, revoked.reason))
+    }
+
+    /// A beginning in the held period makes its restoration current; a
+    /// Display or a complete names the current restoration, and a Geometry
+    /// the held period.
+    fn screen(&mut self, message: ServerMessage) -> Result<Screen, Fault> {
+        match message {
+            ServerMessage::RestorationBegin(begin) => self.begin(begin),
+            ServerMessage::Display(display) => self.display(display),
+            ServerMessage::RestorationComplete(complete) => self
+                .holds(complete.authority)
+                .map(|()| Screen::Complete(complete.authority)),
+            ServerMessage::Geometry(actual) => self
+                .in_period(actual.period)
+                .map(|()| Screen::Geometry(actual.period, actual.geometry)),
             _ => Err(UNEXPECTED),
         }
+    }
+
+    fn begin(&mut self, begin: wire::RestorationBegin) -> Result<Screen, Fault> {
+        self.in_period(begin.authority.period)?;
+        self.held = Some(begin.authority);
+        Ok(Screen::Begin(begin.authority, begin.geometry))
+    }
+
+    fn display(&self, display: wire::Display) -> Result<Screen, Fault> {
+        self.holds(display.authority)?;
+        require(!display.payload.is_empty(), EMPTY_DISPLAY)?;
+        Ok(Screen::Display(
+            display.authority,
+            display.payload.into_boxed_slice(),
+        ))
     }
 
     fn holds(&self, authority: AuthorityIds) -> Result<(), Fault> {

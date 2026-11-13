@@ -115,6 +115,24 @@ fn header(request: &native::Request) -> Result<u64, Failure> {
         ))
 }
 
+/// One request tag's parser: its operation and what it charges.
+///
+/// # Safety
+///
+/// As for [`parse`], for the member the tag names.
+type Parser = unsafe fn(&native::Request, Capacity) -> Result<(Operation, u64), Failure>;
+
+/// Every request this release performs, by tag.
+const PARSERS: [(u32, Parser); 7] = [
+    (native::OPEN, open_request),
+    (native::LEAVE, leave),
+    (native::ACQUIRE, acquire),
+    (native::INPUT, input),
+    (native::RESIZE, resize),
+    (native::READY, ready),
+    (native::FOCUS, focus),
+];
+
 /// # Safety
 ///
 /// As for [`parse`].
@@ -122,31 +140,17 @@ unsafe fn operation(
     request: &native::Request,
     capacity: Capacity,
 ) -> Result<(Operation, u64), Failure> {
-    // SAFETY (every arm): the tag names the active member, whose buffers
-    // the caller guarantees.
-    let (named, bytes) = match request.tag {
-        native::OPEN => return unsafe { open(&request.args.open, capacity.request_bytes) },
-        native::LEAVE => {
-            let generation = nonzero(unsafe { request.args.generation })?;
-            return Ok((Operation::Leave(generation), REQUEST));
-        }
-        native::ACQUIRE => (
-            (nonzero(unsafe { request.args.generation })?, Act::Acquire),
-            REQUEST,
-        ),
-        native::INPUT => unsafe { input(&request.args.input, capacity) }?,
-        native::RESIZE => (resize(unsafe { &request.args.resize })?, REQUEST),
-        native::READY => (ready(unsafe { request.args.authority })?, REQUEST),
-        native::FOCUS => (focus(unsafe { &request.args.flag })?, REQUEST),
-        _ => {
-            return Err(Failure::new(
-                UNSUPPORTED_OPERATION,
-                "this client library does not perform this request yet",
-            ));
-        }
-    };
-    let (generation, act) = named;
-    Ok((Operation::Command(Command { generation, act }), bytes))
+    let parser = PARSERS
+        .iter()
+        .find(|(tag, _)| *tag == request.tag)
+        .map(|(_, parser)| *parser)
+        .ok_or(Failure::new(
+            UNSUPPORTED_OPERATION,
+            "this client library does not perform this request yet",
+        ))?;
+    // SAFETY: the parser reads the member the tag names, whose buffers the
+    // caller guarantees.
+    unsafe { parser(request, capacity) }
 }
 
 fn nonzero(generation: u64) -> Result<u64, Failure> {
@@ -155,8 +159,28 @@ fn nonzero(generation: u64) -> Result<u64, Failure> {
         .ok_or(invalid("generation must be nonzero"))
 }
 
-/// A command and the generation it names.
-type Named = (u64, Act);
+/// A command on the role, charged `bytes`.
+fn command(generation: u64, act: Act, bytes: u64) -> (Operation, u64) {
+    (Operation::Command(Command { generation, act }), bytes)
+}
+
+/// # Safety
+///
+/// The tag names `generation`.
+unsafe fn leave(request: &native::Request, _: Capacity) -> Result<(Operation, u64), Failure> {
+    // SAFETY: guaranteed by the caller.
+    let generation = nonzero(unsafe { request.args.generation })?;
+    Ok((Operation::Leave(generation), REQUEST))
+}
+
+/// # Safety
+///
+/// The tag names `generation`.
+unsafe fn acquire(request: &native::Request, _: Capacity) -> Result<(Operation, u64), Failure> {
+    // SAFETY: guaranteed by the caller.
+    let generation = nonzero(unsafe { request.args.generation })?;
+    Ok(command(generation, Act::Acquire, REQUEST))
+}
 
 /// A nonzero generation, period and restoration ID, never substituted for
 /// one another.
@@ -172,8 +196,13 @@ fn authority(authority: native::Authority) -> Result<(u64, AuthorityIds), Failur
         .ok_or(invalid("authority must be nonzero"))
 }
 
-fn ready(native: native::Authority) -> Result<Named, Failure> {
-    authority(native).map(|(generation, ids)| (generation, Act::Ready(ids)))
+/// # Safety
+///
+/// The tag names `authority`.
+unsafe fn ready(request: &native::Request, _: Capacity) -> Result<(Operation, u64), Failure> {
+    // SAFETY: guaranteed by the caller.
+    let (generation, ids) = authority(unsafe { request.args.authority })?;
+    Ok(command(generation, Act::Ready(ids), REQUEST))
 }
 
 /// Positive columns and rows.
@@ -183,20 +212,50 @@ fn geometry(geometry: native::Geometry) -> Option<Geometry> {
         .map(|(cols, rows)| Geometry { cols, rows })
 }
 
-fn resize(resize: &native::Resize) -> Result<Named, Failure> {
+/// # Safety
+///
+/// The tag names `resize`.
+unsafe fn resize(request: &native::Request, _: Capacity) -> Result<(Operation, u64), Failure> {
+    // SAFETY: guaranteed by the caller.
+    let resize = unsafe { request.args.resize };
     let (generation, ids) = authority(resize.authority)?;
     let geometry = geometry(resize.geometry).ok_or(invalid("geometry must be positive"))?;
-    Ok((generation, Act::Resize(ids, geometry)))
+    Ok(command(generation, Act::Resize(ids, geometry), REQUEST))
 }
 
 /// Only 0 and 1, with every reserved byte zero.
-fn focus(flag: &native::Flag) -> Result<Named, Failure> {
+///
+/// # Safety
+///
+/// The tag names `flag`.
+unsafe fn focus(request: &native::Request, _: Capacity) -> Result<(Operation, u64), Failure> {
+    // SAFETY: guaranteed by the caller.
+    let flag = unsafe { request.args.flag };
     let (generation, ids) = authority(flag.authority)?;
     require(
         flag.value <= 1 && flag.reserved == [0; 7],
         invalid("focus is 0 or 1, with reserved bytes zero"),
     )?;
-    Ok((generation, Act::Focus(ids, flag.value == 1)))
+    Ok(command(
+        generation,
+        Act::Focus(ids, flag.value == 1),
+        REQUEST,
+    ))
+}
+
+/// # Safety
+///
+/// The tag names `input`, whose buffer covers its length.
+unsafe fn input(
+    request: &native::Request,
+    capacity: Capacity,
+) -> Result<(Operation, u64), Failure> {
+    // SAFETY: guaranteed by the caller.
+    let input = unsafe { request.args.input };
+    let (generation, ids) = authority(input.authority)?;
+    // SAFETY: as above.
+    let (payload, bytes) = unsafe { payload(input.bytes, capacity) }?;
+    Ok(command(generation, Act::Input(ids, payload), bytes))
 }
 
 /// Nonempty exact bytes of at most `chunk_bytes`, which with the request
@@ -204,19 +263,29 @@ fn focus(flag: &native::Flag) -> Result<Named, Failure> {
 ///
 /// # Safety
 ///
-/// As for [`parse`].
-unsafe fn input(input: &native::Input, capacity: Capacity) -> Result<(Named, u64), Failure> {
-    let (generation, ids) = authority(input.authority)?;
-    let length = input.bytes.length;
+/// A nonnull buffer covers its length.
+unsafe fn payload(bytes: Bytes, capacity: Capacity) -> Result<(Box<[u8]>, u64), Failure> {
     require(
-        length <= capacity.chunk_bytes,
+        bytes.length <= capacity.chunk_bytes,
         invalid("input exceeds chunk_bytes"),
     )?;
-    let bytes = REQUEST + length;
-    require(bytes <= capacity.request_bytes, TOO_LARGE)?;
+    let charge = REQUEST + bytes.length;
+    require(charge <= capacity.request_bytes, TOO_LARGE)?;
     // SAFETY: guaranteed by the caller.
-    let payload = unsafe { buffer(input.bytes) }.ok_or(invalid("input must be nonempty"))?;
-    Ok(((generation, Act::Input(ids, Box::from(payload))), bytes))
+    unsafe { buffer(bytes) }
+        .map(|payload| (Box::from(payload), charge))
+        .ok_or(invalid("input must be nonempty"))
+}
+
+/// # Safety
+///
+/// The tag names `open`, whose lists cover their counts.
+unsafe fn open_request(
+    request: &native::Request,
+    capacity: Capacity,
+) -> Result<(Operation, u64), Failure> {
+    // SAFETY: guaranteed by the caller.
+    unsafe { open(&request.args.open, capacity.request_bytes) }
 }
 
 /// # Safety
@@ -230,20 +299,23 @@ unsafe fn open(open: &native::Open, capacity: u64) -> Result<(Operation, u64), F
     unsafe { lists.open(mode) }
 }
 
-/// Monitor mode with zero geometry, or interactive at a positive one;
+/// Monitor mode at zero geometry, or interactive at a positive one;
 /// reserved zero either way.
 fn mode(open: &native::Open) -> Result<Mode, Failure> {
     require(open.reserved == 0, invalid("reserved must be zero"))?;
-    let geometry = geometry(open.geometry);
-    let zero = [open.geometry.cols, open.geometry.rows] == [0; 2];
     match open.mode {
-        native::MONITOR if zero => Ok(Mode::Monitor),
-        native::MONITOR => Err(invalid("monitor Open needs zero geometry")),
-        native::INTERACTIVE => geometry
+        native::MONITOR => monitor(open.geometry),
+        native::INTERACTIVE => geometry(open.geometry)
             .map(Mode::Interactive)
             .ok_or(invalid("interactive Open needs a positive geometry")),
         _ => Err(invalid("mode must be monitor or interactive")),
     }
+}
+
+fn monitor(geometry: native::Geometry) -> Result<Mode, Failure> {
+    let zero = [geometry.cols, geometry.rows] == [0; 2];
+    zero.then_some(Mode::Monitor)
+        .ok_or(invalid("monitor Open needs zero geometry"))
 }
 
 /// Validated tokens, copied from the caller.

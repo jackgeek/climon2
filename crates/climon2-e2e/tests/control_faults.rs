@@ -188,8 +188,9 @@ fn tags(records: &[Value]) -> Vec<u64> {
 /// interactive Open at zero geometry, Acquire of generation zero, Input with
 /// a zero period, no bytes or more than `chunk_bytes`, Resize to zero
 /// columns, Ready with a zero restoration, Focus of 2 or with a reserved
-/// byte set), while Input of exactly `chunk_bytes` is accepted; Set viewing
-/// remains `unsupported_operation`. The accepted requests are then
+/// byte set); Set viewing remains `unsupported_operation`; Input of
+/// `chunk_bytes` whose charge exceeds `request_bytes` by one is
+/// `queue_full`, while Input charging exactly `request_bytes` is accepted. The accepted requests are then
 /// cancelled by shutdown, and nothing reaches the daemon.
 #[test]
 fn installed_library_rejects_malformed_control_requests_locally() {
@@ -203,7 +204,7 @@ fn installed_library_rejects_malformed_control_requests_locally() {
         json!({ "tag": "input", "request_id": 1, "authority": [1, 2, 2],
                 "bytes": { "null": 0 } }),
         json!({ "tag": "input", "request_id": 1, "authority": [1, 2, 2],
-                "bytes": { "hex": "4142434445" } }),
+                "bytes": { "hex": "414243444546" } }),
         json!({ "tag": "resize", "request_id": 1, "authority": [1, 2, 2],
                 "geometry": [0, 25] }),
         json!({ "tag": "ready", "request_id": 1, "authority": [1, 2, 0] }),
@@ -211,8 +212,9 @@ fn installed_library_rejects_malformed_control_requests_locally() {
         json!({ "tag": "focus", "request_id": 1, "authority": [1, 2, 2], "value": 1,
                 "flag_reserved": 1 }),
     ];
+    let limits = json!({ "chunk_bytes": 5, "request_bytes": REQUEST + 4 });
     let mut steps = vec![json!({ "do": "create", "peer": attached_peer(json!({})),
-                                 "startup": { "limits": { "chunk_bytes": 4 } } })];
+                                 "startup": { "limits": limits } })];
     steps.extend(
         malformed
             .iter()
@@ -221,6 +223,9 @@ fn installed_library_rejects_malformed_control_requests_locally() {
     steps.extend([
         json!({ "do": "submit", "request": { "tag": 6, "request_id": 1,
                 "authority": [1, 2, 2] } }),
+        json!({ "do": "submit", "request": {
+            "tag": "input", "request_id": 1, "authority": [1, 2, 2],
+            "bytes": { "hex": "4142434445" } } }),
         json!({ "do": "submit", "request": {
             "tag": "input", "request_id": 1, "authority": [1, 2, 2],
             "bytes": { "hex": "41424344" } } }),
@@ -239,11 +244,12 @@ fn installed_library_rejects_malformed_control_requests_locally() {
         UNSUPPORTED_OPERATION,
         "unsupported_operation",
     );
-    assert_success(step(&report, viewing + 1));
-    let queued = &step(&report, viewing + 2)["output"];
+    assert_failure(step(&report, viewing + 1), FULL, "queue_full");
+    assert_success(step(&report, viewing + 2));
+    let queued = &step(&report, viewing + 3)["output"];
     assert_eq!(queued["request_records"], 1, "{queued:#}");
     assert_eq!(queued["request_bytes"], REQUEST + 4, "{queued:#}");
-    let (records, terminal) = finished(step(&report, viewing + 5));
+    let (records, terminal) = finished(step(&report, viewing + 6));
     assert_eq!(records.len(), 1, "{records:#?}");
     assert_rejected(&records[0], 1, 1, ORIGIN_LIBRARY, "cancelled");
     assert_terminal(
@@ -315,7 +321,10 @@ fn installed_library_cancels_queued_control_requests_on_shutdown() {
 /// `stale_generation`, Focus without `focus-v1` selected
 /// `unsupported_capability`, and a request after the instance's Leave is
 /// under way `invalid_state`, all locally and never sent: the fake daemon
-/// receives the Open and the Leave only.
+/// receives the Open and the Leave only. An Input whose frame exceeds the
+/// daemon's request frame ceiling is rejected `unsupported_limit`, never
+/// sent, and the role goes on; that daemon advertises no `monitor-v1`,
+/// which an interactive Open does not need.
 #[test]
 fn installed_library_rejects_stale_and_unsupported_control_requests_locally() {
     let package = Package::new();
@@ -350,7 +359,30 @@ fn installed_library_rejects_stale_and_unsupported_control_requests_locally() {
     ]);
     let mut plan = Plan::new();
     plan.add("a", attached("a", peer, json!({}), &then));
+    let mut unfit = attached_peer(json!({}));
+    let without_monitor: Vec<&str> = ADVERTISED
+        .into_iter()
+        .filter(|family| *family != "monitor-v1")
+        .collect();
+    unfit["hello"] = json!({ "json": {
+        "capabilities": without_monitor,
+        "daemon_wire_v1": { "max_request_frame_bytes": 256, "max_server_frame_bytes": 1_048_576 },
+    } });
+    let large = "41".repeat(300);
+    let then = [
+        json!({ "do": "submit", "request": input(2, 1, CURRENT, &large) }),
+        json!({ "do": "drain", "until": { "response": 2 } }),
+        json!({ "do": "shutdown" }),
+    ];
+    plan.add("unfit", attached("unfit", unfit, json!({}), &then));
     let (report, finishes) = plan.run(&package);
+    let unfit_drained = step(&report, finishes[1].1 - 2)["records"]
+        .as_array()
+        .unwrap();
+    assert_rejected(&unfit_drained[0], 1, 2, ORIGIN_LIBRARY, "unsupported_limit");
+    let (_, terminal) = finished(step(&report, finishes[1].1));
+    assert_detached(terminal, 1);
+    assert_eq!(kinds(&report["peers"]["unfit"]), ["hello", "open", "leave"]);
     let (rest, terminal) = finished(step(&report, finishes[0].1));
     let records: Vec<Value> = report["steps"]
         .as_array()
@@ -461,8 +493,10 @@ fn installed_library_times_out_or_loses_control_requests_without_replay() {
 /// request's success maps to its own native result (Acquire and Ready the
 /// authority, Input every byte, Resize nothing, Focus changed, value and
 /// bytes forwarded) and a daemon rejection keeps the daemon's error; a
-/// success carrying another request's result, or Input accepting fewer
-/// bytes than it carried, fails the connection with `invalid_record`.
+/// success carrying another request's result (for each command), Input
+/// accepting fewer bytes than it carried, or a command's rejection naming a
+/// known final result, which only a first role's may, fails the connection
+/// with `invalid_record`.
 #[test]
 fn installed_library_maps_control_answers_and_refuses_mismatched_results() {
     let package = Package::new();
@@ -525,18 +559,33 @@ fn installed_library_maps_control_answers_and_refuses_mismatched_results() {
         ];
         plan.add(&name, attached(&name, rejected, json!({}), &then));
     }
-    let wrong = [
-        ("mismatched", json!({ "kind": "resize_accepted" })),
-        (
-            "partial",
-            json!({ "kind": "input_accepted", "accepted_bytes": 1 }),
-        ),
-    ];
-    for (name, result) in &wrong {
-        let peer = attached_peer(
-            json!({ "input": [answered("input", "ok", result.clone(), Value::Null)] }),
-        );
-        let then = [json!({ "do": "submit", "request": input(2, 1, CURRENT, "4142") })];
+    let left = json!({ "kind": "left", "attachment_detached": false });
+    let mut wrong: Vec<(String, &str, Value)> = commands(2)
+        .into_iter()
+        .map(|(kind, _)| {
+            let mismatched = answered(kind, "ok", left.clone(), Value::Null);
+            (format!("{kind}-mismatched"), kind, mismatched)
+        })
+        .collect();
+    let partial = json!({ "kind": "input_accepted", "accepted_bytes": 1 });
+    wrong.push((
+        "partial".into(),
+        "input",
+        answered("input", "ok", partial, Value::Null),
+    ));
+    let known = json!({ "kind": "known_final", "command_result": { "kind": "exit", "code": 3 } });
+    let rejected_known = answered(
+        "input",
+        "rejected",
+        known,
+        daemon_error("session_terminating"),
+    );
+    wrong.push(("known-final".into(), "input", rejected_known));
+    let requests: Vec<(&str, Value)> = commands(2).into_iter().collect();
+    for (name, kind, action) in &wrong {
+        let peer = attached_peer(json!({ *kind: [action] }));
+        let request = &requests.iter().find(|(named, _)| named == kind).unwrap().1;
+        let then = [json!({ "do": "submit", "request": request })];
         plan.add(name, attached(name, peer, json!({}), &then));
     }
     let (report, finishes) = plan.run(&package);
@@ -559,7 +608,7 @@ fn installed_library_maps_control_answers_and_refuses_mismatched_results() {
         let (_, terminal) = finished(step(&report, finish));
         assert_detached(terminal, 1);
     }
-    for (name, _) in &wrong {
+    for (name, _, _) in &wrong {
         let (_, finish) = finishes.next().unwrap();
         let (records, terminal) = finished(step(&report, finish));
         assert_eq!(records.len(), 1, "{name}: {records:#?}");
@@ -585,7 +634,8 @@ type RecordCase = (&'static str, Vec<Value>, Vec<u64>, (u64, &'static str));
 /// #81: the shared codec decodes it, the library refuses it), a Display
 /// under a restoration it does not hold, a Display after its revocation, a
 /// grant before the Initial metadata, a second grant without a revocation,
-/// and a Geometry of another period; and with library `resource_limit` on a
+/// a Restoration begin or Geometry of another period, and a Restoration
+/// complete or Control revoked of a restoration it does not hold; and with library `resource_limit` on a
 /// Display one byte over `chunk_bytes`, while one of exactly `chunk_bytes`
 /// is delivered.
 #[test]
@@ -692,6 +742,42 @@ fn installed_library_refuses_presentation_records_out_of_authority() {
             oversized,
         ),
         (
+            "foreign-begin",
+            with(vec![begin(3, 3)]),
+            vec![
+                RESPONSE,
+                INITIAL_METADATA,
+                GRANTED,
+                RESTORATION_BEGIN,
+                DIAGNOSTIC,
+            ],
+            invalid,
+        ),
+        (
+            "unheld-complete",
+            with(vec![complete(PERIOD, 3)]),
+            vec![
+                RESPONSE,
+                INITIAL_METADATA,
+                GRANTED,
+                RESTORATION_BEGIN,
+                DIAGNOSTIC,
+            ],
+            invalid,
+        ),
+        (
+            "unheld-revoke",
+            with(vec![revoked(PERIOD, 3, "takeover")]),
+            vec![
+                RESPONSE,
+                INITIAL_METADATA,
+                GRANTED,
+                RESTORATION_BEGIN,
+                DIAGNOSTIC,
+            ],
+            invalid,
+        ),
+        (
             "display-at",
             with(vec![shown(PERIOD, 2, "41424344"), "close".into()]),
             vec![
@@ -731,7 +817,7 @@ fn installed_library_refuses_presentation_records_out_of_authority() {
             Some(*error),
         );
     }
-    let at = finished(step(&report, finishes[7].1)).0;
+    let at = finished(step(&report, finishes.last().unwrap().1)).0;
     assert_eq!(display(&at[4..5], 1, [PERIOD, 2]), "41424344");
     assert_all_released(&report["ledger"]);
 }
