@@ -29,18 +29,67 @@ pub(crate) struct Bounded {
     processor: Processor<Unbuffered>,
     tokenizer: Tokenizer,
     geometry: Geometry,
-    /// The normal screen's history rows the model shows.
-    rows: usize,
-    /// The engine's admitted history limit, in whole chunks: the engine
-    /// adds storage a chunk at a time, so it never holds more rows than the
-    /// limit and, once history is full, no row beyond it.
-    limit: usize,
-    /// The normal screen's history when last observed.
+    history: History,
+    /// The normal screen's history rows when last observed.
     seen: usize,
-    /// Upper bounds on the cell extra data each screen holds: normal, then
-    /// alternate. The inactive screen's bound stays as it was while the
-    /// engine cannot change that screen.
-    extras: [usize; 2],
+    extras: Extras,
+}
+
+/// The normal screen's history: the rows the model shows, and the engine's
+/// admitted limit in whole chunks. The engine adds storage a chunk at a
+/// time, so it never holds more rows than the limit and, once history is
+/// full, no row beyond it.
+#[derive(Clone, Copy)]
+struct History {
+    /// The newest rows the model shows at most (`Limits::history_rows`).
+    shown: usize,
+    /// The engine's history limit, in chunks of [`cost::CHUNK`] rows.
+    chunks: usize,
+}
+
+impl History {
+    /// The first chunk, which holds the protected newest page; none when the
+    /// model keeps no history.
+    fn new(shown: usize) -> Self {
+        Self {
+            shown,
+            chunks: shown.min(1),
+        }
+    }
+
+    /// The engine's history limit in rows.
+    fn rows(self) -> usize {
+        self.chunks * cost::CHUNK
+    }
+}
+
+/// One of the engine's two screens.
+#[derive(Clone, Copy)]
+enum Screen {
+    Normal,
+    Alternate,
+}
+
+/// Upper bounds on the cell extra data each screen holds. The inactive
+/// screen's bound stays as it was while the engine cannot change that
+/// screen.
+#[derive(Default)]
+struct Extras {
+    normal: usize,
+    alternate: usize,
+}
+
+impl Extras {
+    fn of(&mut self, screen: Screen) -> &mut usize {
+        match screen {
+            Screen::Normal => &mut self.normal,
+            Screen::Alternate => &mut self.alternate,
+        }
+    }
+
+    fn total(&self) -> usize {
+        self.normal + self.alternate
+    }
 }
 
 /// The bytes other parts of the model hold, and the model's limit.
@@ -54,30 +103,29 @@ impl Bounded {
     /// What a fresh instance holds and may grow to before any output: the
     /// engine, both screens and the first chunk of history, which holds the
     /// protected newest page.
-    pub(crate) fn mandatory(geometry: Geometry, rows: usize) -> usize {
-        cost::fixed(geometry) + cost::history(geometry, first(rows))
+    pub(crate) fn mandatory(geometry: Geometry, history_rows: usize) -> usize {
+        cost::fixed(geometry) + cost::history(geometry, History::new(history_rows).chunks)
     }
 
-    pub(crate) fn new(geometry: Geometry, rows: usize) -> Self {
-        let limit = first(rows);
-        let term = Term::new(config(limit), &Size(geometry), VoidListener);
+    pub(crate) fn new(geometry: Geometry, history_rows: usize) -> Self {
+        let history = History::new(history_rows);
+        let term = Term::new(config(history.rows()), &Size(geometry), VoidListener);
         Self {
             seen: term.grid().history_size(),
             term,
             processor: Processor::new(),
             tokenizer: Tokenizer::new(),
             geometry,
-            rows,
-            limit,
-            extras: [0; 2],
+            history,
+            extras: Extras::default(),
         }
     }
 
     /// The bytes this instance may hold.
     pub(crate) fn charge(&self) -> usize {
         cost::fixed(self.geometry)
-            + cost::history(self.geometry, self.limit)
-            + self.extras.iter().sum::<usize>()
+            + cost::history(self.geometry, self.history.chunks)
+            + self.extras.total()
     }
 
     /// Feed terminal bytes, a slice of at most one engine step at a time so
@@ -124,7 +172,7 @@ impl Bounded {
                 limit: room.limit,
             });
         }
-        self.extras[self.active()] += growth;
+        *self.extras.of(self.active()) += growth;
         Ok(())
     }
 
@@ -132,23 +180,25 @@ impl Bounded {
     /// next chunk of rows if it fits; otherwise the engine discards its
     /// oldest row for each new one.
     fn grow(&mut self, reach: usize, room: Room) {
-        let Some(next) = self.next_limit(reach) else {
+        let Some(next) = self.next_chunks(reach) else {
             return;
         };
-        let growth = cost::history(self.geometry, next) - cost::history(self.geometry, self.limit);
+        let growth =
+            cost::history(self.geometry, next) - cost::history(self.geometry, self.history.chunks);
         if self.fits(growth, room) {
-            self.limit = next;
-            self.term.set_options(config(next));
+            self.history.chunks = next;
+            self.term.set_options(config(self.history.rows()));
         }
     }
 
-    /// The next history limit, when a token whose bytes and repetitions add
-    /// up to `reach` could fill the current one and the model may show more.
-    /// A token pushes at most a row per byte and per repetition, or a
-    /// screenful.
-    fn next_limit(&self, reach: usize) -> Option<usize> {
+    /// The next history limit in chunks, when a token whose bytes and
+    /// repetitions add up to `reach` could fill the current one and the
+    /// model may show more. A token pushes at most a row per byte and per
+    /// repetition, or a screenful.
+    fn next_chunks(&self, reach: usize) -> Option<usize> {
         let reach = self.normal_history()? + reach.max(usize::from(self.geometry.rows()));
-        (reach > self.limit && self.limit < self.rows).then_some(self.limit + cost::CHUNK)
+        let History { shown, chunks } = self.history;
+        (reach > self.history.rows() && chunks * cost::CHUNK < shown).then_some(chunks + 1)
     }
 
     /// After history is cleared the engine keeps its storage rows, cell data
@@ -166,7 +216,7 @@ impl Bounded {
 
     /// The normal screen's history rows, while it is the active screen.
     fn normal_history(&self) -> Option<usize> {
-        (self.active() == 0).then(|| self.term.grid().history_size())
+        matches!(self.active(), Screen::Normal).then(|| self.term.grid().history_size())
     }
 
     fn fits(&self, growth: usize, room: Room) -> bool {
@@ -185,7 +235,7 @@ impl Bounded {
             .flat_map(|line| cells(grid, line))
             .map(cost::cell)
             .sum();
-        self.extras[self.active()] = held;
+        *self.extras.of(self.active()) = held;
     }
 
     /// The most one token can make the engine allocate: its printed text,
@@ -199,8 +249,12 @@ impl Bounded {
         }
     }
 
-    fn active(&self) -> usize {
-        usize::from(self.term.mode().contains(TermMode::ALT_SCREEN))
+    fn active(&self) -> Screen {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            Screen::Alternate
+        } else {
+            Screen::Normal
+        }
     }
 
     pub(crate) fn geometry(&self) -> Geometry {
@@ -211,7 +265,7 @@ impl Bounded {
     /// oldest first; empty while the alternate screen is active.
     pub(crate) fn history(&self) -> Vec<String> {
         let grid = self.term.grid();
-        let shown = self.normal_history().unwrap_or(0).min(self.rows);
+        let shown = self.normal_history().unwrap_or(0).min(self.history.shown);
         (1..=shown)
             .rev()
             .map(|age| text(cells(grid, -(age as i32))))
@@ -236,10 +290,4 @@ fn text(cells: &[Cell]) -> String {
         .flat_map(|cell| once(cell.c).chain(cell.zerowidth().unwrap_or_default().iter().copied()))
         .collect();
     text.trim_end().to_owned()
-}
-
-/// The first chunk of history, which holds the protected newest page; none
-/// when the model keeps no history.
-fn first(rows: usize) -> usize {
-    rows.min(1) * cost::CHUNK
 }

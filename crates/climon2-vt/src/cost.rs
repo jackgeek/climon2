@@ -39,16 +39,17 @@ pub(crate) fn fixed(geometry: Geometry) -> usize {
     PROCESSOR + RESERVE + terminal(geometry)
 }
 
-/// Normal-screen history storage for a history limit in whole chunks:
-/// the rows, and the row vector, which can double and briefly holds its old
-/// buffer while it grows.
-pub(crate) fn history(geometry: Geometry, limit: usize) -> usize {
-    if limit == 0 {
+/// Normal-screen history storage for a history limit of `chunks` whole
+/// chunks: the rows, and the row vector, which can double and briefly holds
+/// its old buffer while it grows.
+pub(crate) fn history(geometry: Geometry, chunks: usize) -> usize {
+    if chunks == 0 {
         return 0;
     }
     let cols = usize::from(geometry.cols());
-    let rows = usize::from(geometry.rows()) + limit;
-    limit * cols * size_of::<Cell>() + 3 * rows * size_of::<Row<Cell>>()
+    let rows = chunks * CHUNK;
+    rows * cols * size_of::<Cell>()
+        + 3 * (usize::from(geometry.rows()) + rows) * size_of::<Row<Cell>>()
 }
 
 /// One cell's shared extra data (`Arc<CellExtra>`).
@@ -62,19 +63,53 @@ const MARK: usize = 16;
 /// vector's first four characters.
 const COMBINING: usize = 72;
 
-/// The most one printed character can add, by whether the cursor template
-/// carries extra data and by display width. A combining mark may create
-/// extra data; a printed cell shares the template's and may later need its
-/// own copy, and a wide character writes up to three cells: a leading spacer
-/// where it does not fit, itself and its spacer.
-const PRINTED: [[usize; 3]; 2] = [[COMBINING, 0, 0], [COMBINING, EXTRA, WIDE]];
+/// The most printing one character can add, by its display width.
+#[derive(Clone, Copy)]
+struct Printed {
+    /// A combining mark may create extra data.
+    combining: usize,
+    /// A narrow cell shares the cursor template's extra data and may later
+    /// need its own copy.
+    narrow: usize,
+    /// A wide character writes up to three cells: a leading spacer where it
+    /// does not fit, itself and its spacer.
+    wide: usize,
+}
 
-/// A wide character's three cells under an underline colour.
-const WIDE: usize = 3 * EXTRA;
+impl Printed {
+    /// The table for a cursor template that does or does not carry extra
+    /// data, such as an underline colour.
+    fn under(tinted: bool) -> Self {
+        if tinted { TINTED } else { PLAIN }
+    }
 
-/// The most repeating one character can add: a combining mark or, under an
-/// underline colour, a wide character's cells.
-const REPEATED: [usize; 2] = [COMBINING, WIDE];
+    /// Controls (C0, C1 and DEL) have no width: vte executes or ignores them.
+    fn character(self, c: char) -> usize {
+        c.width().map_or(0, |width| match width {
+            0 => self.combining,
+            1 => self.narrow,
+            _ => self.wide,
+        })
+    }
+
+    /// The most any one character adds, which is what repeating the
+    /// preceding character adds each time.
+    fn worst(self) -> usize {
+        self.combining.max(self.narrow).max(self.wide)
+    }
+}
+
+const PLAIN: Printed = Printed {
+    combining: COMBINING,
+    narrow: 0,
+    wide: 0,
+};
+
+const TINTED: Printed = Printed {
+    combining: COMBINING,
+    narrow: EXTRA,
+    wide: 3 * EXTRA,
+};
 
 /// The bound for what one cell's extra data holds: the shared data and its
 /// share for each combining mark.
@@ -86,25 +121,21 @@ pub(crate) fn cell(cell: &Cell) -> usize {
 /// The most feeding a text token can add while the cursor template does or
 /// does not carry extra data.
 pub(crate) fn text(bytes: &[u8], tinted: bool) -> usize {
-    let costs = &PRINTED[usize::from(tinted)];
+    let printed = Printed::under(tinted);
     bytes
         .utf8_chunks()
-        .map(|chunk| chunk_cost(&chunk, costs))
+        .map(|chunk| chunk_cost(&chunk, printed))
         .sum()
 }
 
-/// vte prints one replacement character, a cell, per invalid sequence.
-fn chunk_cost(chunk: &Utf8Chunk<'_>, costs: &[usize; 3]) -> usize {
-    let valid: usize = chunk.valid().chars().map(|c| printed(c, costs)).sum();
-    valid + chunk.invalid().len() * costs[1]
-}
-
-/// Controls (C0, C1 and DEL) have no width: vte executes or ignores them.
-fn printed(c: char, costs: &[usize; 3]) -> usize {
-    c.width().map_or(0, |width| costs[width.min(2)])
+/// vte prints one replacement character, a narrow cell, per invalid
+/// sequence.
+fn chunk_cost(chunk: &Utf8Chunk<'_>, printed: Printed) -> usize {
+    let valid: usize = chunk.valid().chars().map(|c| printed.character(c)).sum();
+    valid + chunk.invalid().len() * printed.narrow
 }
 
 /// The most repeating the preceding character `count` times can add.
 pub(crate) fn repeat(count: usize, tinted: bool) -> usize {
-    count * REPEATED[usize::from(tinted)]
+    count * Printed::under(tinted).worst()
 }

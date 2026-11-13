@@ -126,7 +126,7 @@ const ROOMY: usize = 64 * 1024 * 1024;
 #[test]
 fn plain_text_fills_held_cells_without_growth() {
     let meter = Meter::watch();
-    let mut model = Model::new(geometry(10, 3), limits(ROOMY, ROWS)).unwrap();
+    let mut model = Model::new(geometry(10, 3), limits(ROOMY, NO_HISTORY)).unwrap();
     let footprint = model.footprint();
 
     model
@@ -140,26 +140,26 @@ fn plain_text_fills_held_cells_without_growth() {
 
 /// History rows for tests about anything but history: none, so a charged but
 /// still unallocated history chunk cannot hide an undercharge.
-const ROWS: usize = 0;
+const NO_HISTORY: usize = 0;
 
 /// History rows for tests about history.
 const HISTORY: usize = 100;
 
 /// The bytes a model needs before any output.
 fn mandatory(at: Geometry) -> usize {
-    needed(Model::new(at, limits(0, ROWS)))
+    needed(Model::new(at, limits(0, NO_HISTORY)))
 }
 
 /// A model with the smallest limit that accepts `bytes`, and that limit.
 fn fitted(at: Geometry, bytes: &[u8]) -> (Model, usize) {
-    fitted_with(at, ROWS, bytes)
+    fitted_with(at, NO_HISTORY, bytes)
 }
 
-/// [`fitted`] for a model keeping `rows` history rows.
-fn fitted_with(at: Geometry, rows: usize, bytes: &[u8]) -> (Model, usize) {
-    let mut limit = needed(Model::new(at, limits(0, rows)));
+/// [`fitted`] for a model keeping `history_rows` history rows.
+fn fitted_with(at: Geometry, history_rows: usize, bytes: &[u8]) -> (Model, usize) {
+    let mut limit = needed(Model::new(at, limits(0, history_rows)));
     loop {
-        let mut model = Model::new(at, limits(limit, rows)).unwrap();
+        let mut model = Model::new(at, limits(limit, history_rows)).unwrap();
         match model.feed(bytes) {
             Ok(()) => return (model, limit),
             Err(rejected) => limit = rejected.needed,
@@ -179,7 +179,7 @@ fn assert_bound(at: Geometry, before: &[u8], update: &[u8]) -> Vec<String> {
     let bound = needed(fitted(at, before).0.feed(update));
 
     let meter = Meter::watch();
-    let mut model = Model::new(at, limits(bound, ROWS)).unwrap();
+    let mut model = Model::new(at, limits(bound, NO_HISTORY)).unwrap();
     model.feed(before).unwrap();
     let (held, charged) = (meter.live(), model.footprint());
     model.feed(update).unwrap();
@@ -189,7 +189,7 @@ fn assert_bound(at: Geometry, before: &[u8], update: &[u8]) -> Vec<String> {
     assert!(kept <= charge, "kept {kept} > charged {charge}");
     let accepted = model.screen();
 
-    let mut model = Model::new(at, limits(bound - 1, ROWS)).unwrap();
+    let mut model = Model::new(at, limits(bound - 1, NO_HISTORY)).unwrap();
     model.feed(before).unwrap();
     let page = model.screen();
     assert_eq!(
@@ -239,7 +239,7 @@ fn underline_coloured_cells_are_accepted_at_the_bound_and_rejected_one_byte_past
 fn cells_under_changing_underline_colours_keep_no_more_than_they_were_charged() {
     for glyph in [&b"x"[..], b"\xff", "\u{4e00}".as_bytes()] {
         let meter = Meter::watch();
-        let mut model = Model::new(geometry(10, 3), limits(ROOMY, ROWS)).unwrap();
+        let mut model = Model::new(geometry(10, 3), limits(ROOMY, NO_HISTORY)).unwrap();
         model.feed(b"\r").unwrap();
         let (held, charged) = (meter.live(), model.footprint());
 
@@ -335,7 +335,7 @@ fn released_marks_make_room_before_anything_is_rejected() {
     let update = format!("a{}", "\u{301}".repeat(31));
     let bound = needed(fitted(at, b"").0.feed(update.as_bytes()));
     let meter = Meter::watch();
-    let mut model = Model::new(at, limits(bound, ROWS)).unwrap();
+    let mut model = Model::new(at, limits(bound, NO_HISTORY)).unwrap();
 
     for _ in 0..100 {
         model.feed(b"\x1b[2J\x1b[3J\x1b[H").unwrap();
@@ -441,7 +441,7 @@ fn sequences_no_host_receives_never_grow_the_model() {
     .concat();
     let limit = mandatory(at);
     let meter = Meter::watch();
-    let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+    let mut model = Model::new(at, limits(limit, NO_HISTORY)).unwrap();
 
     model.feed(stream.as_bytes()).unwrap();
 
@@ -461,16 +461,16 @@ fn sequences_no_host_receives_never_grow_the_model() {
 fn restoration_staging_is_accepted_at_the_bound_and_rejected_one_byte_past_it() {
     let at = geometry(10, 3);
     let restoration = format!("restored\r\na{}", "\u{301}".repeat(20));
-    let mut probe = Model::new(at, limits(mandatory(at), ROWS)).unwrap();
+    let mut probe = Model::new(at, limits(mandatory(at), NO_HISTORY)).unwrap();
     probe.feed(b"live page").unwrap();
     let both = needed(probe.stage(at));
-    let mut probe = Model::new(at, limits(both, ROWS)).unwrap();
+    let mut probe = Model::new(at, limits(both, NO_HISTORY)).unwrap();
     probe.feed(b"live page").unwrap();
     probe.stage(at).unwrap();
     let bound = needed(probe.feed(restoration.as_bytes()));
 
     let meter = Meter::watch();
-    let mut model = Model::new(at, limits(bound, ROWS)).unwrap();
+    let mut model = Model::new(at, limits(bound, NO_HISTORY)).unwrap();
     model.feed(b"live page").unwrap();
     model.stage(at).unwrap();
     model.feed(restoration.as_bytes()).unwrap();
@@ -487,7 +487,7 @@ fn restoration_staging_is_accepted_at_the_bound_and_rejected_one_byte_past_it() 
         ]
     );
 
-    let mut model = Model::new(at, limits(bound - 1, ROWS)).unwrap();
+    let mut model = Model::new(at, limits(bound - 1, NO_HISTORY)).unwrap();
     model.feed(b"live page").unwrap();
     model.stage(at).unwrap();
     let rejected = Rejected {
@@ -508,12 +508,12 @@ fn restoration_staging_is_accepted_at_the_bound_and_rejected_one_byte_past_it() 
 fn resizing_stages_a_replacement_at_the_bound_and_is_rejected_one_byte_past_it() {
     let small = geometry(10, 3);
     let large = geometry(200, 60);
-    let mut probe = Model::new(small, limits(mandatory(small), ROWS)).unwrap();
+    let mut probe = Model::new(small, limits(mandatory(small), NO_HISTORY)).unwrap();
     probe.feed(b"page").unwrap();
     let bound = needed(probe.stage(large));
 
     let meter = Meter::watch();
-    let mut model = Model::new(small, limits(bound, ROWS)).unwrap();
+    let mut model = Model::new(small, limits(bound, NO_HISTORY)).unwrap();
     model.feed(b"page").unwrap();
     model.stage(large).unwrap();
     model.feed(b"\x1b[60;190Hcorner").unwrap();
@@ -524,7 +524,7 @@ fn resizing_stages_a_replacement_at_the_bound_and_is_rejected_one_byte_past_it()
     assert_eq!(model.screen()[59].trim_start(), "corner");
 
     let meter = Meter::watch();
-    let mut model = Model::new(small, limits(bound - 1, ROWS)).unwrap();
+    let mut model = Model::new(small, limits(bound - 1, NO_HISTORY)).unwrap();
     model.feed(b"page").unwrap();
     assert_eq!(
         model.stage(large),
@@ -543,7 +543,7 @@ fn resizing_stages_a_replacement_at_the_bound_and_is_rejected_one_byte_past_it()
 #[test]
 fn discarded_restorations_never_become_current() {
     let at = geometry(10, 3);
-    let mut model = Model::new(at, limits(ROOMY, ROWS)).unwrap();
+    let mut model = Model::new(at, limits(ROOMY, NO_HISTORY)).unwrap();
     model.feed(b"current").unwrap();
     let alone = model.footprint();
     model.stage(at).unwrap();
@@ -587,7 +587,7 @@ fn alternate_screen_marks_stay_charged_until_that_screen_is_cleared() {
     drop(model);
 
     let meter = Meter::watch();
-    let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+    let mut model = Model::new(at, limits(limit, NO_HISTORY)).unwrap();
     for _ in 0..3 {
         model.feed(alternate.as_bytes()).unwrap();
         model.feed(b"\x1b[?1049l").unwrap();
@@ -602,7 +602,7 @@ fn alternate_screen_marks_stay_charged_until_that_screen_is_cleared() {
 fn a_rejected_model_accepts_output_again_after_a_restoration_is_applied() {
     let at = geometry(10, 3);
     let marks = format!("a{}", "\u{301}".repeat(20));
-    let mut model = Model::new(at, limits(mandatory(at) * 2 + 1000, ROWS)).unwrap();
+    let mut model = Model::new(at, limits(mandatory(at) * 2 + 1000, NO_HISTORY)).unwrap();
     model.feed("kept\u{301}".as_bytes()).unwrap();
     assert!(model.feed(b"\x1b[65535b").is_err());
     let kept = model.screen();
@@ -676,7 +676,7 @@ fn a_cancelled_sequence_releasing_held_controls_stays_within_the_limit() {
     .concat();
     let limit = mandatory(at);
     let meter = Meter::watch();
-    let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+    let mut model = Model::new(at, limits(limit, NO_HISTORY)).unwrap();
 
     model.feed(&burst).unwrap();
 
@@ -705,7 +705,7 @@ fn the_reserve_covers_what_is_held_briefly() {
     ] {
         let limit = mandatory(at);
         let meter = Meter::watch();
-        let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+        let mut model = Model::new(at, limits(limit, NO_HISTORY)).unwrap();
 
         for read in stream.as_bytes().chunks(read) {
             model.feed(read).unwrap();
@@ -956,7 +956,7 @@ fn adversarial_streams_never_take_a_model_past_its_limit() {
             let limit = mandatory(at) + extra;
             let reads: Vec<usize> = (0..stream.len()).map(|_| 1 + rng.below(64)).collect();
             let meter = Meter::watch();
-            let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+            let mut model = Model::new(at, limits(limit, NO_HISTORY)).unwrap();
             let mut rest = &stream[..];
             let mut sizes = reads.iter();
             let rejected = loop {
@@ -999,7 +999,7 @@ fn marks_accumulating_on_every_cell_stay_within_the_limit() {
         .flat_map(|row| (2..=81).map(move |col| format!("\x1b[{row};{col}H\u{301}")))
         .collect();
     let meter = Meter::watch();
-    let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+    let mut model = Model::new(at, limits(limit, NO_HISTORY)).unwrap();
     model.feed(marked(at, 0).as_bytes()).unwrap();
 
     let accepted = (0..200)
@@ -1024,7 +1024,7 @@ fn repeated_repeats_stay_within_the_limit() {
         b"\x1b[6\x075535b",
     ] {
         let meter = Meter::watch();
-        let mut model = Model::new(at, limits(limit, ROWS)).unwrap();
+        let mut model = Model::new(at, limits(limit, NO_HISTORY)).unwrap();
         model.feed("a\u{301}".as_bytes()).unwrap();
 
         let repeated = (0..20).take_while(|_| model.feed(repeat).is_ok()).count();
@@ -1053,7 +1053,7 @@ fn the_largest_limits_never_overflow_the_accounting() {
 /// implements, and nothing of a lone `CSI ? 1047 h`.
 #[test]
 fn the_engine_sees_only_what_a_host_would_receive() {
-    let mut model = Model::new(geometry(8, 2), limits(ROOMY, ROWS)).unwrap();
+    let mut model = Model::new(geometry(8, 2), limits(ROOMY, NO_HISTORY)).unwrap();
     model.feed(b"normal\x1b[?1047h").unwrap();
     assert_eq!(model.screen(), ["normal", ""]);
 
