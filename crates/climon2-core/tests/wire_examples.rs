@@ -14,8 +14,7 @@ use climon2_core::wire::{
 };
 use climon2_core::{
     hello::{
-        Advertised, Capability, HelloExtensions, Lifecycle, SessionState, advertise,
-        advertise_revision1,
+        Advertised, Capability, HelloExtensions, Lifecycle, SessionState, advertise_revision1,
     },
     protocol::{self, HelloReply},
     wire::{Advertisement, Family, FrameLimit, FrameLimits},
@@ -379,12 +378,13 @@ fn hello(body: &str) -> (HelloReply, HelloExtensions) {
     (reply, HelloExtensions::from_body(body.as_bytes()))
 }
 
-/// DOC-01 / COM-01: the frozen reply, the current advertisement and the
-/// revision-1 advertisement each decode to their documented values and
-/// re-encode byte-identically.
+/// DOC-01 / COM-01: the frozen reply, a reply with capabilities and state
+/// but no revision 1, and the complete revision-1 reply each decode to their
+/// documented values. The frozen and revision-1 replies, the two that
+/// climon2 encodes, re-encode byte-identically.
 #[test]
-fn published_hello_advertisement_examples_round_trip_byte_identically() {
-    let [frozen, current, revision1]: [String; 3] =
+fn published_hello_reply_examples_decode_and_the_encoded_ones_round_trip() {
+    let [frozen, without_revision1, revision1]: [String; 3] =
         page_examples("hello-reply.md").try_into().unwrap();
     let expected = HelloReply {
         session_id: "550e8400-e29b-41d4-a716-446655440000".parse().unwrap(),
@@ -405,7 +405,7 @@ fn published_hello_advertisement_examples_round_trip_byte_identically() {
     let encoded = protocol::ServerMessage::Hello(reply).to_frame().unwrap();
     assert_eq!(encoded.body(), frozen.as_bytes());
 
-    let (reply, extensions) = hello(&current);
+    let (reply, extensions) = hello(&without_revision1);
     let state = SessionState::new(Lifecycle::Attached, 2, true).unwrap();
     assert_eq!(reply, expected);
     let capabilities = extensions.capabilities.valid().unwrap();
@@ -413,7 +413,6 @@ fn published_hello_advertisement_examples_round_trip_byte_identically() {
     assert!(capabilities.supports_state());
     assert_eq!(extensions.state, Advertised::Valid(state));
     assert_eq!(extensions.daemon_wire_v1, Advertised::Absent);
-    assert_eq!(advertise(&reply, state).unwrap().body(), current.as_bytes());
 
     let (reply, extensions) = hello(&revision1);
     let limit = FrameLimit::new(1_048_576).unwrap();

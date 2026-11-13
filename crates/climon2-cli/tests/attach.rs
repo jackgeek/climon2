@@ -2,9 +2,10 @@
 
 use climon2_core::{
     SessionId,
-    hello::{Lifecycle, SessionState, advertise},
+    hello::{Lifecycle, SessionState, advertise_revision1},
     metadata::SessionMetadata,
     protocol::{Frame, HelloReply, PROTOCOL_VERSION, read_frame, write_frame},
+    wire::{Advertisement, FrameLimit, FrameLimits},
 };
 use climon2_platform::{process, runtime};
 use climon2_test_term::{Isolation, Terminal, bin_path, copy_executable};
@@ -103,9 +104,16 @@ fn legacy(metadata: &SessionMetadata) -> Frame {
     Frame::new(1, body).unwrap()
 }
 
+/// A current daemon: capabilities, state and revision 1 (here with no
+/// optional families).
 fn current(metadata: &SessionMetadata) -> Frame {
     let state = SessionState::new(Lifecycle::Detached, 0, false).unwrap();
-    advertise(&reply(metadata), state).unwrap()
+    let limit = FrameLimit::new(1_048_576).unwrap();
+    let limits = FrameLimits {
+        max_request_frame_bytes: limit,
+        max_server_frame_bytes: limit,
+    };
+    advertise_revision1(&reply(metadata), state, &Advertisement::new([], limits)).unwrap()
 }
 
 /// Runs `climon2 attach` in a terminal and returns its status and screen.

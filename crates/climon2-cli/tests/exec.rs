@@ -1017,8 +1017,9 @@ fn attach_overwrites_an_inherited_kill_envelope() {
 /// A session that answers every hello as kill-capable but never confirms.
 fn unconfirming_session(layout: &Layout) -> climon2_core::metadata::SessionMetadata {
     use climon2_core::{
-        hello::{Lifecycle, SessionState, advertise},
+        hello::{Lifecycle, SessionState, advertise_revision1},
         protocol::{HelloReply, PROTOCOL_VERSION, read_frame, write_frame},
+        wire::{Advertisement, FrameLimit, FrameLimits},
     };
     let home = climon2_platform::runtime::canonical_home(&layout.home()).unwrap();
     let id: climon2_core::SessionId = "12345678-1234-4234-8234-123456789abc".parse().unwrap();
@@ -1048,13 +1049,22 @@ fn unconfirming_session(layout: &Layout) -> climon2_core::metadata::SessionMetad
         climon2_version: metadata.climon2_version.clone(),
         protocol: PROTOCOL_VERSION,
     };
+    let limit = FrameLimit::new(1_048_576).unwrap();
+    let revision1 = Advertisement::new(
+        [],
+        FrameLimits {
+            max_request_frame_bytes: limit,
+            max_server_frame_bytes: limit,
+        },
+    );
     std::thread::spawn(move || {
         let mut held = Vec::new();
         for socket in listener.incoming() {
             let mut socket = socket.unwrap();
             if read_frame(&mut socket).is_ok() {
                 let state = SessionState::new(Lifecycle::Detached, 0, false).unwrap();
-                let _ = write_frame(&mut socket, &advertise(&reply, state).unwrap());
+                let hello = advertise_revision1(&reply, state, &revision1).unwrap();
+                let _ = write_frame(&mut socket, &hello);
             }
             held.push(socket);
         }
