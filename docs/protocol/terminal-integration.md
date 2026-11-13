@@ -17,8 +17,19 @@ followed by x acts: pasted [bytes](TERMS.md#byte) are data, never complete a
 pending prefix and leave none pending. A host resize repaints the whole screen
 without blanking it or showing the cursor. Every exit writes the
 [release](../../GLOSSARY.md#restoration-and-presentation) bytes to the host
-before any diagnostic. Everything else in this document remains agreed and
-unimplemented.
+before any diagnostic.
+
+**Implemented with Contract evidence ([#87](https://github.com/jackgeek/climon2/issues/87)):**
+the [session daemon](../../GLOSSARY.md#sessions)'s side of
+[application focus](#host-focus-and-application-focus), served as
+[wire Focus](daemon-client/request-focus.md#implemented-behavior). It
+remembers the desired focus for the current
+[control period](../../GLOSSARY.md#attachment-and-control), forwards each
+change as the application's focus report while the application has focus
+reporting on, in request order after earlier input, and sends the known
+state once when reporting is newly enabled.
+
+Everything else in this document remains agreed and unimplemented.
 
 The later [selector and attention-presentation decision](../monitor-selector.md)
 confirms the captionless double-bordered selector, always-focused search,

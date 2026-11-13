@@ -121,8 +121,9 @@ acknowledgement files and observable completion, never sleeps.
 
 ## Specification mapping
 
-Each test also has a specification doc comment in `tests/packaged.rs` or, for
-session continuity (plan section 6.1), `tests/continuity.rs`.
+Each test also has a specification doc comment in `tests/packaged.rs`, for
+session continuity (plan section 6.1) in `tests/continuity.rs`, or for headless
+sessions in `tests/headless.rs`.
 
 | Requirement | Named packaged test |
 |---|---|
@@ -256,6 +257,32 @@ holds a packaged client between `Granted` and `Ready`; daemon
 and the ambiguous selector (random GUIDs; CLI
 `a_selector_must_match_exactly_one_live_session`). Daemon raw-socket (6.2) and
 client bridge (6.3) scenarios are mapped in those crates' test doc comments.
+
+### Headless sessions (spec #73, acceptance matrix HDL-01)
+
+Monitor-layer evidence through the packaged CLI on macOS and Linux, in
+`tests/headless.rs` unless noted. The Contract-layer cases are mapped in the
+daemon README. Scripted runs have stdin from `/dev/null` and pipes for
+output, so no terminal is involved; a CLI still running at its deadline is
+killed and reaped and its test fails. Scripted creation uses `c2`; the TTY
+case and every kill use `climon2`, the same installed launcher. Every
+headless session command ends itself after two minutes, so even a test
+killed before cleaning up cannot leave a session running forever.
+
+| Scenario | Named packaged test |
+|---|---|
+| Confirmed scenario: from a script with no terminal, exactly the full lowercase GUID and a newline, status 0 only once the session is listed `detached` with no client, 80x24 start; HDL-01 command completion with zero clients | `installed_headless_exec_from_a_script_prints_only_the_guid_and_starts_at_80x24` |
+| Confirmed scenario: a terminal on stdin sets the initial size, with stdout captured as in `id=$(climon2 exec --headless …)`; HDL-01 existing `climon2 kill` ends a headless session | `installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it` |
+| HDL-01 failed creation: 127, 126 and 125 with exec's diagnostics, nothing on stdout, nothing left | `installed_headless_creation_failures_keep_exec_statuses_and_diagnostics` |
+| HDL-01 failed creation and CFG-01 (exec case): an invalid `monitor` section, a wrong type or an out-of-range limit, refused with 125 before any session side effect: nothing on stdout, only the general log written, nothing left | `installed_headless_exec_rejects_an_invalid_monitor_section_before_any_session_side_effect` |
+| HDL-01 creation with an unwritable stdout (owner decision of 2026-11-13): status 0, nothing on stderr, the session keeps running, listed `detached`, until its command completes | `installed_headless_exec_that_cannot_print_the_guid_leaves_the_session_running` |
+| HDL-01 zero clients past the initial attach window (ordered, not slept: the next step follows the Kill of a reference session whose command ignores hang-up, which is confirmed only after the five-second hang-up grace), after a killed client and after a deliberate detach, then Kill | `installed_headless_session_survives_zero_clients_a_killed_client_and_a_detach` |
+| HDL-01 ordinary leave policy unchanged | `killed_installed_client_uses_daemon_leave_policy_and_leaves_nothing` (`tests/packaged.rs`) |
+
+The HDL-01 cases that need a monitor discovering sessions wait for it: headless
+rows appearing in the selector ([#106](https://github.com/jackgeek/climon2/issues/106))
+and `c2 kill` leaving an independently running monitor's row in place
+([#116](https://github.com/jackgeek/climon2/issues/116)).
 
 ### Deliberately reused preceding boundary evidence
 
