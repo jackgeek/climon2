@@ -4,13 +4,14 @@ The session daemon's virtual terminal (ADR 0007): a pure, platform-neutral,
 infallible adapter around unchanged `alacritty_terminal` 0.26.0, and the
 allocation-bounded `Model` a monitor keeps for each session. No I/O, no
 `cfg(target_os)`, and no Alacritty type in the public API. Only
-`climon2-daemon` may depend on it (ADR 0004).
+`climon2-daemon` and `climon2-monitor` may depend on it (ADR 0004); the monitor
+uses it today only for the documented normal-shell baseline in its release.
 
 **Agreed, not implemented:** the
 [#63 terminal contract](../../docs/protocol/terminal-integration.md) plans
 read-only Rust cell/mode/cursor/history views of monitor models for Ratatui.
-This is a future exception to daemon-only use, not a current public cell API or
-native cross-release cell schema. Monitor-mode daemon presentation must be
+This would extend the monitor's baseline-only use; it is not a current public
+cell API or native cross-release cell schema. Monitor-mode daemon presentation must be
 serialized at effective session geometry; ordinary host direct/derived
 presentation below is unchanged. The daemon remains the sole query authority;
 the monitor never forwards parser replies or session bytes directly to its host.

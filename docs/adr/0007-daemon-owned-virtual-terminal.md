@@ -174,7 +174,9 @@ ordered exact daemon terminal bytes, reparsed into monitor-owned `climon2-vt`
 models and painted by Ratatui. This deliberately reopens the rejected
 client-side-emulator option for the monitor role, not ordinary clients or query
 authority. Planned read-only Rust cell/mode/cursor/history views keep engine
-types private; current `climon2-vt` has no public cells and remains daemon-only.
+types private; current `climon2-vt` has no public cells, and the monitor, the
+one other consumer allowed by ADR 0004, uses it only for the documented
+normal-shell baseline.
 No native cross-release cell schema or new workspace crate is selected.
 
 Monitor-mode display/restoration will use effective session geometry canonically,

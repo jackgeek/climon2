@@ -9,7 +9,7 @@ mod publish;
 mod transaction;
 
 pub use command::run;
-pub use payload::Payload;
+pub use payload::{COMPANIONS, Payload};
 
 use std::io;
 use std::path::{Path, PathBuf};

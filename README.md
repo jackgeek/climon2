@@ -10,6 +10,7 @@ c2 attach 3f2a9c1e
 c2 kill 3f2a9c1e
 c2 list
 c2 list --json
+c2 monitor
 ```
 
 `c2` is the short command for climon2. The installer creates `c2 -> climon2`;
@@ -29,8 +30,8 @@ It distinguishes implemented behavior from agreed plans and unresolved details.
 The planned [session status, attention, and activity mechanics](docs/session-status.md)
 include both daemon state machines and the monitor's ordering/recovery behavior.
 The agreed [monitor acceptance criteria](docs/monitor-acceptance.md) define
-required real-monitor, packaged-library and measured evidence, not tests
-already delivered.
+the required real-monitor, packaged-library and measured evidence; only the
+monitor's entry, startup refusals and exits have tests so far.
 
 ## Sessions
 
@@ -149,8 +150,8 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
   when the session starts; attaching never changes it. 0 disables retained
   history, but the screen is still restored.
 
-`exec` validates the whole file before starting the session, `attach` validates
-only `client`, and `list` and `kill` do not read it. Any error, including
+`exec` validates the whole file before starting the session, `attach` and
+`monitor` validate only `client`, and `list` and `kill` do not read it. Any error, including
 malformed JSONC, duplicate keys, wrong types, invalid keys, conflicting bindings
 and out-of-range values, exits 125 before anything starts. The file is read once
 per command; there is no environment override, auto-creation or live reload.
@@ -159,11 +160,12 @@ per command; there is no environment override, auto-creation or live reload.
 
 The [agreed terminal integration](docs/protocol/terminal-integration.md) provides
 interactive terminal input/rendering, internal normal-screen history, one top
-status row, and explicit control/restoration gates. There is no monitor command
-or automated monitor implementation evidence yet.
-The future monitor reads one startup snapshot, reusing `client` bindings; it
-rejects a null escape prefix before changing terminal state. Null takeover is
-allowed because selector confirmation can acquire control. Lowercase prefix+s
+status row, and explicit control/restoration gates. Of these, the
+[monitor](#monitor) implements only its top row, empty state and exits so far,
+and already treats pasted shortcuts as data.
+It already reuses the `client` bindings and rejects a null escape prefix before
+changing terminal state; the rest of its startup snapshot is planned. Null
+takeover is allowed because selector confirmation can acquire control. Lowercase prefix+s
 opens the selector, prefix+x exits, and **prefix+j** jumps to the most recent
 currently connected session needing attention, not necessarily a toast's session.
 Prefix+? opens the [key introduction/help dialog](docs/monitor-selector.md#key-introduction-and-help).
@@ -230,8 +232,7 @@ detach/join claim or thread kill. The agreed
 [operational limits](docs/monitor-operational-limits.md) define planned
 `monitor.limits` configuration, numerical budgets, deadlines and evidence.
 Under pressure, local history shrinks to its newest captured page, never
-disappears entirely; resource-blocked sessions remain visible. Complete native
-declarations (#71) and final automated acceptance (#62) remain open. All of this
+disappears entirely; resource-blocked sessions remain visible. All of this
 is unimplemented; no general session-survival or native-crash isolation is added.
 Planned explicit exit succeeds only after required Leave outcomes, local cleanup/
 joins and host restoration succeed, never with the selected command's status.
@@ -257,6 +258,37 @@ report it. CLIENTS counts attached clients, or shows `-` when unknown.
 Each session is attached and killed through the client of its own climon2
 version, which must still be installed. Older sessions that do not support an
 operation fail with 125 and are left undisturbed. `list` needs no client.
+
+## Monitor
+
+`c2 monitor`, or `c2 mon`, opens the monitor: one terminal that will track
+every live session. It takes no arguments (any is a usage error, 2) and needs a
+terminal on stdin and stdout. The launcher always runs the current version's
+monitor, on macOS and x86-64 GNU/Linux alike. It uses your
+`client.escape_prefix` and `client.take_control_key` settings and their
+defaults, but refuses a `null` escape prefix, the only way to reach its
+actions. Startup errors are reported, with status 125, before your terminal
+changes.
+
+The monitor does not discover sessions yet. On its own alternate screen it shows
+one permanent top row and an empty state that names your escape prefix:
+
+```text
+No session selected
+                         No sessions to show.
+                     Press Ctrl+] then x to exit.
+```
+
+The escape prefix followed by `x` exits with status 0; any other key is
+discarded, and Ctrl+C is a key, not an exit. Pasted text is never a key: a
+paste holding the prefix and `x` does not exit, and a paste cancels a pending
+prefix. SIGINT, SIGTERM and SIGHUP leave the same way with status 128 + signal.
+Resizing repaints the screen at the new size without blanking it. If your
+terminal hangs up or can no longer be read, the monitor leaves with status 125.
+On every exit the monitor returns your terminal to the normal shell state
+described for clients above, restores its settings (termios) exactly and never
+changes its title; only then does it print any error, with status 125. It logs
+to the general log in the climon2 home, never your input.
 
 ## Terminal compatibility
 
@@ -420,6 +452,9 @@ follows available CPUs, capped at 16.
 `xtask check` runs formatting, strict clippy, unit/integration/installer-built
 packaged tests, ShellCheck, append-only metadata fixtures, instrumentation and
 worker-isolation proofs, coverage-backed CRAP <= 5 and zero-survivor mutation.
+Its tests, like `cargo xtask test`, first run the monitor's build test alone,
+proving its plain binary carries no test hooks, before the workspace tests
+build it with hooks at the same path.
 The unchanged workspace must pass in a real mutation overlay before mutation;
 worker infrastructure failures cannot count as killed mutants.
 `cargo xtask check` also measures mutation load before mutating, even when no

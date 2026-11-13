@@ -2,7 +2,9 @@
 
 This reference is for future [plugin](../../GLOSSARY.md#protocol-and-plugin-concepts)
 authors. It distinguishes implemented behavior, agreed plans, and unresolved
-interfaces. The [monitor](../../GLOSSARY.md#sessions) is not implemented.
+interfaces. The [monitor](../../GLOSSARY.md#sessions) ships only as an empty
+walking skeleton ([#74](https://github.com/jackgeek/climon2/issues/74)) that
+implements none of these interfaces.
 Plugin implementation is deferred. Title and terminal-signal detection and
 [session status](../../GLOSSARY.md#status-and-attention) belong in
 [session daemon](../../GLOSSARY.md#sessions) core;
