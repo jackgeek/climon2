@@ -395,7 +395,7 @@ fn conflicting_short_commands_are_preserved_before_any_publication() {
 fn interruption_cleans_only_own_staging_and_rerun_recovers() {
     for mode in ["fail", "crash"] {
         for boundary in [
-            "copy-cli",
+            "copy-climon2-cli",
             "version-staged",
             "version-published",
             "launcher-published",
@@ -428,7 +428,7 @@ fn interruption_cleans_only_own_staging_and_rerun_recovers() {
             }
             assert_eq!(fs::read(destination.join("current")).unwrap(), b"0.0.1\n");
             let version = destination.join(env!("CARGO_PKG_VERSION"));
-            if ["copy-cli", "version-staged"].contains(&boundary) {
+            if ["copy-climon2-cli", "version-staged"].contains(&boundary) {
                 assert!(!version.exists());
             } else {
                 assert_eq!(fs::read_dir(&version).unwrap().count(), VERSION_FILES);

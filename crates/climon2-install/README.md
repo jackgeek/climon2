@@ -68,7 +68,8 @@ This is process-interruption recovery, not a power-loss durability guarantee.
 
 Only the compile-time `test-hooks` feature enables
 `CLIMON2_TEST_INSTALL_FAULT=fail:<boundary>` or `crash:<boundary>`.
-Boundaries are `copy-cli`, `version-staged`, `short-command`, `version-published`, and
+Boundaries are `copy-<file>` after each version file is staged (for example
+`copy-climon2-cli`), `version-staged`, `short-command`, `version-published`, and
 `launcher-published`; crash exits 86 without Rust cleanup. Production builds do
 not contain these hooks.
 

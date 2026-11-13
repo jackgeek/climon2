@@ -32,9 +32,7 @@ impl Stage {
         for (name, source) in &payload.companions {
             fs::copy(source, self.version().join(name))?;
             #[cfg(feature = "test-hooks")]
-            if name == "climon2-cli" {
-                crate::hooks::checkpoint("copy-cli")?;
-            }
+            crate::hooks::checkpoint(&format!("copy-{name}"))?;
         }
         Ok(())
     }
