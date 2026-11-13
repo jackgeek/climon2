@@ -21,10 +21,15 @@ path = "src/bin/cli.rs"
 name = "climon2-daemon-fixture"
 path = "src/bin/daemon.rs"
 
+[[bin]]
+name = "climon2-library-host"
+path = "src/bin/library.rs"
+
 [lints]
 workspace = true
 
 [dependencies]
+climon2-core = { path = "../climon2-core" }
 libc = "0.2.191"
 nix = { version = "0.31", features = ["signal", "process", "term", "fs"] }
 serde_json.workspace = true

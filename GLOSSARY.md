@@ -101,7 +101,7 @@ Probes, passive monitor connections and kill requests are not attachments.
 _Avoid_: Session, control
 
 **Passive monitor connection**:
-A monitor's connection that receives session metadata and is eligible to inherit control, but has not yet become an attachment.
+A monitor's connection that receives the session's core metadata, such as its title and status, and is eligible to inherit control, but has not yet become an attachment.
 _Avoid_: Observer-only attachment, read-only viewer
 
 **Successor**:

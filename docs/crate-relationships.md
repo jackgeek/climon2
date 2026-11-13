@@ -53,7 +53,9 @@ flowchart TB
     e2e -.->|"dev"| core
     e2e -.->|"dev"| install
     e2e -.->|"dev"| test_term
+    fixtures --> core
     fixtures -.->|"dev"| test_term
+    xtask --> core
     xtask --> install
 
     subgraph planned["Planned crate; not implemented"]
@@ -81,6 +83,13 @@ consumes `core`, `platform` and `vt` (the only exception to
 Ratatui is a dependency of this crate alone; third-party crates are
 deliberately excluded from this workspace-only diagram.
 
+**Current (#75):** the [client library](../GLOSSARY.md#sessions)'s `cdylib`,
+`libclimon2_client.dylib` on macOS and `libclimon2_client.so` on Linux, is an
+artifact of `climon2-client`, not another crate. The `#[repr(C)]` declarations
+of its native interface live in `climon2-core`, so the client library, the
+client executable and the monitor can share them without new edges; today the
+library, the library host fixture and xtask's release checks consume them.
+
 **Planned:** a separate discovery crate will share session discovery between
 the CLI and monitor, retained in
 [Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59).
@@ -88,8 +97,7 @@ The monitor will consume discovery continuously and load version-matched client
 libraries in-process, with one client thread per [live session](../GLOSSARY.md#sessions).
 The discovery crate's own dependencies are not yet specified, so no further
 crate names or edges are implied. Dynamic loading is shown in the artifact
-diagram, not as a Cargo dependency. The client library's planned `cdylib` form
-is an artifact decision, not a decision to add another crate.
+diagram, not as a Cargo dependency.
 
 The [status/activity revision](session-status.md) also requires the monitor
 to keep one `climon2-vt` terminal model per session across uncertain

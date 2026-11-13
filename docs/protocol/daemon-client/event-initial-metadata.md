@@ -1,6 +1,8 @@
 # Initial metadata — `0x41`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed; implemented for the title**, owned by
+[#67](https://github.com/jackgeek/climon2/issues/67); status, progress and a
+known command result arrive with their families.
 The [session daemon](../../../GLOSSARY.md#sessions) supplies an atomic report
 to the [client](../../../GLOSSARY.md#sessions) after successful Open.
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
@@ -51,3 +53,16 @@ Numeric bounds/policy remain #69.
 Related: [Title changed](event-title-changed.md),
 [Status changed](event-status-changed.md),
 [Progress changed](event-progress-changed.md), [Command final](event-command-final.md).
+
+## Implemented behavior
+
+After each successful monitor-mode Open, the
+[session daemon](../../../GLOSSARY.md#sessions) captures the session's
+current title and registers the connection for later changes in one step of
+its loop, so no change falls between this record and the first
+[Title changed](event-title-changed.md). With `title-v1` selected, `title` is
+available with the application's title by value: null while unset, `""` when
+set empty. Without it, `title` is unavailable. `status` and `progress` are
+always unavailable for now, and `command_result` is null: the daemon cannot
+yet tell a normal exit from a signal, which a known result needs
+([#88](https://github.com/jackgeek/climon2/issues/88)).

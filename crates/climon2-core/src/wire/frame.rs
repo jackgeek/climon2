@@ -47,6 +47,13 @@ impl FrameLimit {
         self.0.get()
     }
 
+    /// The length a four-byte prefix declares, counting the type byte and
+    /// body, if this limit admits it: what a nonblocking reader still needs
+    /// before `read_frame` can return the whole frame.
+    pub fn frame_length(self, prefix: [u8; 4]) -> Result<usize, FatalCode> {
+        self.admit(u32::from_be_bytes(prefix) as usize)
+    }
+
     /// Zero cannot hold the type byte.
     fn admit(self, length: usize) -> Result<usize, FatalCode> {
         match length {

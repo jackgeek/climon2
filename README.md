@@ -339,7 +339,9 @@ never raw session-sequence passthrough.
 `c2 list` shows live sessions, newest first, with the columns SESSION,
 CREATED, VERSION, STATE, CLIENTS, COMMAND and ARGS. STATE is `starting`,
 `attached`, `detached`, `terminating`, or `unknown` for a session that does not
-report it. CLIENTS counts attached clients, or shows `-` when unknown.
+report it. CLIENTS counts attached clients, or shows `-` when unknown. A
+monitor watching a session without attaching to it (a passive monitor
+connection) is not an attachment: it never counts in CLIENTS or changes STATE.
 
 `c2 list --json` prints an array of session metadata objects. Each has a
 `state` key holding `{"lifecycle": …, "attachments": …, "controlled": …}`, or
@@ -542,7 +544,8 @@ logs older than seven days are pruned.
 ## Development and releases
 
 See the [executable and dynamic-library relationships](https://github.com/jackgeek/climon2/blob/main/docs/runtime-artifacts.md)
-for the current runtime, test tooling, and planned monitor/client-library design.
+for the current runtime and client library, test tooling, and the planned
+monitor loading design.
 See the [workspace crate diagram](https://github.com/jackgeek/climon2/blob/main/docs/crate-relationships.md)
 for consumption relationships between climon2 crates, including test tooling.
 
@@ -622,7 +625,13 @@ universal slices and signature checks. Linux builds verify native ELF
 executables; published Linux artifacts are built on Ubuntu 24.04, not Arch,
 to establish the glibc baseline. Both builds isolate unhooked packages and
 write their native archive, stamped `install.sh` and `SHA256SUMS` to
-`target/dist/`. Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
+`target/dist/`. Each version folder also holds the client library,
+`libclimon2_client.dylib` on macOS or `libclimon2_client.so` on Linux, which
+must export only its bootstrap and describe exactly the archive's version; the
+Linux library must also have no soname, RPATH or RUNPATH and need only glibc's
+libraries. `release-check` applies these library checks to the local
+per-package release build too.
+Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
 
 `xtask install` builds and verifies the same production payload as `dist`, then
 runs its installer without creating an archive. It has the same host and build

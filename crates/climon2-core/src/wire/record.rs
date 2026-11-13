@@ -16,6 +16,13 @@ pub(crate) const REQUEST_TYPES: RangeInclusive<u8> = 0x30..=0x39;
 /// Server types, sent only by the session daemon.
 pub(crate) const SERVER_TYPES: RangeInclusive<u8> = 0x40..=0x4d;
 
+/// Whether revision 1 defines frame type `code`, in either direction. A
+/// session daemon that still speaks another post-hello protocol selects
+/// revision 1 by the type of the first frame after hello.
+pub fn defines(code: u8) -> bool {
+    REQUEST_TYPES.contains(&code) || SERVER_TYPES.contains(&code)
+}
+
 /// A JSON control record and its frame type.
 pub trait ControlRecord: Serialize + DeserializeOwned {
     const CODE: u8;

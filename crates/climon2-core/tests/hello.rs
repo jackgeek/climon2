@@ -1,5 +1,6 @@
 //! Plan 1.11/1.15: optional hello extensions stay lenient and separate from the
-//! frozen mandatory reply; the daemon advertises exactly the frozen tokens.
+//! frozen mandatory reply; the daemon's reply leads with exactly the frozen
+//! tokens and keeps their state beside its revision-1 advertisement.
 use climon2_core::{
     hello::*,
     protocol::*,
@@ -40,25 +41,27 @@ fn state(lifecycle: Lifecycle, attachments: u32, controlled: bool) -> Option<Ses
     SessionState::new(lifecycle, attachments, controlled)
 }
 
-/// COM-01 (codec case): the daemon still advertises exactly the frozen tokens
-/// and state; revision 1 is absent until the daemon speaks it.
+/// Revision 1 as the smallest advertisement: `daemon-wire-v1` alone.
+fn core_only() -> Advertisement {
+    Advertisement::new([], frame_limits(1_048_576, 1_048_576))
+}
+
+/// COM-01 (codec case): the daemon's reply leads its capabilities with
+/// exactly the frozen tokens, whose operations it supports, and carries a
+/// state beside the mandatory reply, which decodes unchanged; revision 1
+/// follows them.
 #[test]
-fn the_daemon_advertises_the_frozen_tokens_and_a_state_beside_the_mandatory_reply() {
+fn the_daemon_reply_leads_with_the_frozen_tokens_and_a_state_beside_the_mandatory_reply() {
     let snapshot = state(Lifecycle::Attached, 2, true).unwrap();
-    let frame = advertise(&reply(), snapshot).unwrap();
+    let frame = advertise_revision1(&reply(), snapshot, &core_only()).unwrap();
     assert_eq!(frame.type_code(), 0x01);
     assert_eq!(
         std::str::from_utf8(frame.body()).unwrap(),
         format!(
-            r#"{{"session_id":"{ID}","climon2_version":"1.2.3","protocol":1,"capabilities":["attach","kill","state-v1","client-startup-v1"],"state":{{"lifecycle":"attached","attachments":2,"controlled":true}}}}"#
+            r#"{{"session_id":"{ID}","climon2_version":"1.2.3","protocol":1,"capabilities":["attach","kill","state-v1","client-startup-v1","daemon-wire-v1"],"state":{{"lifecycle":"attached","attachments":2,"controlled":true}},"daemon_wire_v1":{{"max_request_frame_bytes":1048576,"max_server_frame_bytes":1048576}}}}"#
         )
     );
     let extensions = HelloExtensions::from_body(frame.body());
-    assert_eq!(
-        extensions.daemon_wire_v1,
-        Advertised::Absent,
-        "the daemon advertises revision 1 only once it speaks it"
-    );
     let capabilities = extensions.capabilities.valid().unwrap();
     assert!(capabilities.supports_attach());
     assert!(capabilities.supports_kill());
@@ -205,7 +208,7 @@ fn state_lifecycles_have_their_frozen_names() {
             "lifecycle": name, "attachments": attachments, "controlled": controlled, "future": 1
         }}));
         assert_eq!(parsed.state, Advertised::Valid(snapshot), "{name}");
-        let frame = advertise(&reply(), snapshot).unwrap();
+        let frame = advertise_revision1(&reply(), snapshot, &core_only()).unwrap();
         assert_eq!(
             HelloExtensions::from_body(frame.body()).state,
             Advertised::Valid(snapshot)

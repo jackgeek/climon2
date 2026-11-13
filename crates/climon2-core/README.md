@@ -25,15 +25,14 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   `client-startup-v1`) and `SessionState` (lifecycle `starting`, `attached`,
   `detached` or `terminating`, attachment count, controlled) are parsed
   leniently: absent grants nothing, malformed is reported and never trusted,
-  unknown tokens are ignored. `advertise` builds the daemon's reply frame
-  with exactly those frozen tokens and state. `daemon_wire_v1` is `Valid`
+  unknown tokens are ignored. `daemon_wire_v1` is `Valid`
   only when the capabilities include `daemon-wire-v1` and `daemon_wire_v1`
   holds positive u32 `max_request_frame_bytes` and `max_server_frame_bytes`;
   neither is `Absent`, anything else is `Malformed`, and none of these ever
-  makes a session stale. `advertise_revision1` encodes the same frozen tokens
-  and state plus a revision-1 `Advertisement`: its families after the frozen
-  tokens and its `daemon_wire_v1` limits. Neither encoder can omit the frozen
-  tokens or state.
+  makes a session stale. `advertise_revision1` builds the daemon's reply
+  frame: exactly those frozen tokens, then the families of a revision-1
+  `Advertisement`, the state, and its `daemon_wire_v1` limits. It cannot omit
+  the frozen tokens or state.
 - `wire`: the platform-neutral, stateless daemon wire revision 1 codec shared
   by the daemon and the client library: framing, shared types and all ten
   request and fourteen server messages. Roles, ordering, authority,
@@ -50,6 +49,12 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     transport errors stay `WireError::Io`. A frame the limit refuses is
     never written. Otherwise the frame goes out in one `write_all`, so an I/O
     error can leave part of it written; close the connection on any error.
+  - `FrameLimit::frame_length([u8; 4])`: the length a prefix declares, under
+    the same rules as `read_frame`, so a nonblocking reader knows how many
+    bytes a frame still needs without parsing frames itself. `defines(type)`:
+    whether revision 1 defines a frame type in either direction (`0x30`–`0x39`
+    and `0x40`–`0x4d`); a daemon still speaking another post-hello protocol
+    selects revision 1 by the type of the first frame after hello.
   - `Request::from_frame` (daemon side: Open `0x30`, Input `0x31`, Resize
     `0x32`, Acquire `0x33`, Ready `0x34`, Set viewing `0x35`, Acknowledge
     `0x36`, Leave `0x37`, Kill `0x38`, Focus `0x39`) and
@@ -68,6 +73,9 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     serde's `{"name":null}` form, and a result's or command result's `kind`
     never its variant index), non-object records and inconsistent values.
     `ControlRecord::to_frame` encodes members in their documented order.
+    `Request::request_id()` is the ID every request carries: its Response
+    echoes it, and the receiver's ID sequence consumes it even when it
+    rejects the request.
   - Binary records: `Input` (`0x31`: request ID, control period and
     restoration ID) and `Display` (`0x49`: control period and restoration
     ID) start with a header of nonzero big-endian u64 counters; the payload
@@ -146,6 +154,11 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   from the explicit input, never from a target cfg.
   `VersionBinary` enumerates CLI/daemon/client/monitor; `parse_current` validates the
   current file, permitting one LF or CRLF terminator, not arbitrary trimming.
+- `layout::client_library_name` is the client library's file name in every
+  version folder: Cargo's name for `climon2-client`'s cdylib on the target,
+  built from `std::env::consts::{DLL_PREFIX, DLL_SUFFIX}`
+  (`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux), never
+  from a target cfg.
 - `layout::home_hash8` hashes exact canonical-home encoded bytes, not lossy
   text. `RuntimeLayout::{new,directory,socket_path}` supplies naming and a
   caller-selected socket byte limit. The platform supplies the runtime root,
@@ -221,6 +234,13 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
 - `exit::{ExitStatus,LaunchFailure}::code`: neutral platform-exit input,
   preserving raw command u32 codes, checked `128+signal`, and classifications
   for own failure 125, usage 2, launch 127/126 and terminal gone 129.
+- `native`: the `#[repr(C)]` declarations of native client interface revision 1
+  ([`client-v1.h`](../../docs/protocol/monitor-client/client-v1.h)), shared by
+  the client library, the client executable and the monitor without new crate
+  edges. Names map mechanically (`cm1_optional_text` is `OptionalText`,
+  `CM1_SUCCESS` is `SUCCESS`, `final` is `r#final`); `BOOTSTRAP` names the
+  frozen `climon2_client_get_interface` symbol and `Bootstrap` is its type.
+  They are plain data: core never dereferences or validates a native record.
 
 ## Specification tests
 
@@ -244,16 +264,17 @@ Integration tests call only these public boundaries:
 | #29 recovered argv/environment/depth/ordinal rules | `issue29_exec_list_attach_and_kill_parse_exact_arguments_and_reject_usage_errors`, `issue29_help_and_version_flags_take_no_arguments`, `issue29_top_level_ignores_stray_depth_and_sets_session_vars_and_terminal_identity`, `projected_environment_replaces_term_and_colorterm_and_drops_startup_envelope`, `issue29_nested_depth_defaults_malformed_enclosing_to_one_and_replaces_empty_term`, `issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow` |
 | Continuity messages and connection choice | `continuity_messages_have_exact_wire_codes_and_json`, `continuity_bodies_are_typed_objects_and_each_code_has_one_direction`, `a_connection_chooses_attach_or_kill_once_and_attachment_requests_need_attach` |
 | #17 / #20 exit mapping | `issue17_failures_remain_distinct_from_command_status_and_signal_mapping` |
-| DOC-01 (Contract case for the daemon wire pages and the hello reply): every published example decodes to its documented values and re-encodes byte-identically | `published_request_examples_round_trip_byte_identically`, `published_control_request_examples_round_trip_byte_identically`, `published_focus_examples_round_trip_byte_identically`, `published_response_and_fatal_error_examples_round_trip_byte_identically`, `published_core_metadata_examples_round_trip_byte_identically`, `published_control_and_restoration_examples_round_trip_byte_identically`, `published_binary_examples_round_trip_byte_identically`, `every_revision1_page_example_is_exercised`, `published_hello_advertisement_examples_round_trip_byte_identically` |
-| COM-01 (codec case): revision 1 needs its token and valid frame limits, otherwise unavailable; known families; unique, disjoint capability arrays; the daemon's frozen advertisement is unchanged; the published hello examples carry these advertisements | `a_revision1_advertisement_needs_its_token_and_valid_frame_limits`, `advertised_families_are_the_known_revision1_tokens`, `revision1_support_is_advertised_beside_the_frozen_tokens_and_state`, `capability_arrays_are_unique_case_sensitive_and_disjoint`, `the_daemon_advertises_the_frozen_tokens_and_a_state_beside_the_mandatory_reply`, `published_hello_advertisement_examples_round_trip_byte_identically` |
-| COM-02 (codec case): framing: partial I/O, the local frame ceiling at its limit and one past it, zero and type-only lengths, truncation and transport failures | `revision1_frames_survive_partial_io_and_end_cleanly_at_a_frame_boundary`, `the_local_frame_ceiling_admits_its_limit_and_rejects_one_byte_more`, `zero_length_is_invalid_and_a_type_only_frame_has_an_empty_body`, `a_stream_ending_inside_a_frame_is_truncated`, `transport_failures_are_reported_as_io_errors` |
+| DOC-01 (Contract case for the daemon wire pages and the hello reply): every published example decodes to its documented values and re-encodes byte-identically, except the hello reply without revision 1, which climon2 no longer encodes and only decodes | `published_request_examples_round_trip_byte_identically`, `published_control_request_examples_round_trip_byte_identically`, `published_focus_examples_round_trip_byte_identically`, `published_response_and_fatal_error_examples_round_trip_byte_identically`, `published_core_metadata_examples_round_trip_byte_identically`, `published_control_and_restoration_examples_round_trip_byte_identically`, `published_binary_examples_round_trip_byte_identically`, `every_revision1_page_example_is_exercised`, `published_hello_reply_examples_decode_and_the_encoded_ones_round_trip` |
+| COM-01 (codec case): revision 1 needs its token and valid frame limits, otherwise unavailable; known families; unique, disjoint capability arrays; the daemon's reply leads with exactly the frozen tokens and keeps the state beside its revision-1 advertisement; the published hello examples carry these advertisements | `a_revision1_advertisement_needs_its_token_and_valid_frame_limits`, `advertised_families_are_the_known_revision1_tokens`, `revision1_support_is_advertised_beside_the_frozen_tokens_and_state`, `capability_arrays_are_unique_case_sensitive_and_disjoint`, `the_daemon_reply_leads_with_the_frozen_tokens_and_a_state_beside_the_mandatory_reply`, `published_hello_reply_examples_decode_and_the_encoded_ones_round_trip` |
+| COM-02 (codec case): framing: partial I/O, the local frame ceiling at its limit and one past it, zero and type-only lengths, truncation and transport failures; a prefix alone decides the admitted length; the frame types revision 1 defines | `revision1_frames_survive_partial_io_and_end_cleanly_at_a_frame_boundary`, `the_local_frame_ceiling_admits_its_limit_and_rejects_one_byte_more`, `zero_length_is_invalid_and_a_type_only_frame_has_an_empty_body`, `a_stream_ending_inside_a_frame_is_truncated`, `transport_failures_are_reported_as_io_errors`, `a_prefix_alone_decides_the_admitted_frame_length`, `revision1_defines_the_request_and_server_types_only` |
 | COM-04 (codec case): binary Input and Display carry `00 ff 41`, NUL anywhere, invalid UTF-8 and all 256 byte values unchanged, through fragmented reads and chunking | `published_binary_examples_round_trip_byte_identically`, `input_and_display_carry_arbitrary_bytes_unchanged`, `binary_payloads_survive_fragmented_reads_and_chunking` |
-| LIM-01 (codec case): the local frame ceiling at its limit and one past it, decided from the length prefix before any body is read | `the_local_frame_ceiling_admits_its_limit_and_rejects_one_byte_more` |
+| LIM-01 (codec case): the local frame ceiling at its limit and one past it, decided from the length prefix before any body is read | `the_local_frame_ceiling_admits_its_limit_and_rejects_one_byte_more`, `a_prefix_alone_decides_the_admitted_frame_length` |
 | COM-02 (codec case): types and directions, every member of every JSON record at every depth (required even when null, unique, documented, and a string member, a `kind` included, only a JSON string), JSON and UTF-8, request IDs, every control period and restoration ID and every geometry at both bounds, booleans, grant and revocation reasons, binary headers at their length and counter bounds, capability arrays, integers, GUIDs, UTC times, episodes, progress and notifications | `requests_are_identified_by_type_and_direction`, `server_messages_are_identified_by_type_and_direction`, `request_ids_are_canonical_decimal_counters`, `only_requests_and_responses_carry_request_ids`, `requests_reject_unknown_duplicate_and_missing_members`, `requests_must_be_complete_utf8_json_objects`, `unsigned_fields_are_plain_integer_tokens`, `open_geometry_is_null_for_monitor_and_positive_for_interactive`, `an_interactive_open_encodes_its_documented_members_in_order`, `every_member_of_every_json_record_is_required_unique_and_documented`, `string_members_accept_only_json_strings`, `every_kind_is_only_its_json_string_name`, `every_period_and_restoration_id_is_a_counter_at_both_bounds`, `every_geometry_has_positive_u32_columns_and_rows_at_both_bounds`, `viewing_and_focus_are_json_booleans`, `grant_and_revocation_reasons_are_their_documented_names`, `binary_headers_are_complete_or_invalid_records`, `binary_header_counters_are_nonzero_u64s`, `success_results_reject_undocumented_shapes`, `connection_ids_are_lowercase_canonical_guids`, `fatal_errors_carry_each_connection_fatal_code`, `utc_times_are_exact_calendar_milliseconds`, `status_episodes_belong_only_to_attention_states`, `progress_percent_matches_its_state`, `notifications_are_normalized_records_from_known_sources`, `capability_arrays_are_unique_case_sensitive_and_disjoint` |
 | COM-03 (codec case): every documented result variant; outcome, result and error pairing (a known final result only on a rejection; a failed or indeterminate outcome may carry the operation's known result or a Kill's partial termination, never a confirmed one); catalogue and unknown error codes | `every_documented_success_result_round_trips`, `responses_pair_each_outcome_with_its_result_and_error`, `error_codes_are_nonempty_and_unknown_codes_stay_non_successes` |
 | COM-06 (codec case): normal exit differs from signal; a final status agrees with the command result; Status changed never carries the final state; a partial Kill result or a known final result is never a successful confirmation | `command_results_distinguish_normal_exits_from_signals`, `command_final_status_is_terminal_and_agrees_with_the_result`, `initial_metadata_terminal_status_agrees_with_a_known_result`, `status_episodes_belong_only_to_attention_states`, `responses_pair_each_outcome_with_its_result_and_error` |
 | CTL-03 (codec case): unavailable, unset and empty values stay distinct | `initial_metadata_reports_availability_explicitly`, `title_changes_distinguish_unset_from_empty` |
 | STA-07 (codec case): status records keep exact UTC change times and attention-only episodes | `utc_times_are_exact_calendar_milliseconds`, `status_episodes_belong_only_to_attention_states` |
+| DOC-01 layout case: Rust native declarations equal `client-v1.h` sizes, alignments, field offsets and sizes, tags and result codes (clang checks the host's native target; CI runs x86-64 GNU/Linux and arm64 and x86_64 macOS) | `rust_native_declarations_match_the_published_header`, `a_layout_difference_is_reported_against_the_header` |
 
 `tests/config.rs`, `tests/hello.rs`, `tests/keys.rs`, `tests/selector.rs`,
 `tests/startup_envelope.rs` and `tests/title.rs` specify those modules one rule

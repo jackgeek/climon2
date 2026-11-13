@@ -1,6 +1,9 @@
 use std::process::Command;
 
 /// ADR 0004 / #31: per-package release outputs exclude hooks without replacing test binaries.
+/// #75 packaging: the plain client library is this release build; it carries no hook marker,
+/// describes exactly this version and, on Linux, has no soname, RPATH or RUNPATH and needs only
+/// glibc. DOC-01 exported interface: it exports only the frozen bootstrap.
 #[test]
 fn release_check_builds_unhooked_binaries_in_a_private_target() {
     let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
