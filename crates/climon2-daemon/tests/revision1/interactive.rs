@@ -310,6 +310,44 @@ impl Attached {
         self.focus_as(self.authority(), focused)
     }
 
+    /// Sends Input of `payload`, then a Focus changing the desired focus to
+    /// `focused`, in one write; both are accepted, the Focus with its
+    /// sequence.
+    fn type_then_focus(&mut self, payload: &[u8], focused: bool) {
+        let (period, restoration_id) = self.authority();
+        let typed = self.next();
+        let reported = self.next();
+        let input = Input {
+            request_id: typed,
+            period,
+            restoration_id,
+            payload: payload.to_vec(),
+        };
+        let focus = Focus {
+            request_id: reported,
+            period,
+            restoration_id,
+            focused,
+        };
+        let bytes = [
+            frame_bytes(&input.to_frame()),
+            frame_bytes(&focus.to_frame()),
+        ]
+        .concat();
+        self.stream.write_all(&bytes).unwrap();
+        self.request = typed.get();
+        let accepted_bytes = NonZeroU32::new(payload.len() as u32).unwrap();
+        assert_eq!(
+            self.response(),
+            Outcome::Ok(Success::InputAccepted { accepted_bytes })
+        );
+        self.request = reported.get();
+        assert_eq!(
+            self.response(),
+            focus_ok(true, focused, FocusBytes::Sequence)
+        );
+    }
+
     /// Acquire by a non-controlling attachment: its grant and the beginning
     /// of its restoration precede the success, then the restoration
     /// completes.
@@ -851,6 +889,48 @@ fn focus_reaches_the_application_once_per_change_and_resynchronizes_on_new_readi
     first.typed(b"END");
     first.ended();
     assert_closed(&mut second.stream);
+    session.finish();
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        [recorded.as_slice(), b"END"].concat()
+    );
+}
+
+/// FOC-01 and INP-03 (Contract, Focus after Input): a focus report reaches
+/// the application in request order, after the Input accepted before it,
+/// however the requests were split across reads: in one write with that
+/// Input, or after its response. A focus-out sent with the last Input of a
+/// paste split across several requests follows the paste's end marker and
+/// never lands inside the application's paste.
+#[test]
+fn focus_reports_follow_the_input_accepted_before_them() {
+    let mut session = Session::start("focus-record");
+    let path = session.directory.path().join("focused");
+    let mut recorded = Vec::new();
+    let mut expect = |bytes: &[u8]| {
+        recorded.extend_from_slice(bytes);
+        let expected = recorded.clone();
+        crate::wait_contents(&path, |contents| contents == expected);
+    };
+    let mut attached = ready_attachment(&session, &["focus-v1"]);
+    assert_eq!(attached.focus(true), focus_ok(true, true, FocusBytes::None));
+    attached.typed(b"ON");
+    attached.until_displayed(b"focus-on", 1);
+    expect(b"ON\x1b[I");
+    attached.type_then_focus(b"abc", false);
+    expect(b"abc\x1b[O");
+    attached.typed(b"def");
+    assert_eq!(
+        attached.focus(true),
+        focus_ok(true, true, FocusBytes::Sequence)
+    );
+    expect(b"def\x1b[I");
+    attached.typed(b"\x1b[200~first ");
+    expect(b"\x1b[200~first ");
+    attached.type_then_focus(b"second\x1b[201~", false);
+    expect(b"second\x1b[201~\x1b[O");
+    attached.typed(b"END");
+    attached.ended();
     session.finish();
     assert_eq!(
         fs::read(&path).unwrap(),

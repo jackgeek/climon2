@@ -398,9 +398,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             return;
         }
         let changed = self.control.focus(ConnectionId(id), focus.focused);
-        let due = changed && self.vt.focus_reporting();
-        let (report, accepted_bytes) = focus_report(focus.focused, due);
-        self.pty_writes.daemon(report);
+        let accepted_bytes = self.forward_focus(id, changed, focus.focused);
         let accepted = Success::Focus {
             changed,
             focused: focus.focused,
@@ -409,11 +407,24 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.respond(id, focus.request_id, Outcome::Ok(accepted));
     }
 
+    /// A changed desired focus is due while the application has focus
+    /// reporting on. Its report joins the controller's Input in request
+    /// order, so it follows the Input accepted before it however the
+    /// requests were read, and ends with that Input's admission.
+    fn forward_focus(&mut self, id: u64, changed: bool, focused: bool) -> FocusBytes {
+        if !(changed && self.vt.focus_reporting()) {
+            return FocusBytes::None;
+        }
+        self.pty_writes.input(id, focus_report(focused));
+        FocusBytes::Sequence
+    }
+
     /// The application newly enabled focus reporting: it receives the
-    /// controller's desired focus once, if known; none is invented.
+    /// controller's desired focus once, if known, with the daemon's own
+    /// terminal replies; none is invented.
     pub(super) fn focus_enabled(&mut self) {
         if let Some(focused) = self.control.desired_focus() {
-            self.pty_writes.daemon(focus_report(focused, true).0);
+            self.pty_writes.daemon(focus_report(focused));
         }
     }
 
@@ -701,14 +712,9 @@ fn authorize(
         .ok_or(OperationalCode::NotReady)
 }
 
-/// The application's focus report, and what forwarding it accepted: the
-/// complete sequence when one is due, nothing otherwise.
-fn focus_report(focused: bool, due: bool) -> (&'static [u8], FocusBytes) {
-    match (due, focused) {
-        (false, _) => (b"", FocusBytes::None),
-        (true, true) => (b"\x1b[I", FocusBytes::Sequence),
-        (true, false) => (b"\x1b[O", FocusBytes::Sequence),
-    }
+/// The application's focus report: `ESC [ I` for focus in, `ESC [ O` out.
+fn focus_report(focused: bool) -> &'static [u8] {
+    if focused { b"\x1b[I" } else { b"\x1b[O" }
 }
 
 /// The payload's length, positive and within the frame limit.

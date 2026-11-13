@@ -170,14 +170,16 @@ remaining attachment, then `left` with `attachment_detached: true`; during
 committed termination it still removes the attachment after releasing a
 presentation it has. Focus (`focus-v1`) remembers the controller's desired
 focus for its control period: a change while the application has mode 1004
-on queues `ESC [ I` or `ESC [ O` with the daemon's terminal replies (3 bytes
-accepted), nothing otherwise, and newly enabled reporting (`Fed::focus_enabled`)
-queues the known state once. Command final arrives with #88.
+on queues `ESC [ I` or `ESC [ O` with the controller's input, in request
+order (3 bytes accepted), nothing otherwise, and newly enabled reporting
+(`Fed::focus_enabled`) queues the known state once with the daemon's
+terminal replies. Command final arrives with #88.
 
 Every PTY byte goes through one ordered write queue (`PtyWrites`): terminal
-replies, Focus reports and paste cleanup bytes ahead of queued input, and a
-partly written unit always completes before the next starts, so sequences
-never interleave across partial writes. Input is admitted only from the
+replies, the Focus report on newly enabled reporting and paste cleanup bytes
+ahead of queued input, which holds a controller's Input and Focus reports in
+request order, and a partly written unit always completes before the next
+starts, so sequences never interleave across partial writes. Input is admitted only from the
 controller of the current control period after its `Ready`; when admission
 ends, its unwritten input is discarded and, if an application paste is open
 while mode 2004 is set, closing-marker cleanup bytes are queued. A PTY write
@@ -364,9 +366,9 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | CTL-01 (Contract): a passive registration never acquires control, of a detached session or one controlled elsewhere, and is not an attachment: hello `state` and so `list` are unchanged; core metadata flows before control | `a_passive_registration_never_acquires_control_and_is_not_an_attachment`, `a_monitor_registers_and_leaves_during_committed_termination` |
 | CTL-03 (Contract, title case): titles reach monitors by value, in order and whatever the control; unset, empty, a value and unavailable stay distinct; an oversized title is ignored, never truncated | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_monitor_without_title_v1_receives_nothing_for_titles`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata`, `an_oversized_title_is_ignored_never_truncated`, `titles_reach_an_attachment_as_inert_text` |
 | CTL-05 (Contract and Fault, stale authority from a raw peer): Input, Resize and Ready under an earlier period or a superseded restoration are `stale_period` or `stale_restoration`; Ready needs the complete current restoration; late authority never re-enables input | `stale_and_superseded_authority_is_rejected_and_never_re_enables_input`, `ready_needs_the_complete_current_restoration` |
-| INP-03 (Contract): bracketed-paste bytes reach the application exactly; an open application paste is closed when admission ends | `bracketed_paste_is_exact_and_an_open_paste_is_closed_when_admission_ends` |
+| INP-03 (Contract): bracketed-paste bytes reach the application exactly; an open application paste is closed when admission ends; a focus report never lands inside a paste split across Input requests | `bracketed_paste_is_exact_and_an_open_paste_is_closed_when_admission_ends`, `focus_reports_follow_the_input_accepted_before_them` |
 | TRM-02 (Contract): the daemon alone answers session queries; titles stay inert text and title-looking output stays text | `session_queries_are_answered_by_the_daemon_alone`, `titles_reach_an_attachment_as_inert_text` |
-| FOC-01 (Contract): Focus emits no duplicates, newly enabled reporting receives the current state, and new readiness synchronizes the latest intent without replay | `focus_reaches_the_application_once_per_change_and_resynchronizes_on_new_readiness` |
+| FOC-01 (Contract): Focus emits no duplicates, newly enabled reporting receives the current state, and new readiness synchronizes the latest intent without replay; a focus report follows the Input accepted before it, however the requests were read | `focus_reaches_the_application_once_per_change_and_resynchronizes_on_new_readiness`, `focus_reports_follow_the_input_accepted_before_them` |
 
 `standalone_kill_is_refused_until_it_is_served` pins the interim refusal
 that #88 replaces; it covers no matrix scenario.

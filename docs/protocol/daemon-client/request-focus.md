@@ -123,8 +123,13 @@ A changed desired state, unknown to known included, is `changed:true`.
 While the application has focus reporting (mode 1004) on, a change queues
 exactly `1b 5b 49` (`ESC [ I`) or `1b 5b 4f` (`ESC [ O`) for the command's
 terminal and reports `accepted_bytes` 3. These non-user bytes join the
-daemon's own terminal replies, ahead of Input not yet written. An unchanged
-state, or any state while reporting is off, queues nothing and reports 0.
-When the application newly turns reporting on, however its output is split
-across reads, the daemon queues the current controller's known state once,
-and nothing while it is unknown. Rejected requests are never replayed.
+controller's [Input](request-input.md) in request order: they follow the
+Input accepted before them, however the requests were split across reads,
+so a report never lands inside a paste that earlier Input requests carry.
+Like that Input, a report not yet written is discarded when the
+controller's input admission ends. An unchanged state, or any state while
+reporting is off, queues nothing and reports 0. When the application newly
+turns reporting on, however its output is split across reads, the daemon
+queues the current controller's known state once, with its own terminal
+replies, and nothing while it is unknown. Rejected requests are never
+replayed.
