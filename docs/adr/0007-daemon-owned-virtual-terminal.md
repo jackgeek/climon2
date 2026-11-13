@@ -79,18 +79,34 @@ The model keeps to its limit this way:
   repetition, or a screenful, so one long repeat or released run of line
   feeds can fill several). Beyond the chunks that fit, the engine discards
   its oldest rows instead, and the update is still accepted; no truncation
-  state reports this yet. Storage
-  left after a cleared history is dropped at once, so measuring sees every
-  mark still held. The model shows at most `history_rows`.
-- **Rejection.** The first token that does not fit is rejected before the
-  engine sees it, and so is the rest of the update. The model keeps the page its
-  accepted tokens produced, with every accepted character, and refuses output
-  until a staged restoration is applied.
+  state reports this yet. Storage left after a token clears history is
+  dropped at once, so measuring sees every mark still held. The model shows
+  at most `history_rows`.
+- **History yields before anything is rejected.** History is discarded
+  truthfully as it exceeds the allocation ceiling, never required terminal
+  updates ([operational limits](../monitor-operational-limits.md#memory-history-and-admission)).
+  When a token's growth does not fit even after measuring, the oldest history
+  chunk is discarded, a chunk at a time and never the first: the engine's
+  limit is lowered, the rows it drops and their cell data are released at
+  once, and the normal screen is measured again, whichever screen is active.
+  Beside a staged restoration the current model's history yields first, to
+  the staged model's history chunks as well as its cells, because applying
+  the restoration replaces it whole; then the staged model's own. A chunk
+  admitted ahead of output but not yet filled yields without losing a row.
+  The row vector keeps the capacity its largest limit took, so that capacity
+  stays charged. `Model::shorten_history()` discards a chunk the same way for
+  the monitor's pressure policy across sessions (#119).
+- **Rejection.** The first token that does not fit once history has yielded
+  all it can is rejected before the engine sees it, and so is the rest of the
+  update. The model keeps the page its accepted tokens produced, with every
+  accepted character, and refuses output until a staged restoration is
+  applied.
 - **Staging and geometry.** A restoration is fed into a separate staged model
   charged beside the current one; applying it replaces the current model and
   history whole, and a rejected or discarded restoration never becomes current.
-  A model's geometry is fixed: a new effective geometry arrives as a restoration
-  staged at that geometry, admitted only if both models fit. Models never
+  Staging is admitted once both models fit, the current model's oldest history
+  having yielded first. A model's geometry is fixed: a new effective geometry
+  arrives as a restoration staged at that geometry. Models never
   reflow in place. **Open:** that needs a restoration after every effective
   geometry change, but the agreed wire says only that one may follow a resize
   ([Restoration begin](../protocol/daemon-client/event-restoration-begin.md)),
@@ -108,6 +124,11 @@ allocations with a global allocator. It shows the following:
   controls anywhere in it, staging and resize are accepted exactly at the
   bound and rejected one byte past it, with the page and accepted characters
   intact;
+- history yields instead: live output, the alternate screen, staging and a
+  staged restoration keep every history row at the bound and discard the
+  oldest chunk one byte below it, never the first chunk (worked cases: 6,000
+  marked rows at 200x60 within 64 MiB; staging at 500x200 after 3,100 rows);
+- one token admits every history chunk it could fill;
 - deterministic adversarial streams never pass the limit. They slip the
   tokenizer tests' tricky bytes among text, marks, repeats, tints, scrolls,
   screen switches and control strings, read in pieces of any size;
@@ -118,7 +139,8 @@ Limits: the bound is tracked allocation capacity, not resident memory or
 allocator overhead. Charges are upper bounds, so a model may reject, or stop
 growing history, before memory is strictly exhausted; optional history growth
 uses the running charge and never measures. Which history yields under
-pressure across sessions is monitor policy (#119).
+pressure across sessions is monitor policy (#119), through
+`Model::shorten_history()`.
 
 **Open: per-model cost (measured on #76).** A model's mandatory charge is
 vte's 2 MiB buffer, the reserve, both screens and, when it keeps any history,

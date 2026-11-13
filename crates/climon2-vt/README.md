@@ -82,21 +82,30 @@ place.
   engine sees it (72 bytes per combining mark, 56 per cell printed under an
   underline colour, three cells per wide character, and for `CSI n b` the `n`
   vte parses times the worst character). When the charge would exceed
-  `bytes`, the active screen is measured first; a token that still does not
-  fit is rejected with the rest of the update, and the model refuses output
-  until a staged restoration is applied.
+  `bytes`, the active screen is measured first; then history yields, oldest
+  chunk first and never the first chunk: the current model's while a
+  restoration is staged, then the updated model's own. A token that still
+  does not fit is rejected with the rest of the update, and the model refuses
+  output until a staged restoration is applied.
 - History grows in the engine's 1000-row chunks. Before a token that could
   fill the current limit, every chunk it could fill is admitted while the
   next one fits (a token pushes at most a row per byte and per repetition, or
   a screenful, so one long repeat or released run of line feeds can fill
   several); beyond the chunks that fit, the oldest rows are discarded and the
-  update is still accepted, with no truncation state yet. `Model::history()`
-  shows at most `history_rows` rows.
+  update is still accepted, with no truncation state yet. A discarded chunk's
+  rows and cell data are released at once, on either screen, and a chunk
+  admitted but not yet filled yields without losing a row.
+  `Model::shorten_history()` discards the oldest chunk the same way for the
+  monitor's pressure policy across sessions (#119), and returns false once
+  only the first chunk is left. `Model::history()` shows at most
+  `history_rows` rows.
 - `Model::stage(geometry)` starts a restoration in a separate model, admitted
-  only if it fits beside the current one; later `feed` calls build it.
-  `Model::apply()` replaces the current model and history whole;
-  `Model::discard()` abandons it. A new effective geometry arrives this way;
-  a Geometry event that no restoration follows is an open decision (ADR 0007).
+  only if it fits beside the current one once that model's oldest history
+  has yielded; later `feed` calls build it, and the current model's history
+  keeps yielding to it. `Model::apply()` replaces the current model and
+  history whole; `Model::discard()` abandons it. A new effective geometry
+  arrives this way; a Geometry event that no restoration follows is an open
+  decision (ADR 0007).
 - `Model::footprint()` is the allocation capacity charged against `bytes`, the
   engine's allocation plus `Model::RESERVE` and growth charges;
   `Model::screen()` and `Model::history()` are text views of the current model.
@@ -116,6 +125,8 @@ Acceptance-matrix IDs are cited in each test's doc comment.
 | LIM-03 Contract: wide characters at the bound and one past it | `wide_characters_are_accepted_at_the_bound_and_rejected_one_byte_past_it` |
 | LIM-03 Contract: combining marks at the bound and one past it | `combining_marks_are_accepted_at_the_bound_and_rejected_one_byte_past_it` |
 | LIM-03 Contract: auxiliary cell data (underline colour) at the bound and one past it, invalid bytes included; colours changed between cells keep no more than charged | `underline_coloured_cells_are_accepted_at_the_bound_and_rejected_one_byte_past_it`, `cells_under_changing_underline_colours_keep_no_more_than_they_were_charged` |
+| LIM-03 Contract: history yields its oldest chunk, never the first, before live output, the alternate screen, staging or a staged restoration is rejected: whole at the bound, oldest chunk discarded one byte below it, including the #159 review's worked cases (200x60 within 64 MiB; staging at 500x200 after 3,100 rows); an unfilled chunk yields without losing a row | `live_output_discards_the_oldest_history_instead_of_being_rejected`, `history_yields_its_oldest_chunk_to_live_output_one_byte_below_the_bound`, `history_never_yields_its_first_chunk`, `history_yields_to_the_alternate_screen`, `an_unfilled_history_chunk_yields_without_losing_a_row`, `staging_a_restoration_discards_the_current_models_oldest_history_first`, `staging_never_takes_the_current_models_first_history_chunk`, `a_staged_restoration_takes_room_from_the_current_models_history_first` |
+| LIM-03 Contract: the monitor shortens history a chunk at a time, releasing it at once, never the first chunk (#119) | `shortening_history_releases_the_oldest_chunk_and_never_the_first` |
 | LIM-03 Contract: restoration staging at the bound and one past it | `restoration_staging_is_accepted_at_the_bound_and_rejected_one_byte_past_it` |
 | LIM-03 Contract: resize staged at the bound and rejected one past it | `resizing_stages_a_replacement_at_the_bound_and_is_rejected_one_byte_past_it` |
 | LIM-03 Contract: discarded and superseded restorations never become current | `discarded_restorations_never_become_current` |

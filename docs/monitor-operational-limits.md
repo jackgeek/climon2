@@ -195,6 +195,9 @@ each token's worst-case growth, from vte's own parse of the token, before
 the engine sees it. It admits history storage in the engine's chunks,
 stages restorations beside the current model and never reflows in place
 ([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)).
+Before it rejects live output or a restoration, its oldest history yields a
+chunk at a time, never the chunk holding the newest page, and
+`Model::shorten_history()` lets the monitor shorten history the same way.
 Its tests show no stream passing a model's limit, including adversarial
 ones. That is evidence for the tested streams, not a proof for every input.
 Two questions remain open: how a model handles a geometry change that no

@@ -47,29 +47,24 @@ impl Model {
 
     /// A blank model, if its mandatory allocation fits the limit.
     pub fn new(geometry: Geometry, limits: Limits) -> Result<Self, Rejected> {
-        let room = Room {
-            other: 0,
-            limit: limits.bytes,
-        };
         Ok(Self {
             limits,
-            current: room.blank(geometry, limits.history_rows)?,
+            current: Room::alone(limits.bytes).blank(geometry, limits.history_rows)?,
             staged: None,
             rejected: None,
         })
     }
 
     /// Begin a restoration at `geometry`: a blank model to stage it into,
-    /// replacing any restoration already staged. If both models cannot fit,
-    /// nothing is allocated and the current model becomes read-only.
+    /// replacing any restoration already staged. The current model's oldest
+    /// history yields first, a chunk at a time; if both models still cannot
+    /// fit, nothing is allocated and the current model becomes read-only.
     pub fn stage(&mut self, geometry: Geometry) -> Result<(), Rejected> {
         self.staged = None;
         self.current.measure();
-        let room = Room {
-            other: self.current.charge(),
-            limit: self.limits.bytes,
-        };
-        match room.blank(geometry, self.limits.history_rows) {
+        let staged = Room::beside(&mut self.current, self.limits.bytes)
+            .blank(geometry, self.limits.history_rows);
+        match staged {
             Ok(staged) => {
                 self.staged = Some(staged);
                 Ok(())
@@ -102,17 +97,19 @@ impl Model {
         self.current.geometry()
     }
 
-    /// Apply terminal bytes from the session. Output that would exceed the
-    /// limit is rejected before it reaches the engine; the model keeps the
-    /// page its accepted output produced and refuses everything after.
+    /// Apply terminal bytes from the session. History yields to them, oldest
+    /// chunk first: the current model's while a restoration is staged, then
+    /// that of the model they update, never the first chunk, which holds the
+    /// protected newest page. Output that would still exceed the limit is
+    /// rejected before it reaches the engine; the model keeps the page its
+    /// accepted output produced and refuses everything after.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<(), Rejected> {
         match self.staged.as_mut() {
             Some(staged) => {
-                let room = Room {
-                    other: self.current.charge(),
-                    limit: self.limits.bytes,
-                };
-                let fed = staged.feed(bytes, room);
+                let fed = staged.feed(
+                    bytes,
+                    &mut Room::beside(&mut self.current, self.limits.bytes),
+                );
                 self.restored(fed)
             }
             None => self.live(bytes),
@@ -132,13 +129,19 @@ impl Model {
         if let Some(rejected) = self.rejected {
             return Err(rejected);
         }
-        let room = Room {
-            other: 0,
-            limit: self.limits.bytes,
-        };
-        let fed = self.current.feed(bytes, room);
+        let fed = self
+            .current
+            .feed(bytes, &mut Room::alone(self.limits.bytes));
         self.rejected = fed.err();
         fed
+    }
+
+    /// Discard the current model's oldest history chunk and release its rows
+    /// at once, for the monitor's pressure policy across sessions (#119).
+    /// The first chunk, which holds the protected newest page, is never
+    /// discarded: false when only it is left, or the model keeps no history.
+    pub fn shorten_history(&mut self) -> bool {
+        self.current.shorten()
     }
 
     /// The allocation capacity charged against the limit, for the current

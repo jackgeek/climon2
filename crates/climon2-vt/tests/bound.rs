@@ -839,6 +839,329 @@ fn history_shows_its_rows_at_the_limit_and_not_the_oldest_one_past_it() {
     }
 }
 
+/// Row `n` as printed at `at`: its number, then cells each carrying a
+/// combining mark to the screen's width.
+fn marked_row(at: Geometry, n: usize) -> String {
+    let number = format!("{n:06}");
+    let cells = usize::from(at.cols()) - number.len();
+    format!("{number}{}", "a\u{301}".repeat(cells))
+}
+
+/// [`marked_row`] for each `n` in `range`.
+fn marked_rows(at: Geometry, range: std::ops::Range<usize>) -> Vec<String> {
+    range.map(|n| marked_row(at, n)).collect()
+}
+
+/// LIM-03 Contract (worked case from the #159 review; history discards its
+/// oldest rows as it exceeds either ceiling, not required live updates): at
+/// 200x60 with 64 MiB and 10,000 history rows, rows whose every cell carries
+/// a combining mark outgrow the room for history about 3,000 rows in. The
+/// model discards its oldest history a chunk at a time instead of rejecting
+/// them: it accepts all 6,000 rows, keeps the newest, never fewer than its
+/// first chunk holds, and the allocator never sees the limit exceeded.
+#[test]
+fn live_output_discards_the_oldest_history_instead_of_being_rejected() {
+    let at = geometry(200, 60);
+    let limit = 64 << 20;
+    let rows = marked_rows(at, 0..6000);
+    let output = rows.join("\r\n");
+    let meter = Meter::watch();
+    let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
+
+    model.feed(output.as_bytes()).unwrap();
+
+    assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+    let history = model.history();
+    assert!(history.len() >= 1000, "{} rows kept", history.len());
+    assert_eq!(history, rows[5940 - history.len()..5940]);
+    assert_eq!(model.screen(), rows[5940..]);
+}
+
+/// LIM-03 Contract: live output that fits beside every history row keeps
+/// them all, at the bound; one byte below it, the oldest chunk's rows are
+/// discarded instead, the newest 2,000 of 2,500 are kept, and the output is
+/// accepted with the page intact. The allocator never sees either limit
+/// exceeded.
+#[test]
+fn history_yields_its_oldest_chunk_to_live_output_one_byte_below_the_bound() {
+    let at = geometry(200, 60);
+    let rows = marked_rows(at, 0..2559);
+    let before = format!("{}\r\n", rows.join("\r\n"));
+    let update = "a\u{301}".repeat(50);
+    let fed = |limit| {
+        let meter = Meter::watch();
+        let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
+        model.feed(before.as_bytes()).unwrap();
+        model.feed(update.as_bytes()).unwrap();
+        assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+        model
+    };
+    let bound = fed(ROOMY).footprint();
+    let page = [&rows[2500..], std::slice::from_ref(&update)].concat();
+
+    let model = fed(bound);
+    assert_eq!(model.history(), rows[..2500]);
+    assert_eq!(model.screen(), page);
+
+    let model = fed(bound - 1);
+    assert_eq!(model.history(), rows[500..2500]);
+    assert_eq!(model.screen(), page);
+}
+
+/// LIM-03 Contract: history never yields its first chunk, which holds the
+/// protected newest page. With 1,500 marked rows in two chunks, a repeat of
+/// 65535 marks that fits only once the oldest chunk is discarded is accepted
+/// at that bound with the newest 1,000 rows; one byte below it, the repeat
+/// is rejected before growth, with the newest 1,000 rows and the page intact.
+#[test]
+fn history_never_yields_its_first_chunk() {
+    let at = geometry(10, 3);
+    let rows = marked_rows(at, 0..1502);
+    let before = format!("{}\r\na\u{301}", rows.join("\r\n"));
+    let fed = |limit| {
+        let meter = Meter::watch();
+        let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
+        model.feed(before.as_bytes()).unwrap();
+        let fed = model.feed(b"\x1b[65535b");
+        assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+        (model, fed)
+    };
+    let mut roomy = Model::new(at, limits(ROOMY, 10_000)).unwrap();
+    roomy.feed(before.as_bytes()).unwrap();
+    let bound = needed(fed(roomy.footprint()).1);
+    let page = |marks: usize| {
+        let last = format!("a{}", "\u{301}".repeat(marks));
+        [&rows[1500..], &[last]].concat()
+    };
+
+    let (model, accepted) = fed(bound);
+    assert_eq!(accepted, Ok(()));
+    assert_eq!(model.history(), rows[500..1500]);
+    assert_eq!(model.screen(), page(65536));
+
+    let (model, rejected) = fed(bound - 1);
+    assert_eq!(
+        rejected,
+        Err(Rejected {
+            needed: bound,
+            limit: bound - 1
+        })
+    );
+    assert_eq!(model.history(), rows[500..1500]);
+    assert_eq!(model.screen(), page(1));
+}
+
+/// LIM-03 Contract: history yields while the alternate screen is active,
+/// whose cells it never touches. A model with 1,500 history rows in two
+/// chunks fills its alternate screen with marked cells: at the bound every
+/// history row stays; one byte below it the oldest chunk's rows are
+/// discarded, the alternate screen keeps every mark, and leaving it shows
+/// the normal screen as it was with the newest 1,000 rows.
+#[test]
+fn history_yields_to_the_alternate_screen() {
+    let at = geometry(10, 3);
+    let rows = rows(0..1503);
+    let before = format!("{}\x1b[?1049h\x1b[H", rows.join("\r\n"));
+    let alternate = marked_rows(at, 0..3);
+    let marks = alternate.join("\r\n");
+    let fed = |limit| {
+        let meter = Meter::watch();
+        let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
+        model.feed(before.as_bytes()).unwrap();
+        model.feed(marks.as_bytes()).unwrap();
+        assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+        model
+    };
+    let bound = fed(ROOMY).footprint();
+
+    for (limit, kept) in [(bound, 0..1500), (bound - 1, 500..1500)] {
+        let mut model = fed(limit);
+        assert_eq!(model.screen(), alternate);
+        model.feed(b"\x1b[?1049l").unwrap();
+        assert_eq!(model.history(), rows[kept]);
+        assert_eq!(model.screen(), rows[1500..]);
+    }
+}
+
+/// LIM-03 Contract (worked case from the #159 review): at 500x200 with
+/// 64 MiB, a model whose 3,100 history rows fill four chunks refused every
+/// restoration, because both models could not fit. The current model's
+/// oldest history now yields first: staging is accepted at the bound with
+/// every row, and one byte below it, or at 64 MiB, with the newest 3,000.
+#[test]
+fn staging_a_restoration_discards_the_current_models_oldest_history_first() {
+    let at = geometry(500, 200);
+    let rows = rows(0..3300);
+    let output = rows.join("\r\n");
+    let current = |limit| {
+        let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
+        model.feed(output.as_bytes()).unwrap();
+        model
+    };
+    let bound = current(ROOMY).footprint() + needed(Model::new(at, limits(0, 10_000)));
+
+    for (limit, kept) in [
+        (bound, 0..3100),
+        (bound - 1, 100..3100),
+        (64 << 20, 100..3100),
+    ] {
+        let meter = Meter::watch();
+        let mut model = current(limit);
+        model.stage(at).unwrap();
+        assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+        assert_eq!(model.history(), rows[kept]);
+        assert_eq!(model.screen(), rows[3100..]);
+    }
+}
+
+/// LIM-03 Contract: staging never takes the current model's first history
+/// chunk. A model at 80x24 with 3,100 history rows stages a 500x200
+/// restoration that fits only beside that chunk: at the bound it is staged
+/// and the newest 1,000 rows stay; one byte below it the staging is rejected
+/// before anything is allocated, keeping the newest 1,000 rows and the page,
+/// and the model is read-only.
+#[test]
+fn staging_never_takes_the_current_models_first_history_chunk() {
+    let (small, large) = (geometry(80, 24), geometry(500, 200));
+    let rows = rows(0..3124);
+    let output = rows.join("\r\n");
+    let current = |limit| {
+        let mut model = Model::new(small, limits(limit, 10_000)).unwrap();
+        model.feed(output.as_bytes()).unwrap();
+        model
+    };
+    let mut first = current(ROOMY);
+    while first.shorten_history() {}
+    let bound = first.footprint() + needed(Model::new(large, limits(0, 10_000)));
+
+    let meter = Meter::watch();
+    let mut model = current(bound);
+    model.stage(large).unwrap();
+    assert!(meter.peak() <= bound, "{} > {bound}", meter.peak());
+    assert_eq!(model.history(), rows[2100..3100]);
+
+    let mut model = current(bound - 1);
+    let rejected = Rejected {
+        needed: bound,
+        limit: bound - 1,
+    };
+    assert_eq!(model.stage(large), Err(rejected));
+    assert_eq!(model.feed(b"x"), Err(rejected));
+    assert_eq!(model.history(), rows[2100..3100]);
+    assert_eq!(model.screen(), rows[3100..]);
+}
+
+/// LIM-03 Contract: while a restoration is staged, the current model's
+/// history yields to it, since applying the restoration replaces the current
+/// model whole. At 500x200, a restoration of 3,100 history rows staged
+/// beside a current model with 3,100 rows keeps every row at the bound,
+/// where only the current model's first chunk is left beside it; one byte
+/// below it the restoration keeps its newest 3,000.
+#[test]
+fn a_staged_restoration_takes_room_from_the_current_models_history_first() {
+    let at = geometry(500, 200);
+    let rows = rows(0..3300);
+    let restored: Vec<String> = (0..3300).map(|n| format!("new{n}")).collect();
+    let (output, restoration) = (rows.join("\r\n"), restored.join("\r\n"));
+    let mut first = Model::new(at, limits(ROOMY, 10_000)).unwrap();
+    first.feed(output.as_bytes()).unwrap();
+    while first.shorten_history() {}
+    let mut alone = Model::new(at, limits(ROOMY, 10_000)).unwrap();
+    alone.feed(restoration.as_bytes()).unwrap();
+    let bound = first.footprint() + alone.footprint();
+
+    for (limit, kept) in [(bound, 0..3100), (bound - 1, 100..3100)] {
+        let meter = Meter::watch();
+        let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
+        model.feed(output.as_bytes()).unwrap();
+        model.stage(at).unwrap();
+        model.feed(restoration.as_bytes()).unwrap();
+        assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
+        assert!(model.apply());
+        assert_eq!(model.history(), restored[kept]);
+        assert_eq!(model.screen(), restored[3100..]);
+    }
+}
+
+/// LIM-03 Contract: the monitor can shorten a model's history under pressure
+/// across sessions (#119): each call discards the oldest chunk and releases
+/// its rows at once, while the row vector keeps the capacity ten chunks
+/// took, so the allocator never holds more than the lower footprint; the
+/// first chunk, which holds the protected newest page, is never discarded,
+/// and a model without history has nothing to shorten.
+#[test]
+fn shortening_history_releases_the_oldest_chunk_and_never_the_first() {
+    let at = geometry(4, 1);
+    let rows: Vec<String> = (0..9500).map(|n| format!("{n:04}")).collect();
+    let output = rows.join("\r\n");
+    let meter = Meter::watch();
+    let mut model = Model::new(at, limits(ROOMY, 10_000)).unwrap();
+    model.feed(output.as_bytes()).unwrap();
+
+    for chunks in (1..10).rev() {
+        let footprint = model.footprint();
+        assert!(model.shorten_history());
+        assert!(model.footprint() < footprint);
+        let (live, charged) = (meter.live(), model.footprint());
+        assert!(live <= charged, "{chunks} chunks: {live} > {charged}");
+        assert_eq!(model.history(), rows[9499 - chunks * 1000..9499]);
+    }
+    assert!(!model.shorten_history());
+    assert_eq!(model.history(), rows[8499..9499]);
+    assert_eq!(model.screen(), rows[9499..]);
+    assert!(
+        !Model::new(at, limits(ROOMY, NO_HISTORY))
+            .unwrap()
+            .shorten_history()
+    );
+}
+
+/// LIM-03 Contract: a history chunk admitted ahead of output but not yet
+/// filled yields without losing a row, and the engine then holds no row
+/// beyond the lower limit. With 1,990 history rows and a third chunk
+/// admitted for the rows to come, a marked cell is accepted at the bound
+/// and one byte below it, where that chunk yields; every row stays in both.
+/// Below the bound, marked cells then take most of the room the chunk left,
+/// and the rows that follow fill the lower limit, the oldest going, with the
+/// allocator never past the limit.
+#[test]
+fn an_unfilled_history_chunk_yields_without_losing_a_row() {
+    let at = geometry(200, 60);
+    let plain = rows(0..2149);
+    let cell = "a\u{301}";
+    let marked = cell.repeat(200);
+    let before = format!("{}\r\n", plain[..2049].join("\r\n"));
+    let cover: String = (1..=59)
+        .map(|row| format!("\x1b[{row};1H{marked}"))
+        .collect();
+    let after = format!("\x1b[60;2H\r\n{}\r\n", plain[2049..].join("\r\n"));
+    let lines = [
+        &plain[..1990],
+        &vec![marked; 59],
+        &[cell.to_owned()],
+        &plain[2049..],
+    ]
+    .concat();
+    let updated = |limit| {
+        let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
+        model.feed(before.as_bytes()).unwrap();
+        model.feed(cell.as_bytes()).unwrap();
+        model
+    };
+    let bound = updated(ROOMY).footprint();
+    assert_eq!(updated(bound).history(), plain[..1990]);
+    assert_eq!(updated(bound - 1).history(), plain[..1990]);
+
+    let meter = Meter::watch();
+    let mut model = updated(bound - 1);
+    model.feed(cover.as_bytes()).unwrap();
+    model.feed(after.as_bytes()).unwrap();
+
+    assert!(meter.peak() < bound, "{} >= {bound}", meter.peak());
+    assert_eq!(model.history(), lines[91..2091]);
+    assert_eq!(model.screen()[..59], lines[2091..]);
+}
+
 /// LIM-03 Contract: the alternate screen has no history of its own, and the
 /// normal screen's history is not shown over it.
 #[test]
