@@ -731,13 +731,7 @@ fn a_connection_beyond_the_cap_is_closed_unanswered() {
 #[test]
 fn initial_fallback_and_resize_use_the_real_pty() {
     let mut session = Session::start("zero-size");
-    let report = session.directory.path().join("initial-size");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while !report.exists() {
-        assert!(Instant::now() < deadline);
-        thread::sleep(Duration::from_millis(2));
-    }
-    assert_eq!(fs::read_to_string(report).unwrap(), "80x24");
+    zero_size_started(&session);
     let mut controlling = session.attach();
     session.wait_marker(&mut controlling);
     send(
@@ -1112,6 +1106,13 @@ fn wait_contents(path: &Path, done: impl Fn(&[u8]) -> bool) -> Vec<u8> {
         );
         thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// Waits for the `zero-size` fixture, which starts at the 80x24 fallback,
+/// to report its initial size, so a later grant resizes its terminal.
+fn zero_size_started(session: &Session) {
+    let report = session.directory.path().join("initial-size");
+    wait_contents(&report, |size| size == b"80x24");
 }
 
 fn wait_line(session: &Session, line: &str) {

@@ -6,11 +6,19 @@ mod interactive;
 mod passive;
 
 use super::Session;
-use climon2_core::wire::{
-    self, Available, ControlRecord, Counter, Families, FatalError, Frame, FrameLimit, Leave, Mode,
-    Open, Outcome, Requested, Response, ServerMessage, Success,
+use climon2_core::{
+    hello::Lifecycle,
+    protocol::ClientMessage,
+    wire::{
+        self, Available, ControlRecord, Counter, Families, FatalError, Frame, FrameLimit, Leave,
+        Mode, Open, Outcome, Requested, Response, ServerMessage, Success,
+    },
 };
-use std::{os::unix::net::UnixStream, time::Duration};
+use std::{
+    io::Write,
+    os::unix::net::UnixStream,
+    time::{Duration, Instant},
+};
 
 /// The daemon's release-constant request and server frame limit.
 const FRAME_BYTES: u32 = 1_048_576;
@@ -140,4 +148,41 @@ fn assert_fatal(stream: &mut UnixStream, code: &str) {
         other => panic!("expected Fatal error {code}, got {other:?}"),
     }
     assert_closed(stream);
+}
+
+/// The bytes of a frame of `code` with `body` exactly as given, valid or not.
+fn raw_frame(code: u8, body: &[u8]) -> Vec<u8> {
+    let length = u32::try_from(body.len() + 1).unwrap();
+    [&length.to_be_bytes()[..], &[code], body].concat()
+}
+
+/// The bytes of one encoded revision-1 frame.
+fn encoded(frame: &Frame) -> Vec<u8> {
+    raw_frame(frame.code(), frame.body())
+}
+
+/// Writes `bytes` in three-byte pieces. A hello answered on a newer
+/// connection proves the daemon serviced this one, and read the piece, in
+/// that or an earlier pass, before the next piece is written.
+fn write_in_pieces(session: &Session, stream: &mut UnixStream, bytes: &[u8]) {
+    for piece in bytes.chunks(3) {
+        stream.write_all(piece).unwrap();
+        drop(session.connect());
+    }
+}
+
+/// A private kill requester whose Kill the session has committed to: the
+/// hello `state` reports it terminating. Its Terminated arrives later.
+fn committed_kill(session: &Session) -> UnixStream {
+    let mut killer = session.connect();
+    killer
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    crate::send(&mut killer, ClientMessage::Kill);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while crate::advertised_state(session).0 != Lifecycle::Terminating {
+        assert!(Instant::now() < deadline, "the kill never committed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    killer
 }

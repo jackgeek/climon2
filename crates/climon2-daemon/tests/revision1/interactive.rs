@@ -1,7 +1,10 @@
 //! Interactive attachments (#87): interactive Open, control and authority,
 //! binary Input and Display, Acquire, Focus and Leave over revision 1,
 //! beside the private protocol and its attachments.
-use super::{assert_closed, assert_rejected, counter, limit, message, open, peer, request, send};
+use super::{
+    assert_closed, assert_rejected, counter, encoded, message, open, peer, raw_frame, request,
+    send, write_in_pieces,
+};
 use crate::Session;
 use climon2_core::{
     hello::Lifecycle,
@@ -13,13 +16,7 @@ use climon2_core::{
         RevocationReason, ServerMessage, SetViewing, Success,
     },
 };
-use std::{
-    fs,
-    io::Write,
-    num::NonZeroU32,
-    os::unix::net::UnixStream,
-    time::{Duration, Instant},
-};
+use std::{fs, io::Write, num::NonZeroU32, os::unix::net::UnixStream, time::Duration};
 
 fn geometry(cols: u32, rows: u32) -> Geometry {
     Geometry {
@@ -325,11 +322,7 @@ impl Attached {
             authority,
             focused,
         };
-        let bytes = [
-            frame_bytes(&input.to_frame()),
-            frame_bytes(&focus.to_frame()),
-        ]
-        .concat();
+        let bytes = [encoded(&input.to_frame()), encoded(&focus.to_frame())].concat();
         self.stream.write_all(&bytes).unwrap();
         self.request = typed.get();
         let accepted_bytes = NonZeroU32::new(payload.len() as u32).unwrap();
@@ -402,47 +395,12 @@ fn rejected(outcome: Outcome, code: &str) {
     }
 }
 
-/// The bytes of one revision-1 frame.
-fn frame_bytes(frame: &Frame) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    wire::write_frame(&mut bytes, frame, limit()).unwrap();
-    bytes
-}
-
-/// A frame of `code` with `body` as written, whether or not it is valid.
-fn raw_frame(code: u8, body: &[u8]) -> Vec<u8> {
-    let length = u32::try_from(body.len() + 1).unwrap();
-    [&length.to_be_bytes()[..], &[code], body].concat()
-}
-
 /// A binary Input header: request ID, period and restoration ID.
 fn input_header(request: u64, period: u64, restoration: u64) -> Vec<u8> {
     [request, period, restoration]
         .iter()
         .flat_map(|value| value.to_be_bytes())
         .collect()
-}
-
-/// Writes `bytes` in three-byte pieces. A hello answered on a newer
-/// connection proves the daemon serviced this one, and read the piece, in
-/// that or an earlier pass, before the next piece is written.
-fn write_in_pieces(session: &Session, stream: &mut UnixStream, bytes: &[u8]) {
-    for piece in bytes.chunks(3) {
-        stream.write_all(piece).unwrap();
-        drop(session.connect());
-    }
-}
-
-/// Waits for the `zero-size` fixture, which starts at the 80x24 fallback, to
-/// have reported its initial size, so a grant can resize its terminal.
-fn zero_size_started(session: &Session) {
-    let report = session.directory.path().join("initial-size");
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !report.exists() {
-        assert!(Instant::now() < deadline, "the fixture never started");
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert_eq!(fs::read_to_string(report).unwrap(), "80x24");
 }
 
 /// COM-05 (Contract, interactive order) and COM-03 (Contract, interactive
@@ -461,7 +419,7 @@ fn zero_size_started(session: &Session) {
 #[test]
 fn interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order() {
     let mut session = Session::start("zero-size");
-    zero_size_started(&session);
+    crate::zero_size_started(&session);
     let mut stream = UnixStream::connect(&session.socket).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -470,7 +428,7 @@ fn interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order
     let mut bytes = Vec::new();
     protocol::write_frame(&mut bytes, &hello).unwrap();
     let opening = open(1, &[], &[], Mode::Interactive(geometry(100, 30))).to_frame();
-    let opening = frame_bytes(&opening);
+    let opening = encoded(&opening);
     let (first, rest) = opening.split_at(9);
     bytes.extend_from_slice(first);
     stream.write_all(&bytes).unwrap();
@@ -484,14 +442,14 @@ fn interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order
     );
 
     let authority = attached.authority();
-    let mut coalesced = frame_bytes(
+    let mut coalesced = encoded(
         &Ready {
             request_id: counter(2),
             authority,
         }
         .to_frame(),
     );
-    coalesced.extend(frame_bytes(
+    coalesced.extend(encoded(
         &Input {
             request_id: counter(3),
             authority,
@@ -1078,16 +1036,7 @@ fn committed_termination_rejects_new_interactive_work_and_leave_still_works() {
         Attached::open(&session, geometry(91, 37), &["focus-v1"], geometry(91, 37));
     other.revoked(RevocationReason::Takeover);
     controller.confirm_ready();
-    let mut killer = session.connect();
-    killer
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .unwrap();
-    crate::send(&mut killer, ClientMessage::Kill);
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while crate::advertised_state(&session).0 != Lifecycle::Terminating {
-        assert!(Instant::now() < deadline, "the kill never committed");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    let mut killer = super::committed_kill(&session);
     let mut refused = peer(&session);
     request(
         &mut refused,
