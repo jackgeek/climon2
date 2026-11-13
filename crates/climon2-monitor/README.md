@@ -168,8 +168,8 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 
 Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), application input such
 as Ctrl+C (#109), mouse and focus report classification (#109) and their
-routing to applications (#111), HLP-02 over the selector (#113), prefix+s
-(#106), Escape closing the dialog when Escape is not the prefix (undecided:
-telling a bare Escape from an escape sequence needs the input router's
-classification, #109), and the universal archive's runtime on both architectures, which only
-CI's `dist` and `archive` jobs build and execute.
+routing to applications (#111), HLP-02 over the selector (#113), prefix+s's
+session list (#106), Escape closing the key introduction when Escape is not
+the prefix (#109, whose input router tells a bare Escape from an escape
+sequence), and the universal archive's runtime on both architectures, which
+only CI's `dist` and `archive` jobs build and execute.
