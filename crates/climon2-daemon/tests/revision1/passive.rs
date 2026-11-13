@@ -107,7 +107,7 @@ fn hello_advertises_revision1_beside_the_frozen_tokens_and_state() {
         concat!(
             r#"{{"session_id":"{}","climon2_version":"0.1.0","protocol":1,"#,
             r#""capabilities":["attach","kill","state-v1","client-startup-v1","#,
-            r#""daemon-wire-v1","monitor-v1","title-v1"],"#,
+            r#""daemon-wire-v1","monitor-v1","title-v1","focus-v1"],"#,
             r#""state":{{"lifecycle":"starting","attachments":0,"controlled":false}},"#,
             r#""daemon_wire_v1":{{"max_request_frame_bytes":1048576,"max_server_frame_bytes":1048576}}}}"#
         ),
@@ -134,7 +134,7 @@ fn monitor_open_selects_supported_families_then_reports_initial_metadata() {
     );
     let (first_id, mut selected) = opened(&frame(&mut first), "1");
     selected.sort();
-    assert_eq!(selected, ["monitor-v1", "title-v1"]);
+    assert_eq!(selected, ["focus-v1", "monitor-v1", "title-v1"]);
     assert_eq!(body(&frame(&mut first), 0x41), UNSET_TITLE);
 
     let mut second = peer(&session);
@@ -613,24 +613,13 @@ fn coalesced_and_fragmented_revision1_frames_are_each_answered_in_order() {
     end_controlled(session, controlling);
 }
 
-/// Interim until #87 and #88: this daemon advertises `daemon-wire-v1` but
-/// serves neither interactive Open nor standalone Kill yet. Each is rejected
-/// without effects (`internal_error`) and ends its stream; the session goes
-/// on with its one controller, neither newly attached nor terminating.
+/// Interim until #88: this daemon advertises `daemon-wire-v1` but does not
+/// serve standalone Kill yet. It is rejected without effects
+/// (`internal_error`) and ends its stream; the session goes on with its one
+/// controller, not terminating.
 #[test]
-fn interactive_open_and_standalone_kill_are_refused_until_they_are_served() {
+fn standalone_kill_is_refused_until_it_is_served() {
     let (session, controlling) = controlled();
-    let geometry = Geometry {
-        cols: NonZeroU32::new(80).unwrap(),
-        rows: NonZeroU32::new(24).unwrap(),
-    };
-    let mut interactive = peer(&session);
-    request(
-        &mut interactive,
-        &open(1, &[], &[], Mode::Interactive(geometry)),
-    );
-    assert_rejected(&mut interactive, 1, "internal_error");
-    assert_closed(&mut interactive);
     let mut killer = peer(&session);
     request(&mut killer, &kill(1, 1, &["daemon-wire-v1"]));
     assert_rejected(&mut killer, 1, "internal_error");
@@ -698,26 +687,47 @@ fn needing_an_attachment(id: u64) -> [Frame; 6] {
 }
 
 /// COM-02 (Contract, out-of-state requests) and COM-03 (Contract, passive
-/// cases): no revision-1 connection is an attachment yet, so Input, Resize,
-/// Ready, Set viewing, Acknowledge and Focus are identifiable but
-/// impermissible: each is rejected with `invalid_state`, never
-/// connection-fatal. It consumes its request ID and has no effects: as the
-/// first frame after hello it gives the connection no role, so a monitor
-/// Open still registers; on a passive monitor connection the registration
-/// stays until Leave reports it. No byte reaches the command, its terminal
-/// keeps the controller's size, and the hello `state` is unchanged.
+/// cases): Input, Resize, Ready, Set viewing, Acknowledge and Focus need an
+/// attachment, so on a connection without one each is identifiable but
+/// impermissible: rejected without effects, never connection-fatal, and
+/// consuming its request ID. Focus needs `focus-v1`, which is checked first:
+/// a connection that did not select it gets `unsupported_capability`.
+/// Otherwise, as the first frame after hello a request finds no role
+/// (`invalid_state`), so a monitor Open still registers; on a passive
+/// monitor connection, which is not an attachment, Input, Resize, Ready and
+/// Focus are `not_attached` and the registration stays until Leave reports
+/// it. Set viewing and Acknowledge stay `invalid_state` until #91 serves
+/// them. No byte reaches the command, its terminal keeps the controller's
+/// size, and the hello `state` is unchanged.
 #[test]
-fn requests_that_need_an_attachment_are_invalid_state_and_the_stream_goes_on() {
+fn requests_that_need_an_attachment_are_refused_and_the_stream_goes_on() {
     let mut session = Session::start("lines");
     let mut controlling = session.attach();
     session.wait_marker(&mut controlling);
-    for (first, registered) in needing_an_attachment(1)
+    let without_role = [
+        "invalid_state",
+        "invalid_state",
+        "invalid_state",
+        "invalid_state",
+        "invalid_state",
+        "unsupported_capability",
+    ];
+    let passive = [
+        "not_attached",
+        "not_attached",
+        "not_attached",
+        "invalid_state",
+        "invalid_state",
+        "unsupported_capability",
+    ];
+    let cases = needing_an_attachment(1)
         .into_iter()
         .zip(needing_an_attachment(2))
-    {
+        .zip(without_role.into_iter().zip(passive));
+    for ((first, registered), (first_code, registered_code)) in cases {
         let mut stream = peer(&session);
         send(&mut stream, &first);
-        assert_rejected(&mut stream, 1, "invalid_state");
+        assert_rejected(&mut stream, 1, first_code);
         request(&mut stream, &open(2, &[], &[], Mode::Monitor));
         opened(&frame(&mut stream), "2");
         assert_eq!(body(&frame(&mut stream), 0x41), NO_TITLE);
@@ -725,9 +735,14 @@ fn requests_that_need_an_attachment_are_invalid_state_and_the_stream_goes_on() {
 
         let (mut stream, _) = monitor(&session, &[]);
         send(&mut stream, &registered);
-        assert_rejected(&mut stream, 2, "invalid_state");
+        assert_rejected(&mut stream, 2, registered_code);
         leave(&mut stream, 3);
     }
+    let (mut focusing, _) = monitor(&session, &["focus-v1"]);
+    let [.., focus] = needing_an_attachment(2);
+    send(&mut focusing, &focus);
+    assert_rejected(&mut focusing, 2, "not_attached");
+    leave(&mut focusing, 3);
     assert_eq!(
         crate::advertised_state(&session),
         (Lifecycle::Attached, 1, true)

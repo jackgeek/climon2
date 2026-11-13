@@ -2,6 +2,7 @@
 //! the real daemon binary, the Contract layer of spec #73's Testing Decisions.
 //! Peers encode and decode with `climon2-core`'s codec, which has its own
 //! tests; expectations are written out by hand from the wire reference.
+mod interactive;
 mod passive;
 
 use super::Session;

@@ -1,4 +1,4 @@
-use super::{ConnectionId, Effect};
+use super::{ConnectionId, Effect, Standing};
 
 /// Attachments still present while the session terminates.
 #[derive(Debug, Default)]
@@ -24,6 +24,22 @@ impl Members {
     fn lost(&mut self, conn: ConnectionId) {
         self.presenting = self.presenting.filter(|presenting| *presenting != conn);
         self.released.retain(|released| *released != conn);
+    }
+
+    fn contains(&self, conn: ConnectionId) -> bool {
+        self.presenting == Some(conn) || self.released.contains(&conn)
+    }
+
+    /// An accepted departure: the presentation a member still has is released
+    /// before the departure is confirmed.
+    fn leave(&mut self, conn: ConnectionId) -> Vec<Effect> {
+        let effects = match (self.presenting == Some(conn), self.released.contains(&conn)) {
+            (true, _) => vec![Effect::Release { conn }, Effect::AcceptDetach { conn }],
+            (false, true) => vec![Effect::AcceptDetach { conn }],
+            (false, false) => Vec::new(),
+        };
+        self.lost(conn);
+        effects
     }
 
     fn deliver(self, outcome: Outcome) -> impl Iterator<Item = Effect> {
@@ -103,6 +119,19 @@ impl Shutdown {
     pub fn lost(&mut self, conn: ConnectionId) {
         self.members.lost(conn);
         self.killers.retain(|killer| *killer != conn);
+    }
+
+    /// A remaining attachment can still leave, but takes on no new work.
+    pub fn standing(&self, conn: ConnectionId) -> Standing {
+        if self.members.contains(conn) {
+            Standing::Ending
+        } else {
+            Standing::Absent
+        }
+    }
+
+    pub fn leave(&mut self, conn: ConnectionId) -> Vec<Effect> {
+        self.members.leave(conn)
     }
 
     /// Repeated kills join the shutdown already under way.

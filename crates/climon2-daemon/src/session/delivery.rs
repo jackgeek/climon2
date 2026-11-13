@@ -1,4 +1,4 @@
-use crate::control::Period;
+use crate::control::Authority;
 use climon2_core::protocol::{MAX_DATA_FRAME_LENGTH, TerminalSize};
 use climon2_vt::{Mode, Presentation, Restoration, Vt};
 use std::time::{Duration, Instant};
@@ -17,7 +17,7 @@ pub(super) enum Out {
     Prefix(Vec<u8>),
     /// Live bytes: the 16 MiB live queue limit applies.
     Live(Vec<u8>),
-    RestoreEnd(Period),
+    RestoreEnd(Authority),
 }
 
 /// The backlog and committed queue together passed the live queue limit.
@@ -37,7 +37,7 @@ pub(super) struct Delivery {
 }
 
 struct Granted {
-    period: Period,
+    authority: Authority,
     awaiting_ready: Option<Instant>,
     prefix_bytes: usize,
     restoration: Option<Restoration>,
@@ -60,7 +60,7 @@ impl Delivery {
     pub fn grant(
         &mut self,
         vt: &mut Vt,
-        period: Period,
+        authority: Authority,
         host: TerminalSize,
         now: Instant,
     ) -> Vec<u8> {
@@ -68,7 +68,7 @@ impl Delivery {
         self.presentation.resize_host(host.cols, host.rows);
         let (lead, restoration) = vt.grant(&mut self.presentation);
         self.granted = Some(Granted {
-            period,
+            authority,
             awaiting_ready: Some(now),
             prefix_bytes: lead.len(),
             restoration: Some(restoration),
@@ -166,7 +166,7 @@ impl Delivery {
         out.push(Out::Prefix(chunk.bytes));
         if chunk.done {
             granted.restoration = None;
-            out.push(Out::RestoreEnd(granted.period));
+            out.push(Out::RestoreEnd(granted.authority));
             self.flush_backlog(vt, out);
         }
     }
@@ -198,12 +198,12 @@ impl Delivery {
             .is_some_and(|granted| granted.restoration.is_some())
     }
 
-    /// The period whose restoration deadline (section 1.10) passed without
-    /// `Ready`.
-    pub fn expired(&self, now: Instant) -> Option<Period> {
+    /// The authority whose restoration deadline (section 1.10) passed
+    /// without `Ready`.
+    pub fn expired(&self, now: Instant) -> Option<Authority> {
         let granted = self.granted.as_ref()?;
         let started = granted.awaiting_ready?;
-        (now >= deadline(started, granted.prefix_bytes)).then_some(granted.period)
+        (now >= deadline(started, granted.prefix_bytes)).then_some(granted.authority)
     }
 }
 
@@ -224,7 +224,15 @@ pub(super) fn within_limit(bytes: usize) -> Result<(), Overflow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control::{Period, Restoration};
     use climon2_vt::{Geometry, VtConfig};
+
+    fn authority(number: u64) -> Authority {
+        Authority {
+            period: Period(number),
+            restoration: Restoration(number),
+        }
+    }
 
     const NOW: fn() -> Instant = Instant::now;
 
@@ -248,7 +256,7 @@ mod tests {
             .map(|out| match out {
                 Out::Prefix(bytes) => format!("P[{}]", String::from_utf8_lossy(bytes)),
                 Out::Live(bytes) => format!("L[{}]", String::from_utf8_lossy(bytes)),
-                Out::RestoreEnd(period) => format!("E{}", period.0),
+                Out::RestoreEnd(authority) => format!("E{}", authority.restoration.0),
             })
             .collect()
     }
@@ -271,7 +279,7 @@ mod tests {
 
     fn granted(vt: &mut Vt, host: TerminalSize) -> Delivery {
         let mut delivery = Delivery::new(host);
-        delivery.grant(vt, Period(1), host, NOW());
+        delivery.grant(vt, authority(1), host, NOW());
         delivery
     }
 
@@ -342,12 +350,12 @@ mod tests {
                 .count()
         };
         assert_eq!(
-            leaves(delivery.grant(&mut vt, Period(2), size(20, 4), NOW())),
+            leaves(delivery.grant(&mut vt, authority(2), size(20, 4), NOW())),
             1
         );
         delivery.live(&vt, b"dropped".to_vec(), 0).unwrap();
         assert_eq!(
-            leaves(delivery.grant(&mut vt, Period(3), size(20, 4), NOW())),
+            leaves(delivery.grant(&mut vt, authority(3), size(20, 4), NOW())),
             0
         );
         let restored = text(&restore(&mut delivery, &mut vt));
@@ -395,7 +403,7 @@ mod tests {
         let live = vt.feed(b"\x1b[?2026h\x1b[5;11H", NOW()).live;
         assert!(delivery.live(&vt, live, 0).unwrap().is_empty());
         let out = delivery.produce(&mut vt, 0, true);
-        assert!(out.contains(&Out::RestoreEnd(Period(1))));
+        assert!(out.contains(&Out::RestoreEnd(authority(1))));
         assert!(delivery.release().ends_with(b"\x1b[3;7H"));
     }
 
@@ -428,10 +436,10 @@ mod tests {
         let mut vt = vt(20, 4);
         let start = NOW();
         let mut delivery = Delivery::new(size(20, 4));
-        let lead = delivery.grant(&mut vt, Period(4), size(20, 4), start);
+        let lead = delivery.grant(&mut vt, authority(4), size(20, 4), start);
         let due = deadline(start, lead.len());
         assert_eq!(delivery.expired(due - Duration::from_nanos(1)), None);
-        assert_eq!(delivery.expired(due), Some(Period(4)));
+        assert_eq!(delivery.expired(due), Some(authority(4)));
         delivery.ready();
         assert_eq!(delivery.expired(due), None);
     }

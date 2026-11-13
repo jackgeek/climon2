@@ -11,7 +11,7 @@ mod writes;
 use crate::{
     args::Options,
     connection::{Connection, Failure, Received},
-    control::{ConnectionId, Control, Effect, Lifecycle, Period},
+    control::{Authority, ConnectionId, Control, Effect, Lifecycle, Restoration},
     pty::Pty,
 };
 use climon2_core::{
@@ -22,6 +22,7 @@ use climon2_core::{
         PTY_DRAIN_CAP, ServerMessage, TerminalSize,
     },
     title::default_title,
+    wire::{GrantReason, RevocationReason},
 };
 use climon2_platform::{
     peer,
@@ -40,6 +41,8 @@ use std::{
 use writes::PtyWrites;
 
 const OUTPUT_CHUNK: usize = 32 * 1024;
+/// The terminal bytes one Output or Display frame carries at most.
+const DISPLAY_CHUNK: usize = MAX_DATA_FRAME_LENGTH - 1;
 const MAX_CONNECTIONS: usize = 64;
 const ACCEPTS_PER_TICK: usize = 8;
 const INITIAL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -56,13 +59,15 @@ struct Session<'a, C> {
     cleanup: C,
     connections: BTreeMap<u64, Connection>,
     deliveries: BTreeMap<u64, Delivery>,
-    /// Passive monitor connections: registered, never attachments.
-    monitors: BTreeMap<u64, wire::Monitor>,
+    /// Revision-1 connections after their Open: passive monitor connections
+    /// and interactive attachments.
+    opened: BTreeMap<u64, wire::Opened>,
     control: Control,
     vt: Vt,
     next_id: u64,
     controller: Option<u64>,
-    pending_grants: BTreeMap<u64, (Period, TerminalSize)>,
+    /// Grants and replacement restorations awaiting their snapshot.
+    pending_grants: BTreeMap<u64, (Authority, TerminalSize)>,
     pending_lost: BTreeSet<u64>,
     pty_writes: PtyWrites,
     paste: PasteTracker,
@@ -88,7 +93,7 @@ pub(crate) fn serve(
         cleanup,
         connections: BTreeMap::new(),
         deliveries: BTreeMap::new(),
-        monitors: BTreeMap::new(),
+        opened: BTreeMap::new(),
         control: Control::new(options.size),
         vt,
         next_id: Default::default(),
@@ -218,10 +223,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn dispatch(&mut self, id: u64, received: Received) -> io::Result<()> {
         match received {
             Received::Private(message) => self.message(id, message),
-            Received::Request(request) => {
-                self.request(id, request);
-                Ok(())
-            }
+            Received::Request(request) => self.request(id, request),
         }
     }
 
@@ -385,6 +387,9 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn fed(&mut self, bytes: &[u8], now: Instant) {
         let fed = self.vt.feed(bytes, now);
         self.pty_writes.daemon(&fed.replies);
+        if fed.focus_enabled {
+            self.focus_enabled();
+        }
         self.route(fed.live);
         self.titles(fed.titles);
     }
@@ -420,18 +425,21 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         if self.vt.sync_pending(now) {
             return;
         }
-        for (id, (period, host)) in std::mem::take(&mut self.pending_grants) {
-            self.grant(id, period, host, now);
+        for (id, (authority, host)) in std::mem::take(&mut self.pending_grants) {
+            self.grant(id, authority, host, now);
         }
     }
 
-    fn grant(&mut self, id: u64, period: Period, host: TerminalSize, now: Instant) {
+    /// The snapshot for a grant or a replacement restoration. The private
+    /// protocol names each restoration by a period of its own: its ID.
+    fn grant(&mut self, id: u64, authority: Authority, host: TerminalSize, now: Instant) {
         let Some(delivery) = self.deliveries.get_mut(&id) else {
             return;
         };
-        let lead = delivery.grant(&mut self.vt, period, host, now);
+        let lead = delivery.grant(&mut self.vt, authority, host, now);
         self.controller = Some(id);
-        self.reply(id, ServerMessage::Granted { period: period.0 });
+        let period = authority.restoration.0;
+        self.reply(id, ServerMessage::Granted { period });
         self.send_output(id, &lead);
     }
 
@@ -457,10 +465,15 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         match out {
             Out::Prefix(bytes) => self.send_output(id, &bytes),
             Out::Live(bytes) => self.commit_live(id, bytes),
-            Out::RestoreEnd(period) => {
-                self.reply(id, ServerMessage::RestoreEnd { period: period.0 })
-            }
+            Out::RestoreEnd(authority) => self.restored(id, authority),
         }
+    }
+
+    fn restored(&mut self, id: u64, authority: Authority) {
+        let period = authority.restoration.0;
+        self.reply(id, ServerMessage::RestoreEnd { period });
+        self.report_restored(id, authority);
+        self.control.restored(ConnectionId(id), authority);
     }
 
     /// Committed live bytes beyond the live queue limit lose the attachment.
@@ -556,8 +569,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             .iter()
             .filter_map(|(id, delivery)| Some((*id, delivery.expired(now)?)))
             .collect();
-        for (id, period) in expired {
-            self.react(|control| control.restore_deadline(ConnectionId(id), period))?;
+        for (id, authority) in expired {
+            self.react(|control| control.restore_deadline(ConnectionId(id), authority))?;
         }
         Ok(())
     }
@@ -612,10 +625,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn effect(&mut self, effect: Effect) -> io::Result<()> {
         match effect {
-            Effect::Grant { conn, period, host } => {
-                self.pending_grants.insert(conn.0, (period, host));
-                Ok(())
-            }
             Effect::ResizeSession { size } => self.resize_session(size),
             other => self.shutdown_effect(other),
         }
@@ -635,7 +644,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn attachment_effect(&mut self, effect: Effect) {
         match effect {
             Effect::Admit { conn } => self.admit(conn.0),
-            Effect::Refuse { conn } => self.close_with_error(conn.0, "session is terminating"),
+            Effect::Refuse { conn } => self.refuse(conn.0),
             other => self.input_effect(other),
         }
     }
@@ -674,10 +683,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn result_effect(&mut self, effect: Effect) {
         match effect {
-            Effect::DeliverExit { conn, code } => {
-                self.terminal(conn.0, ServerMessage::Exit { code })
-            }
-            Effect::DeliverError { conn } => self.terminal(conn.0, failure_message()),
+            Effect::DeliverExit { conn, code } => self.ending(conn.0, ServerMessage::Exit { code }),
+            Effect::DeliverError { conn } => self.ending(conn.0, failure_message()),
             other => self.final_effect(other),
         }
     }
@@ -688,9 +695,42 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
                 self.terminal(conn.0, ServerMessage::Terminated { code });
             }
             Effect::Finish => self.finish(),
+            other => self.grant_effect(other),
+        }
+    }
+
+    fn grant_effect(&mut self, effect: Effect) {
+        match effect {
+            Effect::Grant {
+                conn,
+                authority,
+                host,
+                reason,
+            } => self.granted(conn.0, authority, host, reason),
+            Effect::Restore {
+                conn,
+                authority,
+                host,
+            } => self.replaced(conn.0, authority, host),
             // Every other effect was dispatched earlier in the chain.
             _ => {}
         }
+    }
+
+    /// Control is granted at once; the snapshot waits for the pending size
+    /// to apply and for any synchronized update to end.
+    fn granted(&mut self, id: u64, authority: Authority, host: TerminalSize, reason: GrantReason) {
+        self.report_grant(id, authority, host, reason);
+        self.pending_grants.insert(id, (authority, host));
+    }
+
+    /// A replaced restoration's output ends at once.
+    fn replaced(&mut self, id: u64, authority: Authority, host: TerminalSize) {
+        if let Some(delivery) = self.deliveries.get_mut(&id) {
+            delivery.retire();
+        }
+        self.report_restoration(id, authority, host);
+        self.pending_grants.insert(id, (authority, host));
     }
 
     fn resize_session(&mut self, size: TerminalSize) -> io::Result<()> {
@@ -732,6 +772,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let delivery = Delivery::new(self.control.session_size());
         self.deliveries.insert(id, delivery);
         self.reply(id, ServerMessage::Attached);
+        self.admitted(id);
+    }
+
+    fn refuse(&mut self, id: u64) {
+        self.refused(id);
+        self.close_with_error(id, "session is terminating");
     }
 
     fn close_with_error(&mut self, id: u64, message: &str) {
@@ -762,6 +808,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         if let Some(delivery) = self.deliveries.get_mut(&id) {
             delivery.resize(host);
         }
+        self.report_geometry(id);
     }
 
     fn release(&mut self, id: u64) {
@@ -781,6 +828,14 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
         self.forget_controller(id);
         self.reply(id, ServerMessage::Revoked);
+        self.report_revocation(id, RevocationReason::Takeover);
+    }
+
+    /// An attachment's result: control it still holds ends as the session
+    /// ends, then the connection's last message.
+    fn ending(&mut self, id: u64, message: ServerMessage) {
+        self.report_revocation(id, RevocationReason::SessionEnding);
+        self.terminal(id, message);
     }
 
     /// Sends a connection's last message and stops its session output.
@@ -794,13 +849,23 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     // Connection bookkeeping.
 
+    /// Session output in order: Display under an interactive attachment's
+    /// authority, private Output otherwise. Nothing is sent for no bytes.
     fn send_output(&mut self, id: u64, bytes: &[u8]) {
-        for chunk in bytes.chunks(MAX_DATA_FRAME_LENGTH - 1) {
-            self.reply(id, ServerMessage::Output(chunk.to_vec()));
+        let authority = self.display_authority(id);
+        for chunk in bytes.chunks(DISPLAY_CHUNK) {
+            match authority {
+                Some(authority) => self.display(id, authority, chunk),
+                None => self.reply(id, ServerMessage::Output(chunk.to_vec())),
+            }
         }
     }
 
+    /// A private message; a revision-1 connection never receives one.
     fn reply(&mut self, id: u64, message: ServerMessage) {
+        if self.opened.contains_key(&id) {
+            return;
+        }
         let Some(connection) = self.connections.get_mut(&id) else {
             return;
         };
@@ -845,7 +910,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// monitor connection's core metadata.
     fn remove_delivery(&mut self, id: u64) {
         self.deliveries.remove(&id);
-        self.monitors.remove(&id);
+        self.opened.remove(&id);
         self.pty_writes.discard(id);
         self.pending_grants.remove(&id);
         self.forget_controller(id);
@@ -877,7 +942,7 @@ fn control_effects(
 ) -> Vec<Effect> {
     match message {
         ClientMessage::Attach(size) => control.attach(conn, size),
-        ClientMessage::Ready { period } => control.ready(conn, Period(period)),
+        ClientMessage::Ready { period } => control.ready(conn, Restoration(period)),
         other => departure_effects(control, conn, other),
     }
 }
