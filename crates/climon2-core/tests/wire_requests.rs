@@ -1,8 +1,9 @@
-//! Daemon wire revision 1 requests (client to daemon): Open, Leave and Kill.
-//! Validation failures are connection-fatal codes; an identifiable request
-//! with a well-formed but unsupported value is left to the daemon.
+//! Daemon wire revision 1 JSON requests (client to daemon). Validation
+//! failures are connection-fatal codes; an identifiable request with a
+//! well-formed but unsupported value is left to the daemon.
 use climon2_core::wire::{
-    ControlRecord, Counter, Families, FatalCode, Frame, Geometry, Mode, Open, Request, Requested,
+    ControlRecord, Counter, Families, FatalCode, Focus, Frame, Geometry, Mode, Open, Request,
+    Requested, SetViewing,
 };
 use std::num::NonZeroU32;
 use support::{counter, families};
@@ -10,8 +11,10 @@ use support::{counter, families};
 mod support;
 
 const OPEN: u8 = 0x30;
+const SET_VIEWING: u8 = 0x35;
 const LEAVE: u8 = 0x37;
 const KILL: u8 = 0x38;
+const FOCUS: u8 = 0x39;
 
 fn request(code: u8, body: impl AsRef<[u8]>) -> Result<Request, FatalCode> {
     Request::from_frame(&Frame::new(code, body.as_ref().to_vec()))
@@ -269,6 +272,54 @@ fn open_geometry_is_null_for_monitor_and_positive_for_interactive() {
             Err(FatalCode::InvalidRecord),
             "{mode}"
         );
+    }
+}
+
+/// COM-02 (codec case): Set viewing's `viewing` and Focus's `focused` are
+/// JSON booleans. Both values decode and re-encode; any other type is
+/// `invalid_record`.
+#[test]
+fn viewing_and_focus_are_json_booleans() {
+    for (value, flag) in [("true", true), ("false", false)] {
+        let body =
+            format!(r#"{{"request_id":"6","period":"1","restoration_id":"1","viewing":{value}}}"#);
+        let expected = SetViewing {
+            request_id: counter(6),
+            period: counter(1),
+            restoration_id: counter(1),
+            viewing: flag,
+        };
+        assert_eq!(
+            request(SET_VIEWING, &body),
+            Ok(Request::SetViewing(expected))
+        );
+        assert_eq!(
+            expected.to_frame(),
+            Frame::new(SET_VIEWING, body.into_bytes())
+        );
+
+        let body =
+            format!(r#"{{"request_id":"8","period":"2","restoration_id":"3","focused":{value}}}"#);
+        let expected = Focus {
+            request_id: counter(8),
+            period: counter(2),
+            restoration_id: counter(3),
+            focused: flag,
+        };
+        assert_eq!(request(FOCUS, &body), Ok(Request::Focus(expected)));
+        assert_eq!(expected.to_frame(), Frame::new(FOCUS, body.into_bytes()));
+    }
+    for value in [r#""true""#, "1", "0", "null", "[]", "{}"] {
+        for (code, member) in [(SET_VIEWING, "viewing"), (FOCUS, "focused")] {
+            let body = format!(
+                r#"{{"request_id":"1","period":"1","restoration_id":"1","{member}":{value}}}"#
+            );
+            assert_eq!(
+                request(code, &body),
+                Err(FatalCode::InvalidRecord),
+                "{body}"
+            );
+        }
     }
 }
 

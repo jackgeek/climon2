@@ -370,7 +370,7 @@ impl Connection {
     /// The first request selects revision 1; later ones keep its ID sequence.
     fn request(&mut self, bytes: &[u8]) -> Result<Received, FatalCode> {
         let request = decoded_request(bytes)?;
-        self.protocol.receive_request(request_id(&request))?;
+        self.protocol.receive_request(request_id(&request)?)?;
         Ok(Received::Request(request))
     }
 }
@@ -397,11 +397,14 @@ fn decoded_request(bytes: &[u8]) -> Result<Request, FatalCode> {
     Request::from_frame(&frame)
 }
 
-fn request_id(request: &Request) -> Counter {
+/// The codec now decodes every request, but this daemon serves only these
+/// three; the others stay connection-fatal, as before they were decoded.
+fn request_id(request: &Request) -> Result<Counter, FatalCode> {
     match request {
-        Request::Open(open) => open.request_id,
-        Request::Leave(leave) => leave.request_id,
-        Request::Kill(kill) => kill.request_id,
+        Request::Open(open) => Ok(open.request_id),
+        Request::Leave(leave) => Ok(leave.request_id),
+        Request::Kill(kill) => Ok(kill.request_id),
+        _ => Err(FatalCode::UnknownMessageType),
     }
 }
 

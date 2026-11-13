@@ -45,6 +45,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             Request::Open(open) => self.open(id, open),
             Request::Leave(leave) => self.leave(id, leave.request_id),
             Request::Kill(kill) => self.wire_kill(id, kill),
+            _ => unreachable!("the connection refuses every other request"),
         }
     }
 
