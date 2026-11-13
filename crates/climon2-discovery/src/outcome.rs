@@ -87,10 +87,11 @@ pub(crate) fn probe_all(
     sessions: Vec<SessionMetadata>,
     stale: StaleMetadata,
 ) -> io::Result<Vec<Outcome>> {
+    let removal = Removal { stale, home };
     std::thread::scope(|scope| {
         let workers: Vec<_> = sessions
             .into_iter()
-            .map(|metadata| scope.spawn(move || probe(home, metadata, stale)))
+            .map(|metadata| scope.spawn(move || probe(metadata, removal)))
             .collect();
         workers
             .into_iter()
@@ -103,11 +104,28 @@ pub(crate) fn probe_all(
     })
 }
 
-fn probe(home: &HomeLayout, metadata: SessionMetadata, stale: StaleMetadata) -> Outcome {
+/// Whether a pass removes stale metadata, and the home it removes it from: all that only a
+/// stale session's cleanup needs.
+#[derive(Clone, Copy)]
+struct Removal<'a> {
+    stale: StaleMetadata,
+    home: &'a HomeLayout,
+}
+
+impl Removal<'_> {
+    fn clean_up(self, metadata: &SessionMetadata) -> Cleanup {
+        match self.stale {
+            StaleMetadata::Retain => Cleanup::Retained,
+            StaleMetadata::Remove => remove(self.home, metadata),
+        }
+    }
+}
+
+fn probe(metadata: SessionMetadata, removal: Removal) -> Outcome {
     let deadline = Instant::now() + HELLO_TIMEOUT;
     match connection::connect(Path::new(metadata.socket_path.as_str()), HELLO_TIMEOUT) {
         Ok(stream) => answered(hello::hello(stream, deadline, &metadata), metadata),
-        Err(error) => connection_failed(home, metadata, error, stale),
+        Err(error) => connection_failed(metadata, error, removal),
     }
 }
 
@@ -123,38 +141,26 @@ fn answered(result: io::Result<Option<HelloExtensions>>, metadata: SessionMetada
 }
 
 /// Only a missing or refusing socket can begin to prove a session stale.
-fn connection_failed(
-    home: &HomeLayout,
-    metadata: SessionMetadata,
-    error: io::Error,
-    stale: StaleMetadata,
-) -> Outcome {
+fn connection_failed(metadata: SessionMetadata, error: io::Error, removal: Removal) -> Outcome {
     if matches!(
         error.raw_os_error(),
         Some(libc::ENOENT | libc::ECONNREFUSED)
     ) {
-        identity(home, metadata, stale)
+        identity(metadata, removal)
     } else {
         Outcome::Uncertain(metadata, Uncertainty::Unreachable(error))
     }
 }
 
 /// Only a proven dead daemon identity makes such a session stale.
-fn identity(home: &HomeLayout, metadata: SessionMetadata, stale: StaleMetadata) -> Outcome {
+fn identity(metadata: SessionMetadata, removal: Removal) -> Outcome {
     match process::is_same_daemon(&metadata) {
         Ok(false) => {
-            let cleanup = clean_up(home, &metadata, stale);
+            let cleanup = removal.clean_up(&metadata);
             Outcome::Stale(metadata, cleanup)
         }
         Ok(true) => Outcome::Uncertain(metadata, Uncertainty::DaemonAlive),
         Err(error) => Outcome::Uncertain(metadata, Uncertainty::IdentityUnknown(error)),
-    }
-}
-
-fn clean_up(home: &HomeLayout, metadata: &SessionMetadata, stale: StaleMetadata) -> Cleanup {
-    match stale {
-        StaleMetadata::Retain => Cleanup::Retained,
-        StaleMetadata::Remove => remove(home, metadata),
     }
 }
 
