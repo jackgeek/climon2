@@ -89,6 +89,14 @@ impl<L: EventListener> Core<L> {
         self.term.mode().contains(TermMode::ALT_SCREEN)
     }
 
+    pub(crate) fn mode(&self) -> TermMode {
+        *self.term.mode()
+    }
+
+    pub(crate) fn cursor_style(&self) -> CursorStyle {
+        self.term.cursor_style()
+    }
+
     /// History rows the normal screen holds, when it is the active screen.
     pub(crate) fn normal_history(&self) -> Option<usize> {
         (!self.alternate()).then(|| self.term.grid().history_size())
@@ -231,7 +239,7 @@ impl Engine {
     }
 
     pub(crate) fn mode(&self) -> TermMode {
-        *self.core.term.mode()
+        self.core.mode()
     }
 
     /// Change the normal screen's history capacity, dropping its oldest rows
@@ -256,7 +264,7 @@ impl Engine {
     }
 
     pub(crate) fn cursor_style(&self) -> CursorStyle {
-        self.core.term.cursor_style()
+        self.core.cursor_style()
     }
 
     pub(crate) fn active(&self) -> &Grid<Cell> {

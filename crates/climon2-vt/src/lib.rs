@@ -16,6 +16,7 @@ mod restore;
 mod sync;
 mod title;
 pub mod token;
+pub mod view;
 mod vt;
 
 pub use geometry::Geometry;

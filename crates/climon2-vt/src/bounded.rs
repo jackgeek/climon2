@@ -9,6 +9,7 @@ use crate::{
     model::Rejected,
     render::cells,
     token::{Kind, Token, Tokenizer},
+    view::View,
 };
 use alacritty_terminal::{
     Grid,
@@ -345,6 +346,11 @@ impl Bounded {
         (0..self.geometry.rows())
             .map(|line| text(cells(grid, i32::from(line))))
             .collect()
+    }
+
+    /// What this instance shows, for painting.
+    pub(crate) fn view(&self) -> View<'_> {
+        View::new(&self.core)
     }
 }
 
