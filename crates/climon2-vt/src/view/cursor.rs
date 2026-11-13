@@ -16,8 +16,9 @@ pub struct Cursor {
     /// DECTCEM (`CSI ? 25 h` and `l`).
     pub visible: bool,
     pub shape: CursorShape,
-    /// Odd DECSCUSR values and `CSI ? 12 h` blink; even values and
-    /// `CSI ? 12 l` hold it steady.
+    /// Odd DECSCUSR values and `CSI ? 12 h` blink; even values, Ps 0 and
+    /// `CSI ? 12 l` do not, which leaves the [`CursorShape::Default`] shape's
+    /// blinking to the host.
     pub blinking: bool,
 }
 
@@ -34,10 +35,12 @@ impl Cursor {
     }
 }
 
-/// The shapes DECSCUSR (`CSI Ps SP q`) selects. Ps 0, or no DECSCUSR at
-/// all, selects the default: a steady block.
+/// The shapes DECSCUSR (`CSI Ps SP q`) selects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CursorShape {
+    /// The host's own default shape (`CSI 0 SP q`): Ps 0, or no DECSCUSR
+    /// since the terminal started or was reset (RIS).
+    Default,
     /// Ps 1 and 2.
     Block,
     /// Ps 3 and 4.
@@ -46,9 +49,17 @@ pub enum CursorShape {
     Bar,
 }
 
-/// The shapes other than a block that DECSCUSR selects; the engine's other
-/// shapes are its own renderer's.
-const SHAPES: [(EngineShape, CursorShape); 2] = [
+/// The style a model's engine reports while the application has set none:
+/// a shape DECSCUSR never selects, so it reads as [`CursorShape::Default`],
+/// which Alacritty's own default, a steady block, would not.
+pub(crate) const UNSET: CursorStyle = CursorStyle {
+    shape: EngineShape::Hidden,
+    blinking: false,
+};
+
+/// The shapes DECSCUSR selects; any other is the unset style's.
+const SHAPES: [(EngineShape, CursorShape); 3] = [
+    (EngineShape::Block, CursorShape::Block),
     (EngineShape::Underline, CursorShape::Underline),
     (EngineShape::Beam, CursorShape::Bar),
 ];
@@ -58,6 +69,6 @@ impl CursorShape {
         SHAPES
             .iter()
             .find(|(engine, _)| *engine == shape)
-            .map_or(Self::Block, |(_, shape)| *shape)
+            .map_or(Self::Default, |(_, shape)| *shape)
     }
 }

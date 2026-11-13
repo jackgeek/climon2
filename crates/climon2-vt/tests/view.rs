@@ -349,12 +349,13 @@ fn a_tab_leaves_the_cells_it_passes_blank() {
     );
 }
 
-/// The cursor of a fresh model: home, visible, a steady block.
+/// The cursor of a fresh model: home, visible, in the host's default shape
+/// and not asked to blink.
 const HOME: Cursor = Cursor {
     row: 0,
     column: 0,
     visible: true,
-    shape: CursorShape::Block,
+    shape: CursorShape::Default,
     blinking: false,
 };
 
@@ -388,9 +389,11 @@ fn the_cursor_is_where_the_application_moved_it() {
 /// TRM-01 (crate case): cursor visibility, shape and blink. DECTCEM
 /// (`CSI ? 25 l` and `h`) hides and shows the cursor. DECSCUSR
 /// (`CSI Ps SP q`) selects a block (Ps 1, 2), an underline (3, 4) or a bar
-/// (5, 6), blinking for odd Ps and steady for even, and Ps 0 the default, a
-/// steady block; `CSI ? 12 h` and `l` start and stop blinking without
-/// changing the shape.
+/// (5, 6), blinking for odd Ps and steady for even; Ps 0 returns to the
+/// host's default shape, as RIS (`ESC c`) does, and is told apart from an
+/// explicit steady block, also once history has grown. `CSI ? 12 h` and `l`
+/// start and stop blinking without changing the shape, the default one
+/// included.
 #[test]
 fn the_cursor_has_the_visibility_shape_and_blink_the_application_selected() {
     let cursor = |bytes| fed(5, 3, bytes).view().cursor();
@@ -408,12 +411,17 @@ fn the_cursor_has_the_visibility_shape_and_blink_the_application_selected() {
         ("\x1b[4 q", CursorShape::Underline, false),
         ("\x1b[5 q", CursorShape::Bar, true),
         ("\x1b[6 q", CursorShape::Bar, false),
-        ("\x1b[5 q\x1b[0 q", CursorShape::Block, false),
+        ("\x1b[5 q\x1b[0 q", CursorShape::Default, false),
+        ("\x1b[3 q\x1bc", CursorShape::Default, false),
         ("\x1b[4 q\x1b[?12h", CursorShape::Underline, true),
         ("\x1b[5 q\x1b[?12l", CursorShape::Bar, false),
+        ("\x1b[?12h", CursorShape::Default, true),
+        ("\x1b[?12h\x1b[?12l", CursorShape::Default, false),
     ] {
         assert_eq!(style(bytes), (shape, blinking), "{bytes:?}");
     }
+    let past_a_history_chunk = "\n".repeat(1100);
+    assert_eq!(style(&past_a_history_chunk), (CursorShape::Default, false));
 }
 
 /// TRM-01 (crate case): the 1049 alternate screen. `CSI ? 1049 h` saves the

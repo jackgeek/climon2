@@ -9,7 +9,7 @@ use crate::{
     model::Rejected,
     render::cells,
     token::{Kind, Token, Tokenizer},
-    view::View,
+    view::{UNSET, View},
 };
 use alacritty_terminal::{
     Grid,
@@ -212,7 +212,7 @@ impl Bounded {
     pub(crate) fn new(geometry: Geometry, history_rows: usize) -> Self {
         let history = History::new(history_rows);
         Self {
-            core: Core::new(geometry, history.rows(), VoidListener),
+            core: Core::new(geometry, history.rows(), VoidListener, UNSET),
             tokenizer: Tokenizer::new(),
             geometry,
             history,

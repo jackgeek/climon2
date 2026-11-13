@@ -9,6 +9,7 @@ mod cursor;
 mod modes;
 
 pub use cell::{Ansi, Cell, Colour, Content, Glyph, Rendition, Underline};
+pub(crate) use cursor::UNSET;
 pub use cursor::{Cursor, CursorShape};
 pub use modes::{Modes, MouseEncoding, MouseReporting};
 

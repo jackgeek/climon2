@@ -51,11 +51,12 @@ impl Dimensions for Size {
     }
 }
 
-fn config(history: usize) -> Config {
+fn config(history: usize, unset: CursorStyle) -> Config {
     Config {
         scrolling_history: history,
         kitty_keyboard: false,
         osc52: Osc52::Disabled,
+        default_cursor_style: unset,
         ..Config::default()
     }
 }
@@ -65,13 +66,17 @@ fn config(history: usize) -> Config {
 pub(crate) struct Core<L> {
     term: Term<L>,
     processor: Processor<Unbuffered>,
+    /// The cursor style the engine reports while the application has set
+    /// none.
+    unset: CursorStyle,
 }
 
 impl<L: EventListener> Core<L> {
-    pub(crate) fn new(geometry: Geometry, history: usize, listener: L) -> Self {
+    pub(crate) fn new(geometry: Geometry, history: usize, listener: L, unset: CursorStyle) -> Self {
         Self {
-            term: Term::new(config(history), &Size(geometry), listener),
+            term: Term::new(config(history, unset), &Size(geometry), listener),
             processor: Processor::new(),
+            unset,
         }
     }
 
@@ -82,7 +87,7 @@ impl<L: EventListener> Core<L> {
     /// Change the normal screen's history capacity, dropping its oldest rows
     /// beyond it.
     pub(crate) fn set_history(&mut self, rows: usize) {
-        self.term.set_options(config(rows));
+        self.term.set_options(config(rows, self.unset));
     }
 
     pub(crate) fn alternate(&self) -> bool {
@@ -183,7 +188,7 @@ impl Engine {
         let listener = Listener::default();
         let events = listener.0.clone();
         Self {
-            core: Core::new(geometry, history, listener),
+            core: Core::new(geometry, history, listener, CursorStyle::default()),
             events,
             signals: Signals::default(),
             normal_cursor: (1, 1),

@@ -146,8 +146,12 @@ public interface names an engine type.
 - `View::cursor()` is `Cursor { row, column, visible, shape, blinking }`,
   counted from 0 on the active screen; after a character is printed in the
   last column the cursor stays there. DECSCUSR's `CursorShape` is `Block`,
-  `Underline` or `Bar`, blinking for odd `Ps`; `CSI ? 12 h` and `l` set
-  `blinking` alone. This is the cursor style the monitor honours.
+  `Underline` or `Bar`, blinking for odd `Ps`, or `Default`, the host's own
+  shape (`CSI 0 SP q`), for `Ps` 0 or no DECSCUSR since the model started or
+  RIS; `CSI ? 12 h` and `l` set `blinking` alone. This is the cursor style the
+  monitor honours. A model's engine reports a shape DECSCUSR never selects
+  while the style is unset, so `Default` is told apart from an explicit
+  steady block; the daemon's engine keeps Alacritty's default.
 - `View::modes()` is `Modes`: application cursor keys (DECCKM) and keypad
   (DECKPAM, DECKPNM), bracketed paste (2004), `MouseReporting` (`Off`, 1000
   `Clicks`, 1002 `Drag`, 1003 `Motion`), `MouseEncoding` (`Default`, 1005
@@ -216,10 +220,9 @@ tracked allocation capacity, not resident memory, and its charges are upper
 bounds, so it can reject output before memory is strictly exhausted.
 
 The views show what the engine holds. It ignores blinking text (SGR 5 and 6),
-so no cell blinks. A cursor style never set, or reset by DECSCUSR 0, is its
-default, a steady block, which the daemon's restoration sends as the host's
-default (`CSI 0 SP q`). A fresh model has alternate scroll on, as Alacritty
-starts, and the daemon's restoration sets it on hosts too. At capacity the
+so no cell blinks. A fresh model has alternate scroll on, as Alacritty
+starts, and the daemon's restoration sets it on hosts too, until #179 starts
+the engine with it off. At capacity the
 engine discards a history's oldest row for each row pushed without reporting
 it, so a full history (all the rows its admitted chunks hold, when that is no
 more than `history_rows`, as with the monitor's default 10,000) reports
