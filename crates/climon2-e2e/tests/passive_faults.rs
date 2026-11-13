@@ -1206,7 +1206,8 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
 /// back, its two-record event queue being full, so the library reads
 /// nothing and the shutdown Leave's write fails (`EPIPE`). The host
 /// survives; the departure is unconfirmed, with no retry after shutdown,
-/// and the full queue leaves no room for a diagnostic.
+/// and the full queue leaves no room for a diagnostic. Nothing drains until
+/// `run` has returned, so no drain can make room first.
 #[test]
 fn installed_library_never_raises_sigpipe_in_its_embedder() {
     let package = Package::new();
@@ -1221,11 +1222,12 @@ fn installed_library_never_raises_sigpipe_in_its_embedder() {
         { "do": "await_snapshot", "gauge": "event_records", "value": 2 },
         { "do": "await_peer", "frames": 3 },
         { "do": "shutdown" },
+        { "do": "wait_run" },
         { "do": "finish" },
     ]);
     let report = script_with(&package, &root, steps, json!({ "sigpipe": "default" }));
     assert_eq!(step(&report, 4), true);
-    let (records, terminal) = finished(step(&report, 6));
+    let (records, terminal) = finished(step(&report, 7));
     assert_eq!(records.len(), 2, "{records:#?}");
     assert_eq!(assert_response(&records[0], 1, 1, OK)["result_tag"], OPENED);
     assert_header(&records[1], INITIAL_METADATA, 1);
