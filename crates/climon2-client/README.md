@@ -74,6 +74,94 @@ alternate screen blindly, so alternate-screen and other unknown state (for
 example the title) cannot be restored without a daemon response. On expiry
 pending output is discarded and the reset gets one non-blocking attempt.
 
+## Client library (`libclimon2_client.dylib`, `libclimon2_client.so`)
+
+This package's library target is also a cdylib (`crate-type = ["lib",
+"cdylib"]`), so every release ships the client library in its version folder,
+published atomically by the installer: `libclimon2_client.dylib` (universal
+arm64/x86_64) on macOS and `libclimon2_client.so` on x86-64 GNU/Linux. The
+file name comes from `climon2_core::layout::client_library_name`. It is an
+artifact, not another crate. It exports only the frozen
+`climon2_client_get_interface` bootstrap of
+[native client interface revision 1](../../docs/protocol/monitor-client/core-v1.md),
+using the shared `#[repr(C)]` declarations in `climon2_core::native`; Rust
+layouts, unwinding and allocators never cross it. The bootstrap and the table
+entries do no fallible work and allocate nothing, so this build never reports
+`CM1_INTERNAL_ERROR`; contained-panic reporting at every entry arrives with the
+instance lifecycle (#85).
+
+Requesting revision 1 returns one static, immutable description that lives
+until process exit, and the same pointer on every call:
+
+- `release`: the version folder name, compiled in (`CARGO_PKG_VERSION`). A copy
+  placed in another version's folder still reports its own release.
+- `capabilities`: empty (null, zero). No instance behaviour exists yet, so no
+  token is advertised.
+- `requirements`: provisional bounded values until the measurement job (#121)
+  records qualified ones. Each equals its default `monitor.limits` reservation
+  where one exists, plus 1 MiB of instance-local allocation, so a
+  default-configured monitor admits the release without raising a reservation:
+
+  | Field | Value | Bound |
+  |---|---:|---|
+  | `release_bytes` | 67,108,864 | `resources.release_bytes` |
+  | `instance_bytes` | 1,048,576 | nonzero, within `memory.client_bytes` |
+  | `owner_stack_bytes` / `worker_stack_bytes` | 2,097,152 each | nonzero, within `resources.stack_bytes` |
+  | `workers` | 2 | `resources.max_workers_per_client` |
+  | `instance_descriptors` | 8 | nonzero, within `resources.descriptors_per_client` |
+  | `load_descriptors` | 4 | `resources.descriptors_per_load` |
+
+- `functions`: all eleven entries. Until #85 and #93 implement them, each
+  fails with `CM1_UNSUPPORTED_OPERATION`, library origin and the stable error
+  code `unsupported_operation`; failed calls zero their nonnull output structs,
+  `notification` writes -1, and null outputs are never written.
+
+Any other revision returns `CM1_UNSUPPORTED_REVISION` and writes a null
+description; null output storage returns `CM1_INVALID_ARGUMENT`. The bootstrap
+carries the `test_hook_marker!`, so hooked and release builds stay
+distinguishable.
+
+Loaders open the absolute `<executable home>/<version>/<library file>` with
+eager, local resolution (`RTLD_NOW | RTLD_LOCAL`); `current`, the working
+directory, `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` do not change
+which file loads. On macOS `DYLD_LIBRARY_PATH` can, which
+[library embedding](../../docs/protocol/library-embedding.md#artifact-and-dependency-lookup)
+records as a decision for the shared loader (#84). The macOS library's install
+name is its build path; nothing links against it.
+
+On Linux the library target links the GCC unwinder (`gcc_eh`) statically, from
+the Linux-only `src/library/linux.rs`, because Rust's standard library would
+otherwise need the shared `libgcc_s.so.1`; unwinding never leaves the library.
+The `.so` therefore needs only `libc.so.6` and the dynamic loader, exports only
+the bootstrap, and has no soname, RPATH or RUNPATH, as library embedding
+requires. Linking the crate has the same effect on the client executable.
+
+`cargo test` builds the hooked library beside the test executables in
+`target/debug/deps/` (Cargo uplifts only binaries), where tests and the
+installer's `Payload::from_siblings` find it without nested builds. Release
+builds (`cargo build --release -p climon2-client`) uplift the unhooked library.
+
+No `cargo test` builds the library plain, unlike the monitor's binary: this
+package's tests enable `test-hooks` through their `climon2-test-term`
+dev-dependency, and because the library target is a cdylib, Cargo names its
+outputs without a hash, so a plain test build elsewhere would replace the
+hooked library at the same path. The plain library is therefore the
+per-package release build, which `cargo xtask release-check` builds in a
+private target directory and checks.
+
+| Scenario | Named test |
+|---|---|
+| LIB-01 Library: absolute exact-release load, one stable description | `installed_library_describes_revision_one_with_its_version_identity` (`climon2-e2e/tests/library.rs`) |
+| LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths, the absolute path maps the requested file (the loader's lookup, which no library change can alter); the library answers from its own image with its own release, and a misplaced copy reports its compiled-in release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` (`climon2-e2e`) |
+| LIB-02 Library: unsupported revisions and null output storage | `installed_library_rejects_other_revisions_without_a_description` (`climon2-e2e`) |
+| DOC-01: unsupported table calls follow the frozen call rules | `installed_library_table_reports_every_instance_call_unsupported` (`climon2-e2e`) |
+| DOC-01 exported interface: only the bootstrap is exported, from the real release library and from a defective stand-in | `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`), `release_checks_reject_extra_exports` (`xtask/src/library.rs`) |
+| DOC-01 layout case on x86-64 GNU/Linux and both macOS architectures | `rust_native_declarations_match_the_published_header` (`climon2-core/tests/native_layout.rs`) |
+| #75 risk proof: `cargo test` builds the hooked library as a sibling artifact without nested builds (ELF on Linux, Mach-O on macOS); the plain library is the release build | `workspace_client_library_is_a_hooked_sibling_of_the_test_executables` (`climon2-fixtures/tests/hooks.rs`); plain: `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`) |
+| #75 packaging, Linux ([library embedding](../../docs/protocol/library-embedding.md#artifact-and-dependency-lookup)'s release-build rules): release checks reject a soname, RPATH, RUNPATH or a dependency beyond glibc | `release_checks_reject_a_soname_rpath_or_runpath`, `release_checks_reject_a_dependency_beyond_glibc` (`xtask/src/library.rs`) |
+| #75 packaging: release checks accept the exact library and reject a wrong architecture, another release's version or hook markers | `release_checks_accept_the_exact_library`, `release_checks_reject_a_wrong_architecture`, `release_checks_reject_a_wrong_version`, `release_checks_reject_test_hook_markers` (`xtask/src/library.rs`) |
+| Installed and packaged layouts carry the library | `fresh_install_publishes_complete_version_launcher_and_current` (`climon2-install`), `install_builds_production_artifacts_and_preserves_existing_versions` (`xtask/tests/install.rs`) |
+
 ## Behavioral evidence
 
 `tests/bridge.rs` drives the real binary on real PTYs with local protocol peers:
@@ -123,7 +211,10 @@ pending output is discarded and the reset gets one non-blocking attempt.
 `kill_needs_the_kill_capability_and_never_sends_a_request_without_it`,
 `a_kill_capable_session_without_attach_refuses_attach_mode` and
 `a_signal_while_waiting_for_confirmation_is_the_signal_status`.
-`tests/scaffold.rs` has `missing_metadata_is_a_one_line_failure_without_stdout`.
+`tests/scaffold.rs` covers the frozen invocation `attach --metadata <absolute
+path>`: `invocations_outside_the_frozen_contract_are_one_line_usage_failures_without_stdout`
+(no arguments, a missing or relative path, another flag or operation, or an
+extra argument).
 
 The only fault injection, `CLIMON2_CLIENT_FAULT=panic` (with `test-hooks`
 only), panics after entering raw mode. The client has no attach-hold hook (the

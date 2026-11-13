@@ -21,7 +21,7 @@ flowchart TB
             client["climon2-client<br/>client executable"]
             daemon["climon2-daemon<br/>session daemon executable"]
             monitor["climon2-monitor<br/>monitor executable; Ratatui TUI"]
-            library[["libclimon2_client.dylib / .so<br/>planned Rust cdylib on macOS and Linux"]]
+            library[["libclimon2_client.dylib / .so<br/>Rust cdylib; C ABI bootstrap"]]
         end
         command(["Session command<br/>external executable"])
         source_monitor(["Source monitor runtime<br/>future forwarding provider"])
@@ -50,22 +50,27 @@ flowchart TB
         daemon_fixture["climon2-daemon-fixture"]
         terminal_fixture["climon2-fixture"]
         tui_fixture["climon2-tui-fixture"]
+        library_host["climon2-library-host"]
+        library_stand_in[["Client library stand-in<br/>test-only C dylib / .so"]]
         owned_exec["climon2-test-owned<br/>Linux test ownership exec adapter"]
         terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
         xtask -->|"runs builds and tests"| cargo
         xtask -->|"install: runs verified production payload"| installer
         xtask -->|"runs runtime probes"| cli
+        xtask -->|"loads in release checks"| library
         cargo -->|"runs"| tests
         tests -->|"uses directly or as a session command"| cli_fixture
         tests -->|"uses directly or as a session command"| daemon_fixture
         tests -->|"uses directly or as a session command"| terminal_fixture
         tests -->|"uses directly or as a session command"| tui_fixture
+        tests -->|"runs as the Library-layer host"| library_host
+        library_host -->|"loads through the C ABI"| library
+        tests -->|"loads in release-check tests"| library_stand_in
         tests -->|"execs registered terminal roots through; Linux only"| owned_exec
         owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
 
-    style library stroke-dasharray: 5 5
     style source_monitor stroke-dasharray: 5 5
     style browser stroke-dasharray: 5 5
 ```
@@ -91,14 +96,25 @@ Commands that explicitly close inherited descriptors cannot retain this
 additional evidence. macOS keeps its kernel process/image ancestry tracking
 and does not use this adapter.
 
-**Current:** no climon2 dynamic library is built or shipped. Cargo's ordinary
+**Current (#75):** every release builds and ships the client library in its
+version folder: `libclimon2_client.dylib` (universal arm64/x86_64) on macOS and
+`libclimon2_client.so` on x86-64 GNU/Linux, both from one Rust cdylib artifact
+of `climon2-client`. Each exports only the frozen
+`climon2_client_get_interface` bootstrap and implements the bootstrap and
+description of [native revision 1](protocol/monitor-client/core-v1.md); its
+instance calls report unsupported operation. The Linux library links the GCC
+unwinder statically, because no unwinding leaves it, so it needs only glibc's
+libraries and has no soname, RPATH or RUNPATH, as the
+[Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for
+release isolation; release checks enforce each rule. Only test tooling loads it
+today, the library host fixture and xtask's release checks; the monitor's and
+client executable's loading remain planned. xtask's release-check tests compile
+the C stand-in `xtask/tests/fixtures/client-library.c` into a test-only library,
+exact or with one defect, and load it through the same release checks as the
+real library; it is never shipped. Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,
 are not separately loaded dynamic libraries. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
-The planned node names both platforms' library files: `.dylib` on macOS and
-`.so` on x86-64 GNU/Linux. The
-[monitor integration decision](https://github.com/jackgeek/climon2/issues/125)
-agreed Linux loading and release isolation; neither library is built yet.
 
 **Planned:** the [monitor](../GLOSSARY.md#sessions) loads version-matched
 [client libraries](../GLOSSARY.md#sessions) directly into
@@ -169,7 +185,7 @@ release-private dependency resolution, and explicit memory ownership.
 Every successfully opened library handle stays loaded until monitor exit,
 including handles rejected by later validation. Such releases remain in use
 until process exit; completed instance cleanup and joins do not unload them.
-These are planned relationships, not shipped artifacts. Complete interface
+These loading relationships are planned; only the artifacts ship today. Complete interface
 declarations are specified in [native revision 1](protocol/monitor-client/core-v1.md),
 with explicit startup/role, ownership, cleanup and fresh-instance recovery calls.
 No new artifact or consumption arrow is added. Monitor-client communication is
