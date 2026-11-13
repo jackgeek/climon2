@@ -335,8 +335,6 @@ pub fn kinds(peer: &Value) -> Vec<String> {
         .map(|frame| {
             if frame.get("hello").is_some() {
                 "hello".to_owned()
-            } else if frame.get("deaf").is_some() {
-                "deaf".to_owned()
             } else if frame.get("wait_expired").is_some() {
                 "wait_expired".to_owned()
             } else if frame.get("held").is_some() {

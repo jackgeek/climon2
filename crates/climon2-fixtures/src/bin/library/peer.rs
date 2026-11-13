@@ -22,8 +22,7 @@
 //! `{"together": [action, ...]}` (several actions' bytes in one write),
 //! `{"bytewise": action}` (an action's bytes one at a time),
 //! `{"wait": "<path>"}` (until that file exists, bounded; an expired wait is
-//! recorded as `wait_expired`), `"deaf"` (shut down the
-//! reading side, so the library's next write fails, and record `deaf`),
+//! recorded as `wait_expired`),
 //! `"close"` (recorded as `closed` once the connection is dropped), or
 //! `"hold"` (stop answering; keep the connection until the library closes
 //! it).
@@ -37,7 +36,6 @@ use serde_json::{Map, Value, json};
 use std::{
     fs,
     io::Write,
-    net::Shutdown,
     os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
     sync::{
@@ -306,11 +304,6 @@ impl Serving {
         match action {
             Value::String(word) if word == "close" => Next::Close,
             Value::String(word) if word == "hold" => Next::Hold,
-            Value::String(word) if word == "deaf" => {
-                let shut = stream.shutdown(Shutdown::Read);
-                self.record(json!({ "deaf": shut.is_ok() }));
-                Next::Continue
-            }
             action => {
                 if let Some(path) = action["wait"].as_str() {
                     if !wait_file(Path::new(path)) {

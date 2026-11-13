@@ -105,10 +105,10 @@ fixture, held at points by its `await-file` action) and reads their hello
 cases use the host's clearly labelled fake daemon peer, an adversarial
 fixture that serves scripted hello and daemon wire revision 1 traffic
 (malformed, slow, bytewise, coalesced, oversized or truncated frames, lost or
-late answers, a peer that stops reading) and records every frame the library
-sent, so a replay or an early Open shows. Ordering uses trigger files and
-observable completion, never sleeps; every peer wait is bounded and an
-expired wait is recorded.
+late answers, a peer that closes mid-conversation) and records every frame
+the library sent, so a replay or an early Open shows. Ordering uses trigger
+files and observable completion, never sleeps; every peer wait is bounded and
+an expired wait is recorded.
 
 ## Session continuity scenarios
 
