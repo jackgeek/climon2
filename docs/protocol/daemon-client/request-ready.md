@@ -1,6 +1,6 @@
 # Ready — `0x34`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** ([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) reports applied
 [restoration](../../../GLOSSARY.md#restoration-and-presentation) to the
 [session daemon](../../../GLOSSARY.md#sessions), as current
@@ -44,3 +44,15 @@ termination and operational failures use the
 No optional fields/defaults/unknown members; malformed records or IDs are
 fatal. Request bounds/deadlines remain #69, application mechanics #63.
 Related: [Input](request-input.md), [Set viewing](request-viewing.md).
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) accepts Ready that passes
+the [authority checks](core-v1.md#implemented-authority-checks), which need a
+complete restoration: the daemon must already have sent its
+[Restoration complete](event-restoration-complete.md). Ready sent earlier is
+`not_ready` and changes nothing. Every rejection has no effects, and the
+stream goes on. The first accepted Ready under an authority is
+`changed:true`: it admits the controller's Input and ends its restoration
+deadline. Ready again under the same authority is `changed:false`. Ready
+under an earlier period or a superseded restoration never re-enables input.

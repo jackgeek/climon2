@@ -21,7 +21,7 @@ pub use cell::{AnsiColor, Cell, Color, Cursor, CursorShape, Rendition, Underline
 pub use exit::{ChildProcess, exit_within};
 pub use hello::hello_peer;
 pub use input::{Mouse, MouseButton};
-pub use isolation::{Isolation, bin_path, copy_executable, process_command};
+pub use isolation::{Isolation, bin_path, copy_executable, output_within, process_command};
 pub use shell::controlled_bash;
 pub use signals::HostSignal;
 pub use terminal::{InputTerminal, Modes, Options, Terminal};

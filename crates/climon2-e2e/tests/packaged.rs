@@ -4,12 +4,8 @@ mod support;
 
 use climon2_test_term::{Terminal, controlled_bash, copy_executable};
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::Path,
-    time::{Duration, Instant},
-};
-use support::{Package, TIMEOUT, quote};
+use std::{fs, path::Path};
+use support::{LIBRARY, Package, TIMEOUT, quote, type_until};
 
 /// #21.6/#38: real installer → PATH launcher → CLI → daemon → client, from
 /// controlled outer bash to controlled inner bash; a second real PTY lists one
@@ -43,24 +39,6 @@ fn installer_built_bash_smoke_lists_one_session_and_preserves_exit_seven() {
     assert!(package.list().is_empty());
     package.assert_clean();
     package.assert_archive_default_levels();
-}
-
-/// Types `command` until `output` appears. A client drops keys typed before it confirmed
-/// its restoration, and nothing on the screen says when it has, so `command` must be
-/// harmless to repeat.
-fn type_until(terminal: &mut Terminal, command: &str, output: &str) {
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        terminal.wait_for_input_ready(TIMEOUT).unwrap();
-        terminal.send(command).unwrap();
-        if terminal
-            .wait_for_text(output, Duration::from_secs(1))
-            .is_ok()
-        {
-            return;
-        }
-        assert!(Instant::now() < deadline, "{output:?} never appeared");
-    }
 }
 
 fn launch(package: &Package, program: &str, args: &[&str]) -> Terminal {
@@ -347,6 +325,8 @@ fn owned_bash(package: &Package, ignore_hangup: bool) -> Terminal {
 /// #19/#21.7/#38: killing the real installed client cannot request session
 /// termination; EOF drives the daemon's one leave policy, including the full
 /// five-second grace and group kill of a command that ignores hangup.
+/// HDL-01 (Monitor layer), ordinary case: headless sessions leave this policy
+/// unchanged for ordinary sessions.
 #[test]
 fn killed_installed_client_uses_daemon_leave_policy_and_leaves_nothing() {
     let package = Package::new();
@@ -815,13 +795,12 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
     let payload_root = package.isolation.home().join("controlled-payload");
     let fixture_folder = payload_root.join(fixture_version);
     fs::create_dir_all(&fixture_folder).unwrap();
-    fs::copy(
-        package.executable_home().join("climon2"),
-        payload_root.join("climon2"),
-    )
-    .unwrap();
-    for binary in ["climon2-cli", "climon2-daemon", "climon2-monitor"] {
-        fs::copy(old_folder.join(binary), fixture_folder.join(binary)).unwrap();
+    copy_executable(
+        &package.executable_home().join("climon2"),
+        &payload_root.join("climon2"),
+    );
+    for binary in ["climon2-cli", "climon2-daemon", "climon2-monitor", LIBRARY] {
+        copy_executable(&old_folder.join(binary), &fixture_folder.join(binary));
     }
     executable_script(
         &fixture_folder.join("climon2-client"),

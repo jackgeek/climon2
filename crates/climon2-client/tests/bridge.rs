@@ -2,8 +2,9 @@
 
 use climon2_core::{
     SessionId,
-    hello::{Lifecycle, SessionState, advertise},
+    hello::{Lifecycle, SessionState, advertise_revision1},
     protocol::{ClientMessage, HelloReply, ServerMessage, read_frame, write_frame},
+    wire::{Advertisement, FrameLimit, FrameLimits},
 };
 use std::{
     fs::{self, File},
@@ -533,9 +534,15 @@ fn hello(stream: &mut std::os::unix::net::UnixStream) {
         climon2_version: "0.1.0".parse().unwrap(),
         protocol: 1,
     };
-    let frame = advertise(
+    let limit = FrameLimit::new(1_048_576).unwrap();
+    let limits = FrameLimits {
+        max_request_frame_bytes: limit,
+        max_server_frame_bytes: limit,
+    };
+    let frame = advertise_revision1(
         &reply,
         SessionState::new(Lifecycle::Starting, 0, false).unwrap(),
+        &Advertisement::new([], limits),
     )
     .unwrap();
     write_frame(stream, &frame).unwrap();

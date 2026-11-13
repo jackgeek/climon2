@@ -59,7 +59,9 @@ flowchart TB
     e2e -.->|"dev"| core
     e2e -.->|"dev"| install
     e2e -.->|"dev"| test_term
+    fixtures --> core
     fixtures -.->|"dev"| test_term
+    xtask --> core
     xtask --> install
 
     monitor -.->|"planned"| discovery
@@ -84,6 +86,13 @@ consumes `core`, `platform` and `vt` (the only exception to
 Ratatui is a dependency of this crate alone; third-party crates are
 deliberately excluded from this workspace-only diagram.
 
+**Current (#75):** the [client library](../GLOSSARY.md#sessions)'s `cdylib`,
+`libclimon2_client.dylib` on macOS and `libclimon2_client.so` on Linux, is an
+artifact of `climon2-client`, not another crate. The `#[repr(C)]` declarations
+of its native interface live in `climon2-core`, so the client library, the
+client executable and the monitor can share them without new edges; today the
+library, the library host fixture and xtask's release checks consume them.
+
 **Current (#77):** `climon2-discovery` holds the session discovery that
 [Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59)
 planned to share between the CLI and the monitor. It consumes only `core` and
@@ -92,8 +101,7 @@ planned to share between the CLI and the monitor. It consumes only `core` and
 **Planned:** the monitor will consume discovery continuously (#106) and load
 version-matched client libraries in-process, with one client thread per
 [live session](../GLOSSARY.md#sessions). Dynamic loading is shown in the
-artifact diagram, not as a Cargo dependency. The client library's planned
-`cdylib` form is an artifact decision, not a decision to add another crate.
+artifact diagram, not as a Cargo dependency.
 
 The [status/activity revision](session-status.md) also requires the monitor
 to keep one `climon2-vt` terminal model per session across uncertain
@@ -123,9 +131,11 @@ browser. All workspace crates above remain unchanged.
 The [agreed lifecycle](monitor-lifecycle.md), not implemented, specifies
 concurrent per-instance shutdown/joins and exponential passive recovery. Selector
 Delete reuses Kill and dismisses a row/cache only after definitive termination
-and local cleanup. Future headless creation changes only an explicitly headless
-session's zero-client lifetime; it does not select another crate or alter a
-current Cargo edge. No new crate or consumption arrow is introduced here.
+and local cleanup. Implemented headless creation changes only an explicitly
+headless session's zero-client lifetime. Its policy type lives in
+`climon2-core`, which the CLI and daemon already consume; it does not select
+another crate or alter a current Cargo edge. No new crate or consumption arrow
+is introduced here.
 
 The agreed [operational limits](monitor-operational-limits.md), unimplemented,
 require allocation-aware terminal/parser updates and bounded discovery/queues/

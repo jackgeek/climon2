@@ -14,15 +14,14 @@ use climon2_core::wire::{
 };
 use climon2_core::{
     hello::{
-        Advertised, Capability, HelloExtensions, Lifecycle, SessionState, advertise,
-        advertise_revision1,
+        Advertised, Capability, HelloExtensions, Lifecycle, SessionState, advertise_revision1,
     },
     protocol::{self, HelloReply},
     wire::{Advertisement, Family, FrameLimits},
 };
 use serde_json::{Map, Value, json};
 use std::{collections::BTreeSet, num::NonZeroU32};
-use support::{counter, families, geometry, limit, page_dumps, page_examples, pages};
+use support::{counter, families, geometry, ids, limit, page_dumps, page_examples, pages};
 
 mod support;
 
@@ -79,8 +78,7 @@ fn published_control_request_examples_round_trip_byte_identically() {
     let (resize, frame) = request(0x32, "request-resize.md");
     let expected = Resize {
         request_id: counter(3),
-        period: counter(1),
-        restoration_id: counter(1),
+        authority: ids(1, 1),
         geometry: geometry(100, 30),
     };
     assert_eq!(resize, Request::Resize(expected));
@@ -96,8 +94,7 @@ fn published_control_request_examples_round_trip_byte_identically() {
     let (ready, frame) = request(0x34, "request-ready.md");
     let expected = Ready {
         request_id: counter(5),
-        period: counter(1),
-        restoration_id: counter(1),
+        authority: ids(1, 1),
     };
     assert_eq!(ready, Request::Ready(expected));
     assert_eq!(expected.to_frame(), frame);
@@ -105,8 +102,7 @@ fn published_control_request_examples_round_trip_byte_identically() {
     let (viewing, frame) = request(0x35, "request-viewing.md");
     let expected = SetViewing {
         request_id: counter(6),
-        period: counter(1),
-        restoration_id: counter(1),
+        authority: ids(1, 1),
         viewing: true,
     };
     assert_eq!(viewing, Request::SetViewing(expected));
@@ -115,8 +111,7 @@ fn published_control_request_examples_round_trip_byte_identically() {
     let (acknowledge, frame) = request(0x36, "request-acknowledge.md");
     let expected = Acknowledge {
         request_id: counter(7),
-        period: counter(1),
-        restoration_id: counter(1),
+        authority: ids(1, 1),
     };
     assert_eq!(acknowledge, Request::Acknowledge(expected));
     assert_eq!(expected.to_frame(), frame);
@@ -131,8 +126,7 @@ fn published_focus_examples_round_trip_byte_identically() {
     let frame = Frame::new(0x39, focus.into_bytes());
     let expected = Focus {
         request_id: counter(8),
-        period: counter(2),
-        restoration_id: counter(3),
+        authority: ids(2, 3),
         focused: false,
     };
     assert_eq!(Request::from_frame(&frame), Ok(Request::Focus(expected)));
@@ -277,8 +271,7 @@ fn published_core_metadata_examples_round_trip_byte_identically() {
 fn published_control_and_restoration_examples_round_trip_byte_identically() {
     let (granted, frame) = server(0x46, "event-control-granted.md");
     let expected = ControlGranted {
-        period: counter(2),
-        restoration_id: counter(3),
+        authority: ids(2, 3),
         geometry: geometry(80, 24),
         reason: GrantReason::Successor,
     };
@@ -287,8 +280,7 @@ fn published_control_and_restoration_examples_round_trip_byte_identically() {
 
     let (revoked, frame) = server(0x47, "event-control-revoked.md");
     let expected = ControlRevoked {
-        period: counter(1),
-        restoration_id: counter(1),
+        authority: ids(1, 1),
         reason: RevocationReason::Takeover,
     };
     assert_eq!(revoked, ServerMessage::ControlRevoked(expected));
@@ -296,8 +288,7 @@ fn published_control_and_restoration_examples_round_trip_byte_identically() {
 
     let (begin, frame) = server(0x48, "event-restoration-begin.md");
     let expected = RestorationBegin {
-        period: counter(2),
-        restoration_id: counter(3),
+        authority: ids(2, 3),
         geometry: geometry(80, 24),
     };
     assert_eq!(begin, ServerMessage::RestorationBegin(expected));
@@ -305,8 +296,7 @@ fn published_control_and_restoration_examples_round_trip_byte_identically() {
 
     let (complete, frame) = server(0x4a, "event-restoration-complete.md");
     let expected = RestorationComplete {
-        period: counter(2),
-        restoration_id: counter(3),
+        authority: ids(2, 3),
     };
     assert_eq!(complete, ServerMessage::RestorationComplete(expected));
     assert_eq!(expected.to_frame(), frame);
@@ -343,8 +333,7 @@ fn published_binary_examples_round_trip_byte_identically() {
     let (frame, bytes) = dumped("request-input.md");
     let expected = Input {
         request_id: counter(2),
-        period: counter(1),
-        restoration_id: counter(1),
+        authority: ids(1, 1),
         payload: vec![0x00, 0xff, 0x41],
     };
     assert_eq!(
@@ -355,8 +344,7 @@ fn published_binary_examples_round_trip_byte_identically() {
 
     let (frame, bytes) = dumped("event-display.md");
     let expected = Display {
-        period: counter(2),
-        restoration_id: counter(3),
+        authority: ids(2, 3),
         payload: vec![0x00, 0xff, 0x41],
     };
     assert_eq!(
@@ -375,12 +363,13 @@ fn hello(body: &str) -> (HelloReply, HelloExtensions) {
     (reply, HelloExtensions::from_body(body.as_bytes()))
 }
 
-/// DOC-01 / COM-01: the frozen reply, the current advertisement and the
-/// revision-1 advertisement each decode to their documented values and
-/// re-encode byte-identically.
+/// DOC-01 / COM-01: the frozen reply, a reply with capabilities and state
+/// but no revision 1, and the complete revision-1 reply each decode to their
+/// documented values. The frozen and revision-1 replies, the two that
+/// climon2 encodes, re-encode byte-identically.
 #[test]
-fn published_hello_advertisement_examples_round_trip_byte_identically() {
-    let [frozen, current, revision1]: [String; 3] =
+fn published_hello_reply_examples_decode_and_the_encoded_ones_round_trip() {
+    let [frozen, without_revision1, revision1]: [String; 3] =
         page_examples("hello-reply.md").try_into().unwrap();
     let expected = HelloReply {
         session_id: "550e8400-e29b-41d4-a716-446655440000".parse().unwrap(),
@@ -401,7 +390,7 @@ fn published_hello_advertisement_examples_round_trip_byte_identically() {
     let encoded = protocol::ServerMessage::Hello(reply).to_frame().unwrap();
     assert_eq!(encoded.body(), frozen.as_bytes());
 
-    let (reply, extensions) = hello(&current);
+    let (reply, extensions) = hello(&without_revision1);
     let state = SessionState::new(Lifecycle::Attached, 2, true).unwrap();
     assert_eq!(reply, expected);
     let capabilities = extensions.capabilities.valid().unwrap();
@@ -409,7 +398,6 @@ fn published_hello_advertisement_examples_round_trip_byte_identically() {
     assert!(capabilities.supports_state());
     assert_eq!(extensions.state, Advertised::Valid(state));
     assert_eq!(extensions.daemon_wire_v1, Advertised::Absent);
-    assert_eq!(advertise(&reply, state).unwrap().body(), current.as_bytes());
 
     let (reply, extensions) = hello(&revision1);
     let advertisement = Advertisement::new(

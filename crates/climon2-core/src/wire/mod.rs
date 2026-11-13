@@ -27,17 +27,17 @@ pub use frame::{Frame, FrameLimit, WireError, read_frame, write_frame};
 pub use metadata::{
     Available, CommandResult, Percent, Progress, ProgressState, Status, StatusState,
 };
-pub use record::ControlRecord;
+pub use record::{ControlRecord, defines};
 pub use request::{
     Acknowledge, Acquire, Focus, Kill, Leave, Mode, Open, Ready, Request, Resize, SetViewing,
 };
 pub use response::{
-    Cleanup, Failure, FocusBytes, KnownResult, Outcome, PartialCleanup, PartialTermination,
-    Rejection, Response, Success,
+    AuthorityResult, Cleanup, Failure, FocusBytes, KnownResult, Outcome, PartialCleanup,
+    PartialTermination, Rejection, Response, Success,
 };
 pub use server::{
     ActualGeometry, CommandFinal, ControlGranted, ControlRevoked, FatalError, GrantReason,
     InitialMetadata, Notification, NotificationSource, ProgressChanged, RestorationBegin,
     RestorationComplete, RevocationReason, ServerMessage, StatusChanged, TitleChanged,
 };
-pub use types::{Counter, Geometry, Utc};
+pub use types::{AuthorityIds, Counter, Geometry, Utc};

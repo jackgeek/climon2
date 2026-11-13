@@ -1,6 +1,7 @@
 # Kill — `0x38`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed; first-role validation implemented, termination not yet**
+([#88](https://github.com/jackgeek/climon2/issues/88)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) sends a standalone first-role
 [kill](../../../GLOSSARY.md#attachment-and-control) request to the
 [session daemon](../../../GLOSSARY.md#sessions) after hello.
@@ -51,11 +52,24 @@ instance delivery/handle release, cleanup and thread join. Rejection or lost
 response keeps the row. Never automatically replay Kill; passive recovery may
 establish later definitive completion. Dismissal is run-local and blocks same-run
 rediscovery; fallback selection never acquires another session.
-Existing `c2 kill <session>` must also terminate future
+Existing `c2 kill <session>` also terminates
 [headless sessions](../../../GLOSSARY.md#sessions), whose zero-client lifetime
-survives later attachment loss until completion or Kill. These amendments are
-unimplemented; operation fields/results are unchanged.
+survives later attachment loss until completion or Kill; that is implemented on
+the current private protocol. The other amendments are unimplemented; operation
+fields/results are unchanged.
 #69 owns agreed deadlines/bounds; [native declarations](../monitor-client/core-v1.md)
 are agreed in #71; the [acceptance matrix](../../monitor-acceptance.md)
 is agreed in #62, not executed conformance evidence.
 Related: [Command final](event-command-final.md).
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) validates a first-role
+Kill like Open: `unsupported_revision` unless revision 1, and
+`unsupported_capability` for an unknown or unadvertised required family; each
+rejection has no effects and ends the stream. A Kill on a registered
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) is
+`invalid_state` and keeps the registration. Until
+[#88](https://github.com/jackgeek/climon2/issues/88) serves it, a valid
+standalone Kill is rejected without effects with `internal_error`, and the
+session goes on; `c2 kill` still uses the private protocol.

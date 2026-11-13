@@ -144,7 +144,7 @@ fn exactly_full_history_has_no_notice_and_identical_rows_still_evict() {
 
 #[test]
 fn clearing_history_clears_the_eviction_flag() {
-    for clear in [&b"\x1b[3J"[..], b"\x1bc"] {
+    for clear in [&b"\x1b[3J"[..], b"\x1bc", b"\x1b\x07[3J"] {
         let mut vt = vt(10, 2, 3);
         feed(&mut vt, &lines(1..=6));
         feed(&mut vt, clear);

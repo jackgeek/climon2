@@ -1,6 +1,7 @@
 # Title changed — `0x42`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67),
+with the decoding limits below.
 The [session daemon](../../../GLOSSARY.md#sessions) sends current title changes
 to a subscribed [client](../../../GLOSSARY.md#sessions).
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
@@ -41,3 +42,28 @@ bounds/exhaustion policy are in
 No archive or naming
 [API](../TERMS.md#api) is added.
 Related: [public title mapping](../monitor-client/event-title.md).
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) sends one Title changed
+for each change of the application's own title, in order, even when one read
+of command output holds several, to every connection that selected
+`title-v1`, whatever its control state. Changes are by value: setting the
+same title again sends nothing. `ESC c` (full reset) returns the title to
+unset. Titles come from the session's terminal decoder, Alacritty 0.26.0
+behind `climon2-vt`, and are never logged.
+
+The decoder bounds and normalizes titles in two ways this revision did not
+settle. A title sequence whose body exceeds the existing terminal-token bound
+of 4,096 [bytes](../TERMS.md#byte) is ignored, never truncated, so the longest
+OSC 0/2 title is 4,094 [UTF-8](../TERMS.md#unicode-and-utf-8) bytes, not the
+4,096 of the
+[operational limits](../../monitor-operational-limits.md#payloads-and-parser-state).
+The title bound is decided with the text-bound tests of
+[#90](https://github.com/jackgeek/climon2/issues/90); 4,094 bytes holds until
+then. The decoder also trims surrounding whitespace, drops each
+semicolon-separated part of a title that is not valid UTF-8 instead of
+replacing the invalid bytes (a title of one such part becomes empty), and
+drops everything from a title's 15th semicolon on. This decoding is accepted
+for revision 1, as decided on
+[#86](https://github.com/jackgeek/climon2/issues/86).

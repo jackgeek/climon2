@@ -1,7 +1,10 @@
 # climon2-install
 
 The macOS and GNU/Linux installer is shipped as `install` beside `climon2` and the release's
-`<version>/{climon2-cli,climon2-daemon,climon2-client,climon2-monitor}` directory.
+`<version>/{climon2-cli,climon2-daemon,climon2-client,climon2-monitor}` executables
+and client library (`libclimon2_client.dylib` on macOS, `libclimon2_client.so`
+on Linux). The client library is published atomically with the rest of its
+version.
 
 `install [--dir <directory>]` defaults to `$HOME/.local/share/climon2`.
 It prints a shell-quoted `export PATH=…` hint only when the canonical destination
@@ -17,18 +20,24 @@ It never changes shell profiles or signing/quarantine attributes. Errors produce
   and uses the compiled package version.
 - `Payload::from_siblings(directory, version)` reads `climon2`, `climon2-cli`,
   `climon2-daemon`, `climon2-client` and `climon2-monitor` directly from one
-  Cargo output directory. Packaged tests can therefore install the exact
-  instrumented sibling binaries, without nested Cargo invocations or
-  uninstrumented substitutes.
-- `COMPANIONS` names the executables of a version folder, in installation
-  order; xtask's tooling probe and install-script test build payloads from it.
+  Cargo output directory, and the client library from its `deps/`
+  subdirectory. Packaged tests can therefore install the exact instrumented
+  sibling artifacts, without nested Cargo invocations or uninstrumented
+  substitutes.
+- `version_files()` names the files of a version folder, in installation
+  order: the executables, then the client library, whose name comes from
+  `climon2_core::layout::client_library_name`. `cargo_output(directory, name)`
+  is where a Cargo build leaves each of them: Cargo uplifts binaries but leaves
+  a dependency's cdylib in `deps/`, beside the test executables. xtask's
+  release check, tooling probe and install-script test use both.
 - `Payload::version()` returns the validated core `VersionName`.
 - `install(&payload, destination)` returns `InstallReport { executable_home }`,
   with a canonical destination. It does not print or inspect environment.
 - `run(args)` is the command adapter; arguments exclude argv[0].
 
-Payload files must be regular executable files, not symlinks. Installation
-copies rather than mutates them. Identical versions retain their existing files;
+Payload files, including the client library, must be regular executable
+files, not symlinks. Installation copies rather than mutates them. Identical
+versions retain their existing files;
 different same-version contents replace the whole version atomically using
 Darwin `renamex_np(RENAME_SWAP)` or Linux `renameat2(RENAME_EXCHANGE)`.
 Linux requires a filesystem supporting atomic directory exchange; an unsupported
@@ -59,7 +68,8 @@ This is process-interruption recovery, not a power-loss durability guarantee.
 
 Only the compile-time `test-hooks` feature enables
 `CLIMON2_TEST_INSTALL_FAULT=fail:<boundary>` or `crash:<boundary>`.
-Boundaries are `copy-cli`, `version-staged`, `short-command`, `version-published`, and
+Boundaries are `copy-<file>` after each version file is staged (for example
+`copy-climon2-cli`), `version-staged`, `short-command`, `version-published`, and
 `launcher-published`; crash exits 86 without Rust cleanup. Production builds do
 not contain these hooks.
 

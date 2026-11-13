@@ -199,6 +199,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "uuid",
  "vt100",
 ]
 
@@ -231,6 +232,7 @@ dependencies = [
 name = "climon2-fixtures"
 version = "0.1.0"
 dependencies = [
+ "climon2-core",
  "climon2-test-term",
  "libc",
  "nix 0.31.3",
@@ -1756,7 +1758,9 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "climon2-core",
  "climon2-install",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

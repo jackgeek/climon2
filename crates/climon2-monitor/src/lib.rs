@@ -11,7 +11,7 @@ mod keys;
 mod screen;
 mod startup;
 
-use climon2_core::{keys::ControlKey, protocol::TerminalSize};
+use climon2_core::{config::MonitorConfig, protocol::TerminalSize};
 use host::{Ending, Event, Host};
 use keys::Keys;
 use screen::Screen;
@@ -85,16 +85,17 @@ pub fn run() -> Result<u32, Error> {
 /// is logged as well as returned for main to print.
 fn monitor(startup: &Startup) -> io::Result<u32> {
     tracing::info!(version = %startup.version, "monitor started");
+    tracing::info!(effective = %startup.config, "monitor configuration");
     let status =
-        owned(startup.prefix).inspect_err(|error| tracing::error!(%error, "monitor failed"))?;
+        owned(&startup.config).inspect_err(|error| tracing::error!(%error, "monitor failed"))?;
     tracing::info!(status, "monitor stopped");
     Ok(status)
 }
 
 /// Owns the host until an ending, and releases it before any diagnostic.
-fn owned(prefix: ControlKey) -> io::Result<u32> {
+fn owned(config: &MonitorConfig) -> io::Result<u32> {
     let (mut host, size) = Host::enter()?;
-    let served = Monitor::start(size, prefix).and_then(|monitor| monitor.serve(&mut host));
+    let served = Monitor::start(size, config).and_then(|monitor| monitor.serve(&mut host));
     let released = host.release();
     served.and_then(|ending| released.map(|()| ending.status()))
 }
@@ -106,9 +107,10 @@ struct Monitor {
 }
 
 impl Monitor {
-    fn start(size: TerminalSize, prefix: ControlKey) -> io::Result<Self> {
+    fn start(size: TerminalSize, config: &MonitorConfig) -> io::Result<Self> {
+        let prefix = config.escape_prefix();
         Ok(Self {
-            screen: Screen::new(size, prefix)?,
+            screen: Screen::new(size, prefix, config.settings().show_key_hints)?,
             keys: Keys::new(prefix),
         })
     }

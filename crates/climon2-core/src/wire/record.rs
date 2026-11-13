@@ -16,6 +16,13 @@ pub(crate) const REQUEST_TYPES: RangeInclusive<u8> = 0x30..=0x39;
 /// Server types, sent only by the session daemon.
 pub(crate) const SERVER_TYPES: RangeInclusive<u8> = 0x40..=0x4d;
 
+/// Whether revision 1 defines frame type `code`, in either direction. A
+/// session daemon that still speaks another post-hello protocol selects
+/// revision 1 by the type of the first frame after hello.
+pub fn defines(code: u8) -> bool {
+    REQUEST_TYPES.contains(&code) || SERVER_TYPES.contains(&code)
+}
+
 /// A JSON control record and its frame type.
 pub trait ControlRecord: Serialize + DeserializeOwned {
     const CODE: u8;
@@ -81,6 +88,38 @@ pub(crate) fn dispatch<M>(
         None => Err(FatalCode::UnknownMessageType),
     }
 }
+
+/// Converts between a record whose control period and restoration ID are one
+/// `authority` and `$fields`, its exact wire shape, where the two are the
+/// flat members `period` and `restoration_id`: serde's `flatten` cannot
+/// serve a record that denies unknown members. Each `$member` is one of the
+/// record's other members, the same in both.
+macro_rules! flat_authority {
+    ($record:ty, $fields:ident { $($member:ident),* }) => {
+        impl From<$fields> for $record {
+            fn from(fields: $fields) -> Self {
+                Self {
+                    authority: $crate::wire::AuthorityIds {
+                        period: fields.period,
+                        restoration_id: fields.restoration_id,
+                    },
+                    $($member: fields.$member,)*
+                }
+            }
+        }
+
+        impl From<$record> for $fields {
+            fn from(record: $record) -> Self {
+                Self {
+                    period: record.authority.period,
+                    restoration_id: record.authority.restoration_id,
+                    $($member: record.$member,)*
+                }
+            }
+        }
+    };
+}
+pub(crate) use flat_authority;
 
 /// A nullable member that must still be present: plain `Option` would let
 /// serde default a missing member to `None`.

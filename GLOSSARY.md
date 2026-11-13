@@ -57,13 +57,21 @@ A session whose daemon answers the hello handshake with the matching session ID.
 _Avoid_: Running session, active session
 
 **Detached session**:
-A live session with no attached clients that continues after deliberate detach.
+A live session that keeps running with no attachments: an ordinary session after a deliberate detach, or a headless session whenever it has none.
 _Avoid_: Disconnected session, completed session
 
 **Headless session**:
 A session explicitly created to run without an initial interactive client and to
 remain alive with zero clients, including after later clients leave.
-_Avoid_: Detached session, persistent session
+_Avoid_: Persistent session
+
+**Ordinary session**:
+A session created with an initial interactive client, which survives zero clients only after a deliberate detach, not before its first attachment or after an unexpected loss of its last.
+_Avoid_: Normal session, regular session
+
+**Lifetime policy**:
+Whether a session is ordinary or headless, fixed when the session is created.
+_Avoid_: Session mode, persistence
 
 **Capabilities**:
 The operations or extensions a climon2 participant explicitly advertises as supported; support is never inferred from release versions.
@@ -105,7 +113,7 @@ Probes, passive monitor connections and kill requests are not attachments.
 _Avoid_: Session, control
 
 **Passive monitor connection**:
-A monitor's connection that receives session metadata and is eligible to inherit control, but has not yet become an attachment.
+A monitor's connection that receives the session's core metadata, such as its title and status, and is eligible to inherit control, but has not yet become an attachment.
 _Avoid_: Observer-only attachment, read-only viewer
 
 **Successor**:
