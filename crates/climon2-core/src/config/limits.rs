@@ -1,83 +1,63 @@
 //! `monitor.limits` (docs/monitor-operational-limits.md): eleven groups of
-//! budgets, ceilings, counts and durations. Each setting is range-checked as it
-//! is read, in its native type, and the groups are then checked against each
-//! other once. `Limits` exists only after both checks, and nothing outside
-//! this module can change it; its values are only reported so far.
-use super::object;
-use serde::{
-    Deserialize, Deserializer, Serialize,
-    de::{Error as _, Expected, Unexpected},
-};
-use std::fmt;
-
-/// An integer setting from `MIN` through `MAX`, held in its native type `T`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(transparent)]
-struct Limit<T, const MIN: u64, const MAX: u64>(T);
+//! budgets, ceilings, counts and durations. Each setting is read in its native
+//! type; once every group is read, each setting is checked against its range,
+//! and then the groups against each other. Every refusal names the settings it
+//! concerns. `Limits` exists only after both checks, and nothing outside this
+//! module can change it; its values are only reported so far.
+use super::{Range, object};
+use serde::{Deserialize, Serialize};
 
 /// A positive budget or ceiling, held in a `u64`.
-type Positive64 = Limit<u64, 1, { u64::MAX }>;
+const POSITIVE_64: Range = Range {
+    min: 1,
+    max: u64::MAX,
+};
 /// A positive count or single-item byte ceiling, held in a `u32`.
-type Positive32 = Limit<u32, 1, { u32::MAX as u64 }>;
+const POSITIVE_32: Range = Range {
+    min: 1,
+    max: u32::MAX as u64,
+};
 /// A worker count, which may be zero, held in a `u32`.
-type Workers = Limit<u32, 0, { u32::MAX as u64 }>;
+const WORKERS: Range = Range {
+    min: 0,
+    max: u32::MAX as u64,
+};
 /// Milliseconds, 1 through 3,600,000.
-type Millis = Limit<u32, 1, 3_600_000>;
+const MILLIS: Range = Range {
+    min: 1,
+    max: 3_600_000,
+};
 /// A processing quantum, 1 through 50 milliseconds.
-type Quantum = Limit<u32, 1, 50>;
+const QUANTUM: Range = Range { min: 1, max: 50 };
 /// A render ceiling, 1 through 120 frames per second.
-type Fps = Limit<u32, 1, 120>;
+const FPS: Range = Range { min: 1, max: 120 };
 /// A jitter percentage, 0 through 50.
-type Percent = Limit<u32, 0, 50>;
+const PERCENT: Range = Range { min: 0, max: 50 };
 /// Local history rows, 200 through 100,000.
-type HistoryRows = Limit<u32, 200, 100_000>;
-
-/// Reading `T` first rejects null, other types and integers that overflow it.
-impl<'de, T, const MIN: u64, const MAX: u64> Deserialize<'de> for Limit<T, MIN, MAX>
-where
-    T: Deserialize<'de> + Copy + Into<u64>,
-{
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = T::deserialize(deserializer)?;
-        let wide = value.into();
-        if (MIN..=MAX).contains(&wide) {
-            return Ok(Self(value));
-        }
-        Err(D::Error::invalid_value(
-            Unexpected::Unsigned(wide),
-            &Range::<MIN, MAX>,
-        ))
-    }
-}
-
-/// What a setting accepts, for its error.
-struct Range<const MIN: u64, const MAX: u64>;
-
-impl<const MIN: u64, const MAX: u64> Expected for Range<MIN, MAX> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "an integer from {MIN} to {MAX}")
-    }
-}
+const HISTORY_ROWS: Range = Range {
+    min: 200,
+    max: 100_000,
+};
 
 /// Tracked allocation budgets; every sub-budget is part of the total.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 struct Memory {
-    total_bytes: Positive64,
-    client_bytes: Positive64,
-    history_bytes_per_session: Positive64,
-    history_bytes_total: Positive64,
-    queue_bytes_total: Positive64,
+    total_bytes: u64,
+    client_bytes: u64,
+    history_bytes_per_session: u64,
+    history_bytes_total: u64,
+    queue_bytes_total: u64,
 }
 
 impl Default for Memory {
     fn default() -> Self {
         Self {
-            total_bytes: Limit(536_870_912),
-            client_bytes: Limit(67_108_864),
-            history_bytes_per_session: Limit(16_777_216),
-            history_bytes_total: Limit(268_435_456),
-            queue_bytes_total: Limit(67_108_864),
+            total_bytes: 536_870_912,
+            client_bytes: 67_108_864,
+            history_bytes_per_session: 16_777_216,
+            history_bytes_total: 268_435_456,
+            queue_bytes_total: 67_108_864,
         }
     }
 }
@@ -86,14 +66,12 @@ impl Default for Memory {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 struct History {
-    max_rows: HistoryRows,
+    max_rows: u32,
 }
 
 impl Default for History {
     fn default() -> Self {
-        Self {
-            max_rows: Limit(10_000),
-        }
+        Self { max_rows: 10_000 }
     }
 }
 
@@ -101,23 +79,23 @@ impl Default for History {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 struct Resources {
-    stack_bytes: Positive64,
-    max_workers_per_client: Workers,
-    descriptors_per_client: Positive32,
-    descriptors_per_load: Positive32,
-    descriptor_headroom: Positive32,
-    release_bytes: Positive64,
+    stack_bytes: u64,
+    max_workers_per_client: u32,
+    descriptors_per_client: u32,
+    descriptors_per_load: u32,
+    descriptor_headroom: u32,
+    release_bytes: u64,
 }
 
 impl Default for Resources {
     fn default() -> Self {
         Self {
-            stack_bytes: Limit(2_097_152),
-            max_workers_per_client: Limit(2),
-            descriptors_per_client: Limit(8),
-            descriptors_per_load: Limit(4),
-            descriptor_headroom: Limit(64),
-            release_bytes: Limit(67_108_864),
+            stack_bytes: 2_097_152,
+            max_workers_per_client: 2,
+            descriptors_per_client: 8,
+            descriptors_per_load: 4,
+            descriptor_headroom: 64,
+            release_bytes: 67_108_864,
         }
     }
 }
@@ -126,27 +104,27 @@ impl Default for Resources {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 struct Queues {
-    request_bytes: Positive64,
-    request_records: Positive32,
-    event_bytes: Positive64,
-    event_records: Positive32,
-    progress_bytes: Positive64,
-    progress_records: Positive32,
-    deliveries: Positive32,
-    operations: Positive32,
+    request_bytes: u64,
+    request_records: u32,
+    event_bytes: u64,
+    event_records: u32,
+    progress_bytes: u64,
+    progress_records: u32,
+    deliveries: u32,
+    operations: u32,
 }
 
 impl Default for Queues {
     fn default() -> Self {
         Self {
-            request_bytes: Limit(262_144),
-            request_records: Limit(64),
-            event_bytes: Limit(1_048_576),
-            event_records: Limit(1024),
-            progress_bytes: Limit(65_536),
-            progress_records: Limit(32),
-            deliveries: Limit(8),
-            operations: Limit(16),
+            request_bytes: 262_144,
+            request_records: 64,
+            event_bytes: 1_048_576,
+            event_records: 1024,
+            progress_bytes: 65_536,
+            progress_records: 32,
+            deliveries: 8,
+            operations: 16,
         }
     }
 }
@@ -155,17 +133,17 @@ impl Default for Queues {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 struct Transfer {
-    chunk_bytes: Positive32,
-    drain_records: Positive32,
-    drain_payload_bytes: Positive64,
+    chunk_bytes: u32,
+    drain_records: u32,
+    drain_payload_bytes: u64,
 }
 
 impl Default for Transfer {
     fn default() -> Self {
         Self {
-            chunk_bytes: Limit(65_536),
-            drain_records: Limit(64),
-            drain_payload_bytes: Limit(65_536),
+            chunk_bytes: 65_536,
+            drain_records: 64,
+            drain_payload_bytes: 65_536,
         }
     }
 }
@@ -174,25 +152,25 @@ impl Default for Transfer {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 struct Payload {
-    wire_frame_bytes: Positive32,
-    metadata_record_bytes: Positive32,
-    title_bytes: Positive32,
-    notification_title_bytes: Positive32,
-    notification_body_bytes: Positive32,
-    assembly_records: Positive32,
-    assembly_bytes: Positive64,
+    wire_frame_bytes: u32,
+    metadata_record_bytes: u32,
+    title_bytes: u32,
+    notification_title_bytes: u32,
+    notification_body_bytes: u32,
+    assembly_records: u32,
+    assembly_bytes: u64,
 }
 
 impl Default for Payload {
     fn default() -> Self {
         Self {
-            wire_frame_bytes: Limit(1_048_576),
-            metadata_record_bytes: Limit(16_384),
-            title_bytes: Limit(4096),
-            notification_title_bytes: Limit(4096),
-            notification_body_bytes: Limit(8192),
-            assembly_records: Limit(32),
-            assembly_bytes: Limit(65_536),
+            wire_frame_bytes: 1_048_576,
+            metadata_record_bytes: 16_384,
+            title_bytes: 4096,
+            notification_title_bytes: 4096,
+            notification_body_bytes: 8192,
+            assembly_records: 32,
+            assembly_bytes: 65_536,
         }
     }
 }
@@ -201,19 +179,19 @@ impl Default for Payload {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 struct Scheduling {
-    probes: Positive32,
-    loads: Positive32,
-    starts: Positive32,
-    newer_start_burst: Positive32,
+    probes: u32,
+    loads: u32,
+    starts: u32,
+    newer_start_burst: u32,
 }
 
 impl Default for Scheduling {
     fn default() -> Self {
         Self {
-            probes: Limit(8),
-            loads: Limit(2),
-            starts: Limit(8),
-            newer_start_burst: Limit(8),
+            probes: 8,
+            loads: 2,
+            starts: 8,
+            newer_start_burst: 8,
         }
     }
 }
@@ -222,23 +200,23 @@ impl Default for Scheduling {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 struct Discovery {
-    pass_ms: Millis,
-    stall_ms: Millis,
-    batch_records: Positive32,
-    batch_bytes: Positive64,
-    metadata_file_bytes: Positive64,
-    metadata_depth: Positive32,
+    pass_ms: u32,
+    stall_ms: u32,
+    batch_records: u32,
+    batch_bytes: u64,
+    metadata_file_bytes: u64,
+    metadata_depth: u32,
 }
 
 impl Default for Discovery {
     fn default() -> Self {
         Self {
-            pass_ms: Limit(30_000),
-            stall_ms: Limit(5000),
-            batch_records: Limit(128),
-            batch_bytes: Limit(1_048_576),
-            metadata_file_bytes: Limit(262_144),
-            metadata_depth: Limit(32),
+            pass_ms: 30_000,
+            stall_ms: 5000,
+            batch_records: 128,
+            batch_bytes: 1_048_576,
+            metadata_file_bytes: 262_144,
+            metadata_depth: 32,
         }
     }
 }
@@ -247,35 +225,35 @@ impl Default for Discovery {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 struct Deadlines {
-    load_ms: Millis,
-    start_ms: Millis,
-    operation_ms: Millis,
-    kill_ms: Millis,
-    restoration_stall_ms: Millis,
-    restoration_total_ms: Millis,
-    delivery_stall_ms: Millis,
-    leave_ms: Millis,
-    cleanup_ms: Millis,
-    shutdown_ms: Millis,
-    final_host_ms: Millis,
-    assembly_ms: Millis,
+    load_ms: u32,
+    start_ms: u32,
+    operation_ms: u32,
+    kill_ms: u32,
+    restoration_stall_ms: u32,
+    restoration_total_ms: u32,
+    delivery_stall_ms: u32,
+    leave_ms: u32,
+    cleanup_ms: u32,
+    shutdown_ms: u32,
+    final_host_ms: u32,
+    assembly_ms: u32,
 }
 
 impl Default for Deadlines {
     fn default() -> Self {
         Self {
-            load_ms: Limit(10_000),
-            start_ms: Limit(10_000),
-            operation_ms: Limit(5000),
-            kill_ms: Limit(10_000),
-            restoration_stall_ms: Limit(5000),
-            restoration_total_ms: Limit(60_000),
-            delivery_stall_ms: Limit(5000),
-            leave_ms: Limit(5000),
-            cleanup_ms: Limit(10_000),
-            shutdown_ms: Limit(10_000),
-            final_host_ms: Limit(1000),
-            assembly_ms: Limit(5000),
+            load_ms: 10_000,
+            start_ms: 10_000,
+            operation_ms: 5000,
+            kill_ms: 10_000,
+            restoration_stall_ms: 5000,
+            restoration_total_ms: 60_000,
+            delivery_stall_ms: 5000,
+            leave_ms: 5000,
+            cleanup_ms: 10_000,
+            shutdown_ms: 10_000,
+            final_host_ms: 1000,
+            assembly_ms: 5000,
         }
     }
 }
@@ -284,19 +262,19 @@ impl Default for Deadlines {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 struct Retry {
-    initial_ms: Millis,
-    cap_ms: Millis,
-    jitter_percent: Percent,
-    admission_ms: Millis,
+    initial_ms: u32,
+    cap_ms: u32,
+    jitter_percent: u32,
+    admission_ms: u32,
 }
 
 impl Default for Retry {
     fn default() -> Self {
         Self {
-            initial_ms: Limit(1000),
-            cap_ms: Limit(30_000),
-            jitter_percent: Limit(20),
-            admission_ms: Limit(1000),
+            initial_ms: 1000,
+            cap_ms: 30_000,
+            jitter_percent: 20,
+            admission_ms: 1000,
         }
     }
 }
@@ -305,23 +283,23 @@ impl Default for Retry {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 struct Ui {
-    fps: Fps,
-    client_quantum_ms: Quantum,
-    background_quantum_ms: Quantum,
-    toast_records: Positive32,
-    toast_bytes: Positive64,
-    search_bytes: Positive64,
+    fps: u32,
+    client_quantum_ms: u32,
+    background_quantum_ms: u32,
+    toast_records: u32,
+    toast_bytes: u64,
+    search_bytes: u64,
 }
 
 impl Default for Ui {
     fn default() -> Self {
         Self {
-            fps: Limit(30),
-            client_quantum_ms: Limit(2),
-            background_quantum_ms: Limit(8),
-            toast_records: Limit(128),
-            toast_bytes: Limit(524_288),
-            search_bytes: Limit(4096),
+            fps: 30,
+            client_quantum_ms: 2,
+            background_quantum_ms: 8,
+            toast_records: 128,
+            toast_bytes: 524_288,
+            search_bytes: 4096,
         }
     }
 }
@@ -367,21 +345,27 @@ impl TryFrom<Groups> for Limits {
     }
 }
 
-/// A setting's full name and its value, for a rule between settings.
+/// A setting's full name and its value, for its errors.
 #[derive(Clone, Copy)]
 struct Named {
     name: &'static str,
     value: u64,
 }
 
-fn named<T: Into<u64>, const MIN: u64, const MAX: u64>(
-    name: &'static str,
-    limit: Limit<T, MIN, MAX>,
-) -> Named {
-    Named {
-        name,
-        value: limit.0.into(),
-    }
+/// The setting at `group.field` of the groups in scope, named by that path, so
+/// that no message can name a setting other than the one it reads.
+macro_rules! named {
+    ($group:ident . $field:ident) => {
+        Named {
+            name: concat!(
+                "monitor.limits.",
+                stringify!($group),
+                ".",
+                stringify!($field)
+            ),
+            value: u64::from($group.$field),
+        }
+    };
 }
 
 fn at_most(lesser: Named, greater: Named) -> Option<String> {
@@ -403,72 +387,135 @@ fn below(lesser: Named, greater: Named) -> Option<String> {
 }
 
 impl Groups {
-    /// The first rule these limits break, in this order: sub-budgets and
-    /// reservations fit the totals that include them (each client's queues
-    /// fit both the aggregate queue budget and the client's own); progress
-    /// reserves leave room for ordinary work; the largest chunk fits one
-    /// request, the ordinary event capacity and one delivery, and the largest
-    /// metadata record fits the reserve, that capacity and one delivery; the
-    /// per-client quantum fits the aggregate one; the initial retry delay fits
-    /// its cap.
+    /// The first rule these limits break: a setting outside its range, or
+    /// else settings that disagree.
     fn violation(&self) -> Option<String> {
-        let memory = &self.memory;
-        let total = named("monitor.limits.memory.total_bytes", memory.total_bytes);
-        let client = named("monitor.limits.memory.client_bytes", memory.client_bytes);
-        let per_session = named(
-            "monitor.limits.memory.history_bytes_per_session",
-            memory.history_bytes_per_session,
-        );
-        let history = named(
-            "monitor.limits.memory.history_bytes_total",
-            memory.history_bytes_total,
-        );
-        let queued = named(
-            "monitor.limits.memory.queue_bytes_total",
-            memory.queue_bytes_total,
-        );
-        let queues = &self.queues;
-        let request = named("monitor.limits.queues.request_bytes", queues.request_bytes);
-        let events = named("monitor.limits.queues.event_bytes", queues.event_bytes);
-        let reserve = named(
-            "monitor.limits.queues.progress_bytes",
-            queues.progress_bytes,
-        );
+        self.out_of_range().or_else(|| self.disagreement())
+    }
+
+    /// The first setting outside its range, in the order of the groups.
+    fn out_of_range(&self) -> Option<String> {
+        let Self {
+            memory,
+            history,
+            resources,
+            queues,
+            transfer,
+            payload,
+            scheduling,
+            discovery,
+            deadlines,
+            retry,
+            ui,
+        } = self;
+        [
+            (named!(memory.total_bytes), POSITIVE_64),
+            (named!(memory.client_bytes), POSITIVE_64),
+            (named!(memory.history_bytes_per_session), POSITIVE_64),
+            (named!(memory.history_bytes_total), POSITIVE_64),
+            (named!(memory.queue_bytes_total), POSITIVE_64),
+            (named!(history.max_rows), HISTORY_ROWS),
+            (named!(resources.stack_bytes), POSITIVE_64),
+            (named!(resources.max_workers_per_client), WORKERS),
+            (named!(resources.descriptors_per_client), POSITIVE_32),
+            (named!(resources.descriptors_per_load), POSITIVE_32),
+            (named!(resources.descriptor_headroom), POSITIVE_32),
+            (named!(resources.release_bytes), POSITIVE_64),
+            (named!(queues.request_bytes), POSITIVE_64),
+            (named!(queues.request_records), POSITIVE_32),
+            (named!(queues.event_bytes), POSITIVE_64),
+            (named!(queues.event_records), POSITIVE_32),
+            (named!(queues.progress_bytes), POSITIVE_64),
+            (named!(queues.progress_records), POSITIVE_32),
+            (named!(queues.deliveries), POSITIVE_32),
+            (named!(queues.operations), POSITIVE_32),
+            (named!(transfer.chunk_bytes), POSITIVE_32),
+            (named!(transfer.drain_records), POSITIVE_32),
+            (named!(transfer.drain_payload_bytes), POSITIVE_64),
+            (named!(payload.wire_frame_bytes), POSITIVE_32),
+            (named!(payload.metadata_record_bytes), POSITIVE_32),
+            (named!(payload.title_bytes), POSITIVE_32),
+            (named!(payload.notification_title_bytes), POSITIVE_32),
+            (named!(payload.notification_body_bytes), POSITIVE_32),
+            (named!(payload.assembly_records), POSITIVE_32),
+            (named!(payload.assembly_bytes), POSITIVE_64),
+            (named!(scheduling.probes), POSITIVE_32),
+            (named!(scheduling.loads), POSITIVE_32),
+            (named!(scheduling.starts), POSITIVE_32),
+            (named!(scheduling.newer_start_burst), POSITIVE_32),
+            (named!(discovery.pass_ms), MILLIS),
+            (named!(discovery.stall_ms), MILLIS),
+            (named!(discovery.batch_records), POSITIVE_32),
+            (named!(discovery.batch_bytes), POSITIVE_64),
+            (named!(discovery.metadata_file_bytes), POSITIVE_64),
+            (named!(discovery.metadata_depth), POSITIVE_32),
+            (named!(deadlines.load_ms), MILLIS),
+            (named!(deadlines.start_ms), MILLIS),
+            (named!(deadlines.operation_ms), MILLIS),
+            (named!(deadlines.kill_ms), MILLIS),
+            (named!(deadlines.restoration_stall_ms), MILLIS),
+            (named!(deadlines.restoration_total_ms), MILLIS),
+            (named!(deadlines.delivery_stall_ms), MILLIS),
+            (named!(deadlines.leave_ms), MILLIS),
+            (named!(deadlines.cleanup_ms), MILLIS),
+            (named!(deadlines.shutdown_ms), MILLIS),
+            (named!(deadlines.final_host_ms), MILLIS),
+            (named!(deadlines.assembly_ms), MILLIS),
+            (named!(retry.initial_ms), MILLIS),
+            (named!(retry.cap_ms), MILLIS),
+            (named!(retry.jitter_percent), PERCENT),
+            (named!(retry.admission_ms), MILLIS),
+            (named!(ui.fps), FPS),
+            (named!(ui.client_quantum_ms), QUANTUM),
+            (named!(ui.background_quantum_ms), QUANTUM),
+            (named!(ui.toast_records), POSITIVE_32),
+            (named!(ui.toast_bytes), POSITIVE_64),
+            (named!(ui.search_bytes), POSITIVE_64),
+        ]
+        .into_iter()
+        .find_map(|(setting, range)| range.refusal(setting.name, setting.value))
+    }
+
+    /// The first rule between settings these limits break, in this order:
+    /// sub-budgets and reservations fit the totals that include them (each
+    /// client's queues fit both the aggregate queue budget and the client's
+    /// own); progress reserves leave room for ordinary work; the largest chunk
+    /// fits one request, the ordinary event capacity and one delivery, and the
+    /// largest metadata record fits the reserve, that capacity and one
+    /// delivery; the per-client quantum fits the aggregate one; the initial
+    /// retry delay fits its cap.
+    fn disagreement(&self) -> Option<String> {
+        let Self {
+            memory,
+            resources,
+            queues,
+            transfer,
+            payload,
+            retry,
+            ui,
+            ..
+        } = self;
+        let total = named!(memory.total_bytes);
+        let client = named!(memory.client_bytes);
+        let per_session = named!(memory.history_bytes_per_session);
+        let history = named!(memory.history_bytes_total);
+        let queued = named!(memory.queue_bytes_total);
+        let request = named!(queues.request_bytes);
+        let events = named!(queues.event_bytes);
+        let reserve = named!(queues.progress_bytes);
         let ordinary = Named {
             name: "monitor.limits.queues.event_bytes - monitor.limits.queues.progress_bytes",
             value: events.value.saturating_sub(reserve.value),
         };
-        let chunk = named(
-            "monitor.limits.transfer.chunk_bytes",
-            self.transfer.chunk_bytes,
-        );
-        let delivery = named(
-            "monitor.limits.transfer.drain_payload_bytes",
-            self.transfer.drain_payload_bytes,
-        );
-        let record = named(
-            "monitor.limits.payload.metadata_record_bytes",
-            self.payload.metadata_record_bytes,
-        );
-        let resources = &self.resources;
+        let chunk = named!(transfer.chunk_bytes);
+        let delivery = named!(transfer.drain_payload_bytes);
+        let record = named!(payload.metadata_record_bytes);
         [
             at_most(client, total),
             at_most(history, total),
             at_most(queued, total),
-            at_most(
-                named(
-                    "monitor.limits.resources.stack_bytes",
-                    resources.stack_bytes,
-                ),
-                total,
-            ),
-            at_most(
-                named(
-                    "monitor.limits.resources.release_bytes",
-                    resources.release_bytes,
-                ),
-                total,
-            ),
+            at_most(named!(resources.stack_bytes), total),
+            at_most(named!(resources.release_bytes), total),
             at_most(per_session, history),
             at_most(per_session, client),
             at_most(request, queued),
@@ -477,11 +524,8 @@ impl Groups {
             at_most(events, client),
             below(reserve, events),
             below(
-                named(
-                    "monitor.limits.queues.progress_records",
-                    queues.progress_records,
-                ),
-                named("monitor.limits.queues.event_records", queues.event_records),
+                named!(queues.progress_records),
+                named!(queues.event_records),
             ),
             at_most(chunk, request),
             at_most(chunk, ordinary),
@@ -490,19 +534,10 @@ impl Groups {
             at_most(record, ordinary),
             at_most(record, delivery),
             at_most(
-                named(
-                    "monitor.limits.ui.client_quantum_ms",
-                    self.ui.client_quantum_ms,
-                ),
-                named(
-                    "monitor.limits.ui.background_quantum_ms",
-                    self.ui.background_quantum_ms,
-                ),
+                named!(ui.client_quantum_ms),
+                named!(ui.background_quantum_ms),
             ),
-            at_most(
-                named("monitor.limits.retry.initial_ms", self.retry.initial_ms),
-                named("monitor.limits.retry.cap_ms", self.retry.cap_ms),
-            ),
+            at_most(named!(retry.initial_ms), named!(retry.cap_ms)),
         ]
         .into_iter()
         .flatten()

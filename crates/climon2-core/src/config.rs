@@ -38,7 +38,29 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-const MAX_ROWS_LIMIT: u32 = 100_000;
+/// The integers a setting accepts, `min` through `max`. `scrollback.max_rows`
+/// and every `monitor.limits` setting check their ranges here, so a refusal
+/// always has one shape and names its setting.
+#[derive(Clone, Copy)]
+struct Range {
+    min: u64,
+    max: u64,
+}
+
+impl Range {
+    /// Why `setting` may not hold `value`, if it may not.
+    fn refusal(self, setting: &str, value: u64) -> Option<String> {
+        let Self { min, max } = self;
+        (!(min..=max).contains(&value))
+            .then(|| format!("{setting} must be an integer from {min} to {max}"))
+    }
+}
+
+const MAX_ROWS: &str = "scrollback.max_rows";
+const MAX_ROWS_RANGE: Range = Range {
+    min: 0,
+    max: 100_000,
+};
 
 /// Retained history rows, 0..=100000; zero disables retained history only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,11 +68,15 @@ pub struct MaxRows(u32);
 
 impl MaxRows {
     pub fn new(rows: u32) -> Option<Self> {
-        (rows <= MAX_ROWS_LIMIT).then_some(Self(rows))
+        Self::refusal(rows).is_none().then_some(Self(rows))
     }
 
     pub fn get(self) -> u32 {
         self.0
+    }
+
+    fn refusal(rows: u32) -> Option<String> {
+        MAX_ROWS_RANGE.refusal(MAX_ROWS, rows.into())
     }
 }
 
@@ -63,9 +89,7 @@ impl Default for MaxRows {
 impl<'de> Deserialize<'de> for MaxRows {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let rows = u32::deserialize(deserializer)?;
-        Self::new(rows).ok_or_else(|| {
-            D::Error::custom("scrollback.max_rows must be an integer from 0 to 100000")
-        })
+        Self::refusal(rows).map_or(Ok(Self(rows)), |error| Err(D::Error::custom(error)))
     }
 }
 

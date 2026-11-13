@@ -227,7 +227,7 @@ fn installed_monitor_refuses_every_invalid_configuration_before_the_terminal_cha
         ),
         (
             r#"{"monitor": {"limits": {"ui": {"fps": 121}}}}"#,
-            "config.jsonc is invalid: invalid value: integer `121`, expected an integer from 1 to 120",
+            "config.jsonc is invalid: monitor.limits.ui.fps must be an integer from 1 to 120",
         ),
         (
             r#"{"monitor": {"limits": {"retry": {"initial_ms": 30001}}}}"#,

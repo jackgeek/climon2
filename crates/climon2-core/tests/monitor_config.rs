@@ -380,20 +380,21 @@ fn cfg01_every_setting_accepts_the_upper_limit_of_its_range() {
 }
 
 /// CFG-01 (Contract): one past either end of every range is an explicit
-/// error, including overflow of the native type.
+/// error, including overflow of the native type. A value outside the range is
+/// refused in the one shape every range uses, which names the setting.
 #[test]
 fn cfg01_one_past_every_range_is_rejected() {
     for (path, kind) in FIELDS {
-        let range = format!("expected an integer from {} to {}", kind.min, kind.max);
+        let range = format!(
+            "monitor.limits.{path} must be an integer from {} to {}",
+            kind.min, kind.max
+        );
         let below = match kind.min {
             0 => (
                 String::from("-1"),
-                format!("integer `-1`, expected {}", kind.native),
+                format!("invalid value: integer `-1`, expected {}", kind.native),
             ),
-            min => (
-                (min - 1).to_string(),
-                format!("integer `{}`, {range}", min - 1),
-            ),
+            min => ((min - 1).to_string(), range.clone()),
         };
         let above = match kind.native {
             "u64" if kind.max == u64::MAX => (
@@ -402,15 +403,13 @@ fn cfg01_one_past_every_range_is_rejected() {
             ),
             "u32" if kind.max == u64::from(u32::MAX) => (
                 String::from("4294967296"),
-                String::from("integer `4294967296`, expected u32"),
+                String::from("invalid value: integer `4294967296`, expected u32"),
             ),
-            _ => (
-                (kind.max + 1).to_string(),
-                format!("integer `{}`, {range}", kind.max + 1),
-            ),
+            _ => ((kind.max + 1).to_string(), range),
         };
         for (value, expected) in [below, above] {
-            rejects(&literal(path, &value), &expected);
+            let detail = invalid(&literal(path, &value));
+            assert!(detail.starts_with(&expected), "{path} = {value}: {detail}");
         }
     }
 }
@@ -795,7 +794,7 @@ fn cfg01_exec_validates_the_monitor_section_and_attach_ignores_it() {
         (r#"{"monitor":[]}"#, "expected a JSON object"),
         (
             r#"{"monitor":{"limits":{"history":{"max_rows":199}}}}"#,
-            "expected an integer from 200 to 100000",
+            "monitor.limits.history.max_rows must be an integer from 200 to 100000",
         ),
         (
             r#"{"monitor":{"limits":{"retry":{"initial_ms":30001}}}}"#,

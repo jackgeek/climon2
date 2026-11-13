@@ -158,14 +158,15 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   - `config::Limits` holds the eleven `monitor.limits` groups of
     docs/monitor-operational-limits.md, with its defaults. Each setting is
     read as its native `u32` or `u64` (overflow, null and other types are
-    errors) and range-checked as it is read. `Limits` exists only once the
-    cross-field rules hold (sub-budgets and reservations within their totals,
-    client queues within the queue and client budgets, progress reserves,
-    chunk and record capacity, quanta, retry delays); a broken rule names both
-    settings and their values. Its fields are private: it is only reported so
-    far, and gains accessors with the code that enforces it. The mandatory
-    current model and recent page, and operating-system limits, are not
-    checked.
+    errors). `Limits` exists only once every setting is within its range and
+    the cross-field rules hold (sub-budgets and reservations within their
+    totals, client queues within the queue and client budgets, progress
+    reserves, chunk and record capacity, quanta, retry delays). A range
+    refusal has `MaxRows`'s shape, `<setting> must be an integer from <min> to
+    <max>`, from the same range type; a broken rule names both settings and
+    their values. Its fields are private: it is only reported so far, and
+    gains accessors with the code that enforces it. The mandatory current
+    model and recent page, and operating-system limits, are not checked.
 - `keys`: `ControlKey` is one C0 control byte named in the `Ctrl+` vocabulary.
   `ClientSettings` holds the escape prefix (default `Ctrl+]`) and take-control
   key (default `Ctrl+T`); either may be disabled, take-control may not be
