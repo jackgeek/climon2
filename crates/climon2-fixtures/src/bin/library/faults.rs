@@ -131,6 +131,7 @@ fn snapshot_with_workers(api: Api, handles: Handles, count: u64) -> Value {
         if metrics["workers"] == count || Instant::now() >= deadline {
             return json!([call, metrics]);
         }
+        std::thread::yield_now();
     }
 }
 
