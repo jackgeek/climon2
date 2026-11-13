@@ -2,6 +2,7 @@
 //! Contract case, otherwise synthetic metadata and raw-socket hello peers.
 use climon2_core::{
     SessionId,
+    exit::ExitStatus,
     hello::{Lifecycle, SessionState},
     layout::HomeLayout,
     metadata::{LinuxProcessIdentity, SessionMetadata},
@@ -27,7 +28,7 @@ use std::{
         net::{UnixDatagram, UnixStream},
     },
     path::{Path, PathBuf},
-    process::Command,
+    process::{Child, Command},
     thread,
     time::{Duration, Instant},
 };
@@ -231,7 +232,7 @@ fn kill(daemons: [Daemon; 2]) {
             receive(&mut killer),
             ServerMessage::Terminated { .. }
         ));
-        process::wait(daemon.pid).unwrap();
+        assert!(daemon_exit(daemon.pid).is_some());
         daemon.pid = 0;
     }
 }
@@ -240,9 +241,46 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         if self.pid != 0 {
             unsafe { libc::kill(self.pid as i32, libc::SIGTERM) };
-            let _ = process::wait(self.pid);
+            daemon_exit(self.pid);
         }
     }
+}
+
+/// Generous for any orderly exit under load, a session's five-second hang-up grace included.
+const EXIT_BOUND: Duration = Duration::from_secs(30);
+
+/// Polls `exit` for a child's status until `EXIT_BOUND` passes. `None` means the child is
+/// still running, and its caller kills and reaps it, so a wedged child fails its test rather
+/// than hanging it.
+fn exit_within<T>(mut exit: impl FnMut() -> Option<T>) -> Option<T> {
+    let deadline = Instant::now() + EXIT_BOUND;
+    while Instant::now() < deadline {
+        if let Some(status) = exit() {
+            return Some(status);
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    None
+}
+
+/// Reaps a daemon this process started, killing it first if it outlives `EXIT_BOUND`.
+fn daemon_exit(pid: u32) -> Option<ExitStatus> {
+    let status = exit_within(|| process::try_wait(pid).unwrap());
+    if status.is_none() {
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        process::wait(pid).unwrap();
+    }
+    status
+}
+
+/// Reaps a spawned child, killing it first if it outlives `EXIT_BOUND`.
+fn child_exit(mut child: Child) -> Option<std::process::ExitStatus> {
+    let status = exit_within(|| child.try_wait().unwrap());
+    if status.is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+    status
 }
 
 /// DSC-06 Contract case: a session controlled elsewhere and a nested session, each in its
@@ -478,18 +516,25 @@ fn every_outcome_is_structured_and_no_pass_prints() {
     if std::env::var_os(CHILD).is_some() {
         return every_outcome_in_three_passes();
     }
-    let output = Command::new(std::env::current_exe().unwrap())
+    let directory = tempfile::tempdir().unwrap();
+    let [stdout, stderr] = ["stdout", "stderr"].map(|name| directory.path().join(name));
+    let child = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
             "every_outcome_is_structured_and_no_pass_prints",
             "--nocapture",
         ])
         .env(CHILD, "1")
-        .output()
+        .stdout(fs::File::create(&stdout).unwrap())
+        .stderr(fs::File::create(&stderr).unwrap())
+        .spawn()
         .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{stdout}\n{stderr}");
+    let status = child_exit(child);
+    let [stdout, stderr] = [stdout, stderr].map(|path| fs::read_to_string(path).unwrap());
+    assert!(
+        status.is_some_and(|status| status.success()),
+        "{stdout}\n{stderr}"
+    );
     assert!(stdout.contains("<passes>\n</passes>\n"), "{stdout}");
     assert!(stderr.contains("<passes>\n</passes>\n"), "{stderr}");
 }
