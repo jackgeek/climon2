@@ -18,11 +18,11 @@ use climon2_core::{
         advertise_revision1,
     },
     protocol::{self, HelloReply},
-    wire::{Advertisement, Family, FrameLimit, FrameLimits},
+    wire::{Advertisement, Family, FrameLimits},
 };
 use serde_json::{Map, Value, json};
-use std::{collections::BTreeSet, fs, num::NonZeroU32, path::Path};
-use support::{counter, families, geometry, page_dumps, page_examples};
+use std::{collections::BTreeSet, num::NonZeroU32};
+use support::{counter, families, geometry, limit, page_dumps, page_examples, pages};
 
 mod support;
 
@@ -320,22 +320,18 @@ fn published_control_and_restoration_examples_round_trip_byte_identically() {
     assert_eq!(expected.to_frame(), frame);
 }
 
-fn limit() -> FrameLimit {
-    FrameLimit::new(1_048_576).unwrap()
-}
-
 /// The single hex dump on one daemon wire page, read as one whole frame.
 fn dumped(page: &str) -> (Frame, Vec<u8>) {
     let [bytes]: [Vec<u8>; 1] = page_dumps(page).try_into().unwrap();
     let mut reader = bytes.as_slice();
-    let frame = read_frame(&mut reader, limit()).unwrap().unwrap();
+    let frame = read_frame(&mut reader, limit(1_048_576)).unwrap().unwrap();
     assert!(reader.is_empty(), "{page} shows exactly one frame");
     (frame, bytes)
 }
 
 fn written(frame: &Frame) -> Vec<u8> {
     let mut bytes = Vec::new();
-    write_frame(&mut bytes, frame, limit()).unwrap();
+    write_frame(&mut bytes, frame, limit(1_048_576)).unwrap();
     bytes
 }
 
@@ -416,7 +412,6 @@ fn published_hello_advertisement_examples_round_trip_byte_identically() {
     assert_eq!(advertise(&reply, state).unwrap().body(), current.as_bytes());
 
     let (reply, extensions) = hello(&revision1);
-    let limit = FrameLimit::new(1_048_576).unwrap();
     let advertisement = Advertisement::new(
         [
             Family::MonitorV1,
@@ -427,8 +422,8 @@ fn published_hello_advertisement_examples_round_trip_byte_identically() {
             Family::FocusV1,
         ],
         FrameLimits {
-            max_request_frame_bytes: limit,
-            max_server_frame_bytes: limit,
+            max_request_frame_bytes: limit(1_048_576),
+            max_server_frame_bytes: limit(1_048_576),
         },
     );
     assert_eq!(reply, expected);
@@ -496,10 +491,8 @@ const JSON_PAGES: [(&str, &[u8]); 22] = [
 /// have their own tests.
 #[test]
 fn every_revision1_page_example_is_exercised() {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/protocol/daemon-client");
     let mut dumps = BTreeSet::new();
-    for entry in fs::read_dir(directory).unwrap() {
-        let page = entry.unwrap().file_name().into_string().unwrap();
+    for page in pages() {
         if page.starts_with("hello-") {
             continue;
         }

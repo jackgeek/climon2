@@ -2,11 +2,10 @@
 //! failures are connection-fatal codes; an identifiable request with a
 //! well-formed but unsupported value is left to the daemon.
 use climon2_core::wire::{
-    ControlRecord, Counter, Families, FatalCode, Focus, Frame, Geometry, Mode, Open, Request,
-    Requested, SetViewing,
+    ControlRecord, Counter, Families, FatalCode, Focus, Frame, Mode, Open, Request, Requested,
+    SetViewing,
 };
-use std::num::NonZeroU32;
-use support::{counter, families};
+use support::{counter, families, geometry};
 
 mod support;
 
@@ -230,10 +229,6 @@ fn capability_arrays_are_unique_case_sensitive_and_disjoint() {
 /// a geometry of positive unsigned 32-bit columns and rows.
 #[test]
 fn open_geometry_is_null_for_monitor_and_positive_for_interactive() {
-    let geometry = |cols: u32, rows: u32| Geometry {
-        cols: NonZeroU32::new(cols).unwrap(),
-        rows: NonZeroU32::new(rows).unwrap(),
-    };
     for (body, size) in [
         (r#"{"cols":80,"rows":24}"#, geometry(80, 24)),
         (r#"{"cols":1,"rows":1}"#, geometry(1, 1)),
@@ -331,10 +326,7 @@ fn an_interactive_open_encodes_its_documented_members_in_order() {
         request_id: counter(u64::MAX),
         revision: 1,
         capabilities: Requested::new(families(&[]), families(&["title-v1"])).unwrap(),
-        mode: Mode::Interactive(Geometry {
-            cols: NonZeroU32::new(80).unwrap(),
-            rows: NonZeroU32::new(24).unwrap(),
-        }),
+        mode: Mode::Interactive(geometry(80, 24)),
     };
     assert_eq!(
         open.to_frame(),

@@ -1,8 +1,13 @@
 //! Helpers shared by core's integration tests; each test uses a subset.
 #![allow(dead_code)]
 
-use climon2_core::wire::{Counter, Families, Geometry};
-use std::{fs, num::NonZeroU32, path::Path};
+use climon2_core::wire::{Counter, Families, FrameLimit, Geometry};
+use std::{
+    fs,
+    io::{self, Read, Write},
+    num::NonZeroU32,
+    path::{Path, PathBuf},
+};
 
 /// Every fenced block of `language` in a Markdown document, in document
 /// order.
@@ -21,11 +26,21 @@ pub fn json_examples(document: &str) -> Vec<String> {
     fenced(document, "json")
 }
 
+/// The directory of the daemon wire pages.
+fn directory() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/protocol/daemon-client")
+}
+
+/// The file name of every daemon wire page.
+pub fn pages() -> Vec<String> {
+    fs::read_dir(directory())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect()
+}
+
 fn read_page(page: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/protocol/daemon-client")
-        .join(page);
-    fs::read_to_string(&path).unwrap()
+    fs::read_to_string(directory().join(page)).unwrap()
 }
 
 /// Every JSON example on one daemon wire page, read from the page itself.
@@ -61,5 +76,29 @@ pub fn geometry(cols: u32, rows: u32) -> Geometry {
     Geometry {
         cols: NonZeroU32::new(cols).unwrap(),
         rows: NonZeroU32::new(rows).unwrap(),
+    }
+}
+
+pub fn limit(bytes: u32) -> FrameLimit {
+    FrameLimit::new(bytes).unwrap()
+}
+
+/// Moves at most one byte per read or write, as a slow transport may.
+pub struct Fragmented<T>(pub T);
+
+impl<T: Read> Read for Fragmented<T> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let length = buffer.len().min(1);
+        self.0.read(&mut buffer[..length])
+    }
+}
+
+impl<T: Write> Write for Fragmented<T> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.0.write(&buffer[..buffer.len().min(1)])
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
     }
 }
