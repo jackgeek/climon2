@@ -730,6 +730,7 @@ fn zero_initial_terminal_size_falls_back_to_80_by_24() {
     let mut command = layout.command();
     command.arg("exec");
     command.arg(layout.fixture());
+    // Prints the size and exits: nothing is typed while the client may still be restoring.
     command.arg("size");
     let mut reader = pair.master.try_clone_reader().unwrap();
     let fd = pair.master.as_raw_fd().unwrap();
@@ -738,24 +739,15 @@ fn zero_initial_terminal_size_falls_back_to_80_by_24() {
         unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) },
         0
     );
-    let mut writer = pair.master.take_writer().unwrap();
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
     let mut output = Vec::new();
     let mut bytes = [0; 4096];
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    let mut sent = false;
     loop {
         match reader.read(&mut bytes) {
             Ok(0) => break,
-            Ok(count) => {
-                output.extend_from_slice(&bytes[..count]);
-                if !sent && String::from_utf8_lossy(&output).contains("SIZE:80x24") {
-                    use std::io::Write;
-                    writer.write_all(b"\n").unwrap();
-                    sent = true;
-                }
-            }
+            Ok(count) => output.extend_from_slice(&bytes[..count]),
             Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(std::time::Instant::now() < deadline);
