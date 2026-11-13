@@ -34,11 +34,11 @@ const OVERSIZED: Fault = Fault::library(
 /// Runs the connection until its stream ends, and returns the Leave
 /// evidence and the public requests left unanswered.
 pub(super) fn run(shared: &Shared) -> (Departure, u32) {
-    let mut session = Session::new(shared);
-    while !session.ended {
-        session.turn();
+    let mut driver = Driver::new(shared);
+    while !driver.ended {
+        driver.turn();
     }
-    session.close()
+    driver.close()
 }
 
 /// The open role's socket and its frame ceilings.
@@ -47,7 +47,9 @@ struct Connection {
     peer: Peer,
 }
 
-struct Session<'a> {
+/// The instance's connection as its owner thread drives it: the protocol
+/// state, the open role, deadlines and what waits for room.
+struct Driver<'a> {
     shared: &'a Shared,
     stream: Stream,
     connection: Option<Connection>,
@@ -63,7 +65,7 @@ struct Session<'a> {
     ended: bool,
 }
 
-impl<'a> Session<'a> {
+impl<'a> Driver<'a> {
     fn new(shared: &'a Shared) -> Self {
         Self {
             shared,
