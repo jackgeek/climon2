@@ -3,8 +3,11 @@
 //! type; once every group is read, each setting is checked against its range,
 //! and then the groups against each other. Every refusal names the settings it
 //! concerns. `Limits` exists only after both checks, and nothing outside this
-//! module can change it; its values are only reported so far.
-use super::{Range, object};
+//! module can change it. The monitor reads its history rows, and checks that it
+//! holds one session's [`MandatoryAllocation`]; its values are otherwise only
+//! reported so far.
+use super::{ConfigError, Range, object};
+use crate::protocol::TerminalSize;
 use serde::{Deserialize, Serialize};
 
 /// A positive budget or ceiling, held in a `u64`.
@@ -347,10 +350,11 @@ impl TryFrom<Groups> for Limits {
     }
 }
 
-/// A setting's full name and its value, for its errors.
+/// A setting's full name, or what else a rule compares, and its value, for
+/// its errors.
 #[derive(Clone, Copy)]
-struct Named {
-    name: &'static str,
+struct Named<'a> {
+    name: &'a str,
     value: u64,
 }
 
@@ -552,5 +556,55 @@ impl Groups {
         .into_iter()
         .flatten()
         .next()
+    }
+}
+
+/// One session's mandatory allocation, as the monitor's terminal model of it
+/// is charged before any output: the current model, and the history holding
+/// its recent page. The monitor cannot admit a session its limits cannot
+/// hold this for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MandatoryAllocation {
+    /// The session geometry the bytes are charged at.
+    pub size: TerminalSize,
+    /// Bytes of the current model alone.
+    pub current_model: u64,
+    /// Bytes of the history that holds the recent page.
+    pub recent_page: u64,
+}
+
+impl Limits {
+    /// The most rows of local history a session's terminal model keeps.
+    pub fn history_rows(&self) -> u32 {
+        self.0.history.max_rows
+    }
+
+    /// Refuses limits that cannot hold one session's `mandatory` allocation:
+    /// the total, then the client budget, must each hold its current model and
+    /// recent page together, and the per-session history budget the page, so
+    /// the history total containing it does too. The total comes first
+    /// because it contains the client budget.
+    pub fn hold(&self, mandatory: MandatoryAllocation) -> Result<(), ConfigError> {
+        let memory = &self.0.memory;
+        let TerminalSize { cols, rows } = mandatory.size;
+        let page = format!("the recent page of a {cols}x{rows} session");
+        let both = format!("the current model and recent page of a {cols}x{rows} session");
+        let page = Named {
+            name: &page,
+            value: mandatory.recent_page,
+        };
+        let both = Named {
+            name: &both,
+            value: mandatory.current_model + mandatory.recent_page,
+        };
+        [
+            at_most(both, named!(memory.total_bytes)),
+            at_most(both, named!(memory.client_bytes)),
+            at_most(page, named!(memory.history_bytes_per_session)),
+        ]
+        .into_iter()
+        .flatten()
+        .next()
+        .map_or(Ok(()), |detail| Err(ConfigError::Invalid(detail)))
     }
 }
