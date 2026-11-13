@@ -15,7 +15,12 @@ use climon2_core::{
     },
 };
 use climon2_platform::process;
-use std::{fs, os::unix::net::UnixStream, thread, time::Instant};
+use std::{
+    fs,
+    os::unix::net::UnixStream,
+    thread,
+    time::{Duration, Instant},
+};
 
 /// A standalone Kill's success: termination confirmed with `result` after
 /// complete daemon cleanup.
@@ -372,5 +377,56 @@ fn a_kill_succeeds_after_a_session_failure_once_termination_is_confirmed() {
     let (_, result) = crate::until_terminal(&mut controlling);
     assert!(matches!(result, PrivateMessage::Error { .. }), "{result:?}");
     assert_final_then_closed(&mut watching, &killed);
+    session.finish();
+}
+
+/// COM-06 (Fault: the end of the command's output while it still runs):
+/// the end of the command's terminal output is not final evidence. The
+/// command closes its terminal and keeps running; once the daemon has read
+/// the end of its output, a monitor that opens reports no command result
+/// in its Initial metadata, and the monitor opened before has received
+/// nothing. Only the command's exit, 3, reaches both, as one Command final,
+/// and the private controller gets `Exit` 3.
+#[test]
+fn the_end_of_the_commands_output_while_it_runs_is_no_final_result() {
+    let mut session = Session::start("close-terminal");
+    let mut controlling = session.attach();
+    session.wait_marker(&mut controlling);
+    let (mut early, _) = monitor(&session, &[]);
+    let closed = session.directory.path().join("terminal-closed");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !closed.exists() {
+        assert!(Instant::now() < deadline, "the command kept its terminal");
+        thread::sleep(Duration::from_millis(5));
+    }
+    // The daemon reads the command's terminal right after it answers this
+    // hello, so the Open below is served after it read the end of output.
+    let mut late = peer(&session);
+    request(&mut late, &open(1, &[], &[], Mode::Monitor));
+    assert!(matches!(
+        message(&mut late),
+        ServerMessage::Response(Response {
+            outcome: Outcome::Ok(Success::Opened { .. }),
+            ..
+        })
+    ));
+    let metadata = frame(&mut late);
+    assert_eq!(metadata.code(), 0x41);
+    assert_eq!(
+        std::str::from_utf8(metadata.body()).unwrap(),
+        concat!(
+            r#"{"title":{"available":false,"value":null},"#,
+            r#""status":{"available":false,"value":null},"#,
+            r#""progress":{"available":false,"value":null},"command_result":null}"#
+        )
+    );
+    fs::write(session.directory.path().join("finish"), b"").unwrap();
+    let result = exited(3);
+    assert_final_then_closed(&mut early, &result);
+    assert_final_then_closed(&mut late, &result);
+    assert_eq!(
+        crate::until_terminal(&mut controlling).1,
+        PrivateMessage::Exit { code: 3 }
+    );
     session.finish();
 }
