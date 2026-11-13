@@ -797,14 +797,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.close_with_error(id, "session is terminating");
     }
 
-    /// A passive monitor connection became an attachment: its output is
-    /// canonical, at the session geometry.
-    fn convert(&mut self, id: u64) {
-        let delivery = Delivery::canonical(self.control.session_size());
-        self.deliveries.insert(id, delivery);
-        self.converted(id);
-    }
-
     fn close_with_error(&mut self, id: u64, message: &str) {
         self.terminal(
             id,

@@ -2,7 +2,7 @@
 //! passive monitor connections, ordinary interactive attachments and
 //! standalone Kills, their requests, their control and terminal records and
 //! their core metadata.
-use super::Session;
+use super::{Session, delivery::Delivery};
 use crate::{
     connection::{Connection, frame_limit},
     control::{self, Authority, Authorized, ConnectionId, Needs, Period, Restoration},
@@ -245,15 +245,20 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// A passive monitor connection became an attachment, by its Acquire
-    /// or a promotion; no Open awaits an answer.
-    pub(super) fn converted(&mut self, id: u64) {
-        if let Some(opened) = self.opened.get_mut(&id) {
-            let attachment = Attachment {
-                open: None,
-                held: None,
-            };
-            opened.role = Role::Attachment(attachment);
-        }
+    /// or a promotion: no Open awaits an answer, and its output is
+    /// canonical, at the session geometry. A connection already gone, whose
+    /// loss the control state has yet to hear of, gets nothing.
+    pub(super) fn convert(&mut self, id: u64) {
+        let Some(opened) = self.opened.get_mut(&id) else {
+            return;
+        };
+        let attachment = Attachment {
+            open: None,
+            held: None,
+        };
+        opened.role = Role::Attachment(attachment);
+        let delivery = Delivery::canonical(self.control.session_size());
+        self.deliveries.insert(id, delivery);
     }
 
     /// Success, then the atomic Initial metadata: the connection captures
