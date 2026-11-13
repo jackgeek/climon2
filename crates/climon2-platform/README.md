@@ -177,7 +177,7 @@ Its calls abort, so a test that survives a refusal proves nothing called them.
 | LIB-02 wrong release at the release text's bounds (255 bytes wrong, 256 bytes or none malformed) | `library_describing_another_release_is_refused` |
 | LIB-02 malformed description: revision, reserved, each missing requirement, incomplete table; no workers need no stack | `malformed_description_is_refused_before_any_instance` |
 | LIB-02 missing dependency and incompatible architecture, decided by the loader's own checks; nothing loaded | `library_the_dynamic_loader_cannot_load_is_classified_by_the_loaders_checks` |
-| Absolute lookup: a relative executable home is refused | `loader_refuses_a_relative_executable_home` |
+| LIB-01 absolute lookup: a relative executable home is refused | `loader_refuses_a_relative_executable_home` |
 
 `tests/terminal.rs`: `issue20_real_pty_raw_mode_restores_on_drop_and_panic_without_screen_sequences`,
 `issue20_real_pty_size_and_zero_fallback`,

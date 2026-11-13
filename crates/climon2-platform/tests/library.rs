@@ -434,8 +434,8 @@ fn library_the_dynamic_loader_cannot_load_is_classified_by_the_loaders_checks() 
     }
 }
 
-/// Absolute lookup (library embedding): the loader opens libraries by
-/// absolute path only, so a relative executable home, which the dynamic
+/// LIB-01 Fault (absolute exact-release lookup): the loader opens libraries
+/// by absolute path only, so a relative executable home, which the dynamic
 /// loader would resolve against the working directory, is refused at once.
 #[test]
 #[should_panic(expected = "must be absolute")]
