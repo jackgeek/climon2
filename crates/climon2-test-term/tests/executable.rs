@@ -1,6 +1,6 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
-use climon2_test_term::copy_executable;
+use climon2_test_term::{copy_executable, output_within};
 use nix::libc;
 use std::{
     ffi::CString,
@@ -41,6 +41,38 @@ fn a_fork_while_the_copy_is_written_leaves_the_copy_executable() {
     let status = Command::new(&copy).status().unwrap();
     assert_eq!(status.code(), Some(7));
     drop(holder);
+}
+
+/// #75 bounded waits: a command still running at its deadline is killed and
+/// reaped, and the waiting test fails instead of hanging.
+#[test]
+fn output_within_kills_and_reaps_a_command_that_outlives_its_deadline() {
+    let directory = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let pid_file = directory.path().join("pid");
+    let mut sleeper = Command::new("/bin/sh");
+    sleeper
+        .arg("-c")
+        .arg("echo $$ > \"$1\"; exec sleep 600")
+        .arg("sh")
+        .arg(&pid_file);
+    let started = Instant::now();
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        output_within(&mut sleeper, Duration::from_secs(2))
+    }))
+    .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(60));
+    let message = failure.downcast_ref::<String>().unwrap();
+    assert!(message.contains("did not exit within 2s"), "{message}");
+    let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "the sleeper survives");
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
 }
 
 /// A forked child that keeps every descriptor it inherited, except the source's writer,

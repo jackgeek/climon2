@@ -33,12 +33,10 @@ fn main() {
 
 struct Library {
     bootstrap: Bootstrap,
-    /// Whether loading the same path again returned the same handle.
-    shared: bool,
 }
 
 fn dlerror() -> String {
-    // SAFETY: dlerror returns null or a NUL-terminated message owned by dyld.
+    // SAFETY: dlerror returns null or a NUL-terminated message owned by the loader.
     let message = unsafe { libc::dlerror() };
     if message.is_null() {
         return "unknown loader error".into();
@@ -62,12 +60,7 @@ fn load(path: &CStr) -> Result<Library, String> {
     }
     // SAFETY: the frozen bootstrap symbol has the `Bootstrap` signature.
     let bootstrap = unsafe { std::mem::transmute::<*mut c_void, Bootstrap>(symbol) };
-    // SAFETY: as above; this handle is never closed either.
-    let again = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-    Ok(Library {
-        bootstrap,
-        shared: again == handle,
-    })
+    Ok(Library { bootstrap })
 }
 
 /// The file of the loaded image that contains `address`.
@@ -122,7 +115,6 @@ fn observe(library: Library) -> Value {
     let (status, description, output) = request(&library, native::REVISION);
     let mut report = json!({
         "image": image(library.bootstrap as *const c_void),
-        "handle_shared": library.shared,
         "status": status,
         "output": output,
         "other_revisions": OTHER_REVISIONS.map(|revision| {

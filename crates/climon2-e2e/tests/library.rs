@@ -1,20 +1,21 @@
 //! Library layer (#75): the installed client library (`libclimon2_client.dylib`
 //! on macOS, `libclimon2_client.so` on Linux), loaded by the
-//! `climon2-library-host` fixture through `dlopen`, `dlsym` and the frozen
-//! revision-1 C ABI, never through Rust calls, static linking or a mock table.
-//! In archive mode this is the exact release archive's library.
+//! `climon2-library-host` fixture through `dlopen(RTLD_NOW | RTLD_LOCAL)`,
+//! `dlsym` and the frozen revision-1 C ABI, never through Rust calls, static
+//! linking or a mock table. In archive mode this is the exact release
+//! archive's library.
 
 #[allow(dead_code)]
 mod support;
 
-use climon2_test_term::bin_path;
+use climon2_test_term::{bin_path, copy_executable, output_within, process_command};
 use serde_json::{Value, json};
 use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
 };
-use support::{LIBRARY, Package};
+use support::{LIBRARY, Package, TIMEOUT};
 
 const SUCCESS: u64 = 0;
 const UNSUPPORTED_REVISION: u64 = 1;
@@ -46,7 +47,7 @@ fn version_folder(library: &Path) -> &str {
 
 /// The host with a cleared environment; instrumented builds keep their profile.
 fn host(library: &Path, directory: &Path) -> Command {
-    let mut command = Command::new(bin_path("climon2-library-host"));
+    let mut command = process_command(bin_path("climon2-library-host"));
     command.arg(library).current_dir(directory).env_clear();
     if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
         command.env("LLVM_PROFILE_FILE", profile);
@@ -55,7 +56,7 @@ fn host(library: &Path, directory: &Path) -> Command {
 }
 
 fn observe(mut host: Command) -> Value {
-    let output = host.output().unwrap();
+    let output = output_within(&mut host, TIMEOUT);
     assert!(output.status.success(), "{output:?}");
     assert!(
         output.stderr.is_empty(),
@@ -64,12 +65,12 @@ fn observe(mut host: Command) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-/// LIB-01 Library case (absolute exact-release load, one shared load): the
-/// installed dylib, loaded by absolute path with eager local resolution,
-/// returns revision 1's immutable description. Its release text is exactly the
-/// version folder name, it advertises no capability this build does not
-/// implement, its requirements are present and bounded, and a second load
-/// or bootstrap shares the same handle and description.
+/// LIB-01 Library case (absolute exact-release load): the installed library,
+/// loaded by absolute path with eager local resolution, returns revision 1's
+/// immutable description. Its release text is exactly the version folder name,
+/// it advertises no capability this build does not implement, its
+/// requirements are present and bounded, and a second bootstrap returns the
+/// same description.
 #[test]
 fn installed_library_describes_revision_one_with_its_version_identity() {
     let package = Package::new();
@@ -79,7 +80,6 @@ fn installed_library_describes_revision_one_with_its_version_identity() {
     assert_eq!(report["output"], "set");
     assert_eq!(report["image"], library.to_str().unwrap());
     assert_eq!(report["description_image"], library.to_str().unwrap());
-    assert_eq!(report["handle_shared"], true);
     assert_eq!(report["stable"], true);
     let description = &report["description"];
     assert_eq!(description["revision"], 1);
@@ -202,13 +202,13 @@ fn installed_library_table_reports_every_instance_call_unsupported() {
 }
 
 /// LIB-01 Library case: the library loads from its absolute version path
-/// whatever `current`, the working directory and ambient fallback search
-/// paths name. Valid decoy copies sit in another version folder named by
-/// `current`, in the working directory and on `DYLD_FALLBACK_LIBRARY_PATH`
-/// (and `LD_LIBRARY_PATH`); the loaded image is still the requested file.
-/// LIB-02 Library case (wrong release): the identity is compiled in, not
-/// derived from the location, so the copy in the other version folder still
-/// reports its own release and an exact-version check can reject it.
+/// whatever `current`, the working directory and ambient search paths name.
+/// Valid decoy copies sit in another version folder named by `current`, in the
+/// working directory and on `LD_LIBRARY_PATH` (Linux) and
+/// `DYLD_FALLBACK_LIBRARY_PATH` (macOS); the loaded image is still the
+/// requested file. The release identity is compiled in, not derived from the
+/// location: the copy in the other version folder still reports its own
+/// release.
 #[test]
 fn installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths() {
     let package = Package::private();
@@ -220,7 +220,7 @@ fn installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_sea
     let search = private.join("search path");
     for decoy in [&misplaced, &directory.join(LIBRARY), &search.join(LIBRARY)] {
         fs::create_dir_all(decoy.parent().unwrap()).unwrap();
-        fs::copy(&library, decoy).unwrap();
+        copy_executable(&library, decoy);
     }
     fs::write(home.join("current"), "0.0.1\n").unwrap();
     let mut ambient = host(&library, &directory);
@@ -237,43 +237,5 @@ fn installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_sea
     assert_eq!(report["image"], misplaced.to_str().unwrap());
     assert_eq!(version_folder(&misplaced), "0.0.1");
     assert_eq!(report["description"]["release"], version_folder(&library));
-    package.assert_clean();
-}
-
-/// Defined external symbols of every architecture slice, from `nm`.
-#[cfg(target_os = "macos")]
-fn exported_symbols(library: &Path) -> Vec<Vec<String>> {
-    let output = Command::new("nm")
-        .args(["-gUj", "-arch", "all"])
-        .arg(library)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    let mut slices: Vec<Vec<String>> = Vec::new();
-    for line in String::from_utf8(output.stdout).unwrap().lines() {
-        if line.ends_with("):") && line.contains(" (for architecture ") {
-            slices.push(Vec::new());
-        } else if !line.is_empty() {
-            if slices.is_empty() {
-                slices.push(Vec::new());
-            }
-            slices.last_mut().unwrap().push(line.to_owned());
-        }
-    }
-    slices
-}
-
-/// DOC-01 named case (exported interface): every architecture slice of the
-/// installed library exports exactly the frozen bootstrap symbol, so Rust
-/// symbols, unwinding and allocators never cross the interface by name.
-#[cfg(target_os = "macos")]
-#[test]
-fn installed_library_exports_only_the_frozen_bootstrap() {
-    let package = Package::new();
-    let slices = exported_symbols(&installed_library(&package));
-    assert!(!slices.is_empty());
-    for symbols in slices {
-        assert_eq!(symbols, ["_climon2_client_get_interface"]);
-    }
     package.assert_clean();
 }

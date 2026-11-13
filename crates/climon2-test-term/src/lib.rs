@@ -12,6 +12,6 @@ pub mod ptrace;
 mod shell;
 mod terminal;
 
-pub use isolation::{Isolation, bin_path, copy_executable, process_command};
+pub use isolation::{Isolation, bin_path, copy_executable, output_within, process_command};
 pub use shell::controlled_bash;
 pub use terminal::{InputTerminal, Modes, Options, Terminal};

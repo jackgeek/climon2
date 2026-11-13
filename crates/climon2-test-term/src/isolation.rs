@@ -3,8 +3,12 @@ use portable_pty::CommandBuilder;
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
+    io::Read,
     path::{Path, PathBuf},
+    process::{Output, Stdio},
     sync::atomic::{AtomicU64, Ordering},
+    thread,
+    time::{Duration, Instant},
 };
 use tempfile::TempDir;
 
@@ -65,6 +69,45 @@ pub fn copy_executable(from: &Path, to: &Path) {
         from.display(),
         to.display()
     );
+}
+
+/// Runs `command` with null stdin and collects its output, waiting at most
+/// `timeout` for it to exit. A command still running at the deadline is killed
+/// and reaped, and the test fails.
+pub fn output_within(command: &mut std::process::Command, timeout: Duration) -> Output {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn {command:?}: {error}"));
+    let stdout = drain(child.stdout.take().expect("piped stdout"));
+    let stderr = drain(child.stderr.take().expect("piped stderr"));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll child") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{command:?} did not exit within {timeout:?}");
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    Output {
+        status,
+        stdout: stdout.join().expect("stdout reader"),
+        stderr: stderr.join().expect("stderr reader"),
+    }
+}
+
+fn drain(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes).expect("read child output");
+        bytes
+    })
 }
 
 pub struct Isolation {
