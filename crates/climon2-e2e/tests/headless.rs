@@ -33,12 +33,12 @@ fn size_then_hold() -> String {
     )
 }
 
-/// Waits for `go`, outlives the five-second initial attach window, announces
-/// it and runs until `finish` exists. A session ended by that window hangs up
-/// its terminal, which kills this script before it writes `survived`.
-fn outlive_the_window() -> String {
+/// Waits for `go`, announces that the session is still running and runs
+/// until `finish` exists. A session that ended before `go` hung up its
+/// terminal, which killed this script before it could write `survived`.
+fn alive_after_go() -> String {
     format!(
-        "{}\nsleep 6\necho HEADLESS-ALIVE\n: > \"$HOME/survived\"\n{}\nexit 3",
+        "{}\necho HEADLESS-ALIVE\n: > \"$HOME/survived\"\n{}\nexit 3",
         until_file("go"),
         until_file("finish")
     )
@@ -81,6 +81,25 @@ fn listed_state(package: &Package, id: &str) -> Value {
 
 fn detached() -> Value {
     json!({"lifecycle": "detached", "attachments": 0, "controlled": false})
+}
+
+/// Returns only after the five-second initial attach window of every session
+/// already listed has closed, by order rather than by sleeping. Kill confirms a
+/// reference session only once its command has ended, and a command that
+/// ignores hang-up ends only when the five-second hang-up grace runs out.
+fn outlast_the_initial_attach_window(package: &Package) {
+    let script = format!("trap '' HUP\n{}", until_file("never"));
+    let output = scripted(package, "c2", &headless_args(&script));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    kill_session(
+        package,
+        String::from_utf8(output.stdout).unwrap().trim_end(),
+    );
 }
 
 fn touch(package: &Package, name: &str) {
@@ -221,14 +240,15 @@ fn installed_headless_exec_that_cannot_print_the_guid_ends_the_session_and_fails
 /// go: a headless session survives with zero clients past the five-second
 /// initial attach window, after its only attached client is killed and after
 /// a client deliberately detaches, staying `detached` each time; then CLI kill
-/// ends it. The window is measured from the first listing, which the daemon
-/// only answers once serving.
+/// ends it. The daemon answers the first listing only once serving, so that
+/// window, had the session one, would close within five seconds of it.
 #[test]
 fn installed_headless_session_survives_zero_clients_a_killed_client_and_a_detach() {
     let package = Package::new();
-    let output = scripted(&package, "c2", &headless_args(&outlive_the_window()));
+    let output = scripted(&package, "c2", &headless_args(&alive_after_go()));
     let id = created(&package, &output);
     assert_eq!(listed_state(&package, &id), detached());
+    outlast_the_initial_attach_window(&package);
     touch(&package, "go");
     wait_file(&package.isolation.home().join("survived"));
     assert_eq!(listed_state(&package, &id), detached());
