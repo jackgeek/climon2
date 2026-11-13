@@ -108,8 +108,9 @@ tokens and `state`: `daemon-wire-v1`, `monitor-v1`, `title-v1` and
 1,048,576, the release constant from the
 [operational limits](../../monitor-operational-limits.md#payloads-and-parser-state).
 It advertises only the families it implements; `status-v1`,
-`notification-v1` and `progress-v1` follow with their implementations. The [post-hello boundary](post-hello.md#choosing-a-protocol)
-explains how the first frame after hello then chooses a protocol.
+`notification-v1` and `progress-v1` follow with their implementations. The
+[post-hello boundary](post-hello.md#choosing-a-protocol) explains how the
+first frame after hello then chooses a protocol.
 Existing optional-field behavior and required fields remain frozen;
 this is not permission to apply post-hello strict unknown-field rejection to
 hello. Optional family meanings are in the

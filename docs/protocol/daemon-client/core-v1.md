@@ -454,10 +454,10 @@ kill cleanup failures; bounded stalled consumers and independent control.
 The daemon's contract tests already cover the hello advertisement, framing,
 JSON, ID, direction and truncation failures, capability intersection,
 passive registration, Leave, atomic Initial metadata and title changes, and
-for interactive attachments the record order under partial I/O, stale
-authority and readiness, arbitrary bytes, paste closure, query authority,
-inert titles, Focus, and takeover, hand-back and leave-policy parity;
-the rest remains future.
+for interactive attachments the record order under partial I/O, binary
+Input header failures, stale authority and readiness, arbitrary bytes, paste
+closure, query authority, inert titles, Focus, and takeover, hand-back and
+leave-policy parity; the rest remains future.
 Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent

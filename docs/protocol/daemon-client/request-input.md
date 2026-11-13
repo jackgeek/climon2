@@ -69,7 +69,11 @@ neither enters real-user Input or clears attention.
 
 ## Implemented behavior
 
-The [session daemon](../../../GLOSSARY.md#sessions) accepts Input that passes
+The [session daemon](../../../GLOSSARY.md#sessions) applies the header
+rules above as connection-fatal validation, whether Input is a connection's
+first frame after hello or arrives on an
+[attachment](../../../GLOSSARY.md#attachment-and-control), whose loss is
+then an unexpected departure. It accepts Input that passes
 the [authority checks](core-v1.md#implemented-authority-checks), which need
 readiness: it comes from the ready controller under its current period and
 restoration ID. An empty payload is then `invalid_argument`. Every rejection

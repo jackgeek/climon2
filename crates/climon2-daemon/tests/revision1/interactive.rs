@@ -29,13 +29,16 @@ fn geometry(cols: u32, rows: u32) -> Geometry {
 }
 
 /// An interactive attachment: its stream, the authority of its current
-/// restoration, its last request ID and the terminal bytes it received.
+/// restoration, whether it still controls, its last request ID and the
+/// terminal bytes it received.
 struct Attached {
     stream: UnixStream,
     /// The families its Open selected, sorted.
     selected: Vec<String>,
     period: u64,
     restoration: u64,
+    /// From its Control granted until its Control revoked.
+    controlling: bool,
     request: u64,
     display: Vec<u8>,
 }
@@ -88,6 +91,7 @@ impl Attached {
             selected,
             period: 0,
             restoration: 0,
+            controlling: false,
             request: 1,
             display: Vec::new(),
         };
@@ -114,6 +118,7 @@ impl Attached {
         );
         assert!(granted.period.get() > self.period, "{granted:?}");
         self.period = granted.period.get();
+        self.controlling = true;
         self.begun(granted.restoration_id.get(), geometry);
     }
 
@@ -163,14 +168,18 @@ impl Attached {
         }
     }
 
-    /// A Display carries the current authority and at least one byte.
+    /// A Display reaches only the controller, carries its current authority,
+    /// and holds at least one byte and at most 65,535, the private
+    /// protocol's output chunk.
     fn displayed(&mut self, display: Display) {
+        assert!(self.controlling, "Display after Control revoked");
         assert_eq!(
             (display.period, display.restoration_id),
             self.authority(),
             "Display under another authority"
         );
         assert!(!display.payload.is_empty(), "an empty Display");
+        assert!(display.payload.len() <= 65_535, "{}", display.payload.len());
         self.display.extend(display.payload);
     }
 
@@ -319,7 +328,7 @@ impl Attached {
     }
 
     /// Any release Display, then Control revoked for `reason` under the
-    /// current authority.
+    /// current authority; no Display may follow it.
     fn revoked(&mut self, reason: RevocationReason) {
         let (period, restoration_id) = self.authority();
         let revoked = ControlRevoked {
@@ -331,6 +340,7 @@ impl Attached {
             self.next_after_display(),
             ServerMessage::ControlRevoked(revoked)
         );
+        self.controlling = false;
     }
 
     /// Leaves as an accepted detach: its Response reports an attachment
@@ -368,6 +378,20 @@ fn frame_bytes(frame: &Frame) -> Vec<u8> {
     let mut bytes = Vec::new();
     wire::write_frame(&mut bytes, frame, limit()).unwrap();
     bytes
+}
+
+/// A frame of `code` with `body` as written, whether or not it is valid.
+fn raw_frame(code: u8, body: &[u8]) -> Vec<u8> {
+    let length = u32::try_from(body.len() + 1).unwrap();
+    [&length.to_be_bytes()[..], &[code], body].concat()
+}
+
+/// A binary Input header: request ID, period and restoration ID.
+fn input_header(request: u64, period: u64, restoration: u64) -> Vec<u8> {
+    [request, period, restoration]
+        .iter()
+        .flat_map(|value| value.to_be_bytes())
+        .collect()
 }
 
 /// Writes `bytes` in three-byte pieces. A hello answered on a newer
@@ -603,6 +627,59 @@ fn binary_input_and_display_pass_unchanged() {
     let echoed = &attached.display[start..];
     assert_eq!(&echoed[..payload.len()], payload);
     assert_eq!(&echoed[payload.len()..], crate::release_at(37, 83));
+}
+
+/// COM-02 (Contract, binary Input headers): an Input whose binary header
+/// breaks the rules is connection-fatal with exactly the documented code,
+/// as the first frame after hello and on an attachment alike. A body
+/// shorter than the 24-byte header is `invalid_record`, whatever it holds; a
+/// zero request ID is `invalid_request_id`; a zero period or restoration ID
+/// is `invalid_record`; and a request ID that does not increase is
+/// `invalid_request_id`. A controller lost this way departed unexpectedly:
+/// as the final attachment, its loss ends the session, and no byte of the
+/// refused Input reaches the command.
+#[test]
+fn malformed_binary_input_is_connection_fatal() {
+    let mut session = Session::start("lines");
+    let first_frames = [
+        (vec![1; 23], "invalid_record"),
+        (
+            [input_header(0, 1, 1), b"x".to_vec()].concat(),
+            "invalid_request_id",
+        ),
+        (
+            [input_header(1, 0, 1), b"x".to_vec()].concat(),
+            "invalid_record",
+        ),
+        (
+            [input_header(1, 1, 0), b"x".to_vec()].concat(),
+            "invalid_record",
+        ),
+    ];
+    for (body, code) in first_frames {
+        let mut stream = peer(&session);
+        stream.write_all(&raw_frame(0x31, &body)).unwrap();
+        super::assert_fatal(&mut stream, code);
+    }
+    let mut attached = ready_attachment(&session, &[]);
+    attached.typed(b"a1\n");
+    crate::wait_line(&session, "a1 91x37");
+    let (period, restoration) = attached.authority();
+    let repeated = input_header(attached.request, period.get(), restoration.get());
+    let body = [repeated, b"never\n".to_vec()].concat();
+    attached.stream.write_all(&raw_frame(0x31, &body)).unwrap();
+    match attached.next_after_display() {
+        ServerMessage::FatalError(wire::FatalError(error)) => {
+            assert_eq!(error.code.as_str(), "invalid_request_id");
+        }
+        other => panic!("expected Fatal error invalid_request_id, got {other:?}"),
+    }
+    assert_closed(&mut attached.stream);
+    session.finish();
+    assert_eq!(
+        fs::read_to_string(session.directory.path().join("lines")).unwrap(),
+        "a1 91x37\n"
+    );
 }
 
 /// INP-03 (Contract): bracketed-paste bytes, binary ones included, reach the
@@ -982,9 +1059,10 @@ fn committed_termination_rejects_new_interactive_work_and_leave_still_works() {
 /// and Leave): takeover, hand-back and the leave policy match the private
 /// protocol, across both protocols. An attach or Acquire takes control at
 /// once and revokes the previous controller after its release; a departing
-/// controller hands control back to the most recently controlling remaining
-/// attachment (`hand_back`); a final deliberate Leave keeps the session
-/// running, detached, and a final unexpected departure ends it.
+/// controller, by Leave or by loss, hands control back to the most recently
+/// controlling remaining attachment (`hand_back`); a final deliberate Leave
+/// keeps the session running, detached, and a final unexpected departure
+/// ends it.
 #[test]
 fn takeover_hand_back_and_leave_policy_match_the_private_protocol() {
     let mut session = Session::start("exit");
@@ -1012,6 +1090,12 @@ fn takeover_hand_back_and_leave_policy_match_the_private_protocol() {
     first.granted(GrantReason::HandBack, geometry(91, 37));
     assert_eq!((first.period, first.restoration), (5, 5));
     first.confirm_ready();
+    let third = ready_attachment(&session, &[]);
+    first.revoked(RevocationReason::Takeover);
+    drop(third);
+    first.granted(GrantReason::HandBack, geometry(91, 37));
+    assert_eq!((first.period, first.restoration), (7, 7));
+    first.confirm_ready();
     assert_eq!(
         crate::advertised_state(&session),
         (Lifecycle::Attached, 2, true)
@@ -1028,7 +1112,7 @@ fn takeover_hand_back_and_leave_policy_match_the_private_protocol() {
     );
 
     let last = ready_attachment(&session, &[]);
-    assert_eq!((last.period, last.restoration), (6, 6));
+    assert_eq!((last.period, last.restoration), (8, 8));
     drop(last);
     session.finish();
 }
