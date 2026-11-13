@@ -11,7 +11,9 @@
  * Release-check defects: EXTRA_EXPORT and HOOK_MARKER.
  * Loader defects: NO_BOOTSTRAP (no climon2_client_get_interface export),
  * UNSUPPORTED (refuses revision 1), BOOTSTRAP_STATUS=<code> (answers revision
- * 1 with that status and no description), REVISION=<n> and RESERVED=<n> (the
+ * 1 with that status and no description), FAIL_FIRST_BOOTSTRAP (a contained
+ * failure, CM1_INTERNAL_ERROR, on the first call only), REVISION=<n> and
+ * RESERVED=<n> (the
  * description's fields), NULL_RELEASE (no release text), INCOMPLETE_TABLE (no
  * snapshot entry), and any of the requirements INSTANCE_BYTES,
  * OWNER_STACK_BYTES, WORKER_STACK_BYTES, WORKERS, INSTANCE_DESCRIPTORS and
@@ -113,15 +115,21 @@ uint32_t BOOTSTRAP(uint32_t revision, const cm1_description **out)
 {
     if (out == 0)
         return CM1_INVALID_ARGUMENT;
-#if defined(UNSUPPORTED)
     *out = 0;
+#if defined(UNSUPPORTED)
     return CM1_UNSUPPORTED_REVISION;
 #elif defined(BOOTSTRAP_STATUS)
-    *out = 0;
     return BOOTSTRAP_STATUS;
 #else
-    *out = revision == CM1_REVISION ? &description : 0;
-    return *out ? CM1_SUCCESS : CM1_UNSUPPORTED_REVISION;
+#ifdef FAIL_FIRST_BOOTSTRAP
+    static int answered;
+    if (!answered++)
+        return CM1_INTERNAL_ERROR;
+#endif
+    if (revision != CM1_REVISION)
+        return CM1_UNSUPPORTED_REVISION;
+    *out = &description;
+    return CM1_SUCCESS;
 #endif
 }
 
