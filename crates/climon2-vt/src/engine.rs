@@ -23,7 +23,7 @@ impl EventListener for Listener {
 /// Never pending, so the engine never buffers a synchronized update; the
 /// adapter's own first-begin latch owns synchronized output.
 #[derive(Default)]
-pub(crate) struct Unbuffered;
+struct Unbuffered;
 
 impl Timeout for Unbuffered {
     fn set_timeout(&mut self, _: Duration) {}
@@ -35,7 +35,7 @@ impl Timeout for Unbuffered {
     }
 }
 
-pub(crate) struct Size(pub(crate) Geometry);
+struct Size(Geometry);
 
 impl Dimensions for Size {
     fn total_lines(&self) -> usize {
@@ -51,7 +51,7 @@ impl Dimensions for Size {
     }
 }
 
-pub(crate) fn config(history: usize) -> Config {
+fn config(history: usize) -> Config {
     Config {
         scrolling_history: history,
         kitty_keyboard: false,
@@ -60,9 +60,53 @@ pub(crate) fn config(history: usize) -> Config {
     }
 }
 
-pub(crate) struct Engine {
-    term: Term<Listener>,
+/// The unchanged engine fed by its parser, as the daemon's virtual terminal
+/// and a monitor model both run it.
+pub(crate) struct Core<L> {
+    term: Term<L>,
     processor: Processor<Unbuffered>,
+}
+
+impl<L: EventListener> Core<L> {
+    pub(crate) fn new(geometry: Geometry, history: usize, listener: L) -> Self {
+        Self {
+            term: Term::new(config(history), &Size(geometry), listener),
+            processor: Processor::new(),
+        }
+    }
+
+    pub(crate) fn advance(&mut self, bytes: &[u8]) {
+        self.processor.advance(&mut self.term, bytes);
+    }
+
+    /// Change the normal screen's history capacity, dropping its oldest rows
+    /// beyond it.
+    pub(crate) fn set_history(&mut self, rows: usize) {
+        self.term.set_options(config(rows));
+    }
+
+    pub(crate) fn alternate(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    /// History rows the normal screen holds, when it is the active screen.
+    pub(crate) fn normal_history(&self) -> Option<usize> {
+        (!self.alternate()).then(|| self.term.grid().history_size())
+    }
+
+    pub(crate) fn active(&self) -> &Grid<Cell> {
+        self.term.grid()
+    }
+
+    /// Drop the active screen's storage rows beyond the history it shows,
+    /// and their cell data, which the engine keeps after history shrinks.
+    pub(crate) fn truncate(&mut self) {
+        self.term.grid_mut().truncate();
+    }
+}
+
+pub(crate) struct Engine {
+    core: Core<Listener>,
     events: Rc<RefCell<Vec<Event>>>,
     signals: Signals,
     normal_cursor: (usize, usize),
@@ -81,8 +125,7 @@ impl Engine {
         let listener = Listener::default();
         let events = listener.0.clone();
         Self {
-            term: Term::new(config(history), &Size(geometry), listener),
-            processor: Processor::new(),
+            core: Core::new(geometry, history, listener),
             events,
             signals: Signals::default(),
             normal_cursor: (1, 1),
@@ -91,7 +134,7 @@ impl Engine {
 
     /// Feed one step and collect the replies it produced.
     pub(crate) fn advance(&mut self, bytes: &[u8], replies: &mut Vec<u8>) {
-        self.processor.advance(&mut self.term, bytes);
+        self.core.advance(bytes);
         self.remember_cursor();
         let events = std::mem::take(&mut *self.events.borrow_mut());
         events
@@ -101,7 +144,7 @@ impl Engine {
 
     fn remember_cursor(&mut self) {
         if !self.alternate() {
-            let point = self.term.grid().cursor.point;
+            let point = self.active().cursor.point;
             self.normal_cursor = (point.line.0 as usize + 1, point.column.0 + 1);
         }
     }
@@ -141,36 +184,36 @@ impl Engine {
     }
 
     pub(crate) fn mode(&self) -> TermMode {
-        *self.term.mode()
+        *self.core.term.mode()
     }
 
     /// Change the normal screen's history capacity, dropping its oldest rows
     /// beyond it. The title event `set_options` always emits is discarded.
     pub(crate) fn set_history(&mut self, rows: usize) {
-        self.term.set_options(config(rows));
+        self.core.set_history(rows);
         self.events.borrow_mut().clear();
     }
 
     pub(crate) fn resize(&mut self, geometry: Geometry) {
-        self.term.resize(Size(geometry));
+        self.core.term.resize(Size(geometry));
         self.remember_cursor();
     }
 
     pub(crate) fn alternate(&self) -> bool {
-        self.mode().contains(TermMode::ALT_SCREEN)
+        self.core.alternate()
     }
 
     /// History rows the normal screen holds, when it is the active screen.
     pub(crate) fn normal_history(&self) -> Option<usize> {
-        (!self.alternate()).then(|| self.term.grid().history_size())
+        self.core.normal_history()
     }
 
     pub(crate) fn cursor_style(&self) -> CursorStyle {
-        self.term.cursor_style()
+        self.core.term.cursor_style()
     }
 
     pub(crate) fn active(&self) -> &Grid<Cell> {
-        self.term.grid()
+        self.core.active()
     }
 
     /// Read the normal screen's grid. While the alternate screen is active
@@ -178,14 +221,14 @@ impl Engine {
     /// the swap sets the normal saved cursor to its current cursor (E1).
     pub(crate) fn normal<R>(&mut self, read: impl FnOnce(&Grid<Cell>) -> R) -> R {
         if !self.alternate() {
-            return read(self.term.grid());
+            return read(self.active());
         }
-        let alternate = self.term.grid().clone();
-        self.term.swap_alt();
+        let alternate = self.active().clone();
+        self.core.term.swap_alt();
         self.remember_cursor();
-        let result = read(self.term.grid());
-        self.term.swap_alt();
-        *self.term.grid_mut() = alternate;
+        let result = read(self.active());
+        self.core.term.swap_alt();
+        *self.core.term.grid_mut() = alternate;
         result
     }
 }

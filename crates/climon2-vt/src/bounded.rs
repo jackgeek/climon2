@@ -4,29 +4,23 @@
 use crate::{
     classify::{Live, classify},
     cost,
-    engine::{Size, Unbuffered, config},
+    engine::Core,
     geometry::{Geometry, STEP},
     model::Rejected,
     render::cells,
     token::{Kind, Token, Tokenizer},
 };
 use alacritty_terminal::{
-    Term,
     event::VoidListener,
     grid::Dimensions,
-    term::{
-        TermMode,
-        cell::{Cell, Flags},
-    },
-    vte::ansi::Processor,
+    term::cell::{Cell, Flags},
 };
 use std::iter::once;
 
 const SPACERS: Flags = Flags::WIDE_CHAR_SPACER.union(Flags::LEADING_WIDE_CHAR_SPACER);
 
 pub(crate) struct Bounded {
-    term: Term<VoidListener>,
-    processor: Processor<Unbuffered>,
+    core: Core<VoidListener>,
     tokenizer: Tokenizer,
     geometry: Geometry,
     history: History,
@@ -109,11 +103,9 @@ impl Bounded {
 
     pub(crate) fn new(geometry: Geometry, history_rows: usize) -> Self {
         let history = History::new(history_rows);
-        let term = Term::new(config(history.rows()), &Size(geometry), VoidListener);
         Self {
-            seen: term.grid().history_size(),
-            term,
-            processor: Processor::new(),
+            core: Core::new(geometry, history.rows(), VoidListener),
+            seen: 0,
             tokenizer: Tokenizer::new(),
             geometry,
             history,
@@ -154,7 +146,7 @@ impl Bounded {
         };
         self.admit(self.growth(token.kind, &bytes, policy.repeats), room)?;
         self.grow(bytes.len() + policy.repeats, room);
-        self.processor.advance(&mut self.term, &bytes);
+        self.core.advance(&bytes);
         self.settle();
         Ok(())
     }
@@ -187,7 +179,7 @@ impl Bounded {
             cost::history(self.geometry, next) - cost::history(self.geometry, self.history.chunks);
         if self.fits(growth, room) {
             self.history.chunks = next;
-            self.term.set_options(config(self.history.rows()));
+            self.core.set_history(self.history.rows());
         }
     }
 
@@ -196,7 +188,7 @@ impl Bounded {
     /// model may show more. A token pushes at most a row per byte and per
     /// repetition, or a screenful.
     fn next_chunks(&self, reach: usize) -> Option<usize> {
-        let reach = self.normal_history()? + reach.max(usize::from(self.geometry.rows()));
+        let reach = self.core.normal_history()? + reach.max(usize::from(self.geometry.rows()));
         let History { shown, chunks } = self.history;
         (reach > self.history.rows() && chunks * cost::CHUNK < shown).then_some(chunks + 1)
     }
@@ -205,18 +197,13 @@ impl Bounded {
     /// and all, beyond the history it shows; drop them, so measuring sees
     /// every row that holds cell data.
     fn settle(&mut self) {
-        let Some(now) = self.normal_history() else {
+        let Some(now) = self.core.normal_history() else {
             return;
         };
         if now < self.seen {
-            self.term.grid_mut().truncate();
+            self.core.truncate();
         }
         self.seen = now;
-    }
-
-    /// The normal screen's history rows, while it is the active screen.
-    fn normal_history(&self) -> Option<usize> {
-        matches!(self.active(), Screen::Normal).then(|| self.term.grid().history_size())
     }
 
     fn fits(&self, growth: usize, room: Room) -> bool {
@@ -229,7 +216,7 @@ impl Bounded {
 
     /// Replace the active screen's bound with what its cells hold now.
     pub(crate) fn measure(&mut self) {
-        let grid = self.term.grid();
+        let grid = self.core.active();
         let lines = grid.topmost_line().0..=grid.bottommost_line().0;
         let held = lines
             .flat_map(|line| cells(grid, line))
@@ -241,7 +228,7 @@ impl Bounded {
     /// The most one token can make the engine allocate: its printed text,
     /// or the characters its sequence repeats.
     fn growth(&self, kind: Kind, bytes: &[u8], repeats: usize) -> usize {
-        let tinted = self.term.grid().cursor.template.extra.is_some();
+        let tinted = self.core.active().cursor.template.extra.is_some();
         if kind == Kind::Text {
             cost::text(bytes, tinted)
         } else {
@@ -250,7 +237,7 @@ impl Bounded {
     }
 
     fn active(&self) -> Screen {
-        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+        if self.core.alternate() {
             Screen::Alternate
         } else {
             Screen::Normal
@@ -264,8 +251,12 @@ impl Bounded {
     /// The normal screen's newest history rows the model shows, as text,
     /// oldest first; empty while the alternate screen is active.
     pub(crate) fn history(&self) -> Vec<String> {
-        let grid = self.term.grid();
-        let shown = self.normal_history().unwrap_or(0).min(self.history.shown);
+        let grid = self.core.active();
+        let shown = self
+            .core
+            .normal_history()
+            .unwrap_or(0)
+            .min(self.history.shown);
         (1..=shown)
             .rev()
             .map(|age| text(cells(grid, -(age as i32))))
@@ -274,7 +265,7 @@ impl Bounded {
 
     /// The active screen's rows as text.
     pub(crate) fn screen(&self) -> Vec<String> {
-        let grid = self.term.grid();
+        let grid = self.core.active();
         (0..self.geometry.rows())
             .map(|line| text(cells(grid, i32::from(line))))
             .collect()
