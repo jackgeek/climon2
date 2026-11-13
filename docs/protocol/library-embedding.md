@@ -1,10 +1,13 @@
 # Client library embedding and lifetime
 
-**Status:** agreed design. Only the library side of the bootstrap is
-implemented: every installed version ships its
+**Status:** agreed design. The library side of the bootstrap and of
+instance lifetime is implemented: every installed version ships its
 [client library](../../GLOSSARY.md#sessions) file, exporting
 only `climon2_client_get_interface`
-([#75](https://github.com/jackgeek/climon2/issues/75)). Loading by the
+([#75](https://github.com/jackgeek/climon2/issues/75)), and its instances are
+created, run, cleaned up, released and destroyed on their owner threads as
+described below, with every panic contained and no process-global state
+changed ([#85](https://github.com/jackgeek/climon2/issues/85)). Loading by the
 [monitor](../../GLOSSARY.md#sessions) and the
 [client executable](../../GLOSSARY.md#sessions) is not implemented. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these

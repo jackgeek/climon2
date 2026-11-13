@@ -1,6 +1,9 @@
 # Create local instance
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification. The
+[client library](../../../GLOSSARY.md#sessions) implements create
+([#85](https://github.com/jackgeek/climon2/issues/85)); its caller is not
+implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) creates a
 [client](../../../GLOSSARY.md#sessions) on its dedicated owner thread.
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

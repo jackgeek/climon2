@@ -222,8 +222,8 @@ fn with_output<T>(mut result: Map<String, Value>, output: &MaybeUninit<T>) -> Va
     Value::Object(result)
 }
 
-/// Calls every entry once without an instance, as an embedder would before
-/// creating one; null handles are never dereferenced by unsupported calls.
+/// Calls every entry once without an instance: null handles and outputs are
+/// the invalid arguments a library can detect without dereferencing them.
 fn functions(table: &Interface) -> Value {
     let startup = MaybeUninit::<native::Startup>::zeroed();
     let request = MaybeUninit::<native::Request>::zeroed();

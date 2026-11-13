@@ -6,8 +6,11 @@ not implementation or executed acceptance evidence.** The
 [monitor](../GLOSSARY.md#sessions) exists only as the empty walking skeleton of
 [#74](https://github.com/jackgeek/climon2/issues/74); new daemon wire and
 headless creation remain unimplemented. Packaged
-[client libraries](../GLOSSARY.md#sessions) implement only their bootstrap and
-description ([#75](https://github.com/jackgeek/climon2/issues/75)). Resolving
+[client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
+description ([#75](https://github.com/jackgeek/climon2/issues/75)) and their
+local instance lifecycle
+([#85](https://github.com/jackgeek/climon2/issues/85)), but cannot open a
+connection yet. Resolving
 this specification does not pass a [release gate](../GLOSSARY.md#testing).
 
 This document specifies evidence for the agreed thread-based Ratatui monitor.

@@ -85,18 +85,18 @@ artifact, not another crate. It exports only the frozen
 `climon2_client_get_interface` bootstrap of
 [native client interface revision 1](../../docs/protocol/monitor-client/core-v1.md),
 using the shared `#[repr(C)]` declarations in `climon2_core::native`; Rust
-layouts, unwinding and allocators never cross it. The bootstrap and the table
-entries do no fallible work and allocate nothing, so this build never reports
-`CM1_INTERNAL_ERROR`; contained-panic reporting at every entry arrives with the
-instance lifecycle (#85).
+layouts, unwinding and allocators never cross it. Every entry contains panics
+and reports `CM1_INTERNAL_ERROR` instead; the bootstrap installs a silent panic
+hook in the library's own image (not the host's), so nothing reaches the
+standard streams.
 
 Requesting revision 1 returns one static, immutable description that lives
 until process exit, and the same pointer on every call:
 
 - `release`: the version folder name, compiled in (`CARGO_PKG_VERSION`). A copy
   placed in another version's folder still reports its own release.
-- `capabilities`: empty (null, zero). No instance behaviour exists yet, so no
-  token is advertised.
+- `capabilities`: empty (null, zero). No instance can open a connection yet
+  (#93), so no token is advertised.
 - `requirements`: provisional bounded values until the measurement job (#121)
   records qualified ones. Each equals its default `monitor.limits` reservation
   where one exists, plus 1 MiB of instance-local allocation, so a
@@ -111,15 +111,87 @@ until process exit, and the same pointer on every call:
   | `instance_descriptors` | 8 | nonzero, within `resources.descriptors_per_client` |
   | `load_descriptors` | 4 | `resources.descriptors_per_load` |
 
-- `functions`: all eleven entries. Until #85 and #93 implement them, each
-  fails with `CM1_UNSUPPORTED_OPERATION`, library origin and the stable error
-  code `unsupported_operation`; failed calls zero their nonnull output structs,
-  `notification` writes -1, and null outputs are never written.
+- `functions`: all eleven entries; the instance lifecycle below (#85).
+  `submit` fails with `CM1_UNSUPPORTED_OPERATION` and the stable error code
+  `unsupported_operation` until Open (#93). Failed calls report library
+  origin, a stable error code and a static message (so error text outlives
+  every borrower), zero their nonnull output structs (`run` keeps its report),
+  and `notification` writes -1. A null handle or output pointer, the one
+  invalid address the library can detect, is `CM1_INVALID_ARGUMENT`.
 
 Any other revision returns `CM1_UNSUPPORTED_REVISION` and writes a null
 description; null output storage returns `CM1_INVALID_ARGUMENT`. The bootstrap
 carries the `test_hook_marker!`, so hooked and release builds stay
 distinguishable.
+
+### Instance lifecycle (#85)
+
+Each instance is independent: its own state and lock, its own diagnostics, no
+process-global lock, and no change to the environment, working directory,
+signal handlers or standard streams.
+
+- `create` runs on the thread that becomes the instance's owner. It parses the
+  whole startup before creating anything (`src/library/startup.rs`): the
+  expected release must be this library's (else `CM1_RELEASE_MISMATCH`); the
+  generation is nonzero; metadata, home and runtime paths are absolute native
+  Unix paths, copied byte for byte (invalid UTF-8 is kept; NUL, another
+  encoding or `PATH_MAX` bytes or more are rejected); keys are enabled with a
+  C0 byte or disabled with zero, through core's `ClientSettings`; the
+  diagnostics filter is nonempty `CLIMON2_LOG` grammar even without a log file;
+  reserved fields are zero. Limits are effective values: every field but
+  `max_workers` is nonzero, `client_bytes` covers the described
+  `instance_bytes` and `max_workers` the described `workers`, else
+  `CM1_UNSUPPORTED_LIMIT`; accepted limits are returned unchanged. Malformed
+  input is `CM1_INVALID_ARGUMENT`. Then it creates the notification descriptor
+  and, last, the optional log file at the caller's absolute path (`create_new`,
+  mode `0600`, `O_NOFOLLOW`; a path that exists or whose directory is missing
+  is `CM1_INVALID_ARGUMENT`), so any failure returns no handles and leaves no
+  descriptor (no descriptor left: `CM1_RESOURCE_LIMIT`). No daemon I/O, no
+  worker.
+- The log uses core's subscriber with the instance's filter and the
+  session-log cap (`CappedWriter`), through the instance's own dispatcher;
+  every record carries a `client_instance{generation=N}` span. Records are
+  lifecycle facts only; `client instance running` (debug) names the copied
+  paths and keys.
+- `run` is owner-thread only (`CM1_WRONG_THREAD`) and once (a repeated run is
+  `CM1_CLOSED`). It waits for shutdown or failure, publishes terminal evidence
+  after any queued record, then waits up to `cleanup_ms` for its workers. The
+  report is separate from terminal evidence: complete cleanup is
+  `CM1_CLEANUP_COMPLETE`; a worker still running is `CM1_CLEANUP_INCOMPLETE`
+  with `CM1_TIMEOUT`, and that instance can never be destroyed. Without Open,
+  terminal evidence is stopped with no retry after shutdown, Leave is not
+  required and every connection is closed.
+- `shutdown` is idempotent intent from any thread, and may precede `run`.
+- `notification` returns the same borrowed descriptor every time: on Linux one
+  `eventfd` (close-on-exec, nonblocking), on macOS the read end of a
+  close-on-exec pipe (`src/library/macos.rs`, two descriptors). It is readable
+  while a record or terminal evidence is ready, and `drain` clears it when
+  neither is. `destroy` closes it.
+- `drain` returns one delivery, empty, or terminal evidence once earlier
+  records are drained, repeatedly. `release_delivery` releases a delivery
+  once. `release_communication` is `CM1_BUSY` until the stream has ended for
+  its consumer and every delivery is released; `release_control` until the
+  stream has ended. `destroy` (owner thread) is `CM1_BUSY` until `run` returned
+  with complete cleanup and both handles are released; a failed release or
+  destroy leaves its object valid.
+- `snapshot` reports tracked allocation (the instance's structures, its copied
+  paths and each outstanding delivery), queued and delivered records and their
+  bytes (`sizeof(cm1_record)` each), deliveries, workers and descriptors (the
+  notification descriptors, plus one for a log file), with peaks, and the
+  drained and released counters. No shared-release allocation is tracked;
+  request, operation, input and display measurements stay zero.
+- A panic in an instance call stops that instance: the call fails with
+  `CM1_INTERNAL_ERROR`, one library `CM1_DIAGNOSTIC` record (`internal_error`)
+  is queued when it fits `event_bytes`, and terminal evidence is failed with
+  that error, retried passively unless shutdown had already been requested.
+  After terminal evidence a panic changes nothing else.
+
+With `test-hooks` only (`src/library/hooks.rs`), `CLIMON2_LIBRARY_FAULT`
+selects faults: `panic:<call>[,<call>...]` panics once at each named export's
+boundary (`bootstrap` names `climon2_client_get_interface`), `worker` makes
+`run` start a worker that ends with its stream, and `stall-cleanup` one whose
+cleanup never ends. Release builds have no workers yet: Open (#93) brings the
+first.
 
 Loaders open the absolute `<executable home>/<version>/<library file>` with
 eager, local resolution (`RTLD_NOW | RTLD_LOCAL`); `current`, the working
@@ -154,7 +226,21 @@ private target directory and checks.
 | LIB-01 Library: absolute exact-release load, one stable description | `installed_library_describes_revision_one_with_its_version_identity` (`climon2-e2e/tests/library.rs`) |
 | LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths, the absolute path maps the requested file (the loader's lookup, which no library change can alter); the library answers from its own image with its own release, and a misplaced copy reports its compiled-in release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` (`climon2-e2e`) |
 | LIB-02 Library: unsupported revisions and null output storage | `installed_library_rejects_other_revisions_without_a_description` (`climon2-e2e`) |
-| DOC-01: unsupported table calls follow the frozen call rules | `installed_library_table_reports_every_instance_call_unsupported` (`climon2-e2e`) |
+| DOC-01: null handles and outputs are rejected, failed calls clear their outputs, and `submit` stays unsupported, by the frozen call rules | `installed_library_table_rejects_null_arguments_and_cannot_submit_yet` (`climon2-e2e`) |
+| LIB-03, LIB-04 and LIB-05 Library: create, run, shutdown, drain to terminal evidence, release, destroy and join; run and destroy on the wrong thread, a repeated run, destroy and handle release while busy; terminal evidence apart from the cleanup report | `installed_library_instance_runs_create_run_shutdown_drain_release_destroy_join` (`climon2-e2e/tests/instance.rs`) |
+| LIB-03 Library: a failed create returns no handles and leaves no descriptor: null arguments, a mismatched release, the generation, native paths | `installed_library_create_rejects_invalid_identity_and_paths_without_handles` (`instance.rs`) |
+| LIB-03 Library: client keys, log path and filter | `installed_library_create_rejects_invalid_settings_and_diagnostics_without_handles` (`instance.rs`) |
+| LIB-03 Library: limits it cannot honour, each at its bound; no descriptor left | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` (`instance.rs`) |
+| LIB-03 Library and Fault: caller startup memory scrambled and unmapped after create; lossless native paths; two instances' homes, settings, logs and allocations stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` (`instance.rs`) |
+| LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` (`instance.rs`) |
+| LIB-04 Library and Fault, Linux `eventfd`: the descriptor stays borrowed, counted once, and safe to poll while the stream ends and the handle is in use | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` (`instance.rs`) |
+| LIB-04 Fault (allocator pairing): a delivery stays charged until released through the library | `installed_library_charges_a_delivery_until_it_is_released` (`instance.rs`) |
+| LIB-04 Fault: the failure diagnostic is queued only within `event_bytes` | `installed_library_queues_the_failure_diagnostic_only_within_event_bytes` (`instance.rs`) |
+| LIB-05 Fault: a panic at the bootstrap, `create` or `submit` fails only that call | `installed_library_contains_a_panic_at_the_bootstrap_create_or_submit` (`instance.rs`) |
+| LIB-05 and LIB-04 Fault: a panic in a running instance stops it, with a diagnostic delivery and failed terminal evidence | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` (`instance.rs`) |
+| LIB-04 and LIB-05 Fault: a panic in a release or destroy keeps the object valid | `installed_library_contains_a_panic_in_a_release_and_keeps_the_object` (`instance.rs`) |
+| LIB-05 Library and Fault: worker completion reported apart from terminal evidence | `installed_library_reports_worker_completion_apart_from_terminal_evidence` (`instance.rs`) |
+| LIB-06 Library: stalled worker cleanup is incomplete, never complete, and the instance is never destroyed | `installed_library_reports_stalled_worker_cleanup_as_incomplete_and_never_destroys` (`instance.rs`) |
 | DOC-01 exported interface: only the bootstrap is exported, from the real release library and from a defective stand-in | `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`), `release_checks_reject_extra_exports` (`xtask/src/library.rs`) |
 | DOC-01 layout case on x86-64 GNU/Linux and both macOS architectures | `rust_native_declarations_match_the_published_header` (`climon2-core/tests/native_layout.rs`) |
 | #75 risk proof: `cargo test` builds the hooked library as a sibling artifact without nested builds (ELF on Linux, Mach-O on macOS); the plain library is the release build | `workspace_client_library_is_a_hooked_sibling_of_the_test_executables` (`climon2-fixtures/tests/hooks.rs`); plain: `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`) |
@@ -216,8 +302,9 @@ path>`: `invocations_outside_the_frozen_contract_are_one_line_usage_failures_wit
 (no arguments, a missing or relative path, another flag or operation, or an
 extra argument).
 
-The only fault injection, `CLIMON2_CLIENT_FAULT=panic` (with `test-hooks`
-only), panics after entering raw mode. The client has no attach-hold hook (the
+The client executable's only fault injection, `CLIMON2_CLIENT_FAULT=panic`
+(with `test-hooks` only), panics after entering raw mode; the client library's
+`CLIMON2_LIBRARY_FAULT` faults are described with its instance lifecycle. The client has no attach-hold hook (the
 plan's `hold-attach` was not implemented); the CLI's `CLIMON2_CLI_HOLD` hook
 holds before the client starts instead.
 The panic hook logs a static event, never payloads, argv or environment values.
