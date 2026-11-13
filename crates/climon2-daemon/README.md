@@ -129,7 +129,12 @@ connection, are `invalid_state` and the stream goes on. A rejected first role
 (an unsupported revision, or an unknown or unsupported required family) has
 no effects and ends the stream. Until #87 and #88 serve them, an interactive
 Open and a valid standalone Kill are rejected without effects
-(`internal_error`) and end their stream. Registrations share the connection
+(`internal_error`) and end their stream. Every other request is rejected
+without effects, and the stream goes on with any registration kept: Input,
+Resize, Ready, Set viewing, Acknowledge and Focus with `invalid_state`, since
+no revision-1 connection is an attachment yet; Acquire with `internal_error`
+on a registration until #89 serves it, and with `invalid_state` before any
+Open, which leaves nothing to convert. Registrations share the connection
 cap, the 16 MiB queue and the five-second no-progress loss.
 
 Every PTY byte goes through one ordered write queue (`PtyWrites`): terminal
@@ -304,14 +309,16 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | Scenario | Named tests |
 |---|---|
 | COM-01 (Contract): hello advertises revision 1 beside the frozen tokens and `state`, exactly as the published complete reply does; Open selects only supported families; a peer that does not select an optional family receives nothing for it | `hello_advertises_revision1_beside_the_frozen_tokens_and_state`, `monitor_open_selects_supported_families_then_reports_initial_metadata`, `a_monitor_without_title_v1_receives_nothing_for_titles` |
-| COM-02 (Contract): broken framing, non-strict JSON or UTF-8, server, private and unknown types, non-increasing request IDs and truncation are connection-fatal with their exact codes; a frame at the 1,048,576-byte limit is served and one byte more refused from its prefix; fragmented and coalesced frames are each answered in order; a Fatal error replaces a stalled stream's unstarted backlog without splitting a frame | `revision1_traffic_that_breaks_the_rules_is_connection_fatal`, `a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal`, `coalesced_and_fragmented_revision1_frames_are_each_answered_in_order`, `a_fatal_error_replaces_a_backlog_without_splitting_a_frame` |
-| COM-03 (Contract, passive cases): Open, Leave and the rejections of a first role, a later Open or Kill and an early Leave have their documented outcomes and effects, including during committed termination | `monitor_open_selects_supported_families_then_reports_initial_metadata`, `passive_requests_get_their_documented_outcomes`, `a_monitor_registers_and_leaves_during_committed_termination` |
+| COM-02 (Contract): broken framing, non-strict JSON or UTF-8, server, private and unknown types, non-increasing request IDs and truncation are connection-fatal with their exact codes; a frame at the 1,048,576-byte limit is served and one byte more refused from its prefix; fragmented and coalesced frames are each answered in order; a Fatal error replaces a stalled stream's unstarted backlog without splitting a frame; out-of-state requests are `invalid_state`, never fatal | `revision1_traffic_that_breaks_the_rules_is_connection_fatal`, `a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal`, `coalesced_and_fragmented_revision1_frames_are_each_answered_in_order`, `a_fatal_error_replaces_a_backlog_without_splitting_a_frame`, `requests_that_need_an_attachment_are_invalid_state_and_the_stream_goes_on` |
+| COM-03 (Contract, passive cases): Open, Leave and the rejections of a first role, a later Open or Kill, an early Leave or Acquire and every request that needs an attachment have their documented outcomes and effects, including during committed termination | `monitor_open_selects_supported_families_then_reports_initial_metadata`, `passive_requests_get_their_documented_outcomes`, `a_monitor_registers_and_leaves_during_committed_termination`, `requests_that_need_an_attachment_are_invalid_state_and_the_stream_goes_on`, `acquire_is_refused_without_effects_until_it_is_served` |
 | COM-05 (Contract, Initial metadata case): Initial metadata is captured atomically and title changes follow it gap-free, including around a burst | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata` |
 | CTL-01 (Contract): a passive registration never acquires control, of a detached session or one controlled elsewhere, and is not an attachment: hello `state` and so `list` are unchanged; core metadata flows before control | `a_passive_registration_never_acquires_control_and_is_not_an_attachment`, `a_monitor_registers_and_leaves_during_committed_termination` |
 | CTL-03 (Contract, title case): titles reach monitors by value, in order and whatever the control; unset, empty, a value and unavailable stay distinct; an oversized title is ignored, never truncated | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_monitor_without_title_v1_receives_nothing_for_titles`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata`, `an_oversized_title_is_ignored_never_truncated` |
 
 `interactive_open_and_standalone_kill_are_refused_until_they_are_served` pins
 the interim refusal that #87 and #88 replace; it covers no matrix scenario.
+`acquire_is_refused_without_effects_until_it_is_served` also pins the interim
+`internal_error` refusal of Acquire on a registration, which #89 replaces.
 
 Every wait for a daemon is bounded: `Session::finish`, its drop and
 `run_unsupervised` kill and reap a daemon still running 20 seconds after it

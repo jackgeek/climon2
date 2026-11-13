@@ -16,11 +16,11 @@ and [technical terms](../TERMS.md).
 ## Choosing a protocol
 
 The first [frame](../TERMS.md#frame) after hello chooses the protocol for the
-rest of the connection, by its type byte:
+rest of the connection, by its type [byte](../TERMS.md#byte):
 
 | First frame type | Protocol |
 |---|---|
-| `0x30`–`0x39` (revision-1 requests) or `0x40`–`0x4d` (revision-1 server types) | [Revision 1](core-v1.md). A server type sent by a [client](../../../GLOSSARY.md#sessions) is then `wrong_direction`. |
+| `0x30`–`0x39` (revision-1 [requests](../TERMS.md#request)) or `0x40`–`0x4d` (revision-1 server types) | [Revision 1](core-v1.md). A server type sent by a [client](../../../GLOSSARY.md#sessions) is then `wrong_direction`. |
 | Anything else, such as Attach `0x10` or Kill `0x16` | The private protocol, exactly as before; an unknown type is still its `Error`. |
 
 That frame's length is checked under the frozen hello limit (1 to 1,048,576
@@ -29,8 +29,9 @@ a private-protocol failure. After the choice, private types on a revision-1
 connection are `unknown_message_type`, and revision-1 types on a private
 connection are private failures. The daemon reads no further than the frame
 it is decoding, so the choice never depends on how bytes were split across
-reads. A peer starts revision 1 with Open or standalone Kill; a Leave sent
-first also selects revision 1 and is rejected as `invalid_state`.
+reads. A peer starts revision 1 with Open or standalone Kill; any other
+request sent first also selects revision 1 and is rejected as
+`invalid_state`, and the stream goes on.
 
 The revision-1 advertisement in the [hello reply](hello-reply.md#revision-1-advertisement)
 never changes the frozen tokens and `state` that admission and `climon2 list`

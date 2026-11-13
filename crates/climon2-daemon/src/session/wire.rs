@@ -13,8 +13,11 @@ const HAS_ROLE: &str = "this connection already has a role";
 const NO_ROLE: &str = "this connection has no role to leave";
 const UNSUPPORTED_REVISION: &str = "this daemon supports revision 1 only";
 const UNSUPPORTED_CAPABILITY: &str = "a required capability is not supported";
-/// Interactive Open (#87) and standalone Kill (#88) are not served yet.
-const NOT_YET_SERVED: &str = "this daemon does not serve this role yet";
+/// Interactive Open (#87), standalone Kill (#88) and Acquire (#89) are not
+/// served yet.
+const NOT_YET_SERVED: &str = "this daemon does not serve this request yet";
+/// No revision-1 connection is an attachment yet.
+const NOT_PERMITTED: &str = "this connection's role does not permit this request";
 
 /// What hello advertises: only the families this daemon implements.
 pub(super) fn advertisement() -> Advertisement {
@@ -45,8 +48,28 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             Request::Open(open) => self.open(id, open),
             Request::Leave(leave) => self.leave(id, leave.request_id),
             Request::Kill(kill) => self.wire_kill(id, kill),
-            _ => unreachable!("the connection refuses every other request"),
+            Request::Input(_)
+            | Request::Resize(_)
+            | Request::Acquire(_)
+            | Request::Ready(_)
+            | Request::SetViewing(_)
+            | Request::Acknowledge(_)
+            | Request::Focus(_) => self.unserved(id, &request),
         }
+    }
+
+    /// A request this daemon does not serve yet is rejected without effects;
+    /// the stream goes on and a registration stays. Acquire would convert a
+    /// passive monitor connection into an attachment, so on one it is
+    /// refused until #89 serves it. Every other request, and Acquire without
+    /// a registration, is impermissible: no revision-1 connection is an
+    /// attachment yet.
+    fn unserved(&mut self, id: u64, request: &Request) {
+        let error = match (request, self.monitors.contains_key(&id)) {
+            (Request::Acquire(_), true) => not_yet(),
+            _ => error(OperationalCode::InvalidState, NOT_PERMITTED),
+        };
+        self.reject_with(id, request.request_id(), error);
     }
 
     /// A later Open never repurposes an existing role.

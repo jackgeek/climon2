@@ -5,8 +5,10 @@ This is the maintained contract, not evidence that any release conforms.
 The [#63 terminal contract](../terminal-integration.md) adds optional core
 [Focus](request-focus.md) and canonical monitor-mode presentation below;
 these amendments are also agreed, unimplemented.
-The [private protocol](post-hello.md) is not this revision; session daemons
-now speak both, and the first frame after hello selects one.
+The [private protocol](post-hello.md) is not this revision;
+[session daemons](../../../GLOSSARY.md#sessions) now speak both, and the
+first [frame](../TERMS.md#frame) after [hello](../../../GLOSSARY.md#sessions)
+selects one.
 Use the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md) alongside each message page.
 
@@ -24,7 +26,9 @@ for [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
 [hello advertisement](hello-reply.md#revision-1-advertisement), framing and
 validation with their connection-fatal codes, monitor-mode Open, Leave,
 Response, Fatal error, Initial metadata (the title; status and progress
-reported unavailable) and Title changed. Interactive Open, standalone Kill,
+reported unavailable) and Title changed. Until it serves them, it rejects the
+other requests without effects, as each request's page describes.
+Interactive Open, standalone Kill,
 the control, terminal, status, notification, progress and final-result
 messages, succession and bounded delivery remain unimplemented, and no
 [client](../../../GLOSSARY.md#sessions) speaks this revision yet. The

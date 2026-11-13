@@ -732,8 +732,9 @@ Examples are wire bodies, not native declarations or conformance evidence.
 Session daemons implement Open in monitor mode, Leave for
 [passive monitor connections](../../GLOSSARY.md#attachment-and-control), Kill
 validation, Response, Initial metadata (the title), Title changed and Fatal
-error; each page states what is implemented. The other messages are agreed,
-not implemented.
+error, and reject the other requests without effects until they serve them;
+each page states what is implemented. The other messages are agreed, not
+implemented.
 
 | Code | Message | Direction | Purpose |
 |---|---|---|---|

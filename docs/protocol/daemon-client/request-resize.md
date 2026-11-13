@@ -1,6 +1,6 @@
 # Resize — `0x32`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed, not implemented; rejected until served**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) requests geometry from the
 [session daemon](../../../GLOSSARY.md#sessions) as current
 [controller](../../../GLOSSARY.md#attachment-and-control).
@@ -44,3 +44,14 @@ application input. Coalesce unsent intent only; preserve all submitted outcomes.
 #69 owns numeric limits/clamping bounds and progress budgets. A background
 [monitor](../../../GLOSSARY.md#sessions) must not
 originate resize just because it inherits control.
+
+## Implemented behavior
+
+No revision-1 connection is an
+[attachment](../../../GLOSSARY.md#attachment-and-control) yet, so until
+[#87](https://github.com/jackgeek/climon2/issues/87) serves Resize the
+[session daemon](../../../GLOSSARY.md#sessions) rejects it as impermissible
+with `invalid_state`, whether it is a connection's first request or arrives on
+a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control).
+The session's geometry does not change; the stream goes on and a registration
+stays.

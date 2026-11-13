@@ -1,6 +1,6 @@
 # Input — `0x31`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed, not implemented; rejected until served**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) sends actual user application
 [bytes](../TERMS.md#byte) to the
 [session daemon](../../../GLOSSARY.md#sessions), only as current ready
@@ -62,3 +62,12 @@ events. Monitor input additionally waits for coherent selected paint, excluding
 modal UI/stale/too-small targets, not nonmodal toast coverage. Host replies stay
 monitor-local and application focus uses non-user [Focus](request-focus.md);
 neither enters real-user Input or clears attention.
+
+## Implemented behavior
+
+No revision-1 connection is an attachment yet, so until
+[#87](https://github.com/jackgeek/climon2/issues/87) serves Input the
+[session daemon](../../../GLOSSARY.md#sessions) rejects it as impermissible
+with `invalid_state`, whether it is a connection's first request or arrives on
+a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control).
+No byte reaches the command; the stream goes on and a registration stays.

@@ -120,12 +120,12 @@ fn leave(stream: &mut UnixStream, request_id: u64) {
 /// The next record is the rejection of `request_id` with `code`, carrying no
 /// result.
 fn assert_rejected(stream: &mut UnixStream, request_id: u64, code: &str) {
-    let ServerMessage::Response(Response {
-        request_id: answered,
-        outcome: Outcome::Rejected(rejection),
-    }) = message(stream)
-    else {
-        panic!("expected a rejection of request {request_id}");
+    let (answered, rejection) = match message(stream) {
+        ServerMessage::Response(Response {
+            request_id,
+            outcome: Outcome::Rejected(rejection),
+        }) => (request_id, rejection),
+        other => panic!("expected a rejection of request {request_id}, got {other:?}"),
     };
     assert_eq!(answered, counter(request_id));
     assert_eq!(rejection.error.code.as_str(), code);

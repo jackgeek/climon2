@@ -9,11 +9,13 @@ use climon2_core::{
     hello::Lifecycle,
     protocol::{self, ClientMessage, ServerMessage as PrivateMessage, TerminalSize},
     wire::{
-        self, Available, ControlRecord, FatalError, Frame, Geometry, Kill, Leave, Mode, Outcome,
-        Response, ServerMessage, Success,
+        self, Acknowledge, Acquire, Available, ControlRecord, FatalError, Focus, Frame, Geometry,
+        Input, Kill, Leave, Mode, Outcome, Ready, Resize, Response, ServerMessage, SetViewing,
+        Success,
     },
 };
 use std::{
+    fs,
     io::Write,
     net::Shutdown,
     num::NonZeroU32,
@@ -637,6 +639,147 @@ fn interactive_open_and_standalone_kill_are_refused_until_they_are_served() {
         (Lifecycle::Attached, 1, true)
     );
     end_controlled(session, controlling);
+}
+
+/// Each request that needs an attachment, Input `0x31`, Resize `0x32`, Ready
+/// `0x34`, Set viewing `0x35`, Acknowledge `0x36` and Focus `0x39`, as
+/// request `id`. Its period and restoration ID exceed every request ID these
+/// tests send, and its input, size and focus would each show in the `lines`
+/// fixture's record.
+fn needing_an_attachment(id: u64) -> [Frame; 6] {
+    let (request_id, period, restoration_id) = (counter(id), counter(70), counter(90));
+    let geometry = Geometry {
+        cols: NonZeroU32::new(100).unwrap(),
+        rows: NonZeroU32::new(30).unwrap(),
+    };
+    [
+        Input {
+            request_id,
+            period,
+            restoration_id,
+            payload: b"leaked\n".to_vec(),
+        }
+        .to_frame(),
+        Resize {
+            request_id,
+            period,
+            restoration_id,
+            geometry,
+        }
+        .to_frame(),
+        Ready {
+            request_id,
+            period,
+            restoration_id,
+        }
+        .to_frame(),
+        SetViewing {
+            request_id,
+            period,
+            restoration_id,
+            viewing: true,
+        }
+        .to_frame(),
+        Acknowledge {
+            request_id,
+            period,
+            restoration_id,
+        }
+        .to_frame(),
+        Focus {
+            request_id,
+            period,
+            restoration_id,
+            focused: true,
+        }
+        .to_frame(),
+    ]
+}
+
+/// COM-02 (Contract, out-of-state requests) and COM-03 (Contract, passive
+/// cases): no revision-1 connection is an attachment yet, so Input, Resize,
+/// Ready, Set viewing, Acknowledge and Focus are identifiable but
+/// impermissible: each is rejected with `invalid_state`, never
+/// connection-fatal. It consumes its request ID and has no effects: as the
+/// first frame after hello it gives the connection no role, so a monitor
+/// Open still registers; on a passive monitor connection the registration
+/// stays until Leave reports it. No byte reaches the command, its terminal
+/// keeps the controller's size, and the hello `state` is unchanged.
+#[test]
+fn requests_that_need_an_attachment_are_invalid_state_and_the_stream_goes_on() {
+    let mut session = Session::start("lines");
+    let mut controlling = session.attach();
+    session.wait_marker(&mut controlling);
+    for (first, registered) in needing_an_attachment(1)
+        .into_iter()
+        .zip(needing_an_attachment(2))
+    {
+        let mut stream = peer(&session);
+        send(&mut stream, &first);
+        assert_rejected(&mut stream, 1, "invalid_state");
+        request(&mut stream, &open(2, &[], &[], Mode::Monitor));
+        opened(&frame(&mut stream), "2");
+        assert_eq!(body(&frame(&mut stream), 0x41), NO_TITLE);
+        leave(&mut stream, 3);
+
+        let (mut stream, _) = monitor(&session, &[]);
+        send(&mut stream, &registered);
+        assert_rejected(&mut stream, 2, "invalid_state");
+        leave(&mut stream, 3);
+    }
+    assert_eq!(
+        crate::advertised_state(&session),
+        (Lifecycle::Attached, 1, true)
+    );
+    crate::send(
+        &mut controlling,
+        ClientMessage::Input(b"after\nend\n".to_vec()),
+    );
+    assert_eq!(
+        crate::until_terminal(&mut controlling).1,
+        PrivateMessage::Exit { code: 0 }
+    );
+    session.finish();
+    assert_eq!(
+        fs::read_to_string(session.directory.path().join("lines")).unwrap(),
+        "after 91x37\n"
+    );
+}
+
+/// COM-03 (Contract, passive cases), with the interim refusal until #89:
+/// Acquire would convert a passive monitor connection into an attachment, so
+/// on a registration it is rejected without effects (`internal_error`), the
+/// detached session stays detached, and the registration stays until Leave.
+/// Before any Open there is nothing to convert: like an early Leave, Acquire
+/// is `invalid_state` and the stream goes on.
+#[test]
+fn acquire_is_refused_without_effects_until_it_is_served() {
+    let session = Session::start("exit");
+    detached(&session);
+    let mut stream = peer(&session);
+    request(
+        &mut stream,
+        &Acquire {
+            request_id: counter(1),
+        },
+    );
+    assert_rejected(&mut stream, 1, "invalid_state");
+    request(&mut stream, &open(2, &[], &["title-v1"], Mode::Monitor));
+    opened(&frame(&mut stream), "2");
+    assert_eq!(body(&frame(&mut stream), 0x41), UNSET_TITLE);
+    request(
+        &mut stream,
+        &Acquire {
+            request_id: counter(3),
+        },
+    );
+    assert_rejected(&mut stream, 3, "internal_error");
+    assert_eq!(
+        crate::advertised_state(&session),
+        (Lifecycle::Detached, 0, false)
+    );
+    leave(&mut stream, 4);
+    end_through_attachment(session);
 }
 
 /// COM-02 (Contract, connection effects): a connection-fatal failure on a
