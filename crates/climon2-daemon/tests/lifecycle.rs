@@ -1562,9 +1562,12 @@ fn a_headless_session_survives_the_detach_and_the_loss_of_its_last_attachment() 
 
     let second = session.attach();
     assert_eq!(advertised_state(&session), (Lifecycle::Attached, 1, true));
-    // The closed connection's EOF is readable before the probe connects, and
-    // the daemon services connections in acceptance order, so the probe's
-    // hello is answered after the loss.
+    // Shutting the socket down, unlike closing this process's descriptor, which
+    // a child forked meanwhile by another test thread shares until it execs,
+    // makes its EOF readable before the probe connects. The daemon services
+    // connections in acceptance order, so the probe's hello is answered after
+    // the loss.
+    second.shutdown(std::net::Shutdown::Both).unwrap();
     drop(second);
     assert_eq!(advertised_state(&session), (Lifecycle::Detached, 0, false));
 
