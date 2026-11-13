@@ -1536,14 +1536,21 @@ fn a_headless_session_advertises_detached_and_outlives_the_initial_attach_window
     headless.finish();
 }
 
-/// HDL-01 (Contract layer), command completion with zero clients: a headless
-/// session whose command ends before anything attaches ends with it, cleaned
-/// up. That it does so without the ordinary initial attach hold is the pure
-/// decision `only_an_unattached_ordinary_session_holds_an_early_exit_until_its_initial_deadline`.
+/// HDL-01 (Contract layer), command completion with zero clients and no initial
+/// attach hold: a headless session whose command ends before anything attaches
+/// ends with it, cleaned up, without keeping the exit for an initial
+/// attachment. The ordinary reference session starts first and nothing attaches
+/// to it, so its initial attach window closes before a later session's would:
+/// it still advertising `starting` once the headless session is gone shows the
+/// headless one held nothing until its own deadline. Kill then ends the
+/// reference.
 #[test]
-fn a_headless_session_ends_with_its_command_and_zero_clients() {
-    let mut session = headless("early");
-    session.finish();
+fn a_headless_session_ends_with_its_command_without_the_initial_attach_hold() {
+    let ordinary = Session::start("exit");
+    let mut headless = headless("early");
+    headless.finish();
+    assert_eq!(advertised_state(&ordinary), (Lifecycle::Starting, 0, false));
+    kill(ordinary);
 }
 
 /// HDL-01 (Contract layer), later attachments come and go: a headless session
