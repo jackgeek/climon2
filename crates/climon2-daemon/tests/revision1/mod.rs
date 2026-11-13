@@ -214,10 +214,15 @@ fn committed_kill(session: &Session) -> UnixStream {
         .set_read_timeout(Some(Duration::from_secs(20)))
         .unwrap();
     crate::send(&mut killer, ClientMessage::Kill);
+    terminating(session);
+    killer
+}
+
+/// Waits until the hello `state` reports the session terminating.
+fn terminating(session: &Session) {
     let deadline = Instant::now() + Duration::from_secs(20);
     while crate::advertised_state(session).0 != Lifecycle::Terminating {
-        assert!(Instant::now() < deadline, "the kill never committed");
+        assert!(Instant::now() < deadline, "termination never committed");
         std::thread::sleep(Duration::from_millis(5));
     }
-    killer
 }

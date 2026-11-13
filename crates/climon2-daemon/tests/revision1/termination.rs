@@ -4,11 +4,10 @@ use super::{
     assert_closed, assert_final_then_closed, assert_rejected, command_final, counter, exited,
     frame,
     interactive::{Attached, geometry, ready_attachment},
-    kill, message, monitor, open, peer, request, signalled,
+    kill, message, monitor, open, peer, request, signalled, terminating,
 };
 use crate::Session;
 use climon2_core::{
-    hello::Lifecycle,
     protocol::{ClientMessage, HANGUP_GRACE, ServerMessage as PrivateMessage},
     wire::{
         Acquire, AuthorityIds, Cleanup, CommandResult, Input, KnownResult, Leave, Mode, Outcome,
@@ -16,12 +15,7 @@ use climon2_core::{
     },
 };
 use climon2_platform::process;
-use std::{
-    fs,
-    os::unix::net::UnixStream,
-    thread,
-    time::{Duration, Instant},
-};
+use std::{fs, os::unix::net::UnixStream, thread, time::Instant};
 
 /// A standalone Kill's success: termination confirmed with `result` after
 /// complete daemon cleanup.
@@ -55,15 +49,6 @@ fn assert_refused_knowing(stream: &mut UnixStream, code: &str, result: &CommandR
 fn fixture_pid(session: &Session) -> u32 {
     let pid = fs::read_to_string(session.directory.path().join("fixture-pid")).unwrap();
     pid.parse().unwrap()
-}
-
-/// Waits until the hello `state` reports the session terminating.
-fn terminating(session: &Session) {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while crate::advertised_state(session).0 != Lifecycle::Terminating {
-        assert!(Instant::now() < deadline, "termination never committed");
-        thread::sleep(Duration::from_millis(5));
-    }
 }
 
 /// COM-06 (Contract): exit zero, an arbitrary nonzero exit and a signal each
