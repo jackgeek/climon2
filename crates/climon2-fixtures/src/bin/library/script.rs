@@ -20,7 +20,7 @@
 //! - `run`, on the owner thread; `wait_run` for its report;
 //! - `drain`, `until` `{"records": n}`, `{"tag": t}`, `{"response": id}`,
 //!   `{"display": hex}` (the Display bytes drained in this step contain
-//!   them) or `"terminal"` (default: once), releasing each delivery unless
+//!   them), `{"all": [until, ...]}` or `"terminal"` (default: once), releasing each delivery unless
 //!   `keep`, and stopping at the first failed drain;
 //! - `observe` and `release` the deliveries kept so far;
 //! - `snapshot`, `notification`, `shutdown`; `await_snapshot` until its
@@ -217,7 +217,12 @@ fn submit(api: Api, instance: &Instance, request: &Value) -> Value {
 fn substituted(instance: &Instance, request: &Value) -> Value {
     let back = |by: usize| {
         let count = instance.authorities.len();
-        let index = count.checked_sub(by).expect("enough drained authorities");
+        let index = count.checked_sub(by).unwrap_or_else(|| {
+            panic!(
+                "{by} drained authorities needed: {:?}",
+                instance.authorities
+            )
+        });
         instance.authorities[index]
     };
     match request {
@@ -288,6 +293,11 @@ fn wait_run(instance: &mut Instance) -> Value {
 fn met(until: &Value, drains: &[Value], records: &[Value], terminal: bool) -> bool {
     if until == "terminal" {
         return terminal;
+    }
+    if let Some(all) = until["all"].as_array() {
+        return all
+            .iter()
+            .all(|until| met(until, drains, records, terminal));
     }
     if let Some(count) = until["records"].as_u64() {
         return records.len() as u64 >= count;

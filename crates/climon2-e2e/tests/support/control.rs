@@ -103,10 +103,22 @@ pub struct Session {
 
 impl Session {
     pub fn start(package: &Package, root: &Path) -> Self {
+        Self::running(package, root, &["echo-until", "END"])
+    }
+
+    /// A session whose application only waits for the `end` file after
+    /// `ECHO-READY`, whoever controls it.
+    pub fn idle(package: &Package, root: &Path) -> Self {
+        Self::running(package, root, &[])
+    }
+
+    fn running(package: &Package, root: &Path, then: &[&str]) -> Self {
         let end = root.join("end");
         let mut command = package.command("climon2");
         command.args(["exec", "climon2-fixture", "raw", "print", "\x1b[?1004h"]);
-        command.args(["print", "ECHO-READY", "echo-until", "END", "await-file"]);
+        command.args(["print", "ECHO-READY"]);
+        command.args(then);
+        command.arg("await-file");
         command.arg(&end);
         let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
         terminal.wait_for_text("ECHO-READY", TIMEOUT).unwrap();
@@ -127,7 +139,7 @@ impl Session {
 
     /// The same session, detached by its client's escape prefix.
     pub fn detached(package: &Package, root: &Path) -> Self {
-        let mut session = Self::start(package, root);
+        let mut session = Self::idle(package, root);
         session.terminal.send(super::DETACH).unwrap();
         assert_eq!(session.terminal.wait_exit(TIMEOUT).unwrap(), 0);
         let notice = format!("climon2: detached from session {}", session.id);
@@ -234,9 +246,9 @@ pub fn assert_detached(terminal: &Value, generation: u64) {
     assert_eq!(terminal["error"], no_error(), "{terminal:#}");
 }
 
-/// The records after an Open's Response and Initial metadata, up to and
-/// including Restoration complete: Control granted for `reason` at
-/// `geometry`, its Restoration begin at the same authority and geometry,
+/// The presentation records from a grant through its Restoration complete,
+/// whatever Responses or metadata interleave: Control granted for `reason`
+/// at `geometry`, its Restoration begin at the same authority and geometry,
 /// Display chunks of that authority, and the matching complete. The
 /// authority, nonzero.
 pub fn assert_restored(
@@ -245,23 +257,34 @@ pub fn assert_restored(
     reason: u64,
     geometry: [u64; 2],
 ) -> [u64; 2] {
-    let granted = presented(&records[0], GRANTED, generation);
+    let presented_only: Vec<&Value> = records
+        .iter()
+        .filter(|record| (GRANTED..=GEOMETRY).contains(&record["tag"].as_u64().unwrap()))
+        .collect();
+    let granted = presented(presented_only[0], GRANTED, generation);
     let authority = ids(granted);
     assert!(authority.iter().all(|id| *id > 0), "{granted:#}");
     assert_eq!(granted["geometry"], json!(geometry), "{granted:#}");
     assert_eq!(granted["reason"], reason, "{granted:#}");
     assert_eq!(granted["reserved"], 0, "{granted:#}");
-    let begin = presented(&records[1], RESTORATION_BEGIN, generation);
+    let begin = presented(presented_only[1], RESTORATION_BEGIN, generation);
     assert_eq!(ids(begin), authority, "{begin:#}");
     assert_eq!(begin["geometry"], json!(geometry), "{begin:#}");
-    let (last, chunks) = records[2..].split_last().unwrap();
-    for chunk in chunks {
+    let complete = presented_only
+        .iter()
+        .position(|record| record["tag"] == RESTORATION_COMPLETE)
+        .unwrap();
+    for chunk in &presented_only[2..complete] {
         let display = presented(chunk, DISPLAY, generation);
         assert_eq!(ids(display), authority, "{chunk:#}");
         assert!(!display["bytes"].as_str().unwrap().is_empty());
     }
     assert_eq!(
-        ids(presented(last, RESTORATION_COMPLETE, generation)),
+        ids(presented(
+            presented_only[complete],
+            RESTORATION_COMPLETE,
+            generation
+        )),
         authority
     );
     authority
