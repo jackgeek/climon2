@@ -122,7 +122,7 @@ impl Link {
         if start == wanted {
             return Ok(false);
         }
-        self.incoming.resize(wanted, 0);
+        self.incoming.resize_with(wanted, u8::default);
         let count = arrived(self.socket.read(&mut self.incoming[start..]), start)?;
         self.incoming.truncate(start + count.unwrap_or_default());
         Ok(count.is_some())

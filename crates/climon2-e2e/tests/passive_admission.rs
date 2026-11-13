@@ -174,7 +174,8 @@ fn installed_library_admits_only_valid_requests_and_rejections_cost_nothing() {
 /// record and `metadata_record_bytes` each in `event_records` and
 /// `event_bytes`), both are accepted at the limit and a third request is
 /// `queue_full`. An Open too large for `request_bytes` on its own is
-/// `queue_full`, and its ID is then accepted. Shutdown answers each
+/// `queue_full`, and its ID is then accepted; one that fills it exactly is
+/// accepted, and a Leave after it is `queue_full`. Shutdown answers each
 /// accepted request `cancelled`.
 #[test]
 fn installed_library_bounds_requests_by_every_queue_limit() {
@@ -213,9 +214,22 @@ fn installed_library_bounds_requests_by_every_queue_limit() {
             json!({ "do": "finish", "instance": name }),
         ]);
     }
+    let single = steps.len();
+    let exact = json!({ "request_bytes": charge(&SELECTED) });
+    steps.extend([
+        json!({ "do": "create", "instance": "single", "startup": { "limits": exact } }),
+        json!({ "do": "submit", "instance": "single", "request": open(1, &REQUIRED, &["title-v1"]) }),
+        json!({ "do": "submit", "instance": "single", "request": leave(2, 1) }),
+        json!({ "do": "shutdown", "instance": "single" }),
+        json!({ "do": "run", "instance": "single" }),
+        json!({ "do": "finish", "instance": "single" }),
+    ]);
     let report = script(&package, &root, json!(steps));
     let oversized = step(&report, starts[1] - 1);
     assert_failure(oversized, FULL, "queue_full");
+    assert_success(step(&report, single + 1));
+    assert_failure(step(&report, single + 2), FULL, "queue_full");
+    assert_cancelled(step(&report, single + 5), &[1]);
     for ((name, _), start) in cases.iter().zip(starts) {
         assert_success(step(&report, start));
         assert_success(step(&report, start + 1));
@@ -419,6 +433,89 @@ fn installed_library_holds_daemon_records_while_the_event_queue_is_full() {
     assert!(rest.is_empty(), "{rest:#?}");
     assert_left(terminal, 1);
     assert_eq!(kinds(&report["peers"]["a"]), ["hello", "open", "leave"]);
+    assert_all_released(&report["ledger"]);
+    package.assert_clean();
+}
+
+/// LIB-04 Library (each record is charged its header and the bytes it owns,
+/// nothing else, until released): with every record still queued, the
+/// event queue holds exactly the records' headers plus the Open's selected
+/// token array, the Initial metadata's title and signal name copies, the
+/// titles' copies (none for an unset one) and the copied text of the
+/// daemon's error rejecting a Leave; a Response's own static text costs
+/// nothing.
+#[test]
+fn installed_library_charges_each_record_its_header_and_the_bytes_it_owns() {
+    let package = Package::new();
+    let root = root(&package);
+    let named = send(
+        0x41,
+        json!({
+            "title": { "available": true, "value": "longer title" },
+            "status": { "available": false, "value": null },
+            "progress": { "available": false, "value": null },
+            "command_result": { "kind": "signal", "number": 15, "name": "SIGTERM" },
+        }),
+    );
+    let rejected = leave_answer("rejected", false, daemon_error("invalid_state"));
+    let ok = leave_answer("ok", false, Value::Null);
+    let error = ("invalid_state".len() + "fake daemon".len()) as u64;
+    let cases = [
+        (
+            "named",
+            named,
+            ("longer title".len() + "SIGTERM".len()) as u64,
+        ),
+        ("plain", initial(json!("plain")), "plain".len() as u64),
+    ];
+    let mut steps = Vec::new();
+    for (name, metadata, _) in &cases {
+        let peer = json!({
+            "open": [
+                opened(&SELECTED),
+                metadata,
+                title_changed(Value::Null),
+                title_changed(json!("abc")),
+            ],
+            "leaves": [[rejected], [ok]],
+        });
+        let submit =
+            |request: Value| json!({ "do": "submit", "instance": name, "request": request });
+        steps.extend([
+            json!({ "do": "create", "instance": name, "peer": peer }),
+            submit(open(1, &REQUIRED, &["title-v1"])),
+            submit(leave(2, 1)),
+            json!({ "do": "run", "instance": name }),
+            json!({ "do": "await_snapshot", "instance": name, "gauge": "event_records", "value": 5 }),
+            json!({ "do": "drain", "instance": name, "until": { "records": 5 } }),
+            json!({ "do": "shutdown", "instance": name }),
+            json!({ "do": "finish", "instance": name }),
+        ]);
+    }
+    let report = script(&package, &root, json!(steps));
+    for (index, (name, _, metadata)) in cases.iter().enumerate() {
+        let start = 8 * index;
+        let queued = &step(&report, start + 4)["output"];
+        let owned = 3 * TOKEN + metadata + 3 + error;
+        assert_eq!(queued["event_records"], 5, "{name}: {queued:#}");
+        assert_eq!(
+            queued["event_bytes"],
+            5 * RECORD + owned,
+            "{name}: {queued:#}"
+        );
+        let records = step(&report, start + 5)["records"].as_array().unwrap();
+        let tags: Vec<_> = records.iter().map(|record| record["tag"].clone()).collect();
+        assert_eq!(
+            tags,
+            [RESPONSE, INITIAL_METADATA, TITLE, TITLE, RESPONSE].map(Value::from),
+            "{name}"
+        );
+        assert_eq!(records[2]["title"], title(UNSET, None), "{name}");
+        assert_rejected(&records[4], 1, 2, ORIGIN_DAEMON, "invalid_state");
+        let (rest, terminal) = finished(step(&report, start + 7));
+        assert!(rest.is_empty(), "{name}: {rest:#?}");
+        assert_left(terminal, 1);
+    }
     assert_all_released(&report["ledger"]);
     package.assert_clean();
 }

@@ -78,7 +78,10 @@ fn header(request: &native::Request) -> Result<u64, Failure> {
         .ok_or(invalid("reserved must be zero"))?;
     (request.request_id != 0)
         .then_some(request.request_id)
-        .ok_or(Failure::new(INVALID_REQUEST_ID, "request_id must be positive"))
+        .ok_or(Failure::new(
+            INVALID_REQUEST_ID,
+            "request_id must be positive",
+        ))
 }
 
 /// # Safety

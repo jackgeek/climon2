@@ -354,7 +354,8 @@ fn opened_then(after: Vec<Value>) -> Value {
 /// the connection closed and no Leave needed. A title one byte over
 /// `title_bytes`, or a record one byte over `metadata_record_bytes`, fails
 /// it too (`resource_limit`) instead of being truncated, and a daemon's
-/// Fatal error is reported with its own origin and code.
+/// Fatal error is reported with its own origin and code. Nothing the daemon
+/// sent after the failing frame, even in the same write, is delivered.
 #[test]
 fn installed_library_fails_the_connection_on_traffic_revision_one_forbids() {
     let package = Package::new();
@@ -391,6 +392,8 @@ fn installed_library_fails_the_connection_on_traffic_revision_one_forbids() {
         json!({ "code": "internal_error", "message": "fake daemon failed" }),
     );
     let long = "x".repeat(4097);
+    let past = "y".repeat(300);
+    let past_frame = 1 + serde_json::to_vec(&json!({ "title": past })).unwrap().len();
     let library = |code: &'static str| (ORIGIN_LIBRARY, code);
     let transport = |code: &'static str| (ORIGIN_TRANSPORT, code);
     let cases: Vec<(Case, (u64, &str), usize)> = vec![
@@ -517,15 +520,22 @@ fn installed_library_fails_the_connection_on_traffic_revision_one_forbids() {
         (
             case(
                 "record",
-                opened_then(vec![title_changed(json!("y".repeat(300)))]),
-                json!({ "limits": { "metadata_record_bytes": 256 } }),
+                opened_then(vec![title_changed(json!(past))]),
+                json!({ "limits": { "metadata_record_bytes": past_frame - 1 } }),
                 &request,
             ),
             library("resource_limit"),
             2,
         ),
         (
-            case("fatal", opened_then(vec![fatal]), json!({}), &request),
+            case(
+                "fatal",
+                opened_then(vec![
+                    json!({ "together": [fatal, title_changed(json!("after"))] }),
+                ]),
+                json!({}),
+                &request,
+            ),
             (ORIGIN_DAEMON, "internal_error"),
             2,
         ),
@@ -569,6 +579,10 @@ enum Expect {
     Left(u64),
     /// The Initial metadata.
     Metadata,
+    /// A Title changed record.
+    Title,
+    /// A failed Leave `id` whose known result detached an attachment.
+    FailedLeft(u64, (u64, &'static str)),
     /// A Response to `id` with `outcome`, no result and an error.
     Answer(u64, u64, (u64, &'static str)),
     /// A diagnostic.
@@ -592,6 +606,14 @@ fn assert_records(name: &str, records: &[Value], expected: &[Expect]) {
                 assert_eq!(response["error"], no_error(), "{name}: {record:#}");
             }
             Expect::Metadata => assert_header(record, INITIAL_METADATA, 1),
+            Expect::Title => assert_header(record, TITLE, 1),
+            Expect::FailedLeft(id, (origin, code)) => {
+                let response = assert_response(record, 1, *id, FAILED);
+                assert_eq!(response["result_tag"], LEFT, "{name}: {record:#}");
+                let detached = json!({ "attachment_detached": 1 });
+                assert_eq!(response["result"], detached, "{name}: {record:#}");
+                assert_error(&response["error"], *origin, code);
+            }
             Expect::Answer(id, outcome, (origin, code)) => {
                 let response = assert_response(record, 1, *id, *outcome);
                 assert_eq!(response["result_tag"], RESULT_NONE, "{name}: {record:#}");
@@ -616,7 +638,7 @@ struct Scenario {
 }
 
 /// The steps of an instance against `peer`, with `startup` overrides, that
-/// submits `requests`, runs and finishes.
+/// submits `requests` and runs.
 fn submitted(peer: Value, startup: Value, requests: &[Value]) -> Vec<Value> {
     let mut steps = vec![json!({ "do": "create", "peer": peer, "startup": startup })];
     steps.extend(
@@ -624,18 +646,26 @@ fn submitted(peer: Value, startup: Value, requests: &[Value]) -> Vec<Value> {
             .iter()
             .map(|request| json!({ "do": "submit", "request": request })),
     );
-    steps.extend([json!({ "do": "run" }), json!({ "do": "finish" })]);
+    steps.push(json!({ "do": "run" }));
     steps
 }
 
-/// Every scenario in one script, each on its own instance; then each one's
-/// records, terminal evidence and fake daemon, with nothing replayed.
+/// Every scenario in one script, each on its own instance and each ended by
+/// waiting for run, a snapshot and `finish`; then each one's records,
+/// terminal evidence and fake daemon, with nothing replayed. Once run has
+/// returned, nothing is outstanding: no request, no operation and no
+/// connection descriptor.
 fn assert_scenarios(package: &Package, root: &Path, scenarios: &[Scenario]) {
     let mut steps = Vec::new();
     let mut starts = Vec::new();
+    let ending = [
+        json!({ "do": "wait_run" }),
+        json!({ "do": "snapshot" }),
+        json!({ "do": "finish" }),
+    ];
     for scenario in scenarios {
         starts.push(steps.len());
-        steps.extend(scenario.steps.iter().map(|step| {
+        steps.extend(scenario.steps.iter().chain(&ending).map(|step| {
             let mut step = step.clone();
             step["instance"] = json!(scenario.name);
             step
@@ -644,7 +674,15 @@ fn assert_scenarios(package: &Package, root: &Path, scenarios: &[Scenario]) {
     let report = script(package, root, json!(steps));
     for (scenario, start) in scenarios.iter().zip(starts) {
         let name = scenario.name;
-        let last = start + scenario.steps.len() - 1;
+        let last = start + scenario.steps.len() + ending.len() - 1;
+        let settled = &step(&report, last - 1)["output"];
+        for (gauge, value) in [
+            ("request_records", 0),
+            ("operations", 0),
+            ("descriptors", INSTANCE_DESCRIPTORS),
+        ] {
+            assert_eq!(settled[gauge], value, "{name}: {gauge}: {settled:#}");
+        }
         let (mut records, terminal) = finished(step(&report, last));
         if let Some(drained) = scenario.drained {
             let mut earlier = step(&report, start + drained)["records"]
@@ -669,7 +707,10 @@ fn assert_scenarios(package: &Package, root: &Path, scenarios: &[Scenario]) {
 /// Response, only failed terminal evidence, which makes the caller's still
 /// unanswered IDs indeterminate (a lost Leave leaves the departure
 /// unconfirmed); a daemon's failed or indeterminate Leave is answered as
-/// such and ends the registration; a refused Open is answered with the
+/// such and ends the registration, and a failed one never counts as
+/// detaching, whatever result it knew; a failure's diagnostic is best
+/// effort, left out when the event queue's records are full, while terminal
+/// evidence keeps the error; a refused Open is answered with the
 /// daemon's error and calls for no retry when the daemon knew the command's
 /// final result, for none possible when it lacks support, and for passive
 /// retry otherwise. Each fake daemon saw every request once.
@@ -775,6 +816,46 @@ fn installed_library_reports_lost_and_late_answers_truthfully_without_replay() {
             kinds: &["hello", "open", "leave"],
         },
         Scenario {
+            name: "leave-known",
+            steps: submitted(
+                passive_peer(json!([response(
+                    "$leave",
+                    "failed",
+                    json!({ "kind": "left", "attachment_detached": true }),
+                    daemon_error("internal_error"),
+                )])),
+                json!({}),
+                &both,
+            ),
+            drained: None,
+            records: vec![
+                Expect::Opened(1),
+                Expect::Metadata,
+                Expect::FailedLeft(2, daemon("internal_error")),
+            ],
+            terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_FAILED),
+            error: Some(daemon("internal_error")),
+            kinds: &["hello", "open", "leave"],
+        },
+        Scenario {
+            name: "unfit-diagnostic",
+            steps: submitted(
+                json!({ "open": [
+                    opened(&SELECTED),
+                    initial(json!("t")),
+                    title_changed(json!("x")),
+                    send(0x4d, daemon_error("internal_error")),
+                ] }),
+                json!({ "limits": { "event_records": 3 } }),
+                &alone,
+            ),
+            drained: None,
+            records: vec![Expect::Opened(1), Expect::Metadata, Expect::Title],
+            terminal: (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED),
+            error: Some(daemon("internal_error")),
+            kinds: &["hello", "open"],
+        },
+        Scenario {
             name: "unsupported",
             steps: submitted(
                 refused("rejected", "unsupported_capability"),
@@ -822,7 +903,9 @@ fn installed_library_reports_lost_and_late_answers_truthfully_without_replay() {
 /// COM-01 and COM-03 Fault (a rejection that knows the command's final
 /// result reports it, and calls for no retry): the Open is rejected with
 /// the daemon's error and a known final exit code, as the Response's
-/// result, before any role; terminal evidence calls for no retry.
+/// result, before any role; terminal evidence calls for no retry. The
+/// Response and the diagnostic are each charged their record and their
+/// copies of the daemon's error text, and an exit code costs nothing more.
 #[test]
 fn installed_library_reports_a_known_final_result_and_never_retries() {
     let package = Package::new();
@@ -831,9 +914,20 @@ fn installed_library_reports_a_known_final_result_and_never_retries() {
     let peer = json!({
         "open": [response("$open", "rejected", known, daemon_error("invalid_state"))],
     });
-    let steps = submitted(peer, json!({}), &[open(1, &REQUIRED, &["title-v1"])]);
-    let report = script(&package, &root, json!(steps));
-    let (records, terminal) = finished(step(&report, 3));
+    let steps = json!([
+        { "do": "create", "peer": peer },
+        { "do": "submit", "request": open(1, &REQUIRED, &["title-v1"]) },
+        { "do": "run" },
+        { "do": "wait_run" },
+        { "do": "snapshot" },
+        { "do": "finish" },
+    ]);
+    let report = script(&package, &root, steps);
+    let queued = &step(&report, 4)["output"];
+    let error = ("invalid_state".len() + "fake daemon".len()) as u64;
+    assert_eq!(queued["event_records"], 2, "{queued:#}");
+    assert_eq!(queued["event_bytes"], 2 * (RECORD + error), "{queued:#}");
+    let (records, terminal) = finished(step(&report, 5));
     assert_eq!(records.len(), 2, "{records:#?}");
     let response = assert_response(&records[0], 1, 1, REJECTED);
     assert_eq!(response["result_tag"], KNOWN_FINAL, "{response:#}");
@@ -883,7 +977,6 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
             json!({ "do": "run" }),
             json!({ "do": "drain", "until": { "tag": INITIAL_METADATA } }),
             json!({ "do": "shutdown" }),
-            json!({ "do": "finish" }),
         ]
     };
     let opening = root.join("go-opening");
@@ -939,7 +1032,6 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
                 json!({ "do": "run" }),
                 json!({ "do": "drain", "until": { "records": 3 } }),
                 json!({ "do": "shutdown" }),
-                json!({ "do": "finish" }),
             ],
             drained: Some(4),
             records: vec![
@@ -967,7 +1059,6 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
                 json!({ "do": "await_peer", "frames": 2 }),
                 json!({ "do": "shutdown" }),
                 json!({ "do": "touch", "path": opening.to_str().unwrap() }),
-                json!({ "do": "finish" }),
             ],
             drained: None,
             records: vec![Expect::Opened(1), Expect::Metadata],
@@ -984,7 +1075,6 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
                 json!({ "do": "run" }),
                 json!({ "do": "drain", "until": { "tag": INITIAL_METADATA } }),
                 json!({ "do": "shutdown" }),
-                json!({ "do": "finish" }),
             ],
             drained: Some(4),
             records: vec![
@@ -1009,7 +1099,6 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
                 json!({ "do": "run" }),
                 json!({ "do": "drain", "until": { "records": 3 } }),
                 json!({ "do": "touch", "path": second.to_str().unwrap() }),
-                json!({ "do": "finish" }),
             ],
             drained: Some(5),
             records: vec![

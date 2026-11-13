@@ -421,18 +421,16 @@ fn left(id: Option<u64>, verdict: Verdict) -> Result<Effect, Fault> {
         fault,
         carried,
     } = verdict;
-    let (answer, detached) = match carried {
-        None => (Answer::None, false),
+    let answer = match carried {
+        None => Answer::None,
         Some(Carried::Success(Success::Left {
             attachment_detached,
-        })) => (
-            Answer::Left {
-                detached: attachment_detached,
-            },
-            attachment_detached,
-        ),
+        })) => Answer::Left {
+            detached: attachment_detached,
+        },
         Some(_) => return Err(MISMATCHED),
     };
+    let detached = matches!(answer, Answer::Left { detached: true });
     let departure = Departure::answered(outcome, detached, fault.clone());
     let response = id.map(|id| Response {
         id,
