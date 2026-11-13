@@ -164,8 +164,10 @@ preserves a recent page. Unsafe growth/cleanup is explicit failure, not client
 eviction or unloading. Allocation-aware terminal qualification reopens the
 narrow unbounded-engine assumption; `climon2-vt`'s allocation-bounded `Model`
 (#76) provides it for the monitor's planned per-session models, which the
-monitor does not use yet. It chooses no new executable/library or consumption
-arrow, and does not sandbox trusted native code.
+monitor does not keep yet: at startup it reads only their mandatory
+allocation, to check that its limits hold one session's model (#167). It
+chooses no new executable/library or consumption arrow, and does not sandbox
+trusted native code.
 
 The client executable will also load its same-release library for ordinary
 operations.

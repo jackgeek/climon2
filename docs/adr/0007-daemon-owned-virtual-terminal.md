@@ -216,7 +216,8 @@ client-side-emulator option for the monitor role, not ordinary clients or query
 authority. Planned read-only Rust cell/mode/cursor/history views keep engine
 types private; current `climon2-vt` has no public cells, and the monitor, the
 one other consumer allowed by ADR 0004, uses it only for the documented
-normal-shell baseline.
+normal-shell baseline and, at startup, a model's mandatory allocation, to check
+that its limits hold one session's model (#167).
 No native cross-release cell schema or new workspace crate is selected.
 
 Monitor-mode display/restoration will use effective session geometry canonically,

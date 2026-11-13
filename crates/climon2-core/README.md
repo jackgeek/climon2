@@ -208,8 +208,10 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     then `client_bytes`, must hold the current model and recent page
     together, and `history_bytes_total`, then `history_bytes_per_session`, the
     page. Each total comes before the budgets it contains, so a refusal names
-    the limit to raise, with the session size and both values. `exec` does not apply it.
-    Operating-system limits are left to admission (#120).
+    the limit to raise, with the session size and both values. Holding it
+    admits the largest session, not a restoration staged beside it (at least
+    38,126,478 bytes at 500x200). `exec` does not apply it. Operating-system
+    limits are left to admission (#120).
 - `keys`: `ControlKey` is one C0 control byte named in the `Ctrl+` vocabulary.
   `ClientSettings` holds the escape prefix (default `Ctrl+]`) and take-control
   key (default `Ctrl+T`); either may be disabled, take-control may not be

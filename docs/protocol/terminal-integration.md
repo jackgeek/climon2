@@ -57,7 +57,9 @@ The monitor parses those bytes into its own per-[session](../../GLOSSARY.md#sess
 [virtual terminal](../../GLOSSARY.md#sessions), using `climon2-vt`, and Ratatui
 paints its read-only Rust views. These views of cells, modes, cursor, and history
 are a planned addition; current `climon2-vt` exposes no public cell views, and the
-monitor uses it only for its release bytes. The monitor runs as its own
+monitor uses it only for its release bytes and, before the host terminal changes,
+to check that its configured limits hold one session's mandatory model
+allocation ([#167](https://github.com/jackgeek/climon2/issues/167)). The monitor runs as its own
 `climon2-monitor` executable, beside the other executables of its release
 ([ADR 0004](../adr/0004-crate-layout-and-dependency-direction.md)); this contract
 chooses no workspace crate.

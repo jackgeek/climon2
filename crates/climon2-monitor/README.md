@@ -33,7 +33,9 @@ no client libraries yet.
    keeping `history.max_rows` (#167): `memory.total_bytes`, then
    `client_bytes`, the current model and the history chunk holding its recent
    page together, and `history_bytes_total`, then `history_bytes_per_session`,
-   that chunk (`Limits::hold`).
+   that chunk (`Limits::hold`). That admits the largest session but not a
+   restoration staged beside it, at least 38,126,478 bytes at 500x200, which
+   follows every monitor-mode geometry change (#89).
 
 Every failure prints one escaped line, with the general-log suffix once that log
 exists, and exits 125 before raw mode, the alternate screen or any OSC output.

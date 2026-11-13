@@ -267,7 +267,10 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
   `memory.total_bytes` and `memory.client_bytes` must each hold its current
   model and the history holding its recent page, 19063239 bytes together, and
   `memory.history_bytes_total` and `history_bytes_per_session` that history,
-  12115200 bytes. The refusal names the first limit to raise.
+  12115200 bytes. The refusal names the first limit to raise. Limits that
+  only just pass admit such a session, but restoring it beside its current
+  model needs at least 38126478 bytes, and the monitor will restore it
+  whenever the session's size changes.
 
 `exec` validates the whole file before starting the session. `attach`
 validates only `client`; the monitor validates `client` and `monitor`, and

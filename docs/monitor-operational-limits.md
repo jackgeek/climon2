@@ -73,6 +73,14 @@ the budgets it contains, so a refusal names the limit to raise, with both
 byte counts. `exec` does not make this check: only the monitor has
 terminal models.
 
+The check guarantees admission, not restoration. A restoration is staged in a
+second model beside the current one, whose first history chunk never yields
+to it, so staging one at 500x200 needs room for both models: at least
+38,126,478 bytes (ADR 0007's 36.36 MiB), more once the current model's history
+has grown. Limits below that admit the largest session but cannot stage its
+restoration, which follows every monitor-mode geometry change
+([#89](https://github.com/jackgeek/climon2/issues/89)).
+
 Report effective configured values, qualified reservations and exhaustion
 diagnostics explicitly. Classification and peer visibility are:
 
