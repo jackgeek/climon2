@@ -16,7 +16,8 @@ climon2-daemon --session-id GUID --home CANONICAL_ABSOLUTE_HOME \
 
 Options are private, order-independent, unique and required except `--log`.
 `--scrollback-max-rows` sets the VT engine's retained normal-screen history.
-`--lifetime` is the session's startup policy: `ordinary` for `c2 exec`,
+`--lifetime` is the session's startup policy, its
+[lifetime policy](../../GLOSSARY.md#sessions): `ordinary` for `c2 exec`,
 `headless` for `c2 exec --headless` (see the leave policy below). Any other
 value is an invalid invocation. Core's `lifetime::Lifetime` owns both spellings.
 All tokens after `--` are untouched OS-string command arguments. The CLI

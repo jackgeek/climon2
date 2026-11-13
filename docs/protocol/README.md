@@ -97,11 +97,11 @@ session's zero-client survival lasts until command completion or explicit
 [attachment](../../GLOSSARY.md#attachment-and-control) loss. This CLI spelling
 and lifetime are implemented as agreed in the
 [lifecycle](../monitor-lifecycle.md#headless-creation-and-existing-cli-kill).
-The CLI passes the headless policy to its same-release daemon as a private
-startup argument; no wire message or field is added. Its
-[hello reply](daemon-client/hello-reply.md) reports `detached` whenever it has
-no attachment. Existing `c2 kill <session>` ends headless sessions; no
-duplicate command is added. Ordinary sessions retain
+The CLI passes the headless [lifetime policy](../../GLOSSARY.md#sessions) to its
+same-release daemon as a private startup argument; no wire message or field is
+added. Its [hello reply](daemon-client/hello-reply.md) reports `detached`
+whenever it has no attachment. Existing `c2 kill <session>` ends headless sessions; no
+duplicate command is added. [Ordinary sessions](../../GLOSSARY.md#sessions) retain
 [leave policy](../../GLOSSARY.md#attachment-and-control), and this exception does
 not make all sessions persistent. Succession to
 [passive monitor connections](../../GLOSSARY.md#attachment-and-control) also

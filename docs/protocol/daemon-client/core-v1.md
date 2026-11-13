@@ -206,10 +206,12 @@ on the current private protocol: creation uses a private same-release daemon
 startup argument, not a wire message, and the frozen [hello reply](hello-reply.md)
 reports a headless session without attachments as `detached`. Existing
 `c2 kill <session>` ends headless sessions. Under this revision,
-succession stays as above for every session. The headless policy changes only
-what happens with no attachment: from creation on, and after succession leaves
-no participant, the session keeps running. Ordinary leave policy is unchanged,
-and not every session becomes persistent.
+succession stays as above for every session. The headless
+[lifetime policy](../../../GLOSSARY.md#sessions) changes only what happens with
+no attachment: from creation on, and after succession leaves no participant,
+the session keeps running. The leave policy of
+[ordinary sessions](../../../GLOSSARY.md#sessions) is unchanged, and not every
+session becomes persistent.
 
 The [lifecycle amendment](../../monitor-lifecycle.md) also agrees concurrent
 shutdown and automatic exponential passive recovery. It does not change any

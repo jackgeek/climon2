@@ -209,15 +209,20 @@ interactive client and returns success only after daemon-confirmed successful
 session creation. A later command outcome is the session's outcome, not the
 already-returned CLI's status. Creation failure must be reported truthfully.
 
-Headless is an explicit durable per-session creation policy: zero clients are
+Headless is an explicit, durable per-session
+[lifetime policy](../GLOSSARY.md#sessions) chosen at creation: zero clients are
 allowed from startup and throughout that session's lifetime, including after the
 last client unexpectedly disappears. The session ends on command completion or
-explicit Kill. Normal sessions retain their existing leave policy; deliberate
-detach retains its established behavior. This narrowly scoped headless lifetime
-exception does not make every session persistent or add native-crash isolation.
+explicit Kill. [Ordinary sessions](../GLOSSARY.md#sessions) retain their
+existing leave policy; deliberate detach retains its established behavior.
+This narrowly scoped headless lifetime exception does not make every session
+persistent or add native-crash isolation.
 The developer confirmed on 2026-11-08 that a headless session reports the
 existing `detached` lifecycle whenever it has no attachment, from startup on;
-the five-second initial attach window and its exit hold do not apply.
+the five-second initial attach window and its exit hold do not apply. The owner
+decided on 2026-11-13 that success means the session was created: when its
+session ID cannot be written to stdout, the session keeps running and the CLI
+still exits 0.
 
 `c2 kill <session>` already exists. Preserve it and require it to terminate
 headless sessions using the same authoritative Kill semantics. Selector

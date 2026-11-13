@@ -138,7 +138,7 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   `selector::Selector`. List permits only `--json`; `monitor`, its alias `mon`
   and top-level help/version take no arguments.
   `UsageError::exit_code` returns 2; `cli::USAGE` is the usage line.
-- `lifetime::Lifetime`: a session's lifetime policy, `Ordinary` or `Headless`
+- `lifetime::Lifetime`: a session's [lifetime policy](../../GLOSSARY.md#sessions), `Ordinary` or `Headless`
   (zero clients allowed until command completion or Kill). `name`/`FromStr`
   spell the daemon's `--lifetime ordinary|headless` startup argument.
 - `selector::Selector`: 1 to 32 hex digits after removing hyphens and folding

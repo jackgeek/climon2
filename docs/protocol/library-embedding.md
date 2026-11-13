@@ -204,8 +204,9 @@ supplies configurable delay, cap and jitter.
 
 This is not native-crash isolation. Abort, native faults, and panic-abort builds
 can terminate the monitor and every hosted client. No new session-survival
-guarantee exists: ordinary sessions retain the daemon's existing
-[leave policy](../../GLOSSARY.md#attachment-and-control) and agreed succession.
+guarantee exists: [ordinary sessions](../../GLOSSARY.md#sessions) retain the
+daemon's existing [leave policy](../../GLOSSARY.md#attachment-and-control) and
+agreed succession.
 [Headless sessions](../../GLOSSARY.md#sessions) explicitly survive zero
 clients even after later attachment loss, until completion or
 [Kill](../../GLOSSARY.md#attachment-and-control); that lifetime

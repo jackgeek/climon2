@@ -2,7 +2,7 @@
 use crate::ContractError;
 use std::str::FromStr;
 
-/// Whether a session needs a client to stay alive.
+/// A session's lifetime policy: whether it is an ordinary or a headless session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Lifetime {
     /// `climon2 exec`: the leave policy ends the session when nothing attaches
