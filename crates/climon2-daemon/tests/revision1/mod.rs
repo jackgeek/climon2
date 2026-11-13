@@ -141,6 +141,17 @@ fn leave(stream: &mut UnixStream, request_id: u64) {
 /// The next record is the rejection of `request_id` with `code`, carrying no
 /// result.
 fn assert_rejected(stream: &mut UnixStream, request_id: u64, code: &str) {
+    assert_rejected_knowing(stream, request_id, code, None);
+}
+
+/// The next record is the rejection of `request_id` with `code`, carrying
+/// `known_final`.
+fn assert_rejected_knowing(
+    stream: &mut UnixStream,
+    request_id: u64,
+    code: &str,
+    known_final: Option<&CommandResult>,
+) {
     let (answered, rejection) = match message(stream) {
         ServerMessage::Response(Response {
             request_id: answered,
@@ -150,7 +161,7 @@ fn assert_rejected(stream: &mut UnixStream, request_id: u64, code: &str) {
     };
     assert_eq!(answered, counter(request_id));
     assert_eq!(rejection.error.code.as_str(), code);
-    assert_eq!(rejection.known_final, None);
+    assert_eq!(rejection.known_final.as_ref(), known_final);
 }
 
 fn exited(code: u32) -> CommandResult {

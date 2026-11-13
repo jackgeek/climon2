@@ -241,7 +241,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     pub(super) fn refused(&mut self, id: u64) {
         if let Some(request_id) = self.open_request(id) {
             let error = error(OperationalCode::SessionTerminating, TERMINATING);
-            self.refuse_role(id, request_id, error);
+            self.reject_role(id, request_id, error);
         }
     }
 
@@ -667,20 +667,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.reject_with(id, request_id, error(code, message));
     }
 
-    /// A rejected first role has no effects and ends its stream.
+    /// A rejected first role has no effects, carries the command's result
+    /// once the daemon knows it, and ends its stream.
     fn reject_role(&mut self, id: u64, request_id: Counter, error: Error) {
-        self.refuse_role(id, request_id, error);
+        let known_final = self.command_result.clone();
+        self.rejection(id, request_id, error, known_final);
         self.end_stream(id);
-    }
-
-    /// A first role's rejection carries the command's result once the
-    /// daemon knows it.
-    fn refuse_role(&mut self, id: u64, request_id: Counter, error: Error) {
-        let rejection = Rejection {
-            error,
-            known_final: self.command_result.clone(),
-        };
-        self.respond(id, request_id, Outcome::Rejected(rejection));
     }
 
     fn answer(&mut self, id: u64, request_id: Counter, result: Result<Success, OperationalCode>) {
@@ -690,11 +682,19 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
+    /// A rejected later request has no effects, and its stream goes on.
     fn reject_with(&mut self, id: u64, request_id: Counter, error: Error) {
-        let rejection = Rejection {
-            error,
-            known_final: None,
-        };
+        self.rejection(id, request_id, error, None);
+    }
+
+    fn rejection(
+        &mut self,
+        id: u64,
+        request_id: Counter,
+        error: Error,
+        known_final: Option<CommandResult>,
+    ) {
+        let rejection = Rejection { error, known_final };
         self.respond(id, request_id, Outcome::Rejected(rejection));
     }
 

@@ -1,8 +1,8 @@
 //! Command final and standalone Kill (#88): how the end of a session reaches
 //! revision-1 connections, beside the private protocol's results.
 use super::{
-    assert_closed, assert_final_then_closed, assert_rejected, command_final, counter, exited,
-    frame,
+    assert_closed, assert_final_then_closed, assert_rejected, assert_rejected_knowing,
+    command_final, counter, exited, frame,
     interactive::{Attached, geometry, ready_attachment},
     kill, message, monitor, open, peer, request, signalled, terminating,
 };
@@ -33,21 +33,6 @@ fn terminated(request_id: u64, result: &CommandResult) -> ServerMessage {
         request_id: counter(request_id),
         outcome: Outcome::Ok(termination),
     })
-}
-
-/// The next record rejects first-role request 1 with `code`, carrying the
-/// command's known result, and the stream then ends.
-fn assert_refused_knowing(stream: &mut UnixStream, code: &str, result: &CommandResult) {
-    let rejection = match message(stream) {
-        ServerMessage::Response(Response {
-            request_id,
-            outcome: Outcome::Rejected(rejection),
-        }) if request_id == counter(1) => rejection,
-        other => panic!("expected the rejection of request 1, got {other:?}"),
-    };
-    assert_eq!(rejection.error.code.as_str(), code);
-    assert_eq!(rejection.known_final.as_ref(), Some(result));
-    assert_closed(stream);
 }
 
 /// The next record fails Kill request 1 with `cleanup_failed`: the
@@ -231,7 +216,8 @@ fn a_known_result_reaches_later_opens_and_rejected_first_roles() {
     later_revision.revision = 2;
     let mut refused = peer(&session);
     request(&mut refused, &later_revision);
-    assert_refused_knowing(&mut refused, "unsupported_revision", &result);
+    assert_rejected_knowing(&mut refused, 1, "unsupported_revision", Some(&result));
+    assert_closed(&mut refused);
 
     let mut killer = peer(&session);
     request(&mut killer, &kill(1, 1, &[]));
@@ -241,10 +227,12 @@ fn a_known_result_reaches_later_opens_and_rejected_first_roles() {
         &mut refused,
         &open(1, &[], &[], Mode::Interactive(geometry(91, 37))),
     );
-    assert_refused_knowing(&mut refused, "session_terminating", &result);
+    assert_rejected_knowing(&mut refused, 1, "session_terminating", Some(&result));
+    assert_closed(&mut refused);
     let mut refused = peer(&session);
     request(&mut refused, &kill(1, 1, &["future-v9"]));
-    assert_refused_knowing(&mut refused, "unsupported_capability", &result);
+    assert_rejected_knowing(&mut refused, 1, "unsupported_capability", Some(&result));
+    assert_closed(&mut refused);
     assert_eq!(message(&mut killer), terminated(1, &result));
     assert_closed(&mut killer);
     assert_closed(&mut early);
