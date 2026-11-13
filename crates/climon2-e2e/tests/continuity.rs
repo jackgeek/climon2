@@ -15,7 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 use support::{
-    DETACH, Package, TIMEOUT, assert_released, detach, kill_session, outer, quote, wait_file,
+    DETACH, Package, TIMEOUT, assert_released, detach, kill_session, outer, quote, type_until,
+    wait_file,
 };
 
 const TAKE_CONTROL: &[u8] = b"\x14";
@@ -63,24 +64,6 @@ fn exec_bash(package: &Package, bash: &Path) -> Terminal {
 fn prompt(terminal: &mut Terminal) {
     terminal.wait_for_text("INNER> ", TIMEOUT).unwrap();
     terminal.wait_for_input_ready(TIMEOUT).unwrap();
-}
-
-/// Types `command` until `output` appears, as packaged.rs's `type_until` does. A
-/// client drops keys typed before it confirmed its restoration, and nothing on
-/// the screen says when it has, so `command` must be harmless to repeat.
-fn type_until(terminal: &mut Terminal, command: &str, output: &str) {
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        terminal.wait_for_input_ready(TIMEOUT).unwrap();
-        terminal.send(command).unwrap();
-        if terminal
-            .wait_for_text(output, Duration::from_secs(1))
-            .is_ok()
-        {
-            return;
-        }
-        assert!(Instant::now() < deadline, "{output:?} never appeared");
-    }
 }
 
 /// Waits for `marker`, then for a prompt printed after it.
