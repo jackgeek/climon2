@@ -90,3 +90,4 @@ layer and the monitor's evidence.
 | Scenario | Named tests |
 |---|---|
 | CTL-03 (crate case): application title changes are reported by value, in order and one per change; unset, empty and a value stay distinct; an oversized title is ignored | `application_title_changes_are_reported_in_order_by_value` |
+| FOC-01 (crate case): the application's focus reporting mode (1004) is reported, and each feed says whether it newly enabled the mode, however its tokens were split across reads | `focus_reporting_reports_the_mode_and_each_feed_that_newly_enabled_it` |

@@ -317,10 +317,10 @@ fn an_expired_update_is_rearmed_by_a_new_begin_before_tick() {
     assert!(vt.sync_pending(start + Duration::from_millis(309)));
 }
 
-/// The daemon reports the current application focus once when the
-/// application newly enables focus reporting (mode 1004), so each feed says
-/// whether a token turned it on and it is still on, however the tokens were
-/// split across reads.
+/// FOC-01 (crate case): the daemon reports the current application focus
+/// once when the application newly enables focus reporting (mode 1004), so
+/// each feed says whether a token turned it on and it is still on, however
+/// the tokens were split across reads.
 #[test]
 fn focus_reporting_reports_the_mode_and_each_feed_that_newly_enabled_it() {
     let mut vt = vt();
