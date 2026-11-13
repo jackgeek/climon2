@@ -1,5 +1,7 @@
-//! Host input while no session can take it: only the exit action means
-//! anything (#74). The full input router replaces this when targets exist.
+//! Host input while no session can take it (#74): typed prefix+x exits,
+//! prefix+? opens the key introduction and help dialog, and the dialog takes
+//! other typed keys (#105). The full input router replaces this when targets
+//! exist.
 use climon2_core::keys::ControlKey;
 
 /// The bracketed-paste markers the host sends once the monitor enables them.
@@ -7,9 +9,19 @@ const PASTE_START: &[u8; MARKER] = b"\x1b[200~";
 const PASTE_END: &[u8; MARKER] = b"\x1b[201~";
 const MARKER: usize = 6;
 
-/// Finds typed prefix+x in raw host bytes, however the host splits its reads.
-/// Every other byte, pasted or typed, is discarded: there is no target to
-/// receive it yet.
+/// A typed key, as raw host bytes complete it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Key {
+    /// Prefix+x.
+    Exit,
+    /// Prefix+?.
+    Help,
+    /// A typed byte that completes no action. A prefix before a byte it does
+    /// not complete reaches no target yet, and neither does pasted data.
+    Typed(u8),
+}
+
+/// Finds typed keys in raw host bytes, however the host splits its reads.
 pub(crate) struct Keys {
     prefix: u8,
     input: Input,
@@ -35,12 +47,8 @@ impl Keys {
         }
     }
 
-    /// Whether these bytes complete a typed prefix+x.
-    pub(crate) fn exit(&mut self, bytes: &[u8]) -> bool {
-        bytes.iter().any(|&byte| self.key(byte))
-    }
-
-    fn key(&mut self, byte: u8) -> bool {
+    /// The key `byte` completes, if any.
+    pub(crate) fn key(&mut self, byte: u8) -> Option<Key> {
         match self.input {
             Input::Typed { pending } => self.typed(byte, pending),
             Input::Pasted => self.pasted(byte),
@@ -49,23 +57,28 @@ impl Keys {
 
     /// A prefix after a prefix is one literal prefix, not the start of another
     /// action. A paste drops a pending prefix: nothing could take it.
-    fn typed(&mut self, byte: u8, pending: bool) -> bool {
+    fn typed(&mut self, byte: u8, pending: bool) -> Option<Key> {
         if self.marks(byte, PASTE_START) {
             self.input = Input::Pasted;
-            return false;
+            return None;
         }
-        self.input = Input::Typed {
-            pending: !pending && byte == self.prefix,
-        };
-        pending && byte == b'x'
+        self.input = Input::Typed { pending: false };
+        if pending {
+            return Some(action(byte));
+        }
+        if byte == self.prefix {
+            self.input = Input::Typed { pending: true };
+            return None;
+        }
+        Some(Key::Typed(byte))
     }
 
-    /// Pasted bytes never act; the paste ends with no prefix pending.
-    fn pasted(&mut self, byte: u8) -> bool {
+    /// Pasted bytes are never keys; the paste ends with no prefix pending.
+    fn pasted(&mut self, byte: u8) -> Option<Key> {
         if self.marks(byte, PASTE_END) {
             self.input = Input::Typed { pending: false };
         }
-        false
+        None
     }
 
     /// Whether `byte` completes `marker`.
@@ -76,13 +89,74 @@ impl Keys {
     }
 }
 
+/// The key a typed byte completes after a prefix.
+fn action(byte: u8) -> Key {
+    match byte {
+        b'x' => Key::Exit,
+        b'?' => Key::Help,
+        other => Key::Typed(other),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Keys;
+    use super::{Key, Keys};
     use climon2_core::keys::ControlKey;
 
     fn keys(prefix: &str) -> Keys {
         Keys::new(ControlKey::from_name(prefix).unwrap())
+    }
+
+    impl Keys {
+        /// Whether these bytes complete a typed prefix+x.
+        fn exit(&mut self, bytes: &[u8]) -> bool {
+            bytes.iter().any(|&byte| self.key(byte) == Some(Key::Exit))
+        }
+
+        /// Every key these bytes complete, in order.
+        fn all(&mut self, bytes: &[u8]) -> Vec<Key> {
+            bytes.iter().filter_map(|&byte| self.key(byte)).collect()
+        }
+    }
+
+    /// HLP-01 (pure input-router supplement): prefix+? opens help however the
+    /// host splits the reads, and only after the configured prefix.
+    #[test]
+    fn prefix_then_question_mark_is_help_across_read_boundaries() {
+        let mut split = keys("Ctrl+B");
+        assert_eq!(split.all(b"\x02"), []);
+        assert_eq!(split.all(b"?"), [Key::Help]);
+        assert_eq!(
+            keys("Ctrl+B").all(b"?\x1d?"),
+            [Key::Typed(b'?'), Key::Typed(0x1d), Key::Typed(b'?')]
+        );
+    }
+
+    /// HLP-02 (pure input-router supplement): typed keys that complete no
+    /// action reach the dialog: plain bytes, the byte after a prefix it does
+    /// not complete, and one literal prefix for a doubled one. Pasted Space,
+    /// Enter, prefix+? and prefix+x are data, never keys.
+    #[test]
+    fn typed_keys_that_complete_no_action_reach_the_dialog() {
+        let mut keys = keys("Ctrl+]");
+        assert_eq!(
+            keys.all(b" \r\x03\x1d\r\x1d\x1d"),
+            [
+                Key::Typed(b' '),
+                Key::Typed(b'\r'),
+                Key::Typed(0x03),
+                Key::Typed(b'\r'),
+                Key::Typed(0x1d)
+            ]
+        );
+        let pasted = keys.all(b"\x1b[200~ \r\x1d?\x1dx\x1b[201~");
+        assert!(
+            !pasted
+                .iter()
+                .any(|key| matches!(key, Key::Help | Key::Exit | Key::Typed(b' ' | b'\r'))),
+            "{pasted:?}"
+        );
+        assert_eq!(keys.all(b"\x1d?"), [Key::Help]);
     }
 
     /// INP-01 (pure input-router supplement): prefix+x exits, however the
@@ -96,9 +170,9 @@ mod tests {
     }
 
     /// INP-01 (pure input-router supplement): plain x, Ctrl+C, unknown and
-    /// uppercase suffixes and a doubled, literal prefix are discarded.
+    /// uppercase suffixes and a doubled, literal prefix never exit.
     #[test]
-    fn every_other_key_is_discarded() {
+    fn every_other_key_is_not_an_exit() {
         let mut keys = keys("Ctrl+]");
         assert!(!keys.exit(b"x\x03\x1dy\x1dX\x1d\x1dx"));
         assert!(keys.exit(b"\x1dx"));

@@ -1,4 +1,5 @@
 //! What the monitor draws on its own alternate screen, through Ratatui.
+use crate::help::Dialog;
 use climon2_core::{keys::ControlKey, protocol::TerminalSize};
 use ratatui::{
     backend::{Backend, CrosstermBackend},
@@ -20,32 +21,53 @@ const EMPTY: &str = "No sessions to show.";
 pub(crate) struct Screen {
     backend: CrosstermBackend<Stdout>,
     lines: Vec<Line<'static>>,
+    size: TerminalSize,
+    dialog: Option<Dialog>,
 }
 
 impl Screen {
-    /// The empty state names `prefix` in its key hint, unless `hints` is off.
-    pub(crate) fn new(size: TerminalSize, prefix: ControlKey, hints: bool) -> io::Result<Self> {
+    /// The empty state names `prefix` in its key hint, unless `hints` is off,
+    /// under `dialog`.
+    pub(crate) fn new(
+        size: TerminalSize,
+        prefix: ControlKey,
+        hints: bool,
+        dialog: Option<Dialog>,
+    ) -> io::Result<Self> {
         let hint = hints.then(|| Line::from(format!("Press {prefix} then x to exit.")));
         let mut screen = Self {
             backend: CrosstermBackend::new(io::stdout()),
             lines: std::iter::once(Line::from(EMPTY)).chain(hint).collect(),
+            size,
+            dialog,
         };
         screen.backend.hide_cursor()?;
-        screen.paint(size)?;
+        screen.paint()?;
         Ok(screen)
     }
 
     pub(crate) fn resize(&mut self, size: TerminalSize) -> io::Result<()> {
-        self.paint(size)
+        self.size = size;
+        self.paint()
     }
 
-    /// Paints every cell of the frame at `size`, so whatever the host showed
-    /// is overwritten in place: nothing is erased first, and no blank screen
+    /// Shows `dialog`, or none, over the empty state; an unchanged screen is
+    /// not painted again.
+    pub(crate) fn show(&mut self, dialog: Option<Dialog>) -> io::Result<()> {
+        if dialog == self.dialog {
+            return Ok(());
+        }
+        self.dialog = dialog;
+        self.paint()
+    }
+
+    /// Paints every cell of the frame, so whatever the host showed is
+    /// overwritten in place: nothing is erased first, and no blank screen
     /// shows between two frames.
-    fn paint(&mut self, size: TerminalSize) -> io::Result<()> {
+    fn paint(&mut self) -> io::Result<()> {
         #[cfg(feature = "test-hooks")]
         crate::hooks::fail("draw")?;
-        let frame = frame(size, &self.lines);
+        let frame = frame(self.size, &self.lines, self.dialog.as_ref());
         let cells = frame.content().iter().enumerate().map(|(index, cell)| {
             let (x, y) = frame.pos_of(index);
             (x, y, cell)
@@ -55,8 +77,9 @@ impl Screen {
     }
 }
 
-/// The permanent top row, and below it the empty state, centred.
-fn frame(size: TerminalSize, empty: &[Line<'static>]) -> Buffer {
+/// The permanent top row, and below it the empty state, centred, under any
+/// `dialog`.
+fn frame(size: TerminalSize, empty: &[Line<'static>], dialog: Option<&Dialog>) -> Buffer {
     let area = Rect::new(0, 0, size.cols, size.rows);
     let mut frame = Buffer::empty(area);
     let top = Rect {
@@ -75,5 +98,8 @@ fn frame(size: TerminalSize, empty: &[Line<'static>]) -> Buffer {
     Paragraph::new(empty.to_vec())
         .centered()
         .render(below.centered_vertically(height), &mut frame);
+    if let Some(dialog) = dialog {
+        dialog.render(below, &mut frame);
+    }
     frame
 }

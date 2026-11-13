@@ -1,7 +1,8 @@
 //! Everything that can refuse the monitor, checked in order before the host
 //! terminal changes: terminals, the climon2 home and executable home, then the
-//! one configuration snapshot.
-use crate::Error;
+//! one configuration snapshot. The key introduction's preference is read last;
+//! it never refuses the monitor.
+use crate::{Error, preference::Preference};
 use climon2_core::{
     VersionName,
     config::{ConfigSource, MonitorConfig},
@@ -18,6 +19,7 @@ pub(crate) struct Startup {
     pub(crate) log: LogFile,
     pub(crate) version: VersionName,
     pub(crate) config: MonitorConfig,
+    pub(crate) preference: Preference,
 }
 
 impl Startup {
@@ -31,11 +33,15 @@ impl Startup {
     fn configured(home: &Path, log: LogFile) -> Result<Self, Error> {
         let logged = |error: io::Error| Error::new(error).logged(log.path());
         let version = installed_version().map_err(logged)?;
-        let config = configuration(home).map_err(logged)?;
+        let home = HomeLayout::resolve(Some(home.as_os_str()), Path::new("/"))
+            .map_err(io::Error::other)
+            .map_err(logged)?;
+        let config = configuration(&home).map_err(logged)?;
         Ok(Self {
             log,
             version,
             config,
+            preference: Preference::read(&home),
         })
     }
 }
@@ -63,10 +69,8 @@ fn installed_version() -> io::Result<VersionName> {
 /// The one configuration snapshot: the client bindings, whose escape prefix
 /// the monitor needs to reach its actions, and the `monitor` section. Nothing
 /// reads the file again.
-fn configuration(home: &Path) -> io::Result<MonitorConfig> {
-    let layout =
-        HomeLayout::resolve(Some(home.as_os_str()), Path::new("/")).map_err(io::Error::other)?;
-    ConfigSource::read(&layout)
+fn configuration(home: &HomeLayout) -> io::Result<MonitorConfig> {
+    ConfigSource::read(home)
         .and_then(|source| source.monitor())
         .map_err(io::Error::other)
 }

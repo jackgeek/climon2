@@ -185,6 +185,23 @@ fn config_file(package: &Package) -> PathBuf {
     package.isolation.climon2_home().join("config.jsonc")
 }
 
+/// The preference file a release writes once Don't show again is checked.
+const SUPPRESSED: &str = "{\"version\":1,\"suppress_key_introduction\":true}\n";
+
+fn preferences_file(package: &Package) -> PathBuf {
+    package
+        .isolation
+        .climon2_home()
+        .join("monitor-preferences.json")
+}
+
+/// Saves Don't show again in the test's climon2 home, as an earlier run
+/// would, so the monitor opens on its empty state without the key
+/// introduction.
+fn without_introduction(package: &Package) {
+    fs::write(preferences_file(package), SUPPRESSED).unwrap();
+}
+
 /// CFG-01 (Monitor): every invalid configuration, unreadable and malformed
 /// JSONC included, prints one explicit diagnostic and exits with the climon2
 /// error code before any terminal change: a null, a wrong type, a duplicate
@@ -345,6 +362,7 @@ fn monitor_log(package: &Package) -> String {
 #[test]
 fn installed_monitor_logs_its_effective_configuration() {
     let package = Package::new();
+    without_introduction(&package);
     fs::write(
         config_file(&package),
         r#"{"client": {"take_control_key": null}, "monitor": {"bell": false, "limits": {"history": {"max_rows": 200}, "retry": {"cap_ms": 40000}}}}"#,
@@ -412,12 +430,68 @@ fn expected_screen(rows: u16, cols: u16, prefix: &str) -> String {
     )
 }
 
+/// The key introduction and help dialog as the selector document specifies
+/// it: the configured `prefix` followed by x, s and ?, the Don't show again
+/// checkbox, any `problem` with the saved choice, and the Continue action that
+/// Enter takes, in a box titled Keys with one column of space inside its
+/// border.
+fn dialog(prefix: &str, checked: bool, problem: Option<&str>) -> Vec<String> {
+    let mut lines = vec![
+        format!("{prefix} then x  Exit the monitor"),
+        format!("{prefix} then s  Open the session list"),
+        format!("{prefix} then ?  Show this dialog"),
+        String::new(),
+        format!(
+            "[{}] Don't show again (Space)",
+            if checked { 'x' } else { ' ' }
+        ),
+    ];
+    lines.extend(problem.map(str::to_owned));
+    lines.extend([String::new(), "Continue (Enter)".to_owned()]);
+    let width = lines.iter().map(|line| line.chars().count()).max().unwrap();
+    let mut boxed = vec![format!("┌ Keys {}┐", "─".repeat(width - 4))];
+    boxed.extend(lines.iter().map(|line| format!("│ {line:<width$} │")));
+    boxed.push(format!("└{}┘", "─".repeat(width + 2)));
+    boxed
+}
+
+/// `screen` with `dialog` centred in the rows below its top row: an odd spare
+/// row falls above the dialog and an odd spare column to its left.
+fn overlaid(screen: &str, dialog: &[String]) -> String {
+    let mut rows: Vec<Vec<char>> = screen
+        .split('\n')
+        .map(|row| row.chars().collect())
+        .collect();
+    let (height, width) = (dialog.len(), dialog[0].chars().count());
+    let top = 1 + (rows.len() - 1 - height).div_ceil(2);
+    let left = (rows[0].len() - width).div_ceil(2);
+    for (row, line) in rows[top..top + height].iter_mut().zip(dialog) {
+        row.splice(left..left + width, line.chars());
+    }
+    rows.iter()
+        .map(|row| row.iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The monitor owns the host: its own alternate screen showing the top row and
 /// the empty state, raw input, bracketed paste, SGR-encoded button and drag
 /// mouse reports and focus reports, no cursor, every other mode at the
 /// baseline, and the host's title untouched.
 fn opened(terminal: &mut Terminal) {
     terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
+    owns_host(terminal);
+}
+
+/// The monitor owns the host as [`opened`] checks, showing exactly `expected`.
+fn opened_on(terminal: &mut Terminal, expected: &str) {
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| screen == expected)
+        .unwrap();
+    owns_host(terminal);
+}
+
+fn owns_host(terminal: &mut Terminal) {
     terminal.wait_for_input_ready(TIMEOUT).unwrap();
     assert_eq!(
         terminal.modes(),
@@ -472,6 +546,7 @@ fn monitor_process(package: &Package) -> (i32, String) {
 #[test]
 fn installed_monitor_and_mon_open_the_same_monitor() {
     let package = Package::new();
+    without_introduction(&package);
     let installed = package
         .executable_home()
         .canonicalize()
@@ -500,6 +575,7 @@ fn installed_monitor_and_mon_open_the_same_monitor() {
 #[test]
 fn installed_monitor_hints_and_exits_with_the_configured_prefix() {
     let package = Package::new();
+    without_introduction(&package);
     fs::write(
         config_file(&package),
         r#"{"client": {"escape_prefix": "Ctrl+B", "take_control_key": null}}"#,
@@ -559,6 +635,7 @@ fn read_alone(terminal: &mut Terminal, monitor: i32, bytes: &[u8]) {
 #[test]
 fn pastes_never_exit_or_leave_a_pending_prefix() {
     let package = Package::new();
+    without_introduction(&package);
     let mut terminal = outer(&package, "climon2 monitor");
     opened(&mut terminal);
     let monitor = monitor_process(&package).0;
@@ -576,6 +653,7 @@ fn pastes_never_exit_or_leave_a_pending_prefix() {
 #[test]
 fn signals_release_the_host_with_signal_style_status() {
     let package = Package::new();
+    without_introduction(&package);
     for (signal, status) in [
         (Signal::SIGINT, 130),
         (Signal::SIGTERM, 143),
@@ -601,6 +679,7 @@ fn signals_release_the_host_with_signal_style_status() {
 #[test]
 fn resizing_the_host_redraws_the_monitor_at_the_new_size() {
     let package = Package::new();
+    without_introduction(&package);
     let mut terminal = outer(&package, "climon2 monitor");
     opened(&mut terminal);
     for (rows, cols) in [(12, 50), (40, 160)] {
@@ -695,6 +774,7 @@ fn debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic() {
 #[test]
 fn a_hung_up_host_input_releases_the_host_before_its_diagnostic() {
     let package = Package::new();
+    without_introduction(&package);
     let input = InputTerminal::open(ROWS, COLS).unwrap();
     let mut terminal = outer(
         &package,
@@ -723,6 +803,7 @@ fn a_hung_up_host_input_releases_the_host_before_its_diagnostic() {
 #[test]
 fn installed_monitor_logs_content_free_records_to_its_general_log() {
     let package = Package::new();
+    without_introduction(&package);
     let mut terminal = outer(&package, "CLIMON2_LOG=trace climon2 monitor");
     opened(&mut terminal);
     terminal.send("typed-secret-not-for-logs-5e1").unwrap();
@@ -738,5 +819,97 @@ fn installed_monitor_logs_content_free_records_to_its_general_log() {
     for path in package.logs() {
         assert!(!fs::read_to_string(path).unwrap().contains("typed-secret"));
     }
+    package.assert_clean();
+}
+
+/// HLP-01 (Monitor): with key hints on and nothing saved, every start opens
+/// the modal key introduction over the empty monitor: the actual configured
+/// prefix followed by x, s and ?, and an unchecked Don't show again checkbox.
+/// Enter continues to the empty monitor. Closing without checking the box
+/// saves nothing, so the next start opens it again, and prefix+x exits from
+/// it.
+#[test]
+fn the_key_introduction_opens_at_every_start_until_dont_show_again_is_saved() {
+    let package = Package::new();
+    fs::write(
+        config_file(&package),
+        r#"{"client": {"escape_prefix": "Ctrl+B"}}"#,
+    )
+    .unwrap();
+    let empty = expected_screen(ROWS, COLS, "Ctrl+B");
+    let introduction = overlaid(&empty, &dialog("Ctrl+B", false, None));
+    let mut first = outer(&package, "climon2 monitor");
+    opened_on(&mut first, &introduction);
+    first.send(b"\r").unwrap();
+    first
+        .wait_for_screen(TIMEOUT, |screen| screen == empty)
+        .unwrap();
+    first.send(b"\x02x").unwrap();
+    assert_released(&package, &mut first, 0);
+    let mut again = outer(&package, "climon2 monitor");
+    opened_on(&mut again, &introduction);
+    again.send(b"\x02x").unwrap();
+    assert_released(&package, &mut again, 0);
+    assert!(!preferences_file(&package).exists());
+    package.assert_clean();
+}
+
+/// HLP-01 (Monitor): the key introduction opens at startup only when key
+/// hints are on and Don't show again is not saved, while prefix+? opens the
+/// same dialog whatever either says, showing the saved choice. Prefix+?
+/// while it is open changes nothing: once the monitor has read it, a resize
+/// repaints the dialog still open, centred with an odd spare row above it and
+/// an odd spare column to its left. A later release's preference file, with
+/// a higher version and fields this release does not know, is honoured and
+/// left as it is.
+#[test]
+fn help_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say() {
+    let package = Package::new();
+    fs::write(
+        config_file(&package),
+        r#"{"monitor": {"show_key_hints": false}}"#,
+    )
+    .unwrap();
+    let mut hidden = outer(&package, "climon2 monitor");
+    let quiet = empty_monitor(ROWS, COLS, &[EMPTY]);
+    opened_on(&mut hidden, &quiet);
+    hidden.send(b"\x1d?").unwrap();
+    let help = overlaid(&quiet, &dialog("Ctrl+]", false, None));
+    hidden
+        .wait_for_screen(TIMEOUT, |screen| screen == help)
+        .unwrap();
+    let monitor = monitor_process(&package).0;
+    read_alone(&mut hidden, monitor, b"\x1d?");
+    hidden.resize(21, 71).unwrap();
+    let small = empty_monitor(21, 71, &[EMPTY]);
+    let still_open = overlaid(&small, &dialog("Ctrl+]", false, None));
+    hidden
+        .wait_for_screen(TIMEOUT, |screen| screen == still_open)
+        .unwrap();
+    hidden.send(b"\r").unwrap();
+    hidden
+        .wait_for_screen(TIMEOUT, |screen| screen == small)
+        .unwrap();
+    hidden.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut hidden, 0);
+    assert!(!preferences_file(&package).exists());
+
+    fs::remove_file(config_file(&package)).unwrap();
+    let later = r#"{"version":2,"suppress_key_introduction":true,"tips":{"seen":["x"]}}"#;
+    fs::write(preferences_file(&package), later).unwrap();
+    let mut suppressed = outer(&package, "climon2 monitor");
+    let empty = expected_screen(ROWS, COLS, "Ctrl+]");
+    opened_on(&mut suppressed, &empty);
+    suppressed.send(b"\x1d?").unwrap();
+    let checked = overlaid(&empty, &dialog("Ctrl+]", true, None));
+    suppressed
+        .wait_for_screen(TIMEOUT, |screen| screen == checked)
+        .unwrap();
+    suppressed.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut suppressed, 0);
+    assert_eq!(
+        fs::read_to_string(preferences_file(&package)).unwrap(),
+        later
+    );
     package.assert_clean();
 }
