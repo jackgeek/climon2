@@ -223,55 +223,61 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
   normal-screen history rows a session retains for restoration. It is fixed
   when the session starts; attaching never changes it. 0 disables retained
   history, but the screen is still restored.
+- `monitor.show_key_hints` (default true) hides the [monitor](#monitor)'s
+  implicit key hints when false, never a binding or application text. Today
+  the empty state's hint is the only one; the planned hints below follow it.
+- `monitor.bell` (default true) is validated; the toasts whose bell it
+  silences are planned.
+- `monitor.limits` holds the [operational limits](docs/monitor-operational-limits.md),
+  in bytes, milliseconds (`_ms`) or counts. The monitor validates and reports
+  them; nothing enforces them yet. Its `history.max_rows` is the monitor's own
+  local history and never changes `scrollback.max_rows`. Each is an integer:
+  - 1 to 3600000 for durations, but 1 to 50 for `ui.client_quantum_ms` and
+    `ui.background_quantum_ms`;
+  - 200 to 100000 for `history.max_rows`, 1 to 120 for `ui.fps`, 0 to 50 for
+    `retry.jitter_percent`, and 0 or more for `resources.max_workers_per_client`;
+  - at least 1 for every other budget, ceiling or count, up to 4294967295 for
+    counts and for `transfer.chunk_bytes` and the `payload` `_bytes` ceilings
+    other than `assembly_bytes`, or 18446744073709551615 for the other byte
+    budgets.
+- The limits must also agree with each other:
+  - `memory.client_bytes`, `history_bytes_total` and `queue_bytes_total` fit
+    `total_bytes`, and `history_bytes_per_session` fits both
+    `history_bytes_total` and `client_bytes`;
+  - `queues.progress_bytes` is less than `event_bytes`, and `progress_records`
+    less than `event_records`, leaving room for ordinary work;
+  - `transfer.chunk_bytes` fits `queues.request_bytes`, the ordinary event
+    capacity (`event_bytes` minus `progress_bytes`) and
+    `transfer.drain_payload_bytes`; `payload.metadata_record_bytes` fits
+    `progress_bytes`, that ordinary capacity and `drain_payload_bytes`;
+  - `ui.client_quantum_ms` fits `ui.background_quantum_ms`, and
+    `retry.initial_ms` fits `retry.cap_ms`.
 
-`exec` validates the whole file, `monitor` section included, before starting
-the session; `attach` and `monitor` validate only `client`, and `list` and
-`kill` do not read it. Any error, including
-malformed JSONC, duplicate keys, wrong types, invalid keys, conflicting bindings
-and out-of-range values, exits 125 before anything starts. The file is read once
-per command; there is no environment override, auto-creation or live reload.
+`exec` validates the whole file before starting the session. `attach`
+validates only `client`; the monitor validates `client` and `monitor`, and
+refuses a null `escape_prefix`. `list` and `kill` do not read the file. Any
+error, including malformed JSONC, duplicate keys, wrong types, `null` for a
+setting that cannot be disabled, invalid keys, conflicting bindings,
+out-of-range values and limits that disagree, exits 125 before anything starts.
+The file is read once per command; there is no environment override,
+auto-creation or live reload.
 
-### Planned monitor settings (not implemented)
+### Planned monitor behavior (not implemented)
 
 The [agreed terminal integration](docs/protocol/terminal-integration.md) provides
 interactive terminal input/rendering, internal normal-screen history, one top
 status row, and explicit control/restoration gates. Of these, the
 [monitor](#monitor) implements only its top row, empty state and exits so far,
-and already treats pasted shortcuts as data.
-It already reuses the `client` bindings and rejects a null escape prefix before
-changing terminal state; the rest of its startup snapshot is planned. Null
-takeover is allowed because selector confirmation can acquire control. Lowercase prefix+s
+and already treats pasted shortcuts as data. It reads the configuration above
+once, before changing terminal state. Null takeover is allowed because selector
+confirmation can acquire control. Lowercase prefix+s
 opens the selector, prefix+x exits, and **prefix+j** jumps to the most recent
 currently connected session needing attention, not necessarily a toast's session.
 Prefix+? opens the [key introduction/help dialog](docs/monitor-selector.md#key-introduction-and-help).
 Uppercase J is unknown literal input; bracketed pasted shortcuts remain data.
 
-Full future startup example (the current parser does **not** implement the
-`monitor` field):
-
-```jsonc
-{
-  "client": {
-    // Ctrl+[ is Escape: delays bare Escape; Alt+s/Alt+x/Alt+j/Alt+? may trigger s/x/j/?.
-    "escape_prefix": "Ctrl+]",
-    "take_control_key": "Ctrl+T"
-  },
-  "scrollback": {
-    "max_rows": 10000
-  },
-  "monitor": {
-    "show_key_hints": true, // planned: implicit monitor hints, including the toast hint row
-    "bell": true           // planned: one host bell when each toast starts drawing
-  },
-}
-```
-
-Planned `monitor.show_key_hints` is boolean, default true when missing. It hides
-implicit monitor hints, never bindings or application text. Needs-attention toast
-hints use the actual configured prefix plus lowercase j and describe a dynamic
-most-recent jump. Wrong types and duplicate known fields are explicit startup
-errors before terminal changes; unknown/unrelated settings remain ignored.
-All monitor settings above are future behavior, with no live reload.
+Needs-attention toasts will hint the actual configured prefix plus lowercase j
+and describe a dynamic most-recent jump, unless `monitor.show_key_hints` is false.
 
 The planned modal introduction opens automatically on startup when key hints
 are enabled and **Don't show again** has not been saved. It initially introduces
@@ -281,9 +287,8 @@ per climon2 home across restarts/releases; save failures are explicit.
 Prefix+? always opens the dialog, even with hints disabled or startup display
 suppressed. Enter closes it; Escape follows configured-prefix handling.
 
-Planned `monitor.bell` is boolean, default true, with the same pre-terminal
-startup validation and no live reload. False suppresses the explicit host bell,
-not toasts or OSC 7501 reports; host settings govern actual audibility.
+With toasts, `monitor.bell` false will suppress the explicit host bell, not
+toasts or OSC 7501 reports; host settings govern actual audibility.
 The [selector specification](docs/monitor-selector.md) records the accepted
 layout, read-only disconnected/final history selection and animated toasts.
 The later [lifecycle specification](docs/monitor-lifecycle.md) adds planned
@@ -304,11 +309,12 @@ owned instance. Accepted Leave, connection closure, final outcome, cleanup and
 join are separate evidence. Restore host state and clear root attention before
 diagnostics; stalled cleanup uses bounded whole-process failure, never a false
 detach/join claim or thread kill. The agreed
-[operational limits](docs/monitor-operational-limits.md) define planned
-`monitor.limits` configuration, numerical budgets, deadlines and evidence.
-Under pressure, local history shrinks to its newest captured page, never
-disappears entirely; resource-blocked sessions remain visible. All of this
-is unimplemented; no general session-survival or native-crash isolation is added.
+[operational limits](docs/monitor-operational-limits.md) define the
+`monitor.limits` budgets, deadlines and evidence; only their configuration is
+validated so far. Under pressure, local history shrinks to its newest captured
+page, never disappears entirely; resource-blocked sessions remain visible. All
+of this is unimplemented; no general session-survival or native-crash isolation
+is added.
 Planned explicit exit succeeds only after required Leave outcomes, local cleanup/
 joins and host restoration succeed, never with the selected command's status.
 Fatal monitor errors, required Leave failure/uncertainty, incomplete cleanup or
@@ -339,14 +345,17 @@ operation fail with 125 and are left undisturbed. `list` needs no client.
 `c2 monitor`, or `c2 mon`, opens the monitor: one terminal that will track
 every live session. It takes no arguments (any is a usage error, 2) and needs a
 terminal on stdin and stdout. The launcher always runs the current version's
-monitor, on macOS and x86-64 GNU/Linux alike. It uses your
-`client.escape_prefix` and `client.take_control_key` settings and their
-defaults, but refuses a `null` escape prefix, the only way to reach its
-actions. Startup errors are reported, with status 125, before your terminal
-changes.
+monitor, on macOS and x86-64 GNU/Linux alike. Before your terminal changes, it
+reads `config.jsonc` once: your `client.escape_prefix` and
+`client.take_control_key` settings and their defaults, and the `monitor`
+section (see [Configuration](#configuration)). It refuses a `null` escape
+prefix, the only way to reach its actions. Startup errors, any invalid setting
+included, are reported, with status 125, before your terminal changes. Editing
+the file while the monitor runs changes nothing.
 
 The monitor does not discover sessions yet. On its own alternate screen it shows
-one permanent top row and an empty state that names your escape prefix:
+one permanent top row and an empty state whose key hint names your escape
+prefix; with `monitor.show_key_hints` false only `No sessions to show.` remains:
 
 ```text
 No session selected
@@ -363,7 +372,8 @@ terminal hangs up or can no longer be read, the monitor leaves with status 125.
 On every exit the monitor returns your terminal to the normal shell state
 described for clients above, restores its settings (termios) exactly and never
 changes its title; only then does it print any error, with status 125. It logs
-to the general log in the climon2 home, never your input.
+to the general log in the climon2 home, starting with its effective
+configuration as JSON, never your input.
 
 ## Terminal compatibility
 

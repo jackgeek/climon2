@@ -22,8 +22,11 @@ no client libraries yet.
 3. The executable home and version folder come from the monitor's canonical
    path through `ExecutableLayout::from_binary_path`, exactly as the CLI finds
    its own; outside an install layout this fails.
-4. The existing `client` settings are read with their defaults (`attach`
-   validation only), and a null `client.escape_prefix` is refused.
+4. One configuration snapshot is read, `ConfigSource::monitor()`: the
+   `client` bindings with their defaults, refusing a null
+   `client.escape_prefix`, and the `monitor` section (`show_key_hints`, `bell`
+   and every `monitor.limits` group, range and cross-field rule). Nothing reads
+   the file again, so editing it changes nothing until the next start.
 
 Every failure prints one escaped line, with the general-log suffix once that log
 exists, and exits 125 before raw mode, the alternate screen or any OSC output.
@@ -39,9 +42,10 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   paints every cell of it over the monitor-owned stdout. Nothing is erased
   first, the cursor stays hidden, and the host is never queried. The permanent
   top row reads `No session selected`; below it the centred empty state reads
-  `No sessions to show.` and `Press <prefix> then x to exit.` with the configured
-  prefix. SIGWINCH repaints the whole frame at the new size over the old one,
-  so no blank screen or cursor flashes between them.
+  `No sessions to show.` and, unless `monitor.show_key_hints` is false, the key
+  hint `Press <prefix> then x to exit.` with the configured prefix. Hiding the
+  hint changes no binding. SIGWINCH repaints the whole frame at the new size
+  over the old one, so no blank screen or cursor flashes between them.
 - Host input is read as raw bytes. Only a typed prefix+x acts; every other
   byte, including a doubled (literal) prefix and Ctrl+C, is discarded because
   no target exists. A bracketed paste is data, however the host splits its
@@ -62,7 +66,9 @@ status 128 + signal. The monitor writes the documented normal-shell baseline
 shell's cursor returns. Termios is restored afterwards, and only then does main
 print a diagnostic. A render or host-input failure therefore still releases the
 host first and exits 125. The general log records
-`monitor started version=<folder>`, then `monitor stopped status=<n>` or
+`monitor started version=<folder>`, then
+`monitor configuration effective=<JSON>` with every effective setting in the
+file's shape, then `monitor stopped status=<n>` or
 `monitor failed error=<diagnostic>`, never terminal content or input.
 
 With `test-hooks` only, `CLIMON2_MONITOR_FAULT=draw` makes drawing fail, and
@@ -82,6 +88,10 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | ENT-01 (Monitor): `c2 monitor`, `c2 mon`, `climon2 monitor` and `climon2 mon` open the same installed monitor; top row, empty state, exact host modes; prefix+x exits 0 with the host released, the prefix read alone | `installed_monitor_and_mon_open_the_same_monitor` (e2e) |
 | INP-01 (Monitor): configured prefix hint and exit; null take-control key accepted; once read, Ctrl+C and the default prefix+x are not exits | `installed_monitor_hints_and_exits_with_the_configured_prefix` (e2e) |
 | INP-01 (Monitor): null escape prefix and invalid keys refused before terminal changes | `installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys` (e2e) |
+| CFG-01 (Monitor): unreadable and malformed JSONC, null, wrong type, duplicate, overflow, out-of-range and inconsistent settings each refused with one diagnostic and 125 before terminal changes | `installed_monitor_refuses_every_invalid_configuration_before_the_terminal_changes` (e2e) |
+| CFG-01 (Monitor): `show_key_hints` false hides the empty state's hint, prefix+x still exits; unknown and unrelated settings ignored | `installed_monitor_without_key_hints_shows_none_and_still_exits` (e2e) |
+| CFG-01 (Monitor): no live reload: after an edit, a repaint keeps the started settings and the edited prefix does not act | `editing_the_configuration_while_the_monitor_runs_changes_nothing` (e2e) |
+| CFG-01 (Monitor): every effective setting reported in the general log | `installed_monitor_logs_its_effective_configuration` (e2e) |
 | INP-03 (Monitor, empty monitor): pastes never exit, never complete a pending prefix and leave none pending | `pastes_never_exit_or_leave_a_pending_prefix` (e2e) |
 | Derived scenario: monitor argument refusal (2, usage) | `installed_monitor_arguments_are_a_usage_error` (e2e); core `issue74_monitor_and_mon_take_no_arguments` |
 | Derived scenario: monitor non-TTY stdin or stdout refusal | `installed_monitor_refuses_a_non_terminal_stdin_or_stdout` (e2e) |
