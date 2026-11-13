@@ -941,13 +941,24 @@ fn help_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say() 
     package.assert_clean();
 }
 
+/// The monitor's temporary file for its preference file
+/// (`monitor-preferences.json.<pid>.tmp`), which it renames over that file.
+fn temporary_file(package: &Package) -> PathBuf {
+    let monitor = monitor_process(package).0;
+    package
+        .isolation
+        .climon2_home()
+        .join(format!("monitor-preferences.json.{monitor}.tmp"))
+}
+
 /// HLP-01 (Monitor): Space checks Don't show again and saves it in the
 /// climon2 home's preference file, private to its owner even under umask 000,
-/// and atomically: a temporary file renamed over the old one, so a hard link
-/// to the old file keeps its bytes, and no temporary file is left behind. The
-/// next start opens on the empty monitor; prefix+? shows the box checked, and
-/// Space reverses the choice, so the following start shows the introduction
-/// again. Another climon2 home keeps its own choice.
+/// and atomically: a new temporary file renamed over the old one, so a hard
+/// link to the old file keeps its bytes, and no temporary file is left
+/// behind, not even one an interrupted save left. The next start opens on the
+/// empty monitor; prefix+? shows the box checked, and Space reverses the
+/// choice, so the following start shows the introduction again. Another
+/// climon2 home keeps its own choice.
 #[test]
 fn dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible() {
     let package = Package::new();
@@ -956,6 +967,13 @@ fn dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible() {
     let checked = overlaid(&empty, &dialog("Ctrl+]", true, None));
     let mut first = outer(&package, "umask 000; climon2 monitor");
     opened_on(&mut first, &introduction);
+    let interrupted = temporary_file(&package);
+    fs::write(
+        &interrupted,
+        "left by an interrupted save, longer than any saved choice\n",
+    )
+    .unwrap();
+    fs::set_permissions(&interrupted, fs::Permissions::from_mode(0o644)).unwrap();
     first.send(b" ").unwrap();
     first
         .wait_for_screen(TIMEOUT, |screen| screen == checked)
@@ -1086,38 +1104,33 @@ fn an_unreadable_or_malformed_preference_file_shows_why_beside_the_introduction(
     package.assert_clean();
 }
 
-/// HLP-01 (Fault: a temporary file or the preference file that cannot be
+/// HLP-01 (Fault: a temporary file or a preference file that cannot be
 /// written): a save that fails is reported in the dialog, never claimed: the
 /// box stays as saved, nothing is left behind, and the next start still opens
-/// the introduction. Here a directory occupies the monitor's temporary file
-/// (`monitor-preferences.json.<pid>.tmp`), so the save cannot write it, and
-/// then a directory in place of the preference file, which is unreadable and
-/// cannot be replaced, so the written temporary file is removed again.
+/// the introduction. First a directory occupies the monitor's temporary file,
+/// so the save cannot create it; then a directory in place of the preference
+/// file, which is unreadable and cannot be replaced, so the temporary file the
+/// save wrote is removed again.
 #[test]
 fn a_failing_save_is_reported_in_the_dialog_and_saves_nothing() {
     let package = Package::new();
     let empty = expected_screen(ROWS, COLS, "Ctrl+]");
     let introduction = overlaid(&empty, &dialog("Ctrl+]", false, None));
-    let not_saved = "cannot save monitor-preferences.json: Is a directory (os error 21)";
     let mut blocked = outer(&package, "climon2 monitor");
     opened_on(&mut blocked, &introduction);
-    let monitor = monitor_process(&package).0;
-    let temporary = package
-        .isolation
-        .climon2_home()
-        .join(format!("monitor-preferences.json.{monitor}.tmp"));
+    let temporary = temporary_file(&package);
     fs::create_dir(&temporary).unwrap();
     blocked.send(b" ").unwrap();
-    let reported = overlaid(&empty, &dialog("Ctrl+]", false, Some(not_saved)));
+    let exists = "cannot save monitor-preferences.json: File exists (os error 17)";
+    let not_created = overlaid(&empty, &dialog("Ctrl+]", false, Some(exists)));
     blocked
-        .wait_for_screen(TIMEOUT, |screen| screen == reported)
+        .wait_for_screen(TIMEOUT, |screen| screen == not_created)
         .unwrap();
     blocked.send(b"\x1dx").unwrap();
     assert_released(&package, &mut blocked, 0);
     assert!(!preferences_file(&package).exists());
     assert!(
-        monitor_logs(&package)
-            .contains(&format!("monitor preference not saved problem={not_saved}"))
+        monitor_logs(&package).contains(&format!("monitor preference not saved problem={exists}"))
     );
     fs::remove_dir(&temporary).unwrap();
     let mut again = outer(&package, "climon2 monitor");
@@ -1133,6 +1146,8 @@ fn a_failing_save_is_reported_in_the_dialog_and_saves_nothing() {
         &overlaid(&empty, &dialog("Ctrl+]", false, Some(unreadable))),
     );
     replaced.send(b" ").unwrap();
+    let not_replaced = "cannot save monitor-preferences.json: Is a directory (os error 21)";
+    let reported = overlaid(&empty, &dialog("Ctrl+]", false, Some(not_replaced)));
     replaced
         .wait_for_screen(TIMEOUT, |screen| screen == reported)
         .unwrap();
@@ -1140,5 +1155,88 @@ fn a_failing_save_is_reported_in_the_dialog_and_saves_nothing() {
     replaced.send(b"\x1dx").unwrap();
     assert_released(&package, &mut replaced, 0);
     assert!(preferences_file(&package).is_dir());
+    package.assert_clean();
+}
+
+/// Keys, reports and a paste that the open dialog owns and that change
+/// nothing: Ctrl+C, plain x, s, j and ?, Tab and Backspace, prefix+s,
+/// prefix+j, prefix+d, a doubled (literal) prefix, a focus report, an SGR
+/// mouse click, and a paste holding Space, Enter, prefix+x and prefix+?.
+const INERT: &[u8] = b"\x03xsj?\t\x7f\x1ds\x1dj\x1dd\x1d\x1d\x1b[I\x1b[<0;6;6M\x1b[<0;6;6m\x1b[200~ \r\x1dx\x1d?\x1b[201~";
+
+/// HLP-02 (Monitor, over the empty monitor): the open dialog owns every
+/// typed key and paste, and only its own actions and prefix+x act. Once the
+/// monitor has read [`INERT`], a resize repaints the dialog still open and
+/// unchanged, and no preference was written. Enter closes it onto the empty
+/// monitor; prefix+? opens it again, and prefix+x exits from it with status 0,
+/// releasing the host with its title untouched. Over the empty monitor there
+/// is no session to send input to, resize, acquire or acknowledge.
+#[test]
+fn help_is_modal_and_prefix_x_still_exits_from_it() {
+    let package = Package::new();
+    let empty = expected_screen(ROWS, COLS, "Ctrl+]");
+    let mut terminal = outer(&package, "climon2 monitor");
+    opened_on(
+        &mut terminal,
+        &overlaid(&empty, &dialog("Ctrl+]", false, None)),
+    );
+    let monitor = monitor_process(&package).0;
+    read_alone(&mut terminal, monitor, INERT);
+    terminal.resize(25, 81).unwrap();
+    let small = expected_screen(25, 81, "Ctrl+]");
+    let unchanged = overlaid(&small, &dialog("Ctrl+]", false, None));
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| screen == unchanged)
+        .unwrap();
+    assert!(!preferences_file(&package).exists());
+    terminal.send(b"\r").unwrap();
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| screen == small)
+        .unwrap();
+    terminal.send(b"\x1d?").unwrap();
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| screen == unchanged)
+        .unwrap();
+    terminal.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert!(!preferences_file(&package).exists());
+    package.assert_clean();
+}
+
+/// HLP-02 (Monitor, over the empty monitor): with Ctrl+[ (Escape) as the
+/// prefix, Escape cannot close the dialog, the accepted limitation. Escape ?
+/// (prefix+?, also legacy Alt+?) opens it; a doubled Escape is one literal
+/// Escape, which the dialog owns, so a resize repaints it still open; a lone
+/// Escape waits as the prefix, and x after it exits with status 0.
+#[test]
+fn with_escape_as_the_prefix_escape_cannot_close_help_and_prefix_x_still_exits() {
+    let package = Package::new();
+    fs::write(
+        config_file(&package),
+        r#"{"client": {"escape_prefix": "Ctrl+["}, "monitor": {"show_key_hints": false}}"#,
+    )
+    .unwrap();
+    let mut terminal = outer(&package, "climon2 monitor");
+    let quiet = empty_monitor(ROWS, COLS, &[EMPTY]);
+    opened_on(&mut terminal, &quiet);
+    terminal.send(b"\x1b?").unwrap();
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| {
+            screen == overlaid(&quiet, &dialog("Ctrl+[", false, None))
+        })
+        .unwrap();
+    let monitor = monitor_process(&package).0;
+    read_alone(&mut terminal, monitor, b"\x1b\x1b");
+    terminal.resize(25, 81).unwrap();
+    let still_open = overlaid(
+        &empty_monitor(25, 81, &[EMPTY]),
+        &dialog("Ctrl+[", false, None),
+    );
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| screen == still_open)
+        .unwrap();
+    read_alone(&mut terminal, monitor, b"\x1b");
+    terminal.send(b"x").unwrap();
+    assert_released(&package, &mut terminal, 0);
     package.assert_clean();
 }

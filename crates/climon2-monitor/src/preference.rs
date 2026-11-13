@@ -79,10 +79,12 @@ fn saved(path: &Path) -> Result<bool, String> {
 }
 
 /// Writes `preferences` to a private temporary file beside `path`, then
-/// renames it over `path`, so the file is never seen half written. A failed
-/// save removes the temporary file it may have left.
+/// renames it over `path`, so the file is never seen half written. Whatever
+/// an interrupted save left there is removed first, and a failed save removes
+/// what it wrote.
 fn save(path: &Path, preferences: MonitorPreferences) -> io::Result<()> {
     let temporary = temporary(path);
+    let _ = fs::remove_file(&temporary);
     let saved = write_private(&temporary, &preferences.to_json())
         .and_then(|()| fs::rename(&temporary, path));
     if saved.is_err() {
@@ -99,15 +101,13 @@ fn temporary(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Created for its owner alone, whatever the umask; a file an interrupted
-/// save left at `path` is reused.
+/// A new file, readable and writable by its owner alone whatever the umask;
+/// an existing file or link at `path` is refused.
 fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
     file.write_all(bytes)?;
     file.sync_all()
