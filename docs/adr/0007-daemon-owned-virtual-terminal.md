@@ -122,7 +122,9 @@ The model keeps to its limit this way:
   restoration may follow a resize
   ([Restoration begin](../protocol/daemon-client/event-restoration-begin.md)),
   and a [Geometry](../protocol/daemon-client/event-geometry.md) event carries
-  none.
+  none. [#89](https://github.com/jackgeek/climon2/issues/89) amends those
+  pages and tests the order; [#108](https://github.com/jackgeek/climon2/issues/108)
+  adds the stale defence.
 
 Evidence: `crates/climon2-vt/tests/bound.rs` (LIM-03) counts each test thread's
 allocations with a global allocator. It shows the following:

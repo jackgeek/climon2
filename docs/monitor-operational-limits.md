@@ -201,8 +201,9 @@ chunk at a time, never the chunk holding the newest page, and
 Its tests show no stream passing a model's limit, including adversarial
 ones; the owner accepted that evidence, with the measured reserve, as the
 risk proof. The owner also decided that a monitor-mode geometry change is
-always followed by a restoration at that geometry (a wire amendment not yet
-made), and how per-model cost is to meet PERF-01
+always followed by a restoration at that geometry (a wire amendment that
+[#89](https://github.com/jackgeek/climon2/issues/89) makes), and how
+per-model cost is to meet PERF-01
 ([#166](https://github.com/jackgeek/climon2/issues/166)). The monitor's own
 budgets and pressure policies above remain unimplemented.
 

@@ -106,7 +106,7 @@ place.
   history whole; `Model::discard()` abandons it. A new effective geometry
   arrives this way: the owner decided that a monitor-mode geometry change is
   always followed by a restoration at that geometry (ADR 0007), a wire
-  amendment not yet made.
+  amendment that #89 makes.
 - `Model::footprint()` is the allocation capacity charged against `bytes`, the
   engine's allocation plus `Model::RESERVE` and growth charges;
   `Model::screen()` and `Model::history()` are text views of the current model.
