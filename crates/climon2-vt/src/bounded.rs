@@ -93,6 +93,35 @@ pub(crate) struct Room {
     pub(crate) limit: usize,
 }
 
+impl Room {
+    /// Rejected unless `bytes` fit beside the other bytes.
+    pub(crate) fn fit(self, bytes: usize) -> Result<(), Rejected> {
+        let needed = self.other + bytes;
+        if needed > self.limit {
+            return Err(Rejected {
+                needed,
+                limit: self.limit,
+            });
+        }
+        Ok(())
+    }
+
+    fn fits(self, bytes: usize) -> bool {
+        self.fit(bytes).is_ok()
+    }
+
+    /// A blank instance at `geometry`, if what it holds before any output
+    /// fits beside the other bytes.
+    pub(crate) fn blank(
+        self,
+        geometry: Geometry,
+        history_rows: usize,
+    ) -> Result<Bounded, Rejected> {
+        self.fit(Bounded::mandatory(geometry, history_rows))?;
+        Ok(Bounded::new(geometry, history_rows))
+    }
+}
+
 impl Bounded {
     /// What a fresh instance holds and may grow to before any output: the
     /// engine, both screens and the first chunk of history, which holds the
@@ -154,16 +183,10 @@ impl Bounded {
     /// Charge `growth` if it fits, measuring the active screen first when
     /// the running charge alone does not leave room.
     fn admit(&mut self, growth: usize, room: Room) -> Result<(), Rejected> {
-        if !self.fits(growth, room) {
+        if !room.fits(self.charge() + growth) {
             self.measure();
         }
-        let needed = self.needed(growth, room);
-        if needed > room.limit {
-            return Err(Rejected {
-                needed,
-                limit: room.limit,
-            });
-        }
+        room.fit(self.charge() + growth)?;
         *self.extras.of(self.active()) += growth;
         Ok(())
     }
@@ -177,7 +200,7 @@ impl Bounded {
         };
         let growth =
             cost::history(self.geometry, next) - cost::history(self.geometry, self.history.chunks);
-        if self.fits(growth, room) {
+        if room.fits(self.charge() + growth) {
             self.history.chunks = next;
             self.core.set_history(self.history.rows());
         }
@@ -204,14 +227,6 @@ impl Bounded {
             self.core.truncate();
         }
         self.seen = now;
-    }
-
-    fn fits(&self, growth: usize, room: Room) -> bool {
-        self.needed(growth, room) <= room.limit
-    }
-
-    fn needed(&self, growth: usize, room: Room) -> usize {
-        room.other + self.charge() + growth
     }
 
     /// Replace the active screen's bound with what its cells hold now.

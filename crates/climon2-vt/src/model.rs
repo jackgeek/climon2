@@ -47,16 +47,13 @@ impl Model {
 
     /// A blank model, if its mandatory allocation fits the limit.
     pub fn new(geometry: Geometry, limits: Limits) -> Result<Self, Rejected> {
-        let needed = Bounded::mandatory(geometry, limits.history_rows);
-        if needed > limits.bytes {
-            return Err(Rejected {
-                needed,
-                limit: limits.bytes,
-            });
-        }
+        let room = Room {
+            other: 0,
+            limit: limits.bytes,
+        };
         Ok(Self {
             limits,
-            current: Bounded::new(geometry, limits.history_rows),
+            current: room.blank(geometry, limits.history_rows)?,
             staged: None,
             rejected: None,
         })
@@ -68,17 +65,20 @@ impl Model {
     pub fn stage(&mut self, geometry: Geometry) -> Result<(), Rejected> {
         self.staged = None;
         self.current.measure();
-        let needed = self.current.charge() + Bounded::mandatory(geometry, self.limits.history_rows);
-        if needed > self.limits.bytes {
-            let rejected = Rejected {
-                needed,
-                limit: self.limits.bytes,
-            };
-            self.rejected = Some(rejected);
-            return Err(rejected);
+        let room = Room {
+            other: self.current.charge(),
+            limit: self.limits.bytes,
+        };
+        match room.blank(geometry, self.limits.history_rows) {
+            Ok(staged) => {
+                self.staged = Some(staged);
+                Ok(())
+            }
+            Err(rejected) => {
+                self.rejected = Some(rejected);
+                Err(rejected)
+            }
         }
-        self.staged = Some(Bounded::new(geometry, self.limits.history_rows));
-        Ok(())
     }
 
     /// Complete the staged restoration: it replaces the current model and its
