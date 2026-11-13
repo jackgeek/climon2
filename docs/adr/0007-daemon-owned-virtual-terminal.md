@@ -73,11 +73,13 @@ The model keeps to its limit this way:
   charge stands while the engine cannot change it.
 - **History.** The engine's history limit is whole 1000-row chunks, so its
   storage never outgrows the limit; the first chunk, which holds the protected
-  newest page, is mandatory. The next chunk is admitted, before it is
-  allocated, ahead of any token that could fill the current one (a token
-  pushes at most a row per byte and per repetition, or a screenful). When the
-  chunk does not fit, the engine discards its oldest rows instead, and the
-  update is still accepted; no truncation state reports this yet. Storage
+  newest page, is mandatory. Ahead of any token that could fill the current
+  limit, every chunk it could fill is admitted, before it is allocated, while
+  the next one fits (a token pushes at most a row per byte and per
+  repetition, or a screenful, so one long repeat or released run of line
+  feeds can fill several). Beyond the chunks that fit, the engine discards
+  its oldest rows instead, and the update is still accepted; no truncation
+  state reports this yet. Storage
   left after a cleared history is dropped at once, so measuring sees every
   mark still held. The model shows at most `history_rows`.
 - **Rejection.** The first token that does not fit is rejected before the

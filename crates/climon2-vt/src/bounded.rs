@@ -55,6 +55,13 @@ impl History {
     fn rows(self) -> usize {
         self.chunks * cost::CHUNK
     }
+
+    /// The chunks it takes to hold `rows` history rows, but no more than the
+    /// model shows.
+    fn wanted(self, rows: usize) -> usize {
+        rows.div_ceil(cost::CHUNK)
+            .min(self.shown.div_ceil(cost::CHUNK))
+    }
 }
 
 /// One of the engine's two screens.
@@ -144,9 +151,12 @@ impl Bounded {
 
     /// The bytes this instance may hold.
     pub(crate) fn charge(&self) -> usize {
-        cost::fixed(self.geometry)
-            + cost::history(self.geometry, self.history.chunks)
-            + self.extras.total()
+        self.charge_with(self.history.chunks)
+    }
+
+    /// The bytes this instance may hold with a history limit of `chunks`.
+    fn charge_with(&self, chunks: usize) -> usize {
+        cost::fixed(self.geometry) + cost::history(self.geometry, chunks) + self.extras.total()
     }
 
     /// Feed terminal bytes, a slice of at most one engine step at a time so
@@ -191,29 +201,26 @@ impl Bounded {
         Ok(())
     }
 
-    /// Before a token that could fill the history limit, admit the engine's
-    /// next chunk of rows if it fits; otherwise the engine discards its
-    /// oldest row for each new one.
+    /// Before a token that could fill the history limit, admit each further
+    /// chunk of rows it could fill while the next one fits; beyond them the
+    /// engine discards its oldest row for each new one. A token pushes at
+    /// most a row per byte and per repetition, or a screenful, so one long
+    /// repeat or released run of controls can fill several chunks.
     fn grow(&mut self, reach: usize, room: Room) {
-        let Some(next) = self.next_chunks(reach) else {
+        let Some(history) = self.core.normal_history() else {
             return;
         };
-        let growth =
-            cost::history(self.geometry, next) - cost::history(self.geometry, self.history.chunks);
-        if room.fits(self.charge() + growth) {
-            self.history.chunks = next;
+        let wanted = self
+            .history
+            .wanted(history + reach.max(usize::from(self.geometry.rows())));
+        let mut chunks = self.history.chunks;
+        while chunks < wanted && room.fits(self.charge_with(chunks + 1)) {
+            chunks += 1;
+        }
+        if chunks != self.history.chunks {
+            self.history.chunks = chunks;
             self.core.set_history(self.history.rows());
         }
-    }
-
-    /// The next history limit in chunks, when a token whose bytes and
-    /// repetitions add up to `reach` could fill the current one and the
-    /// model may show more. A token pushes at most a row per byte and per
-    /// repetition, or a screenful.
-    fn next_chunks(&self, reach: usize) -> Option<usize> {
-        let reach = self.core.normal_history()? + reach.max(usize::from(self.geometry.rows()));
-        let History { shown, chunks } = self.history;
-        (reach > self.history.rows() && chunks * cost::CHUNK < shown).then_some(chunks + 1)
     }
 
     /// After history is cleared the engine keeps its storage rows, cell data

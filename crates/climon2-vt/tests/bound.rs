@@ -396,22 +396,47 @@ fn repeat_counts_are_the_parsers_whatever_controls_sit_in_them() {
     }
 }
 
-/// LIM-03 Contract: a repeat scrolls one row per screen width it prints, more
-/// than its bytes or a screenful. The history chunk it could fill is admitted
-/// before it, so every row the model may show is kept.
+/// LIM-03 Contract: one token can push several chunks of history: a long
+/// repeat scrolls a row per screen width it prints, and an abandoned
+/// sequence releases the line feeds it held as one token. Every chunk such a
+/// token could fill is admitted before it, so every row it pushes is kept.
+/// For the line feeds that is exactly at the bound; one byte below it, the
+/// chunks that fit are admitted and only the oldest rows beyond them are
+/// discarded.
 #[test]
-fn a_long_repeat_admits_the_history_chunk_it_could_fill() {
-    let at = geometry(8, 2);
-    let mut model = Model::new(at, limits(ROOMY, 2000)).unwrap();
-    model.feed("x\r\n".repeat(900).as_bytes()).unwrap();
-    assert_eq!(model.history().len(), 899);
+fn one_token_admits_every_history_chunk_it_could_fill() {
+    let at = geometry(2, 1);
+    let early = "x\r\n".repeat(900);
+    let mut model = Model::new(at, limits(ROOMY, 10_000)).unwrap();
+    model.feed(early.as_bytes()).unwrap();
 
-    model.feed(b"y\x1b[1599b").unwrap();
+    model.feed(b"y\x1b[2500b").unwrap();
 
     let history = model.history();
-    assert_eq!(history.len(), 899 + 199);
+    assert_eq!(history.len(), 900 + 1250);
     assert_eq!(history[..900], vec!["x".to_owned(); 900]);
-    assert_eq!(history[900..], vec!["y".repeat(8); 198]);
+    assert_eq!(history[900..], vec!["yy".to_owned(); 1250]);
+    assert_eq!(model.screen(), ["y"]);
+
+    let feeds = [b"\x1b[".as_slice(), &[b'\n'; 2500], b"\x18"].concat();
+    let fed = |limit| {
+        let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
+        model.feed(early.as_bytes()).unwrap();
+        model.feed(&feeds).unwrap();
+        model
+    };
+    let bound = fed(ROOMY).footprint();
+    let kept = |x: usize| [vec!["x".to_owned(); x], vec![String::new(); 2500]].concat();
+
+    let meter = Meter::watch();
+    let model = fed(bound);
+    assert!(meter.peak() <= bound, "{} > {bound}", meter.peak());
+    assert_eq!(model.history(), kept(900));
+
+    let meter = Meter::watch();
+    let model = fed(bound - 1);
+    assert!(meter.peak() < bound, "{} >= {bound}", meter.peak());
+    assert_eq!(model.history(), kept(500));
 }
 
 /// LIM-03 Fault: what the live output policy never forwards to a host

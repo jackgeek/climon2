@@ -85,11 +85,13 @@ place.
   `bytes`, the active screen is measured first; a token that still does not
   fit is rejected with the rest of the update, and the model refuses output
   until a staged restoration is applied.
-- History grows in the engine's 1000-row chunks, each admitted before output
-  that could fill the current one (a token pushes at most a row per byte and
-  per repetition, or a screenful); when a chunk does not fit, the oldest rows
-  are discarded and the update is still accepted, with no truncation state
-  yet. `Model::history()` shows at most `history_rows` rows.
+- History grows in the engine's 1000-row chunks. Before a token that could
+  fill the current limit, every chunk it could fill is admitted while the
+  next one fits (a token pushes at most a row per byte and per repetition, or
+  a screenful, so one long repeat or released run of line feeds can fill
+  several); beyond the chunks that fit, the oldest rows are discarded and the
+  update is still accepted, with no truncation state yet. `Model::history()`
+  shows at most `history_rows` rows.
 - `Model::stage(geometry)` starts a restoration in a separate model, admitted
   only if it fits beside the current one; later `feed` calls build it.
   `Model::apply()` replaces the current model and history whole;
@@ -108,7 +110,7 @@ Acceptance-matrix IDs are cited in each test's doc comment.
 | LIM-03 Contract: mandatory model admitted at its bytes, rejected one below | `a_model_is_admitted_at_its_mandatory_bytes_and_rejected_one_below` |
 | LIM-03 Contract: plain text grows nothing beyond held cells | `plain_text_fills_held_cells_without_growth` |
 | LIM-03 Contract: history chunk at the bound, oldest row discarded one past it | `history_grows_at_the_bound_and_discards_its_oldest_row_one_byte_past_it` |
-| LIM-03 Contract: history grows only before output that could fill it, including a long repeat, never past its configured rows, and is not shown over the alternate screen | `history_grows_only_before_output_that_could_fill_it`, `a_long_repeat_admits_the_history_chunk_it_could_fill`, `history_never_grows_past_its_configured_rows`, `the_alternate_screen_shows_no_history` |
+| LIM-03 Contract: history grows only before output that could fill it, by every chunk one token could fill (a long repeat, released line feeds: at the bound and one past it), never past its configured rows, and is not shown over the alternate screen | `history_grows_only_before_output_that_could_fill_it`, `one_token_admits_every_history_chunk_it_could_fill`, `history_never_grows_past_its_configured_rows`, `the_alternate_screen_shows_no_history` |
 | LIM-03 Contract: history shows at most `history_rows` rows, all of them at the limit and not the oldest one past it | `history_shows_its_rows_at_the_limit_and_not_the_oldest_one_past_it` |
 | LIM-03 Contract: the largest limits never overflow the accounting | `the_largest_limits_never_overflow_the_accounting` |
 | LIM-03 Contract: wide characters at the bound and one past it | `wide_characters_are_accepted_at_the_bound_and_rejected_one_byte_past_it` |
