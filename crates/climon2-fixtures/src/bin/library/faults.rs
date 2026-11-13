@@ -37,10 +37,11 @@ fn submit(api: Api, handles: Handles) -> Value {
 }
 
 /// `fault`: every call once, in a fixed order, each retried once after an
-/// explicit internal failure: create, submit, notification, snapshot, drain
-/// (with a delivery: destroy and handle release while it is outstanding, and
-/// its release), shutdown, then run on the owner thread, drains to terminal
-/// evidence, release of the control handle, one more drain, release of the
+/// explicit internal failure: create, submit, notification, snapshot, drain,
+/// shutdown, then run on the owner thread, drains to terminal evidence and
+/// release of the control handle. A delivery from the first drain is held
+/// until then: release of the communication handle and destroy while it is
+/// outstanding, then its release. Then one more drain, release of the
 /// communication handle and destroy. The descriptor's readiness is reported
 /// where a contained panic changes it: a failure queues its diagnostic
 /// before `run` publishes terminal evidence.
@@ -67,22 +68,11 @@ pub fn fault(setup: &Setup) -> Value {
         (json!([call, drain.observed.clone()]), drain)
     });
     report.insert("drain".into(), drain);
-    if let Some(delivery) = drained.delivery {
+    if drained.delivery.is_some() {
         report.insert(
             "snapshot_with_delivery".into(),
             json!(api.snapshot(handles)),
         );
-        report.insert(
-            "destroy_with_delivery".into(),
-            owner.call(move || api.destroy(handles)),
-        );
-        report.insert(
-            "release_communication_with_delivery".into(),
-            api.release_communication(handles),
-        );
-        report.insert("delivery_before_release".into(), drained.observe_again());
-        let (released, ()) = attempts(|| (api.release_delivery(delivery), ()));
-        report.insert("release_delivery".into(), released);
     }
     report.insert(
         "readable_before_run".into(),
@@ -104,6 +94,23 @@ pub fn fault(setup: &Setup) -> Value {
         "release_control".into(),
         attempts(|| (api.release_control(handles), ())).0,
     );
+    if let Some(delivery) = drained.delivery {
+        report.insert(
+            "release_communication_with_delivery".into(),
+            api.release_communication(handles),
+        );
+        report.insert(
+            "destroy_with_delivery".into(),
+            owner.call(move || api.destroy(handles)),
+        );
+        report.insert("delivery_before_release".into(), drained.observe_again());
+        let (released, ()) = attempts(|| (api.release_delivery(delivery), ()));
+        report.insert("release_delivery".into(), released);
+        report.insert(
+            "snapshot_after_release".into(),
+            json!(api.snapshot(handles)),
+        );
+    }
     let (call, drain) = api.drain(handles);
     report.insert(
         "drain_after_release_control".into(),
