@@ -16,10 +16,10 @@ Only the typed [client escape prefix](../../GLOSSARY.md#attachment-and-control)
 followed by x (exit) or ? (the modal
 [key introduction](../../GLOSSARY.md#attachment-and-control), also opened at
 startup while key hints are on and its suppression is unsaved) acts, and the
-open dialog takes the other typed keys, acting only on Enter and Space: pasted
-[bytes](TERMS.md#byte) are data, never complete a pending prefix and leave none
-pending. A host resize repaints the whole screen without blanking it or showing
-the cursor. Every exit writes the
+open dialog takes the other typed keys, a doubled prefix as one literal prefix,
+acting only on Enter and Space: pasted [bytes](TERMS.md#byte) are data, never
+complete a pending prefix and leave none pending. A host resize repaints the
+whole screen without blanking it or showing the cursor. Every exit writes the
 [release](../../GLOSSARY.md#restoration-and-presentation) bytes to the host
 before any diagnostic. Everything else in this document remains agreed and
 unimplemented, including Escape closing the dialog when Escape is not the

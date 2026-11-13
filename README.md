@@ -408,9 +408,11 @@ also stays closed while `monitor.show_key_hints` is false. Whatever either
 says, the escape prefix followed by `?` opens the same dialog as help,
 showing your saved choice; doing so while it is open changes nothing. The
 dialog takes every other key and any paste, and none of them does anything
-else; the escape prefix followed by `x` still exits. There is no session list
-for `s` to open yet, and Escape does not close the dialog: with `Ctrl+[` as
-the prefix it never can, because Escape is the prefix.
+else; the escape prefix followed by `x` still exits. The escape prefix pressed
+twice reaches the dialog as that key, so with `Ctrl+M` (Enter) as the prefix,
+Enter Enter continues. There is no session list for `s` to open yet, and
+Escape does not close the dialog: with `Ctrl+[` as the prefix it never can,
+because Escape is the prefix.
 
 The choice lives in `<climon2 home>/monitor-preferences.json`, apart from
 `config.jsonc`: `{"version":1,"suppress_key_introduction":true}`. Every

@@ -1209,3 +1209,42 @@ fn with_escape_as_the_prefix_escape_cannot_close_the_key_introduction_and_prefix
     assert_released(&package, &mut terminal, 0);
     package.assert_clean();
 }
+
+/// HLP-02 (Monitor, over the empty monitor): a doubled prefix reaches the
+/// open key introduction as one literal prefix, the key it is. With Ctrl+M
+/// (Enter) as the prefix, a lone Enter waits as the prefix, so Enter and a
+/// key it does not complete, Space, reach nothing: once the monitor has read
+/// them, a resize repaints the introduction still open and unchecked. Enter
+/// Enter then continues as Enter does, saving nothing, and prefix+x still
+/// exits.
+#[test]
+fn with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction() {
+    let package = Package::new();
+    fs::write(
+        config_file(&package),
+        r#"{"client": {"escape_prefix": "Ctrl+M"}}"#,
+    )
+    .unwrap();
+    let mut terminal = outer(&package, "climon2 monitor");
+    opened_on(
+        &mut terminal,
+        &overlaid(
+            &expected_screen(ROWS, COLS, "Ctrl+M"),
+            &key_introduction("Ctrl+M", false, None),
+        ),
+    );
+    let monitor = monitor_process(&package).0;
+    read_alone(&mut terminal, monitor, b"\r ");
+    terminal.resize(25, 81).unwrap();
+    let small = expected_screen(25, 81, "Ctrl+M");
+    shows(
+        &mut terminal,
+        &overlaid(&small, &key_introduction("Ctrl+M", false, None)),
+    );
+    terminal.send(b"\r\r").unwrap();
+    shows(&mut terminal, &small);
+    assert!(!preferences_file(&package).exists());
+    terminal.send(b"\rx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    package.assert_clean();
+}

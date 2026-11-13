@@ -55,8 +55,9 @@ const MARKER: usize = 6;
 pub(crate) enum Key {
     /// A prefix and the key after it that completes an action.
     Action(Action),
-    /// A typed byte outside a prefix. A prefix and the byte after it that
-    /// completes no action reach no target yet, and neither does pasted data.
+    /// A typed byte outside a prefix, or the one literal prefix a doubled
+    /// prefix is. A prefix and the byte after it that completes no action
+    /// reach no target yet, and neither does pasted data.
     Typed(u8),
 }
 
@@ -94,8 +95,7 @@ impl Keys {
         }
     }
 
-    /// A prefix after a prefix is one literal prefix, not the start of another
-    /// action. A paste drops a pending prefix: nothing could take it.
+    /// A paste drops a pending prefix: nothing could take it.
     fn typed(&mut self, byte: u8, pending: bool) -> Option<Key> {
         if self.marks(byte, PASTE_START) {
             self.input = Input::Pasted;
@@ -103,13 +103,22 @@ impl Keys {
         }
         self.input = Input::Typed { pending: false };
         if pending {
-            return action(byte);
+            return self.prefixed(byte);
         }
         if byte == self.prefix {
             self.input = Input::Typed { pending: true };
             return None;
         }
         Some(Key::Typed(byte))
+    }
+
+    /// The key `byte` completes after a prefix: a prefix after a prefix is one
+    /// literal prefix, not the start of another action.
+    fn prefixed(&self, byte: u8) -> Option<Key> {
+        if byte == self.prefix {
+            return Some(Key::Typed(byte));
+        }
+        action(byte)
     }
 
     /// Pasted bytes are never keys; the paste ends with no prefix pending.
@@ -174,12 +183,14 @@ mod tests {
         );
     }
 
-    /// HLP-02 (pure input-router supplement): only typed keys outside a
-    /// prefix reach the dialog. A prefix with a key it does not complete,
-    /// a doubled prefix included, reaches nothing. Pasted Space, Enter,
-    /// prefix+? and prefix+x are data, never keys.
+    /// HLP-02 (pure input-router supplement): typed keys outside a prefix
+    /// reach the key introduction, and a doubled prefix reaches it as one
+    /// literal prefix: with Ctrl+M as the prefix, Enter Enter is one Enter. A
+    /// prefix with a key it does not complete reaches nothing. Pasted Space,
+    /// Enter, prefix+? and prefix+x are data, never keys.
     #[test]
-    fn only_unprefixed_typed_keys_reach_the_dialog() {
+    fn only_typed_keys_and_a_doubled_prefix_reach_the_key_introduction() {
+        assert_eq!(keys("Ctrl+M").all(b"\r \r\r"), [Key::Typed(b'\r')]);
         let mut keys = keys("Ctrl+]");
         assert_eq!(
             keys.all(b" \r\x03\x1d\r\x1d \x1d\x1dq"),
@@ -187,6 +198,7 @@ mod tests {
                 Key::Typed(b' '),
                 Key::Typed(b'\r'),
                 Key::Typed(0x03),
+                Key::Typed(0x1d),
                 Key::Typed(b'q')
             ]
         );
