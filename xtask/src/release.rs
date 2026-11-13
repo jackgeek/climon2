@@ -80,10 +80,14 @@ pub fn check(root: &Path) -> io::Result<()> {
             )));
         }
     }
-    crate::library::verify(
-        &release.join(client_library_name()),
-        env!("CARGO_PKG_VERSION"),
+    let version = env!("CARGO_PKG_VERSION");
+    let home = target.path().join("executable home");
+    fs::create_dir_all(home.join(version))?;
+    fs::copy(
+        release.join(client_library_name()),
+        home.join(version).join(client_library_name()),
     )?;
+    crate::library::verify(&home, version)?;
     for ((name, path), before) in artifacts.iter().zip(snapshots) {
         if fs::read(path)? != before {
             return Err(io::Error::other(format!(
