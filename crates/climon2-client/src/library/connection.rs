@@ -1,6 +1,7 @@
 //! An instance's daemon connection, run on its owner thread by `run`: its
 //! one Open (session metadata, the frozen hello, then daemon wire revision
-//! 1), the records the daemon sends, Leave, and shutdown. One poll loop
+//! 1), the commands on its role (#94), the records the daemon sends, Leave,
+//! and shutdown. One poll loop
 //! waits on the socket and the instance's waker; submitted work arrives
 //! through the instance's request queue and records leave through its event
 //! queue, so `submit`, `drain` and `release_delivery` never touch the
@@ -12,10 +13,13 @@ use super::{
     instance::{Descriptor, Next, Shared, Taken},
     link::{self, Link, TIMEOUT},
     records::{Event, Response},
-    request::{Open, Operation, Submitted},
+    request::{Act, Command, Open, Operation, Submitted},
     stream::{Departure, Effect, Stream},
 };
-use climon2_core::{protocol::HELLO_TIMEOUT, wire::Frame};
+use climon2_core::{
+    protocol::HELLO_TIMEOUT,
+    wire::{self, Frame},
+};
 use std::time::{Duration, Instant};
 
 const INVALID_STATE: Fault = Fault::library(
@@ -28,8 +32,14 @@ const STALE_GENERATION: Fault = Fault::library(
 );
 const OVERSIZED: Fault = Fault::library(
     "resource_limit",
-    "a record from the session daemon exceeds metadata_record_bytes",
+    "a record from the session daemon exceeds metadata_record_bytes or chunk_bytes",
 );
+const UNFOCUSED: Fault = Fault::library(
+    "unsupported_capability",
+    "focus-v1 is not selected on this connection",
+);
+/// A Display's header: its period and restoration ID.
+const DISPLAY_HEADER: u64 = 16;
 
 /// Runs the connection until its stream ends, and returns the Leave
 /// evidence. Whatever ends it, the requests it took and the socket it held
@@ -59,8 +69,6 @@ struct Driver<'a> {
     connection: Option<Connection<'a>>,
     /// The Open's start deadline, until its Initial metadata arrives.
     start: Option<Instant>,
-    /// The deadline of an unanswered Leave.
-    leave: Option<Instant>,
     /// A record waiting for room in the event allowance; nothing is read
     /// meanwhile.
     parked: Option<Event>,
@@ -77,7 +85,6 @@ impl<'a> Driver<'a> {
             stream: Stream::new(shared.limits().title_bytes),
             connection: None,
             start: None,
-            leave: None,
             parked: None,
             shutdown: false,
             departure: Departure::NOT_REQUIRED,
@@ -86,7 +93,7 @@ impl<'a> Driver<'a> {
     }
 
     fn turn(&mut self) {
-        match self.taken.next(self.shutdown, self.leave_ready()) {
+        match self.taken.next(self.shutdown, self.ready()) {
             Next::Stop => self.ended = true,
             Next::Shutdown => self.shut_down(),
             Next::Request(request) => self.execute(request),
@@ -94,8 +101,8 @@ impl<'a> Driver<'a> {
         }
     }
 
-    /// A Leave executes unless the Open is still under way.
-    fn leave_ready(&self) -> bool {
+    /// A Leave or a command executes unless the Open is still under way.
+    fn ready(&self) -> bool {
         self.connection.is_none() || self.stream.synchronized()
     }
 
@@ -107,7 +114,11 @@ impl<'a> Driver<'a> {
 
     /// The connection broke: a Leave under way is unconfirmed.
     fn broken(&mut self, fault: Fault) {
-        if self.leave.is_some() {
+        self.lost(self.stream.leaving(), fault);
+    }
+
+    fn lost(&mut self, leaving: bool, fault: Fault) {
+        if leaving {
             self.departure = Departure::lost(fault.clone());
         }
         self.end(Failed::passive(fault));
@@ -131,6 +142,46 @@ impl<'a> Driver<'a> {
             Operation::Open(open) if self.connection.is_none() => self.open(request.id, &open),
             Operation::Open(_) => self.reject(request.id, INVALID_STATE),
             Operation::Leave(generation) => self.leave(request.id, generation),
+            Operation::Command(command) => self.command(request.id, command),
+        }
+    }
+
+    /// Why a request naming `generation` cannot go on this role, if it
+    /// cannot: another generation, no role, or a Leave under way.
+    fn refusal(&self, generation: u64) -> Option<Fault> {
+        let refused = [
+            (generation != self.shared.generation(), STALE_GENERATION),
+            (
+                self.connection.is_none() || self.stream.leaving(),
+                INVALID_STATE,
+            ),
+        ];
+        refused
+            .into_iter()
+            .find_map(|(refused, fault)| refused.then_some(fault))
+    }
+
+    /// A command goes on the role unless refused; Focus needs `focus-v1`.
+    fn command(&mut self, id: u64, command: Command) {
+        let unfocused = matches!(command.act, Act::Focus(..)) && !self.stream.focus();
+        let refusal = self
+            .refusal(command.generation)
+            .or(unfocused.then_some(UNFOCUSED));
+        match refusal {
+            Some(fault) => self.reject(id, fault),
+            None => self.send_command(id, command.act),
+        }
+    }
+
+    /// Sends a command, answered within `operation_ms`; one that cannot fit
+    /// the frame ceilings is never sent.
+    fn send_command(&mut self, id: u64, act: Act) {
+        let operation_ms = Duration::from_millis(self.shared.limits().operation_ms.into());
+        let deadline = Instant::now() + operation_ms;
+        let connection = self.connection.as_mut().expect("a command needs a role");
+        match self.stream.command(id, act, connection.peer.send, deadline) {
+            Ok(frame) => connection.link.send(&frame),
+            Err(fault) => self.reject(id, fault),
         }
     }
 
@@ -139,15 +190,8 @@ impl<'a> Driver<'a> {
     }
 
     fn leave(&mut self, id: u64, generation: u64) {
-        let refused = [
-            (generation != self.shared.generation(), STALE_GENERATION),
-            (
-                self.connection.is_none() || self.stream.leaving(),
-                INVALID_STATE,
-            ),
-        ];
-        match refused.into_iter().find(|(refused, _)| *refused) {
-            Some((_, fault)) => self.reject(id, fault),
+        match self.refusal(generation) {
+            Some(fault) => self.reject(id, fault),
             None => self.send_leave(Some(id)),
         }
     }
@@ -157,9 +201,9 @@ impl<'a> Driver<'a> {
     fn send_leave(&mut self, id: Option<u64>) {
         self.shared.conclude(true);
         let leave_ms = Duration::from_millis(self.shared.limits().leave_ms.into());
-        self.leave = Some(Instant::now() + leave_ms);
+        let deadline = Instant::now() + leave_ms;
         let sent = self.connection.as_mut().map(|connection| {
-            let frame = self.stream.leave(id, connection.peer.send);
+            let frame = self.stream.leave(id, connection.peer.send, deadline);
             frame.map(|frame| connection.link.send(&frame))
         });
         if let Some(Err(fault)) = sent {
@@ -203,7 +247,7 @@ impl<'a> Driver<'a> {
 
     fn request(&mut self, id: u64, open: &Open, mut link: Link, peer: Peer) {
         let offered = super::families::offered(&peer.advertisement, &open.requested);
-        match self.stream.open(id, offered, peer.send) {
+        match self.stream.open(id, (open.mode, offered), peer.send) {
             Ok(frame) => {
                 link.send(&frame);
                 self.connection = Some(Connection {
@@ -234,11 +278,11 @@ impl<'a> Driver<'a> {
         }
     }
 
-    /// The deadline that applies: an unanswered Leave's, else the Open's
-    /// until its Initial metadata.
+    /// The earliest deadline that applies: an unanswered request's, or the
+    /// Open's until its Initial metadata.
     fn deadline(&self) -> Option<Instant> {
-        self.leave
-            .or(self.start.filter(|_| !self.stream.synchronized()))
+        let start = self.start.filter(|_| !self.stream.synchronized());
+        self.stream.deadline().into_iter().chain(start).min()
     }
 
     fn service(&mut self) {
@@ -290,12 +334,18 @@ impl<'a> Driver<'a> {
         }
     }
 
-    /// Every record fits `metadata_record_bytes`, type byte included; none
-    /// is truncated into a healthy one.
+    /// Every record fits `metadata_record_bytes`, type byte included, and
+    /// a Display's bytes `chunk_bytes` (#94); none is truncated into a
+    /// healthy one.
     fn decode(&mut self, frame: &Frame) -> Result<Effect, Fault> {
-        let length = frame.body().len() as u64 + 1;
-        let limit = self.shared.limits().metadata_record_bytes.into();
-        require(length <= limit, OVERSIZED)?;
+        let limits = self.shared.limits();
+        let body = frame.body().len() as u64;
+        let fits = if frame.code() == wire::Display::CODE {
+            body <= DISPLAY_HEADER + u64::from(limits.chunk_bytes)
+        } else {
+            body < limits.metadata_record_bytes.into()
+        };
+        require(fits, OVERSIZED)?;
         self.stream.receive(frame)
     }
 
@@ -303,6 +353,7 @@ impl<'a> Driver<'a> {
         match effect {
             Effect::Record(event) => self.offer(event),
             Effect::Opened(response, opened) => self.opened(response, opened),
+            Effect::Answered(response) => self.taken.answer(response),
             Effect::Left(response, departure) => self.left(response, departure),
             Effect::Fatal(fault) => self.broken(fault),
         }
@@ -326,7 +377,6 @@ impl<'a> Driver<'a> {
         if let Some(response) = response {
             self.taken.answer(response);
         }
-        self.leave = None;
         if !departure.kept() || self.shutdown {
             self.departure = departure;
             self.ended = true;
@@ -345,9 +395,10 @@ impl<'a> Driver<'a> {
     /// The request a deadline bounded reports `timeout`, as indeterminate:
     /// it was sent. The connection then fails.
     fn timed_out(&mut self) {
-        if let Some(id) = self.stream.expire() {
+        let leaving = self.stream.leaving();
+        if let Some(id) = self.stream.expire(Instant::now()) {
             self.taken.answer(Response::uncertain(id, TIMEOUT));
         }
-        self.broken(TIMEOUT);
+        self.lost(leaving, TIMEOUT);
     }
 }

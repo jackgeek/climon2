@@ -15,10 +15,12 @@
 //!   `"hold"`;
 //! - `open` and `leave`: the actions after the library's Open, and after
 //!   each Leave; `leaves`, a list of action lists, overrides `leave` for the
-//!   first Leaves in turn.
+//!   first Leaves in turn; `input`, `resize`, `acquire`, `ready` and
+//!   `focus`: the actions after each of those requests (#94).
 //!
 //! An action is `{"send": {"type": n, "json": value}}` (a JSON body in which
-//! the string `"$open"` or `"$leave"` is that request's ID) or
+//! the string `"$open"`, `"$leave"` or another request kind's name is that
+//! request's latest ID) or
 //! `{"send": {"type": n, "hex": body}}`, `{"raw": hex}` (bytes as they are),
 //! `{"together": [action, ...]}` (several actions' bytes in one write),
 //! `{"bytewise": action}` (an action's bytes one at a time),
@@ -268,12 +270,18 @@ impl Serving {
             };
             let kind = match frame.code() {
                 0x30 => "open",
+                0x31 => "input",
+                0x32 => "resize",
+                0x33 => "acquire",
+                0x34 => "ready",
                 0x37 => "leave",
+                0x39 => "focus",
                 _ => "other",
             };
             let body: Value = serde_json::from_slice(frame.body())
                 .unwrap_or_else(|_| json!({ "hex": hex(frame.body()) }));
-            self.ids.insert(kind.to_owned(), body["request_id"].clone());
+            self.ids
+                .insert(kind.to_owned(), request_id(&body, frame.body()));
             self.record(json!({ "type": frame.code(), "kind": kind, "body": body }));
             let actions = self.actions(kind);
             match self.script_actions(stream, &actions) {
@@ -381,6 +389,15 @@ impl Serving {
             Ok(()) => Next::Continue,
             Err(_) => Next::Close,
         }
+    }
+}
+
+/// A JSON request's ID, or a binary Input's: its first big-endian u64,
+/// as the wire's decimal string.
+fn request_id(body: &Value, bytes: &[u8]) -> Value {
+    match (&body["request_id"], bytes.first_chunk::<8>()) {
+        (Value::Null, Some(word)) => json!(u64::from_be_bytes(*word).to_string()),
+        (id, _) => id.clone(),
     }
 }
 

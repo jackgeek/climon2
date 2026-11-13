@@ -2,21 +2,25 @@
 //! requests the library sent and are still unanswered, what the Open
 //! selected, and what the daemon may send next. Every record the daemon
 //! sends maps to a native record or an explicit connection failure; nothing
-//! is skipped or fabricated.
+//! is skipped or fabricated. Presentation records must name the authority
+//! the role holds (#94): an old period or restoration never reaches the
+//! caller as current.
 
 use super::{
     failure::{Failed, Fault, Retry, require},
-    families,
+    families::{self, Selection},
     link::fatal,
-    records::{Answer, Command, Event, Metadata, Outcome, Response, Title},
+    records::{Answer, Command, Event, Metadata, Outcome, Presentation, Response, Title},
+    request::Act,
 };
 use climon2_core::{
     native,
     wire::{
-        self, Available, ControlRecord, Counter, Families, Family, Frame, FrameLimit, KnownResult,
-        Mode, Requested, ServerMessage, Success,
+        self, AuthorityIds, Available, ControlRecord, Counter, Families, Family, Frame, FrameLimit,
+        KnownResult, Mode, Requested, ServerMessage, Success,
     },
 };
+use std::time::Instant;
 
 /// Daemon wire revision 1.
 const REVISION: u32 = 1;
@@ -25,6 +29,11 @@ const UNEXPECTED: Fault = Fault::transport(
     "invalid_record",
     "the session daemon sent a record out of order or for an unselected family",
 );
+const UNHELD: Fault = Fault::transport(
+    "invalid_record",
+    "a record names an authority the connection does not hold",
+);
+const EMPTY_DISPLAY: Fault = Fault::transport("invalid_record", "a Display carries no bytes");
 const MISMATCHED: Fault = Fault::transport(
     "invalid_record",
     "a response's result does not belong to its request",
@@ -50,6 +59,58 @@ enum Sent {
     Leave {
         id: Option<u64>,
     },
+    Command {
+        id: u64,
+        expects: Expects,
+    },
+}
+
+/// The result a command's success must carry.
+#[derive(Clone, Copy, Debug)]
+enum Expects {
+    Acquired,
+    /// All of the Input's bytes, never part of them.
+    Input(u32),
+    Resized,
+    Ready,
+    Focus,
+}
+
+impl Expects {
+    fn answer(self, success: Success) -> Result<Answer, Fault> {
+        match (self, success) {
+            (Self::Acquired, Success::Acquired(result)) => Ok(Answer::Acquired(result)),
+            (Self::Input(length), Success::InputAccepted { accepted_bytes })
+                if accepted_bytes.get() == length =>
+            {
+                Ok(Answer::Input(length))
+            }
+            (Self::Resized, Success::ResizeAccepted {}) => Ok(Answer::Resized),
+            (Self::Ready, Success::Ready(result)) => Ok(Answer::Ready(result)),
+            (
+                Self::Focus,
+                Success::Focus {
+                    changed,
+                    focused,
+                    accepted_bytes,
+                },
+            ) => Ok(Answer::Focus {
+                changed,
+                focused,
+                bytes: accepted_bytes.into(),
+            }),
+            _ => Err(MISMATCHED),
+        }
+    }
+}
+
+/// A request on the wire: its wire ID, what it was, and the deadline its
+/// answer must meet, if one bounds it.
+#[derive(Debug)]
+struct Pending {
+    wire: u64,
+    sent: Sent,
+    deadline: Option<Instant>,
 }
 
 /// Leave evidence: whether a departure was required and what proves it.
@@ -118,6 +179,8 @@ pub(super) enum Effect {
     Record(Event),
     /// The Open's outcome, to deliver; then the role is open or refused.
     Opened(Response, Result<(), Failed>),
+    /// A command's outcome, to deliver.
+    Answered(Response),
     /// A Leave's outcome: delivered when public, and its evidence.
     Left(Option<Response>, Departure),
     /// The daemon reported a connection-fatal error.
@@ -139,11 +202,14 @@ pub(super) struct Stream {
     title_bytes: u64,
     /// The last wire request ID sent; the next is one more.
     last: u64,
-    pending: Vec<(u64, Sent)>,
-    /// After the Open's success: whether `title-v1` is selected.
-    title: Option<bool>,
+    pending: Vec<Pending>,
+    /// After the Open's success: what it selected.
+    selected: Option<Selection>,
     /// Whether the Initial metadata arrived.
     synchronized: bool,
+    /// The period and restoration the role holds, from its grant until its
+    /// revocation.
+    held: Option<AuthorityIds>,
 }
 
 impl Stream {
@@ -152,8 +218,9 @@ impl Stream {
             title_bytes: title_bytes.into(),
             last: 0,
             pending: Vec::new(),
-            title: None,
+            selected: None,
             synchronized: false,
+            held: None,
         }
     }
 
@@ -163,22 +230,26 @@ impl Stream {
         &mut self,
         sent: Sent,
         record: impl FnOnce(Counter) -> Frame,
-        limit: FrameLimit,
+        (limit, deadline): (FrameLimit, Option<Instant>),
     ) -> Result<Vec<u8>, Fault> {
         let request_id = Counter::new(self.last + 1).expect("wire request IDs start at one");
         let mut bytes = Vec::new();
         wire::write_frame(&mut bytes, &record(request_id), limit).map_err(|_| UNFIT)?;
         self.last = request_id.get();
-        self.pending.push((self.last, sent));
+        self.pending.push(Pending {
+            wire: self.last,
+            sent,
+            deadline,
+        });
         Ok(bytes)
     }
 
-    /// A monitor-mode Open of the `requested` families, for public request
+    /// An Open of `mode` and the `requested` families, for public request
     /// `id`.
     pub(super) fn open(
         &mut self,
         id: u64,
-        requested: Requested,
+        (mode, requested): (Mode, Requested),
         limit: FrameLimit,
     ) -> Result<Vec<u8>, Fault> {
         let capabilities = requested.clone();
@@ -187,33 +258,109 @@ impl Stream {
                 request_id,
                 revision: REVISION,
                 capabilities,
-                mode: Mode::Monitor,
+                mode,
             }
             .to_frame()
         };
-        self.send(Sent::Open { id, requested }, record, limit)
+        self.send(Sent::Open { id, requested }, record, (limit, None))
     }
 
-    /// A Leave, for public request `id`, or shutdown's own without one.
-    pub(super) fn leave(&mut self, id: Option<u64>, limit: FrameLimit) -> Result<Vec<u8>, Fault> {
+    /// A Leave, for public request `id`, or shutdown's own without one,
+    /// answered before `deadline`.
+    pub(super) fn leave(
+        &mut self,
+        id: Option<u64>,
+        limit: FrameLimit,
+        deadline: Instant,
+    ) -> Result<Vec<u8>, Fault> {
         let record = |request_id| wire::Leave { request_id }.to_frame();
-        self.send(Sent::Leave { id }, record, limit)
+        self.send(Sent::Leave { id }, record, (limit, Some(deadline)))
     }
 
-    /// Gives up the request a deadline bounded, an unanswered Leave or else
-    /// the unanswered Open: its public ID, if it has one.
-    pub(super) fn expire(&mut self) -> Option<u64> {
-        let leave = self
+    /// A command for public request `id`, answered before `deadline`.
+    pub(super) fn command(
+        &mut self,
+        id: u64,
+        act: Act,
+        limit: FrameLimit,
+        deadline: Instant,
+    ) -> Result<Vec<u8>, Fault> {
+        let (expects, record): (Expects, Box<dyn FnOnce(Counter) -> Frame>) = match act {
+            Act::Acquire => (
+                Expects::Acquired,
+                Box::new(|request_id| wire::Acquire { request_id }.to_frame()),
+            ),
+            Act::Input(authority, payload) => (
+                Expects::Input(payload.len() as u32),
+                Box::new(move |request_id| {
+                    wire::Input {
+                        request_id,
+                        authority,
+                        payload: payload.into_vec(),
+                    }
+                    .to_frame()
+                }),
+            ),
+            Act::Resize(authority, geometry) => (
+                Expects::Resized,
+                Box::new(move |request_id| {
+                    wire::Resize {
+                        request_id,
+                        authority,
+                        geometry,
+                    }
+                    .to_frame()
+                }),
+            ),
+            Act::Ready(authority) => (
+                Expects::Ready,
+                Box::new(move |request_id| {
+                    wire::Ready {
+                        request_id,
+                        authority,
+                    }
+                    .to_frame()
+                }),
+            ),
+            Act::Focus(authority, focused) => (
+                Expects::Focus,
+                Box::new(move |request_id| {
+                    wire::Focus {
+                        request_id,
+                        authority,
+                        focused,
+                    }
+                    .to_frame()
+                }),
+            ),
+        };
+        let sent = Sent::Command { id, expects };
+        self.send(sent, record, (limit, Some(deadline)))
+    }
+
+    /// The earliest deadline an unanswered request must meet.
+    pub(super) fn deadline(&self) -> Option<Instant> {
+        self.pending
+            .iter()
+            .filter_map(|pending| pending.deadline)
+            .min()
+    }
+
+    /// Gives up the request a deadline bounded: the one whose deadline
+    /// passed by `now`, or else the unanswered Open. Its public ID, if it
+    /// has one.
+    pub(super) fn expire(&mut self, now: Instant) -> Option<u64> {
+        let expired = self
             .pending
             .iter()
-            .position(|(_, sent)| matches!(sent, Sent::Leave { .. }));
-        let index = leave.or_else(|| {
+            .position(|pending| pending.deadline.is_some_and(|deadline| deadline <= now));
+        let index = expired.or_else(|| {
             self.pending
                 .iter()
-                .position(|(_, sent)| matches!(sent, Sent::Open { .. }))
+                .position(|pending| matches!(pending.sent, Sent::Open { .. }))
         })?;
-        match self.pending.remove(index).1 {
-            Sent::Open { id, .. } => Some(id),
+        match self.pending.remove(index).sent {
+            Sent::Open { id, .. } | Sent::Command { id, .. } => Some(id),
             Sent::Leave { id } => id,
         }
     }
@@ -222,7 +369,17 @@ impl Stream {
     pub(super) fn leaving(&self) -> bool {
         self.pending
             .iter()
-            .any(|(_, sent)| matches!(sent, Sent::Leave { .. }))
+            .any(|pending| matches!(pending.sent, Sent::Leave { .. }))
+    }
+
+    /// Whether the Open selected `focus-v1`.
+    pub(super) fn focus(&self) -> bool {
+        self.selects(Family::FocusV1)
+    }
+
+    fn selects(&self, family: Family) -> bool {
+        self.selected
+            .is_some_and(|selected| selected.contains(family))
     }
 
     /// Whether the Initial metadata arrived.
@@ -247,17 +404,73 @@ impl Stream {
         }
     }
 
-    /// Initial metadata, then title changes; nothing else is selected.
+    /// Initial metadata, then title changes and presentation records.
     fn report(&mut self, message: ServerMessage) -> Result<Event, Fault> {
         match message {
             ServerMessage::InitialMetadata(metadata) => self.initial(&metadata),
             ServerMessage::TitleChanged(changed) => self.changed(changed.title.as_deref()),
+            message => {
+                require(self.synchronized, UNEXPECTED)?;
+                self.present(message).map(Event::Presentation)
+            }
+        }
+    }
+
+    /// A grant starts a period when none is held; every other presentation
+    /// record names the held period, and all but a beginning or a Geometry
+    /// its current restoration too. A beginning makes its restoration
+    /// current; a revocation ends what was held.
+    fn present(&mut self, message: ServerMessage) -> Result<Presentation, Fault> {
+        match message {
+            ServerMessage::ControlGranted(granted) => {
+                require(self.held.is_none(), UNHELD)?;
+                self.held = Some(granted.authority);
+                Ok(Presentation::Granted(
+                    granted.authority,
+                    granted.geometry,
+                    granted.reason,
+                ))
+            }
+            ServerMessage::ControlRevoked(revoked) => {
+                self.holds(revoked.authority)?;
+                self.held = None;
+                Ok(Presentation::Revoked(revoked.authority, revoked.reason))
+            }
+            ServerMessage::RestorationBegin(begin) => {
+                self.in_period(begin.authority.period)?;
+                self.held = Some(begin.authority);
+                Ok(Presentation::Begin(begin.authority, begin.geometry))
+            }
+            ServerMessage::Display(display) => {
+                self.holds(display.authority)?;
+                require(!display.payload.is_empty(), EMPTY_DISPLAY)?;
+                Ok(Presentation::Display(
+                    display.authority,
+                    display.payload.into_boxed_slice(),
+                ))
+            }
+            ServerMessage::RestorationComplete(complete) => {
+                self.holds(complete.authority)?;
+                Ok(Presentation::Complete(complete.authority))
+            }
+            ServerMessage::Geometry(actual) => {
+                self.in_period(actual.period)?;
+                Ok(Presentation::Geometry(actual.period, actual.geometry))
+            }
             _ => Err(UNEXPECTED),
         }
     }
 
+    fn holds(&self, authority: AuthorityIds) -> Result<(), Fault> {
+        require(self.held == Some(authority), UNHELD)
+    }
+
+    fn in_period(&self, period: Counter) -> Result<(), Fault> {
+        require(self.held.is_some_and(|held| held.period == period), UNHELD)
+    }
+
     fn awaiting_metadata(&self) -> bool {
-        self.title.is_some() && !self.synchronized
+        self.selected.is_some() && !self.synchronized
     }
 
     fn respond(&mut self, response: wire::Response) -> Result<Effect, Fault> {
@@ -269,6 +482,7 @@ impl Stream {
         match sent {
             Sent::Open { id, requested } => self.opened(id, &requested, verdict),
             Sent::Leave { id } => left(id, verdict),
+            Sent::Command { id, expects } => answered(id, expects, verdict),
         }
     }
 
@@ -277,9 +491,9 @@ impl Stream {
         let index = self
             .pending
             .iter()
-            .position(|(wire, _)| *wire == request_id.get())
+            .position(|pending| pending.wire == request_id.get())
             .ok_or(UNCORRELATED)?;
-        Ok(self.pending.remove(index).1)
+        Ok(self.pending.remove(index).sent)
     }
 
     fn opened(&mut self, id: u64, sent: &Requested, verdict: Verdict) -> Result<Effect, Fault> {
@@ -323,7 +537,7 @@ impl Stream {
         sent: &Requested,
     ) -> Result<Answer, Fault> {
         let selected = families::selected(selection, sent).ok_or(MISMATCHED)?;
-        self.title = Some(selected.contains(Family::TitleV1));
+        self.selected = Some(selected);
         Ok(Answer::Opened {
             connection: connection.bytes(),
             selected,
@@ -354,7 +568,7 @@ impl Stream {
     }
 
     fn availability(&self, title: &Available<Option<String>>) -> Result<Title, Fault> {
-        match (self.title == Some(true), title) {
+        match (self.selects(Family::TitleV1), title) {
             (false, Available::Unavailable) => Ok(Title::Unavailable),
             (true, Available::Available(value)) => self.value(value.as_deref()),
             _ => Err(UNEXPECTED),
@@ -362,7 +576,10 @@ impl Stream {
     }
 
     fn changed(&self, title: Option<&str>) -> Result<Event, Fault> {
-        require(self.synchronized && self.title == Some(true), UNEXPECTED)?;
+        require(
+            self.synchronized && self.selects(Family::TitleV1),
+            UNEXPECTED,
+        )?;
         self.value(title).map(Event::Title)
     }
 
@@ -398,6 +615,24 @@ fn left(id: Option<u64>, verdict: Verdict) -> Result<Effect, Fault> {
         answer,
     });
     Ok(Effect::Left(response, departure))
+}
+
+/// A command's answer: its result when it succeeded, or a failure's known
+/// partial result of its own operation.
+fn answered(id: u64, expects: Expects, verdict: Verdict) -> Result<Effect, Fault> {
+    let Verdict {
+        outcome, carried, ..
+    } = verdict;
+    let answer = match carried {
+        None => Answer::None,
+        Some(Carried::Success(success)) => expects.answer(success)?,
+        Some(Carried::KnownFinal(_)) => return Err(MISMATCHED),
+    };
+    Ok(Effect::Answered(Response {
+        id,
+        outcome,
+        answer,
+    }))
 }
 
 /// What a response may carry: an operation's result, or a rejection's

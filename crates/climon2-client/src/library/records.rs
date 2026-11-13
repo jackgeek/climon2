@@ -7,7 +7,10 @@ use super::{
     failure::{Fault, bytes},
     families::Selection,
 };
-use climon2_core::{native, wire};
+use climon2_core::{
+    native,
+    wire::{self, AuthorityIds, Counter, Geometry, GrantReason, RevocationReason},
+};
 use std::mem;
 
 /// Bytes every record is charged before its variable data: a delivered
@@ -35,6 +38,8 @@ pub(super) enum Event {
     Metadata(Metadata),
     /// A Title changed, by value; never unavailable.
     Title(Title),
+    /// A control, restoration or display record (#94).
+    Presentation(Presentation),
     /// An explicit error the stream reports, such as a connection failure.
     Diagnostic(Fault),
 }
@@ -45,6 +50,25 @@ pub(super) struct Response {
     pub(super) id: u64,
     pub(super) outcome: Outcome,
     pub(super) answer: Answer,
+}
+
+/// What the daemon presents to the role it controls, under immutable
+/// period and restoration identities.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Presentation {
+    /// Control granted: a new period and its restoration, at the session's
+    /// effective geometry.
+    Granted(AuthorityIds, Geometry, GrantReason),
+    /// Control revoked under the authority it ends.
+    Revoked(AuthorityIds, RevocationReason),
+    /// A restoration's beginning, at the geometry its bytes use.
+    Begin(AuthorityIds, Geometry),
+    /// Nonempty exact terminal bytes, of a restoration or live.
+    Display(AuthorityIds, Box<[u8]>),
+    /// Every Display of the restoration was sent.
+    Complete(AuthorityIds),
+    /// The session's effective geometry in a period.
+    Geometry(Counter, Geometry),
 }
 
 /// A response's outcome: success, or a non-success with the error that
@@ -111,6 +135,17 @@ pub(super) enum Answer {
     },
     /// An initial role rejection's known command result.
     KnownFinal(Command),
+    /// Input accepted, all of its bytes.
+    Input(u32),
+    Resized,
+    Acquired(wire::AuthorityResult),
+    Ready(wire::AuthorityResult),
+    /// Focus: whether it changed, the state, and the bytes forwarded.
+    Focus {
+        changed: bool,
+        focused: bool,
+        bytes: u32,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -212,6 +247,8 @@ impl Event {
                 metadata.title.bytes() + metadata.command.as_ref().map_or(0, Command::bytes)
             }
             Self::Title(title) => title.bytes(),
+            Self::Presentation(Presentation::Display(_, bytes)) => bytes.len() as u64,
+            Self::Presentation(_) => 0,
             Self::Diagnostic(fault) => fault.bytes(),
         }
     }
@@ -292,8 +329,109 @@ fn record(
             record.tag = native::DIAGNOSTIC;
             record.data.diagnostic = fault.error();
         }
+        Event::Presentation(presentation) => {
+            (record.tag, record.data) = presentation.native();
+        }
     }
     record
+}
+
+fn geometry(geometry: Geometry) -> native::Geometry {
+    native::Geometry {
+        cols: geometry.cols.get(),
+        rows: geometry.rows.get(),
+    }
+}
+
+fn barrier(ids: AuthorityIds) -> native::Barrier {
+    native::Barrier {
+        period: ids.period.get(),
+        restoration_id: ids.restoration_id.get(),
+    }
+}
+
+fn granted(reason: GrantReason) -> u32 {
+    match reason {
+        GrantReason::Attach => native::ATTACH,
+        GrantReason::Acquire => native::TAKE_CONTROL,
+        GrantReason::HandBack => native::HAND_BACK,
+        GrantReason::Successor => native::SUCCESSOR,
+    }
+}
+
+fn revoked(reason: RevocationReason) -> u32 {
+    match reason {
+        RevocationReason::Takeover => native::TAKEOVER,
+        RevocationReason::SessionEnding => native::SESSION_ENDING,
+    }
+}
+
+impl Presentation {
+    /// Its tag and data, pointing into its own bytes.
+    fn native(&self) -> (u32, native::RecordData) {
+        match self {
+            Self::Granted(ids, size, reason) => (
+                native::GRANTED,
+                native::RecordData {
+                    granted: native::Granted {
+                        period: ids.period.get(),
+                        restoration_id: ids.restoration_id.get(),
+                        geometry: geometry(*size),
+                        reason: granted(*reason),
+                        reserved: 0,
+                    },
+                },
+            ),
+            Self::Revoked(ids, reason) => (
+                native::REVOKED,
+                native::RecordData {
+                    revoked: native::Revoked {
+                        period: ids.period.get(),
+                        restoration_id: ids.restoration_id.get(),
+                        reason: revoked(*reason),
+                        reserved: 0,
+                    },
+                },
+            ),
+            Self::Begin(ids, size) => (
+                native::RESTORATION_BEGIN,
+                native::RecordData {
+                    restoration: native::Restoration {
+                        period: ids.period.get(),
+                        restoration_id: ids.restoration_id.get(),
+                        geometry: geometry(*size),
+                    },
+                },
+            ),
+            Self::Display(ids, bytes) => (
+                native::DISPLAY,
+                native::RecordData {
+                    display: native::Display {
+                        authority: barrier(*ids),
+                        bytes: native::Bytes {
+                            data: bytes.as_ptr(),
+                            length: bytes.len() as u64,
+                        },
+                    },
+                },
+            ),
+            Self::Complete(ids) => (
+                native::RESTORATION_COMPLETE,
+                native::RecordData {
+                    barrier: barrier(*ids),
+                },
+            ),
+            Self::Geometry(period, size) => (
+                native::GEOMETRY,
+                native::RecordData {
+                    geometry: native::GeometryEvent {
+                        period: period.get(),
+                        geometry: geometry(*size),
+                    },
+                },
+            ),
+        }
+    }
 }
 
 impl Metadata {
@@ -341,8 +479,43 @@ impl Response {
                 response.result_tag = native::KNOWN_FINAL;
                 response.result.known_final = command.native();
             }
+            Answer::Input(bytes) => {
+                response.result_tag = native::INPUT_ACCEPTED;
+                response.result.accepted_bytes = *bytes;
+            }
+            Answer::Resized => response.result_tag = native::RESIZE_ACCEPTED,
+            Answer::Acquired(result) => {
+                response.result_tag = native::ACQUIRED;
+                response.result.authority = authority(result);
+            }
+            Answer::Ready(result) => {
+                response.result_tag = native::READY_RESULT;
+                response.result.authority = authority(result);
+            }
+            Answer::Focus {
+                changed,
+                focused,
+                bytes,
+            } => {
+                response.result_tag = native::FOCUS_RESULT;
+                response.result.flag = native::FlagResult {
+                    changed: u8::from(*changed),
+                    value: u8::from(*focused),
+                    reserved: [0; 2],
+                    accepted_bytes: *bytes,
+                };
+            }
         }
         response
+    }
+}
+
+fn authority(result: &wire::AuthorityResult) -> native::AuthorityResult {
+    native::AuthorityResult {
+        changed: u8::from(result.changed),
+        reserved: [0; 7],
+        period: result.authority.period.get(),
+        restoration_id: result.authority.restoration_id.get(),
     }
 }
 

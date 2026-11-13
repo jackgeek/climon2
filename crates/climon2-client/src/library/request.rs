@@ -1,6 +1,7 @@
 //! `cm1_request`, validated and copied once, at `submit`: what the instance
 //! queues is its own copy, never a caller buffer. Only the active argument
-//! member is read; inactive storage is ignored.
+//! member is read; inactive storage is ignored. Authority and geometry are
+//! parsed into core's wire types here, once (#94).
 
 use super::{
     failure::{
@@ -12,9 +13,9 @@ use super::{
 };
 use climon2_core::{
     native::{self, Bytes, Tokens},
-    wire::{Families, Requested},
+    wire::{AuthorityIds, Counter, Families, Geometry, Mode, Requested},
 };
-use std::{mem, slice};
+use std::{mem, num::NonZeroU32, slice};
 
 /// What an accepted request costs the request queue: the request and every
 /// buffer it names, as submitted.
@@ -32,18 +33,38 @@ pub(super) struct Submitted {
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum Operation {
-    /// A monitor-mode Open.
     Open(Open),
     /// Leave, naming the connection generation it leaves.
     Leave(u64),
+    /// A request on the opened role (#94), naming its generation.
+    Command(Command),
 }
 
-/// A monitor-mode Open's families, parsed once: unique, required and
-/// optional disjoint, every required one relayed, and only those optional
-/// ones this release relays (it never selects others).
+/// An Open's mode and families, parsed once: unique, required and optional
+/// disjoint, every required one relayed, and only those optional ones this
+/// release relays (it never selects others).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Open {
+    pub(super) mode: Mode,
     pub(super) requested: Requested,
+}
+
+/// A request on the opened role: the generation it names, and what it asks.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct Command {
+    pub(super) generation: u64,
+    pub(super) act: Act,
+}
+
+/// What a command asks of the daemon, under the period and restoration it
+/// names, if any. Input owns its exact bytes.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum Act {
+    Acquire,
+    Input(AuthorityIds, Box<[u8]>),
+    Resize(AuthorityIds, Geometry),
+    Ready(AuthorityIds),
+    Focus(AuthorityIds, bool),
 }
 
 fn invalid(message: &'static str) -> Failure {
@@ -52,14 +73,25 @@ fn invalid(message: &'static str) -> Failure {
 
 const TOO_LARGE: Failure = Failure::new(FULL, "the request does not fit request_bytes");
 
-/// Validates and copies a request. `capacity` is the request queue's byte
-/// limit: no token is read or copied for a request that cannot fit it.
+/// What a request may cost and carry: the request queue's byte limit, and
+/// the most bytes one Input carries.
+#[derive(Clone, Copy)]
+pub(super) struct Capacity {
+    pub(super) request_bytes: u64,
+    pub(super) chunk_bytes: u64,
+}
+
+/// Validates and copies a request. No token or byte is read or copied for
+/// a request that cannot fit `capacity`.
 ///
 /// # Safety
 ///
 /// Every nonnull buffer and list in the active member covers its length or
 /// count (the caller's contract).
-pub(super) unsafe fn parse(request: &native::Request, capacity: u64) -> Result<Submitted, Failure> {
+pub(super) unsafe fn parse(
+    request: &native::Request,
+    capacity: Capacity,
+) -> Result<Submitted, Failure> {
     let id = header(request)?;
     // SAFETY: guaranteed by the caller.
     let (operation, bytes) = unsafe { operation(request, capacity) }?;
@@ -86,54 +118,132 @@ fn header(request: &native::Request) -> Result<u64, Failure> {
 /// # Safety
 ///
 /// As for [`parse`].
-unsafe fn operation(request: &native::Request, capacity: u64) -> Result<(Operation, u64), Failure> {
-    // SAFETY (both arms): the tag names the active member, whose buffers the
-    // caller guarantees.
-    match request.tag {
-        native::OPEN => unsafe { open(&request.args.open, capacity) },
-        native::LEAVE => leave(unsafe { request.args.generation }),
-        _ => Err(Failure::new(
-            UNSUPPORTED_OPERATION,
-            "this client library does not perform this request yet",
-        )),
-    }
+unsafe fn operation(
+    request: &native::Request,
+    capacity: Capacity,
+) -> Result<(Operation, u64), Failure> {
+    // SAFETY (every arm): the tag names the active member, whose buffers
+    // the caller guarantees.
+    let (named, bytes) = match request.tag {
+        native::OPEN => return unsafe { open(&request.args.open, capacity.request_bytes) },
+        native::LEAVE => {
+            let generation = nonzero(unsafe { request.args.generation })?;
+            return Ok((Operation::Leave(generation), REQUEST));
+        }
+        native::ACQUIRE => (
+            (nonzero(unsafe { request.args.generation })?, Act::Acquire),
+            REQUEST,
+        ),
+        native::INPUT => unsafe { input(&request.args.input, capacity) }?,
+        native::RESIZE => (resize(unsafe { &request.args.resize })?, REQUEST),
+        native::READY => (ready(unsafe { request.args.authority })?, REQUEST),
+        native::FOCUS => (focus(unsafe { &request.args.flag })?, REQUEST),
+        _ => {
+            return Err(Failure::new(
+                UNSUPPORTED_OPERATION,
+                "this client library does not perform this request yet",
+            ));
+        }
+    };
+    let (generation, act) = named;
+    Ok((Operation::Command(Command { generation, act }), bytes))
 }
 
-fn leave(generation: u64) -> Result<(Operation, u64), Failure> {
+fn nonzero(generation: u64) -> Result<u64, Failure> {
     (generation != 0)
-        .then_some((Operation::Leave(generation), REQUEST))
+        .then_some(generation)
         .ok_or(invalid("generation must be nonzero"))
+}
+
+/// A command and the generation it names.
+type Named = (u64, Act);
+
+/// A nonzero generation, period and restoration ID, never substituted for
+/// one another.
+fn authority(authority: native::Authority) -> Result<(u64, AuthorityIds), Failure> {
+    let ids = Counter::new(authority.period)
+        .zip(Counter::new(authority.restoration_id))
+        .map(|(period, restoration_id)| AuthorityIds {
+            period,
+            restoration_id,
+        });
+    ids.filter(|_| authority.generation != 0)
+        .map(|ids| (authority.generation, ids))
+        .ok_or(invalid("authority must be nonzero"))
+}
+
+fn ready(native: native::Authority) -> Result<Named, Failure> {
+    authority(native).map(|(generation, ids)| (generation, Act::Ready(ids)))
+}
+
+/// Positive columns and rows.
+fn geometry(geometry: native::Geometry) -> Option<Geometry> {
+    NonZeroU32::new(geometry.cols)
+        .zip(NonZeroU32::new(geometry.rows))
+        .map(|(cols, rows)| Geometry { cols, rows })
+}
+
+fn resize(resize: &native::Resize) -> Result<Named, Failure> {
+    let (generation, ids) = authority(resize.authority)?;
+    let geometry = geometry(resize.geometry).ok_or(invalid("geometry must be positive"))?;
+    Ok((generation, Act::Resize(ids, geometry)))
+}
+
+/// Only 0 and 1, with every reserved byte zero.
+fn focus(flag: &native::Flag) -> Result<Named, Failure> {
+    let (generation, ids) = authority(flag.authority)?;
+    require(
+        flag.value <= 1 && flag.reserved == [0; 7],
+        invalid("focus is 0 or 1, with reserved bytes zero"),
+    )?;
+    Ok((generation, Act::Focus(ids, flag.value == 1)))
+}
+
+/// Nonempty exact bytes of at most `chunk_bytes`, which with the request
+/// must fit `request_bytes`: sized before any byte is copied.
+///
+/// # Safety
+///
+/// As for [`parse`].
+unsafe fn input(input: &native::Input, capacity: Capacity) -> Result<(Named, u64), Failure> {
+    let (generation, ids) = authority(input.authority)?;
+    let length = input.bytes.length;
+    require(
+        length <= capacity.chunk_bytes,
+        invalid("input exceeds chunk_bytes"),
+    )?;
+    let bytes = REQUEST + length;
+    require(bytes <= capacity.request_bytes, TOO_LARGE)?;
+    // SAFETY: guaranteed by the caller.
+    let payload = unsafe { buffer(input.bytes) }.ok_or(invalid("input must be nonempty"))?;
+    Ok(((generation, Act::Input(ids, Box::from(payload))), bytes))
 }
 
 /// # Safety
 ///
 /// As for [`parse`].
 unsafe fn open(open: &native::Open, capacity: u64) -> Result<(Operation, u64), Failure> {
-    monitor(open)?;
+    let mode = mode(open)?;
     // SAFETY: guaranteed by the caller.
     let lists = unsafe { Lists::read(open, capacity) }?;
     // SAFETY: as above; `read` bounded the lists.
-    unsafe { lists.open() }
+    unsafe { lists.open(mode) }
 }
 
-/// Monitor mode only: interactive Open arrives with #94.
-fn monitor(open: &native::Open) -> Result<(), Failure> {
+/// Monitor mode with zero geometry, or interactive at a positive one;
+/// reserved zero either way.
+fn mode(open: &native::Open) -> Result<Mode, Failure> {
+    require(open.reserved == 0, invalid("reserved must be zero"))?;
+    let geometry = geometry(open.geometry);
+    let zero = [open.geometry.cols, open.geometry.rows] == [0; 2];
     match open.mode {
-        native::MONITOR => passive(open),
-        native::INTERACTIVE => Err(Failure::new(
-            UNSUPPORTED_OPERATION,
-            "this client library does not open interactive connections yet",
-        )),
+        native::MONITOR if zero => Ok(Mode::Monitor),
+        native::MONITOR => Err(invalid("monitor Open needs zero geometry")),
+        native::INTERACTIVE => geometry
+            .map(Mode::Interactive)
+            .ok_or(invalid("interactive Open needs a positive geometry")),
         _ => Err(invalid("mode must be monitor or interactive")),
     }
-}
-
-fn passive(open: &native::Open) -> Result<(), Failure> {
-    let zero = [open.reserved, open.geometry.cols, open.geometry.rows] == [0; 3];
-    require(
-        zero,
-        invalid("monitor Open needs zero geometry and reserved zero"),
-    )
 }
 
 /// Validated tokens, copied from the caller.
@@ -172,10 +282,10 @@ impl<'a> Lists<'a> {
     /// # Safety
     ///
     /// As for [`parse`].
-    unsafe fn open(&self) -> Result<(Operation, u64), Failure> {
+    unsafe fn open(&self, mode: Mode) -> Result<(Operation, u64), Failure> {
         // SAFETY: guaranteed by the caller.
         let requested = unsafe { self.tokens() }?;
-        Ok((Operation::Open(relayed(&requested)?), self.bytes))
+        Ok((Operation::Open(relayed(mode, &requested)?), self.bytes))
     }
 
     /// Every token nonempty UTF-8, each one once across both lists.
@@ -243,7 +353,7 @@ unsafe fn texts(list: &[Bytes]) -> Result<Texts, Failure> {
 
 /// The relayed families: a required family this release does not relay is
 /// unsupported; an optional one is never requested.
-fn relayed(requested: &Requested) -> Result<Open, Failure> {
+fn relayed(mode: Mode, requested: &Requested) -> Result<Open, Failure> {
     let relayed = |token: &str| families::relayed(token).is_some();
     require(
         requested
@@ -257,6 +367,7 @@ fn relayed(requested: &Requested) -> Result<Open, Failure> {
         ),
     )?;
     Ok(Open {
+        mode,
         requested: requested.retain_optional(relayed),
     })
 }
