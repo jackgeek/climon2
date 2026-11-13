@@ -83,6 +83,19 @@ fn adr0001_version_matched_client_has_exact_frozen_invocation() {
     );
 }
 
+/// #105 (spec #73 Entry and startup, Introduction preference): the monitor
+/// keeps its preference file at the root of the climon2 home, beside
+/// `config.jsonc`, never inside the configuration.
+#[test]
+fn issue105_the_monitor_preference_file_is_in_the_climon2_home() {
+    let home = std::env::current_dir().unwrap().join("custom home");
+    let layout = HomeLayout::resolve(Some(home.as_os_str()), Path::new("ignored")).unwrap();
+    assert_eq!(
+        layout.monitor_preferences(),
+        home.join("monitor-preferences.json")
+    );
+}
+
 /// #74: the monitor finds its executable home and version folder from its own
 /// canonical path exactly as the CLI does, and the CLI names its own version's
 /// monitor with the same layout code.

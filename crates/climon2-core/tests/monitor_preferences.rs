@@ -4,8 +4,7 @@
 //! file's versioning and malformed-file behaviour). Every expectation is
 //! written here from the README's description of the file, never taken from
 //! the code under test.
-use climon2_core::{layout::HomeLayout, preferences::MonitorPreferences};
-use std::path::Path;
+use climon2_core::preferences::MonitorPreferences;
 
 fn parsed(text: &str) -> MonitorPreferences {
     MonitorPreferences::parse(text.as_bytes()).unwrap_or_else(|error| panic!("{text}: {error}"))
@@ -15,20 +14,6 @@ fn malformed(text: &str) -> String {
     match MonitorPreferences::parse(text.as_bytes()) {
         Ok(preferences) => panic!("{text} was read as {preferences:?}"),
         Err(error) => error.to_string(),
-    }
-}
-
-/// HLP-01 (Contract): each climon2 home keeps its own preference file, beside
-/// its `config.jsonc`.
-#[test]
-fn hlp01_each_home_keeps_its_own_preference_file() {
-    let root = std::env::current_dir().unwrap();
-    for home in [root.join("one home"), root.join("another")] {
-        let layout = HomeLayout::resolve(Some(home.as_os_str()), Path::new("/")).unwrap();
-        assert_eq!(
-            layout.monitor_preferences(),
-            home.join("monitor-preferences.json")
-        );
     }
 }
 
