@@ -7,7 +7,7 @@ use crate::{
     modes::{DIRECT, SHARED, cursor_style, transitions},
     presentation::{Mode, Presentation},
     render::{cursor, cursors, screen},
-    restore::{Chunk, PROLOGUE, Restoration, Snapshot, lead},
+    restore::{Chunk, PROLOGUE, Restoration, Snapshot, canonical_lead, lead},
     sync::Latch,
     title,
     token::{Kind, Token, Tokenizer},
@@ -97,15 +97,37 @@ impl Vt {
     pub fn grant(&mut self, presentation: &mut Presentation) -> (Vec<u8>, Restoration) {
         presentation.mode = Mode::of(presentation.cols, presentation.rows, self.geometry);
         let direct = presentation.mode == Mode::Direct;
-        let rows = self
-            .engine
-            .normal(Dimensions::history_size)
-            .min(self.ledger.max_rows);
-        let notice = self.ledger.evicted && rows > 0;
+        let (rows, notice) = self.retained();
         let suffix = self.suffix(direct);
         let restoration = Restoration::new(&self.ledger, rows, notice, presentation, suffix);
         presentation.cache = Cache::current(&self.engine, &self.ledger, &self.title_text());
         (lead(presentation, notice), restoration)
+    }
+
+    /// Take the snapshot point S for a canonical restoration: the session
+    /// serialized at its own geometry for a fresh terminal of exactly that
+    /// size, as a monitor-mode connection parses it into a new model. It
+    /// never preserves host content and never depends on a host's size:
+    /// `presentation` becomes a fresh record of a host of the session
+    /// geometry, so live output stays Direct. Returns phase A and the
+    /// restoration producing phases B and C, as [`Vt::grant`] does. Never
+    /// call while [`Vt::sync_pending`].
+    pub fn canonical(&mut self, presentation: &mut Presentation) -> (Vec<u8>, Restoration) {
+        *presentation = Presentation::new(self.geometry.cols(), self.geometry.rows());
+        let (rows, notice) = self.retained();
+        let suffix = self.suffix(true);
+        let restoration = Restoration::canonical(&self.ledger, rows, notice, presentation, suffix);
+        (canonical_lead(notice), restoration)
+    }
+
+    /// The retained history rows at the snapshot point, and whether the
+    /// truncation notice precedes them.
+    fn retained(&mut self) -> (usize, bool) {
+        let rows = self
+            .engine
+            .normal(Dimensions::history_size)
+            .min(self.ledger.max_rows);
+        (rows, self.ledger.evicted && rows > 0)
     }
 
     /// The live update for a Derived controller whose restoration has
