@@ -4,6 +4,7 @@
 use super::{
     RELEASE, REQUIREMENTS,
     failure::{Failure, INVALID_ARGUMENT, RELEASE_MISMATCH, UNSUPPORTED_LIMIT},
+    guid,
 };
 use climon2_core::{
     diagnostics::{CappedWriter, subscriber},
@@ -15,6 +16,8 @@ use std::{ffi::OsString, io, os::unix::ffi::OsStringExt, path::PathBuf, slice};
 /// The validated startup. Only the diagnostics filter is borrowed, and only
 /// for the `create` call that parses it.
 pub(super) struct Startup<'a> {
+    /// The session's GUID in its canonical text, as metadata and hello name it.
+    pub(super) session: String,
     pub(super) generation: u64,
     pub(super) paths: Paths,
     pub(super) settings: ClientSettings,
@@ -47,6 +50,7 @@ impl Startup<'_> {
         let (generation, paths, settings) = unsafe { identity(startup) }?;
         let diagnostics = unsafe { diagnostics(startup.diagnostics) }?;
         Ok(Self {
+            session: guid::text(startup.session_id.bytes),
             generation,
             paths,
             settings,
@@ -75,7 +79,7 @@ fn invalid(message: &'static str) -> Failure {
 /// # Safety
 ///
 /// A nonnull `data` covers `length` readable bytes.
-unsafe fn buffer<'a>(bytes: Bytes) -> Option<&'a [u8]> {
+pub(super) unsafe fn buffer<'a>(bytes: Bytes) -> Option<&'a [u8]> {
     isize::try_from(bytes.length)
         .ok()
         .filter(|length| *length > 0 && !bytes.data.is_null())

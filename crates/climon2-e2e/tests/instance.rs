@@ -26,7 +26,6 @@ use support::{
 
 const SUCCESS: u64 = 0;
 const INVALID_ARGUMENT: u64 = 2;
-const UNSUPPORTED_OPERATION: u64 = 3;
 const CLOSED: u64 = 6;
 const BUSY: u64 = 7;
 const WRONG_THREAD: u64 = 8;
@@ -52,12 +51,13 @@ const INSTANCE_BYTES: u64 = 1024 * 1024;
 const WORKERS: u64 = 2;
 /// `sizeof(cm1_record)` on every supported target.
 const RECORD: u64 = size_of::<climon2_core::native::Record>() as u64;
-/// The notification descriptors one instance holds: an `eventfd` on Linux,
-/// a pipe's two ends on macOS.
+/// The descriptors one instance holds before any connection: its
+/// notification descriptor and its waker, an `eventfd` each on Linux and a
+/// pipe's two ends each on macOS.
 #[cfg(target_os = "linux")]
-const NOTIFIER_DESCRIPTORS: u64 = 1;
+const INSTANCE_DESCRIPTORS: u64 = 2;
 #[cfg(target_os = "macos")]
-const NOTIFIER_DESCRIPTORS: u64 = 2;
+const INSTANCE_DESCRIPTORS: u64 = 4;
 const PATH_MAX: u64 = nix::libc::PATH_MAX as u64;
 
 /// The documented default `monitor.limits` values the host's startup uses.
@@ -838,12 +838,12 @@ fn installed_library_instances_keep_their_own_copies_paths_settings_and_logs() {
         // The notification descriptors and the log file.
         assert_eq!(
             snapshot["descriptors"],
-            NOTIFIER_DESCRIPTORS + 1,
+            INSTANCE_DESCRIPTORS + 1,
             "{snapshot}"
         );
         assert_eq!(
             snapshot["peak_descriptors"],
-            NOTIFIER_DESCRIPTORS + 1,
+            INSTANCE_DESCRIPTORS + 1,
             "{snapshot}"
         );
     }
@@ -930,6 +930,7 @@ fn log_lines(path: &Path) -> Vec<String> {
         "client instance terminal evidence published",
         "client instance worker cleanup complete",
         "client instance destroyed",
+        "client instance failed",
         "client library contained a panic",
     ];
     let lines: Vec<String> = text.lines().map(str::to_owned).collect();
@@ -987,12 +988,12 @@ fn assert_unaffected(report: &Value) {
     assert_all_released(&report["ledger"], 0);
 }
 
-/// LIB-05 Fault: a panic injected at the bootstrap, at `create` or at
-/// `submit` returns an explicit `CM1_INTERNAL_ERROR` without unwinding (the
-/// host survives, nothing reaches its standard error), with cleared output
-/// and no handles; the retry succeeds, and no instance is affected.
+/// LIB-05 Fault: a panic injected at the bootstrap or at `create` returns an
+/// explicit `CM1_INTERNAL_ERROR` without unwinding (the host survives,
+/// nothing reaches its standard error), with cleared output and no handles;
+/// the retry succeeds, and no instance is affected.
 #[test]
-fn installed_library_contains_a_panic_at_the_bootstrap_create_or_submit() {
+fn installed_library_contains_a_panic_at_the_bootstrap_or_create() {
     let package = Package::new();
     let Some(report) = fault(&package, "bootstrap", json!({})) else {
         return;
@@ -1011,18 +1012,15 @@ fn installed_library_contains_a_panic_at_the_bootstrap_create_or_submit() {
     assert_eq!(failed["output"], "zeroed");
     assert_success(&retried["call"]);
     assert_unaffected(&report);
-    let report = fault(&package, "submit", json!({})).unwrap();
-    let (failed, retried) = twice(&report["submit"]);
-    assert_failure(failed, INTERNAL_ERROR, "internal_error");
-    assert_failure(retried, UNSUPPORTED_OPERATION, "unsupported_operation");
-    assert_unaffected(&report);
     package.assert_clean();
 }
 
 /// LIB-05 Fault and LIB-04 Fault: a panic injected while an instance is in
-/// use (at `notification`, `snapshot`, `drain`, `shutdown` or `run`)
-/// returns an explicit `CM1_INTERNAL_ERROR` with cleared output (run still
-/// reports its cleanup and terminal evidence) and stops the instance: a
+/// use (at `submit`, `notification`, `snapshot`, `drain`, `shutdown` or
+/// `run`) returns an explicit `CM1_INTERNAL_ERROR` with cleared output (run
+/// still reports its cleanup and terminal evidence) and stops the instance
+/// (the scenario's retried `submit`, of a zeroed and so malformed request,
+/// is then rejected as malformed): a
 /// library diagnostic is queued and raises the descriptor until drained, and
 /// its delivery stays unchanged until released;
 /// destroy and handle release stay busy while that delivery is outstanding;
@@ -1032,11 +1030,23 @@ fn installed_library_contains_a_panic_at_the_bootstrap_create_or_submit() {
 #[test]
 fn installed_library_contains_a_panic_in_a_running_instance_and_stops_it() {
     let package = Package::new();
-    for call in ["notification", "snapshot", "drain", "shutdown", "run"] {
+    for call in [
+        "submit",
+        "notification",
+        "snapshot",
+        "drain",
+        "shutdown",
+        "run",
+    ] {
         let Some(report) = fault(&package, call, json!({})) else {
             return;
         };
-        let early = ["notification", "snapshot", "drain"].contains(&call);
+        let early = ["submit", "notification", "snapshot", "drain"].contains(&call);
+        if call == "submit" {
+            let (failed, retried) = twice(&report["submit"]);
+            assert_failure(failed, INTERNAL_ERROR, "internal_error");
+            assert_failure(retried, INVALID_ARGUMENT, "invalid_argument");
+        }
         if call == "notification" {
             let (failed, retried) = twice(&report["notification"]);
             assert_failure(&failed[0], INTERNAL_ERROR, "internal_error");
@@ -1055,7 +1065,7 @@ fn installed_library_contains_a_panic_in_a_running_instance_and_stops_it() {
             assert_failure(&failed[0], INTERNAL_ERROR, "internal_error");
             assert_eq!(failed[1], json!({ "output": "zeroed" }));
         }
-        let failed_before_drain = call == "notification" || call == "snapshot";
+        let failed_before_drain = ["submit", "notification", "snapshot"].contains(&call);
         assert_eq!(
             report["readable_before_drain"], failed_before_drain,
             "{call}"
@@ -1210,8 +1220,8 @@ fn installed_library_charges_a_delivery_until_it_is_released() {
     ] {
         assert_eq!(after[unused], 0, "{unused}: {after}");
     }
-    assert_eq!(after["descriptors"], NOTIFIER_DESCRIPTORS);
-    assert_eq!(after["peak_descriptors"], NOTIFIER_DESCRIPTORS);
+    assert_eq!(after["descriptors"], INSTANCE_DESCRIPTORS);
+    assert_eq!(after["peak_descriptors"], INSTANCE_DESCRIPTORS);
     package.assert_clean();
 }
 
@@ -1363,8 +1373,8 @@ fn installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing
     #[cfg(target_os = "macos")]
     assert_eq!(descriptor["kind"]["fifo"], true);
     let snapshot = &report["snapshot"][1];
-    assert_eq!(snapshot["descriptors"], NOTIFIER_DESCRIPTORS);
-    assert_eq!(snapshot["peak_descriptors"], NOTIFIER_DESCRIPTORS);
+    assert_eq!(snapshot["descriptors"], INSTANCE_DESCRIPTORS);
+    assert_eq!(snapshot["peak_descriptors"], INSTANCE_DESCRIPTORS);
     assert_eq!(report["readable_after_create"], false);
     assert_success(&report["shutdown"]);
     assert_eq!(report["poller_saw_end"], true);

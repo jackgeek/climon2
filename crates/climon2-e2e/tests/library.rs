@@ -19,7 +19,6 @@ use support::{
 const SUCCESS: u64 = 0;
 const UNSUPPORTED_REVISION: u64 = 1;
 const INVALID_ARGUMENT: u64 = 2;
-const UNSUPPORTED_OPERATION: u64 = 3;
 const ORIGIN_LIBRARY: u64 = 1;
 const MIB: u64 = 1024 * 1024;
 
@@ -37,9 +36,9 @@ fn version_folder(library: &Path) -> &str {
 /// LIB-01 Library case (absolute exact-release load): the installed library,
 /// loaded by absolute path with eager local resolution, returns revision 1's
 /// immutable description. Its release text is exactly the version folder name,
-/// it advertises no capability this build does not implement, its
-/// requirements are present and bounded, and a second bootstrap returns the
-/// same description.
+/// it advertises exactly the families it relays (#93: core, passive monitor
+/// entry and titles), its requirements are present and bounded, and a second
+/// bootstrap returns the same description.
 #[test]
 fn installed_library_describes_revision_one_with_its_version_identity() {
     let package = Package::new();
@@ -56,7 +55,11 @@ fn installed_library_describes_revision_one_with_its_version_identity() {
     assert_eq!(description["release"], version_folder(&library));
     assert_eq!(
         description["capabilities"],
-        json!({ "null": true, "count": 0, "tokens": [] })
+        json!({
+            "null": false,
+            "count": 3,
+            "tokens": ["daemon-wire-v1", "monitor-v1", "title-v1"],
+        })
     );
     assert_bounded(&description["requirements"]);
     package.assert_clean();
@@ -122,10 +125,9 @@ fn installed_library_rejects_other_revisions_without_a_description() {
 /// one invalid address the library can detect, fails with
 /// `CM1_INVALID_ARGUMENT`, library origin, zero reserved fields and a
 /// nonempty stable error code and message; failed calls clear their output
-/// structs and notification writes -1. `submit` fails with
-/// `CM1_UNSUPPORTED_OPERATION` until Open (#93).
+/// structs and notification writes -1.
 #[test]
-fn installed_library_table_rejects_null_arguments_and_cannot_submit_yet() {
+fn installed_library_table_rejects_null_arguments() {
     let package = Package::new();
     let library = installed_library(&package);
     let report = observe(host(&library, package.isolation.home()));
@@ -147,16 +149,11 @@ fn installed_library_table_rejects_null_arguments_and_cannot_submit_yet() {
     assert_eq!(entries.len(), names.len(), "{functions:#}");
     for name in names {
         let entry = &entries[name];
-        let (code, error_code) = if name == "submit" {
-            (UNSUPPORTED_OPERATION, "unsupported_operation")
-        } else {
-            (INVALID_ARGUMENT, "invalid_argument")
-        };
-        assert_eq!(entry["code"], code, "{name}: {entry}");
+        assert_eq!(entry["code"], INVALID_ARGUMENT, "{name}: {entry}");
         assert_eq!(entry["reserved"], 0, "{name}: {entry}");
         assert_eq!(entry["origin"], ORIGIN_LIBRARY, "{name}: {entry}");
         assert_eq!(entry["error_reserved"], 0, "{name}: {entry}");
-        assert_eq!(entry["error_code"], error_code, "{name}");
+        assert_eq!(entry["error_code"], "invalid_argument", "{name}");
         assert!(!entry["message"].as_str().unwrap().is_empty(), "{name}");
     }
     for name in ["create", "run", "drain", "snapshot"] {
