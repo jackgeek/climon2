@@ -145,17 +145,21 @@ sessions in `tests/headless.rs`.
 | LIB-03, LIB-04 and LIB-05 Library: create, run, shutdown, drain to terminal evidence, release, destroy and join; wrong-thread run and destroy, repeated run, busy destroy and release; terminal evidence apart from the cleanup report; every object released through the library | `installed_library_instance_runs_create_run_shutdown_drain_release_destroy_join` |
 | LIB-03 Library: failed creates return no handles and leave no descriptor: null arguments, mismatched release, generation, native paths (non-UTF-8 kept, `PATH_MAX` bound) | `installed_library_create_rejects_invalid_identity_and_paths_without_handles` |
 | LIB-03 Library: client keys, log path and `CLIMON2_LOG` filter | `installed_library_create_rejects_invalid_settings_and_diagnostics_without_handles` |
-| LIB-03 Library: limits it cannot honour, each at its bound, never raised or lowered; no descriptor left | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` |
+| LIB-03 Library: limits it cannot honour, each at its bound, never raised or lowered; no descriptor left for the notification descriptor or for the log file (`CM1_RESOURCE_LIMIT`, no log file), one more is enough | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` |
 | LIB-03 Library and Fault: copies survive unmapped caller memory; lossless native paths; two instances' homes, settings, logs and allocations stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` |
 | LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` |
-| LIB-04 Library and Fault, Linux `eventfd`: borrowed descriptor, counted once, safe to poll while the stream ends and the handle is in use | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` |
+| LIB-04 Library and Fault, Linux `eventfd`: borrowed descriptor, counted once; a scheduled race in which polling sees the stream end while the handle is used before shutdown and after the end, every call succeeding with the same descriptor | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` |
 | LIB-04 Fault: allocator pairing, a delivery charged until released | `installed_library_charges_a_delivery_until_it_is_released` |
 | LIB-04 Fault: the failure diagnostic only within `event_bytes`, at and one under the bound | `installed_library_queues_the_failure_diagnostic_only_within_event_bytes` |
 | LIB-05 Fault: injected panic at the bootstrap, `create` and `submit` | `installed_library_contains_a_panic_at_the_bootstrap_create_or_submit` |
-| LIB-05 and LIB-04 Fault: injected panic at `notification`, `snapshot`, `drain`, `shutdown` and `run` stops the instance | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` |
+| LIB-05 and LIB-04 Fault: injected panic at `notification`, `snapshot`, `drain`, `shutdown` and `run` stops the instance, with no retry from `shutdown` on; a delivery held past terminal evidence alone keeps communication and destroy busy | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` |
 | LIB-04 and LIB-05 Fault: injected panic at `release_delivery`, `release_communication`, `release_control` and `destroy` keeps the object | `installed_library_contains_a_panic_in_a_release_and_keeps_the_object` |
-| LIB-05 Library and Fault: worker completion apart from terminal evidence | `installed_library_reports_worker_completion_apart_from_terminal_evidence` |
-| LIB-06 Library: stalled worker cleanup incomplete, never complete or destroyed | `installed_library_reports_stalled_worker_cleanup_as_incomplete_and_never_destroys` |
+| LIB-05 Fault (`worker` hook): worker completion apart from terminal evidence | `installed_library_reports_worker_completion_apart_from_terminal_evidence` |
+| LIB-06 Fault (`stall-cleanup` hook): stalled worker cleanup incomplete, never complete or destroyed | `installed_library_reports_stalled_worker_cleanup_as_incomplete_and_never_destroys` |
+
+LIB-06 Library is not covered yet: without the fault hook this release starts
+no worker that could stall. Open
+([#93](https://github.com/jackgeek/climon2/issues/93)) brings the first.
 
 ### Session continuity (plan section 6.1)
 

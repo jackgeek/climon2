@@ -11,7 +11,11 @@ below. Its requirements are provisional bounded values
 until [#121](https://github.com/jackgeek/climon2/issues/121) records qualified
 ones. Its [function-table](../TERMS.md#function-table) calls create, run,
 destroy, drain, release_delivery, shutdown, release_communication,
-release_control, notification and snapshot follow the rules below; `submit`
+release_control, notification and snapshot follow the rules below, with these
+gaps: create does not read the session ID, and snapshot reports no
+shared-release allocation and undercounts instance allocation, because it does
+not yet count each instance's diagnostics dispatcher
+([#180](https://github.com/jackgeek/climon2/issues/180)). `submit`
 reports `CM1_UNSUPPORTED_OPERATION` until Open
 ([#93](https://github.com/jackgeek/climon2/issues/93)). No instance can open a
 [daemon](../../../GLOSSARY.md#sessions) connection yet, so
