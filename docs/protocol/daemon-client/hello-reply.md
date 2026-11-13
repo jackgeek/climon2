@@ -56,7 +56,8 @@ has at least one attachment and a controller. Terminating state may retain
 attachments, but zero attachments cannot have a controller.
 
 An ordinary session is `starting` until its first attachment, and `detached`
-after an accepted final detach. A [headless session](../../../GLOSSARY.md#sessions)
+after an accepted final [detach](../../../GLOSSARY.md#attachment-and-control). A
+[headless session](../../../GLOSSARY.md#sessions)
 is never `starting`: it is `detached` whenever it has no attachment, from the
 moment it is created and after any later departure, including an unexpected
 loss. In both cases `detached` means the session keeps running without a

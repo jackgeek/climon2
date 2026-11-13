@@ -90,7 +90,8 @@ revision could add one if chosen.
 
 `c2 exec --headless <command> [args...]` creates a
 [headless session](../../GLOSSARY.md#sessions) without an interactive client. It
-prints the session ID and succeeds only after daemon-confirmed creation. The
+prints the [session ID](../../GLOSSARY.md#protocol-and-plugin-concepts) and
+succeeds only after daemon-confirmed creation. The
 session's zero-client survival lasts until command completion or explicit
 [Kill](../../GLOSSARY.md#attachment-and-control), including after later
 [attachment](../../GLOSSARY.md#attachment-and-control) loss. This CLI spelling
