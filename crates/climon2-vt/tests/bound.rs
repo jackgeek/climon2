@@ -1070,15 +1070,21 @@ fn the_largest_limits_never_overflow_the_accounting() {
 }
 
 /// LIM-03 Contract: the engine sees exactly what the live output policy
-/// forwards to a host: from `CSI ? 47;1049 h` only the alternate screen it
-/// implements, and nothing of a lone `CSI ? 1047 h`.
+/// forwards to a host. A hyperlink, which the policy strips, never reaches
+/// it, so the text printed under it carries no extra data and costs
+/// nothing; from `CSI ? 47;1049 h` the engine still sees the alternate
+/// screen it implements.
 #[test]
 fn the_engine_sees_only_what_a_host_would_receive() {
     let mut model = Model::new(geometry(8, 2), limits(ROOMY, NO_HISTORY)).unwrap();
-    model.feed(b"normal\x1b[?1047h").unwrap();
-    assert_eq!(model.screen(), ["normal", ""]);
+    let footprint = model.footprint();
+
+    model
+        .feed(b"\x1b]8;;https://example.com/\x07link\x1b]8;;\x07")
+        .unwrap();
+    assert_eq!(model.footprint(), footprint);
+    assert_eq!(model.screen(), ["link", ""]);
 
     model.feed(b"\x1b[?47;1049h").unwrap();
-
     assert_eq!(model.screen(), ["", ""]);
 }
