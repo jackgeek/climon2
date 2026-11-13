@@ -1,3 +1,8 @@
+use crate::{
+    cell::{Cell, Cursor},
+    input::{Host, Mouse},
+    signals::{HostSignal, Signals},
+};
 use alacritty_terminal::{
     Term,
     event::{Event, EventListener},
@@ -106,7 +111,7 @@ impl Modes {
         line_feed_new_line: false,
     };
 
-    fn of(mode: TermMode) -> Self {
+    pub(crate) fn of(mode: TermMode) -> Self {
         Self {
             alternate_screen: mode.contains(TermMode::ALT_SCREEN),
             cursor_visible: mode.contains(TermMode::SHOW_CURSOR),
@@ -131,6 +136,7 @@ struct Screen {
     title: Option<String>,
     /// Queries and clipboard operations the host was asked to perform.
     requests: Vec<String>,
+    signals: Signals,
     recent: Vec<u8>,
     eof: bool,
     error: Option<io::Error>,
@@ -150,6 +156,13 @@ impl Screen {
         let grid = self.term.grid();
         (0..grid.columns())
             .map(|col| grid[Line(line)][Column(col)].c)
+            .collect()
+    }
+
+    fn cells(&self, line: i32) -> Vec<Cell> {
+        let grid = self.term.grid();
+        (0..grid.columns())
+            .map(|col| Cell::of(&grid[Line(line)][Column(col)]))
             .collect()
     }
 
@@ -185,8 +198,9 @@ impl Screen {
         io::Error::new(
             error.kind(),
             format!(
-                "{error}\nSCREEN:\n{}\nRECENT BYTES:\n{:?}",
+                "{error}\nSCREEN:\n{}\nHOST SIGNALS:\n{:?}\nRECENT BYTES:\n{:?}",
                 self.text(),
+                self.signals.recorded(),
                 String::from_utf8_lossy(&self.recent)
             ),
         )
@@ -255,6 +269,7 @@ impl Terminal {
                 replies: options.replies,
                 title: None,
                 requests: Vec::new(),
+                signals: Signals::default(),
                 recent: Vec::new(),
                 eof: false,
                 error: None,
@@ -290,6 +305,7 @@ impl Terminal {
                     Ok(0) => state.eof = true,
                     Ok(count) => {
                         parser.advance(&mut state.term, &buffer[..count]);
+                        state.signals.push(&buffer[..count]);
                         state.recent.extend_from_slice(&buffer[..count]);
                         state.last_output = Instant::now();
                         let excess = state.recent.len().saturating_sub(65536);
@@ -327,6 +343,45 @@ impl Terminal {
             .map_err(|error| self.screen.0.lock().expect("screen lock").failure(error))
     }
 
+    /// Reports host focus gained (`CSI I`) or lost (`CSI O`), as a real
+    /// terminal does only while the application has focus reporting
+    /// (`CSI ? 1004 h`) on.
+    pub fn focus(&mut self, focused: bool) -> io::Result<()> {
+        self.inject(|host| host.focus(focused))
+    }
+
+    /// Reports a mouse `action` at the visible-screen cell (`row`, `column`),
+    /// 0-based, in SGR encoding (`CSI < Cb ; Cx ; Cy M` or `m`, 1-based), as a
+    /// real terminal does only with SGR encoding (`CSI ? 1006 h`) and a
+    /// tracking mode that reports the action on.
+    pub fn mouse(&mut self, action: Mouse, row: usize, column: usize) -> io::Result<()> {
+        self.inject(|host| host.mouse(action, row, column))
+    }
+
+    /// Pastes `text` unchanged between `CSI 200 ~` and `CSI 201 ~`, as a real
+    /// terminal does while the application has bracketed paste
+    /// (`CSI ? 2004 h`) on; send unbracketed paste with [`Terminal::send`].
+    pub fn paste(&mut self, text: impl AsRef<[u8]>) -> io::Result<()> {
+        self.inject(|host| host.paste(text.as_ref()))
+    }
+
+    /// Sends the input the emulated host makes of an event, or nothing, failing
+    /// with [`io::ErrorKind::InvalidInput`], when the host would not send it.
+    fn inject(&mut self, encode: impl FnOnce(&Host) -> Result<Vec<u8>, String>) -> io::Result<()> {
+        let bytes = {
+            let screen = self.screen.0.lock().expect("screen lock");
+            let host = Host {
+                mode: *screen.term.mode(),
+                rows: screen.term.screen_lines(),
+                columns: screen.term.columns(),
+            };
+            encode(&host).map_err(|reason| {
+                screen.failure(io::Error::new(io::ErrorKind::InvalidInput, reason))
+            })?
+        };
+        self.send(bytes)
+    }
+
     pub fn screen(&self) -> String {
         self.screen.0.lock().expect("screen lock").text()
     }
@@ -339,6 +394,11 @@ impl Terminal {
     /// The visible screen row `row` (0-based), with every column.
     pub fn row(&self, row: usize) -> String {
         self.screen.0.lock().expect("screen lock").row(row as i32)
+    }
+
+    /// The visible screen row `row` (0-based), cell by cell with every column.
+    pub fn cells(&self, row: usize) -> Vec<Cell> {
+        self.screen.0.lock().expect("screen lock").cells(row as i32)
     }
 
     pub fn history(&self) -> Vec<String> {
@@ -354,23 +414,26 @@ impl Terminal {
         Modes::of(*self.screen.0.lock().expect("screen lock").term.mode())
     }
 
-    /// The cursor's visible-screen (row, column), 0-based.
-    pub fn cursor(&self) -> (usize, usize) {
-        let point = self
-            .screen
-            .0
-            .lock()
-            .expect("screen lock")
-            .term
-            .grid()
-            .cursor
-            .point;
-        (point.line.0 as usize, point.column.0)
+    /// The cursor's position, visibility, shape and blink, read together.
+    pub fn cursor(&self) -> Cursor {
+        Cursor::of(&self.screen.0.lock().expect("screen lock").term)
     }
 
     /// Every query and clipboard operation the host was asked to perform.
     pub fn host_requests(&self) -> Vec<String> {
         self.screen.0.lock().expect("screen lock").requests.clone()
+    }
+
+    /// Every OSC 7501 report and bell the host received, in the order its parser
+    /// acted on them.
+    pub fn host_signals(&self) -> Vec<HostSignal> {
+        self.screen
+            .0
+            .lock()
+            .expect("screen lock")
+            .signals
+            .recorded()
+            .to_vec()
     }
 
     /// The most recent output bytes (at most 64 KiB).
@@ -429,6 +492,15 @@ impl Terminal {
                     .windows(bytes.len())
                     .any(|window| window == bytes)
         })
+    }
+
+    /// Waits until `condition` holds for every host signal received so far.
+    pub fn wait_for_host_signals(
+        &mut self,
+        timeout: Duration,
+        condition: impl Fn(&[HostSignal]) -> bool,
+    ) -> io::Result<()> {
+        self.wait(timeout, |screen| condition(screen.signals.recorded()))
     }
 
     fn wait(&self, timeout: Duration, condition: impl Fn(&Screen) -> bool) -> io::Result<()> {

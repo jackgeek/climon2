@@ -1,3 +1,4 @@
+use climon2_fixtures::BOUND;
 use std::{
     env, fs,
     io::{self, Write},
@@ -22,12 +23,17 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         return Err("expected fixture script".into());
     }
     let mut script = args.iter();
+    let mut raw = None;
     while let Some(action) = script.next() {
+        if action == "raw" {
+            raw = Some(climon2_fixtures::RawTerminal::enter()?);
+            continue;
+        }
         if action == "await-resize" {
             let initial = climon2_fixtures::size()?;
             print!("resize-ready");
             io::stdout().flush()?;
-            let deadline = Instant::now() + Duration::from_secs(2);
+            let deadline = Instant::now() + BOUND;
             while climon2_fixtures::size()? == initial {
                 if Instant::now() >= deadline {
                     return Err("resize deadline exceeded".into());
@@ -53,6 +59,8 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
                 print!("{value}");
                 io::stdout().flush()?;
             }
+            "await-input" if raw.is_some() => await_input(value)?,
+            "await-input" => return Err("await-input needs raw mode".into()),
             "exit" => return Ok(value.parse()?),
             "write-pid" => fs::write(value, std::process::id().to_string())?,
             "detach" => {
@@ -69,11 +77,11 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
                 nix::sys::signal::raise(signal)?;
             }
             "sleep" => {
-                let millis: u64 = value.parse()?;
-                if millis > 5000 {
-                    return Err("sleep exceeds 5 s fixture bound".into());
+                let duration = Duration::from_millis(value.parse()?);
+                if duration > BOUND {
+                    return Err("sleep exceeds the fixture bound".into());
                 }
-                thread::sleep(Duration::from_millis(millis));
+                thread::sleep(duration);
             }
             _ => return Err(format!("unknown fixture action: {action}").into()),
         }
@@ -84,6 +92,13 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
 fn report(path: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let value = climon2_fixtures::report(args)?;
     fs::write(path, serde_json::to_vec_pretty(&value)?)?;
+    Ok(())
+}
+
+/// Reads raw input until `expected` arrives, so a test can hold this fixture's
+/// next output until the host has read everything before it.
+fn await_input(expected: &str) -> io::Result<()> {
+    climon2_fixtures::read_until(|input| Ok(String::from_utf8_lossy(input).contains(expected)))?;
     Ok(())
 }
 
@@ -118,7 +133,7 @@ fn detach(script: &[&String]) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     // Until the child leads its own session, this fixture exiting would hang it up.
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + BOUND;
     while getsid(Some(child)) != Ok(child) {
         if Instant::now() >= deadline {
             return Err("detached child never started its session".into());
