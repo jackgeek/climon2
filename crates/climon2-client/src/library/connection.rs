@@ -202,8 +202,8 @@ impl<'a> Driver<'a> {
     }
 
     fn request(&mut self, id: u64, open: &Open, mut link: Link, peer: Peer) {
-        let offered = super::families::offered(&peer.advertisement, &open.optional);
-        match self.stream.open(id, open, offered, peer.send) {
+        let offered = super::families::offered(&peer.advertisement, &open.requested);
+        match self.stream.open(id, offered, peer.send) {
             Ok(frame) => {
                 link.send(&frame);
                 self.connection = Some(Connection {

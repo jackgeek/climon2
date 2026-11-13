@@ -3,7 +3,10 @@
 //! released: every buffer a delivered record points to lives in that
 //! delivery.
 
-use super::failure::{Fault, bytes};
+use super::{
+    failure::{Fault, bytes},
+    families::Selection,
+};
 use climon2_core::{native, wire};
 use std::mem;
 
@@ -68,7 +71,7 @@ pub(super) enum Answer {
     None,
     Opened {
         connection: [u8; 16],
-        selected: Vec<&'static str>,
+        selected: Selection,
     },
     Left {
         detached: bool,
@@ -184,7 +187,7 @@ impl Event {
 impl Response {
     fn bytes(&self) -> u64 {
         let answer = match &self.answer {
-            Answer::Opened { selected, .. } => TOKEN * selected.len() as u64,
+            Answer::Opened { selected, .. } => TOKEN * selected.families().count() as u64,
             Answer::KnownFinal(command) => command.bytes(),
             _ => 0,
         };
@@ -295,7 +298,7 @@ impl Response {
                 selected,
             } => {
                 response.result_tag = native::OPENED;
-                response.result.opened = opened(*connection, selected, tokens);
+                response.result.opened = opened(*connection, *selected, tokens);
             }
             Answer::Left { detached } => {
                 response.result_tag = native::LEFT;
@@ -327,10 +330,13 @@ fn listed(list: &[native::Bytes]) -> native::Tokens {
 
 fn opened(
     connection: [u8; 16],
-    selected: &[&'static str],
+    selected: Selection,
     tokens: &mut Vec<Box<[native::Bytes]>>,
 ) -> native::Opened {
-    let list: Box<[native::Bytes]> = selected.iter().map(|token| bytes(token)).collect();
+    let list: Box<[native::Bytes]> = selected
+        .families()
+        .map(|family| bytes(family.token()))
+        .collect();
     let selected = listed(&list);
     tokens.push(list);
     native::Opened {

@@ -26,6 +26,7 @@ use super::{
     stream::Departure,
 };
 use climon2_core::{
+    SessionId,
     diagnostics::{CappedWriter, dispatch},
     keys::{ClientSettings, ControlKey},
     native,
@@ -235,8 +236,7 @@ pub(super) enum Next {
 }
 
 pub(super) struct Shared {
-    /// The session's GUID in canonical text.
-    session: String,
+    session: SessionId,
     generation: u64,
     limits: native::Limits,
     paths: Paths,
@@ -462,7 +462,7 @@ impl Shared {
         tracing::dispatcher::with_default(&self.dispatch, || self.span.in_scope(work))
     }
 
-    pub(super) fn session(&self) -> &str {
+    pub(super) fn session(&self) -> &SessionId {
         &self.session
     }
 

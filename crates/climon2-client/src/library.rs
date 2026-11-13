@@ -16,13 +16,12 @@ use instance::{Object, Shared};
 use std::{
     panic::{self, AssertUnwindSafe},
     ptr,
-    sync::{Arc, Once},
+    sync::{Arc, LazyLock, Once},
 };
 
 mod connection;
 mod failure;
 mod families;
-mod guid;
 mod handshake;
 #[cfg(feature = "test-hooks")]
 mod hooks;
@@ -62,36 +61,38 @@ struct Immutable<T>(T);
 
 // SAFETY: the value is immutable and points only to static data.
 unsafe impl<T> Sync for Immutable<T> {}
+// SAFETY: as above.
+unsafe impl<T> Send for Immutable<T> {}
 
 /// The families this release relays, as the description lists them.
-static CAPABILITIES: Immutable<[Bytes; 3]> = Immutable([
-    failure::bytes(families::RELAYED[0]),
-    failure::bytes(families::RELAYED[1]),
-    failure::bytes(families::RELAYED[2]),
-]);
+static CAPABILITIES: LazyLock<Immutable<[Bytes; 3]>> =
+    LazyLock::new(|| Immutable(families::RELAYED.map(|family| failure::bytes(family.token()))));
 
-static DESCRIPTION: Immutable<Description> = Immutable(Description {
-    revision: native::REVISION,
-    reserved: 0,
-    release: failure::bytes(RELEASE),
-    capabilities: Tokens {
-        data: CAPABILITIES.0.as_ptr(),
-        count: CAPABILITIES.0.len() as u64,
-    },
-    requirements: REQUIREMENTS,
-    functions: Interface {
-        create: Some(create),
-        run: Some(run),
-        destroy: Some(destroy),
-        submit: Some(submit),
-        drain: Some(drain),
-        release_delivery: Some(release_delivery),
-        shutdown: Some(shutdown),
-        release_communication: Some(release_communication),
-        release_control: Some(release_control),
-        notification: Some(notification),
-        snapshot: Some(snapshot),
-    },
+/// Built once, then immutable until process exit.
+static DESCRIPTION: LazyLock<Immutable<Description>> = LazyLock::new(|| {
+    Immutable(Description {
+        revision: native::REVISION,
+        reserved: 0,
+        release: failure::bytes(RELEASE),
+        capabilities: Tokens {
+            data: CAPABILITIES.0.as_ptr(),
+            count: CAPABILITIES.0.len() as u64,
+        },
+        requirements: REQUIREMENTS,
+        functions: Interface {
+            create: Some(create),
+            run: Some(run),
+            destroy: Some(destroy),
+            submit: Some(submit),
+            drain: Some(drain),
+            release_delivery: Some(release_delivery),
+            shutdown: Some(shutdown),
+            release_communication: Some(release_communication),
+            release_control: Some(release_control),
+            notification: Some(notification),
+            snapshot: Some(snapshot),
+        },
+    })
 });
 
 /// A null handle or output pointer: the one invalid native address the library

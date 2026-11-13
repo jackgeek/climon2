@@ -4,9 +4,9 @@
 use super::{
     RELEASE, REQUIREMENTS,
     failure::{Failure, INVALID_ARGUMENT, RELEASE_MISMATCH, UNSUPPORTED_LIMIT, require},
-    guid,
 };
 use climon2_core::{
+    SessionId,
     diagnostics::Filter,
     keys::{ClientSettings, ControlKey},
     native::{self, Bytes},
@@ -16,8 +16,8 @@ use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf, slice};
 /// The validated startup, parsed and copied: nothing here borrows a caller
 /// buffer.
 pub(super) struct Startup {
-    /// The session's GUID in its canonical text, as metadata and hello name it.
-    pub(super) session: String,
+    /// The session metadata and hello must name this session.
+    pub(super) session: SessionId,
     pub(super) generation: u64,
     pub(super) paths: Paths,
     pub(super) settings: ClientSettings,
@@ -51,7 +51,7 @@ impl Startup {
         let (generation, paths, settings) = unsafe { identity(startup) }?;
         let diagnostics = unsafe { diagnostics(startup.diagnostics) }?;
         Ok(Self {
-            session: guid::text(startup.session_id.bytes),
+            session: SessionId::from_bytes(startup.session_id.bytes),
             generation,
             paths,
             settings,

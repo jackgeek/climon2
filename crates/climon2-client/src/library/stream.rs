@@ -9,13 +9,12 @@ use super::{
     families,
     link::fatal,
     records::{Answer, Command, Event, Metadata, Response, Title},
-    request::Open,
 };
 use climon2_core::{
     native,
     wire::{
-        self, Available, ControlRecord, Counter, Families, Frame, FrameLimit, KnownResult, Mode,
-        Outcome, Requested, ServerMessage, Success,
+        self, Available, ControlRecord, Counter, Families, Family, Frame, FrameLimit, KnownResult,
+        Mode, Outcome, Requested, ServerMessage, Success,
     },
 };
 
@@ -45,11 +44,12 @@ const UNFIT: Fault = Fault::library(
 enum Sent {
     Open {
         id: u64,
-        required: Vec<&'static str>,
-        requested: Vec<&'static str>,
+        requested: Requested,
     },
     /// Without a public ID, shutdown's own Leave.
-    Leave { id: Option<u64> },
+    Leave {
+        id: Option<u64>,
+    },
 }
 
 /// Leave evidence: whether a departure was required and what proves it.
@@ -179,26 +179,15 @@ impl Stream {
         Ok(bytes)
     }
 
-    /// A monitor-mode Open of `open.required` and the `offered` optional
-    /// families, for public request `id`.
+    /// A monitor-mode Open of the `requested` families, for public request
+    /// `id`.
     pub(super) fn open(
         &mut self,
         id: u64,
-        open: &Open,
-        offered: Vec<&'static str>,
+        requested: Requested,
         limit: FrameLimit,
     ) -> Result<Vec<u8>, Fault> {
-        let tokens = |families: &[&str]| {
-            Families::new(families.iter().map(|family| (*family).to_owned()).collect())
-                .expect("submit admitted each family once")
-        };
-        let capabilities = Requested::new(tokens(&open.required), tokens(&offered))
-            .expect("submit kept required and optional apart");
-        let sent = Sent::Open {
-            id,
-            required: open.required.clone(),
-            requested: open.required.iter().chain(&offered).copied().collect(),
-        };
+        let capabilities = requested.clone();
         let record = |request_id| {
             wire::Open {
                 request_id,
@@ -208,7 +197,7 @@ impl Stream {
             }
             .to_frame()
         };
-        self.send(sent, record, limit)
+        self.send(Sent::Open { id, requested }, record, limit)
     }
 
     /// A Leave, for public request `id`, or shutdown's own without one.
@@ -284,11 +273,7 @@ impl Stream {
 
     fn resolve(&mut self, sent: Sent, verdict: Verdict) -> Result<Effect, Fault> {
         match sent {
-            Sent::Open {
-                id,
-                required,
-                requested,
-            } => self.opened(id, &required, &requested, verdict),
+            Sent::Open { id, requested } => self.opened(id, &requested, verdict),
             Sent::Leave { id } => left(id, verdict),
         }
     }
@@ -303,13 +288,7 @@ impl Stream {
         Ok(self.pending.remove(index).1)
     }
 
-    fn opened(
-        &mut self,
-        id: u64,
-        required: &[&'static str],
-        requested: &[&'static str],
-        verdict: Verdict,
-    ) -> Result<Effect, Fault> {
+    fn opened(&mut self, id: u64, sent: &Requested, verdict: Verdict) -> Result<Effect, Fault> {
         let Verdict {
             outcome,
             fault,
@@ -318,7 +297,7 @@ impl Stream {
         } = verdict;
         let answer = match carried {
             None => Answer::None,
-            Some(carried) => self.result(carried, required, requested)?,
+            Some(carried) => self.result(carried, sent)?,
         };
         let refused = fault.clone().map(|fault| Failed::new(fault, retry));
         let response = Response {
@@ -332,17 +311,12 @@ impl Stream {
 
     /// An Open's result: what it opened, or the command result a rejection
     /// knew.
-    fn result(
-        &mut self,
-        carried: Carried,
-        required: &[&'static str],
-        requested: &[&'static str],
-    ) -> Result<Answer, Fault> {
+    fn result(&mut self, carried: Carried, sent: &Requested) -> Result<Answer, Fault> {
         match carried {
             Carried::Success(Success::Opened {
                 connection_id,
                 selected_capabilities,
-            }) => self.selected(&connection_id, &selected_capabilities, required, requested),
+            }) => self.selected(&connection_id, &selected_capabilities, sent),
             Carried::KnownFinal(result) => Ok(Answer::KnownFinal(Command::from(&result))),
             Carried::Success(_) => Err(MISMATCHED),
         }
@@ -352,14 +326,12 @@ impl Stream {
         &mut self,
         connection: &wire::Guid,
         selection: &Families,
-        required: &[&'static str],
-        requested: &[&'static str],
+        sent: &Requested,
     ) -> Result<Answer, Fault> {
-        let selected =
-            families::selected(selection.tokens(), required, requested).ok_or(MISMATCHED)?;
-        self.title = Some(selected.contains(&families::TITLE));
+        let selected = families::selected(selection, sent).ok_or(MISMATCHED)?;
+        self.title = Some(selected.contains(Family::TitleV1));
         Ok(Answer::Opened {
-            connection: super::guid::bytes(connection.as_str()),
+            connection: connection.bytes(),
             selected,
         })
     }

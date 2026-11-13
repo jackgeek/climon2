@@ -10,8 +10,11 @@ use super::{
     families,
     startup::buffer,
 };
-use climon2_core::native::{self, Bytes, Tokens};
-use std::{collections::BTreeSet, mem, slice};
+use climon2_core::{
+    native::{self, Bytes, Tokens},
+    wire::{Families, Requested},
+};
+use std::{mem, slice};
 
 /// What an accepted request costs the request queue: the request and every
 /// buffer it names, as submitted.
@@ -35,12 +38,12 @@ pub(super) enum Operation {
     Leave(u64),
 }
 
-/// A monitor-mode Open's families: every required one relayed, and those
-/// optional ones this release relays (it never selects others).
+/// A monitor-mode Open's families, parsed once: unique, required and
+/// optional disjoint, every required one relayed, and only those optional
+/// ones this release relays (it never selects others).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Open {
-    pub(super) required: Vec<&'static str>,
-    pub(super) optional: Vec<&'static str>,
+    pub(super) requested: Requested,
 }
 
 fn invalid(message: &'static str) -> Failure {
@@ -133,8 +136,8 @@ fn passive(open: &native::Open) -> Result<(), Failure> {
     )
 }
 
-/// Validated tokens, borrowed from the caller for the call.
-type Texts<'a> = Vec<&'a [u8]>;
+/// Validated tokens, copied from the caller.
+type Texts = Vec<String>;
 
 /// An Open's two token lists, sized before any token is read.
 struct Lists<'a> {
@@ -171,8 +174,8 @@ impl<'a> Lists<'a> {
     /// As for [`parse`].
     unsafe fn open(&self) -> Result<(Operation, u64), Failure> {
         // SAFETY: guaranteed by the caller.
-        let (required, optional) = unsafe { self.tokens() }?;
-        Ok((Operation::Open(relayed(&required, &optional)?), self.bytes))
+        let requested = unsafe { self.tokens() }?;
+        Ok((Operation::Open(relayed(&requested)?), self.bytes))
     }
 
     /// Every token nonempty UTF-8, each one once across both lists.
@@ -180,13 +183,13 @@ impl<'a> Lists<'a> {
     /// # Safety
     ///
     /// As for [`parse`].
-    unsafe fn tokens(&self) -> Result<(Texts<'a>, Texts<'a>), Failure> {
+    unsafe fn tokens(&self) -> Result<Requested, Failure> {
         // SAFETY (both): guaranteed by the caller.
         let required = unsafe { texts(self.required) }?;
         let optional = unsafe { texts(self.optional) }?;
-        let distinct: BTreeSet<_> = required.iter().chain(&optional).collect();
-        (distinct.len() == required.len() + optional.len())
-            .then_some((required, optional))
+        Families::new(required)
+            .zip(Families::new(optional))
+            .and_then(|(required, optional)| Requested::new(required, optional))
             .ok_or(invalid(
                 "tokens must be unique, and required and optional disjoint",
             ))
@@ -228,29 +231,32 @@ unsafe fn listed<'a>(list: Tokens) -> Result<&'a [Bytes], Failure> {
 /// # Safety
 ///
 /// As for [`parse`].
-unsafe fn texts<'a>(list: &[Bytes]) -> Result<Texts<'a>, Failure> {
+unsafe fn texts(list: &[Bytes]) -> Result<Texts, Failure> {
     list.iter()
         // SAFETY: guaranteed by the caller.
         .map(|token| unsafe { buffer(*token) })
-        .map(|token| token.filter(|token| std::str::from_utf8(token).is_ok()))
+        .map(|token| token.and_then(|token| std::str::from_utf8(token).ok()))
+        .map(|token| token.map(str::to_owned))
         .collect::<Option<_>>()
         .ok_or(invalid("tokens must be nonempty UTF-8"))
 }
 
 /// The relayed families: a required family this release does not relay is
-/// unsupported; an optional one is never selected.
-fn relayed(required: &[&[u8]], optional: &[&[u8]]) -> Result<Open, Failure> {
-    let required = required
-        .iter()
-        .map(|token| families::relayed(token))
-        .collect::<Option<_>>()
-        .ok_or(Failure::new(
+/// unsupported; an optional one is never requested.
+fn relayed(requested: &Requested) -> Result<Open, Failure> {
+    let relayed = |token: &str| families::relayed(token).is_some();
+    require(
+        requested
+            .required()
+            .tokens()
+            .iter()
+            .all(|token| relayed(token)),
+        Failure::new(
             UNSUPPORTED_CAPABILITY,
             "this client library does not relay a required family",
-        ))?;
-    let optional = optional
-        .iter()
-        .filter_map(|token| families::relayed(token))
-        .collect();
-    Ok(Open { required, optional })
+        ),
+    )?;
+    Ok(Open {
+        requested: requested.retain_optional(relayed),
+    })
 }
