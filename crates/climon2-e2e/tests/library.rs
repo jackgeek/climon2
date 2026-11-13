@@ -1,8 +1,8 @@
-//! Library layer (#75): the installed `libclimon2_client.dylib`, loaded by the
+//! Library layer (#75): the installed client library (`libclimon2_client.dylib`
+//! on macOS, `libclimon2_client.so` on Linux), loaded by the
 //! `climon2-library-host` fixture through `dlopen`, `dlsym` and the frozen
 //! revision-1 C ABI, never through Rust calls, static linking or a mock table.
-//! In archive mode this is the exact release archive's universal library.
-#![cfg(target_os = "macos")]
+//! In archive mode this is the exact release archive's library.
 
 #[allow(dead_code)]
 mod support;
@@ -14,9 +14,8 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-use support::Package;
+use support::{LIBRARY, Package};
 
-const LIBRARY: &str = "libclimon2_client.dylib";
 const SUCCESS: u64 = 0;
 const UNSUPPORTED_REVISION: u64 = 1;
 const INVALID_ARGUMENT: u64 = 2;
@@ -242,6 +241,7 @@ fn installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_sea
 }
 
 /// Defined external symbols of every architecture slice, from `nm`.
+#[cfg(target_os = "macos")]
 fn exported_symbols(library: &Path) -> Vec<Vec<String>> {
     let output = Command::new("nm")
         .args(["-gUj", "-arch", "all"])
@@ -266,6 +266,7 @@ fn exported_symbols(library: &Path) -> Vec<Vec<String>> {
 /// DOC-01 named case (exported interface): every architecture slice of the
 /// installed library exports exactly the frozen bootstrap symbol, so Rust
 /// symbols, unwinding and allocators never cross the interface by name.
+#[cfg(target_os = "macos")]
 #[test]
 fn installed_library_exports_only_the_frozen_bootstrap() {
     let package = Package::new();

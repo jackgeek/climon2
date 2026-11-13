@@ -12,7 +12,10 @@ pub const COMPANIONS: [&str; 4] = [
     "climon2-monitor",
 ];
 /// The client library every version folder holds beside its executables.
+#[cfg(target_os = "macos")]
 pub const LIBRARY: &str = "libclimon2_client.dylib";
+#[cfg(target_os = "linux")]
+pub const LIBRARY: &str = "libclimon2_client.so";
 // Linux exec refuses inodes whose writable descriptors another test's fork
 // inherited. These fixtures share one process descriptor table, not a filesystem.
 #[cfg(target_os = "linux")]

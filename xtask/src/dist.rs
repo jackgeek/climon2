@@ -59,10 +59,8 @@ fn build_payload(root: &Path) -> io::Result<BuiltPayload> {
             _ => payload.join(version).join(binary),
         };
         package_binary(&platform, &build, binary, &destination)?;
-        if *binary == release::LIBRARY {
-            crate::library::verify(&destination, version)?;
-        }
     }
+    package_library(&platform, &build, &payload.join(version), version)?;
     for file in ["LICENSE", "README.md"] {
         fs::copy(root.join(file), payload.join(file))?;
     }
@@ -150,6 +148,20 @@ fn package_binary(
         verify_macos_binary(destination)?;
     }
     unhooked(destination)
+}
+
+/// The client library is packaged like an executable, then checked as the
+/// library of exactly this `version`.
+fn package_library(
+    platform: &Platform,
+    build: &Path,
+    folder: &Path,
+    version: &str,
+) -> io::Result<()> {
+    let name = climon2_core::layout::client_library_name();
+    let destination = folder.join(&name);
+    package_binary(platform, build, &name, &destination)?;
+    crate::library::verify(&destination, version)
 }
 
 /// Release builds never enable `test-hooks`, so no shipped binary carries the marker.

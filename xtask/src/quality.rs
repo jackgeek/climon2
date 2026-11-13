@@ -567,14 +567,12 @@ fn prove_killed_profile(staged: &Path, profile: &str) -> io::Result<()> {
 fn install_instrumented_probe(workspace: &Path, build: &Path) -> io::Result<PathBuf> {
     let payload = workspace.join("payload");
     fs::create_dir(&payload)?;
-    for binary in std::iter::once("climon2").chain(climon2_install::COMPANIONS) {
-        fs::copy(build.join("debug/isolation-cli"), payload.join(binary))?;
+    fs::copy(build.join("debug/isolation-cli"), payload.join("climon2"))?;
+    for name in climon2_install::version_files() {
+        let path = climon2_install::cargo_output(&payload, &name);
+        fs::create_dir_all(path.parent().expect("payload file directory"))?;
+        fs::copy(build.join("debug/isolation-cli"), path)?;
     }
-    fs::create_dir(payload.join("deps"))?;
-    fs::copy(
-        build.join("debug/isolation-cli"),
-        payload.join("deps/libclimon2_client.dylib"),
-    )?;
     let payload = climon2_install::Payload::from_siblings(&payload, env!("CARGO_PKG_VERSION"))?;
     let destination = workspace.join("installed");
     climon2_install::install(&payload, &destination)?;

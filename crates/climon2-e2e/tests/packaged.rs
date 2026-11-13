@@ -9,7 +9,7 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
-use support::{Package, TIMEOUT, quote};
+use support::{LIBRARY, Package, TIMEOUT, quote};
 
 /// #21.6/#38: real installer → PATH launcher → CLI → daemon → client, from
 /// controlled outer bash to controlled inner bash; a second real PTY lists one
@@ -820,12 +820,7 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
         payload_root.join("climon2"),
     )
     .unwrap();
-    for binary in [
-        "climon2-cli",
-        "climon2-daemon",
-        "climon2-monitor",
-        "libclimon2_client.dylib",
-    ] {
+    for binary in ["climon2-cli", "climon2-daemon", "climon2-monitor", LIBRARY] {
         fs::copy(old_folder.join(binary), fixture_folder.join(binary)).unwrap();
     }
     executable_script(

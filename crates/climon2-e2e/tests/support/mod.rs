@@ -13,6 +13,11 @@ use std::{
 
 // A failed handoff can spend both the five-second startup and leave budgets.
 pub const TIMEOUT: Duration = Duration::from_secs(20);
+/// The client library's file name in every version folder (library embedding).
+#[cfg(target_os = "macos")]
+pub const LIBRARY: &str = "libclimon2_client.dylib";
+#[cfg(target_os = "linux")]
+pub const LIBRARY: &str = "libclimon2_client.so";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 static INSTALLED: Mutex<Weak<Installed>> = Mutex::new(Weak::new());
 
@@ -375,7 +380,7 @@ fn extract_payload(archive: &std::ffi::OsStr, directory: &Path) -> (PathBuf, Str
         format!("{root}/{version}/climon2-daemon"),
         format!("{root}/{version}/climon2-client"),
         format!("{root}/{version}/climon2-monitor"),
-        format!("{root}/{version}/libclimon2_client.dylib"),
+        format!("{root}/{version}/{LIBRARY}"),
         format!("{root}/LICENSE"),
         format!("{root}/README.md"),
     ];
