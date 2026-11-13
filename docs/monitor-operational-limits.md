@@ -213,8 +213,12 @@ risk proof. The owner also decided that a monitor-mode geometry change is
 always followed by a restoration at that geometry (a wire amendment that
 [#89](https://github.com/jackgeek/climon2/issues/89) makes), and how
 per-model cost is to meet PERF-01
-([#166](https://github.com/jackgeek/climon2/issues/166)). The monitor's own
-budgets and pressure policies above remain unimplemented.
+([#166](https://github.com/jackgeek/climon2/issues/166)). #83's read-only
+history view labels truncation: rows beyond the row ceiling or released under
+pressure, and, conservatively, every history that output leaves full, because
+the engine does not report the rows it discards there
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#read-only-views-for-painting)).
+The monitor's own budgets and pressure policies above remain unimplemented.
 
 ## Queues and transfers
 

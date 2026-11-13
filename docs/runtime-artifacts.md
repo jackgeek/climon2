@@ -127,8 +127,9 @@ the monitor's rendering; today it draws only the permanent top row and the empty
 state, and the rest of its terminal integration is agreed, unimplemented.
 The [agreed terminal contract](protocol/terminal-integration.md), not implemented,
 selects exact ordered terminal bytes/control/restoration through existing
-in-process record queues and monitor-owned `climon2-vt` models, with planned
-read-only Rust views for Ratatui. Session bytes never go directly to the host;
+in-process record queues and monitor-owned `climon2-vt` models, with read-only
+Rust views for Ratatui, which `climon2-vt` provides (#83) but the monitor does
+not use yet. Session bytes never go directly to the host;
 daemon query authority stays unique. Monitor-mode daemon presentation uses
 effective session geometry, not host/requested dimensions, including background
 promotion. Optional core Focus is not a plugin/artifact addition. No new dynamic

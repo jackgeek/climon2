@@ -2,19 +2,21 @@
 
 The session daemon's virtual terminal (ADR 0007): a pure, platform-neutral,
 infallible adapter around unchanged `alacritty_terminal` 0.26.0, and the
-allocation-bounded `Model` a monitor keeps for each session. No I/O, no
-`cfg(target_os)`, and no Alacritty type in the public API. Only
-`climon2-daemon` and `climon2-monitor` may depend on it (ADR 0004); the monitor
-uses it today only for the documented normal-shell baseline in its release.
+allocation-bounded `Model` a monitor keeps for each session, with the
+read-only views it paints from. No I/O, no `cfg(target_os)`, and no Alacritty
+type in the public API. Only `climon2-daemon` and `climon2-monitor` may depend
+on it (ADR 0004); the monitor uses it today only for the documented
+normal-shell baseline in its release.
 
-**Agreed, not implemented:** the
-[#63 terminal contract](../../docs/protocol/terminal-integration.md) plans
-read-only Rust cell/mode/cursor/history views of monitor models for Ratatui.
-This would extend the monitor's baseline-only use; it is not a current public
-cell API or native cross-release cell schema. Monitor-mode daemon presentation must be
-serialized at effective session geometry; ordinary host direct/derived
-presentation below is unchanged. The daemon remains the sole query authority;
-the monitor never forwards parser replies or session bytes directly to its host.
+The [#63 terminal contract](../../docs/protocol/terminal-integration.md) has
+the monitor paint each session with Ratatui from
+[read-only views](#read-only-views) of its model (#83). They are Rust types,
+not a native cross-release cell schema, and the monitor does not paint from
+them yet (#108, #112). **Agreed, not implemented:** monitor-mode daemon
+presentation must be serialized at effective session geometry; ordinary host
+direct/derived presentation below is unchanged. The daemon remains the sole
+query authority; the monitor never forwards parser replies or session bytes
+directly to its host.
 
 ## Public boundaries
 
@@ -99,7 +101,8 @@ place.
   next one fits (a token pushes at most a row per byte and per repetition, or
   a screenful, so one long repeat or released run of line feeds can fill
   several); beyond the chunks that fit, the oldest rows are discarded and the
-  update is still accepted, with no truncation state yet. A discarded chunk's
+  update is still accepted, and the history view reports
+  [truncation](#read-only-views). A discarded chunk's
   rows and cell data are released at once, on either screen, and a chunk
   admitted but not yet filled yields without losing a row.
   `Model::shorten_history()` discards the oldest chunk the same way for the
@@ -116,7 +119,50 @@ place.
   amendment that #89 makes.
 - `Model::footprint()` is the allocation capacity charged against `bytes`, the
   engine's allocation plus `Model::RESERVE` and growth charges;
-  `Model::screen()` and `Model::history()` are text views of the current model.
+  `Model::screen()` and `Model::history()` are text views of the current model,
+  and `Model::view()` its [read-only views](#read-only-views).
+
+## Read-only views
+
+`Model::view()` borrows the current model for one frame as a `view::View`; the
+model cannot change while it is held. Every type is climon2's own:
+`xtask/tests/vt_interface.rs` parses this crate's sources and fails if its
+public interface names an engine type.
+
+- `View::screen()` is `Screen::Normal { rows, history }` or, after
+  `CSI ? 1049 h`, `Screen::Alternate { rows }`, which keeps no history.
+  `Rows` has `len()`, `is_empty()`, `get(index)` and `iter()`, top row first;
+  `Row::cells()` yields one `Cell` per column.
+- `Cell { content, foreground, background, underline, rendition }`. `content`
+  is `Content::Narrow(Glyph)`, `Content::Wide(Glyph)`, which covers the next
+  column too, or `Content::Spacer`, that next column, with nothing of its own
+  to draw. A `Glyph` is a character and the combining marks printed after it;
+  a blank cell holds a space, and so does the cell where a tab began. A
+  `Colour` is `Default`, one of the 16 `Ansi` colours, `Indexed(n)` from the
+  256-colour palette or `Rgb(r, g, b)`; `underline` is SGR 58's colour, and
+  `Default` draws underlines in the foreground colour. `Rendition` has bold,
+  dim, italic, one `Underline` style (single, double, curly, dotted, dashed),
+  inverse, hidden and strikeout.
+- `View::cursor()` is `Cursor { row, column, visible, shape, blinking }`,
+  counted from 0 on the active screen; after a character is printed in the
+  last column the cursor stays there. DECSCUSR's `CursorShape` is `Block`,
+  `Underline` or `Bar`, blinking for odd `Ps`; `CSI ? 12 h` and `l` set
+  `blinking` alone. This is the cursor style the monitor honours.
+- `View::modes()` is `Modes`: application cursor keys (DECCKM) and keypad
+  (DECKPAM, DECKPNM), bracketed paste (2004), `MouseReporting` (`Off`, 1000
+  `Clicks`, 1002 `Drag`, 1003 `Motion`), `MouseEncoding` (`Default`, 1005
+  `Utf8`, 1006 `Sgr`), focus reporting (1004) and alternate scroll (1007). The
+  latest mouse reporting mode set replaces the others, and so does the latest
+  encoding.
+- `History { rows, truncated }` holds the newest rows scrolled off the normal
+  screen, oldest first, at most `history_rows`: the rows `Model::history()`
+  shows. `truncated` says older rows were discarded since the history was last
+  cleared (`CSI 3 J` on the normal screen, or `ESC c`): beyond `history_rows`,
+  because the allocation bound refused the history a chunk or took one back
+  (beside a staged restoration too), or by `Model::shorten_history()`.
+  Shortening is exact: a chunk admitted ahead of rows that never came yields
+  without truncating. Applying a restoration replaces the history and its
+  state whole.
 
 ## Scenario-to-test mapping
 
@@ -152,6 +198,12 @@ monitor's evidence.
 | LIM-03 Fault: the reserve covers brief holdings with no history: 4096 held controls released at once (as one token), the largest held bodies, resets, tinted templates | `a_cancelled_sequence_releasing_held_controls_stays_within_the_limit`, `the_reserve_covers_what_is_held_briefly`, `tests/tokenizer.rs`: `controls_held_by_an_abandoned_sequence_are_one_text_token` |
 | CTL-03 (crate case): application title changes are reported by value, in order and one per change; unset, empty and a value stay distinct; an oversized title is ignored | `tests/live.rs`: `application_title_changes_are_reported_in_order_by_value` |
 | TRM-02 Contract: the daemon stays the sole query responder; queries, clipboard, titles, links, strings and screen modes after a control before the introducer are still filtered, and the kind of every token is what vte dispatches (#152) | `tests/live.rs`: `a_control_after_esc_reaches_the_host_without_the_filtered_sequence`, `titles_and_links_after_a_control_are_still_reencoded_or_plain`, `modes_set_after_a_control_are_tracked_for_the_host`, `c0_controls_survive_a_replaced_sequence_before_its_replacement`; `tests/tokenizer.rs`: `vte_dispatches_each_token_as_its_kind` |
+| TRM-01 (crate case): wide and combining characters, a wide character wrapping at the right margin; colours (the 16 ANSI colours, palette, direct, underline colour, defaults) and rendition; a tab's cells blank | `tests/view.rs`: `wide_and_combining_characters_fill_the_cells_they_cover`, `cells_keep_the_colours_sgr_selected`, `sgr_selects_each_of_the_sixteen_ansi_colours`, `cells_keep_the_rendition_sgr_selected`, `a_tab_leaves_the_cells_it_passes_blank` |
+| TRM-01 (crate case): cursor position, visibility, shape and blink; the 1049 alternate screen, entered cleared and left with the normal screen and cursor restored | `tests/view.rs`: `the_cursor_is_where_the_application_moved_it`, `the_cursor_has_the_visibility_shape_and_blink_the_application_selected`, `the_alternate_screen_replaces_the_normal_screen_until_it_is_left` |
+| INP-02, INP-03, INP-05, FOC-01 (crate cases): cursor-key and keypad, bracketed-paste, mouse reporting and encoding, and focus-reporting modes, set and reset | `tests/view.rs`: `cursor_key_and_keypad_modes_follow_decckm_and_deckpam`, `bracketed_paste_follows_mode_2004`, `mouse_reporting_and_encoding_follow_their_modes`, `focus_reporting_follows_mode_1004` |
+| TRM-05 (crate case): normal history rows as cells; alternate scroll mode; no history over the alternate screen; cleared history starting again complete | `tests/view.rs`: `rows_scrolled_off_the_normal_screen_are_its_history`, `alternate_scroll_follows_mode_1007`, `the_alternate_screen_shows_no_history_until_it_is_left`, `cleared_history_starts_again_with_nothing_discarded` |
+| TRM-05, LIM-03 (crate cases): explicit history truncation at the row limit and one past it, when the allocation bound refuses growth (at the bound and one byte below), when shortening discards rows and not when it discards none, while the alternate screen is active, and replaced whole by an applied restoration | `tests/view.rs`: `history_is_truncated_one_row_past_its_limit`, `history_the_bound_stops_growing_is_truncated`, `shortened_history_is_truncated_only_when_rows_are_discarded`, `the_alternate_screen_shows_no_history_until_it_is_left`, `a_restoration_replaces_a_truncated_history_whole` |
+| ADR 0007 (#83): no engine type in the public interface, the views included | `xtask/tests/vt_interface.rs`: `the_virtual_terminal_interface_names_no_engine_type` |
 
 ## Limitations
 
@@ -162,6 +214,17 @@ normal current cursor (E1). Combining marks per cell are unbounded in
 Alacritty 0.26.0; only `Model` bounds them, by allocation. A model's bound is
 tracked allocation capacity, not resident memory, and its charges are upper
 bounds, so it can reject output before memory is strictly exhausted.
+
+The views show what the engine holds. It ignores blinking text (SGR 5 and 6),
+so no cell blinks. A cursor style never set, or reset by DECSCUSR 0, is its
+default, a steady block, which the daemon's restoration sends as the host's
+default (`CSI 0 SP q`). A fresh model has alternate scroll on, as Alacritty
+starts, and the daemon's restoration sets it on hosts too. At capacity the
+engine discards a history's oldest row for each row pushed without reporting
+it, so a full history (all the rows its admitted chunks hold, when that is no
+more than `history_rows`, as with the monitor's default 10,000) reports
+truncation once output leaves it full, even if no row went; a model keeping no
+history reports it as soon as it is fed.
 
 Titles are decoded by Alacritty 0.26.0: it trims surrounding whitespace,
 drops a title parameter that is not valid UTF-8, and keeps at most the first

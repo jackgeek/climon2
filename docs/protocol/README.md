@@ -106,8 +106,9 @@ not make all sessions persistent.
 Ratatui powers the planned monitor's rendering. The agreed
 [terminal integration contract](terminal-integration.md) selects exact ordered
 terminal bytes through client-library records, parsed into the monitor's own
-per-[session](../../GLOSSARY.md#sessions) `climon2-vt`, with planned read-only Rust
-views for painting. Session bytes never go directly to the host. Monitor-mode
+per-[session](../../GLOSSARY.md#sessions) `climon2-vt`, with read-only Rust views
+for painting, which `climon2-vt` provides but the monitor does not use yet.
+Session bytes never go directly to the host. Monitor-mode
 daemon presentation is canonically serialized at effective session
 [geometry](TERMS.md#geometry),
 not outer-host dimensions; ordinary attach is unchanged.
