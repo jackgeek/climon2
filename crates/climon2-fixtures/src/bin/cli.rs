@@ -121,8 +121,16 @@ fn main() {
             if let Some(path) = std::env::var_os("FIXTURE_TUI_READY") {
                 std::fs::write(path, b"").unwrap();
             }
+            // Echoes every byte until `x`, so a test can see its input arrive first.
             let mut byte = [0];
-            io::stdin().read_exact(&mut byte).unwrap();
+            loop {
+                io::stdin().read_exact(&mut byte).unwrap();
+                if byte == *b"x" {
+                    break;
+                }
+                io::stdout().write_all(&byte).unwrap();
+                io::stdout().flush().unwrap();
+            }
             std::fs::write("input-accepted", byte).unwrap();
             print!("INPUT-ACCEPTED");
             std::process::exit(42);
