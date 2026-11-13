@@ -209,8 +209,11 @@ pub fn lifecycle(setup: &Setup) -> Value {
         json!(probe::wait_readable(descriptor, probe::deadline())),
     );
     report.insert("drains".into(), drain_to_terminal(api, handles, descriptor));
-    let (call, drain) = api.drain(handles);
-    report.insert("drain_after_terminal".into(), json!([call, drain.observed]));
+    let (call, terminal) = api.drain(handles);
+    report.insert(
+        "drain_after_terminal".into(),
+        json!([call, terminal.observed]),
+    );
     report.insert(
         "readable_after_terminal".into(),
         json!(probe::readable(descriptor)),
@@ -222,6 +225,7 @@ pub fn lifecycle(setup: &Setup) -> Value {
         api.release_communication(handles),
     );
     report.insert("release_control".into(), api.release_control(handles));
+    report.insert("terminal_before_destroy".into(), terminal.observe_again());
     report.insert("destroy".into(), owner.call(move || api.destroy(handles)));
     report.insert(
         "descriptor_after_destroy".into(),

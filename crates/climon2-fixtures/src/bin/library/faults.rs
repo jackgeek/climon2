@@ -62,12 +62,12 @@ pub fn fault(setup: &Setup) -> Value {
         "readable_before_drain".into(),
         json!(probe::readable(descriptor)),
     );
-    let (drain, delivery) = attempts(|| {
+    let (drain, drained) = attempts(|| {
         let (call, drain) = api.drain(handles);
-        (json!([call, drain.observed]), drain.delivery)
+        (json!([call, drain.observed.clone()]), drain)
     });
     report.insert("drain".into(), drain);
-    if let Some(delivery) = delivery {
+    if let Some(delivery) = drained.delivery {
         report.insert(
             "snapshot_with_delivery".into(),
             json!(api.snapshot(handles)),
@@ -80,6 +80,7 @@ pub fn fault(setup: &Setup) -> Value {
             "release_communication_with_delivery".into(),
             api.release_communication(handles),
         );
+        report.insert("delivery_before_release".into(), drained.observe_again());
         let (released, ()) = attempts(|| (api.release_delivery(delivery), ()));
         report.insert("release_delivery".into(), released);
     }

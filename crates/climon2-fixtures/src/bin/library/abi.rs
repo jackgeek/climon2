@@ -49,6 +49,22 @@ pub struct Drain {
     pub kind: u32,
     pub delivery: Option<Ptr<Delivery>>,
     pub observed: Value,
+    drained: Retained,
+}
+
+/// A drain's output, whose records live until the delivery's release and
+/// whose terminal evidence lives until destroy.
+struct Retained(Drained);
+
+// SAFETY: the host reads the retained objects only within their lifetimes.
+unsafe impl Send for Retained {}
+
+impl Drain {
+    /// What the retained output holds now. Only valid before the delivery is
+    /// released, and terminal evidence before destroy.
+    pub fn observe_again(&self) -> Value {
+        observe(&self.drained.0)
+    }
 }
 
 struct Object {
@@ -377,6 +393,8 @@ impl Api {
                     kind: 0,
                     delivery: None,
                     observed,
+                    // SAFETY: an all-zero drain output holds only null pointers.
+                    drained: Retained(unsafe { std::mem::zeroed() }),
                 },
             );
         }
@@ -393,6 +411,7 @@ impl Api {
                 kind: drained.kind,
                 delivery,
                 observed,
+                drained: Retained(drained),
             },
         )
     }

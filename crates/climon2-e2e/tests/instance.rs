@@ -270,8 +270,9 @@ fn assert_all_released(ledger: &Value, deliveries: usize) {
 
 /// LIB-03 Library (create returns all three handles; the caller's startup
 /// memory is scrambled and unmapped at once), LIB-04 Library (destroy busy
-/// while run or handles are outstanding; the descriptor stays borrowed and
-/// is closed by destroy; every object is released through the library) and
+/// while run or handles are outstanding; terminal evidence lives until
+/// destroy; the descriptor stays borrowed and is closed by destroy; every
+/// object is released through the library) and
 /// LIB-05 Library (create, run and destroy on the owner thread, shutdown,
 /// drain and handle release elsewhere, then join; terminal evidence and the
 /// worker-cleanup report stay distinct), plus explicit rejection of run and
@@ -328,6 +329,8 @@ fn installed_library_instance_runs_create_run_shutdown_drain_release_destroy_joi
     assert_failure(&owner["destroy_before_release"], BUSY, "busy");
     assert_success(&report["release_communication"]);
     assert_success(&report["release_control"]);
+    // Terminal evidence lives until destroy, past both handle releases.
+    assert_eq!(terminal_of(&report["terminal_before_destroy"]), &stopped(7));
     assert_success(&report["destroy"]);
     assert_eq!(report["descriptor"]["open"], true);
     assert_eq!(report["descriptor_after_destroy"]["open"], false);
@@ -1012,7 +1015,8 @@ fn installed_library_contains_a_panic_at_the_bootstrap_create_or_submit() {
 /// use (at `notification`, `snapshot`, `drain`, `shutdown` or `run`)
 /// returns an explicit `CM1_INTERNAL_ERROR` with cleared output (run still
 /// reports its cleanup and terminal evidence) and stops the instance: a
-/// library diagnostic is queued and raises the descriptor until drained;
+/// library diagnostic is queued and raises the descriptor until drained, and
+/// its delivery stays unchanged until released;
 /// destroy and handle release stay busy while that delivery is outstanding;
 /// terminal evidence follows it, failed with `internal_error`, retried
 /// passively unless shutdown had been requested first (the fault at `run`
@@ -1051,6 +1055,8 @@ fn installed_library_contains_a_panic_in_a_running_instance_and_stops_it() {
         let drained_early = report["drain"].as_array().unwrap().last().unwrap();
         if early {
             assert_diagnostic(drained(drained_early), 5);
+            // The delivery's records live, unchanged, until its release.
+            assert_eq!(&report["delivery_before_release"], &drained_early[1]);
             assert_failure(&report["destroy_with_delivery"], BUSY, "busy");
             assert_failure(&report["release_communication_with_delivery"], BUSY, "busy");
             assert_success(once(&report["release_delivery"]));
