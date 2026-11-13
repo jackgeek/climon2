@@ -72,6 +72,16 @@ enum Kind {
     Kill,
 }
 
+impl Role {
+    fn kind(&self) -> Kind {
+        match self {
+            Self::Monitor => Kind::Monitor,
+            Self::Attachment(_) => Kind::Attachment,
+            Self::Kill(_) => Kind::Kill,
+        }
+    }
+}
+
 struct Attachment {
     /// The Open that its admission or refusal answers.
     open: Counter,
@@ -438,12 +448,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn kind(&self, id: u64) -> Option<Kind> {
-        let kind = match self.opened.get(&id)?.role {
-            Role::Monitor => Kind::Monitor,
-            Role::Attachment(_) => Kind::Attachment,
-            Role::Kill(_) => Kind::Kill,
-        };
-        Some(kind)
+        Some(self.opened.get(&id)?.role.kind())
     }
 
     fn selects(&self, id: u64, family: Family) -> bool {
@@ -846,9 +851,13 @@ fn initial_metadata(
     title: Available<Option<String>>,
     command_result: Option<CommandResult>,
 ) -> InitialMetadata {
-    let unavailable = Available::Unavailable;
-    InitialMetadata::new(title, unavailable, Available::Unavailable, command_result)
-        .expect("unavailable status agrees with any command result")
+    InitialMetadata::new(
+        title,
+        Available::Unavailable,
+        Available::Unavailable,
+        command_result,
+    )
+    .expect("unavailable status agrees with any command result")
 }
 
 /// A fresh logical connection identity, never reused.

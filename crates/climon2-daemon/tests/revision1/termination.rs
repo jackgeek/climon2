@@ -108,8 +108,8 @@ fn command_final_reports_each_exit_and_signal_once() {
 /// the command's termination is confirmed and the daemon cleaned up: after
 /// the real five-second hang-up grace, with the session's files removed
 /// and the command gone. A second standalone Kill and a private kill, sent
-/// a second later, join the same termination without restarting the grace,
-/// and all three are answered together. On the Kill's connection, a later
+/// halfway through the grace, join the same termination without restarting
+/// it, and all three are answered together. On the Kill's connection, a later
 /// Kill or Open is `invalid_state`, as are Leave and Acquire, with nothing
 /// opened, and Input is `not_attached`. The command ignores SIGHUP, so
 /// SIGKILL ends it: the Kills and every Command final say signal 9, while
@@ -152,8 +152,9 @@ fn a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_j
     };
     super::send(&mut first, &input.to_frame());
     assert_rejected(&mut first, 6, "not_attached");
-    // A gap a restarted grace would show, not an ordering step.
-    thread::sleep(Duration::from_secs(1));
+    // Half the grace between the first Kill and the joining ones, so a
+    // restarted grace would show; not an ordering step.
+    thread::sleep(HANGUP_GRACE.div_f64(2.0).saturating_sub(started.elapsed()));
     let mut second = peer(&session);
     let joined = Instant::now();
     request(&mut second, &kill(1, 1, &["daemon-wire-v1"]));
