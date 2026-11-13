@@ -43,9 +43,11 @@ fn main() {
             println!("{report}");
             println!("FIXTURE_READY");
             io::stdout().flush().unwrap();
-            if std::env::var_os("FIXTURE_REPORT_NO_WAIT").is_none() {
-                let mut line = String::new();
-                io::stdin().read_line(&mut line).unwrap();
+            // The test creates the release file when it is done, instead of typing.
+            if let Some(release) = std::env::var_os("FIXTURE_REPORT_RELEASE") {
+                while !std::path::Path::new(&release).exists() {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
             }
         }
         Some("exit") => std::process::exit(args[1].to_str().unwrap().parse().unwrap()),
@@ -58,8 +60,6 @@ fn main() {
             let size = unsafe { size.assume_init() };
             println!("SIZE:{}x{}", size.ws_col, size.ws_row);
             io::stdout().flush().unwrap();
-            let mut line = String::new();
-            io::stdin().read_line(&mut line).unwrap();
         }
         Some("removed-cwd") => {
             use std::os::unix::process::CommandExt;
@@ -121,8 +121,16 @@ fn main() {
             if let Some(path) = std::env::var_os("FIXTURE_TUI_READY") {
                 std::fs::write(path, b"").unwrap();
             }
+            // Echoes every byte until `x`, so a test can see its input arrive first.
             let mut byte = [0];
-            io::stdin().read_exact(&mut byte).unwrap();
+            loop {
+                io::stdin().read_exact(&mut byte).unwrap();
+                if byte == *b"x" {
+                    break;
+                }
+                io::stdout().write_all(&byte).unwrap();
+                io::stdout().flush().unwrap();
+            }
             std::fs::write("input-accepted", byte).unwrap();
             print!("INPUT-ACCEPTED");
             std::process::exit(42);
