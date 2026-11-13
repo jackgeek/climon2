@@ -32,14 +32,15 @@ the monitor never forwards parser replies or session bytes directly to its host.
   host-dependent requests, keyboard negotiation, OSC 52, OSC 8 and every
   other OSC/DCS/SOS/PM/APC stripped; titles re-encoded; `CSI ? 47/1047`
   removed because the engine implements only 1049). A token is classified
-  by the sequence vte dispatches, whatever C0 controls precede its
-  introducer, and the controls vte executes in a stripped or rewritten token
-  still reach the host, in order. `titles` lists each change of the
-  application's own title in order, one per change even within one read, by
-  value: `None` is unset (the default title shows, including after `ESC c`),
-  and an unchanged title is not listed again. The body cap ignores a title
-  sequence longer than 4,096 bytes, so with its `2;` the longest OSC 0/2
-  title is 4,094 bytes.
+  by the sequence vte dispatches, whatever C0 controls vte executes before
+  its introducer (CAN and SUB cancel the sequence instead, and ESC restarts
+  it), and the controls vte executes in a stripped or rewritten token still
+  reach the host, in order. `titles` lists each change of the application's
+  own title in order, one per change even within one read, by value: `None`
+  is unset (the default title shows, including after `ESC c`), and an
+  unchanged title is not listed again. The body cap ignores a title sequence
+  longer than 4,096 bytes, so with its `2;` the longest OSC 0/2 title is
+  4,094 bytes.
 - `Vt::application_title()`: the application's current title, `None` while
   unset; the session daemon reports it as inert core metadata.
 - `Vt::sync_pending(now)` / `Vt::tick(now)`: the first-begin synchronized
@@ -151,7 +152,7 @@ monitor's evidence.
 | LIM-03 Contract: the engine sees exactly what the live output policy forwards: text under a stripped hyperlink costs nothing, and a rewritten screen-mode list keeps the alternate screen the engine implements | `the_engine_sees_only_what_a_host_would_receive` |
 | LIM-03 Fault: the reserve covers brief holdings with no history: 4096 held controls released at once (as one token), the largest held bodies, resets, tinted templates | `a_cancelled_sequence_releasing_held_controls_stays_within_the_limit`, `the_reserve_covers_what_is_held_briefly`, `tests/tokenizer.rs`: `controls_held_by_an_abandoned_sequence_are_one_text_token` |
 | CTL-03 (crate case): application title changes are reported by value, in order and one per change; unset, empty and a value stay distinct; an oversized title is ignored | `tests/live.rs`: `application_title_changes_are_reported_in_order_by_value` |
-| TRM-02 Contract: the daemon stays the sole query responder; queries, clipboard, titles, links, strings and screen modes after a control before the introducer are still filtered, and the kind of every token is what vte dispatches (#152) | `tests/live.rs`: `a_control_after_esc_reaches_the_host_without_the_filtered_sequence`, `titles_and_links_after_a_control_are_still_reencoded_or_plain`, `modes_set_after_a_control_are_tracked_for_the_host`, `c0_controls_survive_a_replaced_sequence_before_its_replacement`; `tests/tokenizer.rs`: `vte_dispatches_each_token_as_its_kind` |
+| TRM-02 (crate case): a C0 control between `ESC` and an introducer never lets a filtered sequence reach the host; each token keeps the kind vte dispatches (#152) | `tests/live.rs`: `a_control_after_esc_reaches_the_host_without_the_filtered_sequence`; `tests/tokenizer.rs`: `vte_dispatches_each_token_as_its_kind` |
 
 ## Limitations
 
