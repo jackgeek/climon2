@@ -396,7 +396,7 @@ impl<'a> Driver<'a> {
     /// it was sent. The connection then fails.
     fn timed_out(&mut self) {
         let leaving = self.stream.leaving();
-        if let Some(id) = self.stream.expire(Instant::now()) {
+        if let Some(id) = self.stream.expire() {
             self.taken.answer(Response::uncertain(id, TIMEOUT));
         }
         self.lost(leaving, TIMEOUT);

@@ -370,15 +370,19 @@ impl Stream {
             .min()
     }
 
-    /// Gives up the request a deadline bounded: the one whose deadline
-    /// passed by `now`, or else the unanswered Open. Its public ID, if it
-    /// has one.
-    pub(super) fn expire(&mut self, now: Instant) -> Option<u64> {
-        let expired = self
+    /// Gives up the request a deadline bounded: the one with the earliest
+    /// deadline, or else, while the Open's start deadline is the only one
+    /// (nothing else is sent before the Initial metadata), the unanswered
+    /// Open. Its public ID, if it has one.
+    pub(super) fn expire(&mut self) -> Option<u64> {
+        let earliest = self
             .pending
             .iter()
-            .position(|pending| pending.deadline.is_some_and(|deadline| deadline <= now));
-        let index = expired.or_else(|| {
+            .enumerate()
+            .filter_map(|(index, pending)| pending.deadline.map(|deadline| (deadline, index)))
+            .min()
+            .map(|(_, index)| index);
+        let index = earliest.or_else(|| {
             self.pending
                 .iter()
                 .position(|pending| matches!(pending.sent, Sent::Open { .. }))
