@@ -9,7 +9,7 @@ use alacritty_terminal::{
     term::{Config, Osc52, TermMode, cell::Cell},
     vte::ansi::{CursorStyle, Processor, Timeout},
 };
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{cell::RefCell, mem, rc::Rc, time::Duration};
 
 #[derive(Clone, Default)]
 struct Listener(Rc<RefCell<Vec<Event>>>);
@@ -103,6 +103,28 @@ impl<L: EventListener> Core<L> {
     pub(crate) fn truncate(&mut self) {
         self.term.grid_mut().truncate();
     }
+
+    /// Run `f` with the normal screen active. While the alternate screen is
+    /// active, its grid is moved aside and a two-cell placeholder, which the
+    /// swap back resets instead, takes its place, so no screen is copied;
+    /// the swap back sets the normal saved cursor to its current cursor (E1).
+    pub(crate) fn on_normal<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        if !self.alternate() {
+            return f(self);
+        }
+        let alternate = mem::replace(self.term.grid_mut(), Grid::new(1, 2, 0));
+        self.term.swap_alt();
+        let result = f(self);
+        self.term.swap_alt();
+        *self.term.grid_mut() = alternate;
+        result
+    }
+}
+
+/// A grid's cursor as a 1-based (row, column).
+fn position(grid: &Grid<Cell>) -> (usize, usize) {
+    let point = grid.cursor.point;
+    (point.line.0 as usize + 1, point.column.0 + 1)
 }
 
 pub(crate) struct Engine {
@@ -144,8 +166,7 @@ impl Engine {
 
     fn remember_cursor(&mut self) {
         if !self.alternate() {
-            let point = self.active().cursor.point;
-            self.normal_cursor = (point.line.0 as usize + 1, point.column.0 + 1);
+            self.normal_cursor = position(self.active());
         }
     }
 
@@ -216,19 +237,15 @@ impl Engine {
         self.core.active()
     }
 
-    /// Read the normal screen's grid. While the alternate screen is active
-    /// this swaps screens and back, then restores the alternate grid exactly;
-    /// the swap sets the normal saved cursor to its current cursor (E1).
+    /// Read the normal screen's grid, remembering its cursor. While the
+    /// alternate screen is active this swaps screens and back, leaving the
+    /// alternate grid exactly as it was; the swap sets the normal saved
+    /// cursor to its current cursor (E1).
     pub(crate) fn normal<R>(&mut self, read: impl FnOnce(&Grid<Cell>) -> R) -> R {
-        if !self.alternate() {
-            return read(self.active());
-        }
-        let alternate = self.active().clone();
-        self.core.term.swap_alt();
-        self.remember_cursor();
-        let result = read(self.active());
-        self.core.term.swap_alt();
-        *self.core.term.grid_mut() = alternate;
+        let (cursor, result) = self
+            .core
+            .on_normal(|core| (position(core.active()), read(core.active())));
+        self.normal_cursor = cursor;
         result
     }
 }
