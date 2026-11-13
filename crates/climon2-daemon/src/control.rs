@@ -29,8 +29,9 @@ pub use attachments::Needs;
 use attachments::{Attachment, Attachments, Departure, Phase};
 use climon2_core::{
     protocol::TerminalSize,
-    wire::{GrantReason, OperationalCode},
+    wire::{CommandResult, GrantReason, OperationalCode},
 };
+pub use shutdown::Outcome;
 use shutdown::{Members, Shutdown};
 
 /// Identifies one daemon connection: an attachment, a probe or a kill requester.
@@ -99,7 +100,7 @@ pub struct Acquisition {
 }
 
 /// Work the daemon loop performs for the state machine, in the order given.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Effect {
     /// Accept an attachment: send `Attached`.
     Admit { conn: ConnectionId },
@@ -149,12 +150,15 @@ pub enum Effect {
     /// Remove metadata and the socket, keeping connections open; then report
     /// [`Control::cleanup_finished`] or [`Control::authoritative_failure`].
     Cleanup,
-    /// Send `Exit{code}`.
+    /// Send an attachment `Exit{code}`.
     DeliverExit { conn: ConnectionId, code: u32 },
-    /// Send `Error` describing the authoritative failure.
+    /// Send an attachment `Error` describing the authoritative failure.
     DeliverError { conn: ConnectionId },
-    /// Send `Terminated{code}` to a kill requester.
-    ConfirmKill { conn: ConnectionId, code: u32 },
+    /// Answer a kill requester with how the session ended.
+    ConfirmKill {
+        conn: ConnectionId,
+        outcome: Outcome,
+    },
     /// Flush connections under the shared short deadline, then exit.
     Finish,
 }
@@ -292,10 +296,13 @@ fn begin_shutdown(open: Open, killers: Vec<ConnectionId>, failed: bool) -> (Stag
     (Stage::Terminating(shutdown), effects)
 }
 
-fn command_exited(open: Open, code: u32) -> (Stage, Vec<Effect>) {
+fn command_exited(open: Open, command: Option<CommandResult>) -> (Stage, Vec<Effect>) {
     let (members, mut effects) = open.into_members();
     effects.push(Effect::Cleanup);
-    (Stage::Terminating(Shutdown::exited(members, code)), effects)
+    (
+        Stage::Terminating(Shutdown::exited(members, command)),
+        effects,
+    )
 }
 
 fn initial_deadline(open: Open) -> (Stage, Vec<Effect>) {
@@ -513,11 +520,12 @@ impl Control {
         [vec![Effect::Disconnect { conn }], self.lost(conn)].concat()
     }
 
-    /// The command exited; for a normal exit, report it after the output drain.
-    pub fn command_exited(&mut self, code: u32) -> Vec<Effect> {
+    /// The command ended: its result, or `None` when the daemon could not
+    /// confirm how. After a natural exit, report it once the output drained.
+    pub fn command_exited(&mut self, command: Option<CommandResult>) -> Vec<Effect> {
         match &mut self.stage {
-            Stage::Terminating(shutdown) => shutdown.command_exited(code),
-            Stage::Open(_) => self.open(|open, _| command_exited(open, code)),
+            Stage::Terminating(shutdown) => shutdown.command_exited(command),
+            Stage::Open(_) => self.open(|open, _| command_exited(open, command)),
         }
     }
 
@@ -628,6 +636,28 @@ mod tests {
 
     const RESTORING: Phase = Phase::Restoring { complete: false };
     const RESTORED: Phase = Phase::Restoring { complete: true };
+
+    fn exit(code: u32) -> Option<CommandResult> {
+        Some(CommandResult::Exit { code })
+    }
+
+    fn signal(number: u32) -> Option<CommandResult> {
+        let number = std::num::NonZeroU32::new(number).unwrap();
+        Some(CommandResult::Signal { number, name: None })
+    }
+
+    /// A session that ended with `command` and cleaned up, without failing.
+    fn ended(command: Option<CommandResult>) -> Outcome {
+        Outcome {
+            command,
+            failed: false,
+            cleaned: true,
+        }
+    }
+
+    fn confirmed(conn: ConnectionId, outcome: Outcome) -> Effect {
+        ConfirmKill { conn, outcome }
+    }
 
     fn granted(effects: Vec<Effect>) -> Authority {
         match effects.last() {
@@ -1132,10 +1162,10 @@ mod tests {
         assert_eq!(control.leave(A), NONE);
         assert_eq!(control.controlling(A), Err(OperationalCode::NotAttached));
         assert_eq!(control.snapshot(), state(Terminating, 0, false));
-        control.command_exited(0);
+        control.command_exited(exit(0));
         assert_eq!(
             control.cleanup_finished(),
-            [ConfirmKill { conn: K, code: 0 }, Finish]
+            [confirmed(K, ended(exit(0))), Finish]
         );
     }
 
@@ -1452,12 +1482,14 @@ mod tests {
         assert_eq!(control.desired_focus(), None);
         assert_eq!(control.snapshot(), state(Terminating, 2, true));
     }
+    /// Every kill gets the command's signal itself; attachments get the
+    /// private protocol's status, 128 plus the signal's number.
     #[test]
     fn shutdown_releases_the_presenting_attachment_and_confirms_every_kill() {
         let mut control = session(&[A, B]);
         control.kill(K);
         control.kill(K2);
-        assert_eq!(control.command_exited(137), [Cleanup]);
+        assert_eq!(control.command_exited(signal(9)), [Cleanup]);
         assert_eq!(control.snapshot(), state(Terminating, 2, true));
         assert_eq!(
             control.cleanup_finished(),
@@ -1465,11 +1497,8 @@ mod tests {
                 Release { conn: B },
                 DeliverExit { conn: B, code: 137 },
                 DeliverExit { conn: A, code: 137 },
-                ConfirmKill { conn: K, code: 137 },
-                ConfirmKill {
-                    conn: K2,
-                    code: 137
-                },
+                confirmed(K, ended(signal(9))),
+                confirmed(K2, ended(signal(9))),
                 Finish
             ]
         );
@@ -1485,14 +1514,14 @@ mod tests {
         assert_eq!(control.lost(K), NONE);
         assert_eq!(control.apply_pending(), NONE);
         assert_eq!(control.snapshot(), state(Terminating, 2, true));
-        control.command_exited(0);
+        control.command_exited(exit(0));
         assert_eq!(
             control.cleanup_finished(),
             [
                 Release { conn: C },
                 DeliverExit { conn: C, code: 0 },
                 DeliverExit { conn: A, code: 0 },
-                ConfirmKill { conn: K2, code: 0 },
+                confirmed(K2, ended(exit(0))),
                 Finish
             ]
         );
@@ -1505,12 +1534,12 @@ mod tests {
         assert_eq!(control.lost(B), NONE);
         assert_eq!(control.apply_pending(), NONE);
         assert_eq!(control.snapshot(), state(Terminating, 1, true));
-        control.command_exited(0);
+        control.command_exited(exit(0));
         assert_eq!(
             control.cleanup_finished(),
             [
                 DeliverExit { conn: A, code: 0 },
-                ConfirmKill { conn: K, code: 0 },
+                confirmed(K, ended(exit(0))),
                 Finish
             ]
         );
@@ -1520,12 +1549,12 @@ mod tests {
     fn a_command_exit_releases_and_delivers_exit_to_every_attachment() {
         let mut control = session(&[A, B]);
         assert_eq!(
-            control.command_exited(3),
+            control.command_exited(exit(3)),
             [DiscardPendingInput { conn: B }, ClosePaste, Cleanup]
         );
         assert_eq!(control.attach(C, host()), [Refuse { conn: C }]);
         assert_eq!(control.snapshot(), state(Terminating, 2, true));
-        assert_eq!(control.command_exited(4), NONE);
+        assert_eq!(control.command_exited(exit(4)), NONE);
         assert_eq!(
             control.cleanup_finished(),
             [
@@ -1542,7 +1571,7 @@ mod tests {
     fn a_command_exit_before_any_attach_finishes_after_cleanup() {
         let mut control = Control::new(host());
         assert_eq!(control.cleanup_finished(), NONE);
-        assert_eq!(control.command_exited(0), [Cleanup]);
+        assert_eq!(control.command_exited(exit(0)), [Cleanup]);
         assert_eq!(control.initial_deadline(), NONE);
         assert_eq!(control.cleanup_finished(), [Finish]);
     }
@@ -1552,20 +1581,20 @@ mod tests {
         let mut control = session(&[A]);
         control.kill(K);
         assert_eq!(control.cleanup_finished(), NONE);
-        assert_eq!(control.command_exited(143), [Cleanup]);
+        assert_eq!(control.command_exited(signal(15)), [Cleanup]);
     }
 
     #[test]
     fn a_kill_during_cleanup_is_confirmed_after_it() {
         let mut control = session(&[A]);
-        control.command_exited(5);
+        control.command_exited(exit(5));
         assert_eq!(control.kill(K), NONE);
         assert_eq!(
             control.cleanup_finished(),
             [
                 Release { conn: A },
                 DeliverExit { conn: A, code: 5 },
-                ConfirmKill { conn: K, code: 5 },
+                confirmed(K, ended(exit(5))),
                 Finish
             ]
         );
@@ -1574,9 +1603,9 @@ mod tests {
     #[test]
     fn a_kill_after_the_session_finished_is_confirmed_immediately() {
         let mut control = session(&[A]);
-        control.command_exited(5);
+        control.command_exited(exit(5));
         control.cleanup_finished();
-        assert_eq!(control.kill(K), [ConfirmKill { conn: K, code: 5 }]);
+        assert_eq!(control.kill(K), [confirmed(K, ended(exit(5)))]);
         assert_eq!(control.attach(C, host()), [Refuse { conn: C }]);
     }
 
@@ -1589,18 +1618,22 @@ mod tests {
         );
         assert_eq!(control.attach(C, host()), [Refuse { conn: C }]);
         assert_eq!(control.kill(K), NONE);
-        assert_eq!(control.command_exited(1), [Cleanup]);
+        assert_eq!(control.command_exited(signal(1)), [Cleanup]);
+        let failed = Outcome {
+            failed: true,
+            ..ended(signal(1))
+        };
         assert_eq!(
             control.cleanup_finished(),
             [
                 Release { conn: B },
                 DeliverError { conn: B },
                 DeliverError { conn: A },
-                DeliverError { conn: K },
+                confirmed(K, failed.clone()),
                 Finish
             ]
         );
-        assert_eq!(control.kill(K2), [DeliverError { conn: K2 }]);
+        assert_eq!(control.kill(K2), [confirmed(K2, failed)]);
         assert_eq!(control.authoritative_failure(), NONE);
     }
 
@@ -1609,34 +1642,85 @@ mod tests {
         let mut control = session(&[A]);
         control.kill(K);
         assert_eq!(control.authoritative_failure(), NONE);
-        control.command_exited(0);
+        control.command_exited(exit(0));
+        let failed = Outcome {
+            failed: true,
+            ..ended(exit(0))
+        };
         assert_eq!(
             control.cleanup_finished(),
             [
                 Release { conn: A },
                 DeliverError { conn: A },
-                DeliverError { conn: K },
+                confirmed(K, failed),
                 Finish
             ]
         );
     }
 
+    /// A failure while cleaning up leaves the cleanup incomplete, distinct
+    /// from a failure of the session, though the private protocol reports
+    /// both as `Error`.
     #[test]
     fn a_failed_cleanup_never_confirms_a_kill() {
         let mut control = session(&[A]);
         control.kill(K);
-        control.command_exited(0);
+        control.command_exited(exit(0));
+        let uncleaned = Outcome {
+            cleaned: false,
+            ..ended(exit(0))
+        };
         assert_eq!(
             control.authoritative_failure(),
             [
                 Release { conn: A },
                 DeliverError { conn: A },
-                DeliverError { conn: K },
+                confirmed(K, uncleaned),
                 Finish
             ]
         );
         assert_eq!(control.cleanup_finished(), NONE);
         assert_eq!(control.snapshot(), state(Terminating, 0, false));
+    }
+
+    /// A command end the daemon could not confirm has no result: the
+    /// private protocol reports climon2's own status, and a kill learns
+    /// that nothing was confirmed.
+    #[test]
+    fn an_unconfirmed_command_end_reports_climon2s_own_status() {
+        let mut control = session(&[A]);
+        control.kill(K);
+        assert_eq!(control.command_exited(None), [Cleanup]);
+        assert_eq!(
+            control.cleanup_finished(),
+            [
+                Release { conn: A },
+                DeliverExit { conn: A, code: 125 },
+                confirmed(K, ended(None)),
+                Finish
+            ]
+        );
+    }
+
+    /// The private protocol keeps its exit mapping: a normal exit's raw
+    /// status, 128 plus a signal's number, 125 when nothing was confirmed,
+    /// and an error after a failure of the session or of its cleanup.
+    #[test]
+    fn the_private_protocol_keeps_its_exit_mapping() {
+        assert_eq!(ended(exit(0)).private_code(), Some(0));
+        assert_eq!(ended(exit(143)).private_code(), Some(143));
+        assert_eq!(ended(signal(15)).private_code(), Some(143));
+        assert_eq!(ended(None).private_code(), Some(125));
+        let failed = Outcome {
+            failed: true,
+            ..ended(exit(0))
+        };
+        assert_eq!(failed.private_code(), None);
+        let uncleaned = Outcome {
+            cleaned: false,
+            ..ended(exit(0))
+        };
+        assert_eq!(uncleaned.private_code(), None);
     }
 
     #[test]
@@ -1659,10 +1743,10 @@ mod tests {
         let mut control = Control::new(host());
         control.initial_deadline();
         assert_eq!(control.kill(K), NONE);
-        control.command_exited(129);
+        control.command_exited(signal(1));
         assert_eq!(
             control.cleanup_finished(),
-            [ConfirmKill { conn: K, code: 129 }, Finish]
+            [confirmed(K, ended(signal(1))), Finish]
         );
     }
 
@@ -1671,10 +1755,10 @@ mod tests {
         let mut control = session(&[A]);
         control.lost(A);
         assert_eq!(control.kill(K), NONE);
-        control.command_exited(129);
+        control.command_exited(signal(1));
         assert_eq!(
             control.cleanup_finished(),
-            [ConfirmKill { conn: K, code: 129 }, Finish]
+            [confirmed(K, ended(signal(1))), Finish]
         );
     }
 

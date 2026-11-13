@@ -1,4 +1,5 @@
 use crate::{args::Options, startup::Failure};
+use climon2_core::{exit::ExitStatus, wire::CommandResult};
 use climon2_platform::{peer, process, runtime};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::{
@@ -24,8 +25,8 @@ pub(crate) struct Pty {
     pid: u32,
     session: process::TerminalSession,
     observed: Instant,
-    reaped: bool,
-    status: Option<u32>,
+    /// The reaped command's result; `None` until it is reaped.
+    status: Option<CommandResult>,
 }
 
 impl Pty {
@@ -51,7 +52,6 @@ impl Pty {
             pid,
             session,
             observed: Instant::now(),
-            reaped: false,
             status: None,
         };
         // The master stays open as long as `pty` holds it, so the borrow is valid.
@@ -119,11 +119,11 @@ impl Pty {
         let mut master_io = self.master_io.as_ref().expect("live PTY");
         master_io.read(bytes)
     }
-    pub fn try_wait(&mut self) -> io::Result<Option<u32>> {
+    pub fn try_wait(&mut self) -> io::Result<Option<CommandResult>> {
         if self.status.is_none() {
             self.reap()?;
         }
-        Ok(self.status)
+        Ok(self.status.clone())
     }
     fn reap(&mut self) -> io::Result<()> {
         if let Some(status) = process::try_wait(self.pid)? {
@@ -131,12 +131,11 @@ impl Pty {
         }
         Ok(())
     }
-    /// Records the reaped command, which stays reaped even if its status has no code.
-    fn exited(&mut self, status: climon2_core::exit::ExitStatus) -> io::Result<u32> {
-        self.reaped = true;
-        let code = status.code().map_err(io::Error::other)?;
-        self.status = Some(code);
-        Ok(code)
+    /// Records the reaped command's result.
+    fn exited(&mut self, status: ExitStatus) -> io::Result<CommandResult> {
+        let result = command_result(status)?;
+        self.status = Some(result.clone());
+        Ok(result)
     }
     fn close_master(&mut self) {
         close(&mut self.master, &mut self.master_io);
@@ -144,19 +143,22 @@ impl Pty {
     /// Closes the terminal without waiting; `end_hangup` follows once the
     /// hang-up grace has elapsed.
     pub fn hang_up(&mut self) -> io::Result<()> {
-        if !self.reaped {
+        if self.status.is_none() {
             self.session.observe()?;
         }
         self.close_master();
         Ok(())
     }
 
-    /// Kills what remains of the command session; the command's status.
-    pub fn end_hangup(&mut self) -> io::Result<u32> {
-        if self.reaped {
-            self.session.kill()?;
-            return Ok(self.status.unwrap_or(129));
+    /// Kills what remains of the command session; the command's result.
+    pub fn end_hangup(&mut self) -> io::Result<CommandResult> {
+        match self.status.clone() {
+            Some(result) => self.session.kill().map(|()| result),
+            None => self.reap_hung_up(),
         }
+    }
+
+    fn reap_hung_up(&mut self) -> io::Result<CommandResult> {
         let status = process::end_hangup(&mut self.session)?;
         self.exited(status)
     }
@@ -181,6 +183,16 @@ impl Pty {
         }
         self.observed = Instant::now();
         self.session.observe()
+    }
+}
+
+/// A reaped command's result: a normal exit keeps its raw status and a
+/// signal its number, never folded together.
+fn command_result(status: ExitStatus) -> io::Result<CommandResult> {
+    match status {
+        ExitStatus::Command(code) => Ok(CommandResult::Exit { code }),
+        ExitStatus::Signal(number) => Ok(CommandResult::Signal { number, name: None }),
+        _ => Err(super::io_error("not a command's wait status")),
     }
 }
 
@@ -278,7 +290,7 @@ fn spawn_child(
 impl Drop for Pty {
     fn drop(&mut self) {
         self.close_master();
-        if !self.reaped {
+        if self.status.is_none() {
             let _ = self.session.kill();
             let _ = process::wait(self.pid);
         }
