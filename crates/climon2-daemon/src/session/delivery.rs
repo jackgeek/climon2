@@ -1,4 +1,4 @@
-use crate::control::Authority;
+use crate::control::{Authority, Target};
 use climon2_core::protocol::{MAX_DATA_FRAME_LENGTH, TerminalSize};
 use climon2_vt::{Mode, Presentation, Restoration, Vt};
 use std::time::{Duration, Instant};
@@ -28,9 +28,9 @@ pub(super) struct Overflow;
 /// section 3.3, delivery per attachment).
 pub(super) struct Delivery {
     presentation: Presentation,
-    /// A monitor-mode attachment's: every restoration is canonical, at the
-    /// session geometry, and its host size never changes its presentation.
-    canonical: bool,
+    /// For a canonical target every restoration is at the session
+    /// geometry, and a host size never changes the presentation.
+    target: Target,
     granted: Option<Granted>,
     backlog: Vec<u8>,
     /// Output arrived since the last derived update. A derive with nothing new emits
@@ -50,7 +50,7 @@ impl Delivery {
     pub fn new(host: TerminalSize) -> Self {
         Self {
             presentation: Presentation::new(host.cols, host.rows),
-            canonical: false,
+            target: Target::Host,
             granted: None,
             backlog: Vec::new(),
             // A grant's restoration starts from the current screen, not from this.
@@ -63,7 +63,7 @@ impl Delivery {
     /// `session`.
     pub fn canonical(session: TerminalSize) -> Self {
         Self {
-            canonical: true,
+            target: Target::Canonical,
             ..Self::new(session)
         }
     }
@@ -89,14 +89,17 @@ impl Delivery {
         lead
     }
 
-    /// The snapshot point of a restoration for a host of size `host`, or of
-    /// a canonical one, whatever the host.
+    /// The snapshot point of a restoration for a host of size `host`. For
+    /// a canonical target, `host` is the session geometry, which the VT
+    /// already has.
     fn snapshot(&mut self, vt: &mut Vt, host: TerminalSize) -> (Vec<u8>, Restoration) {
-        if self.canonical {
-            return vt.canonical(&mut self.presentation);
+        match self.target {
+            Target::Canonical => vt.canonical(&mut self.presentation),
+            Target::Host => {
+                self.presentation.resize_host(host.cols, host.rows);
+                vt.grant(&mut self.presentation)
+            }
         }
-        self.presentation.resize_host(host.cols, host.rows);
-        vt.grant(&mut self.presentation)
     }
 
     /// The controller confirmed readiness: its restoration deadline ends.
@@ -126,7 +129,7 @@ impl Delivery {
     /// [`Delivery::produce`] outside a synchronized update. A canonical
     /// presentation stays at the session geometry: a new one replaces it.
     pub fn resize(&mut self, host: TerminalSize) {
-        if !self.canonical {
+        if self.target == Target::Host {
             self.resized = Some(host);
         }
     }

@@ -74,8 +74,9 @@ attachment, every restoration has
 [canonical presentation](../../../GLOSSARY.md#restoration-and-presentation):
 the session serialized at the session geometry for a fresh terminal of
 exactly that size, whatever host size any client reported. It resets the
-modes that history rows rely on, writes any truncation notice and the
-retained history from the top of the fresh screen, scrolls off exactly the
+modes that history rows rely on, writes any
+[truncation notice](../../../GLOSSARY.md#restoration-and-presentation) and the
+[retained history](../../../GLOSSARY.md#restoration-and-presentation) from the top of the fresh screen, scrolls off exactly the
 lines it wrote, then sets the screen, cursor, modes and title; no host
 content is preserved. Parsed into a fresh model of that geometry, it leaves
 exactly the session's retained history and screen. Its snapshot likewise

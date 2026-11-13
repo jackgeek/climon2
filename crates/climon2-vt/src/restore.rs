@@ -28,12 +28,21 @@ pub struct Chunk {
 #[derive(Debug)]
 pub struct Restoration {
     view: View,
-    direct: bool,
+    layout: Layout,
     host_rows: u16,
-    /// Phase B starts at the top of a fresh terminal of the session's size,
-    /// not below host content scrolled off by phase A.
-    canonical: bool,
     suffix: Option<Snapshot>,
+}
+
+/// How phase B writes the history and how much C1 scrolls off.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Layout {
+    /// Below host content that phase A scrolled off; every row trimmed.
+    Derived,
+    /// Below host content that phase A scrolled off; a soft-wrapped row is
+    /// printed full width.
+    Direct,
+    /// Direct, from the top of a fresh terminal of the session's size.
+    Canonical,
 }
 
 #[derive(Debug)]
@@ -189,9 +198,11 @@ impl Restoration {
                 notice_lines,
                 soft: false,
             },
-            direct: presentation.mode == Mode::Direct,
+            layout: match presentation.mode {
+                Mode::Direct => Layout::Direct,
+                Mode::Derived => Layout::Derived,
+            },
             host_rows: presentation.rows,
-            canonical: false,
             suffix: Some(suffix),
         }
     }
@@ -206,7 +217,7 @@ impl Restoration {
         suffix: Snapshot,
     ) -> Self {
         Self {
-            canonical: true,
+            layout: Layout::Canonical,
             ..Self::new(ledger, rows, notice, presentation, suffix)
         }
     }
@@ -220,9 +231,10 @@ impl Restoration {
         budget: usize,
         out: &mut Vec<u8>,
     ) -> bool {
+        let direct = self.layout != Layout::Derived;
         let mut more = true;
         while more && out.len() < budget {
-            more = self.view.step(grid, ledger, self.direct, out);
+            more = self.view.step(grid, ledger, direct, out);
         }
         !more
     }
@@ -256,10 +268,9 @@ impl Restoration {
             out.extend_from_slice(b"\r\n");
         }
         let above = usize::from(self.host_rows - 1);
-        let printed = if self.canonical {
-            self.view.lines
-        } else {
-            above
+        let printed = match self.layout {
+            Layout::Canonical => self.view.lines,
+            Layout::Direct | Layout::Derived => above,
         };
         scroll_off(self.host_rows, printed.min(above), out);
     }

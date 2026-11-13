@@ -34,8 +34,9 @@ the session daemon's side of
 [canonical monitor presentation](#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1).
 A [passive monitor connection](../../GLOSSARY.md#attachment-and-control) that
 its Acquire or a [promotion](../../GLOSSARY.md#attachment-and-control) makes an
-attachment is granted at the session's current geometry, receives
-restorations with
+[attachment](../../GLOSSARY.md#attachment-and-control) is granted at the
+session's current [geometry](TERMS.md#geometry), receives
+[restorations](../../GLOSSARY.md#restoration-and-presentation) with
 [canonical presentation](../../GLOSSARY.md#restoration-and-presentation),
 serialized at the effective session geometry for a fresh terminal of that
 size, and receives a new restoration at every new effective geometry before

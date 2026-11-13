@@ -45,7 +45,8 @@ geometry or takeover. Interactive mode attaches and
 [grants](../../../GLOSSARY.md#attachment-and-control)
 [control](../../../GLOSSARY.md#attachment-and-control) using requested geometry
 under daemon policy. See [succession](core-v1.md#membership-and-succession).
-Monitor-mode display/restoration after acquisition or promotion uses effective
+Monitor-mode display/restoration after acquisition or
+[promotion](../../../GLOSSARY.md#attachment-and-control) uses effective
 session geometry regardless of outer host or requested size under the
 [canonical terminal contract](../terminal-integration.md#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1).
 Ordinary interactive [direct](../../../GLOSSARY.md#restoration-and-presentation)/[derived](../../../GLOSSARY.md#restoration-and-presentation)/native-history behavior is unchanged.
@@ -108,4 +109,6 @@ and the hello `state` counts it like any attachment. During committed
 termination an interactive Open is rejected with `session_terminating` and
 ends its stream. Once the daemon knows how the command ended (see
 [Command final](event-command-final.md#implemented-behavior)), every
-rejection of an Open carries that result as `known_final`.
+rejection of a first-role Open carries that result as `known_final`; a
+later Open on a connection that already has a role is `invalid_state`
+without it.

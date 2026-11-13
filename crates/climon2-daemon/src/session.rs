@@ -11,7 +11,10 @@ mod writes;
 use crate::{
     args::Options,
     connection::{Connection, Failure, Received},
-    control::{Authority, ConnectionId, Control, Effect, Lifecycle, Outcome, Restoration},
+    control::{
+        Authority, CommandEnd, ConnectionId, Control, Effect, Lifecycle, PrivateResult,
+        Restoration, SessionEnd,
+    },
     pty::Pty,
 };
 use climon2_core::{
@@ -21,7 +24,7 @@ use climon2_core::{
         PTY_DRAIN_CAP, ServerMessage, TerminalSize,
     },
     title::default_title,
-    wire::{CommandResult, GrantReason, RevocationReason},
+    wire::{CommandResult, Counter, GrantReason, RevocationReason},
 };
 use climon2_platform::{
     peer,
@@ -58,9 +61,12 @@ struct Session<'a, C> {
     cleanup: C,
     connections: BTreeMap<u64, Connection>,
     deliveries: BTreeMap<u64, Delivery>,
-    /// Revision-1 connections after their first role: passive monitor
-    /// connections, interactive attachments and standalone Kills.
+    /// Revision-1 connections after their Open: passive monitor connections
+    /// and interactive attachments.
     opened: BTreeMap<u64, wire::Opened>,
+    /// Revision-1 connections whose standalone Kill awaits its answer: the
+    /// Kill's request ID.
+    kills: BTreeMap<u64, Counter>,
     /// The command's result, once the daemon knows it.
     command_result: Option<CommandResult>,
     control: Control,
@@ -95,6 +101,7 @@ pub(crate) fn serve(
         connections: BTreeMap::new(),
         deliveries: BTreeMap::new(),
         opened: BTreeMap::new(),
+        kills: BTreeMap::new(),
         command_result: None,
         control: Control::new(options.size, options.lifetime),
         vt,
@@ -156,6 +163,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     // Incoming connections and frames.
 
     fn incoming(&mut self) -> io::Result<()> {
+        #[cfg(feature = "test-hooks")]
+        if crate::startup::held() {
+            return Ok(());
+        }
         self.accept()?;
         for id in self.connection_ids() {
             self.service(id)?;
@@ -302,19 +313,27 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.initial_deadline(now)
     }
 
-    /// A hang-up the daemon cannot confirm leaves the command's result unknown.
+    /// A hang-up the daemon cannot confirm keeps only what it already knew.
     fn end_hangup(&mut self, now: Instant) -> io::Result<()> {
         if !self.command.hung_up(now) {
             return Ok(());
         }
-        let ended = self.pty.end_hangup().ok();
-        if let Some(result) = &ended {
-            self.publish(result);
-        }
-        self.end_command(ended)
+        let end = match self.pty.end_hangup() {
+            Ok(result) => {
+                self.publish(&result);
+                CommandEnd::Confirmed(result)
+            }
+            Err(_) => self.unconfirmed(),
+        };
+        self.end_command(end)
     }
 
-    fn end_command(&mut self, command: Option<CommandResult>) -> io::Result<()> {
+    /// The command's end, unconfirmed, with any result already known.
+    fn unconfirmed(&self) -> CommandEnd {
+        CommandEnd::Unconfirmed(self.command_result.clone())
+    }
+
+    fn end_command(&mut self, command: CommandEnd) -> io::Result<()> {
         self.command = Command::Ended;
         self.react(|control| control.command_exited(command))
     }
@@ -601,7 +620,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         if self.awaiting(now) {
             return Ok(());
         }
-        self.end_command(Some(result))
+        self.end_command(CommandEnd::Confirmed(result))
     }
 
     fn awaiting(&self, now: Instant) -> bool {
@@ -712,7 +731,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn final_effect(&mut self, effect: Effect) {
         match effect {
-            Effect::ConfirmKill { conn, outcome } => self.confirm_kill(conn.0, &outcome),
+            Effect::ConfirmKill { conn, end } => self.confirm_kill(conn.0, &end),
             Effect::Finish => self.finish(),
             other => self.grant_effect(other),
         }
@@ -764,10 +783,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// The grace is a loop deadline, so probes, refusals and joining kills
     /// are served while the command session hangs up. A failed hang-up
-    /// leaves the command's result unknown.
+    /// confirms nothing.
     fn begin_shutdown(&mut self) -> io::Result<()> {
         if self.pty.hang_up().is_err() {
-            return self.end_command(None);
+            return self.end_command(self.unconfirmed());
         }
         self.command = Command::HangingUp {
             until: Instant::now() + HANGUP_GRACE,
@@ -776,11 +795,20 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn run_cleanup(&mut self) -> io::Result<()> {
-        let effects = match (self.cleanup)() {
+        let effects = match self.clean_up() {
             Ok(()) => self.control.cleanup_finished(),
             Err(_) => self.control.authoritative_failure(),
         };
         self.effects(effects)
+    }
+
+    /// Removes the session metadata and socket.
+    fn clean_up(&mut self) -> io::Result<()> {
+        #[cfg(feature = "test-hooks")]
+        if crate::startup::selected_fault("cleanup") {
+            return Err(super::io_error("controlled cleanup fault"));
+        }
+        (self.cleanup)()
     }
 
     fn finish(&mut self) {
@@ -853,10 +881,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// A kill requester's answer: a standalone Kill's Response, or the
     /// private protocol's confirmation.
-    fn confirm_kill(&mut self, id: u64, outcome: &Outcome) {
+    fn confirm_kill(&mut self, id: u64, end: &SessionEnd) {
         match self.kill_request(id) {
-            Some(request_id) => self.answer_kill(id, request_id, outcome),
-            None => self.terminal(id, private_confirmation(outcome)),
+            Some(request_id) => self.answer_kill(id, request_id, end),
+            None => self.terminal(id, private_confirmation(end)),
         }
     }
 
@@ -892,7 +920,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// A private message; a revision-1 connection never receives one.
     fn reply(&mut self, id: u64, message: ServerMessage) {
-        if self.opened.contains_key(&id) {
+        if self.holds_role(id) {
             return;
         }
         let Some(connection) = self.connections.get_mut(&id) else {
@@ -924,8 +952,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// Loses a connection from inside output routing; the state machine
-    /// hears of it after this iteration's output.
+    /// hears of it after this iteration's output, but a registration can
+    /// inherit control no more from now on.
     fn mark_lost(&mut self, id: u64) {
+        self.control.unregister(ConnectionId(id));
         self.pending_lost.insert(id);
         self.remove_connection(id);
     }
@@ -940,6 +970,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn remove_delivery(&mut self, id: u64) {
         self.deliveries.remove(&id);
         self.opened.remove(&id);
+        self.kills.remove(&id);
         self.pty_writes.discard(id);
         self.pending_restorations.remove(&id);
         self.forget_controller(id);
@@ -1003,10 +1034,10 @@ fn ending_effects(
 }
 
 /// `Terminated` with the private protocol's status, or `Error`.
-fn private_confirmation(outcome: &Outcome) -> ServerMessage {
-    match outcome.private_code() {
-        Some(code) => ServerMessage::Terminated { code },
-        None => failure_message(),
+fn private_confirmation(end: &SessionEnd) -> ServerMessage {
+    match end.private_result() {
+        PrivateResult::Status(code) => ServerMessage::Terminated { code },
+        PrivateResult::Error => failure_message(),
     }
 }
 

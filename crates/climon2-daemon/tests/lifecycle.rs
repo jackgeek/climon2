@@ -2758,6 +2758,21 @@ fn record_input(file: &str, query: Option<&str>) -> ! {
     std::process::exit(0);
 }
 
+/// Closes every descriptor of its terminal, so the daemon reads the end of
+/// its output, and keeps running: `terminal-closed` says it closed them.
+/// It exits with status 3 once `finish` appears, or after 45 seconds.
+fn close_terminal() -> ! {
+    for descriptor in 0..3 {
+        unsafe { libc::close(descriptor) };
+    }
+    fs::write("terminal-closed", b"").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(45);
+    while !Path::new("finish").exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(2));
+    }
+    std::process::exit(3);
+}
+
 /// A raw application recording every byte it reads in `focused` until
 /// `END`. Input ending in `ON` or `OFF` turns focus reporting (mode 1004) on
 /// or off, acknowledged by printing `focus-on` or `focus-off`.
@@ -2927,6 +2942,9 @@ fn fixture_child() {
     io::stdout().flush().unwrap();
     if mode == "lines" {
         record_lines();
+    }
+    if mode == "close-terminal" {
+        close_terminal();
     }
     if mode.starts_with("drain-") {
         let mut line = String::new();

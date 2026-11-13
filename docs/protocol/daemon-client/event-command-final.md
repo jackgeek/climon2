@@ -74,15 +74,20 @@ Status changed is sent. A normal exit keeps its raw status and a signal its
 number, with a null `name`: exit 143 and signal 15 stay apart. A later Open
 gets the result in its [Initial metadata](event-initial-metadata.md), and no
 Command final follows it; learning the same result again sends nothing.
+After a command exits by itself, the session goes on until its last output
+has drained and its controller confirmed [Ready](request-ready.md): until
+then an interactive Open still attaches and [Acquire](request-acquire.md)
+is still granted.
 
 Command final is metadata, sent whatever the
 [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts): the
 [controller](../../../GLOSSARY.md#attachment-and-control) may still receive
 the command's last output as [Display](event-display.md) after it, then the
-release of its
+[release](../../../GLOSSARY.md#restoration-and-presentation) of its
 [presentation](../../../GLOSSARY.md#restoration-and-presentation),
 [Control revoked](event-control-revoked.md) with reason `session_ending`,
-and the end of its stream. When the daemon cannot confirm how the command
-ended, because its hang-up or the kill of what remained of the command's
-terminal session failed, it sends no Command final: the streams end
-without one.
+and the end of its stream. Neither the end of the command's terminal output
+while the command still runs nor the end of a stream is a result. When the
+daemon never learns how the command ended, because its hang-up or the kill
+of what remained of the command's terminal session failed before it reaped
+the command, it sends no Command final: the streams end without one.

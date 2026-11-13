@@ -1,8 +1,8 @@
 # Display — `0x49`
 
 **Status: agreed and implemented** for interactive attachments
-([#87](https://github.com/jackgeek/climon2/issues/87)) and, with canonical
-presentation, for monitor-mode connections
+([#87](https://github.com/jackgeek/climon2/issues/87)) and, with
+[canonical presentation](../../../GLOSSARY.md#restoration-and-presentation), for monitor-mode connections
 ([#89](https://github.com/jackgeek/climon2/issues/89)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) delivers ordered terminal
 [bytes](../TERMS.md#byte) to the controlling
