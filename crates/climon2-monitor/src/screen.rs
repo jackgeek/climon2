@@ -19,17 +19,16 @@ const EMPTY: &str = "No sessions to show.";
 /// asked the host's size or cursor, and the cursor stays hidden.
 pub(crate) struct Screen {
     backend: CrosstermBackend<Stdout>,
-    lines: [Line<'static>; 2],
+    lines: Vec<Line<'static>>,
 }
 
 impl Screen {
-    pub(crate) fn new(size: TerminalSize, prefix: ControlKey) -> io::Result<Self> {
+    /// The empty state names `prefix` in its key hint, unless `hints` is off.
+    pub(crate) fn new(size: TerminalSize, prefix: ControlKey, hints: bool) -> io::Result<Self> {
+        let hint = hints.then(|| Line::from(format!("Press {prefix} then x to exit.")));
         let mut screen = Self {
             backend: CrosstermBackend::new(io::stdout()),
-            lines: [
-                Line::from(EMPTY),
-                Line::from(format!("Press {prefix} then x to exit.")),
-            ],
+            lines: std::iter::once(Line::from(EMPTY)).chain(hint).collect(),
         };
         screen.backend.hide_cursor()?;
         screen.paint(size)?;
@@ -57,7 +56,7 @@ impl Screen {
 }
 
 /// The permanent top row, and below it the empty state, centred.
-fn frame(size: TerminalSize, empty: &[Line<'static>; 2]) -> Buffer {
+fn frame(size: TerminalSize, empty: &[Line<'static>]) -> Buffer {
     let area = Rect::new(0, 0, size.cols, size.rows);
     let mut frame = Buffer::empty(area);
     let top = Rect {

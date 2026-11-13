@@ -1,11 +1,10 @@
 //! Everything that can refuse the monitor, checked in order before the host
 //! terminal changes: terminals, the climon2 home and executable home, then the
-//! existing `client` settings.
+//! one configuration snapshot.
 use crate::Error;
 use climon2_core::{
     VersionName,
-    config::{ConfigError, ConfigSource},
-    keys::ControlKey,
+    config::{ConfigSource, MonitorConfig},
     layout::{ExecutableLayout, HomeLayout, VersionBinary},
 };
 use climon2_platform::{logging::LogFile, runtime, terminal};
@@ -18,7 +17,7 @@ use std::{
 pub(crate) struct Startup {
     pub(crate) log: LogFile,
     pub(crate) version: VersionName,
-    pub(crate) prefix: ControlKey,
+    pub(crate) config: MonitorConfig,
 }
 
 impl Startup {
@@ -32,11 +31,11 @@ impl Startup {
     fn configured(home: &Path, log: LogFile) -> Result<Self, Error> {
         let logged = |error: io::Error| Error::new(error).logged(log.path());
         let version = installed_version().map_err(logged)?;
-        let prefix = escape_prefix(home).map_err(logged)?;
+        let config = configuration(home).map_err(logged)?;
         Ok(Self {
             log,
             version,
-            prefix,
+            config,
         })
     }
 }
@@ -61,17 +60,13 @@ fn installed_version() -> io::Result<VersionName> {
         })
 }
 
-/// The existing client escape prefix, with its default; the monitor has no
-/// other way to reach its actions, so a null prefix is refused.
-fn escape_prefix(home: &Path) -> io::Result<ControlKey> {
+/// The one configuration snapshot: the client bindings, whose escape prefix
+/// the monitor needs to reach its actions, and the `monitor` section. Nothing
+/// reads the file again.
+fn configuration(home: &Path) -> io::Result<MonitorConfig> {
     let layout =
         HomeLayout::resolve(Some(home.as_os_str()), Path::new("/")).map_err(io::Error::other)?;
-    let config = ConfigSource::read(&layout)
-        .and_then(|source| source.attach())
-        .map_err(io::Error::other)?;
-    config.client.escape_prefix().ok_or_else(|| {
-        io::Error::other(ConfigError::Invalid(
-            "client.escape_prefix may not be null for climon2 monitor".into(),
-        ))
-    })
+    ConfigSource::read(&layout)
+        .and_then(|source| source.monitor())
+        .map_err(io::Error::other)
 }
