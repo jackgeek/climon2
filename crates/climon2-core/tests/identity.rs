@@ -1,5 +1,5 @@
 //! ADRs 0001/0005: validate external identifiers before using them as paths.
-use climon2_core::{SessionId, Timestamp, VersionName};
+use climon2_core::{SessionId, Timestamp, VersionName, wire::Guid};
 
 #[test]
 fn adr0005_guid_and_version_are_validated_without_normalizing_untrusted_paths() {
@@ -45,4 +45,21 @@ fn adr0005_created_at_requires_real_utc_calendar_time_with_exact_milliseconds() 
     ] {
         assert!(bad.parse::<Timestamp>().is_err(), "{bad}");
     }
+}
+
+/// Native revision 1 (core-v1 "GUIDs"): a GUID crosses the C ABI as 16
+/// bytes in canonical textual order, without host-endian swapping. A session
+/// ID is made from such bytes, and a wire GUID gives them back.
+#[test]
+fn native_guid_bytes_are_in_canonical_textual_order() {
+    let bytes = [
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+        0xff,
+    ];
+    let text = "00112233-4455-6677-8899-aabbccddeeff";
+    assert_eq!(SessionId::from_bytes(bytes).as_str(), text);
+    assert_eq!(text.parse::<Guid>().unwrap().bytes(), bytes);
+    let nil = "00000000-0000-0000-0000-000000000000";
+    assert_eq!(SessionId::from_bytes([0; 16]).as_str(), nil);
+    assert_eq!(nil.parse::<Guid>().unwrap().bytes(), [0; 16]);
 }
