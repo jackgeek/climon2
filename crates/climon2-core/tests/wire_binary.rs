@@ -3,10 +3,9 @@
 //! counters comes first; the payload after it is exact bytes, never text.
 //! Each test is the codec case of the matrix scenarios it cites.
 use climon2_core::wire::{
-    Display, FatalCode, Frame, FrameLimit, Input, Request, ServerMessage, read_frame, write_frame,
+    Display, FatalCode, Frame, Input, Request, ServerMessage, read_frame, write_frame,
 };
-use std::io::{self, Read};
-use support::counter;
+use support::{Fragmented, counter, limit};
 
 mod support;
 
@@ -87,22 +86,12 @@ fn input_and_display_carry_arbitrary_bytes_unchanged() {
     }
 }
 
-/// Delivers one byte per read, as a slow transport may.
-struct OneByte<'a>(&'a [u8]);
-
-impl Read for OneByte<'_> {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let length = buffer.len().min(1);
-        self.0.read(&mut buffer[..length])
-    }
-}
-
 /// COM-04 (codec case): fragmented payloads stay exact. Frames read one byte
 /// at a time decode to the payloads written, and a payload chunked across two
 /// Display frames keeps its byte order.
 #[test]
 fn binary_payloads_survive_fragmented_reads_and_chunking() {
-    let limit = FrameLimit::new(1_048_576).unwrap();
+    let ceiling = limit(1_048_576);
     let payload: Vec<u8> = (0..=255).rev().chain(0..=255).collect();
     let (first, second) = payload.split_at(300);
     let records = [
@@ -112,11 +101,11 @@ fn binary_payloads_survive_fragmented_reads_and_chunking() {
     ];
     let mut stream = Vec::new();
     for frame in &records {
-        write_frame(&mut stream, frame, limit).unwrap();
+        write_frame(&mut stream, frame, ceiling).unwrap();
     }
 
-    let mut reader = OneByte(&stream);
-    let mut next = || read_frame(&mut reader, limit).unwrap().unwrap();
+    let mut reader = Fragmented(stream.as_slice());
+    let mut next = || read_frame(&mut reader, ceiling).unwrap().unwrap();
     assert_eq!(
         Request::from_frame(&next()),
         Ok(Request::Input(input_record([7, 2, 3], &payload)))
@@ -129,24 +118,25 @@ fn binary_payloads_survive_fragmented_reads_and_chunking() {
         displayed.extend(chunk.payload);
     }
     assert_eq!(displayed, payload);
-    assert!(read_frame(&mut reader, limit).unwrap().is_none());
+    assert!(read_frame(&mut reader, ceiling).unwrap().is_none());
 }
 
-/// COM-02 (codec case): a body shorter than its header is `invalid_record`:
-/// Input's header is 24 bytes and Display's 16. A body of exactly the header
-/// is an identifiable record with an empty payload, which only the
+/// COM-02 (codec case): a body shorter than its header is `invalid_record`,
+/// whatever bytes it holds: Input's header is 24 bytes and Display's 16, and
+/// the length is checked before any counter, so a short Input whose request
+/// ID bytes are zero is not `invalid_request_id`. A body of exactly the
+/// header is an identifiable record with an empty payload, which only the
 /// connection owner refuses (the session daemon rejects empty Input with an
 /// operational error), and one byte more is a one-byte payload.
 #[test]
 fn binary_headers_are_complete_or_invalid_records() {
-    let header = body(&[2, 1, 1], &[]);
-    for length in [0, 8, 16, 23] {
-        assert_eq!(
-            input(&header[..length]),
-            Err(FatalCode::InvalidRecord),
-            "{length}"
-        );
+    for header in [body(&[2, 1, 1], &[]), body(&[0, 0, 0], &[])] {
+        for length in [0, 8, 16, 23] {
+            let short = &header[..length];
+            assert_eq!(input(short), Err(FatalCode::InvalidRecord), "{short:?}");
+        }
     }
+    let header = body(&[2, 1, 1], &[]);
     assert_eq!(
         input(&header),
         Ok(Request::Input(input_record([2, 1, 1], &[])))

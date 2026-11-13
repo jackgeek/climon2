@@ -17,11 +17,11 @@ use climon2_core::{
         Advertised, Capability, HelloExtensions, Lifecycle, SessionState, advertise_revision1,
     },
     protocol::{self, HelloReply},
-    wire::{Advertisement, Family, FrameLimit, FrameLimits},
+    wire::{Advertisement, Family, FrameLimits},
 };
 use serde_json::{Map, Value, json};
-use std::{collections::BTreeSet, fs, num::NonZeroU32, path::Path};
-use support::{counter, families, geometry, page_dumps, page_examples};
+use std::{collections::BTreeSet, num::NonZeroU32};
+use support::{counter, families, geometry, limit, page_dumps, page_examples, pages};
 
 mod support;
 
@@ -319,22 +319,18 @@ fn published_control_and_restoration_examples_round_trip_byte_identically() {
     assert_eq!(expected.to_frame(), frame);
 }
 
-fn limit() -> FrameLimit {
-    FrameLimit::new(1_048_576).unwrap()
-}
-
 /// The single hex dump on one daemon wire page, read as one whole frame.
 fn dumped(page: &str) -> (Frame, Vec<u8>) {
     let [bytes]: [Vec<u8>; 1] = page_dumps(page).try_into().unwrap();
     let mut reader = bytes.as_slice();
-    let frame = read_frame(&mut reader, limit()).unwrap().unwrap();
+    let frame = read_frame(&mut reader, limit(1_048_576)).unwrap().unwrap();
     assert!(reader.is_empty(), "{page} shows exactly one frame");
     (frame, bytes)
 }
 
 fn written(frame: &Frame) -> Vec<u8> {
     let mut bytes = Vec::new();
-    write_frame(&mut bytes, frame, limit()).unwrap();
+    write_frame(&mut bytes, frame, limit(1_048_576)).unwrap();
     bytes
 }
 
@@ -415,7 +411,6 @@ fn published_hello_reply_examples_decode_and_the_encoded_ones_round_trip() {
     assert_eq!(extensions.daemon_wire_v1, Advertised::Absent);
 
     let (reply, extensions) = hello(&revision1);
-    let limit = FrameLimit::new(1_048_576).unwrap();
     let advertisement = Advertisement::new(
         [
             Family::MonitorV1,
@@ -426,8 +421,8 @@ fn published_hello_reply_examples_decode_and_the_encoded_ones_round_trip() {
             Family::FocusV1,
         ],
         FrameLimits {
-            max_request_frame_bytes: limit,
-            max_server_frame_bytes: limit,
+            max_request_frame_bytes: limit(1_048_576),
+            max_server_frame_bytes: limit(1_048_576),
         },
     );
     assert_eq!(reply, expected);
@@ -495,10 +490,8 @@ const JSON_PAGES: [(&str, &[u8]); 22] = [
 /// have their own tests.
 #[test]
 fn every_revision1_page_example_is_exercised() {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/protocol/daemon-client");
     let mut dumps = BTreeSet::new();
-    for entry in fs::read_dir(directory).unwrap() {
-        let page = entry.unwrap().file_name().into_string().unwrap();
+    for page in pages() {
         if page.starts_with("hello-") {
             continue;
         }
@@ -693,6 +686,68 @@ fn string_members_accept_only_json_strings() {
             }
         }
     }
+}
+
+/// Every documented `kind`: the success results, a rejection's known final
+/// result, a Kill's partial termination and the command results.
+const KINDS: [&str; 13] = [
+    "acknowledgement",
+    "acquired",
+    "exit",
+    "focus",
+    "input_accepted",
+    "known_final",
+    "left",
+    "opened",
+    "ready",
+    "resize_accepted",
+    "signal",
+    "termination",
+    "viewing",
+];
+
+/// COM-02 (codec case): a result's `kind`, and a command result's, is only
+/// its JSON string name. An integer, which serde's derived identifiers also
+/// take as a variant index, is `invalid_record`, for every index that a
+/// documented kind could have. Every documented kind is swept: the result
+/// of a Response and the command result inside one, and the command results
+/// of Initial metadata and Command final.
+#[test]
+fn every_kind_is_only_its_json_string_name() {
+    let mut names = BTreeSet::new();
+    let mut tagged = BTreeSet::new();
+    for (code, body) in records() {
+        let record: Value = serde_json::from_str(&body).unwrap();
+        for pointer in objects(&record, String::new()) {
+            let Some(Value::String(name)) = record.pointer(&pointer).unwrap().get("kind") else {
+                continue;
+            };
+            names.insert(name.clone());
+            tagged.insert((code, pointer.clone()));
+            for index in 0..KINDS.len() {
+                let variant = edited(&record, &pointer, |object| {
+                    object.insert("kind".into(), json!(index));
+                });
+                assert_eq!(
+                    decode(code, &variant),
+                    Err(FatalCode::InvalidRecord),
+                    "{variant}"
+                );
+            }
+        }
+    }
+    assert_eq!(names, BTreeSet::from(KINDS.map(str::to_owned)));
+    assert_eq!(
+        tagged,
+        BTreeSet::from([
+            (0x40, "/result".to_owned()),
+            (0x40, "/result/command_result".to_owned()),
+            (0x41, "/command_result".to_owned()),
+            (0x4c, "/command_result".to_owned()),
+        ]),
+        "a Response's result and the command result inside one, Initial metadata's and \
+         Command final's"
+    );
 }
 
 /// COM-02 (codec case): every request and the Response carry a `request_id`,

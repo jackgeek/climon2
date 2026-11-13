@@ -4,25 +4,9 @@ use climon2_core::wire::{
     FatalCode, Frame, FrameLimit, WireError, defines, read_frame, write_frame,
 };
 use std::io::{self, Cursor, Read, Write};
+use support::{Fragmented, limit};
 
-struct Fragmented<T>(T);
-
-impl<T: Read> Read for Fragmented<T> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let length = buf.len().min(2);
-        self.0.read(&mut buf[..length])
-    }
-}
-
-impl<T: Write> Write for Fragmented<T> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.write(&buf[..buf.len().min(2)])
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
-    }
-}
+mod support;
 
 struct Broken;
 
@@ -40,10 +24,6 @@ impl Write for Broken {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
-}
-
-fn limit(bytes: u32) -> FrameLimit {
-    FrameLimit::new(bytes).unwrap()
 }
 
 fn fatal(result: Result<Option<Frame>, WireError>) -> FatalCode {
