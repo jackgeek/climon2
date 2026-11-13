@@ -132,21 +132,22 @@ fn binary_payloads_survive_fragmented_reads_and_chunking() {
     assert!(read_frame(&mut reader, limit).unwrap().is_none());
 }
 
-/// COM-02 (codec case): a body shorter than its header is `invalid_record`:
-/// Input's header is 24 bytes and Display's 16. A body of exactly the header
-/// is an identifiable record with an empty payload, which only the
+/// COM-02 (codec case): a body shorter than its header is `invalid_record`,
+/// whatever bytes it holds: Input's header is 24 bytes and Display's 16, and
+/// the length is checked before any counter, so a short Input whose request
+/// ID bytes are zero is not `invalid_request_id`. A body of exactly the
+/// header is an identifiable record with an empty payload, which only the
 /// connection owner refuses (the session daemon rejects empty Input with an
 /// operational error), and one byte more is a one-byte payload.
 #[test]
 fn binary_headers_are_complete_or_invalid_records() {
-    let header = body(&[2, 1, 1], &[]);
-    for length in [0, 8, 16, 23] {
-        assert_eq!(
-            input(&header[..length]),
-            Err(FatalCode::InvalidRecord),
-            "{length}"
-        );
+    for header in [body(&[2, 1, 1], &[]), body(&[0, 0, 0], &[])] {
+        for length in [0, 8, 16, 23] {
+            let short = &header[..length];
+            assert_eq!(input(short), Err(FatalCode::InvalidRecord), "{short:?}");
+        }
     }
+    let header = body(&[2, 1, 1], &[]);
     assert_eq!(
         input(&header),
         Ok(Request::Input(input_record([2, 1, 1], &[])))

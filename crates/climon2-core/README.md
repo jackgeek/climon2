@@ -72,13 +72,14 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     restoration ID) and `Display` (`0x49`: control period and restoration
     ID) start with a header of nonzero big-endian u64 counters; the payload
     after it is exact bytes, never cut at a NUL or checked as UTF-8. A body
-    shorter than its header (24 or 16 bytes) is `invalid_record`; a zero
-    request ID is `invalid_request_id` (the message type decides, as for
-    JSON) and any other zero counter `invalid_record`. An empty payload
-    decodes: the session daemon rejects empty Input with an operational
-    error, and an empty Display is an invalid operation for the client to
-    judge. `Input::to_frame` and `Display::to_frame` encode them; a frame is
-    25 (Input) or 17 (Display) bytes plus the payload, so callers chunk
+    shorter than its header (24 or 16 bytes) is `invalid_record`, whatever
+    bytes it holds; in a complete header, a zero request ID is
+    `invalid_request_id` (the message type decides, as for JSON) and any
+    other zero counter `invalid_record`. An empty payload decodes: the
+    session daemon rejects empty Input with an operational error, and an
+    empty Display is an invalid operation for the client to judge.
+    `Input::to_frame` and `Display::to_frame` encode them; a frame is 25
+    (Input) or 17 (Display) bytes plus the payload, so callers chunk
     payloads to the frame limit.
   - Shared types: `Counter` (canonical decimal string 1 through
     18446744073709551615), `Guid` (lowercase canonical hyphenated, validated
