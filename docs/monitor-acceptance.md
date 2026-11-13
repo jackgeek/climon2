@@ -4,10 +4,11 @@
 [Define automated monitor acceptance criteria](https://github.com/jackgeek/climon2/issues/62),
 not implementation or executed acceptance evidence.** The
 [monitor](../GLOSSARY.md#sessions) exists only as the empty walking skeleton of
-[#74](https://github.com/jackgeek/climon2/issues/74); packaged
-[client libraries](../GLOSSARY.md#sessions), new daemon wire and headless
-creation remain unimplemented. Resolving this specification does not pass a
-[release gate](../GLOSSARY.md#testing).
+[#74](https://github.com/jackgeek/climon2/issues/74); new daemon wire and
+headless creation remain unimplemented. Packaged
+[client libraries](../GLOSSARY.md#sessions) implement only their bootstrap and
+description ([#75](https://github.com/jackgeek/climon2/issues/75)). Resolving
+this specification does not pass a [release gate](../GLOSSARY.md#testing).
 
 This document specifies evidence for the agreed thread-based Ratatui monitor.
 Read the [domain glossary](../GLOSSARY.md), [technical terms](protocol/TERMS.md)

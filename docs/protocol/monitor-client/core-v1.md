@@ -1,7 +1,16 @@
 # Native client interface revision 1
 
-**Status: developer-confirmed specification for [#71](https://github.com/jackgeek/climon2/issues/71),
-not a client-library implementation.** The [C ABI](../TERMS.md#c-abi)
+**Status: developer-confirmed specification for [#71](https://github.com/jackgeek/climon2/issues/71).
+Implemented only for the bootstrap and the immutable description
+([#75](https://github.com/jackgeek/climon2/issues/75)).** The shipped
+[client library](../../../GLOSSARY.md#sessions) (`libclimon2_client.dylib` on
+macOS, `libclimon2_client.so` on Linux)
+returns revision 1's description and rejects other revisions as specified
+below. Its requirements are provisional bounded values
+until [#121](https://github.com/jackgeek/climon2/issues/121) records qualified
+ones, and every [function-table](../TERMS.md#function-table) call reports
+`CM1_UNSUPPORTED_OPERATION` until it is implemented. Everything else on this
+page is not implemented. The [C ABI](../TERMS.md#c-abi)
 [header](client-v1.h) is authoritative for declarations, numeric tags and field
 order. This page owns their semantics. The [examples](examples.c) compile but
 do not link to a shipped library. [Declaration checks](check.py) are not runtime

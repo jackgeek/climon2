@@ -17,7 +17,7 @@ mod terminal;
 
 pub use cell::{AnsiColor, Cell, Color, Cursor, CursorShape, Rendition, Underline, Width};
 pub use input::{Mouse, MouseButton};
-pub use isolation::{Isolation, bin_path, copy_executable, process_command};
+pub use isolation::{Isolation, bin_path, copy_executable, output_within, process_command};
 pub use shell::controlled_bash;
 pub use signals::HostSignal;
 pub use terminal::{InputTerminal, Modes, Options, Terminal};

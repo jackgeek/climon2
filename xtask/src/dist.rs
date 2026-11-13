@@ -60,6 +60,7 @@ fn build_payload(root: &Path) -> io::Result<BuiltPayload> {
         };
         package_binary(&platform, &build, binary, &destination)?;
     }
+    package_library(&platform, &build, &payload.join(version), version)?;
     for file in ["LICENSE", "README.md"] {
         fs::copy(root.join(file), payload.join(file))?;
     }
@@ -149,8 +150,22 @@ fn package_binary(
     unhooked(destination)
 }
 
+/// The client library is packaged like an executable, then checked as the
+/// library of exactly this `version`.
+fn package_library(
+    platform: &Platform,
+    build: &Path,
+    folder: &Path,
+    version: &str,
+) -> io::Result<()> {
+    let name = climon2_core::layout::client_library_name();
+    let destination = folder.join(&name);
+    package_binary(platform, build, &name, &destination)?;
+    crate::library::verify(&destination, version)
+}
+
 /// Release builds never enable `test-hooks`, so no shipped binary carries the marker.
-fn unhooked(path: &Path) -> io::Result<()> {
+pub(crate) fn unhooked(path: &Path) -> io::Result<()> {
     if release::has_marker(&fs::read(path)?) {
         return Err(io::Error::other(format!(
             "{} contains test hooks",
@@ -160,7 +175,7 @@ fn unhooked(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn verify_linux_binary(path: &Path) -> io::Result<()> {
+pub(crate) fn verify_linux_binary(path: &Path) -> io::Result<()> {
     let bytes = fs::read(path)?;
     // ELF64, little-endian, current ELF version, AMD64 e_machine.
     if !bytes.starts_with(b"\x7fELF\x02\x01\x01") || bytes.get(18..20) != Some(&[62, 0]) {
@@ -225,13 +240,17 @@ fn validate_tag(tag: &str, expected: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn verify_macos_binary(path: &Path) -> io::Result<()> {
-    quality::run(
+pub(crate) fn verify_macos_binary(path: &Path) -> io::Result<()> {
+    quality::output_within(
         Command::new("codesign")
             .args(["--verify", "--strict"])
             .arg(path),
+        quality::TOOL_TIMEOUT,
     )?;
-    let archs = quality::output(Command::new("lipo").arg("-archs").arg(path))?;
+    let archs = quality::output_within(
+        Command::new("lipo").arg("-archs").arg(path),
+        quality::TOOL_TIMEOUT,
+    )?;
     let archs = String::from_utf8(archs.stdout).map_err(io::Error::other)?;
     if archs.split_whitespace().collect::<BTreeSet<_>>() != BTreeSet::from(["arm64", "x86_64"]) {
         return Err(io::Error::other(format!(
