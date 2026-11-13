@@ -823,3 +823,75 @@ fn the_alternate_screen_shows_no_history_until_it_is_left() {
         assert_eq!(screen(&view), cells_of[1500..]);
     }
 }
+
+/// A model of `cols` x `rows` keeping `history_rows`, fed lines `row0`
+/// onwards one at a time until `scrolled` have scrolled off the top of a full
+/// screen, and every line's cells. One short line at a time never admits a
+/// history chunk ahead of the rows to come.
+fn scrolled_line_by_line(
+    cols: u16,
+    rows: u16,
+    history_rows: usize,
+    scrolled: usize,
+) -> (Model, Vec<Vec<Cell<'static>>>) {
+    let total = scrolled + usize::from(rows);
+    let mut model = Model::new(geometry(cols, rows), limits(ROOMY, history_rows)).unwrap();
+    for number in 0..total {
+        let end = if number + 1 < total { "\r\n" } else { "" };
+        model.feed(format!("row{number}{end}").as_bytes()).unwrap();
+    }
+    (model, lines(0..total, usize::from(cols)).1)
+}
+
+/// TRM-05, LIM-03 (crate cases): output that exactly fills the history
+/// chunks admitted for it discards nothing. On an 80x24 screen, SU 24
+/// (`CSI 24 S`) over 976 history rows, ED 2 (`CSI 2 J`) over as many, which
+/// Alacritty keeps by scrolling the screen's rows into history, and 64 line
+/// feeds at the bottom over 936 rows each bring the history to exactly its
+/// first 1000-row chunk: every row is kept and none was discarded, and the
+/// next row joins a complete history.
+#[test]
+fn output_filling_the_admitted_history_exactly_discards_nothing() {
+    for (scrolled, output) in [
+        (976, "\x1b[24S".to_owned()),
+        (976, "\x1b[2J".to_owned()),
+        (936, "\n".repeat(64)),
+    ] {
+        let (mut model, cells_of) = scrolled_line_by_line(80, 24, 10_000, scrolled);
+        let mut expected = cells_of.clone();
+        expected.resize(1000, row("", 80));
+
+        model.feed(output.as_bytes()).unwrap();
+        let history = normal_history(&model.view());
+        assert_eq!(cells(history.rows), expected, "{output:?}");
+        assert!(!history.truncated, "{output:?}");
+
+        model.feed(b"\r\n").unwrap();
+        let history = normal_history(&model.view());
+        assert_eq!(history.rows.len(), 1001, "{output:?}");
+        assert!(!history.truncated, "{output:?}");
+    }
+}
+
+/// TRM-05, LIM-03 (crate cases): a history full at its row limit. A model
+/// keeping 1000 rows that SU 24 fills exactly has discarded nothing, and
+/// switching to the alternate screen and back pushes nothing. Full, though,
+/// it loses its oldest row to every row pushed without the engine reporting
+/// it, so once further output may have pushed one the history reports
+/// truncation, even if none was (the owner's decision on #83, 2026-11-13).
+#[test]
+fn a_history_full_at_its_limit_reports_truncation_once_output_could_push_a_row_out() {
+    let (mut model, cells_of) = scrolled_line_by_line(80, 24, 1000, 976);
+    let complete = |model: &Model| {
+        let history = normal_history(&model.view());
+        assert_eq!(cells(history.rows), cells_of);
+        !history.truncated
+    };
+
+    model.feed(b"\x1b[24S").unwrap();
+    assert!(complete(&model));
+    model.feed(b"\x1b[?1049h\x1b[?1049l").unwrap();
+    assert!(complete(&model));
+    model.feed(b"x").unwrap();
+    assert!(!complete(&model));
+}

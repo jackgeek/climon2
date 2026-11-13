@@ -60,16 +60,20 @@ impl History {
         }
     }
 
-    /// After output left `held` rows, having first cleared the history if
-    /// `cleared`: a cleared history has discarded nothing, and rows beyond
-    /// those shown are discarded. A full history discards its oldest row for
-    /// each row pushed into it without the engine reporting it, so output
-    /// that leaves it full may have discarded rows.
-    fn after(self, held: usize, cleared: bool) -> Self {
-        Self {
-            truncated: (self.truncated && !cleared) || held > self.shown || held == self.rows(),
-            ..self
-        }
+    /// Whether this history is truncated after a token that left `held`
+    /// rows, having first cleared the history if `cleared`: a cleared history
+    /// has discarded nothing, and rows beyond those shown are discarded.
+    /// A full history discards its oldest row for each row pushed into it
+    /// without the engine reporting it, so a token that could push more rows
+    /// than the admitted chunks had room for (`overrun`) and left them full
+    /// may have discarded rows.
+    fn truncated_after(self, held: usize, cleared: bool, overrun: bool) -> bool {
+        (self.truncated && !cleared) || self.lost(held, overrun)
+    }
+
+    /// Rows the engine may have discarded from a history that holds `held`.
+    fn lost(self, held: usize, overrun: bool) -> bool {
+        held > self.shown || (overrun && held == self.rows())
     }
 
     /// The engine's history limit in rows.
@@ -90,14 +94,6 @@ impl History {
         Self {
             chunks,
             peak: self.peak.max(chunks),
-            ..self
-        }
-    }
-
-    /// Truncated if `discarded`.
-    fn discarding(self, discarded: bool) -> Self {
-        Self {
-            truncated: self.truncated || discarded,
             ..self
         }
     }
@@ -256,9 +252,9 @@ impl Bounded {
         let policy = classify(&token);
         let bytes = policy.forwarded(&token);
         self.admit(self.growth(token.kind, bytes, policy.repeats), room)?;
-        self.grow(bytes.len() + policy.repeats, room);
+        let overrun = self.grow(bytes.len() + policy.repeats, room);
         self.core.advance(bytes);
-        self.settle(policy.clear);
+        self.settle(policy.clear, overrun);
         Ok(())
     }
 
@@ -282,13 +278,15 @@ impl Bounded {
     /// them the engine discards its oldest row for each new one. A token
     /// pushes at most a row per byte and per repetition, or a screenful, so
     /// one long repeat or released run of controls can fill several chunks.
-    fn grow(&mut self, reach: usize, room: &mut Room) {
+    /// True when the token could push more rows than the admitted chunks
+    /// then hold, because `history_rows` capped them or the bound refused
+    /// one; the alternate screen pushes none.
+    fn grow(&mut self, reach: usize, room: &mut Room) -> bool {
         let Some(history) = self.core.normal_history() else {
-            return;
+            return false;
         };
-        let wanted = self
-            .history
-            .wanted(history + reach.max(usize::from(self.geometry.rows())));
+        let reached = history + reach.max(usize::from(self.geometry.rows()));
+        let wanted = self.history.wanted(reached);
         let mut grown = self.history;
         while grown.chunks < wanted && room.fit(self.charge_with(grown.next())).is_ok() {
             grown = grown.next();
@@ -297,6 +295,7 @@ impl Bounded {
             self.history = grown;
             self.core.set_history(grown.rows());
         }
+        reached > grown.rows()
     }
 
     /// Discard the oldest history chunk, on either screen: the engine drops
@@ -309,22 +308,23 @@ impl Bounded {
         };
         let (normal, dropped) = self.core.lower_history(history.rows(), held);
         *self.extras.of(Screen::Normal) = normal;
-        self.history = history.discarding(dropped);
+        self.history = history;
+        self.history.truncated |= dropped;
         true
     }
 
     /// After a token clears history the engine keeps its storage rows, cell
     /// data and all, beyond the history it shows; drop them at once, so
-    /// measuring sees every row that holds cell data. Then record what the
-    /// token left in the normal screen's history, while it is the active
-    /// screen.
-    fn settle(&mut self, clear: Clear) {
+    /// measuring sees every row that holds cell data. Then recount whether
+    /// the normal screen's history is truncated, while it is the active
+    /// screen, after a token that may have `overrun` its admitted chunks.
+    fn settle(&mut self, clear: Clear, overrun: bool) {
         let cleared = clear != Clear::Nothing;
         if cleared {
             self.core.truncate();
         }
         if let Some(held) = self.core.normal_history() {
-            self.history = self.history.after(held, cleared);
+            self.history.truncated = self.history.truncated_after(held, cleared, overrun);
         }
     }
 
