@@ -36,6 +36,58 @@ fn linux_process_identity_is_additive_and_rejects_malformed_boot_ids() {
     assert!(read(&record).is_err());
 }
 
+/// #157 / ADR 0005: a Linux `boot_id` is accepted, exactly as written, only
+/// when it is a canonical lowercase hyphenated GUID of any version, the rule
+/// session IDs and wire GUIDs share. Each boundary input (case, length,
+/// hyphen positions, hex digits, whitespace and the other spellings a GUID
+/// parser accepts) has a hand-written verdict that all three must give.
+#[test]
+fn adr0005_linux_boot_ids_accept_exactly_the_canonical_guids_session_ids_accept() {
+    use climon2_core::{SessionId, wire::Guid};
+    let boot_id = |value: &str| {
+        let mut record: serde_json::Value =
+            serde_json::from_slice(include_bytes!("goldens/metadata-linux-v1.json")).unwrap();
+        record["daemon_linux_identity"]["boot_id"] = serde_json::json!(value);
+        SessionMetadata::from_json(Path::new(FILE), &serde_json::to_vec(&record).unwrap())
+            .ok()
+            .and_then(|metadata| metadata.daemon_linux_identity)
+            .map(|identity| identity.boot_id)
+    };
+    let session_id = |value: &str| value.parse::<SessionId>().ok().map(String::from);
+    let wire_guid = |value: &str| value.parse::<Guid>().ok().map(String::from);
+    for (value, canonical) in [
+        ("d56f4c51-46d4-48b3-aeb5-68aa95558389", true),
+        ("00000000-0000-0000-0000-000000000000", true),
+        ("ffffffff-ffff-ffff-ffff-ffffffffffff", true),
+        ("01234567-89ab-cdef-0123-456789abcdef", true),
+        ("d56f4c51-46d4-48b3-aeb5-68aa9555838f", true),
+        ("d56f4c51-46d4-48b3-aeb5-68aa9555838F", false),
+        ("D56F4C51-46D4-48B3-AEB5-68AA95558389", false),
+        ("d56f4c51-46d4-48b3-aeb5-68aa9555838", false),
+        ("d56f4c51-46d4-48b3-aeb5-68aa955583890", false),
+        ("", false),
+        ("d56f4c5-146d4-48b3-aeb5-68aa95558389", false),
+        ("d56f4c51-46d-448b3-aeb5-68aa95558389", false),
+        ("d56f4c51-46d4-48b-3aeb5-68aa95558389", false),
+        ("d56f4c51-46d4-48b3-aeb-568aa95558389", false),
+        ("d56f4c51-46d4-48b3-aeb568aa95558389", false),
+        ("d56f4c51_46d4_48b3_aeb5_68aa95558389", false),
+        ("d56f4c5146d448b3aeb568aa95558389", false),
+        ("d56f4c51-46d4-48b3-aeb5-68aa9555838g", false),
+        ("+56f4c51-46d4-48b3-aeb5-68aa95558389", false),
+        ("d56f4c51-46d4-48b3-aeb5-68aa9555838\u{e9}", false),
+        ("{d56f4c51-46d4-48b3-aeb5-68aa95558389}", false),
+        ("urn:uuid:d56f4c51-46d4-48b3-aeb5-68aa95558389", false),
+        ("d56f4c51-46d4-48b3-aeb5-68aa95558389\n", false),
+        (" d56f4c51-46d4-48b3-aeb5-68aa95558389", false),
+    ] {
+        let accepted = canonical.then(|| value.to_owned());
+        assert_eq!(boot_id(value), accepted, "boot ID {value:?}");
+        assert_eq!(session_id(value), accepted, "session ID {value:?}");
+        assert_eq!(wire_guid(value), accepted, "wire GUID {value:?}");
+    }
+}
+
 #[test]
 fn adr0005_every_checked_in_golden_is_readable_by_the_current_reader() {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/goldens");
