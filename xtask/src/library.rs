@@ -232,7 +232,7 @@ mod tests {
             clang
                 .arg("-o")
                 .arg(&output)
-                .arg(root.join("xtask/tests/fixtures/client-library.c")),
+                .arg(root.join("crates/climon2-fixtures/stand-in/client-library.c")),
             TOOL_TIMEOUT,
         )
         .unwrap();
@@ -267,7 +267,7 @@ mod tests {
                 .args(options)
                 .arg("-o")
                 .arg(&output)
-                .arg(root.join("xtask/tests/fixtures/client-library.c")),
+                .arg(root.join("crates/climon2-fixtures/stand-in/client-library.c")),
             TOOL_TIMEOUT,
         )
         .unwrap();

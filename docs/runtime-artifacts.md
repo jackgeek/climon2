@@ -109,7 +109,7 @@ libraries and has no soname, RPATH or RUNPATH, as the
 release isolation; release checks enforce each rule. Only test tooling loads it
 today, the library host fixture and xtask's release checks; the monitor's and
 client executable's loading remain planned. xtask's release-check tests compile
-the C stand-in `xtask/tests/fixtures/client-library.c` into a test-only library,
+the C stand-in `crates/climon2-fixtures/stand-in/client-library.c` into a test-only library,
 exact or with one defect, and load it through the same release checks as the
 real library; it is never shipped. Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,
