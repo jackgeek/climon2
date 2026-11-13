@@ -820,11 +820,17 @@ mod tests {
         check(Path::new(&root), false, scope).unwrap();
     }
 
+    /// Only an external `cp` ever opens the script for writing. A write
+    /// descriptor held here could be inherited by a concurrent test's fork
+    /// until its exec, and executing the script would then fail with ETXTBSY.
     #[cfg(unix)]
     fn executable(path: &Path, text: &str) {
         use std::os::unix::fs::PermissionsExt;
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, text).unwrap();
+        let staged = path.with_extension("staged");
+        fs::write(&staged, text).unwrap();
+        let copied = Command::new("cp").arg(&staged).arg(path).status().unwrap();
+        assert!(copied.success(), "cp {}: {copied}", path.display());
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
