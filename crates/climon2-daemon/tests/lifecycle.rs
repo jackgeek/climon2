@@ -1544,12 +1544,6 @@ fn a_stalled_reader_is_dropped_after_five_seconds_without_progress() {
 /// have written its output.
 fn script(session: &Session, command: &str) {
     let issued = issue(session, command);
-    acknowledged(session, issued);
-}
-
-/// Waits until the fixture has written the output of its first `issued`
-/// commands.
-fn acknowledged(session: &Session, issued: usize) {
     wait_contents(&session.directory.path().join("acks"), |acks| {
         String::from_utf8_lossy(acks).lines().count() == issued
     });

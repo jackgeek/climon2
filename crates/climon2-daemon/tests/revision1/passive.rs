@@ -20,6 +20,7 @@ use std::{
     net::Shutdown,
     num::NonZeroU32,
     os::unix::net::UnixStream,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -228,25 +229,25 @@ fn a_monitor_without_title_v1_receives_nothing_for_titles() {
 
 /// COM-05 (Contract, Initial metadata case) and CTL-03 (Contract, title
 /// case): titles set many times in one write reach a monitor as every change,
-/// in order. A monitor opening during that burst reports a title from it (or
-/// unset) atomically, then exactly the later changes, with no gap or repeat.
+/// in order. A monitor opening inside a burst, after a first monitor has
+/// seen its first write's last title and before its second write, reports
+/// that title atomically, then exactly the second write's changes, with no
+/// gap or repeat.
 #[test]
 fn a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata() {
     let session = Session::start("script");
     detached(&session);
     let (mut early, title) = monitor(&session, &["title-v1"]);
     assert_eq!(title, Available::Available(None));
-    let issued = crate::issue(&session, "titles 1 300");
-    let (mut late, title) = monitor(&session, &["title-v1"]);
-    crate::acknowledged(&session, issued);
-    for number in 1..=300 {
+    crate::script(&session, "titles 1 150");
+    for number in 1..=150 {
         assert_eq!(title_changed(&mut early), Some(format!("t-{number}")));
     }
-    let Available::Available(title) = title else {
-        panic!("title-v1 was selected");
-    };
-    let next = title.map_or(1, |title| title["t-".len()..].parse::<u32>().unwrap() + 1);
-    for number in next..=300 {
+    let (mut late, title) = monitor(&session, &["title-v1"]);
+    assert_eq!(title, Available::Available(Some("t-150".into())));
+    crate::script(&session, "titles 151 300");
+    for number in 151..=300 {
+        assert_eq!(title_changed(&mut early), Some(format!("t-{number}")));
         assert_eq!(title_changed(&mut late), Some(format!("t-{number}")));
     }
     leave(&mut early, 2);
@@ -782,24 +783,44 @@ fn acquire_is_refused_without_effects_until_it_is_served() {
     end_through_attachment(session);
 }
 
+/// Opens a monitor once the daemon has read `title`, a title that ends a
+/// burst already written, and so has queued every Title changed before it:
+/// the monitor reports that title at once, or an earlier one and then the
+/// rest of the burst, gap-free, up to it.
+fn monitor_after_title(session: &Session, title: &str) -> UnixStream {
+    let (mut stream, reported) = monitor(session, &["title-v1"]);
+    let Available::Available(mut seen) = reported else {
+        panic!("title-v1 was selected");
+    };
+    while seen.as_deref() != Some(title) {
+        seen = title_changed(&mut stream);
+    }
+    stream
+}
+
 /// COM-02 (Contract, connection effects): a connection-fatal failure on a
 /// stream whose peer has stopped reading is reported without waiting for
 /// its backlog. Frames already started still arrive whole, so every record
 /// decodes, then the Fatal error replaces the output not yet started, and
-/// the stream ends. Other connections receive everything.
+/// the stream ends. Other connections receive everything. The failure is
+/// sent as soon as the daemon has queued the whole backlog, without reading
+/// it anywhere first, so the five seconds a stalled reader is allowed only
+/// have to cover the daemon's own work; another monitor reads its copy
+/// concurrently, so it never stalls.
 #[test]
 fn a_fatal_error_replaces_a_backlog_without_splitting_a_frame() {
-    // Far more than a socket buffers as separate tiny frames, yet read back
-    // quickly, well inside the five seconds a stalled reader is allowed.
+    // Far more than a socket buffers as separate tiny frames.
     const TITLES: u32 = 2000;
     let session = Session::start("script");
     detached(&session);
     let (mut stalled, _) = monitor(&session, &["title-v1"]);
     let (mut reading, _) = monitor(&session, &["title-v1"]);
+    let reader = thread::spawn(move || {
+        let titles: Vec<_> = (0..TITLES).map(|_| title_changed(&mut reading)).collect();
+        (reading, titles)
+    });
     crate::script(&session, &format!("titles 1 {TITLES}"));
-    for number in 1..=TITLES {
-        assert_eq!(title_changed(&mut reading), Some(format!("t-{number}")));
-    }
+    let mut queued = monitor_after_title(&session, &format!("t-{TITLES}"));
     stalled.write_all(&[0, 0, 0, 0]).unwrap();
     let mut received = 0;
     loop {
@@ -817,6 +838,12 @@ fn a_fatal_error_replaces_a_backlog_without_splitting_a_frame() {
     }
     assert!(received < TITLES, "the backlog was not replaced");
     assert_closed(&mut stalled);
+    let (mut reading, titles) = reader.join().unwrap();
+    let expected: Vec<_> = (1..=TITLES)
+        .map(|number| Some(format!("t-{number}")))
+        .collect();
+    assert_eq!(titles, expected);
     leave(&mut reading, 2);
+    leave(&mut queued, 2);
     end_script(session);
 }
