@@ -10,9 +10,9 @@ Use the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md) alongside each message page.
 
 An encoder and validator for the [framing](../TERMS.md#frame), the shared
-types and all ten request and fourteen server messages of this revision,
-including the binary [Input](request-input.md) and [Display](event-display.md)
-records, now exists in
+types and all ten [request](../TERMS.md#request) and fourteen server
+messages of this revision, including the binary [Input](request-input.md)
+and [Display](event-display.md) records, now exists in
 [`climon2-core`](../../../crates/climon2-core/README.md). Its tests decode
 every [JSON](../TERMS.md#json) and binary example published on the message
 pages and re-encode it to identical [bytes](../TERMS.md#byte). No
