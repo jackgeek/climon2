@@ -24,7 +24,7 @@ the monitor never forwards parser replies or session bytes directly to its host.
   one engine step can push into history; the engine keeps twice that as
   counting headroom beyond `max_history_rows`.
 - `Vt::new(geometry, VtConfig { max_history_rows, default_title })`.
-- `Vt::feed(bytes, now) -> Fed { live, replies, dropped, titles }`: the front filter
+- `Vt::feed(bytes, now) -> Fed { live, replies, dropped, titles, focus_enabled }`: the front filter
   holds partial tokens across reads (4096-byte body cap; oversized tokens are
   dropped and only counted), feeds complete tokens to the engine in steps of
   at most 64 bytes, and applies the live output policy: write `replies` to
@@ -40,7 +40,9 @@ the monitor never forwards parser replies or session bytes directly to its host.
   is unset (the default title shows, including after `ESC c`), and an
   unchanged title is not listed again. The body cap ignores a title sequence
   longer than 4,096 bytes, so with its `2;` the longest OSC 0/2 title is
-  4,094 bytes.
+  4,094 bytes. `focus_enabled` says a token of this feed turned focus
+  reporting (mode 1004) on and it is still on, however the tokens were split
+  across reads.
 - `Vt::application_title()`: the application's current title, `None` while
   unset; the session daemon reports it as inert core metadata.
 - `Vt::sync_pending(now)` / `Vt::tick(now)`: the first-begin synchronized
@@ -49,6 +51,8 @@ the monitor never forwards parser replies or session bytes directly to its host.
   still have an update open.
 - `Vt::resize(geometry)`: equal geometry is a no-op.
 - `Vt::bracketed_paste()`: the application's mode 2004, for paste cleanup.
+- `Vt::focus_reporting()`: the application's mode 1004, for the daemon's
+  revision-1 Focus reports.
 - `Presentation::new(host_cols, host_rows)`: one per attachment, owned by the
   daemon. Every byte string returned for it (`grant`, `produce`, `derive`,
   `present`, `end_sync`, `release`) must be committed; committed Direct live
@@ -152,6 +156,7 @@ monitor's evidence.
 | LIM-03 Contract: the engine sees exactly what the live output policy forwards: text under a stripped hyperlink costs nothing, and a rewritten screen-mode list keeps the alternate screen the engine implements | `the_engine_sees_only_what_a_host_would_receive` |
 | LIM-03 Fault: the reserve covers brief holdings with no history: 4096 held controls released at once (as one token), the largest held bodies, resets, tinted templates | `a_cancelled_sequence_releasing_held_controls_stays_within_the_limit`, `the_reserve_covers_what_is_held_briefly`, `tests/tokenizer.rs`: `controls_held_by_an_abandoned_sequence_are_one_text_token` |
 | CTL-03 (crate case): application title changes are reported by value, in order and one per change; unset, empty and a value stay distinct; an oversized title is ignored | `tests/live.rs`: `application_title_changes_are_reported_in_order_by_value` |
+| FOC-01 (crate case): the application's focus reporting mode (1004) is reported, and each feed says whether it newly enabled the mode, however its tokens were split across reads | `tests/live.rs`: `focus_reporting_reports_the_mode_and_each_feed_that_newly_enabled_it` |
 | TRM-02 (crate case): a C0 control between `ESC` and an introducer never lets a filtered sequence reach the host; each token keeps the kind vte dispatches (#152) | `tests/live.rs`: `a_control_after_esc_reaches_the_host_without_the_filtered_sequence`; `tests/tokenizer.rs`: `vte_dispatches_each_token_as_its_kind` |
 
 ## Limitations
