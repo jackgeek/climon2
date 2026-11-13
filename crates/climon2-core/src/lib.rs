@@ -11,6 +11,7 @@ pub mod keys;
 pub mod layout;
 pub mod metadata;
 mod names;
+pub mod native;
 pub mod protocol;
 pub mod selector;
 pub mod session;

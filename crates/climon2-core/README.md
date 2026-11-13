@@ -153,6 +153,11 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   from the explicit input, never from a target cfg.
   `VersionBinary` enumerates CLI/daemon/client/monitor; `parse_current` validates the
   current file, permitting one LF or CRLF terminator, not arbitrary trimming.
+- `layout::client_library_name` is the client library's file name in every
+  version folder: Cargo's name for `climon2-client`'s cdylib on the target,
+  built from `std::env::consts::{DLL_PREFIX, DLL_SUFFIX}`
+  (`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux), never
+  from a target cfg.
 - `layout::home_hash8` hashes exact canonical-home encoded bytes, not lossy
   text. `RuntimeLayout::{new,directory,socket_path}` supplies naming and a
   caller-selected socket byte limit. The platform supplies the runtime root,
@@ -218,6 +223,13 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
 - `exit::{ExitStatus,LaunchFailure}::code`: neutral platform-exit input,
   preserving raw command u32 codes, checked `128+signal`, and classifications
   for own failure 125, usage 2, launch 127/126 and terminal gone 129.
+- `native`: the `#[repr(C)]` declarations of native client interface revision 1
+  ([`client-v1.h`](../../docs/protocol/monitor-client/client-v1.h)), shared by
+  the client library, the client executable and the monitor without new crate
+  edges. Names map mechanically (`cm1_optional_text` is `OptionalText`,
+  `CM1_SUCCESS` is `SUCCESS`, `final` is `r#final`); `BOOTSTRAP` names the
+  frozen `climon2_client_get_interface` symbol and `Bootstrap` is its type.
+  They are plain data: core never dereferences or validates a native record.
 
 ## Specification tests
 
@@ -250,6 +262,7 @@ Integration tests call only these public boundaries:
 | COM-06 (codec case): normal exit differs from signal; a final status agrees with the command result; Status changed never carries the final state; a partial Kill result or a known final result is never a successful confirmation | `command_results_distinguish_normal_exits_from_signals`, `command_final_status_is_terminal_and_agrees_with_the_result`, `initial_metadata_terminal_status_agrees_with_a_known_result`, `status_episodes_belong_only_to_attention_states`, `responses_pair_each_outcome_with_its_result_and_error` |
 | CTL-03 (codec case): unavailable, unset and empty values stay distinct | `initial_metadata_reports_availability_explicitly`, `title_changes_distinguish_unset_from_empty` |
 | STA-07 (codec case): status records keep exact UTC change times and attention-only episodes | `utc_times_are_exact_calendar_milliseconds`, `status_episodes_belong_only_to_attention_states` |
+| DOC-01 layout case: Rust native declarations equal `client-v1.h` sizes, alignments, field offsets and sizes, tags and result codes (clang checks the host's native target; CI runs x86-64 GNU/Linux and arm64 and x86_64 macOS) | `rust_native_declarations_match_the_published_header`, `a_layout_difference_is_reported_against_the_header` |
 
 `tests/config.rs`, `tests/hello.rs`, `tests/keys.rs`, `tests/selector.rs`,
 `tests/startup_envelope.rs` and `tests/title.rs` specify those modules one rule

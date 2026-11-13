@@ -7,6 +7,7 @@ use std::{
 mod coverage;
 mod dist;
 mod fixtures;
+mod library;
 mod quality;
 mod release;
 
