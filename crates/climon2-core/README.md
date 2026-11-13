@@ -170,11 +170,16 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   canonicalization, UID, ownership/mode checks and socket operations.
 - `cli::CliArgs::parse`: arguments **exclude** argv[0]. Exec retains
   `CommandArgs { command: OsString, args: Vec<OsString> }`, including empty
-  trailing arguments and option-looking tokens. Optional `--` separates exec
-  from a command. Attach and kill take exactly one `selector::Selector`. List
-  permits only `--json`; `monitor`, its alias `mon` and top-level help/version
-  take no arguments.
+  trailing arguments and option-looking tokens, and a `lifetime`: `--headless`
+  as exec's first argument selects `Headless`, otherwise `Ordinary`. An
+  optional `--` then separates exec from a command, so `exec -- --headless`
+  runs a command named `--headless`. Attach and kill take exactly one
+  `selector::Selector`. List permits only `--json`; `monitor`, its alias `mon`
+  and top-level help/version take no arguments.
   `UsageError::exit_code` returns 2; `cli::USAGE` is the usage line.
+- `lifetime::Lifetime`: a session's [lifetime policy](../../GLOSSARY.md#sessions), `Ordinary` or `Headless`
+  (zero clients allowed until command completion or Kill). `name`/`FromStr`
+  spell the daemon's `--lifetime ordinary|headless` startup argument.
 - `selector::Selector`: 1 to 32 hex digits after removing hyphens and folding
   case; anything else is a `UsageError`. `select` picks exactly one candidate by
   unique prefix or full ID; no match or ambiguity (listing every full ID) is a
@@ -268,6 +273,7 @@ Integration tests call only these public boundaries:
 | INP-01 (Contract): the monitor shares the client bindings and their rules, refuses a null escape prefix and accepts a null take-control key | `inp01_the_monitor_needs_an_escape_prefix_but_not_a_take_control_key` |
 | CFG-01 (Docs): the README spells out every client and monitor default and keeps the Escape/Alt warning above `escape_prefix` | `cfg01_the_readme_documents_every_default_and_the_escape_warning` |
 | #29 recovered argv/environment/depth/ordinal rules | `issue29_exec_list_attach_and_kill_parse_exact_arguments_and_reject_usage_errors`, `issue29_help_and_version_flags_take_no_arguments`, `issue29_top_level_ignores_stray_depth_and_sets_session_vars_and_terminal_identity`, `projected_environment_replaces_term_and_colorterm_and_drops_startup_envelope`, `issue29_nested_depth_defaults_malformed_enclosing_to_one_and_replaces_empty_term`, `issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow` |
+| Confirmed headless scenario (#73/#78): `exec --headless [--]`, literal `exec -- --headless` | `exec_headless_selects_the_headless_lifetime_and_double_dash_keeps_it_literal` |
 | Continuity messages and connection choice | `continuity_messages_have_exact_wire_codes_and_json`, `continuity_bodies_are_typed_objects_and_each_code_has_one_direction`, `a_connection_chooses_attach_or_kill_once_and_attachment_requests_need_attach` |
 | #17 / #20 exit mapping | `issue17_failures_remain_distinct_from_command_status_and_signal_mapping` |
 | DOC-01 (Contract case for the daemon wire pages and the hello reply): every published example decodes to its documented values and re-encodes byte-identically, except the hello reply without revision 1, which climon2 no longer encodes and only decodes | `published_request_examples_round_trip_byte_identically`, `published_control_request_examples_round_trip_byte_identically`, `published_focus_examples_round_trip_byte_identically`, `published_response_and_fatal_error_examples_round_trip_byte_identically`, `published_core_metadata_examples_round_trip_byte_identically`, `published_control_and_restoration_examples_round_trip_byte_identically`, `published_binary_examples_round_trip_byte_identically`, `every_revision1_page_example_is_exercised`, `published_hello_reply_examples_decode_and_the_encoded_ones_round_trip` |

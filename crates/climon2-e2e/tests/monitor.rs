@@ -29,7 +29,7 @@ const COLS: u16 = 120;
 const TITLE: &str = "OUTER-TITLE";
 const BEFORE: &[u8] = b"BEFORE-MONITOR\r\n";
 const DONE: &[u8] = b"OUTER-DONE=";
-const USAGE: &str = "climon2: error: usage: c2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon\r\n";
+const USAGE: &str = "climon2: error: usage: c2 exec [--headless] <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon\r\n";
 const NO_TERMINAL: &str = "climon2: error: climon2 monitor needs a terminal\r\n";
 /// Three bracketed pastes with the default prefix: one holding prefix+x, one
 /// after a typed prefix and followed by a typed x, and one holding the prefix

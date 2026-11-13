@@ -6,6 +6,7 @@ later, end it deliberately, or list live sessions:
 ```sh
 c2 exec bash --noprofile --norc
 c2 exec vim
+c2 exec --headless make test
 c2 attach 3f2a9c1e
 c2 kill 3f2a9c1e
 c2 list
@@ -31,19 +32,39 @@ The planned [session status, attention, and activity mechanics](docs/session-sta
 include both daemon state machines and the monitor's ordering/recovery behavior.
 The agreed [monitor acceptance criteria](docs/monitor-acceptance.md) define
 the required real-monitor, packaged-library and measured evidence; only the
-monitor's entry, startup refusals and exits have tests so far.
+monitor's entry, startup refusals and exits, and headless sessions (HDL-01),
+have tests so far.
 
 ## Sessions
 
-`exec` starts the command and attaches to it. There is no start-detached option.
-Future `c2 exec --headless <command> [args...]` is agreed but **not
-implemented**. It will return success only after daemon-confirmed creation,
-without an interactive client. A headless session will survive zero clients
-throughout its lifetime, including after later attachment loss, until command
-completion or explicit Kill. Ordinary leave policy below remains unchanged.
-The [lifecycle specification](docs/monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill)
-requires preserving existing `c2 kill <session>` and automated headless
-termination tests, not adding another kill command.
+`exec` starts the command and attaches to it.
+
+**Headless sessions.** `c2 exec --headless <command> [args...]` starts the
+command in a [headless session](GLOSSARY.md#sessions) without attaching to it.
+It needs no terminal, so scripts and CI can start background work and target it
+later:
+
+```sh
+id=$(c2 exec --headless ./long-build.sh)
+c2 attach "$id"
+```
+
+Like `exec`, it validates the whole configuration first. It returns only once
+the session is running: it then prints the full lowercase session ID and a
+newline on stdout and exits 0. Creation failures keep `exec`'s statuses and
+diagnostics: 127 when the command is not found, 126 when it cannot be executed,
+and 125 for climon2 failures such as invalid configuration. If the ID cannot be
+written to stdout, the session keeps running and the status is still 0;
+`c2 list` shows it. The command's later exit status belongs to the session, not
+to this CLI. The session starts at the size of the terminal on stdin, or 80x24
+without one; after that, the controlling client sets its size as for any
+session. `--` still separates climon2's options from the command:
+`c2 exec -- --headless` runs a command named `--headless`.
+
+A headless session survives with zero clients: from the start, after a
+deliberate detach and after a client is lost unexpectedly. It ends only when its
+command exits or it is killed with `c2 kill`. `c2 list` shows it as
+`detached` whenever no client is attached.
 
 **Detach** with the escape prefix, Ctrl+], then `d`. The session keeps running
 with no idle timeout, and the client exits 0 after printing
@@ -88,12 +109,15 @@ control returns to the most recently controlling client that is still attached.
 - When the last client detaches, the session runs until its command exits or it
   is killed.
 - When the last client leaves any other way (terminal closed, client crashed,
-  connection lost), the session ends at once: its terminal is hung up and
-  remaining jobs are killed after five seconds. There is no reconnection grace.
-  A client also counts as lost if its terminal accepts no output for five
-  seconds, falls more than 16 MiB behind, or does not finish restoring within
-  30 seconds plus one second per 4 MiB restored.
-- A session that no client attaches to within five seconds of starting ends.
+  connection lost), an ordinary session ends at once: its terminal is hung up
+  and remaining jobs are killed after five seconds. There is no reconnection
+  grace. A headless session keeps running instead. A client also counts as lost
+  if its terminal accepts no output for five seconds, falls more than 16 MiB
+  behind, or does not finish restoring within 30 seconds plus one second per
+  4 MiB restored.
+- An ordinary session that no client attaches to within five seconds of starting
+  ends. If its command exits sooner, the exit is kept for that first client
+  until then. A headless session has no such window.
 - When the command exits, every attached client exits with its status.
 
 **Kill** one session with `c2 kill <session>` (same selector rules), whether
@@ -114,9 +138,10 @@ turns off mouse, focus, bracketed-paste, application cursor-key and keypad
 modes, shows the cursor in its default style, and resets the rendition. Terminal
 settings (termios) are restored exactly.
 
-Exit statuses: 0 for a confirmed detach or kill; the command's own status when
-it finishes while the client is attached; 2 for usage errors; 125 for climon2
-failures; 128 + signal when the client is terminated by a signal; 129 when the
+Exit statuses: 0 for a confirmed detach or kill, or a created headless session;
+the command's own status when it finishes while the client is attached; 2 for
+usage errors; 125 for climon2 failures; 126 and 127 when `exec` cannot start the
+command; 128 + signal when the client is terminated by a signal; 129 when the
 client's terminal goes away.
 
 ## Configuration
@@ -339,7 +364,8 @@ never raw session-sequence passthrough.
 `c2 list` shows live sessions, newest first, with the columns SESSION,
 CREATED, VERSION, STATE, CLIENTS, COMMAND and ARGS. STATE is `starting`,
 `attached`, `detached`, `terminating`, or `unknown` for a session that does not
-report it. CLIENTS counts attached clients, or shows `-` when unknown. A
+report it. A headless session is never `starting`: it is `detached` whenever no
+client is attached. CLIENTS counts attached clients, or shows `-` when unknown. A
 monitor watching a session without attaching to it (a passive monitor
 connection) is not an attachment: it never counts in CLIENTS or changes STATE.
 
