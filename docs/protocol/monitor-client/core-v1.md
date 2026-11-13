@@ -380,7 +380,10 @@ Asynchronous daemon errors preserve the
 with daemon origin; framing/transport failure uses transport origin.
 Native execution errors additionally use `stale_generation`, `cancelled`,
 `release_mismatch`, `invalid_configuration`, `unsupported_limit`, `timeout`,
-`delivery_stalled`, `worker_panic`, `cleanup_failed`, `internal_error`.
+`delivery_stalled`, `worker_panic`, `cleanup_failed`, `internal_error`, and,
+with library origin, `invalid_state`, `resource_limit`, `io_error`,
+`unsupported_revision` and `unsupported_capability`
+([decided on #93](https://github.com/jackgeek/climon2/issues/93)).
 Malformed core responses/events are `invalid_record` with explicit failure,
 not success-shaped defaults. Unknown error strings stay explicit non-success;
 text is not a retry classification. Stable origin/code and known partial effects
