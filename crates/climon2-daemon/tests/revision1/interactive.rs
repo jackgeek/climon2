@@ -1212,7 +1212,7 @@ fn takeover_hand_back_and_leave_policy_match_the_private_protocol() {
 #[test]
 fn ready_needs_the_complete_current_restoration() {
     let mut session = Session::start("script");
-    crate::script(&session, "colors 4000");
+    crate::script_within(&session, "colors 4000", Duration::from_secs(60));
     let mut stream = peer(&session);
     request(
         &mut stream,
