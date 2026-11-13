@@ -200,7 +200,7 @@ Integration tests call only these public boundaries:
 | COM-06 (codec case): normal exit differs from signal; a final status agrees with the command result; Status changed never carries the final state; a partial Kill result or a known final result is never a successful confirmation | `command_results_distinguish_normal_exits_from_signals`, `command_final_status_is_terminal_and_agrees_with_the_result`, `initial_metadata_terminal_status_agrees_with_a_known_result`, `status_episodes_belong_only_to_attention_states`, `responses_pair_each_outcome_with_its_result_and_error` |
 | CTL-03 (codec case): unavailable, unset and empty values stay distinct | `initial_metadata_reports_availability_explicitly`, `title_changes_distinguish_unset_from_empty` |
 | STA-07 (codec case): status records keep exact UTC change times and attention-only episodes | `utc_times_are_exact_calendar_milliseconds`, `status_episodes_belong_only_to_attention_states` |
-| DOC-01 layout case: Rust native declarations equal `client-v1.h` sizes, alignments, field offsets and sizes, tags and result codes (macOS only; clang checks the host architecture, CI runs arm64 and x86_64) | `rust_native_declarations_match_the_published_header`, `a_layout_difference_is_reported_against_the_header` |
+| DOC-01 layout case: Rust native declarations equal `client-v1.h` sizes, alignments, field offsets and sizes, tags and result codes (clang checks the host's native target; CI runs x86-64 GNU/Linux and arm64 and x86_64 macOS) | `rust_native_declarations_match_the_published_header`, `a_layout_difference_is_reported_against_the_header` |
 
 `tests/config.rs`, `tests/hello.rs`, `tests/keys.rs`, `tests/selector.rs`,
 `tests/startup_envelope.rs` and `tests/title.rs` specify those modules one rule

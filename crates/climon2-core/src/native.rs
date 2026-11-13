@@ -6,7 +6,8 @@
 //! [`Bytes`], `CM1_SUCCESS` is [`SUCCESS`], and C field names are kept (`final`
 //! is spelled `r#final`). The client library, the client executable and the
 //! monitor share these declarations without depending on each other. A layout
-//! test compares them with the header on both supported macOS architectures.
+//! test compares them with the header on every declared native target: x86-64
+//! GNU/Linux and both macOS architectures.
 //!
 //! These are plain data declarations: nothing here dereferences a pointer or
 //! validates a record.

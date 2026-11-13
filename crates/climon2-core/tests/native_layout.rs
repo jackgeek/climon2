@@ -1,21 +1,31 @@
 //! DOC-01 layout case: the Rust `climon2_core::native` declarations match the
-//! published revision-1 header on this host's macOS architecture.
+//! published revision-1 header on this host's native target.
 //!
 //! The header is the oracle. The test turns every Rust size, alignment, field
 //! offset, field size and constant into a C11 static assertion and lets clang
-//! check them against `client-v1.h` for this host's target. CI runs it on both
-//! arm64 and x86_64 macOS runners. Name sets are compared in both directions so
-//! that a declaration missing from either side fails too.
-#![cfg(target_os = "macos")]
+//! check them against `client-v1.h` for this host's target. CI runs it on the
+//! three declared native targets: x86-64 GNU/Linux and arm64 and x86_64 macOS.
+//! Name sets are compared in both directions so that a declaration missing
+//! from either side fails too.
+#![cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
 
 use climon2_core::native::*;
 use std::{
     collections::BTreeSet,
-    io::Write,
+    env::consts::{ARCH, OS},
+    io::{Read, Write},
     mem::{align_of, offset_of, size_of},
     path::PathBuf,
-    process::{Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
+
+/// Bounds a clang run, which takes well under a second unloaded.
+const CLANG_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn header_directory() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/protocol/monitor-client")
@@ -533,11 +543,13 @@ fn assertions() -> Assertions {
     checks
 }
 
+/// The clang target of this host: one of revision 1's declared native targets.
 fn host_target() -> &'static str {
-    match std::env::consts::ARCH {
-        "aarch64" => "arm64-apple-macos11",
-        "x86_64" => "x86_64-apple-macos11",
-        other => panic!("revision 1 supports only macOS arm64 and x86_64, not {other}"),
+    match (OS, ARCH) {
+        ("macos", "aarch64") => "arm64-apple-macos11",
+        ("macos", "x86_64") => "x86_64-apple-macos11",
+        ("linux", "x86_64") => "x86_64-linux-gnu",
+        other => panic!("revision 1 declares no native target for {other:?}"),
     }
 }
 
@@ -549,20 +561,42 @@ fn compile(source: &str) -> Result<(), String> {
         .arg(header_directory())
         .args(["-x", "c", "-"])
         .stdin(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .expect("run clang");
-    clang
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(format!("#include \"client-v1.h\"\n#include <stddef.h>\n{source}").as_bytes())
-        .unwrap();
-    let output = clang.wait_with_output().unwrap();
-    if output.status.success() {
+    let mut input = clang.stdin.take().unwrap();
+    let source = format!("#include \"client-v1.h\"\n#include <stddef.h>\n{source}");
+    let writer = thread::spawn(move || input.write_all(source.as_bytes()));
+    let mut errors = clang.stderr.take().unwrap();
+    let reader = thread::spawn(move || {
+        let mut diagnostics = String::new();
+        errors.read_to_string(&mut diagnostics).map(|_| diagnostics)
+    });
+    let status = wait_within(&mut clang, CLANG_TIMEOUT);
+    let written = writer.join().unwrap();
+    let diagnostics = reader.join().unwrap().unwrap();
+    if status.success() {
+        written.unwrap();
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).into_owned())
+        Err(diagnostics)
+    }
+}
+
+/// Waits for `child` until `timeout`; then kills and reaps it and fails.
+fn wait_within(child: &mut Child, timeout: Duration) -> ExitStatus {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("clang did not finish within {timeout:?}");
+        }
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -598,7 +632,8 @@ fn header_constants(header: &str) -> BTreeSet<String> {
 }
 
 /// DOC-01 layout case: sizes, alignments, field offsets and sizes, numeric tags
-/// and result codes of every Rust declaration equal the header's on this host.
+/// and result codes of every Rust declaration equal the header's on this host's
+/// native target (x86-64 GNU/Linux, arm64 or x86_64 macOS).
 #[test]
 fn rust_native_declarations_match_the_published_header() {
     let checks = assertions();
