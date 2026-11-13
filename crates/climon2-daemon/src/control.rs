@@ -451,7 +451,10 @@ mod tests {
 
     /// Attaches each connection in turn at 80x24 and lets it confirm readiness.
     fn session(conns: &[ConnectionId]) -> Control {
-        let mut control = ordinary(host());
+        with_attachments(ordinary(host()), conns)
+    }
+
+    fn with_attachments(mut control: Control, conns: &[ConnectionId]) -> Control {
         for conn in conns {
             control.attach(*conn, host());
             let period = granted(control.apply_pending());
@@ -719,6 +722,41 @@ mod tests {
             [DiscardPendingInput { conn: A }, ClosePaste, BeginShutdown]
         );
         assert_eq!(control.snapshot(), state(Terminating, 0, false));
+    }
+
+    /// HDL-01 (pure decision; developer decision of 2026-11-08): a headless
+    /// session is `detached` from startup, and its initial deadline ends nothing.
+    #[test]
+    fn a_new_headless_session_is_detached_and_outlives_its_initial_deadline() {
+        let mut control = Control::new(host(), Lifetime::Headless);
+        assert_eq!(control.snapshot(), state(Detached, 0, false));
+        assert_eq!(control.initial_deadline(), NONE);
+        assert_eq!(control.snapshot(), state(Detached, 0, false));
+    }
+
+    /// HDL-01 (pure decision): a headless session stays `detached` after its
+    /// last attachment detaches and after its last attachment is lost; Kill
+    /// still ends it.
+    #[test]
+    fn a_headless_session_survives_the_departure_of_its_last_attachment() {
+        let mut control = with_attachments(Control::new(host(), Lifetime::Headless), &[A]);
+        assert_eq!(
+            control.detach(A),
+            [
+                DiscardPendingInput { conn: A },
+                ClosePaste,
+                Release { conn: A },
+                AcceptDetach { conn: A }
+            ]
+        );
+        assert_eq!(control.snapshot(), state(Detached, 0, false));
+        let mut control = with_attachments(control, &[B]);
+        assert_eq!(
+            control.lost(B),
+            [DiscardPendingInput { conn: B }, ClosePaste]
+        );
+        assert_eq!(control.snapshot(), state(Detached, 0, false));
+        assert_eq!(control.kill(K), [BeginShutdown]);
     }
 
     #[test]
