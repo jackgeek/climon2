@@ -1,7 +1,7 @@
 //! Headless sessions (spec #73, ticket #78) through the installed product on
 //! macOS and GNU/Linux: the confirmed headless-creation scenarios and the
 //! Monitor-layer cases of HDL-01. Each test owns the headless session it
-//! starts, ends it by command completion or `c2 kill`, and finishes with
+//! starts, ends it by command completion or CLI kill, and finishes with
 //! `assert_clean()`; a failing test's `Package` kills what it owns. Every
 //! session command ends itself after two minutes, so even a test killed
 //! before cleaning up cannot leave a headless session running forever.
@@ -50,17 +50,17 @@ fn outlive_the_window() -> String {
     )
 }
 
-/// `c2 <args>` as a script runs it: stdin from /dev/null, stdout and stderr
-/// into pipes, so none of them is a terminal.
-fn scripted(package: &Package, args: &[&str]) -> Output {
-    scripted_to(package, args, Stdio::piped())
+/// `<launcher> <args>` as a script runs it: stdin from /dev/null, stdout and
+/// stderr into pipes, so none of them is a terminal.
+fn scripted(package: &Package, launcher: &str, args: &[&str]) -> Output {
+    scripted_to(package, launcher, args, Stdio::piped())
 }
 
 /// Like [`scripted`], with stdout going to `stdout`. A CLI still running at
 /// the deadline is killed and reaped, and the test fails.
-fn scripted_to(package: &Package, args: &[&str], stdout: Stdio) -> Output {
-    let isolated = package.command("c2");
-    let mut cli = process_command(package.executable_home().join("c2"))
+fn scripted_to(package: &Package, launcher: &str, args: &[&str], stdout: Stdio) -> Output {
+    let isolated = package.command(launcher);
+    let mut cli = process_command(package.executable_home().join(launcher))
         .args(args)
         .env_clear()
         .envs(isolated.iter_full_env_as_str())
@@ -75,7 +75,7 @@ fn scripted_to(package: &Package, args: &[&str], stdout: Stdio) -> Output {
         if Instant::now() >= deadline {
             cli.kill().unwrap();
             cli.wait().unwrap();
-            panic!("c2 {args:?} was still running after {TIMEOUT:?}");
+            panic!("{launcher} {args:?} was still running after {TIMEOUT:?}");
         }
         thread::sleep(Duration::from_millis(10));
     }
@@ -166,10 +166,11 @@ fn detach(client: &mut Terminal, id: &str) {
         .unwrap();
 }
 
-/// `c2 kill` keeps its existing semantics for a headless session: silent,
-/// status 0, confirmed only after the session is gone.
+/// `climon2 kill`, the same launcher as `c2 kill`, keeps its existing
+/// semantics for a headless session: silent, status 0, confirmed only after
+/// the session is gone.
 fn kill_session(package: &Package, id: &str) {
-    let output = scripted(package, &["kill", id]);
+    let output = scripted(package, "climon2", &["kill", id]);
     assert_eq!(
         (
             output.status.code(),
@@ -191,7 +192,7 @@ fn kill_session(package: &Package, id: &str) {
 #[test]
 fn installed_headless_exec_from_a_script_prints_only_the_guid_and_starts_at_80x24() {
     let package = Package::new();
-    let output = scripted(&package, &headless_args(&size_then_hold()));
+    let output = scripted(&package, "c2", &headless_args(&size_then_hold()));
     let id = created(&package, &output);
     assert_eq!(listed_state(&package, &id), detached());
     assert_eq!(wait_file(&package.isolation.home().join("size")), "24 80\n");
@@ -202,17 +203,17 @@ fn installed_headless_exec_from_a_script_prints_only_the_guid_and_starts_at_80x2
 }
 
 /// Confirmed scenario (headless TTY size) and HDL-01 (Monitor layer), Kill case:
-/// as in the README's `id=$(c2 exec --headless …)`, stdin is a terminal and
-/// stdout is not. The session starts at the stdin terminal's size, the GUID
-/// and its newline are the only output, and existing `c2 kill` ends the
-/// headless session.
+/// as in the README's `id=$(c2 exec --headless …)`, here spelled
+/// `climon2 exec --headless`, stdin is a terminal and stdout is not. The
+/// session starts at the stdin terminal's size, the GUID and its newline are
+/// the only output, and existing CLI kill ends the headless session.
 #[test]
 fn installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it() {
     let package = Package::new();
     let mut command = package.command("/bin/bash");
     command.args([
         "-c",
-        r#"c2 exec --headless /bin/bash -c "$1" > "$HOME/id""#,
+        r#"climon2 exec --headless /bin/bash -c "$1" > "$HOME/id""#,
         "headless",
         &size_then_hold(),
     ]);
@@ -268,7 +269,7 @@ fn installed_headless_creation_failures_keep_exec_statuses_and_diagnostics() {
             )
             .unwrap();
         }
-        let output = scripted(&package, &["exec", "--headless", command]);
+        let output = scripted(&package, "c2", &["exec", "--headless", command]);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(status), "{stderr}");
         assert!(output.stdout.is_empty(), "{command}");
@@ -291,6 +292,7 @@ fn installed_headless_exec_that_cannot_print_the_guid_ends_the_session_and_fails
     drop(reader);
     let output = scripted_to(
         &package,
+        "c2",
         &headless_args(&until_file("finish")),
         writer.into(),
     );
@@ -306,13 +308,13 @@ fn installed_headless_exec_that_cannot_print_the_guid_ends_the_session_and_fails
 /// HDL-01 (Monitor layer), zero-client lifetime while attachments come and
 /// go: a headless session survives with zero clients past the five-second
 /// initial attach window, after its only attached client is killed and after
-/// a client deliberately detaches, staying `detached` each time; then `c2 kill`
+/// a client deliberately detaches, staying `detached` each time; then CLI kill
 /// ends it. The window is measured from the first listing, which the daemon
 /// only answers once serving.
 #[test]
 fn installed_headless_session_survives_zero_clients_a_killed_client_and_a_detach() {
     let package = Package::new();
-    let output = scripted(&package, &headless_args(&outlive_the_window()));
+    let output = scripted(&package, "c2", &headless_args(&outlive_the_window()));
     let id = created(&package, &output);
     assert_eq!(listed_state(&package, &id), detached());
     touch(&package, "go");

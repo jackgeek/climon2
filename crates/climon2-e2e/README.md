@@ -158,16 +158,17 @@ client bridge (6.3) scenarios are mapped in those crates' test doc comments.
 
 Monitor-layer evidence through the packaged CLI on macOS and Linux, in
 `tests/headless.rs` unless noted. The Contract-layer cases are mapped in the
-daemon README. Scripted `c2` runs have stdin from `/dev/null` and pipes for
+daemon README. Scripted runs have stdin from `/dev/null` and pipes for
 output, so no terminal is involved; a CLI still running at its deadline is
-killed and reaped and its test fails. Every headless session command ends
-itself after two minutes, so even a test killed before cleaning up cannot
-leave a session running forever.
+killed and reaped and its test fails. Scripted creation uses `c2`; the TTY
+case and every kill use `climon2`, the same installed launcher. Every
+headless session command ends itself after two minutes, so even a test
+killed before cleaning up cannot leave a session running forever.
 
 | Scenario | Named packaged test |
 |---|---|
 | Confirmed scenario: from a script with no terminal, exactly the full lowercase GUID and a newline, status 0 only once the session is listed `detached` with no client, 80x24 start; HDL-01 command completion with zero clients | `installed_headless_exec_from_a_script_prints_only_the_guid_and_starts_at_80x24` |
-| Confirmed scenario: a terminal on stdin sets the initial size, with stdout captured as in `id=$(c2 exec --headless …)`; HDL-01 existing `c2 kill` ends a headless session | `installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it` |
+| Confirmed scenario: a terminal on stdin sets the initial size, with stdout captured as in `id=$(climon2 exec --headless …)`; HDL-01 existing `climon2 kill` ends a headless session | `installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it` |
 | HDL-01 failed creation: 127, 126 and 125 with exec's diagnostics, nothing on stdout, nothing left | `installed_headless_creation_failures_keep_exec_statuses_and_diagnostics` |
 | HDL-01 failed creation: an unwritable stdout ends the session and fails with 125, nothing left | `installed_headless_exec_that_cannot_print_the_guid_ends_the_session_and_fails` |
 | HDL-01 zero clients past the initial attach window, after a killed client and after a deliberate detach, then Kill | `installed_headless_session_survives_zero_clients_a_killed_client_and_a_detach` |
