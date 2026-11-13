@@ -1,5 +1,5 @@
 //! What the monitor draws on its own alternate screen, through Ratatui.
-use crate::{introduction::KeyIntroduction, keys::EXIT};
+use crate::{introduction::KeyIntroduction, keys::EXIT, registry::View, selector::Selector};
 use climon2_core::{keys::ControlKey, protocol::TerminalSize};
 use ratatui::{
     backend::{Backend, CrosstermBackend},
@@ -15,6 +15,17 @@ use std::io::{self, Stdout};
 const TOP_ROW: u16 = 1;
 const NO_SELECTION: &str = "No session selected";
 const EMPTY: &str = "No sessions to show.";
+/// The body once rows exist, while nothing is selected (#107, #108).
+const UNSELECTED: &str = "No session selected.";
+
+/// Everything one frame shows.
+pub(crate) struct Scene<'a> {
+    pub(crate) introduction: &'a KeyIntroduction,
+    pub(crate) rows: &'a [View],
+    pub(crate) selector: &'a Selector,
+    /// Why the latest discovery pass was incomplete, if it was.
+    pub(crate) incomplete: Option<&'a str>,
+}
 
 /// Ratatui's backend writing to the monitor-owned host output. It is never
 /// asked the host's size or cursor, and the cursor stays hidden.
@@ -30,12 +41,8 @@ pub(crate) struct Screen {
 impl Screen {
     /// The empty state names `prefix` in its key hint, unless `hints` is off,
     /// under the key introduction while it is open.
-    pub(crate) fn new(
-        size: TerminalSize,
-        prefix: ControlKey,
-        hints: bool,
-        introduction: &KeyIntroduction,
-    ) -> io::Result<Self> {
+    /// Hides the cursor; nothing is painted until the first [`Self::show`].
+    pub(crate) fn new(size: TerminalSize, prefix: ControlKey, hints: bool) -> io::Result<Self> {
         let exit = char::from(EXIT.key);
         let mut screen = Self {
             backend: CrosstermBackend::new(io::stdout()),
@@ -44,24 +51,19 @@ impl Screen {
             painted: Buffer::default(),
         };
         screen.backend.hide_cursor()?;
-        screen.paint(screen.frame(introduction))?;
         Ok(screen)
     }
 
-    pub(crate) fn resize(
-        &mut self,
-        size: TerminalSize,
-        introduction: &KeyIntroduction,
-    ) -> io::Result<()> {
+    /// The next frame is drawn at `size`.
+    pub(crate) fn resize(&mut self, size: TerminalSize) {
         self.size = size;
-        self.paint(self.frame(introduction))
     }
 
-    /// Shows `introduction` over the empty state; an unchanged screen is not
-    /// painted again.
-    pub(crate) fn show(&mut self, introduction: &KeyIntroduction) -> io::Result<()> {
-        let frame = self.frame(introduction);
-        if frame == self.painted {
+    /// Paints `scene`: always when `force`, otherwise only when its frame
+    /// differs from the one painted.
+    pub(crate) fn show(&mut self, scene: &Scene<'_>, force: bool) -> io::Result<()> {
+        let frame = self.frame(scene);
+        if !force && frame == self.painted {
             return Ok(());
         }
         self.paint(frame)
@@ -83,11 +85,15 @@ impl Screen {
         Ok(())
     }
 
-    /// The permanent top row, and below it the empty state, centred, under
-    /// the key introduction while it is open. With key hints off, the empty
-    /// state names any problem with the saved choice where its hint would be:
-    /// a diagnostic, not a hint.
-    fn frame(&self, introduction: &KeyIntroduction) -> Buffer {
+    /// The permanent top row, and below it the body, centred, under the
+    /// selector and then the key introduction while they are open. The body
+    /// is the empty state until a row exists, then says nothing is selected;
+    /// an incomplete discovery pass is said under it, so a list is never
+    /// presented as complete. With key hints off, the body names any problem
+    /// with the saved choice where its hint would be: a diagnostic, not a
+    /// hint.
+    fn frame(&self, scene: &Scene<'_>) -> Buffer {
+        let introduction = scene.introduction;
         let area = Rect::new(0, 0, self.size.cols, self.size.rows);
         let mut frame = Buffer::empty(area);
         let top = Rect {
@@ -103,11 +109,24 @@ impl Screen {
             .reversed()
             .render(top, &mut frame);
         let note = self.hint.as_deref().or(introduction.problem());
-        let lines: Vec<_> = std::iter::once(EMPTY).chain(note).map(Line::from).collect();
+        let state = if scene.rows.is_empty() {
+            EMPTY
+        } else {
+            UNSELECTED
+        };
+        let incomplete = scene
+            .incomplete
+            .map(|why| format!("Discovery incomplete: {why}"));
+        let lines: Vec<_> = std::iter::once(state)
+            .chain(note)
+            .chain(incomplete.as_deref())
+            .map(Line::from)
+            .collect();
         let height = Constraint::Length(lines.len() as u16);
         Paragraph::new(lines)
             .centered()
             .render(below.centered_vertically(height), &mut frame);
+        scene.selector.render(scene.rows, below, &mut frame);
         introduction.render(below, &mut frame);
         frame
     }

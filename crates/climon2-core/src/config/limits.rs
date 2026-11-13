@@ -339,6 +339,100 @@ struct Groups {
 #[serde(try_from = "Groups")]
 pub struct Limits(Groups);
 
+/// What the monitor's own discovery passes read from `monitor.limits`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiscoveryLimits {
+    /// `scheduling.probes`: the most hello probes in flight.
+    pub probes: u32,
+    pub pass_ms: u32,
+    pub batch_records: u32,
+    pub batch_bytes: u64,
+    pub metadata_file_bytes: u64,
+    pub metadata_depth: u32,
+}
+
+/// The client supervisor's bounded lanes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Lanes {
+    /// `scheduling.loads`: release loads at once.
+    pub loads: u32,
+    /// `scheduling.starts`: client starts at once.
+    pub starts: u32,
+    /// `deadlines.shutdown_ms`: how long clients may take to shut down.
+    pub shutdown_ms: u32,
+}
+
+impl Limits {
+    /// The effective `cm1_limits` of every library instance, each field from
+    /// the setting the native contract names. The monitor reserves no model,
+    /// history or staging capacity yet, so the library's share is the whole
+    /// `memory.client_bytes`.
+    pub fn library(&self) -> crate::native::Limits {
+        let Groups {
+            memory,
+            resources,
+            queues,
+            transfer,
+            payload,
+            deadlines,
+            ..
+        } = self.0;
+        crate::native::Limits {
+            client_bytes: memory.client_bytes,
+            request_bytes: queues.request_bytes,
+            event_bytes: queues.event_bytes,
+            progress_bytes: queues.progress_bytes,
+            drain_payload_bytes: transfer.drain_payload_bytes,
+            request_records: queues.request_records,
+            event_records: queues.event_records,
+            progress_records: queues.progress_records,
+            deliveries: queues.deliveries,
+            operations: queues.operations,
+            chunk_bytes: transfer.chunk_bytes,
+            drain_records: transfer.drain_records,
+            wire_frame_bytes: payload.wire_frame_bytes,
+            metadata_record_bytes: payload.metadata_record_bytes,
+            title_bytes: payload.title_bytes,
+            notification_title_bytes: payload.notification_title_bytes,
+            notification_body_bytes: payload.notification_body_bytes,
+            max_workers: resources.max_workers_per_client,
+            operation_ms: deadlines.operation_ms,
+            kill_ms: deadlines.kill_ms,
+            restoration_stall_ms: deadlines.restoration_stall_ms,
+            restoration_total_ms: deadlines.restoration_total_ms,
+            delivery_stall_ms: deadlines.delivery_stall_ms,
+            leave_ms: deadlines.leave_ms,
+            cleanup_ms: deadlines.cleanup_ms,
+            start_ms: deadlines.start_ms,
+            reserved: 0,
+        }
+    }
+
+    pub fn discovery(&self) -> DiscoveryLimits {
+        let Groups {
+            scheduling,
+            discovery,
+            ..
+        } = self.0;
+        DiscoveryLimits {
+            probes: scheduling.probes,
+            pass_ms: discovery.pass_ms,
+            batch_records: discovery.batch_records,
+            batch_bytes: discovery.batch_bytes,
+            metadata_file_bytes: discovery.metadata_file_bytes,
+            metadata_depth: discovery.metadata_depth,
+        }
+    }
+
+    pub fn lanes(&self) -> Lanes {
+        Lanes {
+            loads: self.0.scheduling.loads,
+            starts: self.0.scheduling.starts,
+            shutdown_ms: self.0.deadlines.shutdown_ms,
+        }
+    }
+}
+
 impl TryFrom<Groups> for Limits {
     type Error = String;
 

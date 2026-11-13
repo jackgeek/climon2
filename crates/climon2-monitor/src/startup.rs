@@ -6,7 +6,7 @@ use crate::{Error, preference::Preference};
 use climon2_core::{
     VersionName,
     config::{ConfigSource, MonitorConfig},
-    layout::{ExecutableLayout, HomeLayout, VersionBinary},
+    layout::{ExecutableHome, ExecutableLayout, HomeLayout, VersionBinary},
 };
 use climon2_platform::{logging::LogFile, runtime, terminal};
 use std::{
@@ -18,6 +18,10 @@ use std::{
 pub(crate) struct Startup {
     pub(crate) log: LogFile,
     pub(crate) version: VersionName,
+    /// The canonical climon2 home, whose sessions the monitor discovers.
+    pub(crate) home: HomeLayout,
+    /// Where each session's exact-release client library is loaded from.
+    pub(crate) executable: ExecutableHome,
     pub(crate) config: MonitorConfig,
     pub(crate) preference: Preference,
 }
@@ -32,16 +36,18 @@ impl Startup {
 
     fn configured(home: &Path, log: LogFile) -> Result<Self, Error> {
         let logged = |error: io::Error| Error::new(error).logged(log.path());
-        let version = installed_version().map_err(logged)?;
+        let installed = installed().map_err(logged)?;
         let home = HomeLayout::resolve(Some(home.as_os_str()), Path::new("/"))
             .map_err(io::Error::other)
             .map_err(logged)?;
         let config = configuration(&home).map_err(logged)?;
         Ok(Self {
             log,
-            version,
-            config,
+            version: installed.version().clone(),
             preference: Preference::read(&home),
+            home,
+            executable: installed.home(),
+            config,
         })
     }
 }
@@ -57,13 +63,11 @@ fn home() -> io::Result<PathBuf> {
 
 /// The version folder this monitor runs from, found exactly as the CLI finds
 /// its own executable home.
-fn installed_version() -> io::Result<VersionName> {
+fn installed() -> io::Result<ExecutableLayout> {
     let executable = std::env::current_exe()?.canonicalize()?;
-    ExecutableLayout::from_binary_path(&executable, VersionBinary::Monitor)
-        .map(|layout| layout.version().clone())
-        .map_err(|error| {
-            io::Error::other(format!("cannot find the climon2 executable home: {error}"))
-        })
+    ExecutableLayout::from_binary_path(&executable, VersionBinary::Monitor).map_err(|error| {
+        io::Error::other(format!("cannot find the climon2 executable home: {error}"))
+    })
 }
 
 /// The one configuration snapshot: the client bindings, whose escape prefix

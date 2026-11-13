@@ -39,6 +39,11 @@ impl KeyIntroduction {
         self.open = true;
     }
 
+    /// Whether it is open, owning typed keys.
+    pub(crate) fn is_open(&self) -> bool {
+        self.open
+    }
+
     /// A typed key, which the key introduction owns while it is open: Enter
     /// continues, and Space reverses the saved choice.
     pub(crate) fn key(&mut self, byte: u8) {

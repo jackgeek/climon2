@@ -956,3 +956,93 @@ fn cfg01_the_readme_documents_every_default_and_the_escape_warning() {
         "// Ctrl+[ is Escape: it delays bare Escape, and in the monitor legacy Alt+s/x/j/? may trigger the shortcuts."
     );
 }
+
+/// Every `cm1_limits` field, in header order.
+fn native_fields(limits: &climon2_core::native::Limits) -> [u64; 27] {
+    [
+        limits.client_bytes,
+        limits.request_bytes,
+        limits.event_bytes,
+        limits.progress_bytes,
+        limits.drain_payload_bytes,
+        limits.request_records.into(),
+        limits.event_records.into(),
+        limits.progress_records.into(),
+        limits.deliveries.into(),
+        limits.operations.into(),
+        limits.chunk_bytes.into(),
+        limits.drain_records.into(),
+        limits.wire_frame_bytes.into(),
+        limits.metadata_record_bytes.into(),
+        limits.title_bytes.into(),
+        limits.notification_title_bytes.into(),
+        limits.notification_body_bytes.into(),
+        limits.max_workers.into(),
+        limits.operation_ms.into(),
+        limits.kill_ms.into(),
+        limits.restoration_stall_ms.into(),
+        limits.restoration_total_ms.into(),
+        limits.delivery_stall_ms.into(),
+        limits.leave_ms.into(),
+        limits.cleanup_ms.into(),
+        limits.start_ms.into(),
+        limits.reserved.into(),
+    ]
+}
+
+/// #106 (client supervisor, shared discovery): the monitor hands each library
+/// instance the effective `monitor.limits` its header fields name (native
+/// contract, "Startup, limits and resources"), its own discovery the
+/// `scheduling.probes` and `discovery` bounds, and its start lanes
+/// `scheduling.loads` and `scheduling.starts`, bounded at exit by
+/// `deadlines.shutdown_ms`. Expected values are the
+/// documented defaults with one setting of each kind changed.
+#[test]
+fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
+    let text = limits(&[
+        ("memory.client_bytes", json!(33_554_432)),
+        ("queues.deliveries", json!(5)),
+        ("transfer.drain_records", json!(17)),
+        ("payload.title_bytes", json!(2048)),
+        ("resources.max_workers_per_client", json!(0)),
+        ("deadlines.leave_ms", json!(4321)),
+        ("scheduling.probes", json!(3)),
+        ("scheduling.loads", json!(4)),
+        ("scheduling.starts", json!(6)),
+        ("deadlines.shutdown_ms", json!(7000)),
+        ("discovery.pass_ms", json!(1500)),
+        ("discovery.batch_records", json!(7)),
+        ("discovery.batch_bytes", json!(65_536)),
+        ("discovery.metadata_file_bytes", json!(4096)),
+        ("discovery.metadata_depth", json!(9)),
+    ])
+    .to_string();
+    let config = monitor(&text).unwrap();
+    let limits = &config.settings().limits;
+    assert_eq!(
+        native_fields(&limits.library()),
+        [
+            33_554_432, 262_144, 1_048_576, 65_536, 65_536, 64, 1024, 32, 5, 16, 65_536, 17,
+            1_048_576, 16_384, 2048, 4096, 8192, 0, 5000, 10_000, 5000, 60_000, 5000, 4321, 10_000,
+            10_000, 0,
+        ]
+    );
+    let discovery = limits.discovery();
+    assert_eq!(
+        (
+            discovery.probes,
+            discovery.pass_ms,
+            discovery.batch_records,
+            discovery.batch_bytes,
+            discovery.metadata_file_bytes,
+            discovery.metadata_depth,
+        ),
+        (3, 1500, 7, 65_536, 4096, 9)
+    );
+    let lanes = limits.lanes();
+    assert_eq!((lanes.loads, lanes.starts, lanes.shutdown_ms), (4, 6, 7000));
+    assert_eq!(
+        config.take_control_key(),
+        Some(ControlKey::from_name("Ctrl+T").unwrap())
+    );
+}

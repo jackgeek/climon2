@@ -1350,3 +1350,130 @@ fn with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction(
     assert_released(&package, &mut terminal, 0);
     package.assert_clean();
 }
+
+/// A headless session running `script` in bash: its full session ID. Each
+/// script holds until `$HOME/<finish>` exists, giving up after two minutes,
+/// so a failed test leaves nothing running for long.
+fn headless(package: &Package, script: &str, finish: &str) -> String {
+    let script = format!(
+        "{script}\nuntil [ -e \"$HOME/{finish}\" ] || [ \"$SECONDS\" -ge 120 ]; do sleep 0.05; done"
+    );
+    let output = support::scripted(
+        package,
+        "c2",
+        &["exec", "--headless", "/bin/bash", "-c", &script],
+    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+/// Ends every headless session `headless` started, once `finish` exists, and
+/// waits until their metadata is gone.
+fn finish_sessions(package: &Package, finish: &str) {
+    fs::write(package.isolation.home().join(finish), b"").unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !package.list().is_empty() {
+        assert!(Instant::now() < deadline, "sessions never ended");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Every `logs/<id>/library-*.log` the monitor's library instances created.
+fn library_logs(package: &Package, id: &str) -> Vec<PathBuf> {
+    let directory = package.isolation.climon2_home().join("logs").join(id);
+    let mut logs: Vec<_> = fs::read_dir(directory)
+        .map(|entries| {
+            entries
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with("library-"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    logs.sort();
+    logs
+}
+
+/// How often the monitor's general log records starting a client for `id`.
+fn client_starts(package: &Package, id: &str) -> usize {
+    monitor_log(package)
+        .lines()
+        .filter(|line| line.contains("client starting") && line.contains(id))
+        .count()
+}
+
+/// Waits until a row of the host screen contains `text`.
+fn shows_row(terminal: &mut Terminal, text: &str) {
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| screen.lines().any(|line| line.contains(text)))
+        .unwrap_or_else(|_| panic!("{text:?} never shown:\n{}", terminal.screen()));
+}
+
+/// DSC-03 (Monitor), CTL-01 (Monitor), COM-01 (Monitor), LIB-01 (Monitor)
+/// and HDL-01 (Monitor rows): a monitor started on an empty home lists
+/// headless sessions as they are created, without being asked. Each gets one
+/// passive client, reused across later passes: one start and one library log
+/// in its own session log directory. Passive clients never attach or take
+/// control. The daemon advertises no `status-v1`, so a connected row shows
+/// Unavailable, never a fabricated status; its title arrives through
+/// `title-v1`, and an untitled session shows its command and arguments. On
+/// Linux the monitor maps exactly the session version's
+/// `libclimon2_client.so`.
+#[test]
+fn sessions_appear_as_they_are_created_each_with_one_passive_client() {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    let titled = headless(&package, "printf '\\033]2;Alpha\\007'", "finish");
+    shows(
+        &mut terminal,
+        &empty_monitor(
+            ROWS,
+            COLS,
+            &["No session selected.", "Press Ctrl+] then x to exit."],
+        ),
+    );
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "║Unavailable Alpha");
+    let untitled = headless(&package, ": untitled", "finish");
+    shows_row(&mut terminal, "║Unavailable /bin/bash -c : untitled");
+    for id in [&titled, &untitled] {
+        assert_eq!(client_starts(&package, id), 1, "{id}");
+        let logs = library_logs(&package, id);
+        assert_eq!(logs.len(), 1, "{logs:?}");
+    }
+    for session in package.list() {
+        assert_eq!(
+            session["state"],
+            serde_json::json!({"lifecycle": "detached", "attachments": 0, "controlled": false}),
+            "{session}"
+        );
+    }
+    if cfg!(target_os = "linux") {
+        let monitor = monitor_process(&package).0;
+        let maps = fs::read_to_string(format!("/proc/{monitor}/maps")).unwrap();
+        let libraries: std::collections::BTreeSet<_> = maps
+            .lines()
+            .filter_map(|line| line.find('/').map(|start| &line[start..]))
+            .filter(|path| path.ends_with("libclimon2_client.so"))
+            .collect();
+        let expected = package
+            .executable_home()
+            .canonicalize()
+            .unwrap()
+            .join(VERSION)
+            .join("libclimon2_client.so");
+        assert_eq!(
+            libraries.into_iter().collect::<Vec<_>>(),
+            [expected.to_str().unwrap()]
+        );
+    }
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
