@@ -1,17 +1,10 @@
 use climon2_core::layout::client_library_name;
 use std::{
-    env, fs, io,
+    env, fs, io, iter,
     path::{Path, PathBuf},
     process::Command,
 };
 
-const BINARIES: &[&str] = &[
-    "climon2-cli",
-    "climon2-daemon",
-    "climon2-client",
-    "climon2-install",
-    "climon2-monitor",
-];
 const MARKER: &[u8] = b"CLIMON2_TEST_HOOKS_ENABLED";
 pub(crate) const PACKAGES: &[(&str, &str)] = &[
     ("climon2-launcher", "climon2"),
@@ -102,13 +95,10 @@ pub fn check(root: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The hooked test builds of every shipped executable and the client library,
-/// where `cargo test --workspace` leaves them.
+/// The hooked test builds of every shipped artifact but the launcher, where
+/// `cargo test --workspace` leaves them.
 fn test_artifacts(siblings: &Path) -> Vec<(String, PathBuf)> {
-    BINARIES
-        .iter()
-        .map(|name| name.to_string())
-        .chain([client_library_name()])
+    hooked_names()
         .map(|name| {
             let path = climon2_install::cargo_output(siblings, &name);
             (name, path)
@@ -116,12 +106,16 @@ fn test_artifacts(siblings: &Path) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
-/// Every artifact a release build ships: the executables and the client library.
+/// Every artifact a release build ships: the launcher, then the hooked rest.
 fn shipped_names() -> impl Iterator<Item = String> {
-    PACKAGES
-        .iter()
-        .map(|(_, name)| name.to_string())
-        .chain([client_library_name()])
+    iter::once("climon2".to_owned()).chain(hooked_names())
+}
+
+/// The shipped artifacts whose test builds carry hooks, which is all but the
+/// dependency-free launcher (ADR 0002): the installer, then the version
+/// folder's files, the executables before the client library.
+fn hooked_names() -> impl Iterator<Item = String> {
+    iter::once("climon2-install".to_owned()).chain(climon2_install::version_files())
 }
 
 pub(crate) fn has_marker(bytes: &[u8]) -> bool {
