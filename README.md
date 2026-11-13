@@ -418,13 +418,14 @@ The choice lives in `<climon2 home>/monitor-preferences.json`, apart from
 `config.jsonc`: `{"version":1,"suppress_key_introduction":true}`. Every
 release reads it, whatever its version, ignoring fields it does not know. The
 monitor writes it only when you change the box, as a new file readable only by
-you (`monitor-preferences.json.<pid>.tmp`) renamed over the old one. If the
-file cannot be read or is malformed, the introduction opens with the reason
-under its unchecked box (with key hints off, the empty state shows the reason
-instead), and the file is left as it is until you change the box. If a save
-fails, the dialog says why under the box, which keeps showing the saved
-choice; with key hints off, the empty state says so too. The general log
-records these problems and each saved choice.
+you (`monitor-preferences.json.<pid>.tmp`) renamed over the old one; before
+that, it removes any such file that a monitor no longer running left behind,
+interrupted before its rename. If the file cannot be read or is malformed, the
+introduction opens with the reason under its unchecked box (with key hints
+off, the empty state shows the reason instead), and the file is left as it is
+until you change the box. If a save fails, the dialog says why under the box,
+which keeps showing the saved choice; with key hints off, the empty state says
+so too. The general log records these problems and each saved choice.
 
 ## Terminal compatibility
 

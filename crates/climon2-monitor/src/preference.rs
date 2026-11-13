@@ -8,8 +8,9 @@ use climon2_core::{
     layout::HomeLayout,
     preferences::{FILE_NAME, MonitorPreferences},
 };
+use climon2_platform::process;
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs::{self, OpenOptions},
     io::{self, Write},
     os::unix::fs::OpenOptionsExt,
@@ -79,12 +80,12 @@ fn saved(path: &Path) -> Result<bool, String> {
 }
 
 /// Writes `preferences` to a private temporary file beside `path`, then
-/// renames it over `path`, so the file is never seen half written. Whatever
-/// an interrupted save left there is removed first, and a failed save removes
+/// renames it over `path`, so the file is never seen half written. What
+/// interrupted saves left there is removed first, and a failed save removes
 /// what it wrote.
 fn save(path: &Path, preferences: MonitorPreferences) -> io::Result<()> {
+    remove_leftovers(path);
     let temporary = temporary(path);
-    let _ = fs::remove_file(&temporary);
     let saved = write_private(&temporary, &preferences.to_json())
         .and_then(|()| fs::rename(&temporary, path));
     if saved.is_err() {
@@ -99,6 +100,39 @@ fn temporary(path: &Path) -> PathBuf {
     let mut name = OsString::from(path);
     name.push(format!(".{}.tmp", std::process::id()));
     PathBuf::from(name)
+}
+
+/// Removes the temporary files that saves interrupted before their rename
+/// left beside `path`: those of processes no longer running, and this
+/// process's own, which only an earlier process with its pid can have left.
+/// Those of running processes may still be saving, so they stay.
+fn remove_leftovers(path: &Path) {
+    let Some(entries) = path.parent().and_then(|home| fs::read_dir(home).ok()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let leftover = temporary_pid(&entry.file_name())
+            .is_some_and(|pid| pid == std::process::id() || ended(pid));
+        if leftover {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The pid in `name`, if it names a temporary file of the preference file.
+fn temporary_pid(name: &OsStr) -> Option<u32> {
+    name.to_str()?
+        .strip_prefix(FILE_NAME)?
+        .strip_prefix('.')?
+        .strip_suffix(".tmp")?
+        .parse()
+        .ok()
+}
+
+/// Whether no process runs as `pid` any more. A check that fails, as one of
+/// another user's process may, is no evidence that it ended.
+fn ended(pid: u32) -> bool {
+    matches!(process::start_time(pid), Ok(None))
 }
 
 /// A new file, readable and writable by its owner alone whatever the umask;

@@ -1030,6 +1030,47 @@ fn dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible() {
     package.assert_clean();
 }
 
+/// HLP-01 (Monitor; derived scenario: a save interrupted before its rename):
+/// before it saves, the monitor removes the temporary preference files that
+/// processes no longer running left in its climon2 home, so a crash before
+/// the rename leaves nothing for good. It keeps those of running processes,
+/// which may still be saving, and any other file. No process ever runs as
+/// 2147483647, the largest pid: Linux keeps pids below 2^22 and macOS below
+/// 100000.
+#[test]
+fn saving_removes_temporary_files_that_ended_processes_left_behind() {
+    let package = Package::new();
+    let home = package.isolation.climon2_home();
+    let ended = home.join(format!("monitor-preferences.json.{}.tmp", i32::MAX));
+    let running = home.join(format!(
+        "monitor-preferences.json.{}.tmp",
+        std::process::id()
+    ));
+    let other = home.join("monitor-preferences.json.saved.tmp");
+    for path in [&ended, &running, &other] {
+        fs::write(path, "left by a save interrupted before its rename\n").unwrap();
+    }
+    let empty = expected_screen(ROWS, COLS, "Ctrl+]");
+    let mut terminal = outer(&package, "climon2 monitor");
+    opened_on(
+        &mut terminal,
+        &overlaid(&empty, &key_introduction("Ctrl+]", false, None)),
+    );
+    terminal.send(b" ").unwrap();
+    shows(
+        &mut terminal,
+        &overlaid(&empty, &key_introduction("Ctrl+]", true, None)),
+    );
+    assert!(!ended.exists());
+    assert!(running.exists() && other.exists());
+    terminal.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    fs::remove_file(running).unwrap();
+    fs::remove_file(other).unwrap();
+    assert_saved(&package, true);
+    package.assert_clean();
+}
+
 /// HLP-01 (Monitor; derived scenario: an unreadable or malformed preference
 /// file): such a file means not suppressed, so the introduction opens with
 /// the reason under its unchecked box, and the general log records it. The

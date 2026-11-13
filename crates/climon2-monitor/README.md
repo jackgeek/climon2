@@ -83,15 +83,20 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   reports are not classified yet: they never exit and the key introduction
   ignores their bytes, but they end a pending prefix. The input router
   classifies them (#109) and routes them to applications (#111).
-- Space saves the reversed choice (`preference.rs`): the new
-  `MonitorPreferences` goes to `monitor-preferences.json.<pid>.tmp` beside the
-  file, created afresh (`create_new`, mode 0600, so private under any umask;
-  a file already under that name, left by an interrupted save of a process
-  with the same pid, is removed first) and synced, then renamed over the file.
-  A save interrupted before its rename leaves its temporary file behind; the
-  preference file itself is always whole. A failed save removes what it wrote and shows `cannot
-  save monitor-preferences.json: <error>` under the box, which keeps the saved
-  choice. Nothing else writes the file.
+- Space saves the reversed choice (`preference.rs`). First it tries to remove
+  the temporary files that saves interrupted before their rename left in the
+  climon2 home: each `monitor-preferences.json.<pid>.tmp` whose pid no process
+  runs as (`climon2_platform::process::start_time` finds none; a failed check
+  keeps the file), and the one with its own pid, which only an earlier process
+  with that pid can have left. Those of running processes stay: they may still
+  be saving. The new `MonitorPreferences` then goes to its own
+  `monitor-preferences.json.<pid>.tmp`, created afresh (`create_new`, mode
+  0600, so private under any umask) and synced, then renamed over the file.
+  The preference file itself is therefore always whole, and a save interrupted
+  before its rename leaves its temporary file only until a later save in the
+  same climon2 home, once its process has ended. A failed save removes what it
+  wrote and shows `cannot save monitor-preferences.json: <error>` under the
+  box, which keeps the saved choice. Nothing else writes the file.
 - A failed wait for host input, other than one a signal interrupts, and the
   end of host input (a hung-up host terminal) end the monitor through the exit
   path below with status 125: `cannot wait for host input: …` or
@@ -147,6 +152,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | HLP-01 (Monitor): at every start with hints on and nothing saved, the introduction lists the actual prefix with x, s and ? and an unchecked box; Enter continues, closing saves nothing, prefix+x exits from it | `the_key_introduction_opens_at_every_start_until_dont_show_again_is_saved` (e2e) |
 | HLP-01 (Monitor): hints off or the choice saved keep it closed; prefix+? opens it regardless, showing the saved choice; prefix+? while open is a no-op; a later version's file with unknown fields is honoured | `the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say` (e2e) |
 | HLP-01 (Monitor): Space saves and reverses the choice per climon2 home, exact version 1 bytes, mode 0600 under umask 000, by rename (a hard link keeps the old bytes), nothing left behind, a file already under the temporary name replaced; restarts and another home | `dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible` (e2e) |
+| HLP-01 (Monitor; derived scenario: a save interrupted before its rename): saving first removes the temporary files of processes no longer running and keeps those of running processes and any other file | `saving_removes_temporary_files_that_ended_processes_left_behind` (e2e) |
 | HLP-01 (Monitor; derived scenario: unreadable or malformed preference file): not suppressed, the reason under the box and in the log, the file never rewritten implicitly | `an_unreadable_or_malformed_preference_file_shows_why_beside_the_introduction` (e2e) |
 | HLP-01 (Monitor, Fault; derived scenario: unreadable or malformed preference file, key hints off): the introduction stays closed and the empty state shows the reason in place of the hint, a diagnostic; prefix+? shows it under the box; a failing save shows its failure in both places; a successful save over the file clears them | `without_key_hints_the_empty_state_shows_problems_with_the_saved_choice` (e2e) |
 | HLP-01 (Fault): a save that cannot create its temporary file or replace the preference file is reported in the key introduction and logged, saves nothing and leaves nothing behind | `a_failing_save_is_reported_in_the_key_introduction_and_saves_nothing` (e2e) |
