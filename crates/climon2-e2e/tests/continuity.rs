@@ -64,6 +64,24 @@ fn prompt(terminal: &mut Terminal) {
     terminal.wait_for_input_ready(TIMEOUT).unwrap();
 }
 
+/// Types `command` until `output` appears, as packaged.rs's `type_until` does. A
+/// client drops keys typed before it confirmed its restoration, and nothing on
+/// the screen says when it has, so `command` must be harmless to repeat.
+fn type_until(terminal: &mut Terminal, command: &str, output: &str) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        terminal.wait_for_input_ready(TIMEOUT).unwrap();
+        terminal.send(command).unwrap();
+        if terminal
+            .wait_for_text(output, Duration::from_secs(1))
+            .is_ok()
+        {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{output:?} never appeared");
+    }
+}
+
 /// Waits for `marker`, then for a prompt printed after it.
 fn prompt_after(terminal: &mut Terminal, marker: &str) {
     terminal
@@ -229,10 +247,17 @@ fn installed_session_after_vim_keeps_outer_shell_input_below_restored_output() {
             quote(&bash)
         ))
         .unwrap();
-    prompt(&mut terminal);
+    // The nested client drops keys typed before it confirms its restoration.
+    terminal.wait_for_text("INNER> ", TIMEOUT).unwrap();
+    type_until(
+        &mut terminal,
+        "printf 'SESSION-%s\\n' HISTORY\n",
+        "SESSION-HISTORY",
+    );
+    prompt_after(&mut terminal, "SESSION-HISTORY");
     terminal
         .send(format!(
-            "printf 'SESSION-%s\\n' HISTORY; /usr/bin/vim -Nu NONE -i NONE -n {}\n",
+            "/usr/bin/vim -Nu NONE -i NONE -n {}\n",
             quote(&path)
         ))
         .unwrap();
