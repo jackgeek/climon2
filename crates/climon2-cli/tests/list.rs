@@ -662,8 +662,7 @@ fn list_args_that_exactly_fit_are_whole_and_one_cell_less_is_truncated() {
 /// failed stale cleanup. Uncertain sessions keep their metadata.
 #[test]
 fn every_probe_diagnostic_is_logged_once_with_its_errno() {
-    use climon2_core::protocol::{Frame, read_frame, write_frame};
-    use climon2_test_term::{Isolation, bin_path, process_command};
+    use climon2_test_term::{Isolation, bin_path, exit_within, hello_peer, process_command};
     use std::os::unix::fs::PermissionsExt;
     let isolation = Isolation::new();
     let home = runtime::canonical_home(&isolation.climon2_home()).unwrap();
@@ -674,13 +673,7 @@ fn every_probe_diagnostic_is_logged_once_with_its_errno() {
         .map(|(suffix, body)| {
             let metadata = metadata(&home, suffix, created);
             save(&home, &metadata);
-            let listener =
-                runtime::bind(std::path::Path::new(metadata.socket_path.as_str())).unwrap();
-            let worker = std::thread::spawn(move || {
-                let (mut socket, _) = listener.accept().unwrap();
-                read_frame(&mut socket).unwrap();
-                write_frame(&mut socket, &Frame::new(1, body.into()).unwrap()).unwrap();
-            });
+            let worker = hello_peer(metadata.socket_path.as_str(), body, 1);
             (metadata, worker)
         })
         .collect();
@@ -762,22 +755,4 @@ fn every_probe_diagnostic_is_logged_once_with_its_errno() {
     fs::remove_file(unreachable.socket_path.as_str()).unwrap();
     files.iter().for_each(|file| fs::remove_file(file).unwrap());
     isolation.assert_clean();
-}
-
-/// The child's exit status, or `None` after killing and reaping a child still running at
-/// the deadline, so a wedged child fails its test instead of hanging it.
-fn exit_within(
-    mut child: std::process::Child,
-    bound: std::time::Duration,
-) -> Option<std::process::ExitStatus> {
-    let deadline = std::time::Instant::now() + bound;
-    while std::time::Instant::now() < deadline {
-        if let Some(status) = child.try_wait().unwrap() {
-            return Some(status);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    child.kill().unwrap();
-    child.wait().unwrap();
-    None
 }

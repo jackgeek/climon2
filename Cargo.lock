@@ -282,6 +282,7 @@ dependencies = [
  "alacritty_terminal",
  "climon2-cli",
  "climon2-client",
+ "climon2-core",
  "climon2-daemon",
  "climon2-install",
  "climon2-monitor",

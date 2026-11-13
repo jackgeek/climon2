@@ -5,6 +5,8 @@
 //! test-owned descriptor. Neither trusts the environment marker alone, or requires
 //! an orphan's parent to survive until the next process-table sample.
 
+mod exit;
+mod hello;
 mod isolation;
 mod ownership;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -12,6 +14,8 @@ pub mod ptrace;
 mod shell;
 mod terminal;
 
+pub use exit::{ChildProcess, exit_within};
+pub use hello::hello_peer;
 pub use isolation::{Isolation, bin_path, copy_executable, process_command};
 pub use shell::controlled_bash;
 pub use terminal::{InputTerminal, Modes, Options, Terminal};

@@ -2,12 +2,11 @@
 //! Contract case, otherwise synthetic metadata and raw-socket hello peers.
 use climon2_core::{
     SessionId,
-    exit::ExitStatus,
     hello::{Lifecycle, SessionState},
     layout::HomeLayout,
     metadata::{LinuxProcessIdentity, SessionMetadata},
     protocol::{
-        ClientMessage, Frame, HANGUP_GRACE, HELLO_TIMEOUT, ServerMessage, TerminalSize, read_frame,
+        ClientMessage, HANGUP_GRACE, HELLO_TIMEOUT, ServerMessage, TerminalSize, read_frame,
         write_frame,
     },
 };
@@ -19,7 +18,7 @@ use climon2_platform::{
     daemon::{self, Readiness},
     process, runtime,
 };
-use climon2_test_term::{Isolation, bin_path};
+use climon2_test_term::{Isolation, bin_path, exit_within, hello_peer};
 use std::{
     fs,
     io::{self, Read},
@@ -28,7 +27,7 @@ use std::{
         net::{UnixDatagram, UnixStream},
     },
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::Command,
     thread,
     time::{Duration, Instant},
 };
@@ -91,24 +90,6 @@ fn save(home: &Path, metadata: &SessionMetadata) -> PathBuf {
     let path = path(home, metadata);
     fs::write(&path, metadata.to_json().unwrap()).unwrap();
     path
-}
-
-/// Answers each of `probes` hello requests with one frame.
-fn peer(
-    metadata: &SessionMetadata,
-    type_code: u8,
-    body: String,
-    probes: usize,
-) -> thread::JoinHandle<()> {
-    let listener = runtime::bind(Path::new(metadata.socket_path.as_str())).unwrap();
-    thread::spawn(move || {
-        for _ in 0..probes {
-            let (mut socket, _) = listener.accept().unwrap();
-            assert_eq!(read_frame(&mut socket).unwrap().body(), b"{\"protocol\":1}");
-            let frame = Frame::new(type_code, body.clone().into_bytes()).unwrap();
-            write_frame(&mut socket, &frame).unwrap();
-        }
-    })
 }
 
 fn hello_body(id: &str) -> String {
@@ -235,7 +216,7 @@ fn kill(daemons: [Daemon; 2]) {
         // The daemon is reaped even when it fails the assertion, so `Drop` must not signal or
         // wait for it again.
         let pid = std::mem::take(&mut daemon.pid);
-        assert!(daemon_exit(pid).is_some());
+        assert!(exit_within(pid, EXIT_BOUND).is_some());
     }
 }
 
@@ -243,47 +224,13 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         if self.pid != 0 {
             unsafe { libc::kill(self.pid as i32, libc::SIGTERM) };
-            daemon_exit(self.pid);
+            exit_within(self.pid, EXIT_BOUND);
         }
     }
 }
 
 /// Generous for any orderly exit under load, a session's five-second hang-up grace included.
 const EXIT_BOUND: Duration = Duration::from_secs(30);
-
-/// Polls `exit` for a child's status until `EXIT_BOUND` passes. `None` means the child is
-/// still running, and its caller kills and reaps it, so a wedged child fails its test rather
-/// than hanging it.
-fn exit_within<T>(mut exit: impl FnMut() -> Option<T>) -> Option<T> {
-    let deadline = Instant::now() + EXIT_BOUND;
-    while Instant::now() < deadline {
-        if let Some(status) = exit() {
-            return Some(status);
-        }
-        thread::sleep(Duration::from_millis(5));
-    }
-    None
-}
-
-/// Reaps a daemon this process started, killing it first if it outlives `EXIT_BOUND`.
-fn daemon_exit(pid: u32) -> Option<ExitStatus> {
-    let status = exit_within(|| process::try_wait(pid).unwrap());
-    if status.is_none() {
-        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-        process::wait(pid).unwrap();
-    }
-    status
-}
-
-/// Reaps a spawned child, killing it first if it outlives `EXIT_BOUND`.
-fn child_exit(mut child: Child) -> Option<std::process::ExitStatus> {
-    let status = exit_within(|| child.try_wait().unwrap());
-    if status.is_none() {
-        child.kill().unwrap();
-        child.wait().unwrap();
-    }
-    status
-}
 
 /// DSC-06 Contract case: a session controlled elsewhere and a nested session, each in its
 /// own independently resolved home, are live in that home's pass only, with their hello
@@ -404,9 +351,13 @@ fn every_outcome_in_three_passes() {
         .map(|metadata| save(&home, metadata))
         .collect();
     let peers = [
-        peer(&live, 1, hello_body(live.session_id.as_str()), 3),
-        peer(&mismatched, 1, hello_body(OUTER), 3),
-        peer(&unanswered, 1, "{".to_owned(), 3),
+        hello_peer(
+            live.socket_path.as_str(),
+            &hello_body(live.session_id.as_str()),
+            3,
+        ),
+        hello_peer(mismatched.socket_path.as_str(), &hello_body(OUTER), 3),
+        hello_peer(unanswered.socket_path.as_str(), "{", 3),
     ];
     // A stream connection to a datagram socket fails, with EPROTOTYPE, on both platforms.
     let _datagram = UnixDatagram::bind(unreachable.socket_path.as_str()).unwrap();
@@ -532,7 +483,7 @@ fn every_outcome_is_structured_and_no_pass_prints() {
         .stderr(fs::File::create(&stderr).unwrap())
         .spawn()
         .unwrap();
-    let status = child_exit(child);
+    let status = exit_within(child, EXIT_BOUND);
     let [stdout, stderr] = [stdout, stderr].map(|path| fs::read_to_string(path).unwrap());
     assert!(
         status.is_some_and(|status| status.success()),
