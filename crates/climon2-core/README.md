@@ -135,6 +135,9 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
 - `metadata::SessionMetadata::{from_json,to_json}`: eleven typed frozen fields.
   `NonZeroU32` expresses format version/depth; future versions are accepted.
   `from_json` validates the `.pty` filename and matching GUID.
+  The optional Linux `daemon_linux_identity` (`LinuxProcessIdentity`) is
+  additive; `from_json` refuses a record whose `boot_id` fails the
+  canonical-GUID rule that `SessionId` and `Guid` share.
   `metadata_session_id` filters candidate filenames.
   `metadata::MetadataPath` accepts absolute Unix, drive-rooted Windows and UNC
   display paths independently of the reader OS.
@@ -242,6 +245,7 @@ Integration tests call only these public boundaries:
 | ADR 0001 / #27 unknown hello fields and version checks | `adr0001_hello_ignores_future_fields_for_probe_and_version_matched_client` |
 | ADR 0005 GUID/SemVer/time validation | `adr0005_guid_and_version_are_validated_without_normalizing_untrusted_paths`, `adr0005_created_at_requires_real_utc_calendar_time_with_exact_milliseconds` |
 | ADR 0005 / #26 frozen fields, future999 and one-way display | `adr0005_append_only_goldens_include_future999_and_unknown_fields`, `adr0005_frozen_fields_reject_missing_wrong_types_invalid_values_and_filename_mismatch`, `adr0005_metadata_requires_a_json_object_not_a_positional_array`, `adr0005_metadata_paths_are_absolute_cross_os_display_strings_not_native_paths`, `adr0005_display_is_lossy_only_and_never_used_as_runtime_argv` |
+| ADR 0005 optional Linux process identity is additive; #157 its `boot_id` accepts exactly the canonical GUIDs that session IDs and wire GUIDs accept (case, length, hyphen positions, hex digits, whitespace and the other GUID spellings) | `linux_process_identity_is_additive_and_rejects_malformed_boot_ids`, `adr0005_linux_boot_ids_accept_exactly_the_canonical_guids_session_ids_accept` |
 | #17/#18/#28 home, layout, hash and frozen invocation | `issue17_home_defaults_only_when_unset_and_never_accepts_empty_or_relative`, `adr0001_version_matched_client_has_exact_frozen_invocation`, `issue18_runtime_hash_is_sha256_of_exact_canonical_home_and_socket_is_bounded` |
 | #74 monitor executable home and the CLI's own-version monitor | `issue74_monitor_resolves_the_same_layout_as_the_cli` |
 | #74 `monitor`/`mon` take no arguments (INP-01 derived refusal) | `issue74_monitor_and_mon_take_no_arguments` |
