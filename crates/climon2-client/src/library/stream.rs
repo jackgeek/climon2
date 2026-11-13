@@ -8,13 +8,13 @@ use super::{
     failure::{Failed, Fault, Retry, require},
     families,
     link::fatal,
-    records::{Answer, Command, Event, Metadata, Response, Title},
+    records::{Answer, Command, Event, Metadata, Outcome, Response, Title},
 };
 use climon2_core::{
     native,
     wire::{
         self, Available, ControlRecord, Counter, Families, Family, Frame, FrameLimit, KnownResult,
-        Mode, Outcome, Requested, ServerMessage, Success,
+        Mode, Requested, ServerMessage, Success,
     },
 };
 
@@ -60,14 +60,6 @@ pub(super) struct Departure {
     fault: Option<Fault>,
 }
 
-/// Each response outcome and the Leave evidence it gives.
-const EVIDENCE: [(u32, u32); 4] = [
-    (native::OK, native::LEAVE_CONFIRMED),
-    (native::REJECTED, native::LEAVE_REJECTED),
-    (native::FAILED, native::LEAVE_FAILED),
-    (native::INDETERMINATE, native::LEAVE_INDETERMINATE),
-];
-
 impl Departure {
     /// No registration remains possible.
     pub(super) const NOT_REQUIRED: Self = Self {
@@ -86,15 +78,17 @@ impl Departure {
     }
 
     /// Only a confirmed departure can have detached an attachment.
-    fn answered(outcome: u32, detached: bool, fault: Option<Fault>) -> Self {
-        let leave = EVIDENCE
-            .into_iter()
-            .find(|(answered, _)| *answered == outcome)
-            .map_or(native::LEAVE_INDETERMINATE, |(_, leave)| leave);
+    fn answered(outcome: &Outcome, detached: bool) -> Self {
+        let leave = match outcome {
+            Outcome::Ok => native::LEAVE_CONFIRMED,
+            Outcome::Rejected(_) => native::LEAVE_REJECTED,
+            Outcome::Failed(_) => native::LEAVE_FAILED,
+            Outcome::Indeterminate(_) => native::LEAVE_INDETERMINATE,
+        };
         Self {
             leave,
             detached: detached && leave == native::LEAVE_CONFIRMED,
-            fault,
+            fault: outcome.fault().cloned(),
         }
     }
 
@@ -291,7 +285,6 @@ impl Stream {
     fn opened(&mut self, id: u64, sent: &Requested, verdict: Verdict) -> Result<Effect, Fault> {
         let Verdict {
             outcome,
-            fault,
             carried,
             retry,
         } = verdict;
@@ -299,12 +292,13 @@ impl Stream {
             None => Answer::None,
             Some(carried) => self.result(carried, sent)?,
         };
-        let refused = fault.clone().map(|fault| Failed::new(fault, retry));
+        let refused = outcome
+            .fault()
+            .map(|fault| Failed::new(fault.clone(), retry));
         let response = Response {
             id,
             outcome,
             answer,
-            fault,
         };
         Ok(Effect::Opened(response, refused.map_or(Ok(()), Err)))
     }
@@ -385,10 +379,7 @@ impl Stream {
 /// A Leave's answer: its response when public, and its evidence.
 fn left(id: Option<u64>, verdict: Verdict) -> Result<Effect, Fault> {
     let Verdict {
-        outcome,
-        fault,
-        carried,
-        ..
+        outcome, carried, ..
     } = verdict;
     let answer = match carried {
         None => Answer::None,
@@ -400,12 +391,11 @@ fn left(id: Option<u64>, verdict: Verdict) -> Result<Effect, Fault> {
         Some(_) => return Err(MISMATCHED),
     };
     let detached = matches!(answer, Answer::Left { detached: true });
-    let departure = Departure::answered(outcome, detached, fault.clone());
+    let departure = Departure::answered(&outcome, detached);
     let response = id.map(|id| Response {
         id,
         outcome,
         answer,
-        fault,
     });
     Ok(Effect::Left(response, departure))
 }
@@ -418,39 +408,38 @@ enum Carried {
     KnownFinal(wire::CommandResult),
 }
 
-/// A response's native outcome, its error, the result it carries and, for
-/// a non-success, the retry its error calls for.
+/// A response's outcome, the result it carries and, for a non-success, the
+/// retry its error calls for.
 struct Verdict {
-    outcome: u32,
-    fault: Option<Fault>,
+    outcome: Outcome,
     carried: Option<Carried>,
     retry: Retry,
 }
 
 impl Verdict {
-    fn from(outcome: Outcome) -> Result<Self, Fault> {
+    fn from(outcome: wire::Outcome) -> Result<Self, Fault> {
         match outcome {
-            Outcome::Ok(success) => Ok(Self {
-                outcome: native::OK,
-                fault: None,
+            wire::Outcome::Ok(success) => Ok(Self {
+                outcome: Outcome::Ok,
                 carried: Some(Carried::Success(success)),
                 retry: Retry::None,
             }),
-            Outcome::Rejected(rejection) => Ok(Self::of(
-                native::REJECTED,
+            wire::Outcome::Rejected(rejection) => Ok(Self::of(
+                Outcome::Rejected,
                 &rejection.error,
                 rejection.known_final.map(Carried::KnownFinal),
             )),
-            Outcome::Failed(failure) => Self::failure(native::FAILED, &failure),
-            Outcome::Indeterminate(failure) => Self::failure(native::INDETERMINATE, &failure),
+            wire::Outcome::Failed(failure) => Self::failure(Outcome::Failed, &failure),
+            wire::Outcome::Indeterminate(failure) => {
+                Self::failure(Outcome::Indeterminate, &failure)
+            }
         }
     }
 
     /// A non-success with the daemon's `error`.
-    fn of(outcome: u32, error: &wire::Error, carried: Option<Carried>) -> Self {
+    fn of(outcome: fn(Fault) -> Outcome, error: &wire::Error, carried: Option<Carried>) -> Self {
         Self {
-            outcome,
-            fault: Some(Fault::daemon(error)),
+            outcome: outcome(Fault::daemon(error)),
             carried,
             retry: Retry::refused(&error.code),
         }
@@ -458,7 +447,7 @@ impl Verdict {
 
     /// A failed or indeterminate outcome keeps a known result of its own
     /// operation; a Kill's partial termination belongs to no request here.
-    fn failure(outcome: u32, failure: &wire::Failure) -> Result<Self, Fault> {
+    fn failure(outcome: fn(Fault) -> Outcome, failure: &wire::Failure) -> Result<Self, Fault> {
         let carried = match failure.known() {
             None => None,
             Some(KnownResult::Operation(success)) => Some(Carried::Success(success.clone())),

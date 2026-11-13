@@ -37,30 +37,57 @@ pub(super) enum Event {
 pub(super) struct Response {
     /// The caller's public request ID.
     pub(super) id: u64,
-    /// `CM1_OK`, `CM1_REJECTED`, `CM1_FAILED` or `CM1_INDETERMINATE`.
-    pub(super) outcome: u32,
+    pub(super) outcome: Outcome,
     pub(super) answer: Answer,
-    /// Every non-success has one; success none.
-    pub(super) fault: Option<Fault>,
+}
+
+/// A response's outcome: success, or a non-success with the error that
+/// explains it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Outcome {
+    Ok,
+    /// The request never executed.
+    Rejected(Fault),
+    Failed(Fault),
+    /// Its effect is unknown.
+    Indeterminate(Fault),
+}
+
+impl Outcome {
+    /// `CM1_OK`, `CM1_REJECTED`, `CM1_FAILED` or `CM1_INDETERMINATE`.
+    fn code(&self) -> u32 {
+        match self {
+            Self::Ok => native::OK,
+            Self::Rejected(_) => native::REJECTED,
+            Self::Failed(_) => native::FAILED,
+            Self::Indeterminate(_) => native::INDETERMINATE,
+        }
+    }
+
+    pub(super) fn fault(&self) -> Option<&Fault> {
+        match self {
+            Self::Ok => None,
+            Self::Rejected(fault) | Self::Failed(fault) | Self::Indeterminate(fault) => Some(fault),
+        }
+    }
 }
 
 impl Response {
     /// A request that never executed.
     pub(super) fn rejected(id: u64, fault: Fault) -> Self {
-        Self::failed(id, native::REJECTED, fault)
+        Self::unanswered(id, Outcome::Rejected(fault))
     }
 
     /// A request whose effect is unknown.
     pub(super) fn uncertain(id: u64, fault: Fault) -> Self {
-        Self::failed(id, native::INDETERMINATE, fault)
+        Self::unanswered(id, Outcome::Indeterminate(fault))
     }
 
-    fn failed(id: u64, outcome: u32, fault: Fault) -> Self {
+    fn unanswered(id: u64, outcome: Outcome) -> Self {
         Self {
             id,
             outcome,
             answer: Answer::None,
-            fault: Some(fault),
         }
     }
 }
@@ -191,7 +218,7 @@ impl Response {
             Answer::KnownFinal(command) => command.bytes(),
             _ => 0,
         };
-        answer + self.fault.as_ref().map_or(0, Fault::bytes)
+        answer + self.outcome.fault().map_or(0, Fault::bytes)
     }
 }
 
@@ -289,8 +316,8 @@ impl Response {
         // them, for which zero (null) is valid.
         let mut response: native::Response = unsafe { mem::zeroed() };
         response.request_id = self.id;
-        response.outcome = self.outcome;
-        response.error = self.fault.as_ref().map_or(NO_ERROR, Fault::error);
+        response.outcome = self.outcome.code();
+        response.error = self.outcome.fault().map_or(NO_ERROR, Fault::error);
         match &self.answer {
             Answer::None => {}
             Answer::Opened {
