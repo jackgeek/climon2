@@ -1,7 +1,7 @@
 //! ADR 0005 frozen, write-once record. File permissions, atomic publication,
 //! liveness and deletion belong to platform/callers, not to this pure parser.
 pub use crate::identity::MetadataPath;
-use crate::{ContractError, SessionId, Timestamp, VersionName};
+use crate::{ContractError, SessionId, Timestamp, VersionName, identity::validate_guid};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::{OsStr, OsString},
@@ -45,12 +45,7 @@ pub struct LinuxProcessIdentity {
 
 impl LinuxProcessIdentity {
     fn validate(&self) -> Result<(), ContractError> {
-        let id = uuid::Uuid::parse_str(&self.boot_id)
-            .map_err(|_| ContractError("invalid Linux boot ID".into()))?;
-        if id.to_string() != self.boot_id {
-            return Err(ContractError("Linux boot ID must be canonical".into()));
-        }
-        Ok(())
+        validate_guid(&self.boot_id).map_err(|_| ContractError("invalid Linux boot ID".into()))
     }
 }
 
