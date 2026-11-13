@@ -4,18 +4,24 @@
 use super::{
     assert_closed, assert_final_then_closed, assert_rejected, counter,
     interactive::{Attached, geometry, ready_attachment, rejected},
-    kill, leave, message, monitor, peer, request, signalled, terminating,
+    kill, leave, message, monitor, open, peer, request, signalled, terminating,
 };
 use crate::Session;
 use climon2_core::{
     hello::Lifecycle,
     protocol::{ClientMessage, ServerMessage as PrivateMessage},
     wire::{
-        Acquire, ActualGeometry, AuthorityResult, GrantReason, Leave, Outcome, Response,
+        Acquire, ActualGeometry, AuthorityResult, GrantReason, Leave, Mode, Outcome, Response,
         RevocationReason, ServerMessage, Success,
     },
 };
-use std::{fs, num::NonZeroU16, os::unix::net::UnixStream};
+use std::{
+    fs,
+    num::NonZeroU16,
+    os::unix::net::UnixStream,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 /// The `lines` fixture's record: each line it read, with its terminal size.
 fn recorded(session: &Session) -> String {
@@ -257,6 +263,65 @@ fn leave_racing_a_promotion_removes_the_registration_or_the_attachment_atomicall
     let (mut leaving, _) = monitor(&session, &[]);
     leave(&mut leaving, 2);
     drop(controller);
+    session.finish();
+}
+
+/// Holds the session's incoming frames through the `CLIMON2_DAEMON_HOLD`
+/// hook at `hold`, runs `queue`, then releases them, so the daemon reads
+/// every frame `queue` wrote in one pass over its connections.
+fn in_one_pass(hold: &Path, queue: impl FnOnce()) {
+    fs::write(hold, b"").unwrap();
+    let held = hold.with_extension("held");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !held.exists() {
+        assert!(Instant::now() < deadline, "the daemon never held its input");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    queue();
+    fs::remove_file(hold).unwrap();
+}
+
+/// CTL-04 (Fault, through the `monitor-overflow` and `CLIMON2_DAEMON_HOLD`
+/// test hooks: a registration lost to its own queue's overflow racing a
+/// promotion). The daemon reads, in one pass, a registration's request
+/// whose Response overflows its output queue, then the final attachment's
+/// Leave. The departing registration is removed before succession, so the
+/// Leave promotes nobody: the registration's stream just ends, the
+/// attachment leaves as an accepted detach, and the session stays
+/// detached rather than ending at the lost registration's departure.
+#[test]
+fn a_registration_lost_to_an_overflow_is_never_promoted() {
+    let mut hold = None;
+    let mut session = Session::configured("lines", |command, home| {
+        command.env("CLIMON2_DAEMON_FAULT", "monitor-overflow");
+        hold = Some(home.join("hold"));
+        command.env("CLIMON2_DAEMON_HOLD", home.join("hold"));
+    });
+    let mut watching = Attached::registered(&session, &[]);
+    let mut controller = ready_attachment(&session, &[]);
+    in_one_pass(&hold.unwrap(), || {
+        request(&mut watching.stream, &open(2, &[], &[], Mode::Monitor));
+        let request_id = controller.next();
+        request(&mut controller.stream, &Leave { request_id });
+    });
+    let left = Success::Left {
+        attachment_detached: true,
+    };
+    assert_eq!(controller.response(), Outcome::Ok(left));
+    assert_closed(&mut controller.stream);
+    assert_closed(&mut watching.stream);
+    assert_eq!(
+        crate::advertised_state(&session),
+        (Lifecycle::Detached, 0, false)
+    );
+
+    let mut last = session.attach();
+    session.wait_marker(&mut last);
+    crate::send(&mut last, ClientMessage::Input(b"end\n".to_vec()));
+    assert_eq!(
+        crate::until_terminal(&mut last).1,
+        PrivateMessage::Exit { code: 0 }
+    );
     session.finish();
 }
 

@@ -156,6 +156,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     // Incoming connections and frames.
 
     fn incoming(&mut self) -> io::Result<()> {
+        #[cfg(feature = "test-hooks")]
+        if crate::startup::held() {
+            return Ok(());
+        }
         self.accept()?;
         for id in self.connection_ids() {
             self.service(id)?;
@@ -924,8 +928,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// Loses a connection from inside output routing; the state machine
-    /// hears of it after this iteration's output.
+    /// hears of it after this iteration's output, but a registration can
+    /// inherit control no more from now on.
     fn mark_lost(&mut self, id: u64) {
+        self.control.unregister(ConnectionId(id));
         self.pending_lost.insert(id);
         self.remove_connection(id);
     }

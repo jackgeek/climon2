@@ -246,8 +246,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// A passive monitor connection became an attachment, by its Acquire
     /// or a promotion: no Open awaits an answer, and its output is
-    /// canonical, at the session geometry. A connection already gone, whose
-    /// loss the control state has yet to hear of, gets nothing.
+    /// canonical, at the session geometry. The control state converts only
+    /// a registration whose connection is still open.
     pub(super) fn convert(&mut self, id: u64) {
         let Some(opened) = self.opened.get_mut(&id) else {
             return;
@@ -718,6 +718,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn respond(&mut self, id: u64, request_id: Counter, outcome: Outcome) {
+        #[cfg(feature = "test-hooks")]
+        if self.overflows(id, &outcome) {
+            return self.mark_lost(id);
+        }
         self.send_wire(
             id,
             &Response {
@@ -726,6 +730,15 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             }
             .to_frame(),
         );
+    }
+
+    /// The `monitor-overflow` fault: a passive monitor connection's
+    /// rejection overflows its output queue.
+    #[cfg(feature = "test-hooks")]
+    fn overflows(&self, id: u64, outcome: &Outcome) -> bool {
+        matches!(outcome, Outcome::Rejected(_))
+            && self.kind(id) == Some(Kind::Monitor)
+            && crate::startup::selected_fault("monitor-overflow")
     }
 
     fn end_stream(&mut self, id: u64) {

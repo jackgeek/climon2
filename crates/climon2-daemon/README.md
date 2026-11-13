@@ -437,6 +437,7 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | CTL-03 (Contract, title case): titles reach monitors by value, in order and whatever the control, a promoted monitor's background control included; unset, empty, a value and unavailable stay distinct; an oversized title is ignored, never truncated | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_monitor_without_title_v1_receives_nothing_for_titles`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata`, `an_oversized_title_is_ignored_never_truncated`, `titles_reach_an_attachment_as_inert_text` |
 | CTL-04 (Contract): a departing controller, by Leave or by loss, hands control back to the most recently controlling remaining attachment first, otherwise the newest registration is promoted (`successor`) at the session's geometry, with no resize or input; the leave policy applies only after succession, so a registered monitor keeps the session alive; the promotion's restoration is canonical at the effective geometry, while an ordinary attachment on an oversized host keeps its Derived restoration | `departures_hand_control_back_first_then_promote_the_newest_registration`, `monitor_mode_restorations_are_canonical_at_the_effective_geometry_whatever_the_host` |
 | CTL-04 (Fault, races): a Leave read after a promotion detaches the promoted attachment (`attachment_detached: true`), and one read first removes the registration, which is then never promoted; a committed Kill overrides succession, and a registration promoted before the Kill ends with the session as an attachment | `leave_racing_a_promotion_removes_the_registration_or_the_attachment_atomically`, `a_committed_kill_overrides_succession`, `a_registration_promoted_before_a_kill_ends_as_an_attachment` |
+| CTL-04 (Fault, `monitor-overflow` and `CLIMON2_DAEMON_HOLD` hooks): a registration lost to its own output queue's overflow, read in the same pass as the final attachment's Leave, is removed before succession and never promoted; the session stays detached | `a_registration_lost_to_an_overflow_is_never_promoted` |
 | CTL-05 (Contract and Fault, stale authority from a raw peer): Input, Resize and Ready under an earlier period or a superseded restoration are `stale_period` or `stale_restoration`; Ready needs the complete current restoration; late authority never re-enables input | `stale_and_superseded_authority_is_rejected_and_never_re_enables_input`, `ready_needs_the_complete_current_restoration` |
 | INP-03 (Contract): bracketed-paste bytes reach the application exactly; an open application paste is closed when admission ends; a focus report never lands inside a paste that earlier Input requests carry | `bracketed_paste_is_exact_and_an_open_paste_is_closed_when_admission_ends`, `focus_reports_follow_the_input_accepted_before_them` |
 | TRM-02 (Contract): the daemon alone answers session queries; titles stay inert text and title-looking output stays text | `session_queries_are_answered_by_the_daemon_alone`, `titles_reach_an_attachment_as_inert_text` |
@@ -460,6 +461,12 @@ session failure: the controller receives its release bytes, then `Error`.
 byte after a 5 ms pause, forcing the partial writes the ordering tests need.
 `CLIMON2_DAEMON_FAULT=end-hangup` makes the end of every hang-up fail, as one
 the daemon cannot confirm: no Command final, and a failed standalone Kill.
+`CLIMON2_DAEMON_FAULT=monitor-overflow` makes every rejection Response to a
+passive monitor connection overflow its output queue, so the connection is
+lost inside the pass that read its request. `CLIMON2_DAEMON_HOLD=<path>` makes
+the session loop read no incoming frame while `<path>` exists, announcing each
+held pass by creating `<path>` with its extension replaced by `.held`; a test
+releases frames it wrote on several connections into one pass.
 These fault
 branches and the extra generic fixture binary are absent from ordinary release
 builds. The ignored libtest function is a subprocess fixture, not a skipped
