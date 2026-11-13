@@ -138,3 +138,9 @@ Ordinary cases share one immutable copied install layout with isolated data
 homes. Cases that remove or change executable permissions get private copies.
 Leak checks await asynchronous daemon cleanup and inspect unique process markers,
 metadata and sockets; fixture cleanup also terminates owned processes on panic.
+Typed input follows [`climon2-e2e`'s rule](../climon2-e2e/README.md): a client
+discards keys typed while it restores, so before input that must reach the session
+`type_until` retypes a harmless line until its echo appears, and the input is then
+sent once. Where typing would only end the command, the command waits instead for
+an acknowledgement file the test creates (the fixture's `FIXTURE_REPORT_RELEASE`);
+the zero-size case's fixture prints the size and exits, so that test types nothing.
