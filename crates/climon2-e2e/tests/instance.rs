@@ -1027,8 +1027,9 @@ fn installed_library_contains_a_panic_at_the_bootstrap_create_or_submit() {
 /// its delivery stays unchanged until released;
 /// destroy and handle release stay busy while that delivery is outstanding;
 /// terminal evidence follows it, failed with `internal_error`, retried
-/// passively unless shutdown had been requested first (the fault at `run`
-/// follows `shutdown`); the instance is still cleaned up and joined.
+/// passively, or not at all when the panic is in `shutdown` or follows it
+/// (the fault at `run` follows `shutdown`); the instance is still cleaned up
+/// and joined.
 #[test]
 fn installed_library_contains_a_panic_in_a_running_instance_and_stops_it() {
     let package = Package::new();
@@ -1080,7 +1081,7 @@ fn installed_library_contains_a_panic_in_a_running_instance_and_stops_it() {
         for delivery in deliveries {
             assert_diagnostic(delivery, 5);
         }
-        let retry = if call == "run" {
+        let retry = if call == "run" || call == "shutdown" {
             RETRY_NONE
         } else {
             RETRY_PASSIVE

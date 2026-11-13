@@ -416,11 +416,15 @@ impl Shared {
         }
     }
 
+    /// Records the intent before anything that can fail, so even a failed
+    /// call ends the stream with no retry.
     pub(super) fn shutdown(&self) -> Result<(), Failure> {
         self.lock().stop.shutdown = true;
         self.changed.notify_all();
-        tracing::debug!("client instance shutdown requested");
-        Ok(())
+        self.guard("shutdown", || {
+            tracing::debug!("client instance shutdown requested");
+            Ok(())
+        })
     }
 
     fn wait_for_stop(&self) {

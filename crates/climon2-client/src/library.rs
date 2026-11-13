@@ -315,7 +315,7 @@ unsafe extern "C" fn shutdown(control: *mut Control) -> Call {
     contained(|| {
         // SAFETY: the caller supplies null or a live handle.
         let handle = unsafe { control.cast::<instance::Control>().as_ref() }.ok_or(NULL)?;
-        handle.shared.guard("shutdown", || handle.shared.shutdown())
+        handle.shared.shutdown()
     })
 }
 
