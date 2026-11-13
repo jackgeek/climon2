@@ -325,8 +325,9 @@ mod tests {
         );
     }
 
-    /// LIB-01 exact release identity: release checks reject a library whose
-    /// description, read through the frozen bootstrap, reports another release.
+    /// #75 packaging (release checks: exact version): release checks reject a
+    /// library whose description, read through the frozen bootstrap, reports
+    /// another release.
     #[test]
     fn release_checks_reject_a_wrong_version() {
         let scratch = scratch();
@@ -369,8 +370,9 @@ mod tests {
         );
     }
 
-    /// LIB-01 (Linux: no cross-binding through loader identity): release
-    /// checks reject a library with a soname, an RPATH or a RUNPATH.
+    /// #75 packaging (Linux amendment; library embedding's release-build
+    /// rules): release checks reject a library with a soname, an RPATH or a
+    /// RUNPATH, through which the loader could bind another release.
     #[cfg(target_os = "linux")]
     #[test]
     fn release_checks_reject_a_soname_rpath_or_runpath() {
@@ -398,9 +400,9 @@ mod tests {
         }
     }
 
-    /// LIB-01 (Linux: no cross-binding through dependencies): release checks
-    /// reject a library that needs a shared library beyond glibc's, such as
-    /// the GCC runtime.
+    /// #75 packaging (Linux amendment; library embedding's release-build
+    /// rules): release checks reject a library that needs a shared library
+    /// beyond glibc's, such as the GCC runtime.
     #[cfg(target_os = "linux")]
     #[test]
     fn release_checks_reject_a_dependency_beyond_glibc() {
