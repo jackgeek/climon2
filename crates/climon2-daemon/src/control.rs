@@ -1907,6 +1907,10 @@ mod tests {
         control.register(M);
         assert_eq!(control.snapshot(), state(Detached, 0, false));
         assert_eq!(control.apply_pending(), NONE);
+        assert_eq!(
+            control.acquire(B),
+            (Err(OperationalCode::NotAttached), Vec::new())
+        );
 
         let (acquired, effects) = control.acquire(M);
         assert_eq!(
