@@ -780,12 +780,20 @@ fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descri
     package.assert_clean();
 }
 
+/// Instance `a`'s log file, at a non-UTF-8 path on Linux. macOS file systems
+/// refuse names that are not UTF-8 (`EILSEQ`), so there it keeps non-ASCII
+/// UTF-8; `a`'s home keeps an invalid byte on both systems.
+#[cfg(target_os = "linux")]
+const A_LOG: &[u8] = b"logs/a-caf\xc3\xa9-\xff.log";
+#[cfg(target_os = "macos")]
+const A_LOG: &[u8] = b"logs/a-caf\xc3\xa9.log";
+
 /// LIB-03 Library and Fault (caller startup memory scrambled and unmapped
 /// after create; native paths copied losslessly; independent homes,
 /// settings, diagnostics and generations; instance-scoped, content-free
-/// logs at a non-UTF-8 log path, filtered by each instance's own grammar;
-/// allocation counts each instance's own copies). Instance `a` ends while
-/// `b` keeps running, then `b` ends.
+/// logs at a non-ASCII log path (not UTF-8 on Linux), filtered by each
+/// instance's own grammar; allocation counts each instance's own copies).
+/// Instance `a` ends while `b` keeps running, then `b` ends.
 #[test]
 fn installed_library_instances_keep_their_own_copies_paths_settings_and_logs() {
     let package = Package::new();
@@ -793,7 +801,7 @@ fn installed_library_instances_keep_their_own_copies_paths_settings_and_logs() {
     let base = root.to_str().unwrap();
     let a_home = [base.as_bytes(), b"/caf\xc3\xa9/\xff"].concat();
     let b_home = format!("{base}/b-home-longer");
-    let a_log = root.join(OsStr::from_bytes(b"logs/a-caf\xc3\xa9-\xff.log"));
+    let a_log = root.join(OsStr::from_bytes(A_LOG));
     let b_log = root.join("logs/b.log");
     let a = json!({
         "generation": 7,
