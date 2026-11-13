@@ -22,7 +22,7 @@ and daemon wire pages assign exact agreed schemas, separately from implementatio
 | Interface | Status | Reference |
 |---|---|---|
 | [Client](../../GLOSSARY.md#sessions) to session daemon: [hello handshake](../../GLOSSARY.md#sessions) | Implemented and frozen | [Request](daemon-client/hello-request.md) and [reply](daemon-client/hello-reply.md). |
-| Client to session daemon: after hello | Current private protocol implemented; separate wire revision 1 agreed, not implemented (an encoder and validator for its framing and all its messages exists, unused) | [Decision boundary](daemon-client/post-hello.md), [complete wire rules](daemon-client/core-v1.md). |
+| Client to session daemon: after hello | Private protocol implemented for attach and kill; wire revision 1 agreed and partly implemented beside it: session daemons serve passive monitor connections, chosen by the first frame after hello | [Decision boundary](daemon-client/post-hello.md), [complete wire rules](daemon-client/core-v1.md). |
 | Monitor to [client library](../../GLOSSARY.md#sessions) | Complete native revision-1 specification agreed, not implemented | [Library embedding](library-embedding.md), [native contract/header/examples](monitor-client/core-v1.md), and [shared communication contract](#shared-in-process-communication-contract). |
 | [Client executable](../../GLOSSARY.md#sessions) to same-release library | Same-release loading agreed, not implemented | [Library embedding](library-embedding.md). |
 | Monitor to [host](../../GLOSSARY.md#sessions) | Program-status advertising and toast bell agreed, not implemented | [Reports and bell](#monitor-to-host-status-and-bell). |
@@ -318,6 +318,10 @@ The planned [title state/change interaction](monitor-client/event-title.md)
 uses daemon core, not a plugin or plugin extension. When supported, it provides
 the authoritative current title and gap-free ordered updates regardless of
 control, menu visibility, or input readiness, without screen mirroring.
+Session daemons already send it over wire revision 1 as
+[Initial metadata](daemon-client/event-initial-metadata.md) and
+[Title changed](daemon-client/event-title-changed.md); no client or monitor
+consumes it yet.
 Cached titles must be marked stale/unavailable when delivery becomes uncertain.
 An empty title restores the command/arguments fallback.
 The permanent top row uses title/fallback as a label only, with
@@ -582,7 +586,7 @@ contracts and remaining open decisions are distinguished below:
 
 | Owner | Agreed contract or unresolved details |
 |---|---|
-| [Daemon wire #67](https://github.com/jackgeek/climon2/issues/67) | Agreed [wire revision 1](daemon-client/core-v1.md), not implemented. No remaining schema decision is delegated back to #67. |
+| [Daemon wire #67](https://github.com/jackgeek/climon2/issues/67) | Agreed [wire revision 1](daemon-client/core-v1.md), partly implemented: passive monitor connections ([#86](https://github.com/jackgeek/climon2/issues/86)). No remaining schema decision is delegated back to #67. |
 | [Terminal integration #63](https://github.com/jackgeek/climon2/issues/63) | Agreed [terminal contract](terminal-integration.md), including canonical monitor geometry and optional core Focus; not implemented. Numeric transfer budgets and native declarations are agreed in #69/#71. |
 | [Lifecycle #61](https://github.com/jackgeek/climon2/issues/61) | Agreed [lifecycle contract](../monitor-lifecycle.md), not implemented: exponential passive recovery, concurrent truthful shutdown, bounded whole-process fail-stop, Delete/removal and headless lifetime. Numerical schedules remain #69; no general native-crash survival guarantee. |
 | [Operational limits #69](https://github.com/jackgeek/climon2/issues/69) | Agreed [numerical specification](../monitor-operational-limits.md). Only its `monitor.limits` configuration is implemented: validated by the monitor and `exec` (except the mandatory model/recent-page check, [#167](https://github.com/jackgeek/climon2/issues/167), and operating-system limits, left to admission, [#120](https://github.com/jackgeek/climon2/issues/120)) and reported by the monitor, not enforced ([#82](https://github.com/jackgeek/climon2/issues/82)). Not implemented: configurable byte/record/object and aggregate budgets, progress/stall deadlines, fair admission, protected recent history, payload/transfer limits and measurement thresholds. |
@@ -717,7 +721,7 @@ shutdown/handle release, notification and measurements are indexed in
 The [post-hello page](daemon-client/post-hello.md) distinguishes current private
 messages from the agreed wire revision.
 
-### Daemon-client: agreed wire revision 1, not implemented
+### Daemon-client: wire revision 1, partly implemented
 
 Every page inherits the [complete shared wire rules](daemon-client/core-v1.md):
 portable framing, strict JSON/binary types, IDs, capabilities, ordering,
@@ -725,6 +729,12 @@ acceptance/errors, bounded delivery and unresolved owners. Hello advertises
 support; first Open/Kill validates before effects without a separate exchange.
 There are ten request types and fourteen server types, including Response.
 Examples are wire bodies, not native declarations or conformance evidence.
+Session daemons implement Open in monitor mode, Leave for
+[passive monitor connections](../../GLOSSARY.md#attachment-and-control), Kill
+validation, Response, Initial metadata (the title), Title changed and Fatal
+error, and reject the other requests without effects until they serve them;
+each page states what is implemented. The other messages are agreed, not
+implemented.
 
 | Code | Message | Direction | Purpose |
 |---|---|---|---|
@@ -774,7 +784,9 @@ Examples are wire bodies, not native declarations or conformance evidence.
   interoperability and final monitor acceptance remain future evidence.
 - [Freeze daemon-client communication contract](https://github.com/jackgeek/climon2/issues/67):
   agreed [revision-1 post-hello wire](daemon-client/core-v1.md), passive
-  succession, metadata, outcomes and validation; no implementation claim.
+  succession, metadata, outcomes and validation; session daemons implement
+  its passive monitor connections ([#86](https://github.com/jackgeek/climon2/issues/86)),
+  and the rest is unimplemented.
 - [Choose the monitor terminal integration contract](https://github.com/jackgeek/climon2/issues/63):
   agreed [terminal/input/geometry/restoration contract](terminal-integration.md),
   optional core Focus and #64/#59 input/config amendments; not implemented.

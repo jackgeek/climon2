@@ -340,7 +340,9 @@ never raw session-sequence passthrough.
 `c2 list` shows live sessions, newest first, with the columns SESSION,
 CREATED, VERSION, STATE, CLIENTS, COMMAND and ARGS. STATE is `starting`,
 `attached`, `detached`, `terminating`, or `unknown` for a session that does not
-report it. CLIENTS counts attached clients, or shows `-` when unknown.
+report it. CLIENTS counts attached clients, or shows `-` when unknown. A
+monitor watching a session without attaching to it (a passive monitor
+connection) is not an attachment: it never counts in CLIENTS or changes STATE.
 
 `c2 list --json` prints an array of session metadata objects. Each has a
 `state` key holding `{"lifecycle": …, "attachments": …, "controlled": …}`, or

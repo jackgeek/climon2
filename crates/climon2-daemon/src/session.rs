@@ -5,17 +5,18 @@ mod command;
 mod delivery;
 mod paste;
 mod pending;
+mod wire;
 mod writes;
 
 use crate::{
     args::Options,
-    connection::Connection,
+    connection::{Connection, Failure, Received},
     control::{ConnectionId, Control, Effect, Lifecycle, Period},
     pty::Pty,
 };
 use climon2_core::{
     exit::CLIMON2_ERROR,
-    hello::{SessionState, advertise},
+    hello::{SessionState, advertise_revision1},
     protocol::{
         ClientMessage, Frame, HANGUP_GRACE, HelloReply, MAX_DATA_FRAME_LENGTH, PROTOCOL_VERSION,
         PTY_DRAIN_CAP, ServerMessage, TerminalSize,
@@ -55,6 +56,8 @@ struct Session<'a, C> {
     cleanup: C,
     connections: BTreeMap<u64, Connection>,
     deliveries: BTreeMap<u64, Delivery>,
+    /// Passive monitor connections: registered, never attachments.
+    monitors: BTreeMap<u64, wire::Monitor>,
     control: Control,
     vt: Vt,
     next_id: u64,
@@ -85,6 +88,7 @@ pub(crate) fn serve(
         cleanup,
         connections: BTreeMap::new(),
         deliveries: BTreeMap::new(),
+        monitors: BTreeMap::new(),
         control: Control::new(options.size),
         vt,
         next_id: Default::default(),
@@ -189,21 +193,36 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
-    fn received(&mut self, id: u64, received: io::Result<Vec<ClientMessage>>) -> io::Result<()> {
-        match received {
-            Ok(messages) => self.messages(id, messages),
-            Err(error) => self.protocol_failure(id, &error),
+    fn received(
+        &mut self,
+        id: u64,
+        (messages, failure): (Vec<Received>, Option<Failure>),
+    ) -> io::Result<()> {
+        self.messages(id, messages)?;
+        match failure {
+            Some(failure) => self.protocol_failure(id, failure),
+            None => Ok(()),
         }
     }
 
-    fn messages(&mut self, id: u64, messages: Vec<ClientMessage>) -> io::Result<()> {
+    fn messages(&mut self, id: u64, messages: Vec<Received>) -> io::Result<()> {
         for message in messages {
             if !self.connections.contains_key(&id) {
                 break;
             }
-            self.message(id, message)?;
+            self.dispatch(id, message)?;
         }
         Ok(())
+    }
+
+    fn dispatch(&mut self, id: u64, received: Received) -> io::Result<()> {
+        match received {
+            Received::Private(message) => self.message(id, message),
+            Received::Request(request) => {
+                self.request(id, request);
+                Ok(())
+            }
+        }
     }
 
     fn message(&mut self, id: u64, message: ClientMessage) -> io::Result<()> {
@@ -236,7 +255,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             climon2_version: self.options.version.clone(),
             protocol: PROTOCOL_VERSION,
         };
-        self.queue_frame(id, advertise(&reply, state)?);
+        self.queue_frame(
+            id,
+            advertise_revision1(&reply, state, &wire::advertisement())?,
+        );
         Ok(())
     }
 
@@ -248,10 +270,9 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.pty_writes.input(id, bytes);
     }
 
-    fn protocol_failure(&mut self, id: u64, error: &io::Error) -> io::Result<()> {
+    fn protocol_failure(&mut self, id: u64, failure: Failure) -> io::Result<()> {
         if let Some(connection) = self.connections.get_mut(&id) {
-            connection.error(&protocol_error(error));
-            connection.close_after_flush();
+            connection.fail(failure);
         }
         self.remove_delivery(id);
         self.react(|control| control.lost(ConnectionId(id)))
@@ -365,6 +386,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let fed = self.vt.feed(bytes, now);
         self.pty_writes.daemon(&fed.replies);
         self.route(fed.live);
+        self.titles(fed.titles);
     }
 
     fn route(&mut self, live: Vec<u8>) {
@@ -819,8 +841,11 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.remove_delivery(id);
     }
 
+    /// Stops all session output to a connection, including a passive
+    /// monitor connection's core metadata.
     fn remove_delivery(&mut self, id: u64) {
         self.deliveries.remove(&id);
+        self.monitors.remove(&id);
         self.pty_writes.discard(id);
         self.pending_grants.remove(&id);
         self.forget_controller(id);
@@ -885,13 +910,6 @@ fn failure_message() -> ServerMessage {
     ServerMessage::Error {
         message: FAILURE_MESSAGE.into(),
     }
-}
-
-fn protocol_error(error: &io::Error) -> String {
-    if error.kind() == io::ErrorKind::InvalidData {
-        return error.to_string();
-    }
-    "invalid session protocol".into()
 }
 
 /// An ending session finishes at its drain deadline, with output still queued for a client

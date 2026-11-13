@@ -1,6 +1,6 @@
 # Focus — `0x39`
 
-**Status: agreed, unimplemented #63 amendment to wire revision 1.**
+**Status: agreed, unimplemented #63 amendment to wire revision 1; rejected until served.**
 The [client](../../../GLOSSARY.md#sessions) reports desired application focus to
 the [session daemon](../../../GLOSSARY.md#sessions), as the current ready
 [controller](../../../GLOSSARY.md#attachment-and-control).
@@ -106,3 +106,13 @@ Ordinary unsupported clients must not send this type to an unadvertising daemon.
 Related: [Input](request-input.md), [Ready](request-ready.md),
 [Set viewing](request-viewing.md), [Acknowledge](request-acknowledge.md), and
 [native Focus semantics](../monitor-client/request-focus.md).
+
+## Implemented behavior
+
+No revision-1 connection is an attachment yet, so until
+[#87](https://github.com/jackgeek/climon2/issues/87) serves Focus the
+[session daemon](../../../GLOSSARY.md#sessions) rejects it as impermissible
+with `invalid_state`, whether it is a connection's first request or arrives on
+a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control).
+No focus sequence reaches the command; the stream goes on and a registration
+stays. This interim rejection comes before the `focus-v1` check shown above.

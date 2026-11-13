@@ -15,6 +15,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Daemon wire revision 1 beside the private protocol, through this harness.
+mod revision1;
+
 const ID: &str = "01234567-89ab-4cde-8fab-0123456789ab";
 
 /// Test-only fixtures live in climon2-fixtures and are built beside this test binary (ADR 0004).
@@ -1540,6 +1543,15 @@ fn a_stalled_reader_is_dropped_after_five_seconds_without_progress() {
 /// Appends one command for [`follow_script`] and waits for the fixture to
 /// have written its output.
 fn script(session: &Session, command: &str) {
+    let issued = issue(session, command);
+    wait_contents(&session.directory.path().join("acks"), |acks| {
+        String::from_utf8_lossy(acks).lines().count() == issued
+    });
+}
+
+/// Appends one command for [`follow_script`] without waiting for it, and
+/// returns how many commands the script now holds.
+fn issue(session: &Session, command: &str) -> usize {
     let path = session.directory.path().join("script");
     let mut commands = fs::read_to_string(&path).unwrap_or_default();
     commands.push_str(command);
@@ -1547,10 +1559,7 @@ fn script(session: &Session, command: &str) {
     let staged = path.with_extension("tmp");
     fs::write(&staged, &commands).unwrap();
     fs::rename(staged, path).unwrap();
-    let issued = commands.lines().count();
-    wait_contents(&session.directory.path().join("acks"), |acks| {
-        String::from_utf8_lossy(acks).lines().count() == issued
-    });
+    commands.lines().count()
 }
 
 /// Takes over with fresh 91x37 attachments, leaving each restoration
@@ -2527,7 +2536,10 @@ fn record_lines() -> ! {
 
 /// Prints what the test appends to `script`, one command per line, and
 /// acknowledges each in `acks`: `rows A B` prints numbered rows, `same N`
-/// prints `N` identical rows and `clear` erases the scrollback.
+/// prints `N` identical rows and `clear` erases the scrollback. Title commands
+/// set the window title: `title TEXT`, `title-empty`, `title-bytes N` (N
+/// UTF-8 bytes, `é` repeated) and `titles A B` (`t-A` through `t-B` in one
+/// write); `reset` is `ESC c`, and `exit` ends the fixture with status 0.
 fn follow_script() -> ! {
     print!("fixture-ready\r\n");
     io::stdout().flush().unwrap();
@@ -2551,6 +2563,20 @@ fn follow_script() -> ! {
                 }
                 ["clear"] => write!(out, "\x1b[3J").unwrap(),
                 ["sync"] => write!(out, "\x1b[?2026h").unwrap(),
+                ["exit"] => std::process::exit(0),
+                ["reset"] => write!(out, "\x1bc").unwrap(),
+                ["title-empty"] => write!(out, "\x1b]2;\x07").unwrap(),
+                ["title-bytes", bytes] => {
+                    let bytes: usize = bytes.parse().unwrap();
+                    let title = "é".repeat(bytes / 2) + &"x".repeat(bytes % 2);
+                    write!(out, "\x1b]2;{title}\x07").unwrap();
+                }
+                ["titles", first, last] => {
+                    for title in first.parse::<u32>().unwrap()..=last.parse().unwrap() {
+                        write!(out, "\x1b]2;t-{title}\x07").unwrap();
+                    }
+                }
+                ["title", ..] => write!(out, "\x1b]2;{}\x07", &command["title ".len()..]).unwrap(),
                 _ => panic!("unknown script command {command:?}"),
             }
             out.flush().unwrap();
@@ -2718,7 +2744,7 @@ fn fixture_child() {
     if mode == "reply-record" {
         record_input("recorded", Some("\x1b[c"));
     }
-    if mode.starts_with("retain-") {
+    if mode.starts_with("retain-") || mode == "script" {
         follow_script();
     }
     print!("fixture-ready");
