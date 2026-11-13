@@ -442,3 +442,42 @@ fn installed_library_instance_stalled_by_its_daemon_never_stops_another() {
     session.end();
     package.assert_clean();
 }
+
+/// COM-01 Library (core and monitor support are implicit: an Open naming no
+/// family, as the native contract's minimal example does, still registers
+/// passively, and the daemon selects none) and COM-02 Library (an empty
+/// selection is null and zero, as every empty native list is): the
+/// Response's selection is a null list of zero tokens, the Initial metadata
+/// reports the title unavailable, and shutdown leaves, confirmed.
+#[test]
+fn installed_library_opens_naming_no_family_and_selects_none() {
+    let package = Package::new();
+    let root = root(&package);
+    let session = Session::start(&package, &root);
+    let minimal = json!({ "tag": "open", "request_id": 1, "open": { "mode": 1 } });
+    let steps = json!([
+        { "do": "create", "startup": session.startup(&package, 3) },
+        { "do": "submit", "request": minimal },
+        { "do": "run" },
+        { "do": "drain", "until": { "tag": INITIAL_METADATA } },
+        { "do": "shutdown" },
+        { "do": "finish" },
+    ]);
+    let report = script(&package, &root, steps);
+    assert_success(step(&report, 1));
+    let records = step(&report, 3)["records"].as_array().unwrap();
+    assert_eq!(records.len(), 2, "{records:#?}");
+    let response = assert_response(&records[0], 3, 1, OK);
+    assert_eq!(response["result_tag"], OPENED, "{response:#}");
+    let none = json!({ "null": true, "count": 0 });
+    assert_eq!(response["result"]["selected"], none, "{response:#}");
+    assert_header(&records[1], INITIAL_METADATA, 3);
+    let title_record = &records[1]["metadata"]["title"];
+    assert_eq!(title_record, &title(UNAVAILABLE, None), "{title_record:#}");
+    let (rest, terminal) = finished(step(&report, 5));
+    assert!(rest.is_empty(), "{rest:#?}");
+    assert_left(terminal, 3);
+    assert_all_released(&report["ledger"]);
+    session.end();
+    package.assert_clean();
+}

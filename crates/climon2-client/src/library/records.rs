@@ -310,16 +310,28 @@ impl Response {
     }
 }
 
+/// A list's native view: null and zero when empty, as every empty native
+/// list is.
+fn listed(list: &[native::Bytes]) -> native::Tokens {
+    if list.is_empty() {
+        return native::Tokens {
+            data: std::ptr::null(),
+            count: 0,
+        };
+    }
+    native::Tokens {
+        data: list.as_ptr(),
+        count: list.len() as u64,
+    }
+}
+
 fn opened(
     connection: [u8; 16],
     selected: &[&'static str],
     tokens: &mut Vec<Box<[native::Bytes]>>,
 ) -> native::Opened {
     let list: Box<[native::Bytes]> = selected.iter().map(|token| bytes(token)).collect();
-    let selected = native::Tokens {
-        data: list.as_ptr(),
-        count: list.len() as u64,
-    };
+    let selected = listed(&list);
     tokens.push(list);
     native::Opened {
         connection_id: native::Guid { bytes: connection },
