@@ -27,7 +27,7 @@ use climon2_core::{
 };
 use std::{
     fs::OpenOptions,
-    mem,
+    io, mem,
     ops::{AddAssign, SubAssign},
     os::unix::fs::OpenOptionsExt,
     panic::{self, AssertUnwindSafe},
@@ -321,8 +321,19 @@ fn log(diagnostics: Diagnostics) -> Result<(Dispatch, u32), Failure> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
-        .map_err(|_| Failure::new(INVALID_ARGUMENT, "log_path cannot be created as a new file"))?;
+        .map_err(log_failure)?;
     Ok((dispatch(CappedWriter::new(file), diagnostics.filter), 1))
+}
+
+/// Why the log file cannot be created: no descriptor left is a resource
+/// limit; anything else is the caller's path.
+fn log_failure(error: io::Error) -> Failure {
+    match error.raw_os_error() {
+        Some(libc::EMFILE | libc::ENFILE) => {
+            Failure::new(RESOURCE_LIMIT, "no descriptor is left for the log file")
+        }
+        _ => Failure::new(INVALID_ARGUMENT, "log_path cannot be created as a new file"),
+    }
 }
 
 /// The record a failure leaves in the stream.

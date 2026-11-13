@@ -705,13 +705,25 @@ fn installed_library_create_rejects_invalid_settings_and_diagnostics_without_han
 /// `CM1_UNSUPPORTED_LIMIT`, never silently raised or lowered: every limit
 /// but `max_workers` must be nonzero, `client_bytes` must cover the
 /// described instance allocation and `max_workers` the described workers,
-/// each exactly at its bound. With no descriptor left, create fails with
-/// `CM1_RESOURCE_LIMIT` and no handles.
+/// each exactly at its bound. With no descriptor left for the notification
+/// descriptor, or for the log file after it, create fails with
+/// `CM1_RESOURCE_LIMIT`, no handles and no log file; one more descriptor is
+/// enough.
 #[test]
 fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors() {
     let package = Package::new();
     let root = root(&package);
     let limits = |fields: Value| startup(json!({ "limits": fields }));
+    let unopened = root.join("logs/unopened.log");
+    let opened = root.join("logs/opened.log");
+    let logging = |log: &Path, free: u64| {
+        json!({
+            "free_descriptors": free,
+            "startup": { "diagnostics": { "log_path": {
+                "present": 1, "value": path(json!(log.to_str().unwrap())),
+            } } },
+        })
+    };
     let mut cases = vec![
         (
             "limits reserved",
@@ -758,10 +770,22 @@ fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descri
             "",
         ),
         (
-            "exhausted descriptors",
-            json!({ "exhausted": true }),
+            "no descriptor left",
+            json!({ "free_descriptors": 0, "startup": {} }),
             RESOURCE_LIMIT,
             "resource_limit",
+        ),
+        (
+            "no descriptor left for the log file",
+            logging(&unopened, NOTIFIER_DESCRIPTORS),
+            RESOURCE_LIMIT,
+            "resource_limit",
+        ),
+        (
+            "one descriptor left for the log file",
+            logging(&opened, NOTIFIER_DESCRIPTORS + 1),
+            SUCCESS,
+            "",
         ),
     ];
     for field in default_limits().as_object().unwrap().keys() {
@@ -776,7 +800,9 @@ fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descri
         }
     }
     let report = creates(&package, &root, &cases);
-    assert_eq!(report["cases"].as_array().unwrap().len(), 7 + 25);
+    assert_eq!(report["cases"].as_array().unwrap().len(), 9 + 25);
+    assert!(!unopened.exists(), "a failed create leaves no log file");
+    assert!(opened.exists());
     package.assert_clean();
 }
 

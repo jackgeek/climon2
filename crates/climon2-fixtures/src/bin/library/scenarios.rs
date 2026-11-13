@@ -256,8 +256,9 @@ pub fn clean_up(api: Api, owner: &Owner, handles: Handles) -> Value {
 
 /// `create`: one create per case, on an owner thread of its own, with the
 /// open descriptors before and after; a successful one is then cleaned up.
-/// A case is startup overrides, or `{"null": "startup" | "output"}`, or
-/// `{"exhausted": true}` to create with no descriptor left.
+/// A case is `{"startup": overrides}`, optionally with `"free_descriptors": N`
+/// to create while only N new descriptors can be opened, or
+/// `{"null": "startup" | "output"}`.
 pub fn creates(setup: &Setup) -> Value {
     let cases = setup.input["cases"].as_array().expect("cases");
     Value::Array(cases.iter().map(|case| create_case(setup, case)).collect())
@@ -269,12 +270,14 @@ fn create_case(setup: &Setup, case: &Value) -> Value {
     let before = probe::open_descriptors();
     let (mut report, handles) = match case.get("null").and_then(Value::as_str) {
         Some(which) => (null_create(setup, &owner, which), None),
-        None if case.get("exhausted").is_some() => {
-            let (arena, startup) = setup.startup(&json!({}));
+        None if case.get("free_descriptors").is_some() => {
+            let free = case["free_descriptors"].as_u64().expect("a count") as usize;
+            let overrides = case.get("startup").cloned().unwrap_or_else(|| json!({}));
+            let (arena, startup) = setup.startup(&overrides);
             let prepared = Prepared(arena, startup);
             owner.call(move || {
                 let prepared = prepared;
-                let created = probe::without_descriptors(|| api.create(prepared.1));
+                let created = probe::with_free_descriptors(free, || api.create(prepared.1));
                 prepared.0.scramble_and_unmap();
                 (
                     json!({ "call": created.call, "output": created.output }),
