@@ -4,7 +4,7 @@ use std::time::Duration;
 /// `attach --metadata <absolute path>`, with no arguments, a relative path, or
 /// any other operation or flag, before reading anything.
 #[test]
-fn missing_metadata_is_a_one_line_failure_without_stdout() {
+fn invocations_outside_the_frozen_contract_are_one_line_usage_failures_without_stdout() {
     let home = tempfile::tempdir().unwrap();
     for arguments in [
         &[][..],

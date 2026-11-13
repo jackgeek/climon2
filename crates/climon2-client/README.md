@@ -203,7 +203,10 @@ builds (`cargo build --release -p climon2-client`) uplift the unhooked library.
 `kill_needs_the_kill_capability_and_never_sends_a_request_without_it`,
 `a_kill_capable_session_without_attach_refuses_attach_mode` and
 `a_signal_while_waiting_for_confirmation_is_the_signal_status`.
-`tests/scaffold.rs` has `missing_metadata_is_a_one_line_failure_without_stdout`.
+`tests/scaffold.rs` covers the frozen invocation `attach --metadata <absolute
+path>`: `invocations_outside_the_frozen_contract_are_one_line_usage_failures_without_stdout`
+(no arguments, a missing or relative path, another flag or operation, or an
+extra argument).
 
 The only fault injection, `CLIMON2_CLIENT_FAULT=panic` (with `test-hooks`
 only), panics after entering raw mode. The client has no attach-hold hook (the
