@@ -393,6 +393,18 @@ fn acquire(
     (Stage::Open(open), effects)
 }
 
+/// With no attachment left, the newest registration becomes one, with a
+/// successor's grant.
+fn promote(open: &mut Open, grants: &mut Grants, registrations: &mut Registrations) -> Vec<Effect> {
+    let successor = match open {
+        Open::Detached => registrations.newest(),
+        _ => None,
+    };
+    successor
+        .map(|conn| convert(open, conn, GrantReason::Successor, grants))
+        .unwrap_or_default()
+}
+
 /// The passive monitor connection `conn`, no longer registered, becomes a
 /// monitor-mode attachment: canonical, at the session geometry, and in
 /// control at once for `reason`.
@@ -428,18 +440,7 @@ fn depart(
     };
     let (remaining, mut effects) = attachments.depart(conn, departure, grants);
     let mut open = remaining.map_or(Open::Detached, Open::Attached);
-    let successor = match open {
-        Open::Detached => registrations.newest(),
-        _ => None,
-    };
-    if let Some(successor) = successor {
-        effects.extend(convert(
-            &mut open,
-            successor,
-            GrantReason::Successor,
-            grants,
-        ));
-    }
+    effects.extend(promote(&mut open, grants, registrations));
     match (open, departure, lifetime) {
         (Open::Detached, Departure::Lost, Lifetime::Ordinary) => {
             let (stage, shutdown) = begin_shutdown(Open::Detached, Vec::new(), false);
