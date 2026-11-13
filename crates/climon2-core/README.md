@@ -73,6 +73,9 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     included), wrong types (an enum member is only its JSON string name, never
     serde's `{"name":null}` form), non-object records and inconsistent values.
     `ControlRecord::to_frame` encodes members in their documented order.
+    `Request::request_id()` is the ID every request carries: its Response
+    echoes it, and the receiver's ID sequence consumes it even when it
+    rejects the request.
   - Binary records: `Input` (`0x31`: request ID, control period and
     restoration ID) and `Display` (`0x49`: control period and restoration
     ID) start with a header of nonzero big-endian u64 counters; the payload
