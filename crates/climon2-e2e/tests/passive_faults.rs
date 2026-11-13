@@ -1118,15 +1118,20 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
 
 /// LIB-05 Fault (the library never raises `SIGPIPE` in its embedder): in a
 /// host that leaves `SIGPIPE` at its default disposition, as a C embedder
-/// may, a fake daemon stops reading after the Initial metadata, so the
-/// shutdown Leave's write fails (`EPIPE` on Linux). The host survives; the
-/// departure is unconfirmed, with no retry after shutdown.
+/// may, the shutdown Leave is written to a fake daemon that can no longer
+/// receive it. One stops reading after the Initial metadata (`EPIPE` on
+/// Linux; another system may accept the write unread, and the Leave then
+/// outlives `leave_ms`). The other closes its connection after a title the
+/// library holds back, its two-record event queue being full, so the library
+/// reads nothing and its write fails. The host survives each; the departure
+/// is unconfirmed, with no retry after shutdown, and the full queue leaves
+/// no room for a diagnostic.
 #[test]
 fn installed_library_never_raises_sigpipe_in_its_embedder() {
     let package = Package::new();
     let root = root(&package);
     let end = root.join("end-deaf");
-    let peer = json!({
+    let deaf = json!({
         "open": [
             opened(&SELECTED),
             initial(json!("t")),
@@ -1134,8 +1139,11 @@ fn installed_library_never_raises_sigpipe_in_its_embedder() {
             { "wait": end.to_str().unwrap() },
         ],
     });
+    let gone = json!({
+        "open": [opened(&SELECTED), initial(json!("t")), title_changed(json!("x")), "close"],
+    });
     let steps = json!([
-        { "do": "create", "peer": peer, "startup": { "limits": { "leave_ms": 2000 } } },
+        { "do": "create", "peer": deaf, "startup": { "limits": { "leave_ms": 2000 } } },
         { "do": "submit", "request": open(1, &REQUIRED, &["title-v1"]) },
         { "do": "run" },
         { "do": "drain", "until": { "tag": INITIAL_METADATA } },
@@ -1143,6 +1151,14 @@ fn installed_library_never_raises_sigpipe_in_its_embedder() {
         { "do": "shutdown" },
         { "do": "finish" },
         { "do": "touch", "path": end.to_str().unwrap() },
+        { "do": "create", "instance": "gone", "peer": gone,
+          "startup": { "limits": { "event_records": 2 } } },
+        { "do": "submit", "instance": "gone", "request": open(1, &REQUIRED, &["title-v1"]) },
+        { "do": "run", "instance": "gone" },
+        { "do": "await_snapshot", "instance": "gone", "gauge": "event_records", "value": 2 },
+        { "do": "await_peer", "instance": "gone", "frames": 3 },
+        { "do": "shutdown", "instance": "gone" },
+        { "do": "finish", "instance": "gone" },
     ]);
     let report = script_with(&package, &root, steps, json!({ "sigpipe": "default" }));
     let (records, terminal) = finished(step(&report, 6));
@@ -1158,6 +1174,15 @@ fn installed_library_never_raises_sigpipe_in_its_embedder() {
     let unconfirmed = (CLIENT_FAILED, RETRY_NONE, LEAVE_INDETERMINATE);
     assert_terminal(terminal, 1, unconfirmed, Some(error));
     assert_eq!(report["peers"]["a"]["frames"][2]["deaf"], true);
+    assert_eq!(step(&report, 12), true);
+    let (records, terminal) = finished(step(&report, 14));
+    assert_eq!(records.len(), 2, "{records:#?}");
+    assert_eq!(assert_response(&records[0], 1, 1, OK)["result_tag"], OPENED);
+    assert_header(&records[1], INITIAL_METADATA, 1);
+    let lost = (ORIGIN_TRANSPORT, "io_error");
+    assert_terminal(terminal, 1, unconfirmed, Some(lost));
+    let peer = &report["peers"]["gone"];
+    assert_eq!(peer["frames"][2]["closed"], true, "{peer:#}");
     assert_all_released(&report["ledger"]);
     package.assert_clean();
 }

@@ -24,8 +24,9 @@
 //! `{"wait": "<path>"}` (until that file exists, bounded; an expired wait is
 //! recorded as `wait_expired`), `"deaf"` (shut down the
 //! reading side, so the library's next write fails, and record `deaf`),
-//! `"close"`, or `"hold"` (stop answering; keep the connection until the
-//! library closes it).
+//! `"close"` (recorded as `closed` once the connection is dropped), or
+//! `"hold"` (stop answering; keep the connection until the library closes
+//! it).
 
 use super::{abi::hex, probe};
 use climon2_core::{
@@ -97,6 +98,7 @@ impl Peer {
             release,
             received: Arc::clone(&received),
             ids: Map::new(),
+            closed: false,
         };
         let thread = thread::Builder::new()
             .name(format!("peer-{name}"))
@@ -168,6 +170,8 @@ struct Serving {
     /// The ID of each request kind the library sent, for `"$open"` and
     /// `"$leave"`.
     ids: Map<String, Value>,
+    /// Whether a script's `"close"` ended the conversation.
+    closed: bool,
 }
 
 /// How the connection went on after an action.
@@ -189,6 +193,10 @@ impl Serving {
             Next::Hold => hold(&mut stream, &self.received),
             Next::Close => false,
         };
+        drop(stream);
+        if self.closed {
+            self.record(json!({ "closed": true }));
+        }
         json!({
             "accepted": true,
             "finished": true,
@@ -261,7 +269,10 @@ impl Serving {
             let actions = self.actions(kind);
             match self.script_actions(stream, &actions) {
                 Next::Continue => {}
-                Next::Close => return false,
+                Next::Close => {
+                    self.closed = true;
+                    return false;
+                }
                 Next::Hold => return hold(stream, &self.received),
             }
         }

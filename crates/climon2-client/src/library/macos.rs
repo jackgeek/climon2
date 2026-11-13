@@ -74,8 +74,12 @@ impl Notifier {
 fn nonblocking(descriptor: RawFd) -> io::Result<()> {
     // SAFETY (both): fcntl on an open descriptor takes no pointers.
     let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
-    let set = unsafe { libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK) };
-    if set == -1 {
+    status(unsafe { libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK) })
+}
+
+/// A call's status: success, or the error it set.
+fn status(result: libc::c_int) -> io::Result<()> {
+    if result < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
@@ -87,7 +91,7 @@ fn nonblocking(descriptor: RawFd) -> io::Result<()> {
 pub(super) fn quiet(socket: RawFd) -> io::Result<()> {
     let on: libc::c_int = 1;
     // SAFETY: the option value covers its length.
-    let set = unsafe {
+    status(unsafe {
         libc::setsockopt(
             socket,
             libc::SOL_SOCKET,
@@ -95,11 +99,7 @@ pub(super) fn quiet(socket: RawFd) -> io::Result<()> {
             (&raw const on).cast(),
             size_of::<libc::c_int>() as libc::socklen_t,
         )
-    };
-    if set == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    })
 }
 
 /// Sends what the socket takes now; `quiet` made it never raise `SIGPIPE`.

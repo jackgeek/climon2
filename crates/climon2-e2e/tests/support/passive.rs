@@ -332,12 +332,14 @@ pub fn passive_peer(leave: Value) -> Value {
     })
 }
 
-/// The fake daemon's received frames: hello, then each frame's kind.
+/// The fake daemon's received frames: hello, then each frame's kind (and
+/// its marks, apart from the `closed` it records after a scripted close).
 pub fn kinds(peer: &Value) -> Vec<String> {
     peer["frames"]
         .as_array()
         .unwrap()
         .iter()
+        .filter(|frame| frame.get("closed").is_none())
         .map(|frame| {
             if frame.get("hello").is_some() {
                 "hello".to_owned()

@@ -574,6 +574,8 @@ impl Shared {
         self.changed.notify_all();
     }
 
+    /// Waits until the stream stops running: only a hooked worker waits.
+    #[cfg(feature = "test-hooks")]
     fn wait_for_stop(&self) {
         let state = self.lock();
         drop(
