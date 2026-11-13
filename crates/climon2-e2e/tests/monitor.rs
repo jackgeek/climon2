@@ -333,9 +333,7 @@ fn editing_the_configuration_while_the_monitor_runs_changes_nothing() {
     .unwrap();
     terminal.resize(12, 50).unwrap();
     let repainted = empty_monitor(12, 50, &[EMPTY]);
-    terminal
-        .wait_for_screen(TIMEOUT, |screen| screen == repainted)
-        .unwrap();
+    shows(&mut terminal, &repainted);
     let monitor = monitor_process(&package).0;
     read_alone(&mut terminal, monitor, b"\x01x");
     kill(Pid::from_raw(monitor), Signal::SIGTERM)
@@ -368,20 +366,33 @@ const EFFECTIVE: &str = r#"{
   }
 }"#;
 
-/// The one general log the monitor wrote.
-fn monitor_log(package: &Package) -> String {
-    let logs = package.logs();
-    let monitor: Vec<_> = logs
-        .iter()
+/// The general logs the monitor runs wrote.
+fn monitor_log_files(package: &Package) -> Vec<PathBuf> {
+    package
+        .logs()
+        .into_iter()
         .filter(|path| {
             path.file_name()
                 .unwrap()
                 .to_string_lossy()
                 .starts_with("monitor-")
         })
-        .collect();
-    assert_eq!(monitor.len(), 1, "{logs:?}");
-    fs::read_to_string(monitor[0]).unwrap()
+        .collect()
+}
+
+/// The one general log the monitor wrote.
+fn monitor_log(package: &Package) -> String {
+    let files = monitor_log_files(package);
+    assert_eq!(files.len(), 1, "{:?}", package.logs());
+    fs::read_to_string(&files[0]).unwrap()
+}
+
+/// Every record the monitor runs wrote to their general logs.
+fn monitor_logs(package: &Package) -> String {
+    monitor_log_files(package)
+        .iter()
+        .map(|path| fs::read_to_string(path).unwrap())
+        .collect()
 }
 
 /// CFG-01 (Monitor): the monitor reports every effective setting, the
@@ -512,10 +523,15 @@ fn opened(terminal: &mut Terminal) {
 
 /// The monitor owns the host as [`opened`] checks, showing exactly `expected`.
 fn opened_on(terminal: &mut Terminal, expected: &str) {
+    shows(terminal, expected);
+    owns_host(terminal);
+}
+
+/// Waits until the host shows exactly `expected`.
+fn shows(terminal: &mut Terminal, expected: &str) {
     terminal
         .wait_for_screen(TIMEOUT, |screen| screen == expected)
         .unwrap();
-    owns_host(terminal);
 }
 
 fn owns_host(terminal: &mut Terminal) {
@@ -712,9 +728,7 @@ fn resizing_the_host_redraws_the_monitor_at_the_new_size() {
     for (rows, cols) in [(12, 50), (40, 160)] {
         terminal.resize(rows, cols).unwrap();
         let expected = expected_screen(rows, cols, "Ctrl+]");
-        terminal
-            .wait_for_screen(TIMEOUT, |screen| screen == expected)
-            .unwrap();
+        shows(&mut terminal, &expected);
         assert!(!terminal.modes().cursor_visible);
     }
     let received = terminal.received();
@@ -868,9 +882,7 @@ fn the_key_introduction_opens_at_every_start_until_dont_show_again_is_saved() {
     let mut first = outer(&package, "climon2 monitor");
     opened_on(&mut first, &introduction);
     first.send(b"\r").unwrap();
-    first
-        .wait_for_screen(TIMEOUT, |screen| screen == empty)
-        .unwrap();
+    shows(&mut first, &empty);
     first.send(b"\x02x").unwrap();
     assert_released(&package, &mut first, 0);
     let mut again = outer(&package, "climon2 monitor");
@@ -902,21 +914,15 @@ fn help_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say() 
     opened_on(&mut hidden, &quiet);
     hidden.send(b"\x1d?").unwrap();
     let help = overlaid(&quiet, &dialog("Ctrl+]", false, None));
-    hidden
-        .wait_for_screen(TIMEOUT, |screen| screen == help)
-        .unwrap();
+    shows(&mut hidden, &help);
     let monitor = monitor_process(&package).0;
     read_alone(&mut hidden, monitor, b"\x1d?");
     hidden.resize(21, 71).unwrap();
     let small = empty_monitor(21, 71, &[EMPTY]);
     let still_open = overlaid(&small, &dialog("Ctrl+]", false, None));
-    hidden
-        .wait_for_screen(TIMEOUT, |screen| screen == still_open)
-        .unwrap();
+    shows(&mut hidden, &still_open);
     hidden.send(b"\r").unwrap();
-    hidden
-        .wait_for_screen(TIMEOUT, |screen| screen == small)
-        .unwrap();
+    shows(&mut hidden, &small);
     hidden.send(b"\x1dx").unwrap();
     assert_released(&package, &mut hidden, 0);
     assert!(!preferences_file(&package).exists());
@@ -929,9 +935,7 @@ fn help_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say() 
     opened_on(&mut suppressed, &empty);
     suppressed.send(b"\x1d?").unwrap();
     let checked = overlaid(&empty, &dialog("Ctrl+]", true, None));
-    suppressed
-        .wait_for_screen(TIMEOUT, |screen| screen == checked)
-        .unwrap();
+    shows(&mut suppressed, &checked);
     suppressed.send(b"\x1dx").unwrap();
     assert_released(&package, &mut suppressed, 0);
     assert_eq!(
@@ -976,14 +980,10 @@ fn dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible() {
     .unwrap();
     fs::set_permissions(&interrupted, fs::Permissions::from_mode(0o644)).unwrap();
     first.send(b" ").unwrap();
-    first
-        .wait_for_screen(TIMEOUT, |screen| screen == checked)
-        .unwrap();
+    shows(&mut first, &checked);
     assert_saved(&package, true);
     first.send(b"\r").unwrap();
-    first
-        .wait_for_screen(TIMEOUT, |screen| screen == empty)
-        .unwrap();
+    shows(&mut first, &empty);
     first.send(b"\x1dx").unwrap();
     assert_released(&package, &mut first, 0);
 
@@ -992,13 +992,9 @@ fn dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible() {
     let mut second = outer(&package, "umask 000; climon2 monitor");
     opened_on(&mut second, &empty);
     second.send(b"\x1d?").unwrap();
-    second
-        .wait_for_screen(TIMEOUT, |screen| screen == checked)
-        .unwrap();
+    shows(&mut second, &checked);
     second.send(b" ").unwrap();
-    second
-        .wait_for_screen(TIMEOUT, |screen| screen == introduction)
-        .unwrap();
+    shows(&mut second, &introduction);
     assert_saved(&package, false);
     assert_eq!(fs::read_to_string(&old).unwrap(), SUPPRESSED);
     second.send(b"\x1dx").unwrap();
@@ -1007,9 +1003,7 @@ fn dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible() {
     let mut third = outer(&package, "climon2 monitor");
     opened_on(&mut third, &introduction);
     third.send(b" ").unwrap();
-    third
-        .wait_for_screen(TIMEOUT, |screen| screen == checked)
-        .unwrap();
+    shows(&mut third, &checked);
     third.send(b"\x1dx").unwrap();
     assert_released(&package, &mut third, 0);
     assert_saved(&package, true);
@@ -1032,21 +1026,6 @@ fn dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible() {
         assert!(logs.contains(record), "{logs}");
     }
     package.assert_clean();
-}
-
-/// Every record the monitor runs wrote to their general logs.
-fn monitor_logs(package: &Package) -> String {
-    package
-        .logs()
-        .iter()
-        .filter(|path| {
-            path.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("monitor-")
-        })
-        .map(|path| fs::read_to_string(path).unwrap())
-        .collect()
 }
 
 /// HLP-01 (Monitor; derived scenario: an unreadable or malformed preference
@@ -1075,9 +1054,7 @@ fn an_unreadable_or_malformed_preference_file_shows_why_beside_the_introduction(
             &overlaid(&empty, &dialog("Ctrl+]", false, Some(reason))),
         );
         terminal.send(b"\r").unwrap();
-        terminal
-            .wait_for_screen(TIMEOUT, |screen| screen == empty)
-            .unwrap();
+        shows(&mut terminal, &empty);
         terminal.send(b"\x1dx").unwrap();
         assert_released(&package, &mut terminal, 0);
         assert_eq!(
@@ -1124,9 +1101,7 @@ fn a_failing_save_is_reported_in_the_dialog_and_saves_nothing() {
     blocked.send(b" ").unwrap();
     let exists = "cannot save monitor-preferences.json: File exists (os error 17)";
     let not_created = overlaid(&empty, &dialog("Ctrl+]", false, Some(exists)));
-    blocked
-        .wait_for_screen(TIMEOUT, |screen| screen == not_created)
-        .unwrap();
+    shows(&mut blocked, &not_created);
     blocked.send(b"\x1dx").unwrap();
     assert_released(&package, &mut blocked, 0);
     assert!(!preferences_file(&package).exists());
@@ -1149,9 +1124,7 @@ fn a_failing_save_is_reported_in_the_dialog_and_saves_nothing() {
     replaced.send(b" ").unwrap();
     let not_replaced = "cannot save monitor-preferences.json: Is a directory (os error 21)";
     let reported = overlaid(&empty, &dialog("Ctrl+]", false, Some(not_replaced)));
-    replaced
-        .wait_for_screen(TIMEOUT, |screen| screen == reported)
-        .unwrap();
+    shows(&mut replaced, &reported);
     assert_eq!(home_entries(&package), ["logs", "monitor-preferences.json"]);
     replaced.send(b"\x1dx").unwrap();
     assert_released(&package, &mut replaced, 0);
@@ -1187,18 +1160,12 @@ fn help_is_modal_and_prefix_x_still_exits_from_it() {
     terminal.resize(25, 81).unwrap();
     let small = expected_screen(25, 81, "Ctrl+]");
     let unchanged = overlaid(&small, &dialog("Ctrl+]", false, None));
-    terminal
-        .wait_for_screen(TIMEOUT, |screen| screen == unchanged)
-        .unwrap();
+    shows(&mut terminal, &unchanged);
     assert!(!preferences_file(&package).exists());
     terminal.send(b"\r").unwrap();
-    terminal
-        .wait_for_screen(TIMEOUT, |screen| screen == small)
-        .unwrap();
+    shows(&mut terminal, &small);
     terminal.send(b"\x1d?").unwrap();
-    terminal
-        .wait_for_screen(TIMEOUT, |screen| screen == unchanged)
-        .unwrap();
+    shows(&mut terminal, &unchanged);
     terminal.send(b"\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
     assert!(!preferences_file(&package).exists());
@@ -1222,11 +1189,10 @@ fn with_escape_as_the_prefix_escape_cannot_close_help_and_prefix_x_still_exits()
     let quiet = empty_monitor(ROWS, COLS, &[EMPTY]);
     opened_on(&mut terminal, &quiet);
     terminal.send(b"\x1b?").unwrap();
-    terminal
-        .wait_for_screen(TIMEOUT, |screen| {
-            screen == overlaid(&quiet, &dialog("Ctrl+[", false, None))
-        })
-        .unwrap();
+    shows(
+        &mut terminal,
+        &overlaid(&quiet, &dialog("Ctrl+[", false, None)),
+    );
     let monitor = monitor_process(&package).0;
     read_alone(&mut terminal, monitor, b"\x1b\x1b");
     terminal.resize(25, 81).unwrap();
@@ -1234,9 +1200,7 @@ fn with_escape_as_the_prefix_escape_cannot_close_help_and_prefix_x_still_exits()
         &empty_monitor(25, 81, &[EMPTY]),
         &dialog("Ctrl+[", false, None),
     );
-    terminal
-        .wait_for_screen(TIMEOUT, |screen| screen == still_open)
-        .unwrap();
+    shows(&mut terminal, &still_open);
     read_alone(&mut terminal, monitor, b"\x1b");
     terminal.send(b"x").unwrap();
     assert_released(&package, &mut terminal, 0);
