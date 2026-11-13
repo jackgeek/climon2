@@ -11,8 +11,8 @@ use climon2_core::{
     },
 };
 use climon2_discovery::{
-    Cleanup, InvalidReason, MetadataLimits, Options, Outcome, Pass, StaleMetadata, Uncertainty,
-    discover,
+    Batch, Cleanup, Continuation, Incomplete, InvalidReason, MetadataLimits, Options, Outcome,
+    Pass, Progress, Scan, StaleMetadata, Uncertainty, discover,
 };
 use climon2_platform::{
     daemon::{self, Readiness},
@@ -22,6 +22,7 @@ use climon2_test_term::{Isolation, bin_path, exit_within, hello_peer};
 use std::{
     fs,
     io::{self, Read},
+    num::NonZeroUsize,
     os::unix::{
         fs::PermissionsExt,
         net::{UnixDatagram, UnixStream},
@@ -707,4 +708,287 @@ fn a_regular_file_at_the_socket_path_is_never_deleted() {
     assert_eq!(fs::read(socket).unwrap(), b"not a socket");
     assert!(file.exists());
     fs::remove_file(socket).unwrap();
+}
+
+/// A monitor's scan: unbounded metadata, broad batches and an ample pass deadline, changed
+/// field by field where a test bounds one.
+const BROAD: Scan = Scan {
+    limits: MetadataLimits::UNBOUNDED,
+    probes: NonZeroUsize::new(8).unwrap(),
+    batch_records: NonZeroUsize::new(128).unwrap(),
+    batch_bytes: u64::MAX,
+    pass_time: Duration::from_secs(600),
+};
+
+fn records(count: usize) -> NonZeroUsize {
+    NonZeroUsize::new(count).unwrap()
+}
+
+fn suffix_id(suffix: u8) -> String {
+    format!("12345678-1234-4234-8234-123456789a{suffix:02x}")
+}
+
+/// One incremental pass: each batch's session IDs in the order reported, then its progress.
+fn batches(
+    continuation: &mut Continuation,
+    home: &HomeLayout,
+    scan: &Scan,
+) -> (Vec<Vec<String>>, Progress) {
+    batches_changing(continuation, home, scan, |_| {})
+}
+
+/// As [`batches`], calling `change` with each batch's index once it has been reported.
+fn batches_changing(
+    continuation: &mut Continuation,
+    home: &HomeLayout,
+    scan: &Scan,
+    mut change: impl FnMut(usize),
+) -> (Vec<Vec<String>>, Progress) {
+    let mut seen = Vec::new();
+    let progress = continuation.pass(home, scan, |batch: Batch| {
+        assert!(batch.invalid.is_empty(), "{batch:?}");
+        seen.push(
+            ids(&batch.sessions)
+                .iter()
+                .map(|id| id.to_string())
+                .collect(),
+        );
+        change(seen.len() - 1);
+    });
+    (seen, progress)
+}
+
+fn ids_of(suffixes: &[u8]) -> Vec<String> {
+    suffixes.iter().map(|&suffix| suffix_id(suffix)).collect()
+}
+
+/// DSC-03 and DSC-04 Contract cases (incremental passes): a pass reports every entry once,
+/// in batches of at most `batch_records` entries, a batch ending before the entry whose
+/// metadata would take it past `batch_bytes` (at the bound and one byte short of it). A
+/// completed pass is distinguished from an incomplete one, and a completed empty pass reports
+/// no batch at all. Nothing is ever deleted.
+#[test]
+fn incremental_passes_report_every_entry_once_in_bounded_batches() {
+    let (_directory, home) = home();
+    let mut continuation = Continuation::default();
+    assert!(matches!(
+        batches(&mut continuation, &home, &BROAD),
+        (seen, Progress::Complete) if seen.is_empty()
+    ));
+    let suffixes = [0x81, 0x82, 0x83, 0x84, 0x85];
+    let files: Vec<_> = suffixes
+        .map(|suffix| save(&home, &record(&home, suffix, CREATED)))
+        .to_vec();
+    let size = fs::metadata(&files[0]).unwrap().len();
+    let cases = [
+        (2, u64::MAX, vec![&[0x81, 0x82][..], &[0x83, 0x84], &[0x85]]),
+        (5, u64::MAX, vec![&suffixes[..]]),
+        (4, u64::MAX, vec![&suffixes[..4], &[0x85]]),
+        (
+            128,
+            2 * size,
+            vec![&[0x81, 0x82][..], &[0x83, 0x84], &[0x85]],
+        ),
+        (
+            128,
+            2 * size - 1,
+            vec![&[0x81][..], &[0x82], &[0x83], &[0x84], &[0x85]],
+        ),
+    ];
+    for (batch_records, batch_bytes, expected) in cases {
+        let scan = Scan {
+            batch_records: records(batch_records),
+            batch_bytes,
+            ..BROAD
+        };
+        let (seen, progress) = batches(&mut continuation, &home, &scan);
+        let expected: Vec<_> = expected.into_iter().map(ids_of).collect();
+        assert_eq!(
+            seen, expected,
+            "{batch_records} records, {batch_bytes} bytes"
+        );
+        assert!(matches!(progress, Progress::Complete), "{progress:?}");
+    }
+    assert!(files.iter().all(|file| file.exists()));
+}
+
+/// DSC-03 Contract case (fair continuation while the directory changes): entries added
+/// after the pass's position are reported in the same pass, and one removed before it is
+/// reached is not; an entry added behind the position waits for the next pass, which
+/// reports every entry again.
+#[test]
+fn a_pass_continues_through_directory_changes_and_the_next_pass_reaches_what_it_missed() {
+    let (_directory, home) = home();
+    for suffix in [0x91, 0x93, 0x95, 0x97] {
+        save(&home, &record(&home, suffix, CREATED));
+    }
+    let mut continuation = Continuation::default();
+    let scan = Scan {
+        batch_records: records(1),
+        ..BROAD
+    };
+    let (seen, progress) = batches_changing(&mut continuation, &home, &scan, |index| {
+        if index == 0 {
+            save(&home, &record(&home, 0x90, CREATED));
+            save(&home, &record(&home, 0x96, CREATED));
+            fs::remove_file(path(&home, &record(&home, 0x95, CREATED))).unwrap();
+        }
+    });
+    assert!(matches!(progress, Progress::Complete), "{progress:?}");
+    let singles = |suffixes: &[u8]| -> Vec<Vec<String>> {
+        suffixes.iter().map(|&suffix| ids_of(&[suffix])).collect()
+    };
+    assert_eq!(seen, singles(&[0x91, 0x93, 0x96, 0x97]));
+    let (seen, progress) = batches(&mut continuation, &home, &scan);
+    assert!(matches!(progress, Progress::Complete), "{progress:?}");
+    assert_eq!(seen, singles(&[0x90, 0x91, 0x93, 0x96, 0x97]));
+}
+
+/// A peer at `metadata`'s socket that accepts `probes` hellos and never answers, each until
+/// the probe hangs up.
+fn silent_peer(metadata: &SessionMetadata, probes: usize) -> thread::JoinHandle<()> {
+    let listener = runtime::bind(Path::new(metadata.socket_path.as_str())).unwrap();
+    thread::spawn(move || {
+        for _ in 0..probes {
+            let (mut socket, _) = listener.accept().unwrap();
+            read_frame(&mut socket).unwrap();
+            socket.set_read_timeout(Some(HELLO_TIMEOUT * 5)).unwrap();
+            assert_eq!(socket.read_to_end(&mut Vec::new()).unwrap(), 0);
+        }
+    })
+}
+
+/// DSC-04 Contract and Fault cases (slow and dead probes, incomplete discovery) with DSC-03
+/// fair continuation: a pass whose deadline passes reports incomplete progress with what it
+/// did probe, the silent daemon uncertain after the frozen two-second hello deadline. The
+/// next pass continues after it, reaching the entries the first missed before probing the
+/// silent daemon again, and completes.
+#[test]
+fn a_pass_deadline_reports_incomplete_progress_and_the_next_pass_continues_after_it() {
+    let (_directory, home) = home();
+    let silent = record(&home, 0xa1, CREATED);
+    let files = [0xa1, 0xa2, 0xa3].map(|suffix| save(&home, &record(&home, suffix, CREATED)));
+    let peer = silent_peer(&silent, 2);
+    let mut continuation = Continuation::default();
+    let hurried = Scan {
+        probes: records(1),
+        pass_time: Duration::from_millis(100),
+        ..BROAD
+    };
+    let mut first = Vec::new();
+    let started = Instant::now();
+    let progress = continuation.pass(&home, &hurried, |batch| first.push(batch));
+    assert!(started.elapsed() >= HELLO_TIMEOUT);
+    assert!(
+        matches!(progress, Progress::Incomplete(Incomplete::Deadline)),
+        "{progress:?}"
+    );
+    let [batch] = first.as_slice() else {
+        panic!("{first:?}");
+    };
+    let [Outcome::Uncertain(found, Uncertainty::Unanswered(error))] = batch.sessions.as_slice()
+    else {
+        panic!("{batch:?}");
+    };
+    assert_eq!(found, &silent);
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+
+    let (seen, progress) = batches(&mut continuation, &home, &BROAD);
+    assert!(matches!(progress, Progress::Complete), "{progress:?}");
+    assert_eq!(seen, [ids_of(&[0xa2, 0xa3]), ids_of(&[0xa1])]);
+    peer.join().unwrap();
+    assert!(files.iter().all(|file| file.exists()));
+    fs::remove_file(silent.socket_path.as_str()).unwrap();
+}
+
+/// DSC-04 Contract case (bounded probes): with one probe at a time, two silent daemons are
+/// probed one after the other, so the pass lasts at least two hello deadlines.
+#[test]
+fn probes_are_bounded_by_the_scans_concurrency() {
+    let (_directory, home) = home();
+    let silent = [0xb1, 0xb2].map(|suffix| record(&home, suffix, CREATED));
+    let peers = silent.each_ref().map(|metadata| {
+        save(&home, metadata);
+        silent_peer(metadata, 1)
+    });
+    let scan = Scan {
+        probes: records(1),
+        ..BROAD
+    };
+    let started = Instant::now();
+    let (seen, progress) = batches(&mut Continuation::default(), &home, &scan);
+    assert!(started.elapsed() >= HELLO_TIMEOUT * 2);
+    assert!(matches!(progress, Progress::Complete), "{progress:?}");
+    assert_eq!(seen, [ids_of(&[0xb1, 0xb2])]);
+    for peer in peers {
+        peer.join().unwrap();
+    }
+    for metadata in &silent {
+        fs::remove_file(metadata.socket_path.as_str()).unwrap();
+    }
+}
+
+/// DSC-04 Contract case (bounded probes): probes do run concurrently up to the bound: two
+/// daemons each hold their answer until both have been reached by the same pass.
+#[test]
+fn probes_run_concurrently_up_to_the_bound() {
+    let (_directory, home) = home();
+    let live = [0xc1, 0xc2].map(|suffix| record(&home, suffix, CREATED));
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let peers = live.each_ref().map(|metadata| {
+        save(&home, metadata);
+        let listener = runtime::bind(Path::new(metadata.socket_path.as_str())).unwrap();
+        let reply = climon2_core::protocol::Frame::new(
+            1,
+            hello_body(metadata.session_id.as_str()).into_bytes(),
+        )
+        .unwrap();
+        let barrier = barrier.clone();
+        thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            read_frame(&mut socket).unwrap();
+            barrier.wait();
+            write_frame(&mut socket, &reply).unwrap();
+        })
+    });
+    let scan = Scan {
+        probes: records(2),
+        ..BROAD
+    };
+    let mut reported = Vec::new();
+    let progress = Continuation::default().pass(&home, &scan, |batch| reported.push(batch));
+    assert!(matches!(progress, Progress::Complete), "{progress:?}");
+    let [batch] = reported.as_slice() else {
+        panic!("{reported:?}");
+    };
+    assert!(
+        batch
+            .sessions
+            .iter()
+            .all(|outcome| matches!(outcome, Outcome::Live(_))),
+        "{batch:?}"
+    );
+    for peer in peers {
+        peer.join().unwrap();
+    }
+    for metadata in &live {
+        fs::remove_file(metadata.socket_path.as_str()).unwrap();
+    }
+}
+
+/// DSC-04 Contract case (inaccessible discovery): an incremental pass over a sessions
+/// directory that cannot be listed reports incomplete progress with the listing error, never
+/// a completed empty pass, and deletes nothing.
+#[test]
+fn an_unlistable_sessions_directory_makes_the_pass_incomplete() {
+    let (_directory, home) = home();
+    let sessions = home.root().join("sessions");
+    fs::write(&sessions, b"not a directory").unwrap();
+    let (seen, progress) = batches(&mut Continuation::default(), &home, &BROAD);
+    assert!(seen.is_empty());
+    let Progress::Incomplete(Incomplete::Inaccessible(error)) = progress else {
+        panic!("{progress:?}");
+    };
+    assert_eq!(error.raw_os_error(), Some(libc::ENOTDIR), "{error}");
+    assert_eq!(fs::read(&sessions).unwrap(), b"not a directory");
 }

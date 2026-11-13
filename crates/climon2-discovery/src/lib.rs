@@ -4,9 +4,11 @@
 //! callers own scheduling, presentation and logging.
 
 mod hello;
+mod incremental;
 mod metadata;
 mod outcome;
 
+pub use incremental::{Batch, Continuation, Incomplete, Progress, Scan};
 pub use metadata::{InvalidMetadata, InvalidReason, MetadataLimits};
 pub use outcome::{Cleanup, LiveSession, Outcome, Uncertainty};
 
