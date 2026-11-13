@@ -3,14 +3,14 @@
 //! restoration events. Each test is the codec case of the matrix scenarios
 //! it cites; the daemon and library cases come with their own tickets.
 use climon2_core::wire::{
-    Available, Cleanup, CommandFinal, CommandResult, ControlGranted, ControlRecord, ControlRevoked,
-    Counter, Error, ErrorCode, Failure, Families, FatalCode, FocusBytes, Frame, GrantReason, Guid,
-    InitialMetadata, KnownResult, OperationalCode, Outcome, PartialCleanup, PartialTermination,
-    Percent, Progress, ProgressState, Rejection, Response, RevocationReason, ServerMessage, Status,
-    StatusChanged, StatusState, Success, Utc,
+    AuthorityResult, Available, Cleanup, CommandFinal, CommandResult, ControlGranted,
+    ControlRecord, ControlRevoked, Counter, Error, ErrorCode, Failure, Families, FatalCode,
+    FocusBytes, Frame, GrantReason, Guid, InitialMetadata, KnownResult, OperationalCode, Outcome,
+    PartialCleanup, PartialTermination, Percent, Progress, ProgressState, Rejection, Response,
+    RevocationReason, ServerMessage, Status, StatusChanged, StatusState, Success, Utc,
 };
 use std::num::NonZeroU32;
-use support::{counter, geometry};
+use support::{counter, geometry, ids};
 
 mod support;
 
@@ -155,19 +155,17 @@ fn every_documented_success_result_round_trips() {
         ),
         (
             r#"{"kind":"acquired","changed":true,"period":"2","restoration_id":"3"}"#.into(),
-            Success::Acquired {
+            Success::Acquired(AuthorityResult {
                 changed: true,
-                period: counter(2),
-                restoration_id: counter(3),
-            },
+                authority: ids(2, 3),
+            }),
         ),
         (
             r#"{"kind":"ready","changed":false,"period":"2","restoration_id":"3"}"#.into(),
-            Success::Ready {
+            Success::Ready(AuthorityResult {
                 changed: false,
-                period: counter(2),
-                restoration_id: counter(3),
-            },
+                authority: ids(2, 3),
+            }),
         ),
         (
             r#"{"kind":"viewing","changed":true,"viewing":false}"#.into(),
@@ -1163,8 +1161,7 @@ fn grant_and_revocation_reasons_are_their_documented_names() {
         assert_eq!(
             round_trip(CONTROL_GRANTED, &grant(&format!(r#""{name}""#))),
             ServerMessage::ControlGranted(ControlGranted {
-                period: counter(2),
-                restoration_id: counter(3),
+                authority: ids(2, 3),
                 geometry: geometry(80, 24),
                 reason,
             })
@@ -1177,8 +1174,7 @@ fn grant_and_revocation_reasons_are_their_documented_names() {
         assert_eq!(
             round_trip(CONTROL_REVOKED, &revocation(&format!(r#""{name}""#))),
             ServerMessage::ControlRevoked(ControlRevoked {
-                period: counter(1),
-                restoration_id: counter(1),
+                authority: ids(1, 1),
                 reason,
             })
         );
