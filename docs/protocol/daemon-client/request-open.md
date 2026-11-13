@@ -1,6 +1,7 @@
 # Open — `0x30`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed; monitor mode implemented, interactive mode not yet**
+([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) sends this first role request to the
 [session daemon](../../../GLOSSARY.md#sessions) after
 [hello](hello-request.md).
@@ -63,3 +64,25 @@ Initial rejection has no effects, ends the attempted role stream, and may
 include `known_final` if a command result is known. A later Open cannot change
 role. No unknown fields/defaults; malformed records and bad IDs are fatal under
 the shared rules. Numeric limits remain #69; geometry policy #63/#69.
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) checks the revision first
+(`unsupported_revision` unless 1), then the required families
+(`unsupported_capability` for an unknown or unadvertised one). The selected
+families are the requested ones it supports: every required family, plus the
+optional families it advertises. It adds no family the request did not name,
+since core and monitor support are implicit. Each successful Open gets a
+fresh random `connection_id`.
+
+A monitor-mode Open registers a passive monitor connection, answers success,
+then sends the Initial metadata in the same daemon loop step. It never
+changes the hello `state`. It is accepted during committed termination too,
+which rejects new interactive work only, so a monitor can still learn the
+outcome passively. A later Open on a registered connection is
+`invalid_state` and keeps the registration.
+
+Until [#87](https://github.com/jackgeek/climon2/issues/87) serves it, a valid
+interactive Open is rejected without effects with `internal_error` and ends
+its stream. Rejections carry no `known_final` yet: a known command result
+arrives with [#88](https://github.com/jackgeek/climon2/issues/88).

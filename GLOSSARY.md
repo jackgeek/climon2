@@ -109,7 +109,7 @@ Probes, passive monitor connections and kill requests are not attachments.
 _Avoid_: Session, control
 
 **Passive monitor connection**:
-A monitor's connection that receives session metadata and is eligible to inherit control, but has not yet become an attachment.
+A monitor's connection that receives the session's core metadata, such as its title and status, and is eligible to inherit control, but has not yet become an attachment.
 _Avoid_: Observer-only attachment, read-only viewer
 
 **Successor**:
@@ -305,8 +305,11 @@ A climon2-owned test program that checks the session contract (args, cwd, enviro
 _Avoid_: Test shell, dummy command
 
 **TUI fixture**:
-A climon2-owned full-screen test program that exercises alternate screen, cursor queries, mouse, bracketed paste, and resize redraws.
+A climon2-owned full-screen test program that exercises alternate screen, cursor queries, focus reporting, mouse, bracketed paste, and resize redraws.
 _Avoid_: Fake app, mock TUI
+
+**Terminal oracle**:
+The test harness's emulated host, whose visible cells, cursor, modes, bells and status reports stand for what a user observes in their terminal.
 
 **Shell profile**:
 The test harness's description of how to start one shell in a controlled way and drive it in tests; the only place climon2 knows about specific shells.

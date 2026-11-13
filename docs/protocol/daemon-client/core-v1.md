@@ -1,24 +1,39 @@
 # Daemon wire revision 1
 
-**Status: developer-agreed specification in [#67](https://github.com/jackgeek/climon2/issues/67), not implemented.**
+**Status: developer-agreed specification in [#67](https://github.com/jackgeek/climon2/issues/67), partly implemented.**
 This is the maintained contract, not evidence that any release conforms.
 The [#63 terminal contract](../terminal-integration.md) adds optional core
 [Focus](request-focus.md) and canonical monitor-mode presentation below;
 these amendments are also agreed, unimplemented.
-The [current private protocol](post-hello.md) is not this revision.
+The [private protocol](post-hello.md) is not this revision;
+[session daemons](../../../GLOSSARY.md#sessions) now speak both, and the
+first [frame](../TERMS.md#frame) after [hello](../../../GLOSSARY.md#sessions)
+selects one.
 Use the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md) alongside each message page.
 
-An encoder and validator for the [framing](../TERMS.md#frame), shared types,
-[Open](request-open.md), [Leave](request-leave.md), [Kill](request-kill.md),
-[Response](response.md), [Fatal error](event-fatal-error.md) and the
-[core metadata](../README.md#capabilities-and-connection-generations) events
-now exists in
+An encoder and validator for the [framing](../TERMS.md#frame), the shared
+types and all ten [request](../TERMS.md#request) and fourteen server
+messages of this revision, including the binary [Input](request-input.md)
+and [Display](event-display.md) records, now exists in
 [`climon2-core`](../../../crates/climon2-core/README.md). Its tests decode
-every published example on those pages and re-encode it to identical
-[bytes](../TERMS.md#byte). No [session daemon](../../../GLOSSARY.md#sessions)
-or [client](../../../GLOSSARY.md#sessions) speaks this revision yet, so the
-behavior below remains unimplemented.
+every [JSON](../TERMS.md#json) and binary example published on the message
+pages and re-encode it to identical [bytes](../TERMS.md#byte).
+
+The [session daemon](../../../GLOSSARY.md#sessions) implements this revision
+for [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
+([#86](https://github.com/jackgeek/climon2/issues/86)): the
+[hello advertisement](hello-reply.md#revision-1-advertisement), framing and
+validation with their connection-fatal codes, monitor-mode Open, Leave,
+Response, Fatal error, Initial metadata (the title; status and progress
+reported unavailable) and Title changed. Until it serves them, it rejects the
+other requests without effects, as each request's page describes.
+Interactive Open, standalone Kill,
+the control, terminal, status, notification, progress and final-result
+messages, succession and bounded delivery remain unimplemented, and no
+[client](../../../GLOSSARY.md#sessions) speaks this revision yet. The
+[daemon's contract tests](../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
+are the evidence for the implemented parts.
 
 ## Transport and startup
 
@@ -39,7 +54,7 @@ native library running inside a browser is implied.
 
 The frozen [hello handshake](../../../GLOSSARY.md#sessions) remains type `0x01`,
 protocol 1, with its existing required fields, limits, and unknown-optional-field
-behavior. [Hello reply](hello-reply.md#revision-1-advertisement-agreed-not-implemented)
+behavior. [Hello reply](hello-reply.md#revision-1-advertisement)
 adds `daemon-wire-v1` and a `daemon_wire_v1` limits object.
 Missing or malformed support makes this revision unavailable, not the session
 stale. Existing hello tokens are not new wire promises.
@@ -51,6 +66,9 @@ redundant negotiation exchange. Exact-release client/library/daemon matching
 remains mandatory and separate from support negotiation. Release numbers never
 imply support. Initial role rejection has no effects and ends that attempted
 role stream; later Open/Kill cannot repurpose an existing role.
+Until the private protocol is retired, the first frame after hello selects
+the protocol by its type, as the [post-hello boundary](post-hello.md)
+describes.
 
 ## Framing and validation
 
@@ -404,6 +422,10 @@ passive/successor candidates, departures and races; stale authority/readiness;
 arbitrary bytes; atomic metadata/status/episode/time and source normalization;
 menus/focus/local toast scope/deduplication; exit/signal versus disconnect;
 kill cleanup failures; bounded stalled consumers and independent control.
+The daemon's contract tests already cover the hello advertisement, framing,
+JSON, ID, direction and truncation failures, capability intersection,
+passive registration, Leave, atomic Initial metadata and title changes;
+the rest remains future.
 Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent

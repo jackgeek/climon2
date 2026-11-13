@@ -1,6 +1,6 @@
 # Acquire — `0x33`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed, not implemented; refused until [#89](https://github.com/jackgeek/climon2/issues/89) serves it**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) explicitly requests
 [control](../../../GLOSSARY.md#attachment-and-control) from the
 [session daemon](../../../GLOSSARY.md#sessions) after Open.
@@ -40,3 +40,14 @@ Invalid state, terminating session and resource/I/O failures use
 No optional fields/defaults or unknown members; malformed records/bad IDs are
 fatal. Numeric bounds belong to #69.
 Related: [Acknowledge](request-acknowledge.md), [Ready](request-ready.md).
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) does not serve Acquire
+yet. On a
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) it
+rejects Acquire without effects with `internal_error`, the interim code it
+also gives a valid interactive [Open](request-open.md) or standalone
+[Kill](request-kill.md): no control is acquired and the registration stays.
+Before any Open there is nothing to convert, so Acquire is `invalid_state`,
+like an early [Leave](request-leave.md). Either way the stream goes on.

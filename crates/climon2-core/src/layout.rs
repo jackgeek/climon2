@@ -3,6 +3,7 @@
 use crate::{ContractError, SessionId, VersionName};
 use sha2::{Digest, Sha256};
 use std::{
+    env::consts::{DLL_PREFIX, DLL_SUFFIX},
     ffi::{OsStr, OsString},
     path::{Component, Path, PathBuf},
 };
@@ -84,6 +85,13 @@ impl VersionBinary {
             ))),
         }
     }
+}
+
+/// The client library's file name in every version folder: the name Cargo
+/// gives `climon2-client`'s cdylib on this target, `libclimon2_client.dylib`
+/// on macOS and `libclimon2_client.so` on Linux.
+pub fn client_library_name() -> String {
+    format!("{DLL_PREFIX}climon2_client{DLL_SUFFIX}")
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -1,26 +1,12 @@
 //! Daemon wire revision 1 framing through the public Read/Write seam:
 //! `u32be length | u8 type | body`, bounded by a local frame ceiling.
-use climon2_core::wire::{FatalCode, Frame, FrameLimit, WireError, read_frame, write_frame};
+use climon2_core::wire::{
+    FatalCode, Frame, FrameLimit, WireError, defines, read_frame, write_frame,
+};
 use std::io::{self, Cursor, Read, Write};
+use support::{Fragmented, limit};
 
-struct Fragmented<T>(T);
-
-impl<T: Read> Read for Fragmented<T> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let length = buf.len().min(2);
-        self.0.read(&mut buf[..length])
-    }
-}
-
-impl<T: Write> Write for Fragmented<T> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.write(&buf[..buf.len().min(2)])
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
-    }
-}
+mod support;
 
 struct Broken;
 
@@ -38,10 +24,6 @@ impl Write for Broken {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
-}
-
-fn limit(bytes: u32) -> FrameLimit {
-    FrameLimit::new(bytes).unwrap()
 }
 
 fn fatal(result: Result<Option<Frame>, WireError>) -> FatalCode {
@@ -107,6 +89,45 @@ fn the_local_frame_ceiling_admits_its_limit_and_rejects_one_byte_more() {
     );
     write_frame(&mut unwritten, &over, limit(17)).unwrap();
     assert_eq!(unwritten.len(), 4 + 17);
+}
+
+/// COM-02 / LIM-01 (codec case): a nonblocking reader learns a frame's
+/// length from its four-byte prefix alone, under the same rules as
+/// `read_frame`: the ceiling is admitted, one byte more is `frame_too_large`
+/// and zero is `invalid_frame_length`.
+#[test]
+fn a_prefix_alone_decides_the_admitted_frame_length() {
+    assert_eq!(limit(16).frame_length([0, 0, 0, 16]), Ok(16));
+    assert_eq!(limit(16).frame_length([0, 0, 0, 1]), Ok(1));
+    assert_eq!(
+        limit(16).frame_length([0, 0, 0, 17]),
+        Err(FatalCode::FrameTooLarge)
+    );
+    assert_eq!(
+        limit(1_048_576).frame_length([0, 0x10, 0, 0]),
+        Ok(1_048_576)
+    );
+    assert_eq!(
+        limit(1_048_576).frame_length([0, 0x10, 0, 1]),
+        Err(FatalCode::FrameTooLarge)
+    );
+    assert_eq!(
+        limit(16).frame_length([0, 0, 0, 0]),
+        Err(FatalCode::InvalidFrameLength)
+    );
+}
+
+/// COM-02 (codec case): revision 1 defines exactly the request types
+/// `0x30`–`0x39` and the server types `0x40`–`0x4d`. A session daemon that
+/// still speaks another post-hello protocol selects revision 1 by them.
+#[test]
+fn revision1_defines_the_request_and_server_types_only() {
+    for code in [0x30, 0x37, 0x39, 0x40, 0x4c, 0x4d] {
+        assert!(defines(code), "{code:#x}");
+    }
+    for code in [0x00, 0x01, 0x10, 0x16, 0x2f, 0x3a, 0x3f, 0x4e, 0x7f, 0xff] {
+        assert!(!defines(code), "{code:#x}");
+    }
 }
 
 /// COM-02 (codec case): length zero cannot hold the type byte; length one is a

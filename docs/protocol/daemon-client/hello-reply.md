@@ -25,7 +25,8 @@ checks session ID, protocol, and exact release before continuing.
 
 ## Optional fields
 
-The current daemon advertises `capabilities` and `state`:
+Every daemon advertises at least `capabilities` and `state`, as here; the
+current daemon also adds its [revision-1 advertisement](#revision-1-advertisement):
 
 ```json
 {"session_id":"550e8400-e29b-41d4-a716-446655440000","climon2_version":"1.2.3","protocol":1,"capabilities":["attach","kill","state-v1","client-startup-v1"],"state":{"lifecycle":"attached","attachments":2,"controlled":true}}
@@ -48,7 +49,7 @@ contract.
 | Required state field | Type | Meaning |
 |---|---|---|
 | `lifecycle` | String | `starting`, `attached`, `detached`, or `terminating`. |
-| `attachments` | Unsigned 32-bit integer | Accepted [attachments](../../../GLOSSARY.md), excluding probes and kill requests. |
+| `attachments` | Unsigned 32-bit integer | Accepted [attachments](../../../GLOSSARY.md), excluding probes, kill requests and [passive monitor connections](../../../GLOSSARY.md#attachment-and-control). |
 | `controlled` | Boolean | Whether the session has a [controller](../../../GLOSSARY.md); not which client it is. |
 
 Starting/detached state has zero attachments and no controller. Attached state
@@ -86,7 +87,10 @@ the current lifecycle advertisement or silently repurpose its existing fields.
 [hello tests](../../../crates/climon2-core/tests/hello.rs), and the daemon's
 headless-session [lifecycle tests](../../../crates/climon2-daemon/tests/lifecycle.rs).
 
-## Revision 1 advertisement (agreed, not implemented)
+## Revision 1 advertisement
+
+**Status:** agreed and implemented; the daemon advertises the families it
+implements so far.
 
 The [approved contract](https://github.com/jackgeek/climon2/issues/67) adds
 `daemon-wire-v1` to capabilities and optional `daemon_wire_v1` with required
@@ -107,9 +111,16 @@ Missing/malformed advertisement makes revision 1 unavailable, not the session
 stale. The [hello parser](../../../crates/climon2-core/src/hello.rs) already
 reports this advertisement as valid, absent or malformed, and
 [its tests](../../../crates/climon2-core/tests/hello.rs) cover each case.
-[`climon2-core`](../../../crates/climon2-core/README.md) can also encode it
-beside the frozen tokens and `state`, but the current daemon still
-advertises only the implemented tokens and `state`.
+The [session daemon](../../../GLOSSARY.md#sessions) sends it through
+[`climon2-core`](../../../crates/climon2-core/README.md), after the frozen
+tokens and `state`: `daemon-wire-v1`, `monitor-v1` and `title-v1`, with
+`max_request_frame_bytes` and `max_server_frame_bytes` both 1,048,576, the
+release constant from the
+[operational limits](../../monitor-operational-limits.md#payloads-and-parser-state).
+It advertises only the families it implements; `status-v1`,
+`notification-v1`, `progress-v1` and `focus-v1` follow with their
+implementations. The [post-hello boundary](post-hello.md#choosing-a-protocol)
+explains how the first frame after hello then chooses a protocol.
 Existing optional-field behavior and required fields remain frozen;
 this is not permission to apply post-hello strict unknown-field rejection to
 hello. Optional family meanings are in the

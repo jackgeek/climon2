@@ -7,6 +7,7 @@
 //!
 //! Extend a direction by adding its record type, a `ControlRecord` impl and
 //! one decoder-table entry; binary records implement `to_frame` themselves.
+mod binary;
 mod catalogue;
 mod families;
 mod frame;
@@ -19,20 +20,24 @@ mod types;
 
 /// Shares the session ID's GUID syntax and validator.
 pub use crate::identity::Guid;
+pub use binary::{Display, Input};
 pub use catalogue::{Error, ErrorCode, FatalCode, OperationalCode};
 pub use families::{Advertisement, Families, Family, FrameLimits, Requested};
 pub use frame::{Frame, FrameLimit, WireError, read_frame, write_frame};
 pub use metadata::{
     Available, CommandResult, Percent, Progress, ProgressState, Status, StatusState,
 };
-pub use record::ControlRecord;
-pub use request::{Kill, Leave, Mode, Open, Request};
+pub use record::{ControlRecord, defines};
+pub use request::{
+    Acknowledge, Acquire, Focus, Kill, Leave, Mode, Open, Ready, Request, Resize, SetViewing,
+};
 pub use response::{
     Cleanup, Failure, FocusBytes, KnownResult, Outcome, PartialCleanup, PartialTermination,
     Rejection, Response, Success,
 };
 pub use server::{
-    CommandFinal, FatalError, InitialMetadata, Notification, NotificationSource, ProgressChanged,
-    ServerMessage, StatusChanged, TitleChanged,
+    ActualGeometry, CommandFinal, ControlGranted, ControlRevoked, FatalError, GrantReason,
+    InitialMetadata, Notification, NotificationSource, ProgressChanged, RestorationBegin,
+    RestorationComplete, RevocationReason, ServerMessage, StatusChanged, TitleChanged,
 };
 pub use types::{Counter, Geometry, Utc};

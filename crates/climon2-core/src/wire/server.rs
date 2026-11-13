@@ -1,8 +1,9 @@
 //! Server messages: session daemon to client, types `0x40` through `0x4d`.
 //! Core metadata flows to every selected family regardless of control.
 use super::{
-    Available, CommandResult, Counter, Error, FatalCode, Frame, Progress, Response, Status,
-    record::{self, ControlRecord, Decoder, nullable},
+    Available, CommandResult, Counter, Display, Error, FatalCode, Frame, Geometry, Progress,
+    Response, Status,
+    record::{self, ControlRecord, Decoder, by_name, nullable},
 };
 use crate::ContractError;
 use serde::{Deserialize, Serialize};
@@ -137,6 +138,7 @@ impl TryFrom<StatusChangedFields> for StatusChanged {
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Notification {
+    #[serde(deserialize_with = "by_name")]
     pub source: NotificationSource,
     #[serde(deserialize_with = "nullable")]
     pub source_id: Option<String>,
@@ -161,6 +163,76 @@ pub enum NotificationSource {
 #[serde(deny_unknown_fields)]
 pub struct ProgressChanged {
     pub progress: Progress,
+}
+
+/// Control granted `0x46`: a grant, which starts a new control period at
+/// this geometry. The matching Restoration begin follows; a grant is not
+/// readiness.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlGranted {
+    pub period: Counter,
+    pub restoration_id: Counter,
+    pub geometry: Geometry,
+    #[serde(deserialize_with = "by_name")]
+    pub reason: GrantReason,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantReason {
+    Attach,
+    Acquire,
+    /// Hand-back to the most recently controlling attachment.
+    HandBack,
+    /// Promotion of a passive monitor connection.
+    Successor,
+}
+
+/// Control revoked `0x47`: a revocation, which ends this attachment's control
+/// but not the attachment. The old authority is already invalid.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlRevoked {
+    pub period: Counter,
+    pub restoration_id: Counter,
+    #[serde(deserialize_with = "by_name")]
+    pub reason: RevocationReason,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevocationReason {
+    Takeover,
+    SessionEnding,
+}
+
+/// Restoration begin `0x48`: a new restoration at this geometry, which
+/// invalidates earlier readiness.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestorationBegin {
+    pub period: Counter,
+    pub restoration_id: Counter,
+    pub geometry: Geometry,
+}
+
+/// Restoration complete `0x4a`: every Display of the restoration was sent.
+/// Receiving it is not readiness; applying the restoration is.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestorationComplete {
+    pub period: Counter,
+    pub restoration_id: Counter,
+}
+
+/// Geometry `0x4b`: the session's actual geometry, distinct from Resize
+/// acceptance.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActualGeometry {
+    pub period: Counter,
+    pub geometry: Geometry,
 }
 
 /// Command final `0x4c`: the one authoritative final result. Its status is
@@ -229,6 +301,26 @@ impl ControlRecord for ProgressChanged {
     const CODE: u8 = 0x45;
 }
 
+impl ControlRecord for ControlGranted {
+    const CODE: u8 = 0x46;
+}
+
+impl ControlRecord for ControlRevoked {
+    const CODE: u8 = 0x47;
+}
+
+impl ControlRecord for RestorationBegin {
+    const CODE: u8 = 0x48;
+}
+
+impl ControlRecord for RestorationComplete {
+    const CODE: u8 = 0x4a;
+}
+
+impl ControlRecord for ActualGeometry {
+    const CODE: u8 = 0x4b;
+}
+
 impl ControlRecord for CommandFinal {
     const CODE: u8 = 0x4c;
 }
@@ -246,11 +338,17 @@ pub enum ServerMessage {
     StatusChanged(StatusChanged),
     Notification(Notification),
     ProgressChanged(ProgressChanged),
+    ControlGranted(ControlGranted),
+    ControlRevoked(ControlRevoked),
+    RestorationBegin(RestorationBegin),
+    Display(Display),
+    RestorationComplete(RestorationComplete),
+    Geometry(ActualGeometry),
     CommandFinal(CommandFinal),
     FatalError(FatalError),
 }
 
-const DECODERS: [(u8, Decoder<ServerMessage>); 8] = [
+const DECODERS: [(u8, Decoder<ServerMessage>); 14] = [
     (Response::CODE, |body| {
         record::decode(body).map(ServerMessage::Response)
     }),
@@ -268,6 +366,24 @@ const DECODERS: [(u8, Decoder<ServerMessage>); 8] = [
     }),
     (ProgressChanged::CODE, |body| {
         record::decode(body).map(ServerMessage::ProgressChanged)
+    }),
+    (ControlGranted::CODE, |body| {
+        record::decode(body).map(ServerMessage::ControlGranted)
+    }),
+    (ControlRevoked::CODE, |body| {
+        record::decode(body).map(ServerMessage::ControlRevoked)
+    }),
+    (RestorationBegin::CODE, |body| {
+        record::decode(body).map(ServerMessage::RestorationBegin)
+    }),
+    (Display::CODE, |body| {
+        Display::decode(body).map(ServerMessage::Display)
+    }),
+    (RestorationComplete::CODE, |body| {
+        record::decode(body).map(ServerMessage::RestorationComplete)
+    }),
+    (ActualGeometry::CODE, |body| {
+        record::decode(body).map(ServerMessage::Geometry)
     }),
     (CommandFinal::CODE, |body| {
         record::decode(body).map(ServerMessage::CommandFinal)

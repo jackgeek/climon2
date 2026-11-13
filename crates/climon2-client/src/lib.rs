@@ -1,6 +1,7 @@
 //! Version-matched, byte-transparent terminal client (ADR 0001).
 
 mod bridge;
+mod library;
 mod transport;
 
 use climon2_core::{

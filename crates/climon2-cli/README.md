@@ -14,8 +14,9 @@ startup preserves 126/127.
 
 Home is resolved, created and canonicalized once. Common dispatch opens the
 general log and prunes old logs before any command. Exec reads and validates the
-whole `config.jsonc`, then, unless headless, checks stdin and stdout TTYs, all
-before any session side effect. It resolves canonical companions
+whole `config.jsonc`, its `monitor` section included, then, unless headless,
+checks stdin and stdout TTYs, all before any session side effect. It resolves
+canonical companions
 from its own canonical version-layout path, generates one v4 GUID and socket,
 and switches to the linked session log. Core projects the exact OS-string
 command environment and provides depth/ordinal rules; `TERM=xterm-256color` and
@@ -112,6 +113,13 @@ its scenario table is in that crate's README.
 `kill_refuses_an_older_session_without_capabilities` and
 `kill_of_an_uninstalled_version_names_that_version_and_ignores_config`.
 
+Monitor acceptance-matrix cases proven here:
+
+| Scenario | Named test |
+|---|---|
+| CFG-01 (exec case): exec refuses invalid `monitor` settings, as it does an invalid `scrollback`, before a session exists | `invalid_exec_config_is_rejected_before_session_side_effects` (`tests/exec.rs`) |
+| CFG-01 (attach case): attach ignores an invalid `monitor` section, validating only `client` | `attach_validates_only_the_client_configuration` (`tests/attach.rs`) |
+
 The `monitor`/`mon` hand-off is proven through the installed launcher, as `c2`
 and `climon2`, by `climon2-e2e` `tests/monitor.rs`:
 `installed_monitor_and_mon_open_the_same_monitor` (ENT-01),
@@ -139,3 +147,9 @@ Ordinary cases share one immutable copied install layout with isolated data
 homes. Cases that remove or change executable permissions get private copies.
 Leak checks await asynchronous daemon cleanup and inspect unique process markers,
 metadata and sockets; fixture cleanup also terminates owned processes on panic.
+Typed input follows [`climon2-e2e`'s rule](../climon2-e2e/README.md): a client
+discards keys typed while it restores, so before input that must reach the session
+`type_until` retypes a harmless line until its echo appears, and the input is then
+sent once. Where typing would only end the command, the command waits instead for
+an acknowledgement file the test creates (the fixture's `FIXTURE_REPORT_RELEASE`);
+the zero-size case's fixture prints the size and exits, so that test types nothing.

@@ -1,6 +1,6 @@
 # Input — `0x31`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed, not implemented; rejected until served**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) sends actual user application
 [bytes](../TERMS.md#byte) to the
 [session daemon](../../../GLOSSARY.md#sessions), only as current ready
@@ -48,7 +48,11 @@ Stale authority, no [attachment](../../../GLOSSARY.md#attachment-and-control)/
 control/readiness, empty input, terminating
 session and resource/I/O failure report explicit
 [operational errors](core-v1.md#errors-and-bounded-delivery).
-Invalid framing/header/IDs is fatal. Well-formed rejected requests consume
+Invalid framing/header/IDs is fatal. A body shorter than the 24-byte header
+is `invalid_record`, whatever bytes it holds. In a complete header, a zero
+request ID is `invalid_request_id`, and a zero period or restoration ID with
+a nonzero request ID is `invalid_record`.
+Well-formed rejected requests consume
 wire IDs; loss never permits automatic replay. There are no optional fields,
 text conversion or defaults. Core [capability](../../../GLOSSARY.md#sessions)
 is required; bounds/policy #69
@@ -62,3 +66,12 @@ events. Monitor input additionally waits for coherent selected paint, excluding
 modal UI/stale/too-small targets, not nonmodal toast coverage. Host replies stay
 monitor-local and application focus uses non-user [Focus](request-focus.md);
 neither enters real-user Input or clears attention.
+
+## Implemented behavior
+
+No revision-1 connection is an attachment yet, so until
+[#87](https://github.com/jackgeek/climon2/issues/87) serves Input the
+[session daemon](../../../GLOSSARY.md#sessions) rejects it as impermissible
+with `invalid_state`, whether it is a connection's first request or arrives on
+a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control).
+No byte reaches the command; the stream goes on and a registration stays.

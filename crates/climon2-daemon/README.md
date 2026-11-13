@@ -82,7 +82,8 @@ to the controller only.
 
 Authenticated connections use core's typed protocol messages and connection
 states. Incremental nonblocking decoding enforces an absolute two-second hello
-deadline and bounded frames. Up to 64 concurrent connections are admitted;
+deadline and bounded frames, and reads no further than the frame it is
+decoding. Up to 64 concurrent connections are admitted;
 a further connection is closed unanswered. Each connection's outgoing queue is
 capped at 16 MiB. Restoration prefixes are produced incrementally, whenever less
 than 1 MiB is queued, while live output waits behind them; a controller whose
@@ -90,6 +91,55 @@ pending live output plus queued bytes would exceed 16 MiB, or any connection
 that accepts none of its queued bytes for five seconds, is treated as lost. A
 controller that does not send `Ready` within 30 s plus one second per 4 MiB of
 restoration prefix is also lost. Probes remain serviceable throughout.
+
+### Daemon wire revision 1 beside the private protocol
+
+Hello advertises the frozen tokens and `state`, then `daemon-wire-v1`,
+`monitor-v1` and `title-v1`, and `daemon_wire_v1` with 1,048,576-byte request
+and server frame limits (`core::hello::advertise_revision1`). The first frame
+after hello selects the protocol by its type: a revision-1 type (`0x30`–`0x39`
+or `0x40`–`0x4d`, `core::wire::defines`) selects
+[daemon wire revision 1](../../docs/protocol/daemon-client/core-v1.md) for the
+rest of the connection; any other type continues the private protocol, which
+still serves attach and kill exactly as before. That frame's length is checked
+under the frozen hello limit before its type is known. Every revision-1 frame
+is read and written by core's `wire` codec: a frame its prefix declares
+oversized is refused before its body arrives, request IDs must strictly
+increase (a rejected request still consumes its ID), and a stream ending inside
+a frame is `truncated_frame`. A connection-fatal failure queues a best-effort
+Fatal error, replacing unsent output, and closes the connection; a stream
+ending between frames just closes. Frames read before the end are still
+served, so a peer may send Leave and half-close.
+
+A monitor Open registers a **passive monitor connection**. It is not an
+attachment: control, the leave policy and the hello `state` (so `climon2
+list`'s STATE and CLIENTS) never count it, and it never acquires control.
+Open selects the requested families this daemon supports (required ones must
+all be; unknown or unsupported optional ones are dropped) under a fresh
+connection GUID. Its success Response is followed by one Initial metadata
+record captured in the same loop step: the title by value when `title-v1` is
+selected (unavailable otherwise), status and progress explicitly unavailable,
+and no command result: the exit-or-signal result that needs arrives with #88.
+Every later change of the application title that the VT reports
+(`Fed::titles`, one per change, by value) goes as a Title changed to each
+registration that selected `title-v1`, whatever the control state; titles are
+inert text, never logged. A monitor Open is accepted during committed
+termination too, since that rejects new interactive work only.
+
+Leave removes the registration in the same step, answers `left` with
+`attachment_detached: false`, and closes the stream; nothing sent after it is
+served. Leave before any Open, and a later Open or Kill on a registered
+connection, are `invalid_state` and the stream goes on. A rejected first role
+(an unsupported revision, or an unknown or unsupported required family) has
+no effects and ends the stream. Until #87 and #88 serve them, an interactive
+Open and a valid standalone Kill are rejected without effects
+(`internal_error`) and end their stream. Every other request is rejected
+without effects, and the stream goes on with any registration kept: Input,
+Resize, Ready, Set viewing, Acknowledge and Focus with `invalid_state`, since
+no revision-1 connection is an attachment yet; Acquire with `internal_error`
+on a registration until #89 serves it, and with `invalid_state` before any
+Open, which leaves nothing to convert. Registrations share the connection
+cap, the 16 MiB queue and the five-second no-progress loss.
 
 Every PTY byte goes through one ordered write queue (`PtyWrites`): terminal
 replies and paste cleanup bytes ahead of queued input, and a partly written
@@ -257,6 +307,29 @@ clients and owned generic terminal fixtures:
 - `exec_helper_confirms_launch_failure_codes_and_exits_with_them` drives the
   private `--exec-command` helper directly: 127 for a missing command in a
   usable cwd, otherwise 126.
+
+### Daemon wire revision 1: acceptance scenarios
+
+`tests/revision1/` holds the Contract layer for revision 1 inside the same
+test binary, so it shares the harness and fixtures above: raw-socket peers
+that encode and decode with core's codec and check hand-written expectations
+from the wire reference. The `script` fixture mode sets titles on command
+(`title`, `title-empty`, `title-bytes`, `titles`, `reset`) and can `exit`.
+Each test's doc comment cites the acceptance-matrix IDs it covers.
+
+| Scenario | Named tests |
+|---|---|
+| COM-01 (Contract): hello advertises revision 1 beside the frozen tokens and `state`, exactly as the published complete reply does; Open selects only supported families; a peer that does not select an optional family receives nothing for it | `hello_advertises_revision1_beside_the_frozen_tokens_and_state`, `monitor_open_selects_supported_families_then_reports_initial_metadata`, `a_monitor_without_title_v1_receives_nothing_for_titles` |
+| COM-02 (Contract): broken framing, non-strict JSON or UTF-8, server, private and unknown types, non-increasing request IDs and truncation are connection-fatal with their exact codes; a frame at the 1,048,576-byte limit is served and one byte more refused from its prefix; fragmented and coalesced frames are each answered in order; a Fatal error replaces a stalled stream's unstarted backlog without splitting a frame; out-of-state requests are `invalid_state`, never fatal | `revision1_traffic_that_breaks_the_rules_is_connection_fatal`, `a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal`, `coalesced_and_fragmented_revision1_frames_are_each_answered_in_order`, `a_fatal_error_replaces_a_backlog_without_splitting_a_frame`, `requests_that_need_an_attachment_are_invalid_state_and_the_stream_goes_on` |
+| COM-03 (Contract, passive cases): Open, Leave and the rejections of a first role, a later Open or Kill, an early Leave or Acquire and every request that needs an attachment have their documented outcomes and effects, including during committed termination | `monitor_open_selects_supported_families_then_reports_initial_metadata`, `passive_requests_get_their_documented_outcomes`, `a_monitor_registers_and_leaves_during_committed_termination`, `requests_that_need_an_attachment_are_invalid_state_and_the_stream_goes_on`, `acquire_is_refused_without_effects_until_it_is_served` |
+| COM-05 (Contract, Initial metadata case): Initial metadata is captured atomically and title changes follow it gap-free, including around a burst | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata` |
+| CTL-01 (Contract): a passive registration never acquires control, of a detached session or one controlled elsewhere, and is not an attachment: hello `state` and so `list` are unchanged; core metadata flows before control | `a_passive_registration_never_acquires_control_and_is_not_an_attachment`, `a_monitor_registers_and_leaves_during_committed_termination` |
+| CTL-03 (Contract, title case): titles reach monitors by value, in order and whatever the control; unset, empty, a value and unavailable stay distinct; an oversized title is ignored, never truncated | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_monitor_without_title_v1_receives_nothing_for_titles`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata`, `an_oversized_title_is_ignored_never_truncated` |
+
+`interactive_open_and_standalone_kill_are_refused_until_they_are_served` pins
+the interim refusal that #87 and #88 replace; it covers no matrix scenario.
+`acquire_is_refused_without_effects_until_it_is_served` also pins the interim
+`internal_error` refusal of Acquire on a registration, which #89 replaces.
 
 Every wait for a daemon is bounded: `Session::finish`, its drop and
 `run_unsupervised` kill and reap a daemon still running 20 seconds after it

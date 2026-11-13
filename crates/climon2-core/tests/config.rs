@@ -105,7 +105,7 @@ fn max_rows_accepts_only_integers_from_zero_to_one_hundred_thousand() {
     assert_eq!(MaxRows::new(100_001), None);
     let detail = invalid(exec(r#"{"scrollback":{"max_rows":100001}}"#));
     assert!(
-        detail.contains("max_rows must be an integer from 0 to 100000"),
+        detail.starts_with("scrollback.max_rows must be an integer from 0 to 100000"),
         "{detail}"
     );
     for bad in [

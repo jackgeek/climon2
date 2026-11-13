@@ -5,7 +5,7 @@ mod support;
 use climon2_test_term::{Terminal, controlled_bash, copy_executable};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
-use support::{Package, TIMEOUT, quote, type_until};
+use support::{LIBRARY, Package, TIMEOUT, quote, type_until};
 
 /// #21.6/#38: real installer → PATH launcher → CLI → daemon → client, from
 /// controlled outer bash to controlled inner bash; a second real PTY lists one
@@ -795,13 +795,12 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
     let payload_root = package.isolation.home().join("controlled-payload");
     let fixture_folder = payload_root.join(fixture_version);
     fs::create_dir_all(&fixture_folder).unwrap();
-    fs::copy(
-        package.executable_home().join("climon2"),
-        payload_root.join("climon2"),
-    )
-    .unwrap();
-    for binary in ["climon2-cli", "climon2-daemon", "climon2-monitor"] {
-        fs::copy(old_folder.join(binary), fixture_folder.join(binary)).unwrap();
+    copy_executable(
+        &package.executable_home().join("climon2"),
+        &payload_root.join("climon2"),
+    );
+    for binary in ["climon2-cli", "climon2-daemon", "climon2-monitor", LIBRARY] {
+        copy_executable(&old_folder.join(binary), &fixture_folder.join(binary));
     }
     executable_script(
         &fixture_folder.join("climon2-client"),

@@ -12,9 +12,10 @@ use nix::{
     sys::signal::{Signal, kill},
     unistd::Pid,
 };
+use serde_json::Value;
 use std::{
     env, fs,
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
     thread,
     time::{Duration, Instant},
@@ -171,16 +172,198 @@ fn installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys() {
             r#"climon2: error: config.jsonc is invalid: invalid key string "Ctrl+\n""#,
         ),
     ] {
-        fs::write(
-            package.isolation.climon2_home().join("config.jsonc"),
-            config,
-        )
-        .unwrap();
+        fs::write(config_file(&package), config).unwrap();
         let mut terminal = outer(&package, "climon2 monitor");
         let diagnostic = refusal(&mut terminal);
         assert!(diagnostic.starts_with(expected), "{diagnostic:?}");
         assert_released(&package, &mut terminal, 125);
     }
+    package.assert_clean();
+}
+
+fn config_file(package: &Package) -> PathBuf {
+    package.isolation.climon2_home().join("config.jsonc")
+}
+
+/// CFG-01 (Monitor): every invalid configuration, unreadable and malformed
+/// JSONC included, prints one explicit diagnostic and exits with the climon2
+/// error code before any terminal change: a null, a wrong type, a duplicate
+/// known field, an overflowing count, an out-of-range value and inconsistent
+/// limits.
+#[test]
+fn installed_monitor_refuses_every_invalid_configuration_before_the_terminal_changes() {
+    let package = Package::new();
+    let config = config_file(&package);
+    fs::create_dir(&config).unwrap();
+    let mut terminal = outer(&package, "climon2 monitor");
+    let diagnostic = refusal(&mut terminal);
+    assert!(
+        diagnostic.starts_with("climon2: error: cannot read config.jsonc: "),
+        "{diagnostic:?}"
+    );
+    assert!(diagnostic.contains(" (logs: "), "{diagnostic:?}");
+    assert_released(&package, &mut terminal, 125);
+    fs::remove_dir(&config).unwrap();
+    for (text, expected) in [
+        (
+            "{\"monitor\":",
+            "config.jsonc is malformed: EOF while parsing a value at line 1 column 11",
+        ),
+        (
+            r#"{"monitor": {"bell": null}}"#,
+            "config.jsonc is invalid: invalid type: null, expected a boolean",
+        ),
+        (
+            r#"{"monitor": {"show_key_hints": "no"}}"#,
+            r#"config.jsonc is invalid: invalid type: string "no", expected a boolean"#,
+        ),
+        (
+            r#"{"monitor": {"limits": {}, "limits": {}}}"#,
+            "config.jsonc is invalid: duplicate field `limits`",
+        ),
+        (
+            r#"{"monitor": {"limits": {"queues": {"deliveries": 4294967296}}}}"#,
+            "config.jsonc is invalid: invalid value: integer `4294967296`, expected u32",
+        ),
+        (
+            r#"{"monitor": {"limits": {"ui": {"fps": 121}}}}"#,
+            "config.jsonc is invalid: monitor.limits.ui.fps must be an integer from 1 to 120",
+        ),
+        (
+            r#"{"monitor": {"limits": {"retry": {"initial_ms": 30001}}}}"#,
+            "config.jsonc is invalid: monitor.limits.retry.initial_ms (30001) may not exceed monitor.limits.retry.cap_ms (30000)",
+        ),
+    ] {
+        fs::write(&config, text).unwrap();
+        let mut terminal = outer(&package, "climon2 monitor");
+        let diagnostic = refusal(&mut terminal);
+        assert!(
+            diagnostic.starts_with(&format!("climon2: error: {expected}")),
+            "{text}: {diagnostic:?}"
+        );
+        assert!(diagnostic.contains(" (logs: "), "{diagnostic:?}");
+        assert_released(&package, &mut terminal, 125);
+    }
+    package.assert_clean();
+}
+
+/// CFG-01 (Monitor): `monitor.show_key_hints: false` removes the empty state's
+/// hint but no binding, so prefix+x still exits 0. Unknown and unrelated
+/// settings, an invalid `scrollback` among them, are ignored.
+#[test]
+fn installed_monitor_without_key_hints_shows_none_and_still_exits() {
+    let package = Package::new();
+    fs::write(
+        config_file(&package),
+        r#"{"monitor": {"show_key_hints": false, "future": null}, "scrollback": {"max_rows": "many"}, "future": []}"#,
+    )
+    .unwrap();
+    let mut terminal = outer(&package, "climon2 monitor");
+    opened(&mut terminal);
+    assert_eq!(terminal.screen(), empty_monitor(ROWS, COLS, &[EMPTY]));
+    terminal.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    package.assert_clean();
+}
+
+/// CFG-01 (Monitor): the monitor reads its configuration once, before the
+/// terminal changes, and never reloads it. After the file is edited, a repaint
+/// still shows no hint, and the edited prefix and x, once read, do not exit:
+/// the monitor still runs and leaves on SIGTERM with that signal's status.
+#[test]
+fn editing_the_configuration_while_the_monitor_runs_changes_nothing() {
+    let package = Package::new();
+    let config = config_file(&package);
+    fs::write(
+        &config,
+        r#"{"client": {"escape_prefix": "Ctrl+B"}, "monitor": {"show_key_hints": false}}"#,
+    )
+    .unwrap();
+    let mut terminal = outer(&package, "climon2 monitor");
+    opened(&mut terminal);
+    assert_eq!(terminal.screen(), empty_monitor(ROWS, COLS, &[EMPTY]));
+    fs::write(
+        &config,
+        r#"{"client": {"escape_prefix": "Ctrl+A"}, "monitor": {"show_key_hints": true}}"#,
+    )
+    .unwrap();
+    terminal.resize(12, 50).unwrap();
+    let repainted = empty_monitor(12, 50, &[EMPTY]);
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| screen == repainted)
+        .unwrap();
+    let monitor = monitor_process(&package).0;
+    read_alone(&mut terminal, monitor, b"\x01x");
+    kill(Pid::from_raw(monitor), Signal::SIGTERM)
+        .expect("the monitor still runs after reading the edited prefix and x");
+    assert_released(&package, &mut terminal, 143);
+    package.assert_clean();
+}
+
+/// The effective configuration expected from the file in
+/// [`installed_monitor_logs_its_effective_configuration`]: its four settings
+/// and every other default, written out from the operational limits document.
+const EFFECTIVE: &str = r#"{
+  "client": {"escape_prefix": "Ctrl+]", "take_control_key": null},
+  "monitor": {
+    "show_key_hints": true,
+    "bell": false,
+    "limits": {
+      "memory": {"total_bytes": 536870912, "client_bytes": 67108864, "history_bytes_per_session": 16777216, "history_bytes_total": 268435456, "queue_bytes_total": 67108864},
+      "history": {"max_rows": 200},
+      "resources": {"stack_bytes": 2097152, "max_workers_per_client": 2, "descriptors_per_client": 8, "descriptors_per_load": 4, "descriptor_headroom": 64, "release_bytes": 67108864},
+      "queues": {"request_bytes": 262144, "request_records": 64, "event_bytes": 1048576, "event_records": 1024, "progress_bytes": 65536, "progress_records": 32, "deliveries": 8, "operations": 16},
+      "transfer": {"chunk_bytes": 65536, "drain_records": 64, "drain_payload_bytes": 65536},
+      "payload": {"wire_frame_bytes": 1048576, "metadata_record_bytes": 16384, "title_bytes": 4096, "notification_title_bytes": 4096, "notification_body_bytes": 8192, "assembly_records": 32, "assembly_bytes": 65536},
+      "scheduling": {"probes": 8, "loads": 2, "starts": 8, "newer_start_burst": 8},
+      "discovery": {"pass_ms": 30000, "stall_ms": 5000, "batch_records": 128, "batch_bytes": 1048576, "metadata_file_bytes": 262144, "metadata_depth": 32},
+      "deadlines": {"load_ms": 10000, "start_ms": 10000, "operation_ms": 5000, "kill_ms": 10000, "restoration_stall_ms": 5000, "restoration_total_ms": 60000, "delivery_stall_ms": 5000, "leave_ms": 5000, "cleanup_ms": 10000, "shutdown_ms": 10000, "final_host_ms": 1000, "assembly_ms": 5000},
+      "retry": {"initial_ms": 1000, "cap_ms": 40000, "jitter_percent": 20, "admission_ms": 1000},
+      "ui": {"fps": 30, "client_quantum_ms": 2, "background_quantum_ms": 8, "toast_records": 128, "toast_bytes": 524288, "search_bytes": 4096}
+    }
+  }
+}"#;
+
+/// The one general log the monitor wrote.
+fn monitor_log(package: &Package) -> String {
+    let logs = package.logs();
+    let monitor: Vec<_> = logs
+        .iter()
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("monitor-")
+        })
+        .collect();
+    assert_eq!(monitor.len(), 1, "{logs:?}");
+    fs::read_to_string(monitor[0]).unwrap()
+}
+
+/// CFG-01 (Monitor): the monitor reports every effective setting, the
+/// configured ones and every default, in its general log.
+#[test]
+fn installed_monitor_logs_its_effective_configuration() {
+    let package = Package::new();
+    fs::write(
+        config_file(&package),
+        r#"{"client": {"take_control_key": null}, "monitor": {"bell": false, "limits": {"history": {"max_rows": 200}, "retry": {"cap_ms": 40000}}}}"#,
+    )
+    .unwrap();
+    let mut terminal = outer(&package, "climon2 monitor");
+    opened(&mut terminal);
+    terminal.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    let log = monitor_log(&package);
+    let reported = log
+        .lines()
+        .find_map(|line| line.split_once(" monitor configuration effective="))
+        .unwrap_or_else(|| panic!("{log}"))
+        .1;
+    assert_eq!(
+        serde_json::from_str::<Value>(reported).unwrap(),
+        serde_json::from_str::<Value>(EFFECTIVE).unwrap()
+    );
     package.assert_clean();
 }
 
@@ -202,22 +385,31 @@ fn a_monitor_outside_a_version_folder_refuses_to_start() {
     package.assert_clean();
 }
 
-/// The empty monitor as specified: the permanent top row, then the empty state
-/// centred in the rows below it; an odd spare row falls above the text and an
-/// odd spare column after it.
-fn expected_screen(rows: u16, cols: u16, prefix: &str) -> String {
+/// The empty monitor as specified: the permanent top row, then the empty
+/// state's `lines` centred in the rows below it; an odd spare row falls above
+/// the text and an odd spare column after it.
+fn empty_monitor(rows: u16, cols: u16, lines: &[&str]) -> String {
     let (rows, cols) = (usize::from(rows), usize::from(cols));
-    let hint = format!("Press {prefix} then x to exit.");
-    let first = 1 + (rows - 2) / 2;
+    let first = 1 + (rows - lines.len()) / 2;
     (0..rows)
         .map(|row| match row {
             0 => format!("{TOP_ROW:<cols$}"),
-            _ if row == first => format!("{EMPTY:^cols$}"),
-            _ if row == first + 1 => format!("{hint:^cols$}"),
+            _ if (first..first + lines.len()).contains(&row) => {
+                format!("{:^cols$}", lines[row - first])
+            }
             _ => " ".repeat(cols),
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The empty monitor with its key hint naming `prefix`.
+fn expected_screen(rows: u16, cols: u16, prefix: &str) -> String {
+    empty_monitor(
+        rows,
+        cols,
+        &[EMPTY, &format!("Press {prefix} then x to exit.")],
+    )
 }
 
 /// The monitor owns the host: its own alternate screen showing the top row and
@@ -309,7 +501,7 @@ fn installed_monitor_and_mon_open_the_same_monitor() {
 fn installed_monitor_hints_and_exits_with_the_configured_prefix() {
     let package = Package::new();
     fs::write(
-        package.isolation.climon2_home().join("config.jsonc"),
+        config_file(&package),
         r#"{"client": {"escape_prefix": "Ctrl+B", "take_control_key": null}}"#,
     )
     .unwrap();
@@ -518,17 +710,7 @@ fn a_hung_up_host_input_releases_the_host_before_its_diagnostic() {
         "climon2: error: the host terminal closed (logs: ",
     );
     assert_released(&package, &mut terminal, 125);
-    let logs = package.logs();
-    let log = logs
-        .iter()
-        .find(|path| {
-            path.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("monitor-")
-        })
-        .map(|path| fs::read_to_string(path).unwrap())
-        .unwrap();
+    let log = monitor_log(&package);
     assert!(
         log.contains("monitor failed error=the host terminal closed"),
         "{log}"
@@ -546,26 +728,14 @@ fn installed_monitor_logs_content_free_records_to_its_general_log() {
     terminal.send("typed-secret-not-for-logs-5e1").unwrap();
     terminal.send(b"\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
-    let logs = package.logs();
-    let monitor: Vec<_> = logs
-        .iter()
-        .filter(|path| {
-            path.file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .starts_with("monitor-")
-        })
-        .collect();
-    assert_eq!(monitor.len(), 1, "{logs:?}");
-    let log = fs::read_to_string(monitor[0]).unwrap();
+    let log = monitor_log(&package);
     assert!(log.contains(" role=monitor "), "{log}");
     assert!(
         log.contains(&format!("monitor started version={VERSION}")),
         "{log}"
     );
     assert!(log.contains("monitor stopped status=0"), "{log}");
-    for path in &logs {
+    for path in package.logs() {
         assert!(!fs::read_to_string(path).unwrap().contains("typed-secret"));
     }
     package.assert_clean();

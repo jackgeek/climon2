@@ -4,9 +4,11 @@ The default macOS and GNU/Linux packaged acceptance tier (#38), using the public
 the PATH launcher, real sibling binaries and `climon2-test-term` PTYs.
 There are no nested Cargo builds, ignored packaged tests, test retries, or shortened
 production deadlines. A client discards keys typed during its restoration and
-nothing on the screen marks its end, so the smoke test's first command and the
-line the headless detach step types before its single detach key are harmless
-inputs that `type_until` retypes until the session's answer appears.
+nothing on the screen marks its end, so typed input is ordered by observed output:
+before input that must reach the session, `type_until` retypes a harmless command
+until its output (or echo) appears, and the input itself is then sent exactly once.
+That orders the input; it does not retry an assertion. Where typing would only end
+the command, the command instead waits for an acknowledgement file the test creates.
 Each scenario has an isolated HOME and climon2 home;
 normal completion checks owned processes, session metadata and runtime sockets.
 Logs intentionally survive until the isolated home is dropped.
@@ -63,6 +65,20 @@ home, then both CLIs list both versions and both clients deliver command exit
 statuses. With no prior archive, the first-release gate explicitly reports that
 no compatibility evidence was fabricated.
 
+## Library layer
+
+`tests/library.rs` loads the installed client library,
+`<executable home>/<version>/libclimon2_client.dylib` on macOS or
+`libclimon2_client.so` on Linux, through the test-only `climon2-library-host`
+fixture, which uses only `dlopen` (`RTLD_NOW | RTLD_LOCAL`), `dlsym` of
+`climon2_client_get_interface` and the returned function table, never Rust
+calls, static linking or a mock table. The host prints its observations as
+JSON; the tests decide what is correct. Each host run is bounded; one that
+outlives its deadline is killed, reaped and failed. In archive mode the same
+tests load the exact archive's library, so the CI archive jobs exercise both
+macOS architectures' slices and the Linux library. The exported symbol set is
+a release check (`xtask`), not a Library-layer test.
+
 ## Session continuity scenarios
 
 Detach and reattach, takeover and hand-back, the placeholder, kill, listing
@@ -99,6 +115,15 @@ sessions in `tests/headless.rs`.
 | #19/#25 client panic after exec, diagnostic/log suffix, actual daemon leave policy | `debug_hook_client_panic_after_exec_logs_and_uses_daemon_leave_policy` |
 | #25/#39 actual release default INFO-or-above | smoke's `assert_archive_default_levels` in archive mode |
 
+### Library layer (`tests/library.rs`, #75)
+
+| Scenario | Named test |
+|---|---|
+| LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; bounded requirements; no unimplemented capability | `installed_library_describes_revision_one_with_its_version_identity` |
+| LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths (`LD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`), the absolute path maps the requested file (the system loader's lookup, which no library change can alter); the library answers from its own image with its own folder's release, not `current`'s, and a misplaced copy reports its compiled-in release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
+| LIB-02 Library: unsupported revisions rejected with a null description; null output storage | `installed_library_rejects_other_revisions_without_a_description` |
+| DOC-01: all eleven table entries report unsupported operation by the frozen call rules | `installed_library_table_reports_every_instance_call_unsupported` |
+
 ### Session continuity (plan section 6.1)
 
 | Scenario | Named packaged test (`tests/continuity.rs` unless noted) |
@@ -110,7 +135,7 @@ sessions in `tests/headless.rs`.
 | 6.1.5 kill of detached and attached sessions | `installed_kill_ends_detached_and_attached_sessions` |
 | 6.1.6 self-attach refused without disturbing the session | `installed_self_attach_is_refused_without_disturbing_the_session` |
 | 6.1.7 invalid configuration refused before a session exists; rebound keys | `installed_invalid_config_is_refused_before_a_session_exists`, `installed_config_rebinds_the_client_keys` |
-| 6.1.8 `scrollback.max_rows` bounds restored history with a notice | `installed_scrollback_max_rows_bounds_restored_history` |
+| 6.1.8 `scrollback.max_rows` bounds restored history with a notice; CFG-01 (exec case) the monitor's `history.max_rows` never changes it | `installed_scrollback_max_rows_bounds_restored_history` |
 | 6.1.9 detached queries answered by the session, never forwarded to the host | `installed_session_answers_queries_without_the_host` |
 | 6.1.10 encoded titles, OSC 8 links as plain text | `installed_titles_are_encoded_and_links_are_plain_text` |
 | 6.1.11 detached session absorbs an 8 MiB write | `installed_detached_session_absorbs_a_large_write` |
@@ -137,6 +162,10 @@ own. The hang-up case completes its hang-up while the monitor is stopped.
 | ENT-01 `c2 monitor`, `c2 mon`, `climon2 monitor` and `climon2 mon` open the same installed monitor through the launcher: top row, empty state, exact host modes, prefix+x exits 0 with the prefix read alone | `installed_monitor_and_mon_open_the_same_monitor` |
 | INP-01 configured prefix hint and exit 0, null take-control key accepted; once read, Ctrl+C and the default prefix+x are not exits (SIGTERM then gives 143) | `installed_monitor_hints_and_exits_with_the_configured_prefix` |
 | INP-01 null escape prefix and invalid keys refused before terminal changes | `installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys` |
+| CFG-01 unreadable and malformed JSONC, null, wrong type, duplicate, overflow, out-of-range and inconsistent settings: one diagnostic, 125, no terminal change | `installed_monitor_refuses_every_invalid_configuration_before_the_terminal_changes` |
+| CFG-01 `monitor.show_key_hints` false hides the empty state's hint, prefix+x still exits; unknown and unrelated settings ignored | `installed_monitor_without_key_hints_shows_none_and_still_exits` |
+| CFG-01 no live reload: after an edit, a repaint keeps the started settings and the edited prefix, once read, does not exit (SIGTERM then gives 143) | `editing_the_configuration_while_the_monitor_runs_changes_nothing` |
+| CFG-01 every effective setting in the monitor's general log | `installed_monitor_logs_its_effective_configuration` |
 | INP-03 (empty monitor) pastes never exit, never complete a pending prefix and leave none pending | `pastes_never_exit_or_leave_a_pending_prefix` |
 | Derived scenario: monitor argument refusal, usage and 2 | `installed_monitor_arguments_are_a_usage_error` |
 | Derived scenario: monitor non-TTY stdin or stdout refusal | `installed_monitor_refuses_a_non_terminal_stdin_or_stdout` |
