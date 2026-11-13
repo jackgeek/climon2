@@ -10,10 +10,10 @@ use climon2_core::{
     hello::Lifecycle,
     protocol::{self, ClientMessage, ServerMessage as PrivateMessage, TerminalSize},
     wire::{
-        self, Acknowledge, Acquire, AuthorityIds, AuthorityResult, CommandResult, ControlRecord,
-        ControlRevoked, Counter, Display, Focus, FocusBytes, Frame, Geometry, GrantReason, Input,
-        Kill, Leave, Mode, Outcome, Ready, Resize, Response, RestorationBegin, RestorationComplete,
-        RevocationReason, ServerMessage, SetViewing, Success,
+        self, Acknowledge, Acquire, ActualGeometry, AuthorityIds, AuthorityResult, CommandResult,
+        ControlRecord, ControlRevoked, Counter, Display, Focus, FocusBytes, Frame, Geometry,
+        GrantReason, Input, Kill, Leave, Mode, Outcome, Ready, Resize, Response, RestorationBegin,
+        RestorationComplete, RevocationReason, ServerMessage, SetViewing, Success,
     },
 };
 use std::{fs, io::Write, num::NonZeroU32, os::unix::net::UnixStream, time::Duration};
@@ -29,7 +29,7 @@ pub(super) fn geometry(cols: u32, rows: u32) -> Geometry {
 /// restoration, whether it still controls, its last request ID and the
 /// terminal bytes it received.
 pub(super) struct Attached {
-    stream: UnixStream,
+    pub(super) stream: UnixStream,
     /// The families its Open selected, sorted.
     selected: Vec<String>,
     period: u64,
@@ -37,7 +37,7 @@ pub(super) struct Attached {
     /// From its Control granted until its Control revoked.
     controlling: bool,
     request: u64,
-    display: Vec<u8>,
+    pub(super) display: Vec<u8>,
 }
 
 impl Attached {
@@ -63,6 +63,27 @@ impl Attached {
         let mut attached = Self::opened_begun(stream, granted);
         attached.completed();
         attached
+    }
+
+    /// A passive monitor connection registered with request 1, selecting
+    /// `optional`: not an attachment, and without control, until its
+    /// Acquire or a promotion grants it control.
+    pub(super) fn registered(session: &Session, optional: &[&str]) -> Self {
+        Self::passive(super::monitor(session, optional).0)
+    }
+
+    /// The passive monitor connection `stream`, whose Open with request 1
+    /// was answered with its Initial metadata.
+    pub(super) fn passive(stream: UnixStream) -> Self {
+        Self {
+            stream,
+            selected: Vec::new(),
+            period: 0,
+            restoration: 0,
+            controlling: false,
+            request: 1,
+            display: Vec::new(),
+        }
     }
 
     /// The Response, Initial metadata, Control granted (`attach`) at the
@@ -103,7 +124,7 @@ impl Attached {
 
     /// The next record is Control granted for `reason` at `geometry`, under a
     /// period newer than any this attachment had; its restoration follows.
-    fn granted(&mut self, reason: GrantReason, geometry: Geometry) {
+    pub(super) fn granted(&mut self, reason: GrantReason, geometry: Geometry) {
         self.grant(reason, geometry);
         self.completed();
     }
@@ -134,6 +155,19 @@ impl Attached {
         self.completed();
     }
 
+    /// The effective geometry of a monitor-mode controller changed to
+    /// `geometry`: Geometry under its period comes next, then, before any
+    /// Display at that geometry, the Restoration begin of the period's next
+    /// restoration at it, then that restoration.
+    pub(super) fn regeometried(&mut self, geometry: Geometry) {
+        let actual = ActualGeometry {
+            period: counter(self.period),
+            geometry,
+        };
+        assert_eq!(message(&mut self.stream), ServerMessage::Geometry(actual));
+        self.restored(self.restoration + 1, geometry);
+    }
+
     /// Restoration begin for `restoration` of the current period at
     /// `geometry`.
     fn begun(&mut self, restoration: u64, geometry: Geometry) {
@@ -150,7 +184,7 @@ impl Attached {
 
     /// The current restoration's Display chunks, then its Restoration
     /// complete.
-    fn completed(&mut self) {
+    pub(super) fn completed(&mut self) {
         let complete = RestorationComplete {
             authority: self.authority(),
         };
@@ -187,7 +221,7 @@ impl Attached {
     }
 
     /// Reads Display until the bytes received hold `needle` `times` times.
-    fn until_displayed(&mut self, needle: &[u8], times: usize) {
+    pub(super) fn until_displayed(&mut self, needle: &[u8], times: usize) {
         while crate::count(&self.display, needle) < times {
             match message(&mut self.stream) {
                 ServerMessage::Display(display) => self.displayed(display),
@@ -197,12 +231,12 @@ impl Attached {
     }
 
     /// The next request ID.
-    fn next(&mut self) -> Counter {
+    pub(super) fn next(&mut self) -> Counter {
         self.request += 1;
         counter(self.request)
     }
 
-    fn authority(&self) -> AuthorityIds {
+    pub(super) fn authority(&self) -> AuthorityIds {
         AuthorityIds {
             period: counter(self.period),
             restoration_id: counter(self.restoration),
@@ -210,7 +244,7 @@ impl Attached {
     }
 
     /// The Response to the latest request, after any Display.
-    fn response(&mut self) -> Outcome {
+    pub(super) fn response(&mut self) -> Outcome {
         match self.next_after_display() {
             ServerMessage::Response(response) => {
                 assert_eq!(response.request_id, counter(self.request));
@@ -242,12 +276,12 @@ impl Attached {
         })
     }
 
-    fn ready(&mut self) -> Outcome {
+    pub(super) fn ready(&mut self) -> Outcome {
         self.ready_as(self.authority())
     }
 
     /// Confirms readiness for the first time under this authority.
-    fn confirm_ready(&mut self) {
+    pub(super) fn confirm_ready(&mut self) {
         let authority = self.authority();
         let ready = Success::Ready(AuthorityResult {
             changed: true,
@@ -272,7 +306,7 @@ impl Attached {
     }
 
     /// Input accepted whole for forwarding.
-    fn typed(&mut self, payload: &[u8]) {
+    pub(super) fn typed(&mut self, payload: &[u8]) {
         let accepted_bytes = NonZeroU32::new(payload.len() as u32).unwrap();
         assert_eq!(
             self.input(payload),
@@ -291,7 +325,7 @@ impl Attached {
         })
     }
 
-    fn resize(&mut self, cols: u32, rows: u32) -> Outcome {
+    pub(super) fn resize(&mut self, cols: u32, rows: u32) -> Outcome {
         self.resize_as(self.authority(), cols, rows)
     }
 
@@ -345,7 +379,7 @@ impl Attached {
     /// Acquire by a non-controlling attachment: its grant and the beginning
     /// of its restoration precede the success, then the restoration
     /// completes.
-    fn acquire(&mut self, geometry: Geometry) {
+    pub(super) fn acquire(&mut self, geometry: Geometry) {
         let request_id = self.next();
         request(&mut self.stream, &Acquire { request_id });
         self.grant(GrantReason::Acquire, geometry);
@@ -360,7 +394,7 @@ impl Attached {
 
     /// Any release Display, then Control revoked for `reason` under the
     /// current authority; no Display may follow it.
-    fn revoked(&mut self, reason: RevocationReason) {
+    pub(super) fn revoked(&mut self, reason: RevocationReason) {
         let authority = self.authority();
         let revoked = ControlRevoked { authority, reason };
         assert_eq!(
@@ -372,7 +406,7 @@ impl Attached {
 
     /// Leaves as an accepted detach: its Response reports an attachment
     /// detached, and the stream then ends.
-    fn leave(&mut self) {
+    pub(super) fn leave(&mut self) {
         let request_id = self.next();
         request(&mut self.stream, &Leave { request_id });
         let left = Success::Left {
@@ -399,7 +433,7 @@ impl Attached {
 }
 
 /// The rejection of the latest request with `code`, carrying no result.
-fn rejected(outcome: Outcome, code: &str) {
+pub(super) fn rejected(outcome: Outcome, code: &str) {
     match outcome {
         Outcome::Rejected(rejection) => {
             assert_eq!(rejection.error.code.as_str(), code);

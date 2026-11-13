@@ -30,8 +30,7 @@ const UNSUPPORTED_GEOMETRY: &str = "the geometry exceeds the supported terminal 
 const EMPTY_INPUT: &str = "Input carries no bytes";
 const TERMINATING: &str = "the session is terminating";
 const CLEANUP_INCOMPLETE: &str = "the session's termination or cleanup did not complete";
-/// Acquire by a passive monitor connection (#89), and Set viewing and
-/// Acknowledge (#91) are not served yet.
+/// Set viewing and Acknowledge (#91) are not served yet.
 const NOT_YET_SERVED: &str = "this daemon does not serve this request yet";
 
 /// What hello advertises: only the families this daemon implements.
@@ -55,9 +54,11 @@ pub(super) struct Opened {
 }
 
 enum Role {
-    /// A passive monitor connection: registered, never an attachment.
+    /// A passive monitor connection: registered, not an attachment until
+    /// its Acquire or a promotion converts it.
     Monitor,
-    /// An ordinary interactive attachment.
+    /// An attachment: an ordinary interactive one, or a converted passive
+    /// monitor connection.
     Attachment(Attachment),
     /// A standalone Kill, answered once the session ended: never an
     /// attachment, and it receives no core metadata.
@@ -83,8 +84,9 @@ impl Role {
 }
 
 struct Attachment {
-    /// The Open that its admission or refusal answers.
-    open: Counter,
+    /// The interactive Open that its admission or refusal answers; none
+    /// for a converted passive monitor connection.
+    open: Option<Counter>,
     /// What it holds while it controls.
     held: Option<Held>,
 }
@@ -180,12 +182,14 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// A passive monitor connection: success and Initial metadata at once.
+    /// It may inherit control from now on.
     fn register(&mut self, id: u64, request_id: Counter, selected: BTreeSet<Family>) {
         let opened = Opened {
             selected,
             role: Role::Monitor,
         };
         self.opened.insert(id, opened);
+        self.control.register(ConnectionId(id));
         self.report_opened(id, request_id);
     }
 
@@ -204,7 +208,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             return Ok(());
         };
         let attachment = Attachment {
-            open: request_id,
+            open: Some(request_id),
             held: None,
         };
         let opened = Opened {
@@ -235,8 +239,20 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn open_request(&self, id: u64) -> Option<Counter> {
         match &self.opened.get(&id)?.role {
-            Role::Attachment(attachment) => Some(attachment.open),
+            Role::Attachment(attachment) => attachment.open,
             _ => None,
+        }
+    }
+
+    /// A passive monitor connection became an attachment, by its Acquire
+    /// or a promotion; no Open awaits an answer.
+    pub(super) fn converted(&mut self, id: u64) {
+        if let Some(opened) = self.opened.get_mut(&id) {
+            let attachment = Attachment {
+                open: None,
+                held: None,
+            };
+            opened.role = Role::Attachment(attachment);
         }
     }
 
@@ -269,20 +285,17 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
                 self.reject(id, request_id, OperationalCode::InvalidState, NOT_OPENED);
                 Ok(())
             }
-            Some(Kind::Monitor) => {
-                self.left(id, request_id, false);
-                Ok(())
-            }
-            Some(Kind::Attachment) => self.detach_attachment(id, request_id),
+            Some(kind) => self.depart(id, request_id, kind == Kind::Attachment),
         }
     }
 
-    /// An attachment's Leave is an accepted detach: a controller's
-    /// presentation is released and control is handed back first.
-    fn detach_attachment(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
+    /// A passive monitor connection's registration ends, and an
+    /// attachment's Leave is an accepted detach: a controller's
+    /// presentation is released and control passes on first.
+    fn depart(&mut self, id: u64, request_id: Counter, detached: bool) -> io::Result<()> {
         let effects = self.control.leave(ConnectionId(id));
         self.effects(effects)?;
-        self.left(id, request_id, true);
+        self.left(id, request_id, detached);
         Ok(())
     }
 
@@ -295,21 +308,17 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.end_stream(id);
     }
 
-    /// Acquire takes control for a non-controlling attachment and is an
-    /// explicit no-op for the controller. A passive monitor connection
-    /// cannot acquire until #89 serves it, and a connection that opened
-    /// nothing has nothing to convert.
+    /// Acquire takes control for a non-controlling attachment, converting
+    /// a passive monitor connection into one, and is an explicit no-op for
+    /// the controller. A connection that opened nothing has nothing to
+    /// convert.
     fn acquire(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
         match self.kind(id) {
             None | Some(Kind::Kill) => {
                 self.reject(id, request_id, OperationalCode::InvalidState, NOT_OPENED);
                 Ok(())
             }
-            Some(Kind::Monitor) => {
-                self.reject_with(id, request_id, not_yet());
-                Ok(())
-            }
-            Some(Kind::Attachment) => self.take_control(id, request_id),
+            Some(_) => self.take_control(id, request_id),
         }
     }
 
@@ -881,8 +890,4 @@ fn refusal(code: OperationalCode) -> Error {
         code: code.into(),
         message: format!("request refused: {}", code.as_str()),
     }
-}
-
-fn not_yet() -> Error {
-    error(OperationalCode::InternalError, NOT_YET_SERVED)
 }

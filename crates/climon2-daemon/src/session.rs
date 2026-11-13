@@ -662,6 +662,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         match effect {
             Effect::Admit { conn } => self.admit(conn.0),
             Effect::Refuse { conn } => self.refuse(conn.0),
+            Effect::Convert { conn } => self.convert(conn.0),
             other => self.input_effect(other),
         }
     }
@@ -794,6 +795,14 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn refuse(&mut self, id: u64) {
         self.refused(id);
         self.close_with_error(id, "session is terminating");
+    }
+
+    /// A passive monitor connection became an attachment: its output is
+    /// canonical, at the session geometry.
+    fn convert(&mut self, id: u64) {
+        let delivery = Delivery::canonical(self.control.session_size());
+        self.deliveries.insert(id, delivery);
+        self.converted(id);
     }
 
     fn close_with_error(&mut self, id: u64, message: &str) {

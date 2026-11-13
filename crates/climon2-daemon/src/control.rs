@@ -1,19 +1,20 @@
 //! The pure control state machine of one session.
 //!
 //! It owns the lifecycle, the attachments, the controller and its hand-back
-//! recency order, the control period, the restoration and readiness, the
-//! controller's desired application focus, each attachment's latest host
-//! size, the applied session geometry, the end of input admission and the
-//! shutdown sequence, and it authorizes requests against them. It performs
-//! no I/O: each method takes one event and returns the effects the daemon
-//! loop must perform, in order.
+//! recency order, the passive monitor connections that may inherit control,
+//! the control period, the restoration and readiness, the controller's
+//! desired application focus, each attachment's latest host size, the
+//! applied session geometry, the end of input admission and the shutdown
+//! sequence, and it authorizes requests against them. It performs no I/O:
+//! each method takes one event and returns the effects the daemon loop must
+//! perform, in order.
 //!
 //! Call protocol for one loop iteration:
 //!
 //! 1. Feed every event received this iteration to its method, in acceptance
-//!    order, and perform the effects each returns. Every attach, takeover and
-//!    hand-back is granted at once: its [`Effect::Grant`] names the new
-//!    authority. [`Control::resize`] only records a pending size.
+//!    order, and perform the effects each returns. Every attach, takeover,
+//!    hand-back and promotion is granted at once: its [`Effect::Grant`] names
+//!    the new authority. [`Control::resize`] only records a pending size.
 //! 2. Call [`Control::apply_pending`] exactly once, before reading the PTY and
 //!    before any snapshot for a grant. It applies the controller's latest size
 //!    at most once and replaces at most one restoration.
@@ -106,19 +107,23 @@ pub enum Effect {
     Admit { conn: ConnectionId },
     /// Reject an attachment because the session is terminating: send `Error`, close.
     Refuse { conn: ConnectionId },
+    /// A passive monitor connection became an attachment, by its Acquire or
+    /// a promotion: its output is canonical from its grant, which follows.
+    Convert { conn: ConnectionId },
     /// `conn` controls under `authority`, a new period and its first
     /// restoration, for `reason`: report the grant, then, once the pending
-    /// size is applied, snapshot for a host of size `host` and send the
-    /// restoration.
+    /// size is applied, snapshot for a host of size `host` (a canonical
+    /// attachment's is the session geometry) and send the restoration.
     Grant {
         conn: ConnectionId,
         authority: Authority,
         host: TerminalSize,
         reason: GrantReason,
     },
-    /// The controller's host changed before readiness: its current
-    /// restoration ends now, and `authority` replaces it within the same
-    /// period, snapshotted for a host of size `host`.
+    /// The size the controller's restoration is serialized for changed,
+    /// before readiness or, for a canonical controller, at a new session
+    /// geometry: its current restoration ends now, and `authority` replaces
+    /// it within the same period, snapshotted for a host of size `host`.
     Restore {
         conn: ConnectionId,
         authority: Authority,
@@ -204,6 +209,43 @@ impl Issued {
     }
 }
 
+/// Session-wide state outside the stage that grants draw on: the authority
+/// issued last, the applied sizes, whose session geometry every grant of a
+/// canonical attachment keeps, and the passive monitor connections that may
+/// inherit control.
+struct Grants {
+    issued: Issued,
+    sizes: Sizes,
+    /// Passive monitor connections, in the order their Opens were accepted.
+    successors: Vec<ConnectionId>,
+}
+
+impl Grants {
+    /// The passive monitor connection `conn` as an attachment, no longer
+    /// registered; `None` when it is not registered.
+    fn convert(&mut self, conn: ConnectionId) -> Option<Attachment> {
+        let index = self.successors.iter().position(|other| *other == conn)?;
+        self.successors.remove(index);
+        Some(self.attachment(conn))
+    }
+
+    /// The newest passive monitor connection as an attachment, no longer
+    /// registered.
+    fn successor(&mut self) -> Option<Attachment> {
+        let conn = self.successors.pop()?;
+        Some(self.attachment(conn))
+    }
+
+    /// A monitor-mode attachment: canonical, at the session geometry.
+    fn attachment(&self, conn: ConnectionId) -> Attachment {
+        Attachment {
+            conn,
+            host: self.sizes.session,
+            canonical: true,
+        }
+    }
+}
+
 impl State {
     fn new(lifecycle: Lifecycle, attachments: usize) -> Self {
         Self {
@@ -264,21 +306,39 @@ impl Open {
         }
     }
 
-    fn attach(&mut self, attachment: Attachment, issued: &mut Issued) -> Vec<Effect> {
-        let mut effects = vec![Effect::Admit {
+    /// An accepted attach request: admitted, then granted at once.
+    fn attach(&mut self, attachment: Attachment, grants: &mut Grants) -> Vec<Effect> {
+        let admit = Effect::Admit {
             conn: attachment.conn,
-        }];
+        };
+        let grant = self.grant(attachment, GrantReason::Attach, grants);
+        [vec![admit], grant].concat()
+    }
+
+    /// `attachment` takes control at once for `reason`; a previous
+    /// controller stays, non-controlling.
+    fn grant(
+        &mut self,
+        attachment: Attachment,
+        reason: GrantReason,
+        grants: &mut Grants,
+    ) -> Vec<Effect> {
         match self {
-            Self::Attached(attachments) => {
-                effects.extend(attachments.promote(attachment, GrantReason::Attach, issued))
-            }
+            Self::Attached(attachments) => attachments.promote(attachment, reason, grants),
             _ => {
-                let (attachments, grant) = Attachments::new(attachment, issued);
+                let (attachments, grant) = Attachments::new(attachment, reason, grants);
                 *self = Self::Attached(attachments);
-                effects.push(grant);
+                vec![grant]
             }
         }
-        effects
+    }
+
+    /// A non-controlling attachment takes control at once.
+    fn take_control(&mut self, conn: ConnectionId, grants: &mut Grants) -> Vec<Effect> {
+        match self {
+            Self::Attached(attachments) => attachments.take_control(conn, grants),
+            _ => Vec::new(),
+        }
     }
 
     fn into_members(self) -> (Members, Vec<Effect>) {
@@ -312,17 +372,33 @@ fn initial_deadline(open: Open) -> (Stage, Vec<Effect>) {
     }
 }
 
-/// The leave policy, after any hand-back.
+/// Acquire: a non-controlling attachment takes control at once, and so
+/// does a passive monitor connection, which becomes an attachment; the
+/// controller's own changes nothing.
+fn acquire(mut open: Open, conn: ConnectionId, grants: &mut Grants) -> (Stage, Vec<Effect>) {
+    let effects = match grants.convert(conn) {
+        Some(attachment) => {
+            let grant = open.grant(attachment, GrantReason::Acquire, grants);
+            [vec![Effect::Convert { conn }], grant].concat()
+        }
+        None => open.take_control(conn, grants),
+    };
+    (Stage::Open(open), effects)
+}
+
+/// The leave policy, after succession: a hand-back, or else the promotion
+/// of the newest passive monitor connection.
 fn depart(
     open: Open,
     conn: ConnectionId,
     departure: Departure,
-    issued: &mut Issued,
+    grants: &mut Grants,
 ) -> (Stage, Vec<Effect>) {
     let Open::Attached(attachments) = open else {
         return (Stage::Open(open), Vec::new());
     };
-    let (remaining, effects) = attachments.depart(conn, departure, issued);
+    let (remaining, mut effects) = attachments.depart(conn, departure, grants);
+    let remaining = remaining.or_else(|| promote(grants, &mut effects));
     match (remaining, departure) {
         (Some(attachments), _) => (Stage::Open(Open::Attached(attachments)), effects),
         (None, Departure::Detach) => (Stage::Open(Open::Detached), effects),
@@ -331,6 +407,18 @@ fn depart(
             (stage, [effects, shutdown].concat())
         }
     }
+}
+
+/// With no attachment left, the newest passive monitor connection becomes
+/// one, with a successor's grant.
+fn promote(grants: &mut Grants, effects: &mut Vec<Effect>) -> Option<Attachments> {
+    let successor = grants.successor()?;
+    effects.push(Effect::Convert {
+        conn: successor.conn,
+    });
+    let (attachments, grant) = Attachments::new(successor, GrantReason::Successor, grants);
+    effects.push(grant);
+    Some(attachments)
 }
 
 fn attached(stage: &mut Stage) -> Option<&mut Attachments> {
@@ -342,27 +430,30 @@ fn attached(stage: &mut Stage) -> Option<&mut Attachments> {
 
 pub struct Control {
     stage: Stage,
-    sizes: Sizes,
-    issued: Issued,
+    grants: Grants,
 }
 
 impl Control {
     /// A starting session whose PTY has the session geometry for `initial`.
     pub fn new(initial: TerminalSize) -> Self {
         let host = initial.initial();
+        let sizes = Sizes {
+            host,
+            session: geometry(host),
+        };
         Self {
             stage: Stage::Open(Open::Starting),
-            sizes: Sizes {
-                host,
-                session: geometry(host),
+            grants: Grants {
+                issued: Issued::default(),
+                sizes,
+                successors: Vec::new(),
             },
-            issued: Issued::default(),
         }
     }
 
     /// The applied session geometry: the PTY and virtual terminal size.
     pub fn session_size(&self) -> TerminalSize {
-        self.sizes.session
+        self.grants.sizes.session
     }
 
     pub fn snapshot(&self) -> State {
@@ -410,28 +501,38 @@ impl Control {
         let attachment = Attachment {
             conn,
             host: size.initial(),
+            canonical: false,
         };
-        let issued = &mut self.issued;
+        let grants = &mut self.grants;
         match &mut self.stage {
-            Stage::Open(open) => open.attach(attachment, issued),
+            Stage::Open(open) => open.attach(attachment, grants),
             Stage::Terminating(_) => vec![Effect::Refuse { conn }],
         }
     }
 
-    /// Acquire: a non-controlling attachment takes control at once, and the
-    /// controller's own changes nothing. Its outcome, then its effects.
+    /// A passive monitor connection registered: never an attachment, nor
+    /// in control, until its Acquire or a promotion.
+    pub fn register(&mut self, conn: ConnectionId) {
+        self.grants.successors.push(conn);
+    }
+
+    /// Acquire: a non-controlling attachment takes control at once, and so
+    /// does a passive monitor connection, which becomes an attachment; the
+    /// controller's own changes nothing. Committed termination refuses it.
+    /// Its outcome, then its effects.
     pub fn acquire(
         &mut self,
         conn: ConnectionId,
     ) -> (Result<Acquisition, OperationalCode>, Vec<Effect>) {
-        let issued = &mut self.issued;
-        let taken = attached(&mut self.stage)
-            .and_then(|attachments| attachments.take_control(conn, issued));
+        if let Stage::Terminating(_) = self.stage {
+            return (Err(OperationalCode::SessionTerminating), Vec::new());
+        }
+        let effects = self.open(|open, grants| acquire(open, conn, grants));
         let acquisition = self.controlling(conn).map(|controlling| Acquisition {
-            changed: taken.is_some(),
+            changed: !effects.is_empty(),
             authority: controlling.authority,
         });
-        (acquisition, taken.unwrap_or_default())
+        (acquisition, effects)
     }
 
     /// The private protocol's take-control: an Acquire's effects.
@@ -479,12 +580,15 @@ impl Control {
 
     /// An accepted explicit detach request.
     pub fn detach(&mut self, conn: ConnectionId) -> Vec<Effect> {
-        self.open(|open, issued| depart(open, conn, Departure::Detach, issued))
+        self.open(|open, grants| depart(open, conn, Departure::Detach, grants))
     }
 
-    /// An accepted departure: a detach, which a terminating session accepts
-    /// too, releasing a presentation the attachment still has.
+    /// An accepted departure: a passive monitor connection's registration
+    /// ends, and an attachment's departure is a detach, which a terminating
+    /// session accepts too, releasing a presentation the attachment still
+    /// has.
     pub fn leave(&mut self, conn: ConnectionId) -> Vec<Effect> {
+        self.unregister(conn);
         match &mut self.stage {
             Stage::Terminating(shutdown) => shutdown.leave(conn),
             Stage::Open(_) => self.detach(conn),
@@ -493,10 +597,16 @@ impl Control {
 
     /// The connection closed or failed without an accepted detach.
     pub fn lost(&mut self, conn: ConnectionId) -> Vec<Effect> {
+        self.unregister(conn);
         if let Stage::Terminating(shutdown) = &mut self.stage {
             shutdown.lost(conn);
         }
-        self.open(|open, issued| depart(open, conn, Departure::Lost, issued))
+        self.open(|open, grants| depart(open, conn, Departure::Lost, grants))
+    }
+
+    /// A departing connection is removed before any succession.
+    fn unregister(&mut self, conn: ConnectionId) {
+        self.grants.successors.retain(|other| *other != conn);
     }
 
     pub fn kill(&mut self, conn: ConnectionId) -> Vec<Effect> {
@@ -550,21 +660,25 @@ impl Control {
         let Some(attachments) = attached(&mut self.stage) else {
             return Vec::new();
         };
-        let applied = self.sizes.apply(attachments.controller.host());
+        let applied = self.grants.sizes.apply(attachments.controller.host());
         let resized = applied.is_some();
         let mut effects = applied.unwrap_or_default();
-        effects.extend(attachments.controller.settle(resized, &mut self.issued));
+        effects.extend(
+            attachments
+                .controller
+                .settle(resized, &mut self.grants.issued),
+        );
         effects
     }
 
     /// Runs a transition of an open session; a terminating session ignores it.
     fn open(
         &mut self,
-        transition: impl FnOnce(Open, &mut Issued) -> (Stage, Vec<Effect>),
+        transition: impl FnOnce(Open, &mut Grants) -> (Stage, Vec<Effect>),
     ) -> Vec<Effect> {
         let (stage, effects) = match std::mem::replace(&mut self.stage, Stage::Open(Open::Starting))
         {
-            Stage::Open(open) => transition(open, &mut self.issued),
+            Stage::Open(open) => transition(open, &mut self.grants),
             terminating => (terminating, Vec::new()),
         };
         self.stage = stage;
@@ -575,7 +689,7 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::Effect::*;
-    use super::GrantReason::{Acquire, Attach, HandBack};
+    use super::GrantReason::{Acquire, Attach, HandBack, Successor};
     use super::Lifecycle::*;
     use super::*;
 
@@ -584,6 +698,9 @@ mod tests {
     const C: ConnectionId = ConnectionId(3);
     const K: ConnectionId = ConnectionId(10);
     const K2: ConnectionId = ConnectionId(11);
+    /// Passive monitor connections.
+    const M: ConnectionId = ConnectionId(20);
+    const N: ConnectionId = ConnectionId(21);
     const NONE: [Effect; 0] = [];
 
     fn size(cols: u16, rows: u16) -> TerminalSize {
@@ -1767,5 +1884,166 @@ mod tests {
         let mut control = session(&[A]);
         assert_eq!(control.initial_deadline(), NONE);
         assert_eq!(control.snapshot(), state(Attached, 1, true));
+    }
+
+    /// The effects of a ready controller's deliberate detach, before
+    /// succession.
+    fn detached(conn: ConnectionId) -> [Effect; 4] {
+        [
+            DiscardPendingInput { conn },
+            ClosePaste,
+            Release { conn },
+            AcceptDetach { conn },
+        ]
+    }
+
+    #[test]
+    fn a_registration_acquires_only_by_its_own_acquire_at_the_session_geometry() {
+        let mut control = Control::new(host());
+        let first = granted(control.attach(A, size(100, 30)));
+        control.apply_pending();
+        restore(&mut control, A, first);
+        control.detach(A);
+        control.register(M);
+        assert_eq!(control.snapshot(), state(Detached, 0, false));
+        assert_eq!(control.apply_pending(), NONE);
+
+        let (acquired, effects) = control.acquire(M);
+        assert_eq!(
+            effects,
+            [
+                Convert { conn: M },
+                grant(M, (2, 2), size(100, 30), Acquire)
+            ]
+        );
+        let changed = Acquisition {
+            changed: true,
+            authority: authority(2, 2),
+        };
+        assert_eq!(acquired, Ok(changed));
+        assert_eq!(control.apply_pending(), NONE);
+        assert_eq!(control.snapshot(), state(Attached, 1, true));
+        let kept = Acquisition {
+            changed: false,
+            authority: authority(2, 2),
+        };
+        assert_eq!(control.acquire(M), (Ok(kept), Vec::new()));
+    }
+
+    #[test]
+    fn a_departure_hands_back_first_then_promotes_the_newest_registration() {
+        let mut control = session(&[A, B]);
+        control.register(M);
+        control.register(N);
+        assert_eq!(
+            control.lost(B),
+            [
+                DiscardPendingInput { conn: B },
+                ClosePaste,
+                grant(A, (3, 3), host(), HandBack)
+            ]
+        );
+        restore(&mut control, A, authority(3, 3));
+        let promoted = [Convert { conn: N }, grant(N, (4, 4), host(), Successor)];
+        assert_eq!(control.detach(A), [&detached(A)[..], &promoted].concat());
+        assert_eq!(control.snapshot(), state(Attached, 1, true));
+        assert_eq!(
+            control.lost(N),
+            [Convert { conn: M }, grant(M, (5, 5), host(), Successor)]
+        );
+        assert_eq!(control.lost(M), [BeginShutdown]);
+    }
+
+    #[test]
+    fn leave_and_loss_remove_a_registration_before_any_succession() {
+        let mut control = session(&[A]);
+        control.register(M);
+        control.register(N);
+        assert_eq!(control.leave(N), NONE);
+        assert_eq!(control.lost(M), NONE);
+        assert_eq!(control.detach(A), detached(A));
+        assert_eq!(control.snapshot(), state(Detached, 0, false));
+    }
+
+    #[test]
+    fn committed_termination_refuses_a_registrations_acquire_and_promotes_nobody() {
+        let mut control = session(&[A]);
+        control.register(M);
+        control.kill(K);
+        assert_eq!(
+            control.acquire(M),
+            (Err(OperationalCode::SessionTerminating), Vec::new())
+        );
+        assert_eq!(
+            control.leave(A),
+            [Release { conn: A }, AcceptDetach { conn: A }]
+        );
+        assert_eq!(control.snapshot(), state(Terminating, 0, false));
+    }
+
+    #[test]
+    fn a_canonical_grant_keeps_the_session_geometry_whoever_sized_it_last() {
+        let mut control = session(&[A]);
+        control.register(M);
+        let promoted = granted(control.acquire(M).1);
+        restore(&mut control, M, promoted);
+        control.resize(M, size(120, 40));
+        control.apply_pending();
+        restore(&mut control, M, authority(2, 3));
+        let (_, effects) = control.acquire(A);
+        assert_eq!(effects.last(), Some(&grant(A, (3, 4), host(), Acquire)));
+        assert_eq!(control.apply_pending(), [ResizeSession { size: host() }]);
+        restore(&mut control, A, authority(3, 4));
+        let handed_back = grant(M, (4, 5), host(), HandBack);
+        assert_eq!(
+            control.detach(A),
+            [&detached(A)[..], &[handed_back]].concat()
+        );
+        assert_eq!(control.apply_pending(), NONE);
+    }
+
+    #[test]
+    fn a_canonical_controller_is_restored_afresh_only_at_a_new_session_geometry() {
+        let mut control = Control::new(host());
+        control.register(M);
+        assert_eq!(granted(control.acquire(M).1), authority(1, 1));
+        control.resize(M, size(600, 250));
+        let replaced = Restore {
+            conn: M,
+            authority: authority(1, 2),
+            host: size(500, 200),
+        };
+        let resized = ResizeSession {
+            size: size(500, 200),
+        };
+        assert_eq!(control.apply_pending(), [resized, replaced]);
+        control.resize(M, size(610, 260));
+        assert_eq!(control.apply_pending(), NONE);
+        restore(&mut control, M, authority(1, 2));
+
+        control.resize(M, size(620, 270));
+        let host_only = ResizeHost {
+            conn: M,
+            host: size(620, 270),
+        };
+        assert_eq!(control.apply_pending(), [host_only]);
+        assert!(control.admits_input(M));
+        control.resize(M, size(100, 30));
+        let effects = [
+            ResizeSession {
+                size: size(100, 30),
+            },
+            ResizeHost {
+                conn: M,
+                host: size(100, 30),
+            },
+            Restore {
+                conn: M,
+                authority: authority(1, 3),
+                host: size(100, 30),
+            },
+        ];
+        assert_eq!(control.apply_pending(), effects);
+        assert!(!control.admits_input(M));
     }
 }

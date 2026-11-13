@@ -4,6 +4,7 @@
 //! tests; expectations are written out by hand from the wire reference.
 mod interactive;
 mod passive;
+mod succession;
 mod termination;
 
 use super::Session;
