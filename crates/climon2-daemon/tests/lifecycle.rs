@@ -1535,19 +1535,12 @@ fn a_headless_session_advertises_detached_and_outlives_the_initial_attach_window
 
 /// HDL-01 (Contract layer), command completion with zero clients: a headless
 /// session whose command ends before anything attaches ends with it, cleaned
-/// up. Unlike an ordinary session
-/// (`an_unattached_session_ends_after_the_initial_deadline`), it does not hold
-/// the exit for the five-second initial attach window.
+/// up. That it does so without the ordinary initial attach hold is the pure
+/// decision `only_an_unattached_ordinary_session_holds_an_early_exit_until_its_initial_deadline`.
 #[test]
-fn a_headless_session_ends_with_its_command_without_the_initial_attach_hold() {
+fn a_headless_session_ends_with_its_command_and_zero_clients() {
     let mut session = headless("early");
-    let started = Instant::now();
     session.finish();
-    assert!(
-        started.elapsed() < Duration::from_millis(4500),
-        "{:?}",
-        started.elapsed()
-    );
 }
 
 /// HDL-01 (Contract layer), unexpected loss: a headless session survives the

@@ -557,8 +557,11 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn starting(&self, now: Instant) -> bool {
-        self.control.snapshot().lifecycle == Lifecycle::Starting
-            && !super::passed(self.initial_deadline, now)
+        holds_exit(
+            self.control.snapshot().lifecycle,
+            self.initial_deadline,
+            now,
+        )
     }
 
     fn awaiting_ready(&self) -> bool {
@@ -900,10 +903,42 @@ fn finished_at(deadline: Option<Instant>, now: Instant, drained: impl FnOnce() -
     deadline.is_some_and(|deadline| super::passed(deadline, now) || drained())
 }
 
+/// Only a session still awaiting its initial attachment keeps an early command exit for
+/// that attachment, and only until its initial deadline. A headless session is never
+/// `Starting`, so it never holds one.
+fn holds_exit(lifecycle: Lifecycle, initial_deadline: Instant, now: Instant) -> bool {
+    lifecycle == Lifecycle::Starting && !super::passed(initial_deadline, now)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::finished_at;
+    use super::{finished_at, holds_exit};
+    use crate::control::Control;
+    use climon2_core::{lifetime::Lifetime, protocol::TerminalSize};
     use std::time::{Duration, Instant};
+
+    /// HDL-01 (Contract layer, pure decision): an ordinary session keeps an
+    /// early command exit for its first attachment until its initial attach
+    /// window closes; a headless session, `detached` from startup, never holds it.
+    #[test]
+    fn only_an_unattached_ordinary_session_holds_an_early_exit_until_its_initial_deadline() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(5);
+        let unattached = |lifetime| {
+            Control::new(TerminalSize { cols: 80, rows: 24 }, lifetime)
+                .snapshot()
+                .lifecycle
+        };
+        assert!(holds_exit(unattached(Lifetime::Ordinary), later, now));
+        assert!(
+            !holds_exit(unattached(Lifetime::Ordinary), now, now),
+            "window closed"
+        );
+        assert!(
+            !holds_exit(unattached(Lifetime::Headless), later, now),
+            "headless"
+        );
+    }
 
     #[test]
     fn an_ending_session_finishes_at_its_deadline_or_once_drained() {
