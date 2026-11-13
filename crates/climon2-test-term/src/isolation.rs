@@ -73,7 +73,7 @@ pub fn copy_executable(from: &Path, to: &Path) {
 
 /// Runs `command` with null stdin and collects its output, waiting at most
 /// `timeout` for it to exit. A command still running at the deadline is killed
-/// and reaped, and the test fails.
+/// and reaped, and the test fails with a message naming its process ID.
 pub fn output_within(command: &mut std::process::Command, timeout: Duration) -> Output {
     let mut child = command
         .stdin(Stdio::null())
@@ -91,7 +91,10 @@ pub fn output_within(command: &mut std::process::Command, timeout: Duration) -> 
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("{command:?} did not exit within {timeout:?}");
+            panic!(
+                "{command:?} (pid {}) did not exit within {timeout:?}; killed and reaped",
+                child.id()
+            );
         }
         thread::sleep(Duration::from_millis(10));
     };

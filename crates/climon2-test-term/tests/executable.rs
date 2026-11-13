@@ -47,26 +47,23 @@ fn a_fork_while_the_copy_is_written_leaves_the_copy_executable() {
 /// reaped, and the waiting test fails instead of hanging.
 #[test]
 fn output_within_kills_and_reaps_a_command_that_outlives_its_deadline() {
-    let directory = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
-    let pid_file = directory.path().join("pid");
-    let mut sleeper = Command::new("/bin/sh");
-    sleeper
-        .arg("-c")
-        .arg("echo $$ > \"$1\"; exec sleep 600")
-        .arg("sh")
-        .arg(&pid_file);
+    let mut sleeper = Command::new("sleep");
+    sleeper.arg("600");
     let started = Instant::now();
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        output_within(&mut sleeper, Duration::from_secs(2))
+        output_within(&mut sleeper, Duration::from_secs(1))
     }))
     .unwrap_err();
     assert!(started.elapsed() < Duration::from_secs(60));
     let message = failure.downcast_ref::<String>().unwrap();
-    assert!(message.contains("did not exit within 2s"), "{message}");
-    let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
-        .unwrap()
-        .trim()
-        .parse()
+    assert!(
+        message.ends_with("did not exit within 1s; killed and reaped"),
+        "{message}"
+    );
+    let pid: libc::pid_t = message
+        .split_once("(pid ")
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(pid, _)| pid.parse().unwrap())
         .unwrap();
     assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "the sleeper survives");
     assert_eq!(
