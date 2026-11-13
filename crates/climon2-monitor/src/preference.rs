@@ -129,8 +129,8 @@ fn temporary_pid(name: &OsStr) -> Option<u32> {
         .ok()
 }
 
-/// Whether no process runs as `pid` any more. A check that fails, as one of
-/// another user's process may, is no evidence that it ended.
+/// Whether no process runs as `pid` any more. A failed check, as for another
+/// user's process, is no evidence that it ended.
 fn ended(pid: u32) -> bool {
     matches!(process::start_time(pid), Ok(None))
 }
