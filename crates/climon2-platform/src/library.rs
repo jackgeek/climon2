@@ -119,6 +119,7 @@ pub struct Functions {
 /// A loaded client library whose revision-1 description was validated. It
 /// exists only through [`Loader::load`] and stays loaded until process exit.
 pub struct Library {
+    bootstrap: Bootstrap,
     requirements: Requirements,
     functions: Functions,
 }
@@ -132,6 +133,13 @@ impl Library {
     /// The release's revision-1 calls.
     pub fn functions(&self) -> &Functions {
         &self.functions
+    }
+
+    /// The library's frozen bootstrap, for a caller that observes the C ABI
+    /// itself, such as the Library-layer test host. Embedders use
+    /// [`Library::functions`].
+    pub fn bootstrap(&self) -> Bootstrap {
+        self.bootstrap
     }
 }
 
@@ -204,7 +212,7 @@ impl Loader {
 /// describes `release`.
 fn open(path: &Path, release: &VersionName) -> Result<Library, Refusal> {
     let bootstrap = bootstrap(path)?;
-    validate(describe(bootstrap)?, release)
+    validate(bootstrap, describe(bootstrap)?, release)
 }
 
 /// The bootstrap of the library at `path`, opened with eager and local
@@ -270,12 +278,17 @@ fn unloadable(path: &Path, message: String) -> Refusal {
     }
 }
 
-/// The library `description` makes, if it describes `release` and keeps the
-/// native contract.
-fn validate(description: &Description, release: &VersionName) -> Result<Library, Refusal> {
+/// The library `bootstrap` and its `description` make, if that describes
+/// `release` and keeps the native contract.
+fn validate(
+    bootstrap: Bootstrap,
+    description: &Description,
+    release: &VersionName,
+) -> Result<Library, Refusal> {
     shape(description)?;
     identity(description.release, release)?;
     Ok(Library {
+        bootstrap,
         requirements: requirements(description.requirements)?,
         functions: functions(&description.functions)?,
     })

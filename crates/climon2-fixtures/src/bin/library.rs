@@ -1,17 +1,27 @@
-//! Library-layer test host (#75): loads one client library by absolute path
-//! through the frozen C ABI and prints what it observed as one JSON object.
+//! Library-layer test host (#75, #84): loads one version's client library
+//! from a climon2 executable home through the shared validated loader
+//! (`climon2_platform::library`) and prints what it observed as one JSON
+//! object: the loader's refusal, or what the library shows through the frozen
+//! C ABI, its bootstrap and function table, and whether a second load of the
+//! version shared the first; then the client library files the process has
+//! loaded, and its environment.
 //!
-//! It uses only `dlopen(RTLD_NOW | RTLD_LOCAL)`, `dlsym` of the bootstrap and
-//! the returned function table; never a Rust call into the library. It reports
-//! observations, not verdicts: tests decide what is correct. The library is
-//! never unloaded, as the embedding contract requires.
+//! It never makes a Rust call into the library. It reports observations, not
+//! verdicts: tests decide what is correct. Nothing is unloaded, as the
+//! embedding contract requires.
 
-use climon2_core::native::{self, Bootstrap, Bytes, Call, Description, Interface, Tokens};
+use climon2_core::{
+    VersionName,
+    layout::client_library_name,
+    native::{self, Bootstrap, Bytes, Call, Description, Interface, Tokens},
+};
+use climon2_platform::library::Loader;
 use serde_json::{Map, Value, json};
 use std::{
-    ffi::{CStr, CString, c_void},
+    collections::BTreeMap,
+    ffi::{CStr, OsString, c_void},
     mem::{MaybeUninit, size_of},
-    os::unix::ffi::OsStrExt,
+    path::PathBuf,
     ptr::{self, NonNull},
 };
 
@@ -20,47 +30,110 @@ const UNTOUCHED_DESCRIPTOR: i32 = 0x5a5a_5a5a;
 const OTHER_REVISIONS: [u32; 3] = [0, 2, u32::MAX];
 
 fn main() {
-    let Some(path) = std::env::args_os().nth(1) else {
-        eprintln!("usage: climon2-library-host <absolute library path>");
+    let (home, version) = arguments().unwrap_or_else(|| {
+        eprintln!("usage: climon2-library-host <absolute executable home> <version>");
         std::process::exit(2);
-    };
-    let report = match load(&CString::new(path.as_bytes()).expect("path without NUL")) {
-        Ok(library) => observe(library),
-        Err(error) => json!({ "error": error }),
-    };
+    });
+    let mut report = load(home, &version);
+    report["images"] = json!(images());
+    report["environment"] = json!(
+        std::env::vars_os()
+            .map(|(name, value)| (lossy(name), lossy(value)))
+            .collect::<BTreeMap<_, _>>()
+    );
     println!("{report}");
+}
+
+fn arguments() -> Option<(PathBuf, VersionName)> {
+    let mut arguments = std::env::args_os().skip(1);
+    let home = PathBuf::from(arguments.next()?);
+    let version = arguments.next()?.to_str()?.parse().ok()?;
+    (home.is_absolute() && arguments.next().is_none()).then_some((home, version))
+}
+
+fn lossy(text: OsString) -> String {
+    text.to_string_lossy().into_owned()
 }
 
 struct Library {
     bootstrap: Bootstrap,
 }
 
-fn dlerror() -> String {
-    // SAFETY: dlerror returns null or a NUL-terminated message owned by the loader.
-    let message = unsafe { libc::dlerror() };
-    if message.is_null() {
-        return "unknown loader error".into();
+/// What the loader answered for `version`, twice.
+fn load(home: PathBuf, version: &VersionName) -> Value {
+    let loader = Loader::new(home);
+    match loader.load(version) {
+        Ok(library) => {
+            let mut report = observe(Library {
+                bootstrap: library.bootstrap(),
+            });
+            let again = loader.load(version);
+            report["shared"] = json!(again.is_ok_and(|again| ptr::eq(again, library)));
+            report
+        }
+        Err(error) => json!({
+            "error": { "failure": format!("{:?}", error.failure()), "message": error.to_string() },
+        }),
     }
-    // SAFETY: nonnull dlerror results are NUL-terminated strings.
-    unsafe { CStr::from_ptr(message) }
-        .to_string_lossy()
-        .into_owned()
 }
 
-fn load(path: &CStr) -> Result<Library, String> {
-    // SAFETY: path is NUL-terminated; the handle is deliberately never closed.
-    let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-    if handle.is_null() {
-        return Err(dlerror());
+/// Every loaded image named like a client library, by the path it was
+/// loaded from.
+fn images() -> Vec<String> {
+    let name = format!("/{}", client_library_name());
+    loaded_images()
+        .into_iter()
+        .filter(|image| image.ends_with(&name))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn loaded_images() -> Vec<String> {
+    unsafe extern "C" fn collect(
+        info: *mut libc::dl_phdr_info,
+        _: usize,
+        images: *mut c_void,
+    ) -> libc::c_int {
+        // SAFETY: dl_iterate_phdr passes valid information and our Vec.
+        let (name, images) = unsafe { ((*info).dlpi_name, &mut *images.cast::<Vec<String>>()) };
+        if !name.is_null() {
+            // SAFETY: a nonnull object name is NUL-terminated.
+            images.push(
+                unsafe { CStr::from_ptr(name) }
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        0
     }
-    // SAFETY: handle is a live dlopen handle and the name is NUL-terminated.
-    let symbol = unsafe { libc::dlsym(handle, native::BOOTSTRAP.as_ptr()) };
-    if symbol.is_null() {
-        return Err(dlerror());
-    }
-    // SAFETY: the frozen bootstrap symbol has the `Bootstrap` signature.
-    let bootstrap = unsafe { std::mem::transmute::<*mut c_void, Bootstrap>(symbol) };
-    Ok(Library { bootstrap })
+    let mut images = Vec::<String>::new();
+    // SAFETY: the callback only reads the information and appends to `images`.
+    unsafe { libc::dl_iterate_phdr(Some(collect), (&raw mut images).cast()) };
+    images
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    /// `<mach-o/dyld.h>`: how many images dyld has loaded.
+    fn _dyld_image_count() -> u32;
+    /// `<mach-o/dyld.h>`: the path loaded image `index` was loaded from, or
+    /// null once it is gone.
+    fn _dyld_get_image_name(index: u32) -> *const std::ffi::c_char;
+}
+
+#[cfg(target_os = "macos")]
+fn loaded_images() -> Vec<String> {
+    // SAFETY: dyld's image list, read by index.
+    (0..unsafe { _dyld_image_count() })
+        .map(|index| unsafe { _dyld_get_image_name(index) })
+        .filter(|name| !name.is_null())
+        // SAFETY: a nonnull image name is NUL-terminated.
+        .map(|name| {
+            unsafe { CStr::from_ptr(name) }
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
 }
 
 /// The file of the loaded image that contains `address`.

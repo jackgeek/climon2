@@ -220,6 +220,7 @@ name = "climon2-fixtures"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-platform",
  "climon2-test-term",
  "libc",
  "nix 0.31.3",
