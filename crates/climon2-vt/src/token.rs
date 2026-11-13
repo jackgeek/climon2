@@ -85,6 +85,8 @@ struct Rule {
     hi: u8,
     action: Action,
     next: Option<State>,
+    /// The kind the held sequence takes when this rule fires.
+    kind: Option<Kind>,
 }
 
 const fn rule(states: u16, lo: u8, hi: u8, action: Action, next: Option<State>) -> Rule {
@@ -94,6 +96,19 @@ const fn rule(states: u16, lo: u8, hi: u8, action: Action, next: Option<State>) 
         hi,
         action,
         next,
+        kind: None,
+    }
+}
+
+/// A byte after `ESC` that introduces a CSI or control string of `kind`; a
+/// sequence without one is an escape sequence. The parser executes C0
+/// controls between `ESC` and the introducer without leaving its escape
+/// state, except CAN and SUB, which cancel the sequence, and ESC, which
+/// restarts it.
+const fn introducer(lo: u8, hi: u8, next: State, kind: Kind) -> Rule {
+    Rule {
+        kind: Some(kind),
+        ..rule(ESCAPE, lo, hi, Tokenizer::hold, Some(next))
     }
 }
 
@@ -119,11 +134,11 @@ const RULES: &[Rule] = &[
         Tokenizer::hold,
         Some(State::EscInter),
     ),
-    rule(ESCAPE, b'P', b'P', Tokenizer::hold, Some(State::DcsEntry)),
-    rule(ESCAPE, b'X', b'X', Tokenizer::hold, Some(State::Sos)),
-    rule(ESCAPE, b'[', b'[', Tokenizer::hold, Some(State::Csi)),
-    rule(ESCAPE, b']', b']', Tokenizer::hold, Some(State::Osc)),
-    rule(ESCAPE, b'^', b'_', Tokenizer::hold, Some(State::Sos)),
+    introducer(b'P', b'P', State::DcsEntry, Kind::Dcs),
+    introducer(b'X', b'X', State::Sos, Kind::Sos),
+    introducer(b'[', b'[', State::Csi, Kind::Csi),
+    introducer(b']', b']', State::Osc, Kind::Osc),
+    introducer(b'^', b'_', State::Sos, Kind::Sos),
     rule(
         ESCAPE | ESC_INTER,
         0x30,
@@ -197,18 +212,6 @@ const RULES: &[Rule] = &[
     rule(STR_ESC, 0x00, 0xFF, Tokenizer::interrupt_string, None),
 ];
 
-/// Introducer byte that names a token's kind; anything else is an escape
-/// sequence. The introducer is the first byte after `ESC` that the parser
-/// does not execute: C0 controls between them leave it in its escape state.
-const KINDS: &[(u8, Kind)] = &[
-    (b'[', Kind::Csi),
-    (b']', Kind::Osc),
-    (b'P', Kind::Dcs),
-    (b'X', Kind::Sos),
-    (b'^', Kind::Sos),
-    (b'_', Kind::Sos),
-];
-
 /// Splits PTY output into complete tokens, holding a partial token (at most
 /// [`MAX_BODY`] plus its introducer, or an unfinished UTF-8 sequence) until
 /// a later read completes it.
@@ -216,6 +219,9 @@ const KINDS: &[(u8, Kind)] = &[
 pub struct Tokenizer {
     state: State,
     held: Vec<u8>,
+    /// The kind the held sequence's introducer gave it; none for an escape
+    /// sequence.
+    kind: Option<Kind>,
     oversized: bool,
 }
 
@@ -240,6 +246,7 @@ impl Tokenizer {
             .expect("every state has a catch-all rule");
         (rule.action)(self, byte, out);
         self.state = rule.next.unwrap_or(self.state);
+        self.kind = rule.kind.or(self.kind);
     }
 
     fn emit_text(&mut self, keep: usize, out: &mut Vec<Token>) {
@@ -344,7 +351,7 @@ impl Tokenizer {
         } else {
             self.held.extend_from_slice(tail);
             Token {
-                kind: kind_of(&self.held),
+                kind: self.kind.unwrap_or(Kind::Escape),
                 bytes: std::mem::take(&mut self.held),
             }
         };
@@ -354,18 +361,9 @@ impl Tokenizer {
 
     fn reset(&mut self) {
         self.held.clear();
+        self.kind = None;
         self.oversized = false;
     }
-}
-
-/// A held sequence starts with `ESC` and then holds only executed C0
-/// controls until its introducer; DEL is never held there.
-fn kind_of(bytes: &[u8]) -> Kind {
-    let introducer = bytes.iter().find(|byte| !byte.is_ascii_control());
-    KINDS
-        .iter()
-        .find(|(byte, _)| introducer == Some(byte))
-        .map_or(Kind::Escape, |(_, kind)| *kind)
 }
 
 /// Length of an unfinished but so far valid UTF-8 sequence ending the text.
