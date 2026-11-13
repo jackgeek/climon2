@@ -39,9 +39,24 @@ pub(crate) fn decode<T: ControlRecord>(body: &[u8]) -> Result<T, FatalCode> {
     if correlated(T::CODE) {
         request_id(&value)?;
     }
+    if !named_kinds(&value) {
+        return Err(FatalCode::InvalidRecord);
+    }
     serde_json::from_slice::<Object<T>>(body)
         .map(|Object(record)| record)
         .map_err(|_| FatalCode::InvalidRecord)
+}
+
+/// Whether every `kind`, at any depth, is a JSON string. serde decodes a
+/// Response's result, and the command result inside one, from a buffered
+/// copy whose identifiers also take a variant index: `"kind":3` would decode
+/// as the fourth variant.
+fn named_kinds(value: &Value) -> bool {
+    value.as_object().is_none_or(|members| {
+        members
+            .iter()
+            .all(|(key, member)| (key != "kind" || member.is_string()) && named_kinds(member))
+    })
 }
 
 fn request_id(record: &Value) -> Result<(), FatalCode> {
