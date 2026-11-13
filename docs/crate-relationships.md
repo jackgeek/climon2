@@ -127,8 +127,10 @@ The agreed [operational limits](monitor-operational-limits.md), unimplemented,
 require allocation-aware terminal/parser updates and bounded discovery/queues/
 thread resources. Monitor reuse of `climon2-vt` must qualify its combining and
 auxiliary allocations; the narrow unchanged-engine/infallible-interface
-assumptions are reopened, not silently treated as bounded. No replacement
-engine, additional workspace crate or dependency edge is selected.
+assumptions are reopened, not silently treated as bounded. `climon2-vt`'s
+allocation-bounded `Model` (#76, ADR 0007) qualifies them on the unchanged
+engine; the monitor does not use it yet. No replacement engine, additional
+workspace crate or dependency edge is selected.
 
 Current edges come from workspace `Cargo.toml` files. This is a consumption
 index, not a replacement for the architecture decisions or their permitted

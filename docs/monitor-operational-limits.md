@@ -199,11 +199,12 @@ Before it rejects live output or a restoration, its oldest history yields a
 chunk at a time, never the chunk holding the newest page, and
 `Model::shorten_history()` lets the monitor shorten history the same way.
 Its tests show no stream passing a model's limit, including adversarial
-ones. That is evidence for the tested streams, not a proof for every input.
-Two questions remain open: how a model handles a geometry change that no
-restoration follows, and whether the measured per-model cost can meet
-PERF-01 at these defaults. The monitor's own budgets and pressure policies
-above remain unimplemented.
+ones; the owner accepted that evidence, with the measured reserve, as the
+risk proof. The owner also decided that a monitor-mode geometry change is
+always followed by a restoration at that geometry (a wire amendment not yet
+made), and how per-model cost is to meet PERF-01
+([#166](https://github.com/jackgeek/climon2/issues/166)). The monitor's own
+budgets and pressure policies above remain unimplemented.
 
 ## Queues and transfers
 

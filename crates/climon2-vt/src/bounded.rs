@@ -222,11 +222,11 @@ impl Bounded {
         Ok(())
     }
 
-    /// Only what the live output policy forwards to a Direct host reaches
-    /// the engine. The daemon already applied that policy, so a stripped
-    /// token can only be malformed input; only the controls it executes
-    /// remain. Growth and history are admitted from the policy's own parse
-    /// of the token.
+    /// Only what the live output policy forwards to a Direct controller
+    /// reaches the engine. The daemon already applied that policy, so a
+    /// stripped token can only be malformed input; only the controls it
+    /// executes remain. Growth and history are admitted from the policy's own
+    /// parse of the token.
     fn token(&mut self, token: Token, room: &mut Room) -> Result<(), Rejected> {
         let policy = classify(&token);
         let bytes = match policy.live {

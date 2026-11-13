@@ -76,8 +76,8 @@ place.
   1000-row chunk, which holds the protected newest page. Otherwise it returns
   `Rejected { needed, limit }`.
 - `Model::feed(bytes)` applies terminal bytes token by token. Only what the
-  live output policy forwards to a Direct host reaches the engine; a stripped
-  token leaves only the C0 controls vte executes in it. Each token's
+  live output policy forwards to a Direct controller reaches the engine; a
+  stripped token leaves only the C0 controls vte executes in it. Each token's
   worst-case growth is charged, from the policy's own vte parse, before the
   engine sees it (72 bytes per combining mark, 56 per cell printed under an
   underline colour, three cells per wide character, and for `CSI n b` the `n`
@@ -104,8 +104,9 @@ place.
   has yielded; later `feed` calls build it, and the current model's history
   keeps yielding to it. `Model::apply()` replaces the current model and
   history whole; `Model::discard()` abandons it. A new effective geometry
-  arrives this way; a Geometry event that no restoration follows is an open
-  decision (ADR 0007).
+  arrives this way: the owner decided that a monitor-mode geometry change is
+  always followed by a restoration at that geometry (ADR 0007), a wire
+  amendment not yet made.
 - `Model::footprint()` is the allocation capacity charged against `bytes`, the
   engine's allocation plus `Model::RESERVE` and growth charges;
   `Model::screen()` and `Model::history()` are text views of the current model.

@@ -27,8 +27,10 @@ classification fix both share
 cover every growth path found and deterministic adversarial streams: they are
 evidence that the bound holds for those streams, not a proof for every input.
 Every hole found so far was in the adapter's admission, not the engine, so the
-stop condition was not reached. The engine facts that shaped the design, all
-for 0.26.0 and vte 0.15.0:
+stop condition was not reached. The owner accepted the bound with the measured
+reserve as #76's risk proof (2026-11-13), once history yielded before
+rejection and one token could admit several history chunks. The engine facts
+that shaped the design, all for 0.26.0 and vte 0.15.0:
 
 - every `Processor` allocates vte's 2 MiB synchronized-update buffer;
 - one cell's combining marks live in a shared `CellExtra` with an unbounded
@@ -45,13 +47,15 @@ for 0.26.0 and vte 0.15.0:
 
 The model keeps to its limit this way:
 
-- **Input.** Only what the live output policy forwards to a Direct host reaches
-  the engine, classified by the sequence vte dispatches. The daemon already
-  applied that policy, so a stripped token can only be malformed input; only
-  the C0 controls vte executes in it reach the engine. Titles, the title
-  stack, hyperlinks, clipboard, DCS and queries are therefore stripped before
-  a model's engine, whether or not controls sit before their introducer;
-  tests feed both forms to a model with no history at its mandatory limit.
+- **Input.** Only what the live output policy forwards to a controller under
+  [Direct presentation](../../GLOSSARY.md#restoration-and-presentation)
+  reaches the engine, classified by the sequence vte dispatches. The daemon
+  already applied that policy, so a stripped token can only be malformed
+  input; only the C0 controls vte executes in it reach the engine. Titles, the
+  title stack, hyperlinks, clipboard, DCS and queries are therefore stripped
+  before a model's engine, whether or not controls sit before their
+  introducer; tests feed both forms to a model with no history at its
+  mandatory limit.
 - **Fixed charge.** The engine's allocation for its geometry, vte's buffer and a
   32 KiB reserve for what the front filter and the engine hold briefly: a
   partial token and the tokens one slice completes (at most about 15 KiB
@@ -59,18 +63,21 @@ The model keeps to its limit this way:
   abandoned sequence's held controls are released as one token), the cursor
   templates' cell data, and the engine's new configuration and tab stops
   while it replaces them.
-- **Admission.** Output is admitted one token at a time, a token being at most
-  one 64-byte slice of text or one control sequence. Before the engine sees a
-  token the model charges its worst-case growth, from the live output policy's
-  own vte parse of that token: 72 bytes per combining mark (new extra data and
-  the vector's first four characters); 56 bytes per cell printed while the
-  cursor template carries extra data, such as an underline colour, and three
-  cells per wide character; for `CSI n b`, the count vte parses, wherever
-  controls sit in the sequence, times the worst repeated character. When the
-  running charge leaves no room, the model measures what the active screen's
-  cells hold (56 bytes per cell with extra data and 16 per mark, which covers
-  the doubling vector and its copy) and decides again; the inactive screen's
-  charge stands while the engine cannot change it.
+- **Admission.** Output is admitted one token at a time: the text of one
+  64-byte slice (with at most three bytes of an unfinished UTF-8 sequence
+  held from the slice before), the C0 controls an abandoned sequence held
+  (up to 4096 bytes, released as one token), or one control sequence. Before
+  the engine sees a token the model charges its worst-case growth, from the
+  live output policy's own vte parse of that token: 72 bytes per combining
+  mark (new extra data and the vector's first four characters); 56 bytes per
+  cell printed while the cursor template carries extra data, such as an
+  underline colour, and three cells per wide character; for `CSI n b`, the
+  count vte parses, wherever controls sit in the sequence, times the worst
+  repeated character. When the running charge leaves no room, the model
+  measures what the active screen's cells hold (56 bytes per cell with extra
+  data and 16 per mark, which covers the doubling vector and its copy) and
+  decides again; the inactive screen's charge stands while the engine cannot
+  change it.
 - **History.** The engine's history limit is whole 1000-row chunks, so its
   storage never outgrows the limit; the first chunk, which holds the protected
   newest page, is mandatory. Ahead of any token that could fill the current
@@ -106,13 +113,16 @@ The model keeps to its limit this way:
   history whole, and a rejected or discarded restoration never becomes current.
   Staging is admitted once both models fit, the current model's oldest history
   having yielded first. A model's geometry is fixed: a new effective geometry
-  arrives as a restoration staged at that geometry. Models never
-  reflow in place. **Open:** that needs a restoration after every effective
-  geometry change, but the agreed wire says only that one may follow a resize
+  arrives as a restoration staged at that geometry. Models never reflow in
+  place. **Decided (owner, 2026-11-13, #76):** the wire is to be amended so
+  that a monitor-mode geometry change is always followed by a Restoration
+  begin at that geometry before any Display at it, and, as a defence, a
+  monitor model marks itself stale if a Display arrives at a geometry it does
+  not have. Neither is made by #76: the agreed wire still says only that a
+  restoration may follow a resize
   ([Restoration begin](../protocol/daemon-client/event-restoration-begin.md)),
   and a [Geometry](../protocol/daemon-client/event-geometry.md) event carries
-  none. How a model handles a Geometry event without a restoration awaits the
-  developer's decision.
+  none.
 
 Evidence: `crates/climon2-vt/tests/bound.rs` (LIM-03) counts each test thread's
 allocations with a global allocator. It shows the following:
@@ -120,10 +130,11 @@ allocations with a global allocator. It shows the following:
 - no tested stream takes a model past its limit;
 - what an update keeps is no more than it was charged, so the reserve's unused
   room cannot hide an undercharge;
-- plain text, wide and combining characters, underline colours, `CSI b` with
-  controls anywhere in it, staging and resize are accepted exactly at the
-  bound and rejected one byte past it, with the page and accepted characters
-  intact;
+- plain text, invalid bytes included, fills cells the engine already holds
+  and is accepted without any charge;
+- wide and combining characters, underline colours, `CSI b` with controls
+  anywhere in it, staging and resize are accepted exactly at the bound and
+  rejected one byte past it, with the page and accepted characters intact;
 - history yields instead: live output, the alternate screen, staging and a
   staged restoration keep every history row at the bound and discard the
   oldest chunk one byte below it, never the first chunk (worked cases: 6,000
@@ -142,7 +153,7 @@ uses the running charge and never measures. Which history yields under
 pressure across sessions is monitor policy (#119), through
 `Model::shorten_history()`.
 
-**Open: per-model cost (measured on #76).** A model's mandatory charge is
+**Per-model cost (measured on #76).** A model's mandatory charge is
 vte's 2 MiB buffer, the reserve, both screens and, when it keeps any history,
 the first 1000-row chunk:
 
@@ -154,8 +165,11 @@ the first 1000-row chunk:
 
 The default `memory.total_bytes` (512 MiB) therefore holds 126, 70 and 28
 models with history, or 241, 198 and 77 without, while PERF-01 asks for 100
-sessions at each geometry. Whether to change the design or the budgets awaits
-the developer's decision.
+sessions at each geometry. The owner decided (2026-11-13) to share one vte
+parser per monitor and admit the first history chunk only when the normal
+screen first scrolls, then re-measure and, if 500x200 still falls short, raise
+`memory.total_bytes` or agree a PERF-01 disposition
+([#166](https://github.com/jackgeek/climon2/issues/166)).
 
 ## Live output policy and query authority
 
@@ -229,7 +243,7 @@ Every grant sends a restoration prefix, then live output. Phase A (prologue rese
 
 History is a **moving view**: phase C describes S exactly, while phase B sends a snapshot row only if it is still retained when the producer reaches it, marks skipped rows with the notice, and ends early if the application cleared history. Alacritty does not report how many rows a step pushed, and a push at capacity silently replaces the oldest row, so the adapter counts pushes with **counting headroom**: the engine's capacity is `max_rows + 2P`, where `P = max(64, rows, ceil(2 * 65535 / cols) + 1)` bounds the rows one step can push. Headroom rows are never retained history. They cost at most about 262,000 cells at 2 columns and 200,000 cells at 500x200. The eviction flag is content-independent.
 
-The normal screen is read while the application is on the alternate screen by cloning the alternate grid, swapping, reading, swapping back and restoring the clone. This sets the normal saved cursor to the normal current cursor (accepted exception E1).
+The normal screen is read while the application is on the alternate screen by moving the alternate grid aside (a two-cell placeholder takes its place for the swap back to reset), swapping, reading, swapping back and moving the grid home, so no screen is copied. This sets the normal saved cursor to the normal current cursor (accepted exception E1).
 
 ## Direct and Derived presentation
 
@@ -259,5 +273,5 @@ The engine never buffers a synchronized update: its `Timeout` reports no pending
 - **Raising history capacity as private snapshot storage:** rejected; `set_options` changes the real grid's history and drops rows.
 - **The engine's own synchronized-update buffering:** rejected; it re-arms on repeated begins and flushes its whole buffer in one call.
 - **Capping combining marks per cell, or only rows, in monitor models:** rejected; a cap truncates accepted characters, and rows bound neither marks nor storage chunks.
-- **Reflowing monitor models in place on resize:** rejected; reflow's allocation grows quadratically with the column ratio and keeps old row capacities.
+- **Reflowing monitor models in place on resize:** rejected; reflow's allocation grows quadratically with the column ratio and keeps old row capacities. A restoration follows every monitor-mode geometry change instead (decided above).
 - **A patched or replaced engine for monitor models:** not chosen; admitting each token's worst-case growth before the unchanged engine sees it has found no counterexample (see the outcome above). Reopen this if one is found that admission cannot charge.
