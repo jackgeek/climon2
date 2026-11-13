@@ -170,8 +170,9 @@ operations.
 executable will both load through it. Today the library host and xtask's
 release checks load the client library through it, from a version folder of
 an executable home. The [client library stand-in](../GLOSSARY.md#testing),
-`crates/climon2-fixtures/stand-in/client-library.c`, is compiled by tests into
-a test-only library, exact or with one defect: xtask's release-check tests
+`crates/climon2-fixtures/stand-in/client-library.c`, is compiled by tests,
+through `climon2_fixtures::stand_in`, into a test-only library, exact or with
+one defect: xtask's release-check tests
 load it through the same release checks as the real library, and
 `climon2-platform`'s loader tests load it, as the faulty library, through the
 loader. It is never shipped.

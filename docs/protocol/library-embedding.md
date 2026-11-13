@@ -64,10 +64,13 @@ filename beside itself and verifies its own exact release.
 On macOS, [dyld](TERMS.md#dynamic-loader) searches each `DYLD_LIBRARY_PATH`
 directory for the library file's name before it opens an absolute path, so
 that variable can substitute another file, such as another release's. After
-loading, the loader asks `dladdr` which file the loaded image came from. When
-it is not the requested path, the loader refuses the substitute with an
-explicit error and keeps its handle loaded, like every opened handle (owner
-decision on [#84](https://github.com/jackgeek/climon2/issues/84)). The working
+loading, and before anything else, the loader asks `dladdr` which file holds
+the loaded image's `climon2_client_get_interface`; an image without that
+symbol is the requested file only if dyld lists that path among its images.
+When the loaded image is not the requested path, the loader refuses the
+substitute with an explicit error, rather than blaming the requested file for
+a missing symbol, and keeps its handle loaded, like every opened handle (owner
+decisions on [#84](https://github.com/jackgeek/climon2/issues/84)). The working
 directory, `current` and `DYLD_FALLBACK_LIBRARY_PATH` never change which file
 an absolute path loads.
 
@@ -102,9 +105,10 @@ after both checks pass is a missing dependency, reported with the `dlerror()`
 text only for diagnosis. A missing `climon2_client_get_interface` is a missing
 symbol. macOS classifies the same way, except that a file without a
 [Mach-O slice](TERMS.md#mach-o-and-slices) dyld would load into the running
-process is an incompatible architecture. As implemented, the shared loader
-also counts a file it cannot open at all, missing or unreadable, as a missing
-library, and an ELF header it cannot read as not x86-64.
+process is an incompatible architecture. A file the loader cannot open at all,
+missing or unreadable, counts as a missing library, and an ELF header it
+cannot read as not x86-64 (owner decision on
+[#84](https://github.com/jackgeek/climon2/issues/84)).
 
 `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` come from the
 user's environment and still affect the glibc libraries the client library

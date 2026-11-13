@@ -56,9 +56,11 @@ flowchart TB
     fixtures --> core
     fixtures --> platform
     fixtures -.->|"dev"| test_term
+    platform -.->|"dev"| fixtures
     xtask --> core
     xtask --> install
     xtask --> platform
+    xtask -.->|"dev"| fixtures
 
     subgraph planned["Planned crate; not implemented"]
         discovery["climon2-discovery"]
@@ -97,7 +99,9 @@ library, the library host fixture and xtask's release checks consume them.
 records, so the monitor and the client executable will share it through their
 existing `platform` edges. Today the library host fixture
 (`climon2-fixtures`) and xtask's release checks consume it, which adds their
-`platform` edges.
+`platform` edges. `climon2-fixtures` also builds the
+[client library stand-in](../GLOSSARY.md#testing) for tests, so
+`climon2-platform`'s and xtask's tests consume it as a dev-dependency.
 
 **Planned:** a separate discovery crate will share session discovery between
 the CLI and monitor, retained in
