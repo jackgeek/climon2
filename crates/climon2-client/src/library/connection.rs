@@ -152,7 +152,10 @@ impl<'a> Driver<'a> {
         }
     }
 
+    /// Sends a Leave, the caller's or shutdown's: nothing calls for a retry
+    /// after it, whatever its fate.
     fn send_leave(&mut self, id: Option<u64>) {
+        self.shared.conclude(true);
         let leave_ms = Duration::from_millis(self.shared.limits().leave_ms.into());
         self.leave = Some(Instant::now() + leave_ms);
         let sent = self.connection.as_mut().map(|connection| {
@@ -279,7 +282,10 @@ impl<'a> Driver<'a> {
     fn handle(&mut self, frame: &Frame) {
         super::hook("receive");
         match self.decode(frame) {
-            Ok(effect) => self.apply(effect),
+            Ok(effect) => {
+                self.shared.conclude(effect.concludes());
+                self.apply(effect);
+            }
             Err(fault) => self.broken(fault),
         }
     }

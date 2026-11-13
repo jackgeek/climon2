@@ -724,11 +724,13 @@ fn assert_scenarios(package: &Package, root: &Path, scenarios: &[Scenario]) {
 /// connection lost with an Open or a Leave unanswered gives no fabricated
 /// Response, only failed terminal evidence, which makes the caller's still
 /// unanswered IDs indeterminate (a lost Leave leaves the departure
-/// unconfirmed); a daemon's failed or indeterminate Leave is answered as
-/// such and ends the registration, and a failed one never counts as
-/// detaching, whatever result it knew; a failure's diagnostic is best
-/// effort, left out when the event queue's records are full, while terminal
-/// evidence keeps the error; a refused Open is answered with the
+/// unconfirmed); once the caller's Leave is sent, or the Initial metadata
+/// reports the command's final result, a failure calls for no retry; a
+/// daemon's failed or indeterminate Leave is answered as such and ends the
+/// registration, and a failed one never counts as detaching, whatever
+/// result it knew; a failure's diagnostic is best effort, left out when the
+/// event queue's records are full, while terminal evidence keeps the error;
+/// a refused Open is answered with the
 /// daemon's error and calls for no retry when the daemon knew the command's
 /// final result, for none possible when it lacks support, and for passive
 /// retry otherwise. Each fake daemon saw every request once.
@@ -743,6 +745,15 @@ fn installed_library_reports_lost_and_late_answers_truthfully_without_replay() {
     let lost = (ORIGIN_TRANSPORT, "io_error");
     let daemon = |code: &'static str| (ORIGIN_DAEMON, code);
     let refused = |outcome: &str, code: &str| json!({ "open": [response("$open", outcome, Value::Null, daemon_error(code))] });
+    let concluded = send(
+        0x41,
+        json!({
+            "title": { "available": true, "value": "t" },
+            "status": { "available": false, "value": null },
+            "progress": { "available": false, "value": null },
+            "command_result": { "kind": "exit", "code": 0 },
+        }),
+    );
     let answered = |outcome: &str| {
         passive_peer(json!([leave_answer(
             outcome,
@@ -790,7 +801,7 @@ fn installed_library_reports_lost_and_late_answers_truthfully_without_replay() {
                 Expect::Answer(2, INDETERMINATE, library("timeout")),
                 Expect::Diagnostic(library("timeout")),
             ],
-            terminal: (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_INDETERMINATE),
+            terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_INDETERMINATE),
             error: Some(library("timeout")),
             kinds: &["hello", "open", "leave"],
         },
@@ -803,9 +814,26 @@ fn installed_library_reports_lost_and_late_answers_truthfully_without_replay() {
                 Expect::Metadata,
                 Expect::Diagnostic(lost),
             ],
-            terminal: (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_INDETERMINATE),
+            terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_INDETERMINATE),
             error: Some(lost),
             kinds: &["hello", "open", "leave"],
+        },
+        Scenario {
+            name: "concluded",
+            steps: submitted(
+                json!({ "open": [opened(&SELECTED), concluded, "close"] }),
+                json!({}),
+                &alone,
+            ),
+            drained: None,
+            records: vec![
+                Expect::Opened(1),
+                Expect::Metadata,
+                Expect::Diagnostic(lost),
+            ],
+            terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_NOT_REQUIRED),
+            error: Some(lost),
+            kinds: &["hello", "open"],
         },
         Scenario {
             name: "leave-failed",
@@ -975,8 +1003,9 @@ fn installed_library_reports_a_known_final_result_and_never_retries() {
 /// after shutdown; a rejected one is reported rejected. A rejected explicit
 /// Leave keeps the registration, and shutdown then leaves once more,
 /// confirmed. Shutdown during an Open still under way waits for it, then
-/// leaves once; shutdown during hello answers the Open, never sent,
-/// `cancelled`, and the instance stops with nothing to leave. A Leave before any Open, or while another is unanswered,
+/// leaves once, and if the connection is lost first, calls for no retry;
+/// shutdown during hello answers the Open, never sent, `cancelled`, and the
+/// instance stops with nothing to leave. A Leave before any Open, or while another is unanswered,
 /// is `invalid_state`, and the next Open or Leave proceeds.
 #[test]
 fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
@@ -1000,6 +1029,7 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
     };
     let opening = root.join("go-opening");
     let greeting = root.join("go-greeting");
+    let unanswered = root.join("go-unanswered");
     let second = root.join("go-second");
     let scenarios = [
         Scenario {
@@ -1085,6 +1115,24 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
             terminal: confirmed,
             error: None,
             kinds: &["hello", "open", "leave"],
+        },
+        Scenario {
+            name: "opening-lost",
+            steps: vec![
+                json!({ "do": "create", "peer": {
+                    "open": [{ "wait": unanswered.to_str().unwrap() }, "close"],
+                } }),
+                json!({ "do": "submit", "request": titled }),
+                json!({ "do": "run" }),
+                json!({ "do": "await_peer", "frames": 2 }),
+                json!({ "do": "shutdown" }),
+                json!({ "do": "touch", "path": unanswered.to_str().unwrap() }),
+            ],
+            drained: None,
+            records: vec![Expect::Diagnostic(lost)],
+            terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_NOT_REQUIRED),
+            error: Some(lost),
+            kinds: &["hello", "open"],
         },
         Scenario {
             name: "greeting",

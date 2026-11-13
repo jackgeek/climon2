@@ -526,8 +526,10 @@ are the evidence for this section
   rejects queued requests, waits for an Open under way, then attempts its own
   Leave once; an Open whose hello completes after shutdown is never sent and
   is `CM1_REJECTED` `cancelled`.
-- **Terminal evidence.** Retry is none after shutdown, for an answered Leave
-  that was not confirmed and for a known final result; permanent for the
+- **Terminal evidence.** Retry is none once shutdown is requested, once a
+  Leave the caller asked for is sent, answered or lost, and once the
+  command's final result is known, from a known-final rejection or the
+  Initial metadata's command result; otherwise permanent for the
   library's `unsupported_revision`, `unsupported_capability`,
   `invalid_configuration`, `release_mismatch` and `unsupported_limit`
   refusals and the daemon's `unsupported_revision` and

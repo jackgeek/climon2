@@ -157,6 +157,9 @@ impl Measures {
 /// Why the stream ends, once it does.
 struct Stop {
     shutdown: bool,
+    /// The caller asked to leave, or the command's final result is known:
+    /// whatever ends the stream then calls for no retry.
+    concluded: bool,
     /// The first failure, and the retry it calls for.
     failure: Option<Failed>,
     departure: Departure,
@@ -168,6 +171,7 @@ impl Default for Stop {
     fn default() -> Self {
         Self {
             shutdown: false,
+            concluded: false,
             failure: None,
             departure: Departure::NOT_REQUIRED,
             ended: false,
@@ -176,6 +180,11 @@ impl Default for Stop {
 }
 
 impl Stop {
+    /// Whether a failure can still call for a retry.
+    fn settled(&self) -> bool {
+        self.shutdown || self.concluded
+    }
+
     fn running(&self) -> bool {
         !self.shutdown && self.failure.is_none() && !self.ended
     }
@@ -410,12 +419,13 @@ impl Shared {
     }
 
     /// The first failure ends the stream, unless it has already ended. A
-    /// failure after shutdown was requested calls for no retry.
+    /// failure once shutdown was requested, the caller asked to leave or the
+    /// command's final result is known calls for no retry.
     pub(super) fn fail(&self, failed: Failed) {
         let mut state = self.lock();
         if state.stop.failure.is_none() && self.terminal.get().is_none() {
             tracing::warn!(code = failed.fault.code(), "client instance failed");
-            let retry = if state.stop.shutdown {
+            let retry = if state.stop.settled() {
                 Retry::None
             } else {
                 failed.retry
@@ -445,6 +455,12 @@ impl Shared {
             state.readable = ready;
             self.notifier.set(ready);
         }
+    }
+
+    /// Notes that the caller asked to leave or the command's final result
+    /// is known, when `concluded`.
+    pub(super) fn conclude(&self, concluded: bool) {
+        self.lock().stop.concluded |= concluded;
     }
 
     /// Whether shutdown has been requested.

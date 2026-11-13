@@ -276,14 +276,17 @@ An Open whose hello completes after shutdown is never sent: it is
 
 Terminal evidence is stopped, without an error, after a confirmed departure
 or a shutdown before any role; otherwise failed with the first failure's
-error, or the departure's. Retry is none after shutdown, for an answered
-Leave that was not confirmed and for a known final result; permanent for
-missing support, identity, configuration or frame limits; passive otherwise.
+error, or the departure's. Retry is none once shutdown is requested, once a
+Leave the caller asked for is sent (answered or lost), and once the
+command's final result is known (a known-final rejection or the Initial
+metadata's command result); otherwise permanent for missing support,
+identity, configuration or frame limits, and passive.
 Leave evidence is not required when no Leave was attempted, since closing
 the connection ends a passive registration; otherwise it is confirmed,
 rejected, failed or, when lost or late, indeterminate. Only a confirmed
-departure can report a detached attachment. Every connection is closed. Sends never raise
-`SIGPIPE`: Linux sends with `MSG_NOSIGNAL`, macOS sets `SO_NOSIGPIPE`.
+departure can report a detached attachment. Every connection is closed.
+Sends never raise `SIGPIPE`: Linux sends with `MSG_NOSIGNAL`, macOS sets
+`SO_NOSIGPIPE`.
 
 Loaders open the absolute `<executable home>/<version>/<library file>` with
 eager, local resolution (`RTLD_NOW | RTLD_LOCAL`); `current`, the working

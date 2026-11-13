@@ -130,6 +130,17 @@ pub(super) enum Effect {
     Fatal(Fault),
 }
 
+impl Effect {
+    /// Whether this record makes the command's final result known.
+    pub(super) fn concludes(&self) -> bool {
+        match self {
+            Self::Record(Event::Metadata(metadata)) => metadata.command.is_some(),
+            Self::Opened(response, _) => matches!(response.answer, Answer::KnownFinal(_)),
+            _ => false,
+        }
+    }
+}
+
 pub(super) struct Stream {
     title_bytes: u64,
     /// The last wire request ID sent; the next is one more.
@@ -309,7 +320,7 @@ impl Stream {
             None => Answer::None,
             Some(carried) => self.result(carried, required, requested)?,
         };
-        let refused = fault.clone().map(|fault| refusal(fault, retry, &answer));
+        let refused = fault.clone().map(|fault| Failed::new(fault, retry));
         let response = Response {
             id,
             outcome,
@@ -425,15 +436,6 @@ fn left(id: Option<u64>, verdict: Verdict) -> Result<Effect, Fault> {
         fault,
     });
     Ok(Effect::Left(response, departure))
-}
-
-/// An Open the daemon did not open: never again when it knew the command's
-/// final result, otherwise as its refusal calls for.
-fn refusal(fault: Fault, retry: Retry, answer: &Answer) -> Failed {
-    match answer {
-        Answer::KnownFinal(_) => Failed::new(fault, Retry::None),
-        _ => Failed::new(fault, retry),
-    }
 }
 
 /// What a response may carry: an operation's result, or a rejection's
