@@ -643,7 +643,9 @@ fn cfg01_client_queues_fit_the_queue_and_client_budgets() {
 /// and leaves room for ordinary work, up to the native maximum.
 #[test]
 fn cfg01_progress_reserves_leave_room_in_their_event_allowances() {
-    let tiny = [
+    // The largest event allowance, with nothing else in its way: every budget
+    // that contains it at its maximum, and the smallest chunk and record.
+    let largest_allowance = [
         ("memory.total_bytes", json!(u64::MAX)),
         ("memory.client_bytes", json!(u64::MAX)),
         ("memory.queue_bytes_total", json!(u64::MAX)),
@@ -651,10 +653,10 @@ fn cfg01_progress_reserves_leave_room_in_their_event_allowances() {
         ("payload.metadata_record_bytes", json!(1)),
         ("queues.event_bytes", json!(u64::MAX)),
     ];
-    let mut room = tiny.to_vec();
+    let mut room = largest_allowance.to_vec();
     room.push(("queues.progress_bytes", json!(u64::MAX - 1)));
     accepted(&room);
-    let mut full = tiny.to_vec();
+    let mut full = largest_allowance.to_vec();
     full.push(("queues.progress_bytes", json!(u64::MAX)));
     assert!(refused(&full).contains(
         "monitor.limits.queues.progress_bytes (18446744073709551615) must be less than monitor.limits.queues.event_bytes (18446744073709551615)"

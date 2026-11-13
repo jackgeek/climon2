@@ -327,7 +327,7 @@ impl Default for Ui {
 }
 
 /// Every group as read, before the groups are checked against each other.
-#[derive(Default, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 struct Groups {
     #[serde(deserialize_with = "object")]
@@ -354,74 +354,55 @@ struct Groups {
     ui: Ui,
 }
 
-/// `monitor.limits`, consistent across its groups.
+/// `monitor.limits`: the groups, once they are consistent with each other.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "Groups")]
-pub struct Limits {
-    memory: Memory,
-    history: History,
-    resources: Resources,
-    queues: Queues,
-    transfer: Transfer,
-    payload: Payload,
-    scheduling: Scheduling,
-    discovery: Discovery,
-    deadlines: Deadlines,
-    retry: Retry,
-    ui: Ui,
-}
+pub struct Limits(Groups);
 
 impl TryFrom<Groups> for Limits {
     type Error = String;
 
     fn try_from(groups: Groups) -> Result<Self, String> {
-        let limits = Self {
-            memory: groups.memory,
-            history: groups.history,
-            resources: groups.resources,
-            queues: groups.queues,
-            transfer: groups.transfer,
-            payload: groups.payload,
-            scheduling: groups.scheduling,
-            discovery: groups.discovery,
-            deadlines: groups.deadlines,
-            retry: groups.retry,
-            ui: groups.ui,
-        };
-        limits.violation().map_or(Ok(limits), Err)
+        groups.violation().map_or(Ok(Self(groups)), Err)
     }
 }
 
 /// A setting's full name and its value, for a rule between settings.
 #[derive(Clone, Copy)]
-struct Named(&'static str, u64);
+struct Named {
+    name: &'static str,
+    value: u64,
+}
 
 fn named<T: Into<u64>, const MIN: u64, const MAX: u64>(
     name: &'static str,
     limit: Limit<T, MIN, MAX>,
 ) -> Named {
-    Named(name, limit.0.into())
+    Named {
+        name,
+        value: limit.0.into(),
+    }
 }
 
 fn at_most(lesser: Named, greater: Named) -> Option<String> {
-    (lesser.1 > greater.1).then(|| {
+    (lesser.value > greater.value).then(|| {
         format!(
             "{} ({}) may not exceed {} ({})",
-            lesser.0, lesser.1, greater.0, greater.1
+            lesser.name, lesser.value, greater.name, greater.value
         )
     })
 }
 
 fn below(lesser: Named, greater: Named) -> Option<String> {
-    (lesser.1 >= greater.1).then(|| {
+    (lesser.value >= greater.value).then(|| {
         format!(
             "{} ({}) must be less than {} ({})",
-            lesser.0, lesser.1, greater.0, greater.1
+            lesser.name, lesser.value, greater.name, greater.value
         )
     })
 }
 
-impl Limits {
+impl Groups {
     /// The first rule these limits break, in this order: sub-budgets and
     /// reservations fit the totals that include them (each client's queues
     /// fit both the aggregate queue budget and the client's own); progress
@@ -453,10 +434,10 @@ impl Limits {
             "monitor.limits.queues.progress_bytes",
             queues.progress_bytes,
         );
-        let ordinary = Named(
-            "monitor.limits.queues.event_bytes - monitor.limits.queues.progress_bytes",
-            events.1.saturating_sub(reserve.1),
-        );
+        let ordinary = Named {
+            name: "monitor.limits.queues.event_bytes - monitor.limits.queues.progress_bytes",
+            value: events.value.saturating_sub(reserve.value),
+        };
         let chunk = named(
             "monitor.limits.transfer.chunk_bytes",
             self.transfer.chunk_bytes,
