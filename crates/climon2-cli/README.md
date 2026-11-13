@@ -130,12 +130,8 @@ its scenario table is in that crate's README.
 `kill_refuses_an_older_session_without_capabilities` and
 `kill_of_an_uninstalled_version_names_that_version_and_ignores_config`.
 
-Monitor acceptance-matrix cases proven here:
-
-| Scenario | Named test |
-|---|---|
-| CFG-01 (exec case): exec refuses invalid `monitor` settings, as it does an invalid `scrollback`, before a session exists | `invalid_exec_config_is_rejected_before_session_side_effects` (`tests/exec.rs`) |
-| CFG-01 (attach case): attach ignores an invalid `monitor` section, validating only `client` | `attach_validates_only_the_client_configuration` (`tests/attach.rs`) |
+The monitor acceptance-matrix cases proven here are listed under
+[Specification mapping](#specification-mapping).
 
 The `monitor`/`mon` hand-off is proven through the installed launcher, as `c2`
 and `climon2`, by `climon2-e2e` `tests/monitor.rs`:
@@ -182,7 +178,9 @@ the zero-size case's fixture prints the size and exits, so that test types nothi
 
 | Scenario | Named test |
 |---|---|
+| CFG-01 (exec case): exec refuses invalid `monitor` settings, as it does an invalid `scrollback`, before a session exists | `invalid_exec_config_is_rejected_before_session_side_effects` (`tests/exec.rs`) |
+| CFG-01 (attach case): attach ignores an invalid `monitor` section, validating only `client` | `attach_validates_only_the_client_configuration` (`tests/attach.rs`) |
 | DSC-06 (CLI part): `list` discovery, stale cleanup, probing, ordering and output are unchanged after discovery moved into `climon2-discovery` | `tests/list.rs`: `malformed_metadata_is_hidden_warned_and_never_deleted`, `stale_cleanup_requires_connection_refusal_and_proven_dead_identity`, `uncertain_linux_daemon_identity_is_warned_and_metadata_is_retained` (Linux), `already_missing_stale_socket_does_not_report_cleanup_failure`, `gone_pid_is_stale_but_wrong_or_malformed_hello_never_is`, `list_args_fit_the_real_stdout_terminal_width`, `live_daemon_list_preserves_the_controlling_session_and_json_arguments`, `failed_hello_retains_artifacts_under_a_single_two_second_deadline`, `stalled_partial_hello_does_not_block_past_the_discovery_deadline`, `stale_metadata_cannot_unlink_a_regular_file_as_a_socket`, `frozen_probes_are_concurrent_and_sort_newest_first`, `malformed_hello_extensions_are_logged_and_the_session_stays_live` |
 | DSC-06 (CLI part): `attach` and `kill` select exactly one live session and refuse the sessions they cannot serve, as before | `tests/attach.rs`: `a_selector_must_match_exactly_one_live_session`, `a_session_without_attach_capabilities_is_refused`, `a_session_cannot_attach_to_itself`, `attach_needs_a_terminal`, `a_session_of_an_uninstalled_version_names_that_version`, `kill_selects_exactly_one_live_session`, `kill_refuses_an_older_session_without_capabilities`, `kill_of_an_uninstalled_version_names_that_version_and_ignores_config`, `attach_validates_only_the_client_configuration` |
 | DSC-06 (CLI part): `attach` and `kill` of real sessions, with their statuses and cleanup, are unchanged | `tests/exec.rs`: `packaged_client_can_detach_and_reattach_to_a_live_session`, `kill_terminates_a_detached_session_silently_after_cleanup`, `kill_while_attached_gives_the_client_the_signal_status`, `attach_overwrites_an_inherited_kill_envelope`, `an_unconfirmed_kill_fails_at_the_deadline_and_reaps_only_its_helper` |
-| DSC-06 (CLI part): the general log keeps each probe diagnostic, once per session, with its level, target and errno | `every_probe_diagnostic_is_logged_once_with_its_errno` |
+| DSC-06 (CLI part): the general log keeps each probe diagnostic, once per session, with its level, target and errno | `tests/list.rs`: `every_probe_diagnostic_is_logged_once_with_its_errno` |
