@@ -201,14 +201,17 @@ fn installed_library_table_reports_every_instance_call_unsupported() {
     package.assert_clean();
 }
 
-/// LIB-01 Library case: the library loads from its absolute version path
-/// whatever `current`, the working directory and ambient search paths name.
-/// Valid decoy copies sit in another version folder named by `current`, in the
-/// working directory and on `LD_LIBRARY_PATH` (Linux) and
-/// `DYLD_FALLBACK_LIBRARY_PATH` (macOS); the loaded image is still the
-/// requested file. The release identity is compiled in, not derived from the
-/// location: the copy in the other version folder still reports its own
-/// release.
+/// LIB-01 Library case: `current` names another version folder, and valid
+/// copies of the library sit there, in the working directory and on
+/// `LD_LIBRARY_PATH` (Linux) and `DYLD_FALLBACK_LIBRARY_PATH` (macOS).
+/// Loading by absolute version path still maps the requested file. That is
+/// the system loader's lookup, which the library relies on but cannot change,
+/// so only a loader or host change fails it; the Linux release checks reject
+/// the library properties through which a lookup could bind another release.
+/// The library's own part is its identity: it answers from its own image with
+/// its own folder's release, not the one `current` names, and the copy in the
+/// other version folder reports its compiled-in release, not one derived from
+/// its location.
 #[test]
 fn installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths() {
     let package = Package::private();
