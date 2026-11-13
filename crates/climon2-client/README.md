@@ -256,9 +256,12 @@ event queue is full, the library stops reading the socket, so daemon
 records wait instead of being dropped. A delivery takes the oldest records,
 at most `drain_records`, stopping before `drain_payload_bytes`; create
 refuses `drain_payload_bytes` below `metadata_record_bytes`
-(`unsupported_limit`), so a record never exceeds it alone. Each record is charged its header and the bytes it owns: copied
-text and token arrays; the library's own error text is static and costs
-nothing.
+(`unsupported_limit`), so a record never exceeds it alone. Each record is
+charged twice `sizeof(cm1_record)`, for the `cm1_record` and the library's
+own copy (a compile-time check keeps that copy no larger), plus the bytes it
+owns once: copied text and token arrays; the library's own error text is
+static and costs nothing. Each outstanding request reserves one record's
+charge plus `metadata_record_bytes` for its outcome.
 
 A wire violation, a closed or broken socket, a daemon Fatal error or an
 exceeded limit ends the connection: a diagnostic when it fits the event

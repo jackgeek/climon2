@@ -491,11 +491,13 @@ are the evidence for this section
   `request_bytes` before any token is read. A request counts against
   `request_records` and `request_bytes` until it executes and against
   `operations` until its Response is queued. Each outstanding request
-  reserves one record and `metadata_record_bytes` of `event_records` and
-  `event_bytes` for its outcome; without room, `submit` is `CM1_FULL`
+  reserves one record of `event_records`, and one record's charge plus
+  `metadata_record_bytes` of `event_bytes`, for its outcome; without room, `submit` is `CM1_FULL`
   (`queue_full`).
-- **Records.** A record is charged `sizeof(cm1_record)` plus the bytes it owns:
-  copied text and token arrays. The library's own error text is static and
+- **Records.** A record is charged twice `sizeof(cm1_record)`, for the
+  `cm1_record` and the library's own copy it points into, plus the bytes it
+  owns once: copied text and token arrays. It is charged from its queueing
+  until its delivery's release. The library's own error text is static and
   costs nothing. While the event queue is full, the library stops reading the
   connection, so daemon records wait. A delivery holds the oldest records, at
   most `drain_records`, stopping before `drain_payload_bytes`; a record never

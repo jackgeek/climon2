@@ -21,7 +21,7 @@ use std::{
 };
 use support::{
     Package,
-    library::{INSTANCE_DESCRIPTORS, RECORD, archive, scenario},
+    library::{CHARGE, INSTANCE_DESCRIPTORS, archive, scenario},
 };
 
 const SUCCESS: u64 = 0;
@@ -1223,13 +1223,14 @@ fn installed_library_contains_a_panic_in_a_release_and_keeps_the_object() {
 }
 
 /// LIB-04 Fault: a failure diagnostic is best effort. It is queued only when
-/// one record fits the instance's `event_bytes` (exactly at the limit), and
+/// one record's charge (its `cm1_record` and the library's own copy) fits
+/// the instance's `event_bytes` (exactly at the limit), and
 /// otherwise dropped while terminal evidence keeps the error (one byte
 /// under).
 #[test]
 fn installed_library_queues_the_failure_diagnostic_only_within_event_bytes() {
     let package = Package::new();
-    for (event_bytes, queued) in [(RECORD, true), (RECORD - 1, false)] {
+    for (event_bytes, queued) in [(CHARGE, true), (CHARGE - 1, false)] {
         let limits = json!({ "event_bytes": event_bytes, "progress_bytes": 1 });
         let Some(report) = fault(&package, "snapshot", limits) else {
             return;
@@ -1267,7 +1268,7 @@ fn installed_library_charges_a_delivery_until_it_is_released() {
     assert_eq!(before["event_records"], 0);
     assert_eq!(before["deliveries"], 0);
     assert_eq!(during["event_records"], 1, "{during}");
-    assert_eq!(during["event_bytes"], RECORD, "{during}");
+    assert_eq!(during["event_bytes"], CHARGE, "{during}");
     assert_eq!(during["deliveries"], 1, "{during}");
     assert_eq!(during["records_drained"], 1, "{during}");
     assert_eq!(during["deliveries_released"], 0, "{during}");
@@ -1277,7 +1278,7 @@ fn installed_library_charges_a_delivery_until_it_is_released() {
     assert_eq!(after["peak_allocation_bytes"], during["allocation_bytes"]);
     for (current, peak, value) in [
         ("event_records", "peak_event_records", 1),
-        ("event_bytes", "peak_event_bytes", RECORD),
+        ("event_bytes", "peak_event_bytes", CHARGE),
         ("deliveries", "peak_deliveries", 1),
     ] {
         assert_eq!(after[current], 0, "{current}: {after}");

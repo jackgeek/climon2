@@ -20,7 +20,7 @@ use super::{
     },
     hook,
     platform::Notifier,
-    records::{Batch, Event, RECORD, Response},
+    records::{Batch, CHARGE, Event, Response},
     request::{self, Operation, Submitted},
     startup::{Diagnostics, Paths, Startup},
     stream::Departure,
@@ -603,10 +603,11 @@ impl Shared {
             && self.events_fit(state, operations, 0, 0)
     }
 
-    /// What each outstanding operation reserves for its outcome: a record
-    /// and the largest Response the daemon may send.
+    /// What each outstanding operation reserves for its outcome: a record's
+    /// charge and the largest Response the daemon may send, whose payload
+    /// never exceeds its frame.
     fn reserve(&self) -> u64 {
-        RECORD + u64::from(self.limits.metadata_record_bytes)
+        CHARGE + u64::from(self.limits.metadata_record_bytes)
     }
 
     /// Whether the event allowance holds every queued and delivered record,

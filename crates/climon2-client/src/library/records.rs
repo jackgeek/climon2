@@ -10,8 +10,14 @@ use super::{
 use climon2_core::{native, wire};
 use std::mem;
 
-/// Bytes every record is charged before its variable data.
-pub(super) const RECORD: u64 = mem::size_of::<native::Record>() as u64;
+/// Bytes every record is charged before its variable data: a delivered
+/// record is held twice, as its `cm1_record` and as the library's own copy,
+/// each charged `sizeof(cm1_record)`. Every buffer either points to is the
+/// library copy's, charged once as its payload.
+pub(super) const CHARGE: u64 = 2 * mem::size_of::<native::Record>() as u64;
+
+// The library's own copy never outgrows the `cm1_record` charged for it.
+const _: () = assert!(mem::size_of::<Event>() <= mem::size_of::<native::Record>());
 const TOKEN: u64 = mem::size_of::<native::Bytes>() as u64;
 
 // SAFETY (all three): every field is an integer, a raw pointer or a union of
@@ -195,7 +201,7 @@ impl Event {
     /// What the record costs the event allowance: the record and every
     /// buffer it owns.
     pub(super) fn charge(&self) -> u64 {
-        RECORD + self.payload()
+        CHARGE + self.payload()
     }
 
     /// The bytes of its variable data.

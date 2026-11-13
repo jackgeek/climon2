@@ -10,7 +10,7 @@
 mod support;
 
 use serde_json::{Value, json};
-use support::{Package, library::RECORD, passive::*};
+use support::{Package, library::CHARGE, passive::*};
 
 /// Requests of public ID 7 that `submit` rejects, each with its result code
 /// and stable error code.
@@ -172,7 +172,8 @@ fn installed_library_admits_only_valid_requests_and_rejections_cost_nothing() {
 /// accepted request reserves room for its outcome): with one limit set to
 /// exactly an Open and a Leave (`request_records` and `operations` two,
 /// `request_bytes` both requests' charges, and the outcome reserve of a
-/// record and `metadata_record_bytes` each in `event_records` and
+/// record (charged with the library's own copy) and `metadata_record_bytes`
+/// each in `event_records` and
 /// `event_bytes`), both are accepted at the limit and a third request is
 /// `queue_full`. An Open too large for `request_bytes` on its own is
 /// `queue_full`, and its ID is then accepted; one that fills it exactly is
@@ -183,7 +184,7 @@ fn installed_library_bounds_requests_by_every_queue_limit() {
     let package = Package::new();
     let root = root(&package);
     let both = charge(&SELECTED) + REQUEST;
-    let reserve = RECORD + 1024;
+    let reserve = CHARGE + 1024;
     let cases = [
         ("request_records", json!({ "request_records": 2 })),
         ("request_bytes", json!({ "request_bytes": both })),
@@ -279,7 +280,8 @@ fn batches(drain: &Value) -> Vec<u64> {
 /// records per drain, three queued Responses come as a delivery of two,
 /// then `queue_full` while it is outstanding, its records unchanged when
 /// observed again and still charged, then the third after its release.
-/// Each `cancelled` Response is charged its record alone: its error text is
+/// Each `cancelled` Response is charged its record and the library's own
+/// copy alone: its error text is
 /// the library's own static text, not a copy.
 #[test]
 fn installed_library_holds_each_delivery_until_released() {
@@ -299,7 +301,7 @@ fn installed_library_holds_each_delivery_until_released() {
     let report = script(&package, &root, json!(steps));
     let queued = &step(&report, 7)["output"];
     assert_eq!(queued["event_records"], 3, "{queued:#}");
-    assert_eq!(queued["event_bytes"], 3 * RECORD, "{queued:#}");
+    assert_eq!(queued["event_bytes"], 3 * CHARGE, "{queued:#}");
     assert_eq!(queued["deliveries"], 0, "{queued:#}");
     let first = step(&report, 8);
     assert_eq!(batches(first), [2]);
@@ -313,7 +315,7 @@ fn installed_library_holds_each_delivery_until_released() {
     let live = &step(&report, 11)["output"];
     assert_eq!(live["deliveries"], 1, "{live:#}");
     assert_eq!(live["event_records"], 3, "{live:#}");
-    assert_eq!(live["event_bytes"], 3 * RECORD, "{live:#}");
+    assert_eq!(live["event_bytes"], 3 * CHARGE, "{live:#}");
     assert_success(&step(&report, 12)[0]);
     assert_eq!(batches(step(&report, 13)), [1]);
     let mut records = kept;
@@ -441,7 +443,8 @@ fn installed_library_holds_daemon_records_while_the_event_queue_is_full() {
     package.assert_clean();
 }
 
-/// LIB-04 Fault (each record is charged its header and the bytes it owns,
+/// LIB-04 Fault (each record is charged its header twice, for the
+/// `cm1_record` and the library's own copy, and the bytes it owns once,
 /// nothing else, until released): from the fake daemon peer, with every
 /// record still queued, the
 /// event queue holds exactly the records' headers plus the Open's selected
@@ -505,7 +508,7 @@ fn installed_library_charges_each_record_its_header_and_the_bytes_it_owns() {
         assert_eq!(queued["event_records"], 5, "{name}: {queued:#}");
         assert_eq!(
             queued["event_bytes"],
-            5 * RECORD + owned,
+            5 * CHARGE + owned,
             "{name}: {queued:#}"
         );
         let records = step(&report, start + 5)["records"].as_array().unwrap();

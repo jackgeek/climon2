@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 use support::{
     Package,
-    library::{INSTANCE_DESCRIPTORS, RECORD},
+    library::{CHARGE, INSTANCE_DESCRIPTORS},
     passive::*,
 };
 
@@ -972,7 +972,7 @@ fn installed_library_reports_a_known_final_result_and_never_retries() {
     let queued = &step(&report, 4)["output"];
     let error = ("invalid_state".len() + "fake daemon".len()) as u64;
     assert_eq!(queued["event_records"], 2, "{queued:#}");
-    assert_eq!(queued["event_bytes"], 2 * (RECORD + error), "{queued:#}");
+    assert_eq!(queued["event_bytes"], 2 * (CHARGE + error), "{queued:#}");
     let (records, terminal) = finished(step(&report, 5));
     assert_eq!(records.len(), 2, "{records:#?}");
     let response = assert_response(&records[0], 1, 1, REJECTED);
