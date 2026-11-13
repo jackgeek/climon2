@@ -316,6 +316,57 @@ fn installed_library_explicit_leave_departs_once_and_is_answered() {
     package.assert_clean();
 }
 
+/// EXT-02 Library (an unconfirmed required Leave is a failure, never a false
+/// departure): a passive registration of a real session whose daemon then
+/// stops (`SIGSTOP`) before shutdown. Shutdown's own Leave is written but
+/// never answered, so after `leave_ms` the departure is unconfirmed: a
+/// library `timeout` diagnostic, then failed terminal evidence with Leave
+/// indeterminate, nothing detached, the connection closed and no retry once
+/// shutdown was requested. The daemon then resumes and the session ends
+/// normally.
+#[test]
+fn installed_library_reports_a_lost_leave_to_a_stopped_daemon_as_unconfirmed() {
+    let package = Package::new();
+    let root = root(&package);
+    let session = Session::start(&package, &root);
+    let daemon = package.metadata().daemon_pid;
+    let mut startup = session.startup(&package, 8);
+    startup["limits"] = json!({ "leave_ms": 300 });
+    let steps = json!([
+        { "do": "create", "startup": startup },
+        { "do": "submit", "request": open(1, &REQUIRED, &["title-v1"]) },
+        { "do": "run" },
+        { "do": "drain", "until": { "tag": INITIAL_METADATA } },
+        { "do": "signal", "pid": daemon, "signal": "stop" },
+        { "do": "shutdown" },
+        { "do": "wait_run" },
+        { "do": "finish" },
+        { "do": "signal", "pid": daemon, "signal": "continue" },
+    ]);
+    let report = script(&package, &root, steps);
+    assert_opened(
+        step(&report, 3)["records"].as_array().unwrap(),
+        1,
+        8,
+        &["daemon-wire-v1", "monitor-v1", "title-v1"],
+    );
+    assert_eq!(step(&report, 4), "signalled");
+    assert_success(step(&report, 5));
+    let (records, terminal) = finished(step(&report, 7));
+    assert_eq!(records.len(), 1, "{records:#?}");
+    assert_diagnostic(&records[0], 8, ORIGIN_LIBRARY, "timeout");
+    assert_terminal(
+        terminal,
+        8,
+        (CLIENT_FAILED, RETRY_NONE, LEAVE_INDETERMINATE),
+        Some((ORIGIN_LIBRARY, "timeout")),
+    );
+    assert_eq!(step(&report, 8), "signalled");
+    assert_all_released(&report["ledger"]);
+    session.end();
+    package.assert_clean();
+}
+
 /// COM-01 Library (incompatible peers are rejected before any role takes
 /// effect): the real daemon advertises 1,048,576-byte server frames, which
 /// fit an instance's `wire_frame_bytes` exactly at that limit (the other
