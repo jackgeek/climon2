@@ -180,12 +180,12 @@ earlier run would, so they open on the empty state.
 | Spec #73 host terminal; TRM-04 (empty monitor): SIGWINCH repaints exactly at the new size without erasing or showing the cursor | `resizing_the_host_redraws_the_monitor_at_the_new_size` |
 | Spec #73 exit: content-free monitor general log | `installed_monitor_logs_content_free_records_to_its_general_log` |
 | HLP-01 every start with hints on and nothing saved opens the key introduction: the actual prefix with x, s and ?, an unchecked box; Enter continues, closing saves nothing, prefix+x exits from it | `the_key_introduction_opens_at_every_start_until_dont_show_again_is_saved` |
-| HLP-01 hints off or the choice saved keep it closed; prefix+? opens it regardless, showing the saved choice, and is a no-op while open; a later version's preference file is honoured | `help_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say` |
+| HLP-01 hints off or the choice saved keep it closed; prefix+? opens it regardless, showing the saved choice, and is a no-op while open; a later version's preference file is honoured | `the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say` |
 | HLP-01 Space saves and reverses the choice per climon2 home: exact version 1 bytes, 0600 under umask 000, by rename, nothing left behind, a file already under the temporary name replaced; restarts and another home | `dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible` |
 | HLP-01 (derived scenario: unreadable or malformed preference file) not suppressed, reason under the box and logged, never rewritten implicitly | `an_unreadable_or_malformed_preference_file_shows_why_beside_the_introduction` |
-| HLP-01 (Fault) a save that cannot create its temporary file or replace the preference file is reported and logged, saves nothing, leaves nothing | `a_failing_save_is_reported_in_the_dialog_and_saves_nothing` |
-| HLP-02 (empty monitor) the dialog owns typed keys, prefixed keys, reports and pastes, none acts; Enter closes, prefix+? reopens, prefix+x exits | `help_is_modal_and_prefix_x_still_exits_from_it` |
-| HLP-02 (empty monitor) with Ctrl+[ as the prefix Escape cannot close the dialog, prefix+x still exits | `with_escape_as_the_prefix_escape_cannot_close_help_and_prefix_x_still_exits` |
+| HLP-01 (Fault) a save that cannot create its temporary file or replace the preference file is reported and logged, saves nothing, leaves nothing | `a_failing_save_is_reported_in_the_key_introduction_and_saves_nothing` |
+| HLP-02 (empty monitor) the key introduction owns typed keys, prefixed keys, reports and pastes, none acts; Enter closes, prefix+? reopens, prefix+x exits | `the_key_introduction_is_modal_and_prefix_x_still_exits_from_it` |
+| HLP-02 (empty monitor) with Ctrl+[ as the prefix Escape cannot close the key introduction, prefix+x still exits | `with_escape_as_the_prefix_escape_cannot_close_the_key_introduction_and_prefix_x_still_exits` |
 
 Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
 holds a packaged client between `Granted` and `Ready`; daemon

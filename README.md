@@ -405,7 +405,7 @@ Enter continues to the empty state. Space checks **Don't show again**, or
 clears it again, and saves your choice at once: while it is checked, later
 starts with the same climon2 home open on the empty state. The introduction
 also stays closed while `monitor.show_key_hints` is false. Whatever either
-says, the escape prefix followed by `?` opens the same dialog as key help,
+says, the escape prefix followed by `?` opens the same dialog as help,
 showing your saved choice; doing so while it is open changes nothing. The
 dialog takes every other key and any paste, and none of them does anything
 else; the escape prefix followed by `x` still exits. There is no session list

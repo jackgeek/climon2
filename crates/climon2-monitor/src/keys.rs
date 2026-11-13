@@ -1,12 +1,49 @@
-//! Host input while no session can take it (#74): typed prefix+x exits,
-//! prefix+? opens the key introduction and help dialog, and the dialog takes
-//! other typed keys (#105). The full input router replaces this when targets
-//! exist.
+//! Host input while no session can take it (#74): the prefix actions, and the
+//! typed keys the key introduction takes (#105). The full input router
+//! replaces this when targets exist.
 use climon2_core::keys::ControlKey;
 
-/// The keys that complete the monitor's actions after the prefix.
-pub(crate) const EXIT: u8 = b'x';
-pub(crate) const HELP: u8 = b'?';
+/// What a key completes after the prefix.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Action {
+    Exit,
+    /// The session list arrives with the selector (#106); until then this
+    /// action does nothing.
+    SessionList,
+    KeyIntroduction,
+}
+
+/// A prefix action: the key that completes it after the prefix, and how the
+/// key introduction describes it.
+#[derive(Clone, Copy)]
+pub(crate) struct Binding {
+    pub(crate) key: u8,
+    pub(crate) action: Action,
+    pub(crate) label: &'static str,
+}
+
+/// Prefix+x, which the empty state's key hint also names.
+pub(crate) const EXIT: Binding = Binding {
+    key: b'x',
+    action: Action::Exit,
+    label: "Exit the monitor",
+};
+
+/// Every prefix action, in the order the key introduction lists them
+/// (selector document, "Key introduction and help").
+pub(crate) const BINDINGS: [Binding; 3] = [
+    EXIT,
+    Binding {
+        key: b's',
+        action: Action::SessionList,
+        label: "Open the session list",
+    },
+    Binding {
+        key: b'?',
+        action: Action::KeyIntroduction,
+        label: "Show this dialog",
+    },
+];
 
 /// The bracketed-paste markers the host sends once the monitor enables them.
 const PASTE_START: &[u8; MARKER] = b"\x1b[200~";
@@ -16,10 +53,8 @@ const MARKER: usize = 6;
 /// A typed key, as raw host bytes complete it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Key {
-    /// Prefix+x.
-    Exit,
-    /// Prefix+?.
-    Help,
+    /// A prefix and the key after it that completes an action.
+    Action(Action),
     /// A typed byte outside a prefix. A prefix and the byte after it that
     /// completes no action reach no target yet, and neither does pasted data.
     Typed(u8),
@@ -95,17 +130,19 @@ impl Keys {
 
 /// The action a typed byte completes after a prefix, if any.
 fn action(byte: u8) -> Option<Key> {
-    match byte {
-        EXIT => Some(Key::Exit),
-        HELP => Some(Key::Help),
-        _ => None,
-    }
+    BINDINGS
+        .iter()
+        .find(|binding| binding.key == byte)
+        .map(|binding| Key::Action(binding.action))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Key, Keys};
+    use super::{Action, Key, Keys};
     use climon2_core::keys::ControlKey;
+
+    const EXIT: Key = Key::Action(Action::Exit);
+    const KEY_INTRODUCTION: Key = Key::Action(Action::KeyIntroduction);
 
     fn keys(prefix: &str) -> Keys {
         Keys::new(ControlKey::from_name(prefix).unwrap())
@@ -114,7 +151,7 @@ mod tests {
     impl Keys {
         /// Whether these bytes complete a typed prefix+x.
         fn exit(&mut self, bytes: &[u8]) -> bool {
-            bytes.iter().any(|&byte| self.key(byte) == Some(Key::Exit))
+            bytes.iter().any(|&byte| self.key(byte) == Some(EXIT))
         }
 
         /// Every key these bytes complete, in order.
@@ -123,13 +160,14 @@ mod tests {
         }
     }
 
-    /// HLP-01 (pure input-router supplement): prefix+? opens help however the
-    /// host splits the reads, and only after the configured prefix.
+    /// HLP-01 (pure input-router supplement): prefix+? opens the key
+    /// introduction however the host splits the reads, and only after the
+    /// configured prefix.
     #[test]
-    fn prefix_then_question_mark_is_help_across_read_boundaries() {
+    fn prefix_then_question_mark_opens_the_key_introduction_across_read_boundaries() {
         let mut split = keys("Ctrl+B");
         assert_eq!(split.all(b"\x02"), []);
-        assert_eq!(split.all(b"?"), [Key::Help]);
+        assert_eq!(split.all(b"?"), [KEY_INTRODUCTION]);
         assert_eq!(
             keys("Ctrl+B").all(b"?\x1d?"),
             [Key::Typed(b'?'), Key::Typed(0x1d), Key::Typed(b'?')]
@@ -156,10 +194,10 @@ mod tests {
         assert!(
             !pasted
                 .iter()
-                .any(|key| matches!(key, Key::Help | Key::Exit | Key::Typed(b' ' | b'\r'))),
+                .any(|key| matches!(key, Key::Action(_) | Key::Typed(b' ' | b'\r'))),
             "{pasted:?}"
         );
-        assert_eq!(keys.all(b"\x1d?"), [Key::Help]);
+        assert_eq!(keys.all(b"\x1d?"), [KEY_INTRODUCTION]);
     }
 
     /// INP-01 (pure input-router supplement): prefix+x exits, however the

@@ -4,19 +4,19 @@
 //! explicit empty state, under the key introduction when it is due, until
 //! prefix+x or a catchable termination signal. Nothing is discovered yet.
 
-mod help;
 #[cfg(feature = "test-hooks")]
 mod hooks;
 mod host;
+mod introduction;
 mod keys;
 mod preference;
 mod screen;
 mod startup;
 
 use climon2_core::{config::MonitorConfig, protocol::TerminalSize};
-use help::Help;
 use host::{Ending, Event, Host};
-use keys::{Key, Keys};
+use introduction::KeyIntroduction;
+use keys::{Action, Key, Keys};
 use preference::Preference;
 use screen::Screen;
 use startup::Startup;
@@ -112,7 +112,7 @@ fn owned(config: &MonitorConfig, preference: Preference) -> io::Result<u32> {
 struct Monitor {
     screen: Screen,
     keys: Keys,
-    help: Help,
+    introduction: KeyIntroduction,
 }
 
 impl Monitor {
@@ -123,11 +123,11 @@ impl Monitor {
     ) -> io::Result<Self> {
         let prefix = config.escape_prefix();
         let hints = config.settings().show_key_hints;
-        let help = Help::new(prefix, preference, hints);
+        let introduction = KeyIntroduction::new(prefix, preference, hints);
         Ok(Self {
-            screen: Screen::new(size, prefix, hints, help.dialog())?,
+            screen: Screen::new(size, prefix, hints, &introduction)?,
             keys: Keys::new(prefix),
-            help,
+            introduction,
         })
     }
 
@@ -145,29 +145,29 @@ impl Monitor {
     fn handle(&mut self, event: Event<'_>) -> io::Result<Option<Ending>> {
         match event {
             Event::End(ending) => Ok(Some(ending)),
-            Event::Resize(size) => self.screen.resize(size).map(|()| None),
+            Event::Resize(size) => self.screen.resize(size, &self.introduction).map(|()| None),
             Event::Input(bytes) => self.input(bytes),
             Event::Idle => Ok(None),
         }
     }
 
     /// Acts on each byte in turn until one ends the monitor, then shows the
-    /// dialog as they leave it.
+    /// key introduction as they leave it.
     fn input(&mut self, bytes: &[u8]) -> io::Result<Option<Ending>> {
         match bytes.iter().find_map(|&byte| self.act(byte)) {
             Some(ending) => Ok(Some(ending)),
-            None => self.screen.show(self.help.dialog()).map(|()| None),
+            None => self.screen.show(&self.introduction).map(|()| None),
         }
     }
 
     /// Acts on the key `byte` completes: prefix+x ends the monitor, prefix+?
-    /// opens the dialog, and a typed key goes to it.
+    /// opens the key introduction, and a typed key goes to it.
     fn act(&mut self, byte: u8) -> Option<Ending> {
         match self.keys.key(byte) {
-            Some(Key::Exit) => return Some(Ending::Exit),
-            Some(Key::Help) => self.help.open(),
-            Some(Key::Typed(byte)) => self.help.key(byte),
-            None => {}
+            Some(Key::Action(Action::Exit)) => return Some(Ending::Exit),
+            Some(Key::Action(Action::KeyIntroduction)) => self.introduction.open(),
+            Some(Key::Typed(byte)) => self.introduction.key(byte),
+            Some(Key::Action(Action::SessionList)) | None => {}
         }
         None
     }

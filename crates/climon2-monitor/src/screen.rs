@@ -1,5 +1,5 @@
 //! What the monitor draws on its own alternate screen, through Ratatui.
-use crate::{help::Dialog, keys::EXIT};
+use crate::{introduction::KeyIntroduction, keys::EXIT};
 use climon2_core::{keys::ControlKey, protocol::TerminalSize};
 use ratatui::{
     backend::{Backend, CrosstermBackend},
@@ -22,85 +22,89 @@ pub(crate) struct Screen {
     backend: CrosstermBackend<Stdout>,
     lines: Vec<Line<'static>>,
     size: TerminalSize,
-    dialog: Option<Dialog>,
+    /// The frame last painted.
+    painted: Buffer,
 }
 
 impl Screen {
     /// The empty state names `prefix` in its key hint, unless `hints` is off,
-    /// under `dialog`.
+    /// under the key introduction while it is open.
     pub(crate) fn new(
         size: TerminalSize,
         prefix: ControlKey,
         hints: bool,
-        dialog: Option<Dialog>,
+        introduction: &KeyIntroduction,
     ) -> io::Result<Self> {
-        let exit = char::from(EXIT);
+        let exit = char::from(EXIT.key);
         let hint = hints.then(|| Line::from(format!("Press {prefix} then {exit} to exit.")));
         let mut screen = Self {
             backend: CrosstermBackend::new(io::stdout()),
             lines: std::iter::once(Line::from(EMPTY)).chain(hint).collect(),
             size,
-            dialog,
+            painted: Buffer::default(),
         };
         screen.backend.hide_cursor()?;
-        screen.paint()?;
+        screen.paint(screen.frame(introduction))?;
         Ok(screen)
     }
 
-    pub(crate) fn resize(&mut self, size: TerminalSize) -> io::Result<()> {
+    pub(crate) fn resize(
+        &mut self,
+        size: TerminalSize,
+        introduction: &KeyIntroduction,
+    ) -> io::Result<()> {
         self.size = size;
-        self.paint()
+        self.paint(self.frame(introduction))
     }
 
-    /// Shows `dialog`, or none, over the empty state; an unchanged screen is
-    /// not painted again.
-    pub(crate) fn show(&mut self, dialog: Option<Dialog>) -> io::Result<()> {
-        if dialog == self.dialog {
+    /// Shows `introduction` over the empty state; an unchanged screen is not
+    /// painted again.
+    pub(crate) fn show(&mut self, introduction: &KeyIntroduction) -> io::Result<()> {
+        let frame = self.frame(introduction);
+        if frame == self.painted {
             return Ok(());
         }
-        self.dialog = dialog;
-        self.paint()
+        self.paint(frame)
     }
 
-    /// Paints every cell of the frame, so whatever the host showed is
+    /// Paints every cell of `frame`, so whatever the host showed is
     /// overwritten in place: nothing is erased first, and no blank screen
     /// shows between two frames.
-    fn paint(&mut self) -> io::Result<()> {
+    fn paint(&mut self, frame: Buffer) -> io::Result<()> {
         #[cfg(feature = "test-hooks")]
         crate::hooks::fail("draw")?;
-        let frame = frame(self.size, &self.lines, self.dialog.as_ref());
         let cells = frame.content().iter().enumerate().map(|(index, cell)| {
             let (x, y) = frame.pos_of(index);
             (x, y, cell)
         });
         self.backend.draw(cells)?;
-        Backend::flush(&mut self.backend)
+        Backend::flush(&mut self.backend)?;
+        self.painted = frame;
+        Ok(())
     }
-}
 
-/// The permanent top row, and below it the empty state, centred, under any
-/// `dialog`.
-fn frame(size: TerminalSize, empty: &[Line<'static>], dialog: Option<&Dialog>) -> Buffer {
-    let area = Rect::new(0, 0, size.cols, size.rows);
-    let mut frame = Buffer::empty(area);
-    let top = Rect {
-        height: TOP_ROW,
-        ..area
-    };
-    let below = Rect {
-        y: top.bottom(),
-        height: area.height - TOP_ROW,
-        ..area
-    };
-    Paragraph::new(NO_SELECTION)
-        .reversed()
-        .render(top, &mut frame);
-    let height = Constraint::Length(empty.len() as u16);
-    Paragraph::new(empty.to_vec())
-        .centered()
-        .render(below.centered_vertically(height), &mut frame);
-    if let Some(dialog) = dialog {
-        dialog.render(below, &mut frame);
+    /// The permanent top row, and below it the empty state, centred, under
+    /// the key introduction while it is open.
+    fn frame(&self, introduction: &KeyIntroduction) -> Buffer {
+        let area = Rect::new(0, 0, self.size.cols, self.size.rows);
+        let mut frame = Buffer::empty(area);
+        let top = Rect {
+            height: TOP_ROW,
+            ..area
+        };
+        let below = Rect {
+            y: top.bottom(),
+            height: area.height - TOP_ROW,
+            ..area
+        };
+        Paragraph::new(NO_SELECTION)
+            .reversed()
+            .render(top, &mut frame);
+        let height = Constraint::Length(self.lines.len() as u16);
+        Paragraph::new(self.lines.clone())
+            .centered()
+            .render(below.centered_vertically(height), &mut frame);
+        introduction.render(below, &mut frame);
+        frame
     }
-    frame
 }

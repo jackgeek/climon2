@@ -161,7 +161,7 @@ The screen a non-controlling client shows instead of session content, saying the
 _Avoid_: Viewer mode, read-only view
 
 **Key introduction**:
-The monitor's modal list of its key actions, spelled with the configured client escape prefix, shown at startup until the user declines it for that climon2 home, and on request as key help.
+The monitor's modal list of its key actions, spelled with the configured client escape prefix, shown at startup until the user declines it for that climon2 home, and on request as help.
 _Avoid_: Splash screen, onboarding, welcome screen
 
 ## Status and attention
