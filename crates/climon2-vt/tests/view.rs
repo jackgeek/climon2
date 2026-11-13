@@ -4,9 +4,9 @@
 //! another run of the model.
 
 use climon2_vt::{
-    Geometry, Limits, Model,
+    Geometry, Limits, Model, Rejected,
     view::{
-        Ansi, Cell, Colour, Content, Cursor, CursorShape, Glyph, Modes, MouseEncoding,
+        Ansi, Cell, Colour, Content, Cursor, CursorShape, Glyph, History, Modes, MouseEncoding,
         MouseReporting, Rendition, Rows, Screen, Underline, View,
     },
 };
@@ -25,6 +25,15 @@ fn limits(bytes: usize, history_rows: usize) -> Limits {
     Limits {
         bytes,
         history_rows,
+    }
+}
+
+/// The bytes a model of `at` keeping `history_rows` needs before any
+/// output.
+fn mandatory(at: Geometry, history_rows: usize) -> usize {
+    match Model::new(at, limits(0, history_rows)) {
+        Ok(_) => panic!("a model needs some bytes"),
+        Err(Rejected { needed, .. }) => needed,
     }
 }
 
@@ -581,4 +590,236 @@ fn alternate_scroll_follows_mode_1007() {
         ..FRESH
     };
     assert_modes(&[("\x1b[?1007l", off), ("\x1b[?1007l\x1b[?1007h", FRESH)]);
+}
+
+/// The normal screen's history, or a panic on the alternate screen.
+fn normal_history<'a>(view: &View<'a>) -> History<'a> {
+    match view.screen() {
+        Screen::Normal { history, .. } => history,
+        Screen::Alternate { .. } => panic!("the normal screen is active"),
+    }
+}
+
+/// TRM-05 (crate case): normal history. Rows scrolled off the top of the
+/// normal screen are its history, oldest first, every cell as it was drawn;
+/// nothing has been discarded from it.
+#[test]
+fn rows_scrolled_off_the_normal_screen_are_its_history() {
+    let model = fed(4, 2, "a\r\n\x1b[31mb\x1b[0m\r\nc\r\nd");
+
+    let view = model.view();
+    let history = normal_history(&view);
+    let red = coloured(
+        'b',
+        Colour::Ansi(Ansi::Red),
+        Colour::Default,
+        Colour::Default,
+    );
+    let (a, b) = (row("a", 4), [vec![red], vec![blank(); 3]].concat());
+    assert_eq!(cells(history.rows), [a.clone(), b.clone()]);
+    assert!(!history.truncated);
+    assert_eq!(history.rows.len(), 2);
+    assert!(!history.rows.is_empty());
+    let at = |index| {
+        history
+            .rows
+            .get(index)
+            .map(|row| row.cells().collect::<Vec<_>>())
+    };
+    assert_eq!((at(0), at(1), at(2)), (Some(a), Some(b), None));
+    assert_eq!(screen(&view), [row("c", 4), row("d", 4)]);
+
+    let model = fed(4, 2, "a\r\nb");
+    let empty = normal_history(&model.view());
+    assert!(empty.rows.is_empty());
+    assert_eq!(empty.rows.len(), 0);
+}
+
+/// Lines `row<n>` for each `n` in `numbers`, as printed and as cells
+/// `cols` wide.
+fn lines(numbers: std::ops::Range<usize>, cols: usize) -> (String, Vec<Vec<Cell<'static>>>) {
+    let text: Vec<String> = numbers.map(|number| format!("row{number}")).collect();
+    let cells = text.iter().map(|text| row(text, cols)).collect();
+    (text.join("\r\n"), cells)
+}
+
+/// TRM-05, LIM-03 (crate cases): history truncation at the row limit. A
+/// model keeping 100 history rows shows every row scrolled off, complete,
+/// when exactly 100 have been; one row past it the oldest is discarded and
+/// the history says so.
+#[test]
+fn history_is_truncated_one_row_past_its_limit() {
+    for (scrolled, kept, truncated) in [
+        (HISTORY, 0..HISTORY, false),
+        (HISTORY + 1, 1..HISTORY + 1, true),
+    ] {
+        let (text, cells_of) = lines(0..scrolled + 2, 8);
+        let model = fed(8, 2, &text);
+
+        let view = model.view();
+        let history = normal_history(&view);
+        assert_eq!(cells(history.rows), cells_of[kept], "{scrolled} rows");
+        assert_eq!(history.truncated, truncated, "{scrolled} rows");
+        assert_eq!(screen(&view), cells_of[scrolled..]);
+    }
+}
+
+/// TRM-05 (crate case): clearing history. ED 3 (`CSI 3 J`) erases the
+/// history and RIS (`ESC c`) resets the whole terminal: either way the
+/// history starts again empty, with nothing discarded from it, and rows
+/// scrolled off later join it.
+#[test]
+fn cleared_history_starts_again_with_nothing_discarded() {
+    let (text, cells_of) = lines(0..HISTORY + 3, 8);
+    for (clear, later) in [
+        (
+            "\x1b[3J",
+            vec![
+                cells_of[HISTORY + 1].clone(),
+                cells_of[HISTORY + 2].clone(),
+                row("", 8),
+            ],
+        ),
+        ("\x1bc", vec![row("", 8), row("", 8)]),
+    ] {
+        let mut model = fed(8, 2, &text);
+        assert!(normal_history(&model.view()).truncated);
+
+        model.feed(clear.as_bytes()).unwrap();
+        let history = normal_history(&model.view());
+        assert!(history.rows.is_empty(), "{clear:?}");
+        assert!(!history.truncated, "{clear:?}");
+
+        model.feed(b"\r\n\r\n\r\n").unwrap();
+        let history = normal_history(&model.view());
+        assert_eq!(cells(history.rows), later, "{clear:?}");
+        assert!(!history.truncated, "{clear:?}");
+    }
+}
+
+/// LIM-03, TRM-05 (crate cases): history the allocation bound stops growing.
+/// History grows in the engine's 1000-row chunks while they fit. A model
+/// keeping up to 2000 rows whose limit admits the second chunk keeps every
+/// row scrolled off, complete; one byte below that limit the chunk is
+/// refused, the oldest row is discarded instead, and the history says so.
+#[test]
+fn history_the_bound_stops_growing_is_truncated() {
+    let at = geometry(8, 2);
+    let (text, cells_of) = lines(0..1003, 8);
+    let fed_within = |bytes| {
+        let mut model = Model::new(at, limits(bytes, 2000)).unwrap();
+        model.feed(text.as_bytes()).unwrap();
+        model
+    };
+    let bound = fed_within(ROOMY).footprint();
+
+    for (limit, kept, truncated) in [(bound, 0..1001, false), (bound - 1, 1..1001, true)] {
+        let model = fed_within(limit);
+        let view = model.view();
+        let history = normal_history(&view);
+        assert_eq!(cells(history.rows), cells_of[kept], "limit {limit}");
+        assert_eq!(history.truncated, truncated, "limit {limit}");
+        assert_eq!(screen(&view), cells_of[1001..]);
+    }
+}
+
+/// LIM-03, TRM-05 (crate cases): history shortened under pressure (#119).
+/// Discarding the oldest chunk of a history that reaches into its second
+/// discards rows, and from then on the history says so, while later rows
+/// join it. A chunk admitted ahead of rows that never came holds none, so
+/// discarding it loses nothing.
+#[test]
+fn shortened_history_is_truncated_only_when_rows_are_discarded() {
+    let at = geometry(80, 2);
+    let shortened = |scrolled: usize| {
+        let (text, cells_of) = lines(0..scrolled + 2, 80);
+        let mut model = Model::new(at, limits(ROOMY, 10_000)).unwrap();
+        model.feed(text.as_bytes()).unwrap();
+        assert!(model.shorten_history(), "{scrolled} rows");
+        (model, cells_of)
+    };
+
+    let (model, cells_of) = shortened(1000);
+    let history = normal_history(&model.view());
+    assert_eq!(cells(history.rows), cells_of[..1000]);
+    assert!(!history.truncated);
+
+    let (mut model, _) = shortened(1500);
+    let history = normal_history(&model.view());
+    let (_, cells_of) = lines(0..1600, 80);
+    assert_eq!(cells(history.rows), cells_of[500..1500]);
+    assert!(history.truncated);
+
+    let (more, _) = lines(1502..1600, 80);
+    model.feed(format!("\r\n{more}").as_bytes()).unwrap();
+    let history = normal_history(&model.view());
+    assert_eq!(cells(history.rows), cells_of[500..1598]);
+    assert!(history.truncated);
+}
+
+/// LIM-03, TRM-05 (crate cases): a restoration replaces history whole.
+/// Staging one beside a model takes room from that model's history first:
+/// within the bound every row stays and nothing is discarded; one byte
+/// below it the oldest chunk's rows go and the history says so. Applying the
+/// restoration replaces the model and its truncated history with the
+/// restored ones, complete.
+#[test]
+fn a_restoration_replaces_a_truncated_history_whole() {
+    let at = geometry(80, 24);
+    let (text, cells_of) = lines(0..1524, 80);
+    let current = |limit| {
+        let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
+        model.feed(text.as_bytes()).unwrap();
+        model
+    };
+    let bound = current(ROOMY).footprint() + mandatory(at, 10_000);
+
+    for (limit, kept, truncated) in [(bound, 0..1500, false), (bound - 1, 500..1500, true)] {
+        let mut model = current(limit);
+        model.stage(at).unwrap();
+        let history = normal_history(&model.view());
+        assert_eq!(cells(history.rows), cells_of[kept], "limit {limit}");
+        assert_eq!(history.truncated, truncated, "limit {limit}");
+    }
+
+    let mut model = current(bound - 1);
+    model.stage(at).unwrap();
+    let (restored, cells_of) = lines(2000..2030, 80);
+    model.feed(restored.as_bytes()).unwrap();
+    assert!(model.apply());
+    let view = model.view();
+    let history = normal_history(&view);
+    assert_eq!(cells(history.rows), cells_of[..6]);
+    assert!(!history.truncated);
+    assert_eq!(screen(&view), cells_of[6..]);
+}
+
+/// TRM-05, LIM-03 (crate cases): history behind the alternate screen. The
+/// alternate screen shows no history; leaving it shows the normal screen's
+/// history again with its truncation state, including rows discarded while
+/// the alternate screen was active because its cells needed their room.
+#[test]
+fn the_alternate_screen_shows_no_history_until_it_is_left() {
+    let at = geometry(10, 3);
+    let (text, cells_of) = lines(0..1503, 10);
+    let marks = format!("\x1b[?1049h\x1b[H{}", "a\u{301}".repeat(30));
+    let fed_within = |limit| {
+        let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
+        model.feed(text.as_bytes()).unwrap();
+        model.feed(marks.as_bytes()).unwrap();
+        model
+    };
+    let bound = fed_within(ROOMY).footprint();
+
+    for (limit, kept, truncated) in [(bound, 0..1500, false), (bound - 1, 500..1500, true)] {
+        let mut model = fed_within(limit);
+        assert!(matches!(model.view().screen(), Screen::Alternate { .. }));
+
+        model.feed(b"\x1b[?1049l").unwrap();
+        let view = model.view();
+        let history = normal_history(&view);
+        assert_eq!(cells(history.rows), cells_of[kept], "limit {limit}");
+        assert_eq!(history.truncated, truncated, "limit {limit}");
+        assert_eq!(screen(&view), cells_of[1500..]);
+    }
 }

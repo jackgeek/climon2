@@ -113,21 +113,23 @@ impl<L: EventListener> Core<L> {
     }
 
     /// Lower the normal screen's history limit to `rows`, releasing at once
-    /// the rows it drops and their cell data, then read the normal screen.
+    /// the rows it drops and their cell data, then read the normal screen;
+    /// true with what was read when rows were dropped.
     pub(crate) fn lower_history<R>(
         &mut self,
         rows: usize,
         read: impl FnOnce(&Grid<Cell>) -> R,
-    ) -> R {
+    ) -> (R, bool) {
         self.on_normal(|core| {
             let held = core.term.grid().history_size();
             core.set_history(rows);
             // Truncating when no row was dropped would let the engine's next
             // growth add a whole chunk of storage beyond the lower limit.
-            if held.min(rows) < held {
+            let dropped = held.min(rows) < held;
+            if dropped {
                 core.truncate();
             }
-            read(core.active())
+            (read(core.active()), dropped)
         })
     }
 

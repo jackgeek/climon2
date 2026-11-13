@@ -42,6 +42,9 @@ struct History {
     /// The most chunks the engine has held: its row vector keeps the
     /// capacity they took.
     peak: usize,
+    /// Rows have been discarded, or may have been, since the history was
+    /// last cleared.
+    truncated: bool,
 }
 
 impl History {
@@ -53,6 +56,19 @@ impl History {
             shown,
             chunks: first,
             peak: first,
+            truncated: false,
+        }
+    }
+
+    /// After output left `held` rows, having first cleared the history if
+    /// `cleared`: a cleared history has discarded nothing, and rows beyond
+    /// those shown are discarded. A full history discards its oldest row for
+    /// each row pushed into it without the engine reporting it, so output
+    /// that leaves it full may have discarded rows.
+    fn after(self, held: usize, cleared: bool) -> Self {
+        Self {
+            truncated: (self.truncated && !cleared) || held > self.shown || held == self.rows(),
+            ..self
         }
     }
 
@@ -74,6 +90,14 @@ impl History {
         Self {
             chunks,
             peak: self.peak.max(chunks),
+            ..self
+        }
+    }
+
+    /// Truncated if `discarded`.
+    fn discarding(self, discarded: bool) -> Self {
+        Self {
+            truncated: self.truncated || discarded,
             ..self
         }
     }
@@ -283,17 +307,24 @@ impl Bounded {
         let Some(history) = self.history.shorter() else {
             return false;
         };
-        self.history = history;
-        *self.extras.of(Screen::Normal) = self.core.lower_history(history.rows(), held);
+        let (normal, dropped) = self.core.lower_history(history.rows(), held);
+        *self.extras.of(Screen::Normal) = normal;
+        self.history = history.discarding(dropped);
         true
     }
 
     /// After a token clears history the engine keeps its storage rows, cell
     /// data and all, beyond the history it shows; drop them at once, so
-    /// measuring sees every row that holds cell data.
+    /// measuring sees every row that holds cell data. Then record what the
+    /// token left in the normal screen's history, while it is the active
+    /// screen.
     fn settle(&mut self, clear: Clear) {
-        if clear != Clear::Nothing {
+        let cleared = clear != Clear::Nothing;
+        if cleared {
             self.core.truncate();
+        }
+        if let Some(held) = self.core.normal_history() {
+            self.history = self.history.after(held, cleared);
         }
     }
 
@@ -329,15 +360,19 @@ impl Bounded {
     /// oldest first; empty while the alternate screen is active.
     pub(crate) fn history(&self) -> Vec<String> {
         let grid = self.core.active();
-        let shown = self
-            .core
-            .normal_history()
-            .unwrap_or(0)
-            .min(self.history.shown);
-        (1..=shown)
+        (1..=self.shown())
             .rev()
             .map(|age| text(cells(grid, -(age as i32))))
             .collect()
+    }
+
+    /// How many of the normal screen's newest history rows the model shows:
+    /// none while the alternate screen is active.
+    fn shown(&self) -> usize {
+        self.core
+            .normal_history()
+            .unwrap_or(0)
+            .min(self.history.shown)
     }
 
     /// The active screen's rows as text.
@@ -350,7 +385,7 @@ impl Bounded {
 
     /// What this instance shows, for painting.
     pub(crate) fn view(&self) -> View<'_> {
-        View::new(&self.core)
+        View::new(&self.core, self.shown(), self.history.truncated)
     }
 }
 
