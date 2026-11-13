@@ -371,9 +371,14 @@ fn a_passive_registration_never_acquires_control_and_is_not_an_attachment() {
     );
 
     let mut second = crate::attach_at(&session, TerminalSize { cols: 91, rows: 37 });
-    let (period, _) = crate::restoration(&mut second);
-    assert_eq!(period, 2, "only the two attachments were ever granted");
-    crate::send(&mut second, ClientMessage::Ready { period });
+    let (restoration, _) = crate::restoration(&mut second);
+    assert_eq!(restoration, 2, "only the two attachments were ever granted");
+    crate::send(
+        &mut second,
+        ClientMessage::Ready {
+            period: restoration,
+        },
+    );
     let (mut watching_controlled, _) = monitor(&session, &[]);
     assert_eq!(
         crate::advertised_state(&session),

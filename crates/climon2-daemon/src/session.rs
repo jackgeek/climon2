@@ -431,15 +431,20 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// The snapshot for a grant or a replacement restoration. The private
-    /// protocol names each restoration by a period of its own: its ID.
+    /// protocol's `period` field carries the restoration ID.
     fn grant(&mut self, id: u64, authority: Authority, host: TerminalSize, now: Instant) {
         let Some(delivery) = self.deliveries.get_mut(&id) else {
             return;
         };
         let lead = delivery.grant(&mut self.vt, authority, host, now);
         self.controller = Some(id);
-        let period = authority.restoration.0;
-        self.reply(id, ServerMessage::Granted { period });
+        let restoration = authority.restoration.0;
+        self.reply(
+            id,
+            ServerMessage::Granted {
+                period: restoration,
+            },
+        );
         self.send_output(id, &lead);
     }
 
@@ -470,8 +475,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn restored(&mut self, id: u64, authority: Authority) {
-        let period = authority.restoration.0;
-        self.reply(id, ServerMessage::RestoreEnd { period });
+        let restoration = authority.restoration.0;
+        self.reply(
+            id,
+            ServerMessage::RestoreEnd {
+                period: restoration,
+            },
+        );
         self.report_restored(id, authority);
         self.control.restored(ConnectionId(id), authority);
     }
@@ -942,7 +952,9 @@ fn control_effects(
 ) -> Vec<Effect> {
     match message {
         ClientMessage::Attach(size) => control.attach(conn, size),
-        ClientMessage::Ready { period } => control.ready(conn, Restoration(period)),
+        ClientMessage::Ready {
+            period: restoration,
+        } => control.ready(conn, Restoration(restoration)),
         other => departure_effects(control, conn, other),
     }
 }

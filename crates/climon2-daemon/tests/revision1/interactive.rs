@@ -1149,9 +1149,14 @@ fn takeover_hand_back_and_leave_policy_match_the_private_protocol() {
     let mut first = ready_attachment(&session, &[]);
     let mut private = crate::attach_at(&session, TerminalSize { cols: 91, rows: 37 });
     first.revoked(RevocationReason::Takeover);
-    let (period, _) = crate::restoration(&mut private);
-    assert_eq!(period, 2, "the private protocol names restoration 2");
-    crate::send(&mut private, ClientMessage::Ready { period });
+    let (restoration, _) = crate::restoration(&mut private);
+    assert_eq!(restoration, 2, "the private protocol names restoration 2");
+    crate::send(
+        &mut private,
+        ClientMessage::Ready {
+            period: restoration,
+        },
+    );
 
     first.acquire(geometry(91, 37));
     assert_eq!((first.period, first.restoration), (3, 3));
