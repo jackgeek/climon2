@@ -109,7 +109,8 @@ do not assign another workspace crate or change the current dependency edges.
 The [agreed terminal contract](protocol/terminal-integration.md) specifies planned
 read-only Rust cell/mode/cursor/history views for this monitor reuse. Current
 `climon2-vt` exposes no public cells; today the monitor uses it only for the
-documented normal-shell baseline.
+documented normal-shell baseline and, at startup, the `Model`'s mandatory
+allocation, to check that its limits hold one session's terminal model (#167).
 Exact-release libraries carry terminal bytes, not a native cross-release cell
 schema; the monitor parses at effective daemon geometry and paints locally.
 Canonical monitor presentation and optional core Focus introduce no new crate.
@@ -137,8 +138,9 @@ thread resources. Monitor reuse of `climon2-vt` must qualify its combining and
 auxiliary allocations; the narrow unchanged-engine/infallible-interface
 assumptions are reopened, not silently treated as bounded. `climon2-vt`'s
 allocation-bounded `Model` (#76, ADR 0007) qualifies them on the unchanged
-engine; the monitor does not use it yet. No replacement engine, additional
-workspace crate or dependency edge is selected.
+engine; the monitor keeps no models yet and reads only their mandatory
+allocation (#167). No replacement engine, additional workspace crate or
+dependency edge is selected.
 
 Current edges come from workspace `Cargo.toml` files. This is a consumption
 index, not a replacement for the architecture decisions or their permitted

@@ -3,8 +3,9 @@
 **Status: agreed future specification, not implemented behavior, except that
 the monitor and `exec` validate the `monitor.limits` configuration and the
 monitor reports its effective values
-([#82](https://github.com/jackgeek/climon2/issues/82)). That validation does
-not yet check that the mandatory current model and recent page fit
+([#82](https://github.com/jackgeek/climon2/issues/82)). At startup the monitor
+alone also refuses limits that cannot hold one session's mandatory current
+model and recent page
 ([#167](https://github.com/jackgeek/climon2/issues/167)). Operating-system
 limits are left to admission
 ([#120](https://github.com/jackgeek/climon2/issues/120)), and nothing enforces
@@ -58,6 +59,19 @@ Counts must fit the interface and applicable operating-system limits.
 Changing a setting never makes an allocation-aware engine unnecessary.
 These are ceilings, not instructions to preallocate every client's maximum.
 
+The monitor checks the mandatory current model and recent page at startup,
+before the host terminal changes, for one [session](../GLOSSARY.md#sessions)
+at the largest supported geometry, 500x200, as `climon2-vt` charges a blank
+terminal model there
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)):
+the current model (vte's 2 MiB buffer, the 32 KiB reserve and both screens,
+6,948,039 bytes) and the first 1000-row history chunk, which holds its recent
+page (12,115,200 bytes). `memory.total_bytes`, then `memory.client_bytes`,
+must each hold both, 19,063,239 bytes; `memory.history_bytes_per_session`,
+and so `history_bytes_total`, must hold the page. A refusal names the budget
+and both byte counts. `exec` does not make this check: only the monitor has
+terminal models.
+
 Report effective configured values, qualified reservations and exhaustion
 diagnostics explicitly. Classification and peer visibility are:
 
@@ -105,9 +119,9 @@ An illustrative override is:
 }
 ```
 
-The monitor and `exec` validate this configuration, but no limit is enforced
-yet; the status note names the checks still to come. It does not modify daemon
-`scrollback.max_rows`.
+The monitor and `exec` validate this configuration, the monitor alone also
+against its terminal models' mandatory allocation (above), but no limit is
+enforced yet. It does not modify daemon `scrollback.max_rows`.
 
 ## Memory, history and admission
 
