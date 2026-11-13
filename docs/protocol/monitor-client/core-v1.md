@@ -11,9 +11,13 @@ returns revision 1's description and rejects other revisions as specified
 below. Its requirements are provisional bounded values
 until [#121](https://github.com/jackgeek/climon2/issues/121) records qualified
 ones. All eleven [function-table](../TERMS.md#function-table) calls follow
-the rules below. `submit` accepts monitor-mode `CM1_OPEN` and `CM1_LEAVE`;
-interactive Open ([#94](https://github.com/jackgeek/climon2/issues/94)) and
-every other request report `CM1_UNSUPPORTED_OPERATION`. An instance opens a
+the rules below, with one gap: snapshot reports no shared-release allocation
+and undercounts instance allocation, because it does not yet count each
+instance's diagnostics dispatcher
+([#180](https://github.com/jackgeek/climon2/issues/180)). `submit` accepts
+monitor-mode `CM1_OPEN` and `CM1_LEAVE`; interactive Open
+([#94](https://github.com/jackgeek/climon2/issues/94)) and every other request
+report `CM1_UNSUPPORTED_OPERATION`. An instance opens a
 [passive monitor connection](../../../GLOSSARY.md#attachment-and-control) to
 its [session daemon](../../../GLOSSARY.md#sessions) over
 [daemon wire revision 1](../daemon-client/core-v1.md), delivers Response,

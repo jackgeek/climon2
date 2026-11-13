@@ -8,7 +8,9 @@ It tracks no shared-release allocation. Queued
 [requests](../TERMS.md#request) and outstanding operations are measured
 ([#93](https://github.com/jackgeek/climon2/issues/93)); input and display
 measurements stay zero until Input and Display arrive
-([#94](https://github.com/jackgeek/climon2/issues/94)). The caller is not
+([#94](https://github.com/jackgeek/climon2/issues/94)). Instance allocation
+undercounts: each instance's diagnostics dispatcher is not counted yet
+([#180](https://github.com/jackgeek/climon2/issues/180)). The caller is not
 implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) queries its
 [client](../../../GLOSSARY.md#sessions)'s local resource/progress measurements.

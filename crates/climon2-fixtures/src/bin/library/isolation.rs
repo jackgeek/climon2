@@ -12,7 +12,7 @@ use serde_json::{Map, Value, json};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     thread,
 };
@@ -85,43 +85,90 @@ pub fn ambient(setup: &Setup) -> Value {
     })
 }
 
-/// Polls the borrowed descriptor until it is readable, bounded.
-fn poller(descriptor: i32) -> thread::JoinHandle<bool> {
+/// The racing phases, which only the main thread advances: the stream is
+/// live, then shutdown is requested, then a poll has seen it end.
+const PHASES: [&str; 3] = ["running", "ending", "ended"];
+const ENDING: usize = 1;
+const ENDED: usize = 2;
+const STOPPED: usize = 3;
+
+/// Where the race stands, shared by the main thread, the racer and the
+/// poller.
+#[derive(Default)]
+struct Race {
+    /// An index into [`PHASES`], or [`STOPPED`].
+    phase: AtomicUsize,
+    /// The racer's rounds, by the phase each started in.
+    rounds: [AtomicU64; 3],
+    /// Polls that found the descriptor not readable.
+    quiet_polls: AtomicU64,
+}
+
+/// Polls the borrowed descriptor without waiting until it is readable,
+/// bounded, counting the polls that find it not readable.
+fn poller(descriptor: i32, race: Arc<Race>) -> thread::JoinHandle<bool> {
     thread::Builder::new()
         .name("poller".into())
-        .spawn(move || probe::wait_readable(descriptor, probe::deadline()))
+        .spawn(move || {
+            probe::until(|| {
+                let readable = probe::readable(descriptor);
+                if !readable {
+                    race.quiet_polls.fetch_add(1, Ordering::SeqCst);
+                }
+                readable
+            })
+        })
         .expect("the poller starts")
 }
 
-/// Uses the communication handle at least once and until told to stop,
-/// counting failures.
-fn racer(api: Api, handles: Handles, stop: Arc<AtomicBool>) -> thread::JoinHandle<Value> {
+/// Uses the communication handle in rounds until stopped, recording each
+/// phase's calls, failed calls and the descriptors returned.
+fn racer(api: Api, handles: Handles, race: Arc<Race>) -> thread::JoinHandle<Value> {
     thread::Builder::new()
         .name("racer".into())
         .spawn(move || {
-            let (mut calls, mut failures, mut descriptors) = (0u64, 0u64, Vec::new());
+            let mut phases = [
+                (0u64, 0u64, Vec::new()),
+                (0, 0, Vec::new()),
+                (0, 0, Vec::new()),
+            ];
             loop {
+                let phase = race.phase.load(Ordering::SeqCst);
+                if phase == STOPPED {
+                    break;
+                }
                 let (notification, descriptor) = api.notification(handles);
                 let (snapshot, _) = api.snapshot(handles);
-                calls += 2;
-                failures += u64::from(notification["code"] != native::SUCCESS)
+                let (calls, failures, descriptors) = &mut phases[phase];
+                *calls += 2;
+                *failures += u64::from(notification["code"] != native::SUCCESS)
                     + u64::from(snapshot["code"] != native::SUCCESS);
                 if !descriptors.contains(&descriptor) {
                     descriptors.push(descriptor);
                 }
-                if stop.load(Ordering::SeqCst) {
-                    break;
-                }
+                race.rounds[phase].fetch_add(1, Ordering::SeqCst);
             }
-            json!({ "calls": calls, "failures": failures, "descriptors": descriptors })
+            let phases = PHASES
+                .iter()
+                .zip(phases)
+                .map(|(name, (calls, failures, descriptors))| {
+                    (
+                        name.to_string(),
+                        json!({ "calls": calls, "failures": failures, "descriptors": descriptors }),
+                    )
+                });
+            Value::Object(phases.collect())
         })
         .expect("the racer starts")
 }
 
 /// `race`: one thread polls the borrowed descriptor and another keeps using
-/// the communication handle while the stream ends: polling must see the end,
-/// every call must succeed, and the descriptor must stay the library's,
-/// open until destroy and closed by it.
+/// the communication handle while the stream ends. The main thread schedules
+/// the overlap: shutdown only once both have made progress on the live
+/// stream, and the racer stops only after a round that started once a poll
+/// had seen the end. Polling must see the end, every call must succeed, and
+/// the descriptor must stay the library's, open until destroy and closed by
+/// it.
 pub fn race(setup: &Setup) -> Value {
     let api = setup.api;
     let owner = Owner::spawn("owner");
@@ -136,21 +183,33 @@ pub fn race(setup: &Setup) -> Value {
         json!([first, second, descriptor == again]),
     );
     report.insert("descriptor".into(), probe::descriptor(descriptor));
+    report.insert("descriptor_number".into(), json!(descriptor));
     report.insert("snapshot".into(), json!(api.snapshot(handles)));
     report.insert(
         "readable_after_create".into(),
         json!(probe::readable(descriptor)),
     );
-    let stop = Arc::new(AtomicBool::new(false));
-    let racing = racer(api, handles, Arc::clone(&stop));
-    let polling = poller(descriptor);
     let ran = owner.start(move || api.run(handles));
+    let race = Arc::new(Race::default());
+    let racing = racer(api, handles, Arc::clone(&race));
+    let polling = poller(descriptor, Arc::clone(&race));
+    let live = probe::until(|| {
+        race.rounds[0].load(Ordering::SeqCst) > 0 && race.quiet_polls.load(Ordering::SeqCst) > 0
+    });
+    race.phase.store(ENDING, Ordering::SeqCst);
     report.insert("shutdown".into(), api.shutdown(handles));
     report.insert(
         "poller_saw_end".into(),
         json!(polling.join().expect("the poller ends")),
     );
-    stop.store(true, Ordering::SeqCst);
+    race.phase.store(ENDED, Ordering::SeqCst);
+    let ended = probe::until(|| race.rounds[ENDED].load(Ordering::SeqCst) > 0);
+    race.phase.store(STOPPED, Ordering::SeqCst);
+    report.insert("scheduled".into(), json!({ "live": live, "ended": ended }));
+    report.insert(
+        "quiet_polls".into(),
+        json!(race.quiet_polls.load(Ordering::SeqCst)),
+    );
     report.insert("racer".into(), racing.join().expect("the racer ends"));
     report.insert(
         "readable_twice".into(),

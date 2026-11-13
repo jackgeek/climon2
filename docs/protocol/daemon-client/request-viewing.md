@@ -50,9 +50,10 @@ Frame bounds remain #69. Related: [Ready](request-ready.md).
 
 ## Implemented behavior
 
-No revision-1 connection is an attachment yet, so until
-[#91](https://github.com/jackgeek/climon2/issues/91) serves Set viewing the
+Until [#91](https://github.com/jackgeek/climon2/issues/91) serves Set viewing, the
 [session daemon](../../../GLOSSARY.md#sessions) rejects it as impermissible
-with `invalid_state`, whether it is a connection's first request or arrives on
-a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control).
-No viewing is reported; the stream goes on and a registration stays.
+with `invalid_state`, before the connection has a role, on a
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) and
+on an interactive [attachment](../../../GLOSSARY.md#attachment-and-control)
+alike.
+No viewing is reported; the stream goes on and any role stays.

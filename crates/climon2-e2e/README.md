@@ -121,8 +121,9 @@ acknowledgement files and observable completion, never sleeps.
 
 ## Specification mapping
 
-Each test also has a specification doc comment in `tests/packaged.rs` or, for
-session continuity (plan section 6.1), `tests/continuity.rs`.
+Each test also has a specification doc comment in `tests/packaged.rs`, for
+session continuity (plan section 6.1) in `tests/continuity.rs`, or for headless
+sessions in `tests/headless.rs`.
 
 | Requirement | Named packaged test |
 |---|---|
@@ -161,17 +162,21 @@ session continuity (plan section 6.1), `tests/continuity.rs`.
 | LIB-03, LIB-04 and LIB-05 Library: create, run, shutdown, drain to terminal evidence, release, destroy and join; wrong-thread run and destroy, repeated run, busy destroy and release; terminal evidence apart from the cleanup report; every object released through the library | `installed_library_instance_runs_create_run_shutdown_drain_release_destroy_join` |
 | LIB-03 Library: failed creates return no handles and leave no descriptor: null arguments, mismatched release, generation, native paths (non-UTF-8 kept, `PATH_MAX` bound) | `installed_library_create_rejects_invalid_identity_and_paths_without_handles` |
 | LIB-03 Library: client keys, log path and `CLIMON2_LOG` filter | `installed_library_create_rejects_invalid_settings_and_diagnostics_without_handles` |
-| LIB-03 Library: limits it cannot honour, each at its bound (`drain_payload_bytes` must hold a `metadata_record_bytes` record), never raised or lowered; no descriptor left | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` |
+| LIB-03 Library: limits it cannot honour, each at its bound (`drain_payload_bytes` must hold a `metadata_record_bytes` record), never raised or lowered; no descriptor left for the notification and waker descriptors or for the log file (`CM1_RESOURCE_LIMIT`, no log file), one more is enough | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` |
 | LIB-03 Library and Fault: copies survive unmapped caller memory; lossless native paths; two instances' homes, settings, logs and allocations stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` |
 | LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` |
-| LIB-04 Library and Fault, Linux `eventfd`: borrowed descriptor, counted once, safe to poll while the stream ends and the handle is in use | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` |
+| LIB-04 Library and Fault, Linux `eventfd`: borrowed descriptor, counted once; a scheduled race in which polling sees the stream end while the handle is used before shutdown and after the end, every call succeeding with the same descriptor | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` |
 | LIB-04 Fault: allocator pairing, a delivery charged until released | `installed_library_charges_a_delivery_until_it_is_released` |
 | LIB-04 Fault: the failure diagnostic only within `event_bytes`, at and one under the bound | `installed_library_queues_the_failure_diagnostic_only_within_event_bytes` |
 | LIB-05 Fault: injected panic at the bootstrap and `create` | `installed_library_contains_a_panic_at_the_bootstrap_or_create` |
-| LIB-05 and LIB-04 Fault: injected panic at `submit`, `notification`, `snapshot`, `drain`, `shutdown` and `run` stops the instance | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` |
+| LIB-05 and LIB-04 Fault: injected panic at `submit`, `notification`, `snapshot`, `drain`, `shutdown` and `run` stops the instance, with no retry from `shutdown` on; a delivery held past terminal evidence alone keeps communication and destroy busy | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` |
 | LIB-04 and LIB-05 Fault: injected panic at `release_delivery`, `release_communication`, `release_control` and `destroy` keeps the object | `installed_library_contains_a_panic_in_a_release_and_keeps_the_object` |
-| LIB-05 Library and Fault: worker completion apart from terminal evidence | `installed_library_reports_worker_completion_apart_from_terminal_evidence` |
-| LIB-06 Library: stalled worker cleanup incomplete, never complete or destroyed | `installed_library_reports_stalled_worker_cleanup_as_incomplete_and_never_destroys` |
+| LIB-05 Fault (`worker` hook): worker completion apart from terminal evidence | `installed_library_reports_worker_completion_apart_from_terminal_evidence` |
+| LIB-06 Fault (`stall-cleanup` hook): stalled worker cleanup incomplete, never complete or destroyed | `installed_library_reports_stalled_worker_cleanup_as_incomplete_and_never_destroys` |
+
+LIB-06 Library is not covered yet: without the fault hook this release starts
+no worker that could stall. Open
+([#93](https://github.com/jackgeek/climon2/issues/93)) brings the first.
 
 ### Library layer: passive monitor connections (`tests/passive*.rs`, #93)
 
@@ -258,6 +263,32 @@ holds a packaged client between `Granted` and `Ready`; daemon
 and the ambiguous selector (random GUIDs; CLI
 `a_selector_must_match_exactly_one_live_session`). Daemon raw-socket (6.2) and
 client bridge (6.3) scenarios are mapped in those crates' test doc comments.
+
+### Headless sessions (spec #73, acceptance matrix HDL-01)
+
+Monitor-layer evidence through the packaged CLI on macOS and Linux, in
+`tests/headless.rs` unless noted. The Contract-layer cases are mapped in the
+daemon README. Scripted runs have stdin from `/dev/null` and pipes for
+output, so no terminal is involved; a CLI still running at its deadline is
+killed and reaped and its test fails. Scripted creation uses `c2`; the TTY
+case and every kill use `climon2`, the same installed launcher. Every
+headless session command ends itself after two minutes, so even a test
+killed before cleaning up cannot leave a session running forever.
+
+| Scenario | Named packaged test |
+|---|---|
+| Confirmed scenario: from a script with no terminal, exactly the full lowercase GUID and a newline, status 0 only once the session is listed `detached` with no client, 80x24 start; HDL-01 command completion with zero clients | `installed_headless_exec_from_a_script_prints_only_the_guid_and_starts_at_80x24` |
+| Confirmed scenario: a terminal on stdin sets the initial size, with stdout captured as in `id=$(climon2 exec --headless …)`; HDL-01 existing `climon2 kill` ends a headless session | `installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it` |
+| HDL-01 failed creation: 127, 126 and 125 with exec's diagnostics, nothing on stdout, nothing left | `installed_headless_creation_failures_keep_exec_statuses_and_diagnostics` |
+| HDL-01 failed creation and CFG-01 (exec case): an invalid `monitor` section, a wrong type or an out-of-range limit, refused with 125 before any session side effect: nothing on stdout, only the general log written, nothing left | `installed_headless_exec_rejects_an_invalid_monitor_section_before_any_session_side_effect` |
+| HDL-01 creation with an unwritable stdout (owner decision of 2026-11-13): status 0, nothing on stderr, the session keeps running, listed `detached`, until its command completes | `installed_headless_exec_that_cannot_print_the_guid_leaves_the_session_running` |
+| HDL-01 zero clients past the initial attach window (ordered, not slept: the next step follows the Kill of a reference session whose command ignores hang-up, which is confirmed only after the five-second hang-up grace), after a killed client and after a deliberate detach, then Kill | `installed_headless_session_survives_zero_clients_a_killed_client_and_a_detach` |
+| HDL-01 ordinary leave policy unchanged | `killed_installed_client_uses_daemon_leave_policy_and_leaves_nothing` (`tests/packaged.rs`) |
+
+The HDL-01 cases that need a monitor discovering sessions wait for it: headless
+rows appearing in the selector ([#106](https://github.com/jackgeek/climon2/issues/106))
+and `c2 kill` leaving an independently running monitor's row in place
+([#116](https://github.com/jackgeek/climon2/issues/116)).
 
 ### Deliberately reused preceding boundary evidence
 

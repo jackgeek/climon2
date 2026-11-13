@@ -26,14 +26,14 @@ use super::{
     stream::Departure,
 };
 use climon2_core::{
-    diagnostics::{CappedWriter, subscriber},
+    diagnostics::{CappedWriter, dispatch},
     keys::{ClientSettings, ControlKey},
     native,
 };
 use std::{
     collections::VecDeque,
     fs::OpenOptions,
-    mem,
+    io, mem,
     ops::{AddAssign, SubAssign},
     os::unix::fs::OpenOptionsExt,
     panic::{self, AssertUnwindSafe},
@@ -76,6 +76,9 @@ const DELIVERIES_FULL: Failure = Failure::new(
     FULL,
     "every delivery the limits allow is outstanding; release one first",
 );
+/// The communication and control handles: both must be released before
+/// `destroy`.
+const HANDLES: u8 = 2;
 
 /// A current measurement and its peak.
 #[derive(Clone, Copy, Default)]
@@ -95,6 +98,8 @@ impl<T: Copy + Ord + AddAssign + SubAssign> Gauge<T> {
     }
 }
 
+/// What `snapshot` reports. Records and deliveries are accounted here
+/// alone: a record is charged from its queueing until its delivery's release.
 #[derive(Default)]
 struct Measures {
     allocation: Gauge<u64>,
@@ -201,8 +206,8 @@ struct State {
     events: VecDeque<Event>,
     /// Whether the notification descriptor is currently raised.
     readable: bool,
-    communication_released: bool,
-    control_released: bool,
+    /// How many of the [`HANDLES`] are released.
+    released_handles: u8,
     measures: Measures,
 }
 
@@ -247,13 +252,39 @@ pub(super) struct Shared {
     changed: Condvar,
 }
 
-/// Behind `cm1_instance`: used only by the thread that created it.
+/// Behind `cm1_instance`, which only the thread that created it may run or
+/// destroy. It is only ever borrowed shared, so a call from another thread is
+/// refused safely while the owner thread runs.
 pub(super) struct Owner {
-    pub(super) shared: Arc<Shared>,
+    shared: Arc<Shared>,
     thread: ThreadId,
-    /// `run`'s worker-cleanup result, once it has returned.
-    cleanup: Option<u32>,
+    /// The owner thread's own state, used only after its thread check.
+    run: Mutex<Run>,
+}
+
+/// What `run` leaves behind: its workers, and its cleanup once it returned.
+#[derive(Default)]
+struct Run {
     workers: Vec<JoinHandle<()>>,
+    cleanup: Option<Cleanup>,
+}
+
+/// `run`'s worker cleanup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Cleanup {
+    /// Every worker ended and was joined.
+    Complete,
+    /// A worker outlived `cleanup_ms`: never joined, never abandoned.
+    Incomplete,
+}
+
+impl Cleanup {
+    const fn code(self) -> u32 {
+        match self {
+            Self::Complete => native::CLEANUP_COMPLETE,
+            Self::Incomplete => native::CLEANUP_INCOMPLETE,
+        }
+    }
 }
 
 /// Behind `cm1_communication`.
@@ -266,10 +297,48 @@ pub(super) struct Control {
     pub(super) shared: Arc<Shared>,
 }
 
-/// Behind `cm1_delivery`: one immutable batch, released through this library.
+/// Behind `cm1_delivery`: one immutable batch. Dropping it, which only its
+/// release does, returns everything it was charged.
 pub(super) struct Delivery {
     pub(super) shared: Arc<Shared>,
     batch: Batch,
+}
+
+impl Drop for Delivery {
+    fn drop(&mut self) {
+        let (records, charge) = (self.batch.len(), self.batch.charge());
+        self.shared.lock().measures.release(records, charge);
+        self.shared.waker.raise();
+    }
+}
+
+/// A library object behind a native handle, owned by one instance.
+pub(super) trait Object {
+    fn shared(&self) -> &Arc<Shared>;
+}
+
+impl Object for Owner {
+    fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
+}
+
+impl Object for Communication {
+    fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
+}
+
+impl Object for Control {
+    fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
+}
+
+impl Object for Delivery {
+    fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
 }
 
 pub(super) type Handles = (Box<Owner>, Box<Communication>, Box<Control>);
@@ -280,18 +349,25 @@ pub(super) type Handles = (Box<Owner>, Box<Communication>, Box<Control>);
 pub(super) fn create(startup: Startup) -> Result<Handles, Failure> {
     let notifier = Notifier::new().map_err(|_| NO_DESCRIPTOR)?;
     let waker = Notifier::waker().map_err(|_| NO_DESCRIPTOR)?;
-    let (dispatch, logs) = diagnostics(&startup.diagnostics)?;
-    let generation = startup.generation;
+    let Startup {
+        session,
+        generation,
+        paths,
+        settings,
+        diagnostics,
+        limits,
+    } = startup;
+    let (dispatch, logs) = log(diagnostics)?;
     let span = tracing::dispatcher::with_default(&dispatch, || {
         tracing::info_span!("client_instance", generation)
     });
-    let allocation = FIXED + startup.paths.bytes();
+    let allocation = FIXED + paths.bytes();
     let shared = Arc::new(Shared {
-        session: startup.session,
+        session,
         generation,
-        limits: startup.limits,
-        paths: startup.paths,
-        settings: startup.settings,
+        limits,
+        paths,
+        settings,
         notifier,
         waker,
         dispatch,
@@ -309,8 +385,7 @@ pub(super) fn create(startup: Startup) -> Result<Handles, Failure> {
     let owner = Owner {
         shared: Arc::clone(&shared),
         thread: thread::current().id(),
-        cleanup: None,
-        workers: Vec::new(),
+        run: Mutex::default(),
     };
     let communication = Communication {
         shared: Arc::clone(&shared),
@@ -324,8 +399,8 @@ pub(super) fn create(startup: Startup) -> Result<Handles, Failure> {
 
 /// The instance's own diagnostics and the descriptors they hold: a capped,
 /// private log file created at the caller's path, or nothing.
-fn diagnostics(diagnostics: &Diagnostics) -> Result<(Dispatch, u32), Failure> {
-    let Some(path) = &diagnostics.log else {
+fn log(diagnostics: Diagnostics) -> Result<(Dispatch, u32), Failure> {
+    let Some(path) = diagnostics.log else {
         return Ok((Dispatch::none(), 0));
     };
     let file = OpenOptions::new()
@@ -334,10 +409,19 @@ fn diagnostics(diagnostics: &Diagnostics) -> Result<(Dispatch, u32), Failure> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
-        .map_err(|_| Failure::new(INVALID_ARGUMENT, "log_path cannot be created as a new file"))?;
-    let dispatch = subscriber(CappedWriter::new(file), Some(diagnostics.filter))
-        .expect("startup validated the filter");
-    Ok((dispatch, 1))
+        .map_err(log_failure)?;
+    Ok((dispatch(CappedWriter::new(file), diagnostics.filter), 1))
+}
+
+/// Why the log file cannot be created: no descriptor left is a resource
+/// limit; anything else is the caller's path.
+fn log_failure(error: io::Error) -> Failure {
+    match error.raw_os_error() {
+        Some(libc::EMFILE | libc::ENFILE) => {
+            Failure::new(RESOURCE_LIMIT, "no descriptor is left for the log file")
+        }
+        _ => Failure::new(INVALID_ARGUMENT, "log_path cannot be created as a new file"),
+    }
 }
 
 /// This generation's terminal evidence. The connection is always closed by
@@ -468,12 +552,16 @@ impl Shared {
         self.lock().stop.shutdown
     }
 
+    /// Records the intent before anything that can fail, so even a failed
+    /// call ends the stream with no retry.
     pub(super) fn shutdown(&self) -> Result<(), Failure> {
         self.lock().stop.shutdown = true;
         self.changed.notify_all();
         self.waker.raise();
-        tracing::debug!("client instance shutdown requested");
-        Ok(())
+        self.guard("shutdown", || {
+            tracing::debug!("client instance shutdown requested");
+            Ok(())
+        })
     }
 
     /// Validates and copies a request, then queues it if the instance still
@@ -734,24 +822,17 @@ impl Shared {
         self.terminal.get().is_some() && state.events.is_empty()
     }
 
-    pub(super) fn release_communication(&self) -> Result<(), Failure> {
+    /// Releases one of the [`HANDLES`] once the stream has ended for its
+    /// consumer and nothing else keeps that handle `in_use`.
+    fn release_handle(
+        &self,
+        in_use: impl FnOnce(&State) -> bool,
+        busy: &'static str,
+    ) -> Result<(), Failure> {
         let mut state = self.lock();
-        (self.ended_for_consumer(&state) && state.measures.deliveries.current == 0)
-            .then_some(())
-            .ok_or(Failure::new(
-                BUSY,
-                "the stream has not ended, or deliveries are still outstanding",
-            ))?;
-        state.communication_released = true;
-        Ok(())
-    }
-
-    pub(super) fn release_control(&self) -> Result<(), Failure> {
-        let mut state = self.lock();
-        self.ended_for_consumer(&state)
-            .then_some(())
-            .ok_or(Failure::new(BUSY, "the stream has not ended"))?;
-        state.control_released = true;
+        let idle = self.ended_for_consumer(&state) && !in_use(&state);
+        require(idle, Failure::new(BUSY, busy))?;
+        state.released_handles += 1;
         Ok(())
     }
 
@@ -804,15 +885,6 @@ fn dequeue(state: &mut State) -> Option<Submitted> {
     Some(request)
 }
 
-/// Releases one delivery through its own library; its records end here.
-pub(super) fn release(delivery: Box<Delivery>) {
-    let shared = Arc::clone(&delivery.shared);
-    let (records, bytes) = (delivery.batch.len(), delivery.batch.charge());
-    drop(delivery);
-    shared.lock().measures.release(records, bytes);
-    shared.waker.raise();
-}
-
 /// The connection's socket, counted among the instance's descriptors until
 /// this guard drops, however the connection ends.
 pub(super) struct Descriptor<'a>(&'a Shared);
@@ -858,44 +930,90 @@ impl Drop for Taken<'_> {
     }
 }
 
+impl Communication {
+    /// Busy until the stream has ended for its consumer and every delivery
+    /// is released.
+    pub(super) fn release(&self) -> Result<(), Failure> {
+        self.shared.release_handle(
+            |state| state.measures.deliveries.current > 0,
+            "the stream has not ended, or deliveries are still outstanding",
+        )
+    }
+}
+
+impl Control {
+    /// Busy until the stream has ended for its consumer.
+    pub(super) fn release(&self) -> Result<(), Failure> {
+        self.shared
+            .release_handle(|_| false, "the stream has not ended")
+    }
+}
+
 impl Owner {
     fn owned(&self) -> Result<(), Failure> {
-        (thread::current().id() == self.thread)
-            .then_some(())
-            .ok_or(Failure::new(
+        require(
+            thread::current().id() == self.thread,
+            Failure::new(
                 WRONG_THREAD,
                 "only the instance's owner thread may call this",
-            ))
+            ),
+        )
     }
 
-    /// Runs the connection until its stream ends, publishes terminal
-    /// evidence, then waits up to `cleanup_ms` for its workers. The report
-    /// is separate from the call's result: a failed run still reports what
-    /// it knows.
-    pub(super) fn run(&mut self) -> Result<(Result<(), Failure>, native::RunReport), Failure> {
+    fn run_state(&self) -> MutexGuard<'_, Run> {
+        self.run.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Runs until shutdown or failure, publishes terminal evidence, then
+    /// waits up to `cleanup_ms` for its workers. The report is separate from
+    /// the call's result: a failed run still reports what it knows.
+    pub(super) fn run(&self) -> Result<(Result<(), Failure>, native::RunReport), Failure> {
         self.owned()?;
-        self.cleanup
-            .is_none()
-            .then_some(())
-            .ok_or(Failure::new(CLOSED, "run has already returned"))?;
-        let shared = Arc::clone(&self.shared);
+        let mut run = self.run_state();
+        require(
+            run.cleanup.is_none(),
+            Failure::new(CLOSED, "run has already returned"),
+        )?;
+        let shared = &self.shared;
         let executed = shared.guard("run", || {
-            self.execute();
+            run.execute(shared);
             Ok(())
         });
         let terminal = shared.scope(|| shared.finish());
-        let (cleanup, cleaned) = shared.scope(|| self.clean_up());
-        self.cleanup = Some(cleanup);
+        let (cleanup, cleaned) = shared.scope(|| run.clean_up(shared));
+        run.cleanup = Some(cleanup);
         let report = native::RunReport {
-            workers_cleanup: cleanup,
+            workers_cleanup: cleanup.code(),
             reserved: 0,
             terminal,
         };
         Ok((executed.and(cleaned), report))
     }
 
-    fn execute(&mut self) {
-        let shared = &self.shared;
+    /// Busy until `run` has returned with complete worker cleanup and both
+    /// handles are released; deliveries are released before communication.
+    pub(super) fn destroy(&self) -> Result<(), Failure> {
+        self.owned()?;
+        require(
+            self.finished(),
+            Failure::new(
+                BUSY,
+                "run, workers, handles or deliveries are still outstanding",
+            ),
+        )?;
+        tracing::debug!("client instance destroyed");
+        Ok(())
+    }
+
+    /// Nothing of the instance remains in use.
+    fn finished(&self) -> bool {
+        self.run_state().cleanup == Some(Cleanup::Complete)
+            && self.shared.lock().released_handles == HANDLES
+    }
+}
+
+impl Run {
+    fn execute(&mut self, shared: &Arc<Shared>) {
         let settings = shared.settings;
         tracing::debug!(
             metadata = ?shared.paths.metadata,
@@ -905,19 +1023,19 @@ impl Owner {
             take_control = ?settings.take_control_key().map(ControlKey::byte),
             "client instance running"
         );
-        self.start_workers();
-        let departure = connection::run(&self.shared);
-        self.shared.end(departure);
+        self.start_workers(shared);
+        let departure = connection::run(shared);
+        shared.end(departure);
     }
 
     /// Waits up to `cleanup_ms` for every worker, then joins them; a worker
     /// still running is reported, never joined or abandoned as complete.
-    fn clean_up(&mut self) -> (u32, Result<(), Failure>) {
-        let deadline = Duration::from_millis(self.shared.limits.cleanup_ms.into());
-        if !self.shared.wait_for_workers(deadline) {
+    fn clean_up(&mut self, shared: &Shared) -> (Cleanup, Result<(), Failure>) {
+        let deadline = Duration::from_millis(shared.limits.cleanup_ms.into());
+        if !shared.wait_for_workers(deadline) {
             tracing::warn!("client instance worker cleanup incomplete");
             return (
-                native::CLEANUP_INCOMPLETE,
+                Cleanup::Incomplete,
                 Err(Failure::new(TIMEOUT, "worker cleanup exceeded cleanup_ms")),
             );
         }
@@ -925,60 +1043,58 @@ impl Owner {
             let _ = worker.join();
         }
         tracing::info!("client instance worker cleanup complete");
-        (native::CLEANUP_COMPLETE, Ok(()))
-    }
-
-    /// Busy until `run` has returned with complete worker cleanup and both
-    /// handles are released; deliveries are released before communication.
-    pub(super) fn destroy(&self) -> Result<(), Failure> {
-        self.owned()?;
-        self.finished().then_some(()).ok_or(Failure::new(
-            BUSY,
-            "run, workers, handles or deliveries are still outstanding",
-        ))?;
-        tracing::debug!("client instance destroyed");
-        Ok(())
-    }
-
-    /// Nothing of the instance remains in use.
-    fn finished(&self) -> bool {
-        let state = self.shared.lock();
-        self.cleanup == Some(native::CLEANUP_COMPLETE)
-            && state.communication_released
-            && state.control_released
+        (Cleanup::Complete, Ok(()))
     }
 
     /// Without the `test-hooks` faults, the connection needs no worker: it
     /// runs on the owner thread.
     #[cfg(not(feature = "test-hooks"))]
-    fn start_workers(&mut self) {}
+    fn start_workers(&mut self, _: &Arc<Shared>) {}
 
     /// `worker` and `stall-cleanup` start one worker, whose stack is the
     /// release's qualified worker stack.
     #[cfg(feature = "test-hooks")]
-    fn start_workers(&mut self) {
+    fn start_workers(&mut self, shared: &Arc<Shared>) {
         if let Some(stalls) = super::hooks::worker() {
-            let shared = Arc::clone(&self.shared);
-            shared.lock().measures.workers.add(1);
+            let counted = Counted::new(shared);
             let worker = thread::Builder::new()
                 .name("climon2-client-worker".into())
                 .stack_size(REQUIREMENTS.worker_stack_bytes as usize)
-                .spawn(move || work(&shared, stalls))
+                .spawn(move || work(counted, stalls))
                 .expect("the worker starts");
             self.workers.push(worker);
         }
     }
 }
 
+/// One worker in its instance's count, from its start until it ends, even
+/// by unwinding.
+#[cfg(feature = "test-hooks")]
+struct Counted(Arc<Shared>);
+
+#[cfg(feature = "test-hooks")]
+impl Counted {
+    fn new(shared: &Arc<Shared>) -> Self {
+        shared.lock().measures.workers.add(1);
+        Self(Arc::clone(shared))
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.lock().measures.workers.sub(1);
+        self.0.changed.notify_all();
+    }
+}
+
 /// A worker that ends with its instance's stream, or whose cleanup stalls.
 #[cfg(feature = "test-hooks")]
-fn work(shared: &Shared, stalls: bool) {
-    shared.wait_for_stop();
+fn work(worker: Counted, stalls: bool) {
+    worker.0.wait_for_stop();
     if stalls {
         loop {
             thread::park();
         }
     }
-    shared.lock().measures.workers.sub(1);
-    shared.changed.notify_all();
 }
