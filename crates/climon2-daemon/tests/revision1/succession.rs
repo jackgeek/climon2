@@ -2,17 +2,18 @@
 //! connection, succession on a controller's departure, Leave and Kill racing
 //! a promotion, and the canonical presentation of monitor-mode connections.
 use super::{
-    assert_closed, assert_final_then_closed, assert_rejected, counter, exited,
+    assert_closed, assert_final_then_closed, assert_rejected, command_final, counter, exited,
     interactive::{Attached, geometry, ready_attachment, rejected},
     kill, leave, message, monitor, open, peer, request, signalled, terminating,
+    termination::terminated,
 };
 use crate::Session;
 use climon2_core::{
     hello::Lifecycle,
     protocol::{ClientMessage, ServerMessage as PrivateMessage},
     wire::{
-        Acquire, ActualGeometry, AuthorityResult, GrantReason, Leave, Mode, Outcome, Response,
-        RevocationReason, ServerMessage, Success,
+        Acquire, ActualGeometry, AuthorityResult, CommandResult, ControlRecord, GrantReason, Leave,
+        Mode, Outcome, RevocationReason, ServerMessage, Success,
     },
 };
 use std::{
@@ -36,20 +37,10 @@ fn committed_standalone_kill(session: &Session) -> UnixStream {
     killer
 }
 
-/// The standalone Kill's success arrives once the session ended, then its
-/// stream ends.
-fn assert_killed(killer: &mut UnixStream) {
-    let answer = message(killer);
-    assert!(
-        matches!(
-            &answer,
-            ServerMessage::Response(Response {
-                outcome: Outcome::Ok(Success::Termination { .. }),
-                ..
-            })
-        ),
-        "{answer:?}"
-    );
+/// The standalone Kill's success arrives once the session ended with
+/// `result`, then its stream ends.
+fn assert_killed(killer: &mut UnixStream, result: &CommandResult) {
+    assert_eq!(message(killer), terminated(1, result));
     assert_closed(killer);
 }
 
@@ -121,7 +112,7 @@ fn a_registration_takes_control_only_by_its_own_acquire() {
         },
     );
     assert_rejected(&mut unopened, 1, "invalid_state");
-    let mut watching = Attached::registered(&session, &[]);
+    let mut watching = Attached::registered(&session);
     assert_eq!(
         crate::advertised_state(&session),
         (Lifecycle::Detached, 0, false)
@@ -133,8 +124,7 @@ fn a_registration_takes_control_only_by_its_own_acquire() {
         (Lifecycle::Attached, 1, true)
     );
     let authority = watching.authority();
-    let request_id = watching.next();
-    request(&mut watching.stream, &Acquire { request_id });
+    watching.send(|request_id| Acquire { request_id }.to_frame());
     let unchanged = Success::Acquired(AuthorityResult {
         changed: false,
         authority,
@@ -144,7 +134,7 @@ fn a_registration_takes_control_only_by_its_own_acquire() {
     watching.typed(b"first\n");
     crate::wait_line(&session, "first 91x37");
 
-    let mut other = Attached::registered(&session, &[]);
+    let mut other = Attached::registered(&session);
     other.acquire(geometry(91, 37));
     watching.revoked(RevocationReason::Takeover);
     assert_eq!(
@@ -184,7 +174,7 @@ fn a_registration_takes_control_only_by_its_own_acquire() {
 #[test]
 fn a_registration_acquires_a_starting_session() {
     let mut session = Session::start("lines");
-    let mut watching = Attached::registered(&session, &[]);
+    let mut watching = Attached::registered(&session);
     assert_eq!(
         crate::advertised_state(&session),
         (Lifecycle::Starting, 0, false)
@@ -244,8 +234,8 @@ fn departures_hand_control_back_first_then_promote_the_newest_registration() {
         geometry: geometry(100, 30),
     };
     assert_eq!(first.next_after_display(), ServerMessage::Geometry(resized));
-    let mut older = Attached::registered(&session, &[]);
-    let mut newer = Attached::registered(&session, &[]);
+    let mut older = Attached::registered(&session);
+    let mut newer = Attached::registered(&session);
     let mut second = Attached::open(&session, geometry(100, 30), &[], geometry(100, 30));
     first.revoked(RevocationReason::Takeover);
     second.confirm_ready();
@@ -290,16 +280,15 @@ fn departures_hand_control_back_first_then_promote_the_newest_registration() {
 fn leave_racing_a_promotion_removes_the_registration_or_the_attachment_atomically() {
     let mut session = Session::start("exit");
     let mut controller = ready_attachment(&session, &[]);
-    let mut watching = Attached::registered(&session, &[]);
+    let mut watching = Attached::registered(&session);
     controller.leave();
-    let request_id = watching.next();
-    request(&mut watching.stream, &Leave { request_id });
+    watching.send(|request_id| Leave { request_id }.to_frame());
     watching.granted(GrantReason::Successor, geometry(91, 37));
     let left = Success::Left {
         attachment_detached: true,
     };
     assert_eq!(watching.response(), Outcome::Ok(left));
-    assert_closed(&mut watching.stream);
+    watching.closed();
     assert_eq!(
         crate::advertised_state(&session),
         (Lifecycle::Detached, 0, false)
@@ -310,6 +299,52 @@ fn leave_racing_a_promotion_removes_the_registration_or_the_attachment_atomicall
     leave(&mut leaving, 2);
     drop(controller);
     session.finish();
+}
+
+/// Waits until the hello `state` reports `expected`.
+fn advertises(session: &Session, expected: (Lifecycle, u32, bool)) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while crate::advertised_state(session) != expected {
+        assert!(
+            Instant::now() < deadline,
+            "the session never became {expected:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// CTL-04 and HDL-01 (Contract, headless succession over revision-1
+/// attachments): in a headless session the unexpected loss of the last
+/// attachment promotes the registered monitor, which gets Control granted
+/// (`successor`) at the session's geometry and controls the command. The
+/// promoted monitor's own loss then leaves the session running, detached
+/// with zero clients, and its command still reaches a later attachment.
+#[test]
+fn a_headless_session_promotes_a_monitor_and_outlives_its_loss() {
+    let mut session = crate::headless("lines");
+    let controller = ready_attachment(&session, &[]);
+    let mut watching = Attached::registered(&session);
+    drop(controller);
+    watching.granted(GrantReason::Successor, geometry(91, 37));
+    assert_eq!(
+        crate::advertised_state(&session),
+        (Lifecycle::Attached, 1, true)
+    );
+    watching.confirm_ready();
+    watching.typed(b"inherited\n");
+    crate::wait_line(&session, "inherited 91x37");
+    drop(watching);
+    advertises(&session, (Lifecycle::Detached, 0, false));
+
+    let mut last = session.attach();
+    session.wait_marker(&mut last);
+    crate::send(&mut last, ClientMessage::Input(b"end\n".to_vec()));
+    assert_eq!(
+        crate::until_terminal(&mut last).1,
+        PrivateMessage::Exit { code: 0 }
+    );
+    session.finish();
+    assert_eq!(recorded(&session), "inherited 91x37\n");
 }
 
 /// Holds the session's incoming frames through the `CLIMON2_DAEMON_HOLD`
@@ -343,19 +378,22 @@ fn a_registration_lost_to_an_overflow_is_never_promoted() {
         hold = Some(home.join("hold"));
         command.env("CLIMON2_DAEMON_HOLD", home.join("hold"));
     });
-    let mut watching = Attached::registered(&session, &[]);
+    let mut watching = Attached::registered(&session);
     let mut controller = ready_attachment(&session, &[]);
     in_one_pass(&hold.unwrap(), || {
-        request(&mut watching.stream, &open(2, &[], &[], Mode::Monitor));
-        let request_id = controller.next();
-        request(&mut controller.stream, &Leave { request_id });
+        watching.send(|request_id| {
+            let mut again = open(1, &[], &[], Mode::Monitor);
+            again.request_id = request_id;
+            again.to_frame()
+        });
+        controller.send(|request_id| Leave { request_id }.to_frame());
     });
     let left = Success::Left {
         attachment_detached: true,
     };
     assert_eq!(controller.response(), Outcome::Ok(left));
-    assert_closed(&mut controller.stream);
-    assert_closed(&mut watching.stream);
+    controller.closed();
+    watching.closed();
     assert_eq!(
         crate::advertised_state(&session),
         (Lifecycle::Detached, 0, false)
@@ -381,14 +419,14 @@ fn a_registration_lost_to_an_overflow_is_never_promoted() {
 fn a_committed_kill_overrides_succession() {
     let mut session = Session::start("ignore-hup");
     let mut controller = ready_attachment(&session, &[]);
-    let mut watching = Attached::registered(&session, &[]);
+    let mut watching = Attached::registered(&session);
     let mut killer = committed_standalone_kill(&session);
-    let request_id = watching.next();
-    request(&mut watching.stream, &Acquire { request_id });
+    watching.send(|request_id| Acquire { request_id }.to_frame());
     rejected(watching.response(), "session_terminating");
     controller.leave();
-    assert_final_then_closed(&mut watching.stream, &signalled(9));
-    assert_killed(&mut killer);
+    assert_eq!(watching.next_after_display(), command_final(&signalled(9)));
+    watching.closed();
+    assert_killed(&mut killer, &signalled(9));
     session.finish();
 }
 
@@ -401,7 +439,7 @@ fn a_committed_kill_overrides_succession() {
 fn a_registration_promoted_before_a_kill_ends_as_an_attachment() {
     let mut session = Session::start("ignore-hup");
     let mut controller = ready_attachment(&session, &[]);
-    let mut watching = Attached::registered(&session, &[]);
+    let mut watching = Attached::registered(&session);
     controller.leave();
     watching.granted(GrantReason::Successor, geometry(91, 37));
     watching.confirm_ready();
@@ -411,7 +449,7 @@ fn a_registration_promoted_before_a_kill_ends_as_an_attachment() {
         (Lifecycle::Terminating, 1, true)
     );
     watching.ended(&signalled(9));
-    assert_killed(&mut killer);
+    assert_killed(&mut killer, &signalled(9));
     session.finish();
 }
 
@@ -442,7 +480,7 @@ fn monitor_mode_restorations_are_canonical_at_the_effective_geometry_whatever_th
     ordinary.confirm_ready();
     crate::script(&session, "rows 1 250");
     ordinary.until_displayed(b"row-0250", 1);
-    let mut watching = Attached::registered(&session, &[]);
+    let mut watching = Attached::registered(&session);
     ordinary.leave();
 
     let rows = (1..=250).map(|row| format!("row-{row:04}"));

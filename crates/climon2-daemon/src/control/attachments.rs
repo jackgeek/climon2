@@ -12,31 +12,39 @@ use std::mem;
 pub(super) struct Attachment {
     pub conn: ConnectionId,
     pub host: TerminalSize,
-    /// A monitor-mode attachment: its output is canonical, serialized at
-    /// the session geometry, which each of its grants keeps.
-    pub canonical: bool,
+    pub target: Target,
+}
+
+/// What an attachment's output is presented for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Target {
+    /// Its host: an interactive attachment's.
+    Host,
+    /// A fresh terminal of the session geometry, which each of its grants
+    /// keeps: a monitor-mode attachment's canonical presentation.
+    Canonical,
 }
 
 impl Attachment {
     /// As a grant finds it: a canonical attachment's host is the session
     /// geometry, so its grant resizes nothing.
     fn granted_at(self, session: TerminalSize) -> Self {
-        if self.canonical {
-            return Self {
+        match self.target {
+            Target::Canonical => Self {
                 host: session,
                 ..self
-            };
+            },
+            Target::Host => self,
         }
-        self
     }
 
     /// The size its restorations are serialized for: its host, or for a
     /// canonical attachment the session geometry its host gives.
-    fn serialized(&self) -> TerminalSize {
-        if self.canonical {
-            return geometry(self.host);
+    fn restoration_size(&self) -> TerminalSize {
+        match self.target {
+            Target::Canonical => geometry(self.host),
+            Target::Host => self.host,
         }
-        self.host
     }
 }
 
@@ -78,7 +86,7 @@ pub(super) struct Controller {
     attachment: Attachment,
     authority: Authority,
     /// The size its current restoration is serialized for.
-    serialized: TerminalSize,
+    restored_for: TerminalSize,
     phase: Phase,
     /// The desired application focus in this control period, once known.
     focus: Option<bool>,
@@ -89,17 +97,17 @@ impl Controller {
     fn granted(attachment: Attachment, reason: GrantReason, grants: &mut Grants) -> (Self, Effect) {
         let attachment = attachment.granted_at(grants.sizes.session);
         let authority = grants.issued.grant();
-        let serialized = attachment.serialized();
+        let restored_for = attachment.restoration_size();
         let grant = Effect::Grant {
             conn: attachment.conn,
             authority,
-            host: serialized,
+            host: restored_for,
             reason,
         };
         let controller = Self {
             attachment,
             authority,
-            serialized,
+            restored_for,
             phase: Phase::Restoring { complete: false },
             focus: None,
         };
@@ -185,7 +193,8 @@ impl Controller {
             conn: self.conn(),
             host: self.host(),
         }];
-        if self.attachment.canonical && self.attachment.serialized() != self.serialized {
+        let canonical = self.attachment.target == Target::Canonical;
+        if canonical && self.attachment.restoration_size() != self.restored_for {
             effects.extend(self.replace(issued));
         }
         effects
@@ -193,12 +202,12 @@ impl Controller {
 
     fn replace(&mut self, issued: &mut Issued) -> Vec<Effect> {
         self.authority = issued.restore(self.authority.period);
-        self.serialized = self.attachment.serialized();
+        self.restored_for = self.attachment.restoration_size();
         self.phase = Phase::Restoring { complete: false };
         vec![Effect::Restore {
             conn: self.conn(),
             authority: self.authority,
-            host: self.serialized,
+            host: self.restored_for,
         }]
     }
 
@@ -206,7 +215,7 @@ impl Controller {
     /// a host change before readiness.
     fn invalidate(&mut self) {
         let restoring = matches!(self.phase, Phase::Restoring { .. });
-        if restoring && self.attachment.serialized() != self.serialized {
+        if restoring && self.attachment.restoration_size() != self.restored_for {
             self.phase = Phase::Replacing;
         }
     }
@@ -291,12 +300,12 @@ impl Attachments {
             return Vec::new();
         };
         let attachment = self.others.remove(index);
-        self.promote(attachment, GrantReason::Acquire, grants)
+        self.grant(attachment, GrantReason::Acquire, grants)
     }
 
     /// Makes `attachment` the controller at once; the previous one stays,
     /// non-controlling.
-    pub fn promote(
+    pub fn grant(
         &mut self,
         attachment: Attachment,
         reason: GrantReason,

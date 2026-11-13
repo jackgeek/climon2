@@ -290,17 +290,17 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
                 self.reject(id, request_id, OperationalCode::InvalidState, NOT_OPENED);
                 Ok(())
             }
-            Some(kind) => self.depart(id, request_id, kind == Kind::Attachment),
+            Some(kind) => self.depart(id, request_id, kind),
         }
     }
 
     /// A passive monitor connection's registration ends, and an
     /// attachment's Leave is an accepted detach: a controller's
     /// presentation is released and control passes on first.
-    fn depart(&mut self, id: u64, request_id: Counter, detached: bool) -> io::Result<()> {
+    fn depart(&mut self, id: u64, request_id: Counter, kind: Kind) -> io::Result<()> {
         let effects = self.control.leave(ConnectionId(id));
         self.effects(effects)?;
-        self.left(id, request_id, detached);
+        self.left(id, request_id, kind == Kind::Attachment);
         Ok(())
     }
 

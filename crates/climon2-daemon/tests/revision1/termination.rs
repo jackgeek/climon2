@@ -19,7 +19,7 @@ use std::{fs, os::unix::net::UnixStream, thread, time::Instant};
 
 /// A standalone Kill's success: termination confirmed with `result` after
 /// complete daemon cleanup.
-fn terminated(request_id: u64, result: &CommandResult) -> ServerMessage {
+pub(super) fn terminated(request_id: u64, result: &CommandResult) -> ServerMessage {
     let termination = Success::Termination {
         command_result: result.clone(),
         cleanup: Cleanup::Complete,

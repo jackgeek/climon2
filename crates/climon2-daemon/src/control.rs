@@ -26,8 +26,8 @@
 mod attachments;
 mod shutdown;
 
-pub use attachments::Needs;
 use attachments::{Attachment, Attachments, Departure, Phase};
+pub use attachments::{Needs, Target};
 use climon2_core::{
     lifetime::Lifetime,
     protocol::TerminalSize,
@@ -211,39 +211,33 @@ impl Issued {
 }
 
 /// Session-wide state outside the stage that grants draw on: the authority
-/// issued last, the applied sizes, whose session geometry every grant of a
-/// canonical attachment keeps, and the passive monitor connections that may
-/// inherit control.
+/// issued last and the applied sizes, whose session geometry every grant of
+/// a canonical attachment keeps.
 struct Grants {
     issued: Issued,
     sizes: Sizes,
-    /// Passive monitor connections, in the order their Opens were accepted.
-    successors: Vec<ConnectionId>,
 }
 
-impl Grants {
-    /// The passive monitor connection `conn` as an attachment, no longer
-    /// registered; `None` when it is not registered.
-    fn convert(&mut self, conn: ConnectionId) -> Option<Attachment> {
-        let index = self.successors.iter().position(|other| *other == conn)?;
-        self.successors.remove(index);
-        Some(self.attachment(conn))
+/// The passive monitor connections that may inherit control, in the order
+/// their Opens were accepted.
+#[derive(Default)]
+struct Registrations(Vec<ConnectionId>);
+
+impl Registrations {
+    fn register(&mut self, conn: ConnectionId) {
+        self.0.push(conn);
     }
 
-    /// The newest passive monitor connection as an attachment, no longer
-    /// registered.
-    fn successor(&mut self) -> Option<Attachment> {
-        let conn = self.successors.pop()?;
-        Some(self.attachment(conn))
+    /// Ends `conn`'s registration; true when it had one.
+    fn remove(&mut self, conn: ConnectionId) -> bool {
+        let registered = self.0.len();
+        self.0.retain(|other| *other != conn);
+        self.0.len() != registered
     }
 
-    /// A monitor-mode attachment: canonical, at the session geometry.
-    fn attachment(&self, conn: ConnectionId) -> Attachment {
-        Attachment {
-            conn,
-            host: self.sizes.session,
-            canonical: true,
-        }
+    /// Ends the newest registration, the one a promotion picks.
+    fn newest(&mut self) -> Option<ConnectionId> {
+        self.0.pop()
     }
 }
 
@@ -334,7 +328,7 @@ impl Open {
         grants: &mut Grants,
     ) -> Vec<Effect> {
         match self {
-            Self::Attached(attachments) => attachments.promote(attachment, reason, grants),
+            Self::Attached(attachments) => attachments.grant(attachment, reason, grants),
             _ => {
                 let (attachments, grant) = Attachments::new(attachment, reason, grants);
                 *self = Self::Attached(attachments);
@@ -385,15 +379,36 @@ fn initial_deadline(open: Open) -> (Stage, Vec<Effect>) {
 /// Acquire: a non-controlling attachment takes control at once, and so
 /// does a passive monitor connection, which becomes an attachment; the
 /// controller's own changes nothing.
-fn acquire(mut open: Open, conn: ConnectionId, grants: &mut Grants) -> (Stage, Vec<Effect>) {
-    let effects = match grants.convert(conn) {
-        Some(attachment) => {
-            let grant = open.grant(attachment, GrantReason::Acquire, grants);
-            [vec![Effect::Convert { conn }], grant].concat()
-        }
-        None => open.take_control(conn, grants),
+fn acquire(
+    mut open: Open,
+    conn: ConnectionId,
+    grants: &mut Grants,
+    registrations: &mut Registrations,
+) -> (Stage, Vec<Effect>) {
+    let effects = if registrations.remove(conn) {
+        convert(&mut open, conn, GrantReason::Acquire, grants)
+    } else {
+        open.take_control(conn, grants)
     };
     (Stage::Open(open), effects)
+}
+
+/// The passive monitor connection `conn`, no longer registered, becomes a
+/// monitor-mode attachment: canonical, at the session geometry, and in
+/// control at once for `reason`.
+fn convert(
+    open: &mut Open,
+    conn: ConnectionId,
+    reason: GrantReason,
+    grants: &mut Grants,
+) -> Vec<Effect> {
+    let attachment = Attachment {
+        conn,
+        host: grants.sizes.session,
+        target: Target::Canonical,
+    };
+    let grant = open.grant(attachment, reason, grants);
+    [vec![Effect::Convert { conn }], grant].concat()
 }
 
 /// The leave policy, after succession: a hand-back, or else the promotion
@@ -406,32 +421,32 @@ fn depart(
     conn: ConnectionId,
     departure: Departure,
     grants: &mut Grants,
+    registrations: &mut Registrations,
 ) -> (Stage, Vec<Effect>) {
     let Open::Attached(attachments) = open else {
         return (Stage::Open(open), Vec::new());
     };
     let (remaining, mut effects) = attachments.depart(conn, departure, grants);
-    let remaining = remaining.or_else(|| promote(grants, &mut effects));
-    match (remaining, departure, lifetime) {
-        (Some(attachments), _, _) => (Stage::Open(Open::Attached(attachments)), effects),
-        (None, Departure::Lost, Lifetime::Ordinary) => {
+    let mut open = remaining.map_or(Open::Detached, Open::Attached);
+    let successor = match open {
+        Open::Detached => registrations.newest(),
+        _ => None,
+    };
+    if let Some(successor) = successor {
+        effects.extend(convert(
+            &mut open,
+            successor,
+            GrantReason::Successor,
+            grants,
+        ));
+    }
+    match (open, departure, lifetime) {
+        (Open::Detached, Departure::Lost, Lifetime::Ordinary) => {
             let (stage, shutdown) = begin_shutdown(Open::Detached, Vec::new(), false);
             (stage, [effects, shutdown].concat())
         }
-        (None, _, _) => (Stage::Open(Open::Detached), effects),
+        (open, _, _) => (Stage::Open(open), effects),
     }
-}
-
-/// With no attachment left, the newest passive monitor connection becomes
-/// one, with a successor's grant.
-fn promote(grants: &mut Grants, effects: &mut Vec<Effect>) -> Option<Attachments> {
-    let successor = grants.successor()?;
-    effects.push(Effect::Convert {
-        conn: successor.conn,
-    });
-    let (attachments, grant) = Attachments::new(successor, GrantReason::Successor, grants);
-    effects.push(grant);
-    Some(attachments)
 }
 
 fn attached(stage: &mut Stage) -> Option<&mut Attachments> {
@@ -444,6 +459,7 @@ fn attached(stage: &mut Stage) -> Option<&mut Attachments> {
 pub struct Control {
     stage: Stage,
     grants: Grants,
+    registrations: Registrations,
     lifetime: Lifetime,
 }
 
@@ -460,8 +476,8 @@ impl Control {
             grants: Grants {
                 issued: Issued::default(),
                 sizes,
-                successors: Vec::new(),
             },
+            registrations: Registrations::default(),
             lifetime,
         }
     }
@@ -516,7 +532,7 @@ impl Control {
         let attachment = Attachment {
             conn,
             host: size.initial(),
-            canonical: false,
+            target: Target::Host,
         };
         let grants = &mut self.grants;
         match &mut self.stage {
@@ -528,7 +544,7 @@ impl Control {
     /// A passive monitor connection registered: never an attachment, nor
     /// in control, until its Acquire or a promotion.
     pub fn register(&mut self, conn: ConnectionId) {
-        self.grants.successors.push(conn);
+        self.registrations.register(conn);
     }
 
     /// Acquire: a non-controlling attachment takes control at once, and so
@@ -542,7 +558,8 @@ impl Control {
         if let Stage::Terminating(_) = self.stage {
             return (Err(OperationalCode::SessionTerminating), Vec::new());
         }
-        let effects = self.open(|open, grants| acquire(open, conn, grants));
+        let effects =
+            self.open(|open, grants, registrations| acquire(open, conn, grants, registrations));
         let acquisition = self.controlling(conn).map(|controlling| Acquisition {
             changed: !effects.is_empty(),
             authority: controlling.authority,
@@ -596,7 +613,16 @@ impl Control {
     /// An accepted explicit detach request.
     pub fn detach(&mut self, conn: ConnectionId) -> Vec<Effect> {
         let lifetime = self.lifetime;
-        self.open(|open, grants| depart(lifetime, open, conn, Departure::Detach, grants))
+        self.open(|open, grants, registrations| {
+            depart(
+                lifetime,
+                open,
+                conn,
+                Departure::Detach,
+                grants,
+                registrations,
+            )
+        })
     }
 
     /// An accepted departure: a passive monitor connection's registration
@@ -618,25 +644,27 @@ impl Control {
             shutdown.lost(conn);
         }
         let lifetime = self.lifetime;
-        self.open(|open, grants| depart(lifetime, open, conn, Departure::Lost, grants))
+        self.open(|open, grants, registrations| {
+            depart(lifetime, open, conn, Departure::Lost, grants, registrations)
+        })
     }
 
     /// A departing connection is removed before any succession. A
     /// connection lost inside output routing is removed when it is marked,
     /// before its loss is applied, so no departure in between promotes it.
     pub fn unregister(&mut self, conn: ConnectionId) {
-        self.grants.successors.retain(|other| *other != conn);
+        self.registrations.remove(conn);
     }
 
     pub fn kill(&mut self, conn: ConnectionId) -> Vec<Effect> {
         match &mut self.stage {
             Stage::Terminating(shutdown) => shutdown.kill(conn),
-            Stage::Open(_) => self.open(|open, _| begin_shutdown(open, vec![conn], false)),
+            Stage::Open(_) => self.open(|open, _, _| begin_shutdown(open, vec![conn], false)),
         }
     }
 
     pub fn initial_deadline(&mut self) -> Vec<Effect> {
-        self.open(|open, _| initial_deadline(open))
+        self.open(|open, _, _| initial_deadline(open))
     }
 
     /// The restoration deadline of `authority` expired.
@@ -654,7 +682,7 @@ impl Control {
     pub fn command_exited(&mut self, command: Option<CommandResult>) -> Vec<Effect> {
         match &mut self.stage {
             Stage::Terminating(shutdown) => shutdown.command_exited(command),
-            Stage::Open(_) => self.open(|open, _| command_exited(open, command)),
+            Stage::Open(_) => self.open(|open, _, _| command_exited(open, command)),
         }
     }
 
@@ -669,7 +697,7 @@ impl Control {
     pub fn authoritative_failure(&mut self) -> Vec<Effect> {
         match &mut self.stage {
             Stage::Terminating(shutdown) => shutdown.authoritative_failure(),
-            Stage::Open(_) => self.open(|open, _| begin_shutdown(open, Vec::new(), true)),
+            Stage::Open(_) => self.open(|open, _, _| begin_shutdown(open, Vec::new(), true)),
         }
     }
 
@@ -693,11 +721,11 @@ impl Control {
     /// Runs a transition of an open session; a terminating session ignores it.
     fn open(
         &mut self,
-        transition: impl FnOnce(Open, &mut Grants) -> (Stage, Vec<Effect>),
+        transition: impl FnOnce(Open, &mut Grants, &mut Registrations) -> (Stage, Vec<Effect>),
     ) -> Vec<Effect> {
         let (stage, effects) = match std::mem::replace(&mut self.stage, Stage::Open(Open::Starting))
         {
-            Stage::Open(open) => transition(open, &mut self.grants),
+            Stage::Open(open) => transition(open, &mut self.grants, &mut self.registrations),
             terminating => (terminating, Vec::new()),
         };
         self.stage = stage;
