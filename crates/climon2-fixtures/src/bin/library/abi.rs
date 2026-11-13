@@ -208,17 +208,94 @@ pub fn terminal(terminal: &Terminal) -> Value {
     })
 }
 
-/// A record's header and, for the diagnostics this release can deliver, its
-/// active member; other tags are reported by tag only.
+fn tokens(list: native::Tokens) -> Value {
+    if list.data.is_null() || list.count > 64 {
+        return json!({ "null": list.data.is_null(), "count": list.count });
+    }
+    // SAFETY: a nonnull list covers `count` entries until its delivery's release.
+    let entries = unsafe { std::slice::from_raw_parts(list.data, list.count as usize) };
+    Value::Array(entries.iter().map(|token| text(*token)).collect())
+}
+
+fn optional_text(optional: native::OptionalText) -> Value {
+    json!({ "present": optional.present, "reserved": optional.reserved, "value": text(optional.value) })
+}
+
+fn command(result: &native::CommandResult) -> Value {
+    json!({
+        "kind": result.kind,
+        "value": result.value,
+        "signal_name": optional_text(result.signal_name),
+    })
+}
+
+fn title(title: &native::Title) -> Value {
+    json!({ "state": title.state, "reserved": title.reserved, "value": text(title.value) })
+}
+
+fn response(response: &native::Response) -> Value {
+    let mut value = json!({
+        "request_id": response.request_id,
+        "outcome": response.outcome,
+        "result_tag": response.result_tag,
+        "error": error(response.error),
+    });
+    // SAFETY (each arm): the result tag names the active member.
+    value["result"] = match response.result_tag {
+        native::OPENED => {
+            let opened = unsafe { response.result.opened };
+            json!({
+                "connection_id": hex(&opened.connection_id.bytes),
+                "selected": tokens(opened.selected),
+            })
+        }
+        native::LEFT => {
+            json!({ "attachment_detached": unsafe { response.result.attachment_detached } })
+        }
+        native::KNOWN_FINAL => command(unsafe { &response.result.known_final }),
+        _ => Value::Null,
+    };
+    value
+}
+
+fn metadata(metadata: &native::Metadata) -> Value {
+    json!({
+        "title": title(&metadata.title),
+        "status": {
+            "available": metadata.status.available,
+            "reserved": metadata.status.reserved,
+        },
+        "progress": {
+            "available": metadata.progress.available,
+            "reserved": metadata.progress.reserved,
+        },
+        "command_result": {
+            "present": metadata.command_result.present,
+            "reserved": metadata.command_result.reserved,
+            "value": command(&metadata.command_result.value),
+        },
+    })
+}
+
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// A record's header and its active member, decoded by its tag; another
+/// tag is reported by tag only.
 pub fn record(record: &Record) -> Value {
     let mut value = json!({
         "tag": record.tag,
         "reserved": record.reserved,
         "generation": record.generation,
     });
-    if record.tag == native::DIAGNOSTIC {
-        // SAFETY: the tag names the active member.
-        value["diagnostic"] = error(unsafe { record.data.diagnostic });
+    // SAFETY (each arm): the tag names the active member.
+    match record.tag {
+        native::DIAGNOSTIC => value["diagnostic"] = error(unsafe { record.data.diagnostic }),
+        native::RESPONSE => value["response"] = response(unsafe { &record.data.response }),
+        native::INITIAL_METADATA => value["metadata"] = metadata(unsafe { &record.data.metadata }),
+        native::TITLE => value["title"] = title(unsafe { &record.data.title }),
+        _ => {}
     }
     value
 }
@@ -371,6 +448,14 @@ impl Api {
             json!({ "output": output })
         };
         (self.finish("run", result), report)
+    }
+
+    /// Submits a request built in caller memory, which is scrambled and
+    /// unmapped as soon as `submit` returns.
+    pub fn submit(&self, handles: Handles, request: *const native::Request) -> Value {
+        // SAFETY: the handle is live; the request is null or valid.
+        let result = unsafe { entry!(self, submit)(handles.communication.0, request) };
+        self.finish("submit", result)
     }
 
     pub fn shutdown(&self, handles: Handles) -> Value {
