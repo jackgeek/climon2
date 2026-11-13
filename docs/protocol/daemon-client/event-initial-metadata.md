@@ -56,11 +56,13 @@ Related: [Title changed](event-title-changed.md),
 
 ## Implemented behavior
 
-After each successful monitor-mode Open, the
+After each successful [Open](request-open.md), in either mode, the
 [session daemon](../../../GLOSSARY.md#sessions) captures the session's
 current title and registers the connection for later changes in one step of
 its loop, so no change falls between this record and the first
-[Title changed](event-title-changed.md). With `title-v1` selected, `title` is
+[Title changed](event-title-changed.md). For an interactive Open this record
+precedes the [Control granted](event-control-granted.md) of its
+[attachment](../../../GLOSSARY.md#attachment-and-control), in the same step. With `title-v1` selected, `title` is
 available with the application's title by value: null while unset, `""` when
 set empty. Without it, `title` is unavailable. `status` and `progress` are
 always unavailable for now, and `command_result` is null: the daemon cannot

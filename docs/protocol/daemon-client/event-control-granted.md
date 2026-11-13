@@ -1,6 +1,8 @@
 # Control granted — `0x46`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed; implemented for interactive attachments
+([#87](https://github.com/jackgeek/climon2/issues/87)); reason `successor`
+arrives with [#89](https://github.com/jackgeek/climon2/issues/89)**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) sends a
 [grant](../../../GLOSSARY.md#attachment-and-control) of control to the receiving
 [client](../../../GLOSSARY.md#sessions).
@@ -47,3 +49,17 @@ No [request ID](../TERMS.md#request-id)/defaults/unknown members; malformed reco
 [fatal validation](core-v1.md#framing-and-validation).
 Essential grant records cannot silently disappear; #69 owns bounds/exhaustion,
 #63 actual sizing/application.
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) sends Control granted to
+an interactive [attachment](../../../GLOSSARY.md#attachment-and-control) at
+once when an interactive [Open](request-open.md) (reason `attach`), its
+[Acquire](request-acquire.md) (`acquire`) or another controller's departure
+(`hand_back`) grants it control. Its
+[Restoration begin](event-restoration-begin.md) follows immediately. The
+geometry is the session geometry the grant applies, under the same policy as
+an ordinary attach. Periods and restoration IDs are session-wide and only
+increase. Private-protocol attachments share the same control, and their
+grants use periods and restorations too, so the numbers one connection sees
+can skip.

@@ -3,8 +3,8 @@
 //! result belongs to the request's operation is the connection's to check: a
 //! stateless codec does not know which request a request ID names.
 use super::{
-    CommandResult, Counter, Error, Families, Guid,
-    record::{ControlRecord, by_name, nullable},
+    AuthorityIds, CommandResult, Counter, Error, Families, Guid,
+    record::{ControlRecord, by_name, flat_authority, nullable},
 };
 use crate::{ContractError, json::Object};
 use serde::{Deserialize, Serialize, Serializer};
@@ -85,16 +85,8 @@ pub enum Success {
         accepted_bytes: NonZeroU32,
     },
     ResizeAccepted {},
-    Acquired {
-        changed: bool,
-        period: Counter,
-        restoration_id: Counter,
-    },
-    Ready {
-        changed: bool,
-        period: Counter,
-        restoration_id: Counter,
-    },
+    Acquired(AuthorityResult),
+    Ready(AuthorityResult),
     Viewing {
         changed: bool,
         viewing: bool,
@@ -117,6 +109,25 @@ pub enum Success {
         accepted_bytes: FocusBytes,
     },
 }
+
+/// The result of Acquire and of Ready: whether the request changed control
+/// or readiness, and the authority the requester holds.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(from = "AuthorityResultFields", into = "AuthorityResultFields")]
+pub struct AuthorityResult {
+    pub changed: bool,
+    pub authority: AuthorityIds,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityResultFields {
+    changed: bool,
+    period: Counter,
+    restoration_id: Counter,
+}
+
+flat_authority!(AuthorityResult, AuthorityResultFields { changed });
 
 /// The only cleanup a successful Kill reports.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
