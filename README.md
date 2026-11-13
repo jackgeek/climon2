@@ -430,7 +430,8 @@ zero-survivor mutation. It has two tiers:
   (for example `<Pty as Drop>::drop` or `outer::inner`) has the same tokens.
   Whitespace, comments and doc comments do not count, so moved or
   doc-only-edited functions are not mutated. Nested items are compared on their
-  own. Renamed files compare against their old path; added, copied and
+  own. An edited impl header (generics, bounds, where clause, self type or
+  trait path) changes every item in that impl. Renamed files compare against their old path; added, copied and
   untracked files are mutated whole. Test-only code is skipped. Each such file
   gets its own mutator run, limited with `--lines`.
   `cargo xtask check --print-mutation-plan` prints this selection and exits.

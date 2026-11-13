@@ -7,7 +7,9 @@
 //! Tokens ignore whitespace, ordinary comments and doc comments, so a moved
 //! but unchanged function, or a doc-comment-only edit, is not changed. A
 //! function's tokens exclude its nested items, which are compared on their
-//! own; its lines exclude theirs. Test-only code (`mod tests`, `#[test]` and
+//! own; its lines exclude theirs. An item's tokens include each enclosing impl
+//! header (generics, bounds, where clause, self type, trait path; body
+//! excluded), so a header edit changes every item in that impl. Test-only code (`mod tests`, `#[test]` and
 //! `#[cfg(test)]` items) is skipped, as the mutator skips it.
 
 use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
@@ -94,6 +96,8 @@ fn ranges(lines: BTreeSet<usize>) -> Vec<RangeInclusive<usize>> {
 #[derive(Default)]
 struct Collector {
     scope: Vec<String>,
+    /// Tokens of each enclosing impl header, body excluded, which belong to every method's tokens.
+    headers: Vec<String>,
     records: Vec<Record>,
 }
 
@@ -112,7 +116,13 @@ impl Collector {
         let end = tokens.last().map_or(start, |last| last.span().end().line);
         self.records.push(Record {
             name: self.path(&name.to_string()),
-            tokens: strip_docs(own.to_token_stream()).to_string(),
+            tokens: self
+                .headers
+                .iter()
+                .cloned()
+                .chain([strip_docs(own.to_token_stream()).to_string()])
+                .collect::<Vec<_>>()
+                .join("\n"),
             lines: start..=end,
         });
     }
@@ -149,7 +159,12 @@ impl<'ast> Visit<'ast> for Collector {
             Some((_, path, _)) => format!("<{ty} as {}>", compact(path)),
             None => ty,
         };
+        let mut header = item.clone();
+        header.items.clear();
+        self.headers
+            .push(strip_docs(header.to_token_stream()).to_string());
         self.within(name, |c| visit::visit_item_impl(c, item));
+        self.headers.pop();
     }
 
     fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
@@ -422,6 +437,31 @@ static FLAG: bool = true;
                 item("m::LIMIT", &[6..=6]),
                 item("FLAG", &[8..=8]),
             ]
+        );
+    }
+
+    /// Owner decision: an impl header edit changes every method in that impl.
+    #[test]
+    fn an_edited_impl_header_changes_all_its_methods_and_an_edited_method_only_itself() {
+        let old = "\
+struct W<T>(T);
+impl<T: Clone> W<T> {
+    fn first(&self) -> u8 { 1 }
+    fn second(&self) -> u8 { 2 }
+}
+";
+        let bound = old.replace("T: Clone", "T: Copy");
+        assert_eq!(
+            changed_items(old, &bound).unwrap(),
+            vec![
+                item("W<T>::first", &[3..=3]),
+                item("W<T>::second", &[4..=4])
+            ]
+        );
+        let method = old.replace("{ 2 }", "{ 3 }");
+        assert_eq!(
+            changed_items(old, &method).unwrap(),
+            vec![item("W<T>::second", &[4..=4])]
         );
     }
 
