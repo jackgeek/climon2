@@ -110,7 +110,8 @@ fn assert_cancelled(finish: &Value, ids: &[u64]) -> Vec<Value> {
 /// and closed rejections are synchronous, consume no request ID and retain
 /// no arguments): each invalid request of public ID 7, or a null one, is
 /// rejected with its stable code, and ID 7 is accepted afterwards; an Open
-/// and a Leave whose every byte they do not set is 0xa5 are accepted; an ID
+/// (with a one-byte optional token it does not relay) and a Leave whose
+/// every byte they do not set is 0xa5 are accepted; an ID
 /// that does not increase is `invalid_request_id`; only the accepted
 /// requests are ever charged; after shutdown `submit` is `closed`; and each
 /// accepted request that never executed is answered `cancelled`.
@@ -126,7 +127,7 @@ fn installed_library_admits_only_valid_requests_and_rejections_cost_nothing() {
             .map(|(request, _)| json!({ "do": "submit", "request": request })),
     );
     steps.extend([
-        json!({ "do": "submit", "request": filled(open(7, &REQUIRED, &["title-v1"])) }),
+        json!({ "do": "submit", "request": filled(open(7, &REQUIRED, &["title-v1", "x"])) }),
         json!({ "do": "submit", "request": filled(leave(9, 1)) }),
         json!({ "do": "submit", "request": open(9, &REQUIRED, &[]) }),
         json!({ "do": "submit", "request": leave(8, 1) }),
@@ -154,7 +155,7 @@ fn installed_library_admits_only_valid_requests_and_rejections_cost_nothing() {
         );
     }
     let queued = &step(&report, accepted + 4)["output"];
-    let bytes = charge(&SELECTED) + REQUEST;
+    let bytes = charge(&["daemon-wire-v1", "monitor-v1", "title-v1", "x"]) + REQUEST;
     assert_eq!(queued["request_records"], 2, "{queued:#}");
     assert_eq!(queued["peak_request_records"], 2, "{queued:#}");
     assert_eq!(queued["request_bytes"], bytes, "{queued:#}");
