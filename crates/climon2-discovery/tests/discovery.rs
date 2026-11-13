@@ -323,6 +323,21 @@ fn sessions_are_newest_created_first_with_ascending_session_id_ties() {
     assert_eq!(ids(&discover(&home, RETAIN).unwrap().sessions), expected);
 }
 
+/// DSC-04 Contract case (inaccessible discovery): a sessions directory that cannot be listed
+/// fails the pass with the listing error, rather than reporting an empty home, whether or not
+/// stale cleanup is requested, and nothing is deleted.
+#[test]
+fn a_sessions_directory_that_cannot_be_listed_fails_the_pass() {
+    let (_directory, home) = home();
+    let sessions = home.join("sessions");
+    fs::write(&sessions, b"not a directory").unwrap();
+    for options in [RETAIN, REMOVE] {
+        let error = discover(&home, options).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ENOTDIR), "{error}");
+    }
+    assert_eq!(fs::read(&sessions).unwrap(), b"not a directory");
+}
+
 /// The setup and assertions of `every_outcome_is_structured_and_no_pass_prints`, run in a
 /// child process so that its standard output and error hold nothing else.
 fn every_outcome_in_three_passes() {

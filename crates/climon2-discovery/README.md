@@ -88,6 +88,7 @@ hello peers.
 | DSC-04 Contract case: a silent daemon is uncertain only after the frozen two-second hello deadline, and kept even when cleanup is requested | `a_silent_daemon_is_uncertain_after_the_two_second_hello_deadline` |
 | DSC-04 Contract case (uncertain disappearance): a regular file at a stale session's socket path is never deleted, and neither is its metadata; Linux reports the failed cleanup, macOS the unreachable path | `a_regular_file_at_the_socket_path_is_never_deleted` |
 | DSC-04 Contract case (uncertain disappearance), Linux: only the recorded boot ID and start ticks prove a session stale; a live identity with any start time, and a missing identity, are uncertain and kept even when cleanup is requested | `linux_daemon_identity_alone_proves_a_session_stale` |
+| DSC-04 Contract case (inaccessible discovery): a sessions directory that cannot be listed fails the pass with the listing error instead of reporting an empty home, and nothing is deleted | `a_sessions_directory_that_cannot_be_listed_fails_the_pass` |
 | DSC-01 Contract case (discovery order): newest created first, then ascending full session ID; a home without sessions is an empty pass | `sessions_are_newest_created_first_with_ascending_session_id_ties` |
 
 The monitor's own DSC-01, DSC-03, DSC-04 and DSC-06 cases arrive with #106.
