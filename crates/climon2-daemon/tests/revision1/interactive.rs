@@ -54,7 +54,16 @@ impl Attached {
         Self::opened(stream, granted)
     }
 
-    fn opened(mut stream: UnixStream, granted: Geometry) -> Self {
+    fn opened(stream: UnixStream, granted: Geometry) -> Self {
+        let mut attached = Self::opened_begun(stream, granted);
+        attached.completed();
+        attached
+    }
+
+    /// The Response, Initial metadata, Control granted (`attach`) at the
+    /// session geometry `granted` and Restoration begin of an interactive
+    /// Open with request 1.
+    fn opened_begun(mut stream: UnixStream, granted: Geometry) -> Self {
         let response = message(&mut stream);
         let ServerMessage::Response(Response {
             request_id,
@@ -82,7 +91,7 @@ impl Attached {
             request: 1,
             display: Vec::new(),
         };
-        attached.granted(GrantReason::Attach, granted);
+        attached.grant(GrantReason::Attach, granted);
         attached
     }
 
@@ -1021,5 +1030,41 @@ fn takeover_hand_back_and_leave_policy_match_the_private_protocol() {
     let last = ready_attachment(&session, &[]);
     assert_eq!((last.period, last.restoration), (6, 6));
     drop(last);
+    session.finish();
+}
+
+/// CTL-05 (Contract, restoring) and COM-05 (Contract, restoration chunks):
+/// Ready needs the complete current restoration, not merely its beginning.
+/// A restoration far larger than the attachment has read is produced as
+/// the attachment drains it, in Display chunks of its authority; Ready sent
+/// before its Restoration complete is `not_ready` and changes nothing, so
+/// Input stays `not_ready`, while Resize is already accepted. Once the
+/// restoration is complete, Ready succeeds and Input is admitted.
+#[test]
+fn ready_needs_the_complete_current_restoration() {
+    let mut session = Session::start("script");
+    crate::script(&session, "colors 4000");
+    let mut stream = peer(&session);
+    request(
+        &mut stream,
+        &open(1, &[], &[], Mode::Interactive(geometry(91, 37))),
+    );
+    let mut attached = Attached::opened_begun(stream, geometry(91, 37));
+    rejected(attached.ready(), "not_ready");
+    rejected(attached.input(b"early"), "not_ready");
+    assert_eq!(
+        attached.resize(91, 37),
+        Outcome::Ok(Success::ResizeAccepted {})
+    );
+    attached.completed();
+    assert!(
+        attached.display.len() > 1_048_576,
+        "{}",
+        attached.display.len()
+    );
+    attached.confirm_ready();
+    attached.typed(b"x");
+    crate::issue(&session, "exit");
+    attached.ended();
     session.finish();
 }

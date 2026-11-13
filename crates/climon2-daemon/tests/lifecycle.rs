@@ -2539,8 +2539,9 @@ fn record_lines() -> ! {
 /// prints `N` identical rows and `clear` erases the scrollback. Title commands
 /// set the window title: `title TEXT`, `title-empty`, `title-bytes N` (N
 /// UTF-8 bytes, `é` repeated) and `titles A B` (`t-A` through `t-B` in one
-/// write); `text TEXT` prints TEXT as a line, `reset` is `ESC c`, and `exit`
-/// ends the fixture with status 0.
+/// write); `text TEXT` prints TEXT as a line, `colors N` prints `N` rows
+/// whose every cell changes colour, `reset` is `ESC c`, and `exit` ends the
+/// fixture with status 0.
 fn follow_script() -> ! {
     print!("fixture-ready\r\n");
     io::stdout().flush().unwrap();
@@ -2579,6 +2580,14 @@ fn follow_script() -> ! {
                 }
                 ["title", ..] => write!(out, "\x1b]2;{}\x07", &command["title ".len()..]).unwrap(),
                 ["text", ..] => write!(out, "{}\r\n", &command["text ".len()..]).unwrap(),
+                ["colors", rows] => {
+                    for _ in 0..rows.parse().unwrap() {
+                        for cell in 0..90 {
+                            write!(out, "\x1b[{}mc", 31 + cell % 7).unwrap();
+                        }
+                        write!(out, "\x1b[0m\r\n").unwrap();
+                    }
+                }
                 _ => panic!("unknown script command {command:?}"),
             }
             out.flush().unwrap();
