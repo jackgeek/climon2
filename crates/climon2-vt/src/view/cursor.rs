@@ -1,5 +1,6 @@
 //! The cursor on the active screen: where it is and how it is drawn.
 
+use super::lookup;
 use alacritty_terminal::{
     Grid,
     term::{TermMode, cell::Cell as EngineCell},
@@ -66,9 +67,6 @@ const SHAPES: [(EngineShape, CursorShape); 3] = [
 
 impl CursorShape {
     fn of(shape: EngineShape) -> Self {
-        SHAPES
-            .iter()
-            .find(|(engine, _)| *engine == shape)
-            .map_or(Self::Default, |(_, shape)| *shape)
+        lookup(&SHAPES, |engine| *engine == shape).unwrap_or(Self::Default)
     }
 }

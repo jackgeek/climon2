@@ -1,5 +1,6 @@
 //! The application modes the monitor's input router and painter honour.
 
+use super::lookup;
 use alacritty_terminal::term::TermMode;
 
 /// What the application asked of the keyboard, paste, mouse, focus and
@@ -29,8 +30,10 @@ impl Modes {
             application_cursor_keys: mode.contains(TermMode::APP_CURSOR),
             application_keypad: mode.contains(TermMode::APP_KEYPAD),
             bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
-            mouse_reporting: first(mode, &REPORTING).unwrap_or(MouseReporting::Off),
-            mouse_encoding: first(mode, &ENCODINGS).unwrap_or(MouseEncoding::Default),
+            mouse_reporting: lookup(&REPORTING, |flag| mode.contains(*flag))
+                .unwrap_or(MouseReporting::Off),
+            mouse_encoding: lookup(&ENCODINGS, |flag| mode.contains(*flag))
+                .unwrap_or(MouseEncoding::Default),
             focus_reporting: mode.contains(TermMode::FOCUS_IN_OUT),
             alternate_scroll: mode.contains(TermMode::ALTERNATE_SCROLL),
         }
@@ -63,6 +66,7 @@ pub enum MouseEncoding {
     Sgr,
 }
 
+/// The engine sets at most one mode of each table.
 const REPORTING: [(TermMode, MouseReporting); 3] = [
     (TermMode::MOUSE_REPORT_CLICK, MouseReporting::Clicks),
     (TermMode::MOUSE_DRAG, MouseReporting::Drag),
@@ -73,12 +77,3 @@ const ENCODINGS: [(TermMode, MouseEncoding); 2] = [
     (TermMode::UTF8_MOUSE, MouseEncoding::Utf8),
     (TermMode::SGR_MOUSE, MouseEncoding::Sgr),
 ];
-
-/// The value of the first of `table`'s modes that is set; the engine sets
-/// at most one of each table's.
-fn first<T: Copy>(mode: TermMode, table: &[(TermMode, T)]) -> Option<T> {
-    table
-        .iter()
-        .find(|(flag, _)| mode.contains(*flag))
-        .map(|(_, value)| *value)
-}

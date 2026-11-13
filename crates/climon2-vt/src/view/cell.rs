@@ -1,6 +1,7 @@
 //! One cell as the monitor paints it: what it holds, in which colours and
 //! rendition.
 
+use super::lookup;
 use alacritty_terminal::{
     term::cell::{Cell as EngineCell, Flags},
     vte::ansi::Color,
@@ -168,10 +169,7 @@ impl Rendition {
             bold: flags.contains(Flags::BOLD),
             dim: flags.contains(Flags::DIM),
             italic: flags.contains(Flags::ITALIC),
-            underline: UNDERLINES
-                .iter()
-                .find(|(flag, _)| flags.contains(*flag))
-                .map(|(_, underline)| *underline),
+            underline: lookup(&UNDERLINES, |flag| flags.contains(*flag)),
             inverse: flags.contains(Flags::INVERSE),
             hidden: flags.contains(Flags::HIDDEN),
             strikeout: flags.contains(Flags::STRIKEOUT),

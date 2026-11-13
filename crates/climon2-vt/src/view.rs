@@ -18,6 +18,14 @@ use alacritty_terminal::{
     Grid, event::VoidListener, grid::Dimensions, term::cell::Cell as EngineCell,
 };
 
+/// The value paired with the first key in `table` that `matches`.
+fn lookup<K, V: Copy>(table: &[(K, V)], matches: impl Fn(&K) -> bool) -> Option<V> {
+    table
+        .iter()
+        .find(|(key, _)| matches(key))
+        .map(|(_, value)| *value)
+}
+
 /// What a model shows, borrowed for one frame.
 #[derive(Clone, Copy)]
 pub struct View<'a> {
