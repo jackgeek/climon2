@@ -471,8 +471,14 @@ fn the_alternate_screen_replaces_the_normal_screen_until_it_is_left() {
     );
 }
 
+/// Alternate scroll in a fresh model. Not an independent expectation: it is
+/// the engine's own default, on as Alacritty starts, which the view reports
+/// until #179 starts the engine with it off, as xterm does. The mode tests
+/// below set and reset it explicitly.
+const ENGINE_DEFAULT_ALTERNATE_SCROLL: bool = true;
+
 /// The modes of a fresh model: no input mode is set, and alternate scroll is
-/// on, as Alacritty starts.
+/// the engine's default.
 const FRESH: Modes = Modes {
     application_cursor_keys: false,
     application_keypad: false,
@@ -480,7 +486,7 @@ const FRESH: Modes = Modes {
     mouse_reporting: MouseReporting::Off,
     mouse_encoding: MouseEncoding::Default,
     focus_reporting: false,
-    alternate_scroll: true,
+    alternate_scroll: ENGINE_DEFAULT_ALTERNATE_SCROLL,
 };
 
 /// The modes a model is left in by `bytes`.
@@ -593,16 +599,19 @@ fn focus_reporting_follows_mode_1004() {
     ]);
 }
 
-/// TRM-05 (crate case): alternate scroll. `CSI ? 1007 l` stops the wheel
-/// sending cursor keys on the alternate screen and `CSI ? 1007 h` restores
-/// it.
+/// TRM-05 (crate case): alternate scroll. `CSI ? 1007 h` makes the wheel
+/// send cursor keys on the alternate screen and `CSI ? 1007 l` stops it.
 #[test]
 fn alternate_scroll_follows_mode_1007() {
-    let off = Modes {
-        alternate_scroll: false,
+    let set = |alternate_scroll| Modes {
+        alternate_scroll,
         ..FRESH
     };
-    assert_modes(&[("\x1b[?1007l", off), ("\x1b[?1007l\x1b[?1007h", FRESH)]);
+    assert_modes(&[
+        ("\x1b[?1007l", set(false)),
+        ("\x1b[?1007l\x1b[?1007h", set(true)),
+        ("\x1b[?1007h\x1b[?1007l", set(false)),
+    ]);
 }
 
 /// The normal screen's history, or a panic on the alternate screen.
