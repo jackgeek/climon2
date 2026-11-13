@@ -28,6 +28,7 @@ mod shutdown;
 pub use attachments::Needs;
 use attachments::{Attachment, Attachments, Departure, Phase};
 use climon2_core::{
+    lifetime::Lifetime,
     protocol::TerminalSize,
     wire::{CommandResult, GrantReason, OperationalCode},
 };
@@ -248,14 +249,23 @@ enum Stage {
 
 /// A session that still accepts attachments.
 enum Open {
-    /// Awaiting the initial attachment.
+    /// An ordinary session awaiting its initial attachment.
     Starting,
     Attached(Attachments),
-    /// No attachments after an accepted explicit detach.
+    /// No attachments: after an accepted explicit detach or, in a headless
+    /// session, from startup on and after any departure.
     Detached,
 }
 
 impl Open {
+    /// Before anything attaches.
+    fn unattached(lifetime: Lifetime) -> Self {
+        match lifetime {
+            Lifetime::Ordinary => Self::Starting,
+            Lifetime::Headless => Self::Detached,
+        }
+    }
+
     fn snapshot(&self) -> State {
         match self {
             Self::Starting => State::new(Lifecycle::Starting, 0),
@@ -312,8 +322,11 @@ fn initial_deadline(open: Open) -> (Stage, Vec<Effect>) {
     }
 }
 
-/// The leave policy, after any hand-back.
+/// The leave policy, after any hand-back: only the unexpected loss of an
+/// ordinary session's last attachment ends it; a headless session survives
+/// with zero clients.
 fn depart(
+    lifetime: Lifetime,
     open: Open,
     conn: ConnectionId,
     departure: Departure,
@@ -323,13 +336,13 @@ fn depart(
         return (Stage::Open(open), Vec::new());
     };
     let (remaining, effects) = attachments.depart(conn, departure, issued);
-    match (remaining, departure) {
-        (Some(attachments), _) => (Stage::Open(Open::Attached(attachments)), effects),
-        (None, Departure::Detach) => (Stage::Open(Open::Detached), effects),
-        (None, Departure::Lost) => {
+    match (remaining, departure, lifetime) {
+        (Some(attachments), _, _) => (Stage::Open(Open::Attached(attachments)), effects),
+        (None, Departure::Lost, Lifetime::Ordinary) => {
             let (stage, shutdown) = begin_shutdown(Open::Detached, Vec::new(), false);
             (stage, [effects, shutdown].concat())
         }
+        (None, _, _) => (Stage::Open(Open::Detached), effects),
     }
 }
 
@@ -344,19 +357,21 @@ pub struct Control {
     stage: Stage,
     sizes: Sizes,
     issued: Issued,
+    lifetime: Lifetime,
 }
 
 impl Control {
-    /// A starting session whose PTY has the session geometry for `initial`.
-    pub fn new(initial: TerminalSize) -> Self {
+    /// A new session whose PTY has the session geometry for `initial`.
+    pub fn new(initial: TerminalSize, lifetime: Lifetime) -> Self {
         let host = initial.initial();
         Self {
-            stage: Stage::Open(Open::Starting),
+            stage: Stage::Open(Open::unattached(lifetime)),
             sizes: Sizes {
                 host,
                 session: geometry(host),
             },
             issued: Issued::default(),
+            lifetime,
         }
     }
 
@@ -479,7 +494,8 @@ impl Control {
 
     /// An accepted explicit detach request.
     pub fn detach(&mut self, conn: ConnectionId) -> Vec<Effect> {
-        self.open(|open, issued| depart(open, conn, Departure::Detach, issued))
+        let lifetime = self.lifetime;
+        self.open(|open, issued| depart(lifetime, open, conn, Departure::Detach, issued))
     }
 
     /// An accepted departure: a detach, which a terminating session accepts
@@ -496,7 +512,8 @@ impl Control {
         if let Stage::Terminating(shutdown) = &mut self.stage {
             shutdown.lost(conn);
         }
-        self.open(|open, issued| depart(open, conn, Departure::Lost, issued))
+        let lifetime = self.lifetime;
+        self.open(|open, issued| depart(lifetime, open, conn, Departure::Lost, issued))
     }
 
     pub fn kill(&mut self, conn: ConnectionId) -> Vec<Effect> {
@@ -590,6 +607,10 @@ mod tests {
         TerminalSize { cols, rows }
     }
 
+    fn ordinary(initial: TerminalSize) -> Control {
+        Control::new(initial, Lifetime::Ordinary)
+    }
+
     fn host() -> TerminalSize {
         size(80, 24)
     }
@@ -677,7 +698,10 @@ mod tests {
 
     /// Attaches each connection in turn at 80x24 and lets it confirm readiness.
     fn session(conns: &[ConnectionId]) -> Control {
-        let mut control = Control::new(host());
+        with_attachments(ordinary(host()), conns)
+    }
+
+    fn with_attachments(mut control: Control, conns: &[ConnectionId]) -> Control {
         for conn in conns {
             let authority = granted(control.attach(*conn, host()));
             control.apply_pending();
@@ -688,7 +712,7 @@ mod tests {
 
     #[test]
     fn a_new_session_is_starting_without_attachments() {
-        let control = Control::new(size(100, 30));
+        let control = ordinary(size(100, 30));
         assert_eq!(control.snapshot(), state(Starting, 0, false));
         assert_eq!(control.session_size(), size(100, 30));
         assert_eq!(control.controlling(A), Err(OperationalCode::NotAttached));
@@ -696,19 +720,19 @@ mod tests {
 
     #[test]
     fn a_zero_initial_size_falls_back_to_80x24() {
-        assert_eq!(Control::new(size(0, 30)).session_size(), host());
+        assert_eq!(ordinary(size(0, 30)).session_size(), host());
     }
 
     #[test]
     fn session_geometry_is_clamped_to_the_budget() {
-        assert_eq!(Control::new(size(501, 201)).session_size(), size(500, 200));
-        assert_eq!(Control::new(size(500, 200)).session_size(), size(500, 200));
-        assert_eq!(Control::new(size(1, 1)).session_size(), size(2, 1));
+        assert_eq!(ordinary(size(501, 201)).session_size(), size(500, 200));
+        assert_eq!(ordinary(size(500, 200)).session_size(), size(500, 200));
+        assert_eq!(ordinary(size(1, 1)).session_size(), size(2, 1));
     }
 
     #[test]
     fn the_first_attach_is_admitted_and_granted_at_once() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         assert_eq!(
             control.attach(A, host()),
             [Admit { conn: A }, grant(A, (1, 1), host(), Attach)]
@@ -720,7 +744,7 @@ mod tests {
 
     #[test]
     fn a_grant_applies_the_attaching_host_size_before_its_snapshot() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         assert_eq!(
             control.attach(A, size(100, 30)),
             [Admit { conn: A }, grant(A, (1, 1), size(100, 30), Attach)]
@@ -736,7 +760,7 @@ mod tests {
 
     #[test]
     fn an_attach_without_a_size_uses_80x24() {
-        let mut control = Control::new(size(100, 30));
+        let mut control = ordinary(size(100, 30));
         assert_eq!(
             control.attach(A, size(0, 0)),
             [Admit { conn: A }, grant(A, (1, 1), host(), Attach)]
@@ -746,7 +770,7 @@ mod tests {
 
     #[test]
     fn input_is_admitted_only_after_ready_for_the_complete_current_restoration() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         let authority = granted(control.attach(A, host()));
         assert_eq!(control.ready(A, authority.restoration), NONE);
         control.restored(A, authority);
@@ -766,7 +790,7 @@ mod tests {
 
     #[test]
     fn only_the_current_restoration_of_the_controller_completes() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         let current = granted(control.attach(A, host()));
         control.restored(B, current);
         control.restored(A, authority(1, 2));
@@ -822,7 +846,7 @@ mod tests {
 
     #[test]
     fn revoking_a_controller_that_was_never_ready_closes_no_paste() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         control.attach(A, host());
         control.apply_pending();
         assert_eq!(
@@ -838,7 +862,7 @@ mod tests {
 
     #[test]
     fn attaches_in_one_iteration_are_each_granted_and_the_last_wins() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         assert_eq!(
             control.attach(A, host()),
             [Admit { conn: A }, grant(A, (1, 1), host(), Attach)]
@@ -886,7 +910,7 @@ mod tests {
 
     #[test]
     fn take_control_from_an_unknown_connection_changes_nothing() {
-        assert_eq!(Control::new(host()).take_control(C), NONE);
+        assert_eq!(ordinary(host()).take_control(C), NONE);
         let mut control = session(&[A]);
         assert_eq!(control.take_control(C), NONE);
         assert_eq!(control.apply_pending(), NONE);
@@ -1082,7 +1106,7 @@ mod tests {
 
     #[test]
     fn the_final_explicit_detach_keeps_the_session_detached_at_its_last_size() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         let authority = granted(control.attach(A, size(100, 30)));
         control.apply_pending();
         restore(&mut control, A, authority);
@@ -1169,9 +1193,44 @@ mod tests {
         );
     }
 
+    /// HDL-01 (pure decision; developer decision of 2026-11-08): a headless
+    /// session is `detached` from startup, and its initial deadline ends nothing.
+    #[test]
+    fn a_new_headless_session_is_detached_and_outlives_its_initial_deadline() {
+        let mut control = Control::new(host(), Lifetime::Headless);
+        assert_eq!(control.snapshot(), state(Detached, 0, false));
+        assert_eq!(control.initial_deadline(), NONE);
+        assert_eq!(control.snapshot(), state(Detached, 0, false));
+    }
+
+    /// HDL-01 (pure decision): a headless session stays `detached` after its
+    /// last attachment detaches and after its last attachment is lost; Kill
+    /// still ends it.
+    #[test]
+    fn a_headless_session_survives_the_departure_of_its_last_attachment() {
+        let mut control = with_attachments(Control::new(host(), Lifetime::Headless), &[A]);
+        assert_eq!(
+            control.detach(A),
+            [
+                DiscardPendingInput { conn: A },
+                ClosePaste,
+                Release { conn: A },
+                AcceptDetach { conn: A }
+            ]
+        );
+        assert_eq!(control.snapshot(), state(Detached, 0, false));
+        let mut control = with_attachments(control, &[B]);
+        assert_eq!(
+            control.lost(B),
+            [DiscardPendingInput { conn: B }, ClosePaste]
+        );
+        assert_eq!(control.snapshot(), state(Detached, 0, false));
+        assert_eq!(control.kill(K), [BeginShutdown]);
+    }
+
     #[test]
     fn probes_and_unknown_connections_never_trigger_the_leave_policy() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         assert_eq!(control.lost(C), NONE);
         assert_eq!(control.detach(C), NONE);
         assert_eq!(control.snapshot(), state(Starting, 0, false));
@@ -1299,7 +1358,7 @@ mod tests {
 
     #[test]
     fn a_resize_before_readiness_replaces_the_restoration_within_the_period() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         let first = granted(control.attach(A, host()));
         control.apply_pending();
         control.restored(A, first);
@@ -1329,7 +1388,7 @@ mod tests {
 
     #[test]
     fn a_host_only_resize_before_readiness_replaces_the_restoration() {
-        let mut control = Control::new(size(600, 300));
+        let mut control = ordinary(size(600, 300));
         assert_eq!(
             control.attach(A, size(600, 300)),
             [Admit { conn: A }, grant(A, (1, 1), size(600, 300), Attach)]
@@ -1348,7 +1407,7 @@ mod tests {
 
     #[test]
     fn a_resize_to_the_restored_size_before_readiness_keeps_the_restoration() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         let authority = granted(control.attach(A, host()));
         control.apply_pending();
         control.resize(A, host());
@@ -1368,7 +1427,7 @@ mod tests {
 
     #[test]
     fn resizes_outside_an_attached_session_are_ignored() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         control.resize(A, size(100, 30));
         assert_eq!(control.apply_pending(), NONE);
         let mut control = session(&[A]);
@@ -1420,7 +1479,7 @@ mod tests {
 
     #[test]
     fn a_restoration_deadline_of_the_only_attachment_begins_shutdown() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         let authority = granted(control.attach(A, host()));
         assert_eq!(
             control.restore_deadline(A, authority),
@@ -1431,10 +1490,7 @@ mod tests {
 
     #[test]
     fn a_stale_restoration_deadline_is_ignored() {
-        assert_eq!(
-            Control::new(host()).restore_deadline(A, authority(1, 1)),
-            NONE
-        );
+        assert_eq!(ordinary(host()).restore_deadline(A, authority(1, 1)), NONE);
         let mut control = session(&[A]);
         assert_eq!(control.restore_deadline(A, authority(1, 1)), NONE);
         let current = granted(control.attach(B, host()));
@@ -1457,7 +1513,7 @@ mod tests {
 
     #[test]
     fn a_kill_without_attachments_begins_shutdown() {
-        assert_eq!(Control::new(host()).kill(K), [BeginShutdown]);
+        assert_eq!(ordinary(host()).kill(K), [BeginShutdown]);
         let mut control = session(&[A]);
         control.detach(A);
         assert_eq!(control.kill(K), [BeginShutdown]);
@@ -1569,7 +1625,7 @@ mod tests {
 
     #[test]
     fn a_command_exit_before_any_attach_finishes_after_cleanup() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         assert_eq!(control.cleanup_finished(), NONE);
         assert_eq!(control.command_exited(exit(0)), [Cleanup]);
         assert_eq!(control.initial_deadline(), NONE);
@@ -1725,14 +1781,14 @@ mod tests {
 
     #[test]
     fn an_authoritative_failure_before_any_attach_begins_shutdown() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         assert_eq!(control.authoritative_failure(), [BeginShutdown]);
         assert_eq!(control.snapshot(), state(Terminating, 0, false));
     }
 
     #[test]
     fn the_initial_deadline_terminates_a_session_nobody_attached_to() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         assert_eq!(control.initial_deadline(), [BeginShutdown]);
         assert_eq!(control.snapshot(), state(Terminating, 0, false));
         assert_eq!(control.initial_deadline(), NONE);
@@ -1740,7 +1796,7 @@ mod tests {
 
     #[test]
     fn a_kill_joining_an_initial_deadline_shutdown_is_confirmed() {
-        let mut control = Control::new(host());
+        let mut control = ordinary(host());
         control.initial_deadline();
         assert_eq!(control.kill(K), NONE);
         control.command_exited(signal(1));
