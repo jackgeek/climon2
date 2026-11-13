@@ -105,6 +105,18 @@ pub fn wait_readable(descriptor: i32, deadline: Instant) -> bool {
     false
 }
 
+/// Waits until `condition` holds, bounded; returns whether it held.
+pub fn until(condition: impl Fn() -> bool) -> bool {
+    let deadline = deadline();
+    while !condition() {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::yield_now();
+    }
+    true
+}
+
 /// The descriptor's open-file properties, as the library leaves them.
 pub fn descriptor(descriptor: i32) -> Value {
     // SAFETY (both): fcntl queries take no pointers.
@@ -151,9 +163,9 @@ pub fn open_descriptors() -> Vec<i32> {
         .collect()
 }
 
-/// Lowers the descriptor limit so that no new descriptor can be created, runs
-/// `work`, and restores the limit.
-pub fn without_descriptors<T>(work: impl FnOnce() -> T) -> T {
+/// Lowers the descriptor limit so that exactly `free` new descriptors can be
+/// created, runs `work`, and restores the limit.
+pub fn with_free_descriptors<T>(free: usize, work: impl FnOnce() -> T) -> T {
     let mut limit = MaybeUninit::<libc::rlimit>::zeroed();
     // SAFETY: getrlimit only writes the supplied rlimit.
     assert_eq!(
@@ -162,12 +174,14 @@ pub fn without_descriptors<T>(work: impl FnOnce() -> T) -> T {
     );
     // SAFETY: filled by getrlimit.
     let original = unsafe { limit.assume_init() };
-    let lowest_free = (0..)
+    // Below the first free number past the `free` allowed ones.
+    let excluded = (0..)
         // SAFETY: fcntl queries take no pointers.
-        .find(|descriptor| unsafe { libc::fcntl(*descriptor, libc::F_GETFD) } == -1)
+        .filter(|descriptor| unsafe { libc::fcntl(*descriptor, libc::F_GETFD) } == -1)
+        .nth(free)
         .expect("a free descriptor number");
     let exhausted = libc::rlimit {
-        rlim_cur: lowest_free as libc::rlim_t,
+        rlim_cur: excluded as libc::rlim_t,
         rlim_max: original.rlim_max,
     };
     // SAFETY: setrlimit reads the supplied rlimit.

@@ -5,17 +5,16 @@
 //! is skipped or fabricated.
 
 use super::{
-    failure::{Failed, Fault},
+    failure::{Failed, Fault, Retry, require},
     families,
     link::fatal,
-    records::{Answer, Command, Event, Metadata, Response, Title},
-    request::Open,
+    records::{Answer, Command, Event, Metadata, Outcome, Response, Title},
 };
 use climon2_core::{
     native,
     wire::{
-        self, Available, ControlRecord, Counter, Families, Frame, FrameLimit, KnownResult, Mode,
-        Outcome, Requested, ServerMessage, Success,
+        self, Available, ControlRecord, Counter, Families, Family, Frame, FrameLimit, KnownResult,
+        Mode, Requested, ServerMessage, Success,
     },
 };
 
@@ -40,19 +39,17 @@ const UNFIT: Fault = Fault::library(
     "a request frame exceeds the frame ceilings",
 );
 
-/// The daemon codes that reject an Open for good: support it lacks.
-const PERMANENT: [&str; 2] = ["unsupported_revision", "unsupported_capability"];
-
 /// A request the library sent and the daemon has not answered.
 #[derive(Clone, Debug)]
 enum Sent {
     Open {
         id: u64,
-        required: Vec<&'static str>,
-        requested: Vec<&'static str>,
+        requested: Requested,
     },
     /// Without a public ID, shutdown's own Leave.
-    Leave { id: Option<u64> },
+    Leave {
+        id: Option<u64>,
+    },
 }
 
 /// Leave evidence: whether a departure was required and what proves it.
@@ -62,14 +59,6 @@ pub(super) struct Departure {
     detached: bool,
     fault: Option<Fault>,
 }
-
-/// Each response outcome and the Leave evidence it gives.
-const EVIDENCE: [(u32, u32); 4] = [
-    (native::OK, native::LEAVE_CONFIRMED),
-    (native::REJECTED, native::LEAVE_REJECTED),
-    (native::FAILED, native::LEAVE_FAILED),
-    (native::INDETERMINATE, native::LEAVE_INDETERMINATE),
-];
 
 impl Departure {
     /// No registration remains possible.
@@ -89,15 +78,17 @@ impl Departure {
     }
 
     /// Only a confirmed departure can have detached an attachment.
-    fn answered(outcome: u32, detached: bool, fault: Option<Fault>) -> Self {
-        let leave = EVIDENCE
-            .into_iter()
-            .find(|(answered, _)| *answered == outcome)
-            .map_or(native::LEAVE_INDETERMINATE, |(_, leave)| leave);
+    fn answered(outcome: &Outcome, detached: bool) -> Self {
+        let leave = match outcome {
+            Outcome::Ok => native::LEAVE_CONFIRMED,
+            Outcome::Rejected(_) => native::LEAVE_REJECTED,
+            Outcome::Failed(_) => native::LEAVE_FAILED,
+            Outcome::Indeterminate(_) => native::LEAVE_INDETERMINATE,
+        };
         Self {
             leave,
             detached: detached && leave == native::LEAVE_CONFIRMED,
-            fault,
+            fault: outcome.fault().cloned(),
         }
     }
 
@@ -131,6 +122,17 @@ pub(super) enum Effect {
     Left(Option<Response>, Departure),
     /// The daemon reported a connection-fatal error.
     Fatal(Fault),
+}
+
+impl Effect {
+    /// Whether this record makes the command's final result known.
+    pub(super) fn concludes(&self) -> bool {
+        match self {
+            Self::Record(Event::Metadata(metadata)) => metadata.command.is_some(),
+            Self::Opened(response, _) => matches!(response.answer, Answer::KnownFinal(_)),
+            _ => false,
+        }
+    }
 }
 
 pub(super) struct Stream {
@@ -171,26 +173,15 @@ impl Stream {
         Ok(bytes)
     }
 
-    /// A monitor-mode Open of `open.required` and the `offered` optional
-    /// families, for public request `id`.
+    /// A monitor-mode Open of the `requested` families, for public request
+    /// `id`.
     pub(super) fn open(
         &mut self,
         id: u64,
-        open: &Open,
-        offered: Vec<&'static str>,
+        requested: Requested,
         limit: FrameLimit,
     ) -> Result<Vec<u8>, Fault> {
-        let tokens = |families: &[&str]| {
-            Families::new(families.iter().map(|family| (*family).to_owned()).collect())
-                .expect("submit admitted each family once")
-        };
-        let capabilities = Requested::new(tokens(&open.required), tokens(&offered))
-            .expect("submit kept required and optional apart");
-        let sent = Sent::Open {
-            id,
-            required: open.required.clone(),
-            requested: open.required.iter().chain(&offered).copied().collect(),
-        };
+        let capabilities = requested.clone();
         let record = |request_id| {
             wire::Open {
                 request_id,
@@ -200,7 +191,7 @@ impl Stream {
             }
             .to_frame()
         };
-        self.send(sent, record, limit)
+        self.send(Sent::Open { id, requested }, record, limit)
     }
 
     /// A Leave, for public request `id`, or shutdown's own without one.
@@ -237,15 +228,6 @@ impl Stream {
     /// Whether the Initial metadata arrived.
     pub(super) fn synchronized(&self) -> bool {
         self.synchronized
-    }
-
-    /// Public requests sent and never answered.
-    pub(super) fn unanswered(&self) -> u32 {
-        let public = self.pending.iter().filter(|(_, sent)| match sent {
-            Sent::Open { .. } => true,
-            Sent::Leave { id } => id.is_some(),
-        });
-        public.count() as u32
     }
 
     /// One frame from the daemon.
@@ -285,19 +267,13 @@ impl Stream {
 
     fn resolve(&mut self, sent: Sent, verdict: Verdict) -> Result<Effect, Fault> {
         match sent {
-            Sent::Open {
-                id,
-                required,
-                requested,
-            } => self.opened(id, &required, &requested, verdict),
+            Sent::Open { id, requested } => self.opened(id, &requested, verdict),
             Sent::Leave { id } => left(id, verdict),
         }
     }
 
     fn answered(&mut self, request_id: Counter) -> Result<Sent, Fault> {
-        (!self.awaiting_metadata())
-            .then_some(())
-            .ok_or(UNEXPECTED)?;
+        require(!self.awaiting_metadata(), UNEXPECTED)?;
         let index = self
             .pending
             .iter()
@@ -306,45 +282,35 @@ impl Stream {
         Ok(self.pending.remove(index).1)
     }
 
-    fn opened(
-        &mut self,
-        id: u64,
-        required: &[&'static str],
-        requested: &[&'static str],
-        verdict: Verdict,
-    ) -> Result<Effect, Fault> {
+    fn opened(&mut self, id: u64, sent: &Requested, verdict: Verdict) -> Result<Effect, Fault> {
         let Verdict {
             outcome,
-            fault,
             carried,
+            retry,
         } = verdict;
         let answer = match carried {
             None => Answer::None,
-            Some(carried) => self.result(carried, required, requested)?,
+            Some(carried) => self.result(carried, sent)?,
         };
-        let refused = fault.clone().map(|fault| refusal(fault, &answer));
+        let refused = outcome
+            .fault()
+            .map(|fault| Failed::new(fault.clone(), retry));
         let response = Response {
             id,
             outcome,
             answer,
-            fault,
         };
         Ok(Effect::Opened(response, refused.map_or(Ok(()), Err)))
     }
 
     /// An Open's result: what it opened, or the command result a rejection
     /// knew.
-    fn result(
-        &mut self,
-        carried: Carried,
-        required: &[&'static str],
-        requested: &[&'static str],
-    ) -> Result<Answer, Fault> {
+    fn result(&mut self, carried: Carried, sent: &Requested) -> Result<Answer, Fault> {
         match carried {
             Carried::Success(Success::Opened {
                 connection_id,
                 selected_capabilities,
-            }) => self.selected(&connection_id, &selected_capabilities, required, requested),
+            }) => self.selected(&connection_id, &selected_capabilities, sent),
             Carried::KnownFinal(result) => Ok(Answer::KnownFinal(Command::from(&result))),
             Carried::Success(_) => Err(MISMATCHED),
         }
@@ -354,20 +320,18 @@ impl Stream {
         &mut self,
         connection: &wire::Guid,
         selection: &Families,
-        required: &[&'static str],
-        requested: &[&'static str],
+        sent: &Requested,
     ) -> Result<Answer, Fault> {
-        let selected =
-            families::selected(selection.tokens(), required, requested).ok_or(MISMATCHED)?;
-        self.title = Some(selected.contains(&families::TITLE));
+        let selected = families::selected(selection, sent).ok_or(MISMATCHED)?;
+        self.title = Some(selected.contains(Family::TitleV1));
         Ok(Answer::Opened {
-            connection: super::guid::bytes(connection.as_str()),
+            connection: connection.bytes(),
             selected,
         })
     }
 
     fn initial(&mut self, metadata: &wire::InitialMetadata) -> Result<Event, Fault> {
-        self.awaiting_metadata().then_some(()).ok_or(UNEXPECTED)?;
+        require(self.awaiting_metadata(), UNEXPECTED)?;
         let event = self.metadata(metadata)?;
         self.synchronized = true;
         Ok(event)
@@ -398,9 +362,7 @@ impl Stream {
     }
 
     fn changed(&self, title: Option<&str>) -> Result<Event, Fault> {
-        (self.synchronized && self.title == Some(true))
-            .then_some(())
-            .ok_or(UNEXPECTED)?;
+        require(self.synchronized && self.title == Some(true), UNEXPECTED)?;
         self.value(title).map(Event::Title)
     }
 
@@ -417,9 +379,7 @@ impl Stream {
 /// A Leave's answer: its response when public, and its evidence.
 fn left(id: Option<u64>, verdict: Verdict) -> Result<Effect, Fault> {
     let Verdict {
-        outcome,
-        fault,
-        carried,
+        outcome, carried, ..
     } = verdict;
     let answer = match carried {
         None => Answer::None,
@@ -431,24 +391,13 @@ fn left(id: Option<u64>, verdict: Verdict) -> Result<Effect, Fault> {
         Some(_) => return Err(MISMATCHED),
     };
     let detached = matches!(answer, Answer::Left { detached: true });
-    let departure = Departure::answered(outcome, detached, fault.clone());
+    let departure = Departure::answered(&outcome, detached);
     let response = id.map(|id| Response {
         id,
         outcome,
         answer,
-        fault,
     });
     Ok(Effect::Left(response, departure))
-}
-
-/// An Open the daemon did not open: for good when it lacks support, never
-/// again when it knew the command's final result, otherwise passively.
-fn refusal(fault: Fault, answer: &Answer) -> Failed {
-    match answer {
-        Answer::KnownFinal(_) => Failed::new(fault, native::RETRY_NONE),
-        _ if PERMANENT.contains(&fault.code()) => Failed::permanent(fault),
-        _ => Failed::passive(fault),
-    }
 }
 
 /// What a response may carry: an operation's result, or a rejection's
@@ -459,47 +408,51 @@ enum Carried {
     KnownFinal(wire::CommandResult),
 }
 
-/// A response's native outcome, its error and the result it carries.
+/// A response's outcome, the result it carries and, for a non-success, the
+/// retry its error calls for.
 struct Verdict {
-    outcome: u32,
-    fault: Option<Fault>,
+    outcome: Outcome,
     carried: Option<Carried>,
+    retry: Retry,
 }
 
 impl Verdict {
-    fn from(outcome: Outcome) -> Result<Self, Fault> {
+    fn from(outcome: wire::Outcome) -> Result<Self, Fault> {
         match outcome {
-            Outcome::Ok(success) => Ok(Self::of(native::OK, None, Some(Carried::Success(success)))),
-            Outcome::Rejected(rejection) => Ok(Self::of(
-                native::REJECTED,
-                Some(Fault::daemon(&rejection.error)),
+            wire::Outcome::Ok(success) => Ok(Self {
+                outcome: Outcome::Ok,
+                carried: Some(Carried::Success(success)),
+                retry: Retry::None,
+            }),
+            wire::Outcome::Rejected(rejection) => Ok(Self::of(
+                Outcome::Rejected,
+                &rejection.error,
                 rejection.known_final.map(Carried::KnownFinal),
             )),
-            Outcome::Failed(failure) => Self::failure(native::FAILED, &failure),
-            Outcome::Indeterminate(failure) => Self::failure(native::INDETERMINATE, &failure),
+            wire::Outcome::Failed(failure) => Self::failure(Outcome::Failed, &failure),
+            wire::Outcome::Indeterminate(failure) => {
+                Self::failure(Outcome::Indeterminate, &failure)
+            }
         }
     }
 
-    fn of(outcome: u32, fault: Option<Fault>, carried: Option<Carried>) -> Self {
+    /// A non-success with the daemon's `error`.
+    fn of(outcome: fn(Fault) -> Outcome, error: &wire::Error, carried: Option<Carried>) -> Self {
         Self {
-            outcome,
-            fault,
+            outcome: outcome(Fault::daemon(error)),
             carried,
+            retry: Retry::refused(&error.code),
         }
     }
 
     /// A failed or indeterminate outcome keeps a known result of its own
     /// operation; a Kill's partial termination belongs to no request here.
-    fn failure(outcome: u32, failure: &wire::Failure) -> Result<Self, Fault> {
+    fn failure(outcome: fn(Fault) -> Outcome, failure: &wire::Failure) -> Result<Self, Fault> {
         let carried = match failure.known() {
             None => None,
             Some(KnownResult::Operation(success)) => Some(Carried::Success(success.clone())),
             Some(KnownResult::Termination(_)) => return Err(MISMATCHED),
         };
-        Ok(Self::of(
-            outcome,
-            Some(Fault::daemon(failure.error())),
-            carried,
-        ))
+        Ok(Self::of(outcome, failure.error(), carried))
     }
 }

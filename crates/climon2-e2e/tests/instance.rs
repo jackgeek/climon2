@@ -21,7 +21,7 @@ use std::{
 };
 use support::{
     Package,
-    library::{archive, scenario},
+    library::{CHARGE, INSTANCE_DESCRIPTORS, archive, scenario},
 };
 
 const SUCCESS: u64 = 0;
@@ -49,15 +49,6 @@ const CLEANUP_INCOMPLETE: u64 = 2;
 /// The description's instance allocation and worker requirements.
 const INSTANCE_BYTES: u64 = 1024 * 1024;
 const WORKERS: u64 = 2;
-/// `sizeof(cm1_record)` on every supported target.
-const RECORD: u64 = size_of::<climon2_core::native::Record>() as u64;
-/// The descriptors one instance holds before any connection: its
-/// notification descriptor and its waker, an `eventfd` each on Linux and a
-/// pipe's two ends each on macOS.
-#[cfg(target_os = "linux")]
-const INSTANCE_DESCRIPTORS: u64 = 2;
-#[cfg(target_os = "macos")]
-const INSTANCE_DESCRIPTORS: u64 = 4;
 const PATH_MAX: u64 = nix::libc::PATH_MAX as u64;
 
 /// The documented default `monitor.limits` values the host's startup uses.
@@ -244,22 +235,22 @@ fn drains_to_terminal(drains: &Value) -> (Vec<&Value>, &Value) {
     (deliveries, terminal_of(&last["drained"]))
 }
 
-/// The ledger: every library object was released through its own library's
-/// matching call, and none is outstanding.
-fn assert_all_released(ledger: &Value, deliveries: usize) {
+/// The ledger: `instances` instances, with their handles, and `deliveries`
+/// deliveries were each released through its own library's matching call,
+/// and none is outstanding.
+fn assert_all_released(ledger: &Value, instances: usize, deliveries: usize) {
     assert_eq!(ledger["outstanding"], 0, "{ledger:#}");
     let objects = ledger["objects"].as_array().unwrap();
-    for (kind, by) in [
-        ("instance", "destroy"),
-        ("communication", "release_communication"),
-        ("control", "release_control"),
-        ("delivery", "release_delivery"),
+    for (kind, by, expected) in [
+        ("instance", "destroy", instances),
+        ("communication", "release_communication", instances),
+        ("control", "release_control", instances),
+        ("delivery", "release_delivery", deliveries),
     ] {
         let released: Vec<_> = objects
             .iter()
             .filter(|object| object["kind"] == kind)
             .collect();
-        let expected = if kind == "delivery" { deliveries } else { 1 };
         assert_eq!(released.len(), expected, "{kind}: {ledger:#}");
         assert!(
             released.iter().all(|object| object["released_by"] == by),
@@ -335,7 +326,7 @@ fn installed_library_instance_runs_create_run_shutdown_drain_release_destroy_joi
     assert_eq!(report["descriptor"]["open"], true);
     assert_eq!(report["descriptor_after_destroy"]["open"], false);
     assert_eq!(report["joined"], true);
-    assert_all_released(&report["ledger"], 0);
+    assert_all_released(&report["ledger"], 1, 0);
     let timeline = report["timeline"].as_array().unwrap();
     let calls = |thread: &str| -> Vec<(&str, u64)> {
         timeline
@@ -705,13 +696,27 @@ fn installed_library_create_rejects_invalid_settings_and_diagnostics_without_han
 /// `CM1_UNSUPPORTED_LIMIT`, never silently raised or lowered: every limit
 /// but `max_workers` must be nonzero, `client_bytes` must cover the
 /// described instance allocation and `max_workers` the described workers,
-/// each exactly at its bound. With no descriptor left, create fails with
-/// `CM1_RESOURCE_LIMIT` and no handles.
+/// each exactly at its bound, and `drain_payload_bytes` must hold a whole
+/// record of `metadata_record_bytes`, at that bound too (owner decision 4 on
+/// #93: no delivery ever holds one oversized record). With no descriptor
+/// left for the notification descriptor and the waker, or for the log file
+/// after them, create fails with `CM1_RESOURCE_LIMIT`, no handles and no log
+/// file; one more descriptor is enough.
 #[test]
 fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors() {
     let package = Package::new();
     let root = root(&package);
     let limits = |fields: Value| startup(json!({ "limits": fields }));
+    let unopened = root.join("logs/unopened.log");
+    let opened = root.join("logs/opened.log");
+    let logging = |log: &Path, free: u64| {
+        json!({
+            "free_descriptors": free,
+            "startup": { "diagnostics": { "log_path": {
+                "present": 1, "value": path(json!(log.to_str().unwrap())),
+            } } },
+        })
+    };
     let mut cases = vec![
         (
             "limits reserved",
@@ -744,6 +749,18 @@ fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descri
             "unsupported_limit",
         ),
         (
+            "drain_payload_bytes below metadata_record_bytes",
+            limits(json!({ "metadata_record_bytes": 4096, "drain_payload_bytes": 4095 })),
+            UNSUPPORTED_LIMIT,
+            "unsupported_limit",
+        ),
+        (
+            "drain_payload_bytes at metadata_record_bytes",
+            limits(json!({ "metadata_record_bytes": 4096, "drain_payload_bytes": 4096 })),
+            SUCCESS,
+            "",
+        ),
+        (
             "every limit at one",
             limits(json!({
                 "request_bytes": 1, "event_bytes": 1, "progress_bytes": 1, "drain_payload_bytes": 1,
@@ -758,10 +775,22 @@ fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descri
             "",
         ),
         (
-            "exhausted descriptors",
-            json!({ "exhausted": true }),
+            "no descriptor left",
+            json!({ "free_descriptors": 0, "startup": {} }),
             RESOURCE_LIMIT,
             "resource_limit",
+        ),
+        (
+            "no descriptor left for the log file",
+            logging(&unopened, INSTANCE_DESCRIPTORS),
+            RESOURCE_LIMIT,
+            "resource_limit",
+        ),
+        (
+            "one descriptor left for the log file",
+            logging(&opened, INSTANCE_DESCRIPTORS + 1),
+            SUCCESS,
+            "",
         ),
     ];
     for field in default_limits().as_object().unwrap().keys() {
@@ -776,7 +805,9 @@ fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descri
         }
     }
     let report = creates(&package, &root, &cases);
-    assert_eq!(report["cases"].as_array().unwrap().len(), 7 + 25);
+    assert_eq!(report["cases"].as_array().unwrap().len(), 11 + 25);
+    assert!(!unopened.exists(), "a failed create leaves no log file");
+    assert!(opened.exists());
     package.assert_clean();
 }
 
@@ -868,7 +899,7 @@ fn installed_library_instances_keep_their_own_copies_paths_settings_and_logs() {
         }
     }
     assert_eq!(report["joined"], json!([true, true]));
-    assert_all_released_by_kind(&report["ledger"], 2);
+    assert_all_released(&report["ledger"], 2, 0);
     let a_lines = log_lines(&a_log);
     let b_lines = log_lines(&b_log);
     let home = format!("home=\"{base}/caf\u{e9}/\\xFF\"");
@@ -911,13 +942,6 @@ fn installed_library_instances_keep_their_own_copies_paths_settings_and_logs() {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-/// Like [`assert_all_released`], for `instances` instances without deliveries.
-fn assert_all_released_by_kind(ledger: &Value, instances: usize) {
-    assert_eq!(ledger["outstanding"], 0, "{ledger:#}");
-    let objects = ledger["objects"].as_array().unwrap();
-    assert_eq!(objects.len(), 3 * instances, "{ledger:#}");
 }
 
 /// Every record of an instance log, each a lifecycle fact and never content.
@@ -985,7 +1009,7 @@ fn assert_unaffected(report: &Value) {
     assert_success(&report["owner"]["run"][0]);
     assert_eq!(report["owner"]["run"][1]["terminal"], stopped(5));
     assert_eq!(report["joined"], true);
-    assert_all_released(&report["ledger"], 0);
+    assert_all_released(&report["ledger"], 1, 0);
 }
 
 /// LIB-05 Fault: a panic injected at the bootstrap or at `create` returns an
@@ -1015,105 +1039,158 @@ fn installed_library_contains_a_panic_at_the_bootstrap_or_create() {
     package.assert_clean();
 }
 
+/// How a call's injected panic shows.
+enum Failed {
+    /// The failed attempt's output, cleared; the retry succeeds.
+    Output(Value),
+    /// The failed attempt alone; the retry succeeds.
+    Call,
+    /// `run`, on the owner thread: never retried, and a second run is closed.
+    Run,
+    /// `submit`: the retry, of a zeroed request, is rejected as malformed.
+    Rejected,
+}
+
+/// One call's expectations when a panic is injected at it.
+struct Panicked {
+    call: &'static str,
+    failed: Failed,
+    /// Whether the diagnostic raised the descriptor before the first drain.
+    readable_before_drain: bool,
+    /// Whether the first drain, before `run`, delivers the diagnostic (else
+    /// the drains to terminal evidence do).
+    delivered_before_run: bool,
+    retry: u64,
+}
+
 /// LIB-05 Fault and LIB-04 Fault: a panic injected while an instance is in
 /// use (at `submit`, `notification`, `snapshot`, `drain`, `shutdown` or
 /// `run`) returns an explicit `CM1_INTERNAL_ERROR` with cleared output (run
 /// still reports its cleanup and terminal evidence) and stops the instance
 /// (the scenario's retried `submit`, of a zeroed and so malformed request,
-/// is then rejected as malformed): a
-/// library diagnostic is queued and raises the descriptor until drained, and
-/// its delivery stays unchanged until released;
-/// destroy and handle release stay busy while that delivery is outstanding;
-/// terminal evidence follows it, failed with `internal_error`, retried
-/// passively unless shutdown had been requested first (the fault at `run`
-/// follows `shutdown`); the instance is still cleaned up and joined.
+/// is then rejected as malformed): a library diagnostic is queued and
+/// raises the descriptor until drained.
+/// Terminal evidence follows it, failed with `internal_error`, retried
+/// passively, or not at all when the panic is in `shutdown` or follows it
+/// (the fault at `run` follows `shutdown`). A delivery held past terminal
+/// evidence stays unchanged until released, and alone keeps the
+/// communication handle, and so destroy, busy. The instance is still
+/// cleaned up and joined.
 #[test]
 fn installed_library_contains_a_panic_in_a_running_instance_and_stops_it() {
     let package = Package::new();
-    for call in [
-        "submit",
-        "notification",
-        "snapshot",
-        "drain",
-        "shutdown",
-        "run",
-    ] {
+    let zeroed = || Failed::Output(json!({ "output": "zeroed" }));
+    let cases = [
+        Panicked {
+            call: "submit",
+            failed: Failed::Rejected,
+            readable_before_drain: true,
+            delivered_before_run: true,
+            retry: RETRY_PASSIVE,
+        },
+        Panicked {
+            call: "notification",
+            failed: Failed::Output(json!(-1)),
+            readable_before_drain: true,
+            delivered_before_run: true,
+            retry: RETRY_PASSIVE,
+        },
+        Panicked {
+            call: "snapshot",
+            failed: zeroed(),
+            readable_before_drain: true,
+            delivered_before_run: true,
+            retry: RETRY_PASSIVE,
+        },
+        Panicked {
+            call: "drain",
+            failed: zeroed(),
+            readable_before_drain: false,
+            delivered_before_run: true,
+            retry: RETRY_PASSIVE,
+        },
+        Panicked {
+            call: "shutdown",
+            failed: Failed::Call,
+            readable_before_drain: false,
+            delivered_before_run: false,
+            retry: RETRY_NONE,
+        },
+        Panicked {
+            call: "run",
+            failed: Failed::Run,
+            readable_before_drain: false,
+            delivered_before_run: false,
+            retry: RETRY_NONE,
+        },
+    ];
+    for case in cases {
+        let call = case.call;
         let Some(report) = fault(&package, call, json!({})) else {
             return;
         };
-        let early = ["submit", "notification", "snapshot", "drain"].contains(&call);
-        if call == "submit" {
-            let (failed, retried) = twice(&report["submit"]);
-            assert_failure(failed, INTERNAL_ERROR, "internal_error");
-            assert_failure(retried, INVALID_ARGUMENT, "invalid_argument");
+        let run = &report["owner"]["run"];
+        match &case.failed {
+            Failed::Output(cleared) => {
+                let (failed, retried) = twice(&report[call]);
+                assert_failure(&failed[0], INTERNAL_ERROR, "internal_error");
+                assert_eq!(&failed[1], cleared, "{call}");
+                assert_success(&retried[0]);
+                assert_success(&run[0]);
+            }
+            Failed::Call => {
+                let (failed, retried) = twice(&report[call]);
+                assert_failure(failed, INTERNAL_ERROR, "internal_error");
+                assert_success(retried);
+                assert_success(&run[0]);
+            }
+            Failed::Rejected => {
+                let (failed, retried) = twice(&report[call]);
+                assert_failure(failed, INTERNAL_ERROR, "internal_error");
+                assert_failure(retried, INVALID_ARGUMENT, "invalid_argument");
+                assert_success(&run[0]);
+            }
+            Failed::Run => assert_failure(&run[0], INTERNAL_ERROR, "internal_error"),
         }
-        if call == "notification" {
-            let (failed, retried) = twice(&report["notification"]);
-            assert_failure(&failed[0], INTERNAL_ERROR, "internal_error");
-            assert_eq!(failed[1], -1, "a failed lookup writes -1");
-            assert_success(&retried[0]);
-        }
-        if call == "snapshot" {
-            let (failed, retried) = twice(&report["snapshot"]);
-            assert_failure(&failed[0], INTERNAL_ERROR, "internal_error");
-            assert_eq!(failed[1], json!({ "output": "zeroed" }));
-            assert_success(&retried[0]);
-            assert_eq!(retried[1]["event_records"], 1, "the diagnostic is queued");
-        }
-        if call == "drain" {
-            let (failed, _) = twice(&report["drain"]);
-            assert_failure(&failed[0], INTERNAL_ERROR, "internal_error");
-            assert_eq!(failed[1], json!({ "output": "zeroed" }));
-        }
-        let failed_before_drain = ["submit", "notification", "snapshot"].contains(&call);
         assert_eq!(
-            report["readable_before_drain"], failed_before_drain,
+            report["readable_before_drain"], case.readable_before_drain,
             "{call}"
         );
         let drained_early = report["drain"].as_array().unwrap().last().unwrap();
-        if early {
+        if case.delivered_before_run {
             assert_diagnostic(drained(drained_early), 5);
-            // The delivery's records live, unchanged, until its release.
-            assert_eq!(&report["delivery_before_release"], &drained_early[1]);
-            assert_failure(&report["destroy_with_delivery"], BUSY, "busy");
-            assert_failure(&report["release_communication_with_delivery"], BUSY, "busy");
-            assert_success(once(&report["release_delivery"]));
             assert_eq!(
                 report["readable_before_run"], false,
                 "{call}: cleared once drained"
             );
+            assert_failure(&report["release_communication_with_delivery"], BUSY, "busy");
+            assert_failure(&report["destroy_with_delivery"], BUSY, "busy");
+            // The delivery's records live, unchanged, until its release.
+            assert_eq!(&report["delivery_before_release"], &drained_early[1]);
+            assert_success(once(&report["release_delivery"]));
         } else {
             assert_empty(drained(drained_early));
         }
         let (deliveries, terminal) = drains_to_terminal(&report["drains"]);
-        assert_eq!(deliveries.len(), usize::from(!early), "{call}: {report:#}");
+        assert_eq!(
+            deliveries.len(),
+            usize::from(!case.delivered_before_run),
+            "{call}: {report:#}"
+        );
         for delivery in deliveries {
             assert_diagnostic(delivery, 5);
         }
-        let retry = if call == "run" {
-            RETRY_NONE
-        } else {
-            RETRY_PASSIVE
-        };
-        assert_failed(terminal, 5, retry);
-        let owner = &report["owner"];
-        if call == "run" {
-            assert_failure(&owner["run"][0], INTERNAL_ERROR, "internal_error");
-        } else {
-            assert_success(&owner["run"][0]);
-        }
-        assert_eq!(owner["run"][1]["workers_cleanup"], CLEANUP_COMPLETE);
-        assert_eq!(&owner["run"][1]["terminal"], terminal);
-        assert_failure(&owner["run_again"][0], CLOSED, "closed");
-        if call == "shutdown" {
-            let (failed, retried) = twice(&report["shutdown"]);
-            assert_failure(failed, INTERNAL_ERROR, "internal_error");
-            assert_success(retried);
-        }
-        let destroy = once(&report["destroy"]);
-        assert_success(destroy);
+        assert_failed(terminal, 5, case.retry);
+        assert_eq!(run[1]["workers_cleanup"], CLEANUP_COMPLETE);
+        assert_eq!(&run[1]["terminal"], terminal);
+        assert_failure(&report["owner"]["run_again"][0], CLOSED, "closed");
+        assert_success(once(&report["release_control"]));
+        let again = drained(&report["drain_after_release_control"]);
+        assert_eq!(terminal_of(again), terminal, "{call}");
+        assert_success(once(&report["release_communication"]));
+        assert_success(once(&report["destroy"]));
         assert_eq!(report["joined"], true);
-        assert_all_released(&report["ledger"], 1);
+        assert_all_released(&report["ledger"], 1, 1);
     }
     package.assert_clean();
 }
@@ -1132,7 +1209,7 @@ fn installed_library_contains_a_panic_in_a_release_and_keeps_the_object() {
     let (failed, retried) = twice(&report["release_delivery"]);
     assert_failure(failed, INTERNAL_ERROR, "internal_error");
     assert_success(retried);
-    assert_all_released(&report["ledger"], 1);
+    assert_all_released(&report["ledger"], 1, 1);
     for call in ["release_communication", "release_control", "destroy"] {
         let report = fault(&package, call, json!({})).unwrap();
         let (failed, retried) = twice(&report[call]);
@@ -1146,13 +1223,14 @@ fn installed_library_contains_a_panic_in_a_release_and_keeps_the_object() {
 }
 
 /// LIB-04 Fault: a failure diagnostic is best effort. It is queued only when
-/// one record fits the instance's `event_bytes` (exactly at the limit), and
+/// one record's charge (its `cm1_record` and the library's own copy) fits
+/// the instance's `event_bytes` (exactly at the limit), and
 /// otherwise dropped while terminal evidence keeps the error (one byte
 /// under).
 #[test]
 fn installed_library_queues_the_failure_diagnostic_only_within_event_bytes() {
     let package = Package::new();
-    for (event_bytes, queued) in [(RECORD, true), (RECORD - 1, false)] {
+    for (event_bytes, queued) in [(CHARGE, true), (CHARGE - 1, false)] {
         let limits = json!({ "event_bytes": event_bytes, "progress_bytes": 1 });
         let Some(report) = fault(&package, "snapshot", limits) else {
             return;
@@ -1182,11 +1260,15 @@ fn installed_library_charges_a_delivery_until_it_is_released() {
     };
     let before = &once(&report["snapshot"])[1];
     let during = &report["snapshot_with_delivery"][1];
-    let after = &report["snapshot_after_run"][1];
+    assert_eq!(
+        report["snapshot_after_run"][1]["deliveries"], 1,
+        "still charged after terminal evidence"
+    );
+    let after = &report["snapshot_after_release"][1];
     assert_eq!(before["event_records"], 0);
     assert_eq!(before["deliveries"], 0);
     assert_eq!(during["event_records"], 1, "{during}");
-    assert_eq!(during["event_bytes"], RECORD, "{during}");
+    assert_eq!(during["event_bytes"], CHARGE, "{during}");
     assert_eq!(during["deliveries"], 1, "{during}");
     assert_eq!(during["records_drained"], 1, "{during}");
     assert_eq!(during["deliveries_released"], 0, "{during}");
@@ -1196,7 +1278,7 @@ fn installed_library_charges_a_delivery_until_it_is_released() {
     assert_eq!(after["peak_allocation_bytes"], during["allocation_bytes"]);
     for (current, peak, value) in [
         ("event_records", "peak_event_records", 1),
-        ("event_bytes", "peak_event_bytes", RECORD),
+        ("event_bytes", "peak_event_bytes", CHARGE),
         ("deliveries", "peak_deliveries", 1),
     ] {
         assert_eq!(after[current], 0, "{current}: {after}");
@@ -1237,7 +1319,7 @@ fn workers(package: &Package, fault: &str, cleanup_ms: u64) -> Option<Value> {
     Some(scenario(package, "workers", &input, Some(fault)))
 }
 
-/// LIB-05 Library and Fault: a running worker is counted; terminal evidence
+/// LIB-05 Fault (the `worker` hook): a running worker is counted; terminal evidence
 /// does not claim it finished; `run` reports its completion separately, as
 /// complete; destroy waits for the handles and succeeds; the owner thread is
 /// joined.
@@ -1264,11 +1346,13 @@ fn installed_library_reports_worker_completion_apart_from_terminal_evidence() {
     assert_success(&report["destroy"]);
     assert_eq!(report["instance_destroyed"], true);
     assert_eq!(report["joined"], true);
-    assert_all_released(&report["ledger"], 0);
+    assert_all_released(&report["ledger"], 1, 0);
     package.assert_clean();
 }
 
-/// LIB-06 Library: a worker whose cleanup stalls is reported as incomplete,
+/// LIB-06 Fault (the `stall-cleanup` hook; LIB-06 Library needs a real
+/// worker, which Open, #93, brings): a worker whose cleanup stalls is
+/// reported as incomplete,
 /// never complete: `run` returns `CM1_TIMEOUT` once `cleanup_ms` passes,
 /// with the stalled worker still counted, while terminal evidence was
 /// published regardless. Handles can be released, but the instance can never
@@ -1344,8 +1428,10 @@ fn installed_library_leaves_environment_cwd_signals_and_streams_unchanged() {
 /// destroy closes it), close-on-exec, counted once in the instance's
 /// descriptors (on Linux one nonblocking `eventfd`), not readable until
 /// terminal evidence, and readable from then on until the library clears it.
-/// A thread polling it sees the stream end while another uses the
-/// communication handle throughout; every call succeeds.
+/// The host schedules the race: a thread polling it and another using the
+/// communication handle have both made progress on the live stream before
+/// shutdown, polling sees the stream end, and the handle is used again after
+/// that; every call succeeds and returns the same descriptor.
 #[test]
 fn installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end() {
     let package = Package::new();
@@ -1377,11 +1463,23 @@ fn installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing
     assert_eq!(snapshot["peak_descriptors"], INSTANCE_DESCRIPTORS);
     assert_eq!(report["readable_after_create"], false);
     assert_success(&report["shutdown"]);
+    assert_eq!(
+        report["scheduled"],
+        json!({ "live": true, "ended": true }),
+        "the racer and the poller overlapped the end: {report:#}"
+    );
     assert_eq!(report["poller_saw_end"], true);
     let racer = &report["racer"];
-    assert_eq!(racer["failures"], 0, "{racer}");
-    assert!(racer["calls"].as_u64().unwrap() > 0, "{racer}");
-    assert_eq!(racer["descriptors"].as_array().unwrap().len(), 1, "{racer}");
+    let number = &report["descriptor_number"];
+    for phase in ["running", "ending", "ended"] {
+        assert_eq!(racer[phase]["failures"], 0, "{phase}: {racer}");
+    }
+    // The ending phase may hold no round, so only the others must have one.
+    for phase in ["running", "ended"] {
+        assert_eq!(racer[phase]["descriptors"], json!([number]), "{racer}");
+    }
+    let ending = racer["ending"]["descriptors"].as_array().unwrap();
+    assert!(ending.iter().all(|used| used == number), "{racer}");
     assert_eq!(report["readable_twice"], json!([true, true]));
     let (_, terminal) = drains_to_terminal(&report["drains"]);
     assert_eq!(terminal, &stopped(1));
@@ -1393,6 +1491,6 @@ fn installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing
     assert_success(&report["destroy"]);
     assert_eq!(report["descriptor_after_destroy"]["open"], false);
     assert_eq!(report["joined"], true);
-    assert_all_released(&report["ledger"], 0);
+    assert_all_released(&report["ledger"], 1, 0);
     package.assert_clean();
 }

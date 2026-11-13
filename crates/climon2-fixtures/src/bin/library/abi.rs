@@ -501,58 +501,48 @@ impl Api {
         )
     }
 
-    pub fn release_delivery(&self, delivery: Ptr<Delivery>) -> Value {
-        let address = delivery.0 as usize;
-        assert!(
-            self.ledger.owned("delivery", address),
-            "host bug: not owned"
-        );
-        // SAFETY: an owned, unreleased delivery.
-        let result = unsafe { entry!(self, release_delivery)(delivery.0) };
+    /// Releases one owned `kind` object through `release` (the call `by`),
+    /// which the ledger then records as released.
+    fn release<T>(
+        &self,
+        kind: &str,
+        by: &'static str,
+        object: *mut T,
+        release: unsafe extern "C" fn(*mut T) -> Call,
+    ) -> Value {
+        let address = object as usize;
+        assert!(self.ledger.owned(kind, address), "host bug: not owned");
+        // SAFETY: an owned, unreleased object of this library.
+        let result = unsafe { release(object) };
         if result.code == native::SUCCESS {
-            self.ledger.release("delivery", address, "release_delivery");
+            self.ledger.release(kind, address, by);
         }
-        self.finish("release_delivery", result)
+        self.finish(by, result)
+    }
+
+    pub fn release_delivery(&self, delivery: Ptr<Delivery>) -> Value {
+        let release = entry!(self, release_delivery);
+        self.release("delivery", "release_delivery", delivery.0, release)
     }
 
     pub fn release_communication(&self, handles: Handles) -> Value {
-        let address = handles.communication.0 as usize;
-        assert!(
-            self.ledger.owned("communication", address),
-            "host bug: not owned"
-        );
-        // SAFETY: an owned, unreleased handle.
-        let result = unsafe { entry!(self, release_communication)(handles.communication.0) };
-        if result.code == native::SUCCESS {
-            self.ledger
-                .release("communication", address, "release_communication");
-        }
-        self.finish("release_communication", result)
+        let release = entry!(self, release_communication);
+        self.release(
+            "communication",
+            "release_communication",
+            handles.communication.0,
+            release,
+        )
     }
 
     pub fn release_control(&self, handles: Handles) -> Value {
-        let address = handles.control.0 as usize;
-        assert!(self.ledger.owned("control", address), "host bug: not owned");
-        // SAFETY: an owned, unreleased handle.
-        let result = unsafe { entry!(self, release_control)(handles.control.0) };
-        if result.code == native::SUCCESS {
-            self.ledger.release("control", address, "release_control");
-        }
-        self.finish("release_control", result)
+        let release = entry!(self, release_control);
+        self.release("control", "release_control", handles.control.0, release)
     }
 
     pub fn destroy(&self, handles: Handles) -> Value {
-        let address = handles.instance.0 as usize;
-        assert!(
-            self.ledger.owned("instance", address),
-            "host bug: not owned"
-        );
-        // SAFETY: an owned, undestroyed instance.
-        let result = unsafe { entry!(self, destroy)(handles.instance.0) };
-        if result.code == native::SUCCESS {
-            self.ledger.release("instance", address, "destroy");
-        }
-        self.finish("destroy", result)
+        let release = entry!(self, destroy);
+        self.release("instance", "destroy", handles.instance.0, release)
     }
 
     pub fn notification(&self, handles: Handles) -> (Value, i32) {

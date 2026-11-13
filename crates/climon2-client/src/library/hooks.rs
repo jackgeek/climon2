@@ -3,7 +3,8 @@
 //!
 //! - `panic:<call>[,<call>...]` panics once in the process at the boundary of
 //!   each named exported call, the first time it is made (`bootstrap` is
-//!   `climon2_client_get_interface`);
+//!   `climon2_client_get_interface`), or at `receive`, as a running
+//!   connection handles a frame from its daemon;
 //! - `worker` makes `run` start one worker that ends with its stream;
 //! - `stall-cleanup` makes `run` start one worker whose cleanup never ends.
 

@@ -7,9 +7,9 @@
 //! connection.
 
 use super::{
-    failure::{Failed, Fault},
+    failure::{CANCELLED, Failed, Fault, require},
     handshake::{self, Expected, Peer},
-    instance::{Next, Shared},
+    instance::{Descriptor, Next, Shared, Taken},
     link::{self, Link, TIMEOUT},
     records::{Event, Response},
     request::{Open, Operation, Submitted},
@@ -32,25 +32,31 @@ const OVERSIZED: Fault = Fault::library(
 );
 
 /// Runs the connection until its stream ends, and returns the Leave
-/// evidence and the public requests left unanswered.
-pub(super) fn run(shared: &Shared) -> (Departure, u32) {
-    let mut session = Session::new(shared);
-    while !session.ended {
-        session.turn();
+/// evidence. Whatever ends it, the requests it took and the socket it held
+/// are no longer counted once it returns or unwinds.
+pub(super) fn run(shared: &Shared) -> Departure {
+    let mut driver = Driver::new(shared);
+    while !driver.ended {
+        driver.turn();
     }
-    session.close()
+    driver.departure
 }
 
-/// The open role's socket and its frame ceilings.
-struct Connection {
+/// The open role's socket, counted while it lives, and its frame ceilings.
+struct Connection<'a> {
     link: Link,
     peer: Peer,
+    _counted: Descriptor<'a>,
 }
 
-struct Session<'a> {
+/// The instance's connection as its owner thread drives it: the protocol
+/// state, the open role, deadlines and what waits for room.
+struct Driver<'a> {
     shared: &'a Shared,
+    /// The requests taken from the queue and not answered yet.
+    taken: Taken<'a>,
     stream: Stream,
-    connection: Option<Connection>,
+    connection: Option<Connection<'a>>,
     /// The Open's start deadline, until its Initial metadata arrives.
     start: Option<Instant>,
     /// The deadline of an unanswered Leave.
@@ -63,10 +69,11 @@ struct Session<'a> {
     ended: bool,
 }
 
-impl<'a> Session<'a> {
+impl<'a> Driver<'a> {
     fn new(shared: &'a Shared) -> Self {
         Self {
             shared,
+            taken: Taken::new(shared),
             stream: Stream::new(shared.limits().title_bytes),
             connection: None,
             start: None,
@@ -79,7 +86,7 @@ impl<'a> Session<'a> {
     }
 
     fn turn(&mut self) {
-        match self.shared.next(self.shutdown, self.leave_ready()) {
+        match self.taken.next(self.shutdown, self.leave_ready()) {
             Next::Stop => self.ended = true,
             Next::Shutdown => self.shut_down(),
             Next::Request(request) => self.execute(request),
@@ -90,13 +97,6 @@ impl<'a> Session<'a> {
     /// A Leave executes unless the Open is still under way.
     fn leave_ready(&self) -> bool {
         self.connection.is_none() || self.stream.synchronized()
-    }
-
-    fn close(self) -> (Departure, u32) {
-        if self.connection.is_some() {
-            self.shared.disconnected();
-        }
-        (self.departure, self.stream.unanswered())
     }
 
     /// Ends the stream with a failure.
@@ -134,8 +134,8 @@ impl<'a> Session<'a> {
         }
     }
 
-    fn reject(&self, id: u64, fault: Fault) {
-        self.shared.answer(Response::rejected(id, fault));
+    fn reject(&mut self, id: u64, fault: Fault) {
+        self.taken.answer(Response::rejected(id, fault));
     }
 
     fn leave(&mut self, id: u64, generation: u64) {
@@ -152,7 +152,10 @@ impl<'a> Session<'a> {
         }
     }
 
+    /// Sends a Leave, the caller's or shutdown's: nothing calls for a retry
+    /// after it, whatever its fate.
     fn send_leave(&mut self, id: Option<u64>) {
+        self.shared.conclude(true);
         let leave_ms = Duration::from_millis(self.shared.limits().leave_ms.into());
         self.leave = Some(Instant::now() + leave_ms);
         let sent = self.connection.as_mut().map(|connection| {
@@ -170,6 +173,7 @@ impl<'a> Session<'a> {
         self.start = Some(started + start_ms);
         let deadline = (started + HELLO_TIMEOUT).min(started + start_ms);
         match self.handshake(open, deadline) {
+            Ok(_) if self.shared.shutting_down() => self.reject(id, CANCELLED),
             Ok((link, peer)) => self.request(id, open, link, peer),
             Err(failed) => self.refuse(id, failed),
         }
@@ -198,12 +202,15 @@ impl<'a> Session<'a> {
     }
 
     fn request(&mut self, id: u64, open: &Open, mut link: Link, peer: Peer) {
-        let offered = super::families::offered(&peer.advertisement, &open.optional);
-        match self.stream.open(id, open, offered, peer.send) {
+        let offered = super::families::offered(&peer.advertisement, &open.requested);
+        match self.stream.open(id, offered, peer.send) {
             Ok(frame) => {
                 link.send(&frame);
-                self.connection = Some(Connection { link, peer });
-                self.shared.connected();
+                self.connection = Some(Connection {
+                    link,
+                    peer,
+                    _counted: self.shared.connected(),
+                });
             }
             Err(fault) => self.refuse(id, Failed::permanent(fault)),
         }
@@ -273,8 +280,12 @@ impl<'a> Session<'a> {
     }
 
     fn handle(&mut self, frame: &Frame) {
+        super::hook("receive");
         match self.decode(frame) {
-            Ok(effect) => self.apply(effect),
+            Ok(effect) => {
+                self.shared.conclude(effect.concludes());
+                self.apply(effect);
+            }
             Err(fault) => self.broken(fault),
         }
     }
@@ -283,9 +294,8 @@ impl<'a> Session<'a> {
     /// is truncated into a healthy one.
     fn decode(&mut self, frame: &Frame) -> Result<Effect, Fault> {
         let length = frame.body().len() as u64 + 1;
-        (length <= self.shared.limits().metadata_record_bytes.into())
-            .then_some(())
-            .ok_or(OVERSIZED)?;
+        let limit = self.shared.limits().metadata_record_bytes.into();
+        require(length <= limit, OVERSIZED)?;
         self.stream.receive(frame)
     }
 
@@ -304,7 +314,7 @@ impl<'a> Session<'a> {
     }
 
     fn opened(&mut self, response: Response, opened: Result<(), Failed>) {
-        self.shared.answer(response);
+        self.taken.answer(response);
         if let Err(failed) = opened {
             self.end(failed);
         }
@@ -314,7 +324,7 @@ impl<'a> Session<'a> {
     /// unless shutdown awaits it; any other answer ends the stream.
     fn left(&mut self, response: Option<Response>, departure: Departure) {
         if let Some(response) = response {
-            self.shared.answer(response);
+            self.taken.answer(response);
         }
         self.leave = None;
         if !departure.kept() || self.shutdown {
@@ -336,7 +346,7 @@ impl<'a> Session<'a> {
     /// it was sent. The connection then fails.
     fn timed_out(&mut self) {
         if let Some(id) = self.stream.expire() {
-            self.shared.answer(Response::uncertain(id, TIMEOUT));
+            self.taken.answer(Response::uncertain(id, TIMEOUT));
         }
         self.broken(TIMEOUT);
     }

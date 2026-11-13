@@ -3,25 +3,25 @@
 
 use super::{
     RELEASE, REQUIREMENTS,
-    failure::{Failure, INVALID_ARGUMENT, RELEASE_MISMATCH, UNSUPPORTED_LIMIT},
-    guid,
+    failure::{Failure, INVALID_ARGUMENT, RELEASE_MISMATCH, UNSUPPORTED_LIMIT, require},
 };
 use climon2_core::{
-    diagnostics::{CappedWriter, subscriber},
+    SessionId,
+    diagnostics::Filter,
     keys::{ClientSettings, ControlKey},
     native::{self, Bytes},
 };
-use std::{ffi::OsString, io, os::unix::ffi::OsStringExt, path::PathBuf, slice};
+use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf, slice};
 
-/// The validated startup. Only the diagnostics filter is borrowed, and only
-/// for the `create` call that parses it.
-pub(super) struct Startup<'a> {
-    /// The session's GUID in its canonical text, as metadata and hello name it.
-    pub(super) session: String,
+/// The validated startup, parsed and copied: nothing here borrows a caller
+/// buffer.
+pub(super) struct Startup {
+    /// The session metadata and hello must name this session.
+    pub(super) session: SessionId,
     pub(super) generation: u64,
     pub(super) paths: Paths,
     pub(super) settings: ClientSettings,
-    pub(super) diagnostics: Diagnostics<'a>,
+    pub(super) diagnostics: Diagnostics,
     pub(super) limits: native::Limits,
 }
 
@@ -32,25 +32,26 @@ pub(super) struct Paths {
     pub(super) runtime: PathBuf,
 }
 
-pub(super) struct Diagnostics<'a> {
+pub(super) struct Diagnostics {
     pub(super) log: Option<PathBuf>,
-    pub(super) filter: &'a str,
+    /// Parsed even when nothing is logged: the `CLIMON2_LOG` grammar.
+    pub(super) filter: Filter,
 }
 
-impl Startup<'_> {
-    /// Validates every input before anything is created.
+impl Startup {
+    /// Validates and copies every input before anything is created.
     ///
     /// # Safety
     ///
-    /// Every nonnull buffer in `startup` covers its length (the caller's
-    /// contract), and stays readable for the returned value's use.
+    /// Every nonnull buffer in `startup` covers its length for this call (the
+    /// caller's contract).
     pub(super) unsafe fn parse(startup: &native::Startup) -> Result<Self, Failure> {
         // SAFETY (all calls): guaranteed by the caller.
         let limits = unsafe { supported(startup) }?;
         let (generation, paths, settings) = unsafe { identity(startup) }?;
         let diagnostics = unsafe { diagnostics(startup.diagnostics) }?;
         Ok(Self {
-            session: guid::text(startup.session_id.bytes),
+            session: SessionId::from_bytes(startup.session_id.bytes),
             generation,
             paths,
             settings,
@@ -107,10 +108,13 @@ unsafe fn text<'a>(bytes: Bytes, message: &'static str) -> Result<&'a str, Failu
 unsafe fn release(expected: Bytes) -> Result<(), Failure> {
     // SAFETY: guaranteed by the caller.
     let expected = unsafe { text(expected, "expected_release must be nonempty UTF-8") }?;
-    (expected == RELEASE).then_some(()).ok_or(Failure::new(
-        RELEASE_MISMATCH,
-        "expected_release is not this library's release",
-    ))
+    require(
+        expected == RELEASE,
+        Failure::new(
+            RELEASE_MISMATCH,
+            "expected_release is not this library's release",
+        ),
+    )
 }
 
 /// What this release supports: its own release, and limits it can honour.
@@ -131,12 +135,13 @@ unsafe fn supported(startup: &native::Startup) -> Result<native::Limits, Failure
 ///
 /// As for [`buffer`].
 unsafe fn identity(startup: &native::Startup) -> Result<(u64, Paths, ClientSettings), Failure> {
-    let generation = (startup.generation != 0)
-        .then_some(startup.generation)
-        .ok_or(invalid("generation must be nonzero"))?;
+    require(
+        startup.generation != 0,
+        invalid("generation must be nonzero"),
+    )?;
     // SAFETY: guaranteed by the caller.
     let paths = unsafe { Paths::parse(startup) }?;
-    Ok((generation, paths, settings(startup.settings)?))
+    Ok((startup.generation, paths, settings(startup.settings)?))
 }
 
 impl Paths {
@@ -179,13 +184,12 @@ fn absolute(bytes: &[u8]) -> bool {
 /// # Safety
 ///
 /// As for [`buffer`].
-unsafe fn diagnostics<'a>(diagnostics: native::Diagnostics) -> Result<Diagnostics<'a>, Failure> {
+unsafe fn diagnostics(diagnostics: native::Diagnostics) -> Result<Diagnostics, Failure> {
     // SAFETY (both calls): guaranteed by the caller.
     let log = unsafe { optional_path(diagnostics.log_path) }?;
     let filter = unsafe { text(diagnostics.filter, "filter must be nonempty UTF-8") }?;
-    // The filter is valid even when nothing is logged: the CLIMON2_LOG grammar.
-    subscriber(CappedWriter::new(io::sink()), Some(filter))
-        .map_err(|_| invalid("filter is not a valid CLIMON2_LOG filter"))?;
+    let filter =
+        Filter::parse(filter).map_err(|_| invalid("filter is not a valid CLIMON2_LOG filter"))?;
     Ok(Diagnostics { log, filter })
 }
 
@@ -206,7 +210,7 @@ fn settings(settings: native::Settings) -> Result<ClientSettings, Failure> {
     let escape = key(settings.escape_enabled, settings.escape_byte).ok_or(invalid)?;
     let take_control = key(settings.take_control_enabled, settings.take_control_byte);
     let take_control = take_control.ok_or(invalid)?;
-    (settings.reserved == 0).then_some(()).ok_or(invalid)?;
+    require(settings.reserved == 0, invalid)?;
     ClientSettings::new(escape, take_control).map_err(|_| invalid)
 }
 
@@ -221,18 +225,24 @@ fn key(enabled: u8, byte: u8) -> Option<Option<ControlKey>> {
 }
 
 fn limits(limits: native::Limits) -> Result<native::Limits, Failure> {
-    (limits.reserved == 0)
-        .then_some(())
-        .ok_or(invalid("limits.reserved must be zero"))?;
-    honoured(&limits).then_some(limits).ok_or(Failure::new(
-        UNSUPPORTED_LIMIT,
-        "limits must be effective values this release supports",
-    ))
+    require(
+        limits.reserved == 0,
+        invalid("limits.reserved must be zero"),
+    )?;
+    require(
+        honoured(&limits),
+        Failure::new(
+            UNSUPPORTED_LIMIT,
+            "limits must be effective values this release supports",
+        ),
+    )?;
+    Ok(limits)
 }
 
 /// Every limit is an effective value, never zero-as-default (only
 /// `max_workers` may be zero), and leaves room for this release's own
-/// requirements: its instance allocation and its workers.
+/// requirements: its instance allocation and its workers. A delivery holds
+/// a whole record of `metadata_record_bytes`, so none is ever oversized.
 fn honoured(limits: &native::Limits) -> bool {
     let values = [
         limits.client_bytes,
@@ -262,6 +272,7 @@ fn honoured(limits: &native::Limits) -> bool {
         limits.start_ms.into(),
     ];
     !values.contains(&0)
+        && limits.drain_payload_bytes >= limits.metadata_record_bytes.into()
         && limits.client_bytes >= REQUIREMENTS.instance_bytes
         && limits.max_workers >= REQUIREMENTS.workers
 }

@@ -4,7 +4,10 @@
 //! Expected values are written here by hand from the header, the native
 //! contract and the daemon wire reference.
 
-use super::{Package, library::scenario};
+use super::{
+    Package,
+    library::{archive, scenario},
+};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -51,17 +54,9 @@ pub const LEAVE_REJECTED: u64 = 3;
 pub const LEAVE_FAILED: u64 = 4;
 pub const LEAVE_INDETERMINATE: u64 = 5;
 pub const CLEANUP_COMPLETE: u64 = 1;
-/// The descriptors one instance holds before any connection: its
-/// notification descriptor and its waker, an `eventfd` each on Linux and a
-/// pipe's two ends each on macOS.
-#[cfg(target_os = "linux")]
-pub const INSTANCE_DESCRIPTORS: u64 = 2;
-#[cfg(target_os = "macos")]
-pub const INSTANCE_DESCRIPTORS: u64 = 4;
-/// `sizeof(cm1_request)`, `sizeof(cm1_bytes)` and `sizeof(cm1_record)`.
+/// `sizeof(cm1_request)` and `sizeof(cm1_bytes)`.
 pub const REQUEST: u64 = size_of::<climon2_core::native::Request>() as u64;
 pub const TOKEN: u64 = size_of::<climon2_core::native::Bytes>() as u64;
-pub const RECORD: u64 = size_of::<climon2_core::native::Record>() as u64;
 /// What monitor Open requires, and what the spec's monitor requests besides
 /// (an unknown family too).
 pub const REQUIRED: [&str; 2] = ["daemon-wire-v1", "monitor-v1"];
@@ -90,6 +85,16 @@ pub fn root(package: &Package) -> PathBuf {
 /// One `script` run over the installed library.
 pub fn script(package: &Package, root: &Path, steps: Value) -> Value {
     script_with(package, root, steps, json!({}))
+}
+
+/// One `script` run with the hooked library's `CLIMON2_LIBRARY_FAULT`; none
+/// in archive mode, whose release library has no hooks.
+pub fn script_fault(package: &Package, root: &Path, steps: Value, fault: &str) -> Option<Value> {
+    if archive() {
+        return None;
+    }
+    let input = json!({ "root": root.to_str().unwrap(), "steps": steps });
+    Some(scenario(package, "script", &input, Some(fault)))
 }
 
 /// One `script` run with host `options` (`"sigpipe": "default"`).
@@ -343,8 +348,6 @@ pub fn kinds(peer: &Value) -> Vec<String> {
         .map(|frame| {
             if frame.get("hello").is_some() {
                 "hello".to_owned()
-            } else if frame.get("deaf").is_some() {
-                "deaf".to_owned()
             } else if frame.get("wait_expired").is_some() {
                 "wait_expired".to_owned()
             } else if frame.get("held").is_some() {

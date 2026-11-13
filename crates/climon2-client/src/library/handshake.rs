@@ -6,16 +6,17 @@
 
 use super::{
     RELEASE,
-    failure::{Failed, Fault},
+    failure::{Failed, Fault, require},
     families,
     link::{Link, TIMEOUT, remaining},
     request::Open,
 };
 use climon2_core::{
+    SessionId,
     hello::{Advertised, HelloExtensions},
     metadata::SessionMetadata,
     protocol::{self, ClientMessage, HelloReply, PROTOCOL_VERSION, ServerMessage},
-    wire::{Advertisement, Frame, FrameLimit},
+    wire::{Advertisement, Frame, FrameLimit, Requested},
 };
 use std::{
     fs::File,
@@ -66,7 +67,7 @@ const HELLO_FRAME: u32 = protocol::MAX_FRAME_LENGTH as u32;
 
 /// What an instance checks its session against.
 pub(super) struct Expected<'a> {
-    pub(super) session: &'a str,
+    pub(super) session: &'a SessionId,
     pub(super) metadata: &'a Path,
     /// At most what the instance may allocate: a larger file is not read.
     pub(super) bytes: u64,
@@ -90,17 +91,13 @@ pub(super) fn socket(expected: &Expected) -> Result<PathBuf, Failed> {
         .map_err(|_| UNREADABLE)?;
     let metadata =
         SessionMetadata::from_json(expected.metadata, &bytes).map_err(|_| INVALID_METADATA)?;
-    agree(
-        metadata.session_id.as_str(),
-        expected.session,
-        INVALID_METADATA,
-    )?;
+    require(metadata.session_id == *expected.session, INVALID_METADATA)?;
     agree(metadata.climon2_version.as_str(), RELEASE, ANOTHER_RELEASE)?;
     Ok(PathBuf::from(metadata.socket_path.as_str()))
 }
 
 fn agree(found: &str, expected: &str, refusal: Failed) -> Result<(), Failed> {
-    (found == expected).then_some(()).ok_or(refusal)
+    require(found == expected, refusal)
 }
 
 /// Connects and exchanges the frozen hello before `deadline`, then checks
@@ -134,7 +131,7 @@ fn exchange(link: &mut Link, deadline: Instant) -> Result<Frame, Failed> {
 fn peer(frame: &Frame, expected: &Expected, open: &Open) -> Result<Peer, Failed> {
     identity(&reply(frame)?, expected.session)?;
     let advertisement = advertisement(frame)?;
-    supported(advertisement, &open.required, expected.wire_frame_bytes)
+    supported(advertisement, &open.requested, expected.wire_frame_bytes)
 }
 
 /// The frozen reply: a hello frame with its required fields.
@@ -148,11 +145,9 @@ fn reply(frame: &Frame) -> Result<HelloReply, Failed> {
 }
 
 /// This session, the frozen protocol and this release.
-fn identity(reply: &HelloReply, session: &str) -> Result<(), Failed> {
-    agree(reply.session_id.as_str(), session, ANOTHER_SESSION)?;
-    (reply.protocol == PROTOCOL_VERSION)
-        .then_some(())
-        .ok_or(UNSUPPORTED_PROTOCOL)?;
+fn identity(reply: &HelloReply, session: &SessionId) -> Result<(), Failed> {
+    require(reply.session_id == *session, ANOTHER_SESSION)?;
+    require(reply.protocol == PROTOCOL_VERSION, UNSUPPORTED_PROTOCOL)?;
     agree(reply.climon2_version.as_str(), RELEASE, ANOTHER_RELEASE)
 }
 
@@ -168,17 +163,16 @@ fn advertisement(frame: &Frame) -> Result<Advertisement, Failed> {
 /// The families the Open needs, and frames this instance can receive.
 fn supported(
     advertisement: Advertisement,
-    required: &[&'static str],
+    requested: &Requested,
     wire_frame_bytes: u32,
 ) -> Result<Peer, Failed> {
-    families::supports(&advertisement, required)
-        .then_some(())
-        .ok_or(UNSUPPORTED_FAMILY)?;
+    require(
+        families::supports(&advertisement, requested),
+        UNSUPPORTED_FAMILY,
+    )?;
     let limits = advertisement.limits();
     let server = limits.max_server_frame_bytes.get();
-    (server <= wire_frame_bytes)
-        .then_some(())
-        .ok_or(UNFIT_FRAMES)?;
+    require(server <= wire_frame_bytes, UNFIT_FRAMES)?;
     let send = limits.max_request_frame_bytes.get().min(wire_frame_bytes);
     Ok(Peer {
         receive: limits.max_server_frame_bytes,

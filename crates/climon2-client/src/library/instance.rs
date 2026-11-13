@@ -15,25 +15,26 @@ use super::REQUIREMENTS;
 use super::{
     connection,
     failure::{
-        BUSY, CLOSED, FULL, Failed, Failure, Fault, INVALID_ARGUMENT, INVALID_REQUEST_ID, PANIC,
-        RESOURCE_LIMIT, TIMEOUT, WRONG_THREAD,
+        BUSY, CANCELLED, CLOSED, FULL, Failed, Failure, Fault, INVALID_ARGUMENT,
+        INVALID_REQUEST_ID, PANIC, RESOURCE_LIMIT, Retry, TIMEOUT, WRONG_THREAD, require,
     },
     hook,
     platform::Notifier,
-    records::{Batch, Event, RECORD, Response},
+    records::{Batch, CHARGE, Event, Response},
     request::{self, Operation, Submitted},
     startup::{Diagnostics, Paths, Startup},
     stream::Departure,
 };
 use climon2_core::{
-    diagnostics::{CappedWriter, subscriber},
+    SessionId,
+    diagnostics::{CappedWriter, dispatch},
     keys::{ClientSettings, ControlKey},
     native,
 };
 use std::{
     collections::VecDeque,
     fs::OpenOptions,
-    mem,
+    io, mem,
     ops::{AddAssign, SubAssign},
     os::unix::fs::OpenOptionsExt,
     panic::{self, AssertUnwindSafe},
@@ -76,7 +77,9 @@ const DELIVERIES_FULL: Failure = Failure::new(
     FULL,
     "every delivery the limits allow is outstanding; release one first",
 );
-const CANCELLED: Fault = Fault::library("cancelled", "the request was accepted but never executed");
+/// The communication and control handles: both must be released before
+/// `destroy`.
+const HANDLES: u8 = 2;
 
 /// A current measurement and its peak.
 #[derive(Clone, Copy, Default)]
@@ -96,6 +99,8 @@ impl<T: Copy + Ord + AddAssign + SubAssign> Gauge<T> {
     }
 }
 
+/// What `snapshot` reports. Records and deliveries are accounted here
+/// alone: a record is charged from its queueing until its delivery's release.
 #[derive(Default)]
 struct Measures {
     allocation: Gauge<u64>,
@@ -113,9 +118,54 @@ struct Measures {
     released: u64,
 }
 
+/// Each charge has one owner here: what enters a queue or a delivery is
+/// counted, with the allocation it holds, where it leaves.
+impl Measures {
+    /// A request enters the queue, with its bytes.
+    fn queue_request(&mut self, bytes: u64) {
+        self.request_records.add(1);
+        self.request_bytes.add(bytes);
+        self.allocation.add(bytes);
+    }
+
+    /// A request leaves the queue, to execute or be cancelled.
+    fn dequeue_request(&mut self, bytes: u64) {
+        self.request_records.sub(1);
+        self.request_bytes.sub(bytes);
+        self.allocation.sub(bytes);
+    }
+
+    /// A record enters the event queue, charged until its delivery's
+    /// release.
+    fn queue_event(&mut self, charge: u64) {
+        self.event_records.add(1);
+        self.event_bytes.add(charge);
+        self.allocation.add(charge);
+    }
+
+    /// A delivery of `records` queued records is drained.
+    fn deliver(&mut self, records: u32) {
+        self.deliveries.add(1);
+        self.allocation.add(DELIVERY);
+        self.drained += u64::from(records);
+    }
+
+    /// A delivery is released, with its records and their charge.
+    fn release(&mut self, records: u32, charge: u64) {
+        self.deliveries.sub(1);
+        self.event_records.sub(records);
+        self.event_bytes.sub(charge);
+        self.allocation.sub(DELIVERY + charge);
+        self.released += 1;
+    }
+}
+
 /// Why the stream ends, once it does.
 struct Stop {
     shutdown: bool,
+    /// The caller asked to leave, or the command's final result is known:
+    /// whatever ends the stream then calls for no retry.
+    concluded: bool,
     /// The first failure, and the retry it calls for.
     failure: Option<Failed>,
     departure: Departure,
@@ -127,6 +177,7 @@ impl Default for Stop {
     fn default() -> Self {
         Self {
             shutdown: false,
+            concluded: false,
             failure: None,
             departure: Departure::NOT_REQUIRED,
             ended: false,
@@ -135,6 +186,11 @@ impl Default for Stop {
 }
 
 impl Stop {
+    /// Whether a failure can still call for a retry.
+    fn settled(&self) -> bool {
+        self.shutdown || self.concluded
+    }
+
     fn running(&self) -> bool {
         !self.shutdown && self.failure.is_none() && !self.ended
     }
@@ -151,8 +207,8 @@ struct State {
     events: VecDeque<Event>,
     /// Whether the notification descriptor is currently raised.
     readable: bool,
-    communication_released: bool,
-    control_released: bool,
+    /// How many of the [`HANDLES`] are released.
+    released_handles: u8,
     measures: Measures,
 }
 
@@ -180,8 +236,7 @@ pub(super) enum Next {
 }
 
 pub(super) struct Shared {
-    /// The session's GUID in canonical text.
-    session: String,
+    session: SessionId,
     generation: u64,
     limits: native::Limits,
     paths: Paths,
@@ -197,13 +252,39 @@ pub(super) struct Shared {
     changed: Condvar,
 }
 
-/// Behind `cm1_instance`: used only by the thread that created it.
+/// Behind `cm1_instance`, which only the thread that created it may run or
+/// destroy. It is only ever borrowed shared, so a call from another thread is
+/// refused safely while the owner thread runs.
 pub(super) struct Owner {
-    pub(super) shared: Arc<Shared>,
+    shared: Arc<Shared>,
     thread: ThreadId,
-    /// `run`'s worker-cleanup result, once it has returned.
-    cleanup: Option<u32>,
+    /// The owner thread's own state, used only after its thread check.
+    run: Mutex<Run>,
+}
+
+/// What `run` leaves behind: its workers, and its cleanup once it returned.
+#[derive(Default)]
+struct Run {
     workers: Vec<JoinHandle<()>>,
+    cleanup: Option<Cleanup>,
+}
+
+/// `run`'s worker cleanup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Cleanup {
+    /// Every worker ended and was joined.
+    Complete,
+    /// A worker outlived `cleanup_ms`: never joined, never abandoned.
+    Incomplete,
+}
+
+impl Cleanup {
+    const fn code(self) -> u32 {
+        match self {
+            Self::Complete => native::CLEANUP_COMPLETE,
+            Self::Incomplete => native::CLEANUP_INCOMPLETE,
+        }
+    }
 }
 
 /// Behind `cm1_communication`.
@@ -216,10 +297,48 @@ pub(super) struct Control {
     pub(super) shared: Arc<Shared>,
 }
 
-/// Behind `cm1_delivery`: one immutable batch, released through this library.
+/// Behind `cm1_delivery`: one immutable batch. Dropping it, which only its
+/// release does, returns everything it was charged.
 pub(super) struct Delivery {
     pub(super) shared: Arc<Shared>,
     batch: Batch,
+}
+
+impl Drop for Delivery {
+    fn drop(&mut self) {
+        let (records, charge) = (self.batch.len(), self.batch.charge());
+        self.shared.lock().measures.release(records, charge);
+        self.shared.waker.raise();
+    }
+}
+
+/// A library object behind a native handle, owned by one instance.
+pub(super) trait Object {
+    fn shared(&self) -> &Arc<Shared>;
+}
+
+impl Object for Owner {
+    fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
+}
+
+impl Object for Communication {
+    fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
+}
+
+impl Object for Control {
+    fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
+}
+
+impl Object for Delivery {
+    fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
 }
 
 pub(super) type Handles = (Box<Owner>, Box<Communication>, Box<Control>);
@@ -230,18 +349,25 @@ pub(super) type Handles = (Box<Owner>, Box<Communication>, Box<Control>);
 pub(super) fn create(startup: Startup) -> Result<Handles, Failure> {
     let notifier = Notifier::new().map_err(|_| NO_DESCRIPTOR)?;
     let waker = Notifier::waker().map_err(|_| NO_DESCRIPTOR)?;
-    let (dispatch, logs) = diagnostics(&startup.diagnostics)?;
-    let generation = startup.generation;
+    let Startup {
+        session,
+        generation,
+        paths,
+        settings,
+        diagnostics,
+        limits,
+    } = startup;
+    let (dispatch, logs) = log(diagnostics)?;
     let span = tracing::dispatcher::with_default(&dispatch, || {
         tracing::info_span!("client_instance", generation)
     });
-    let allocation = FIXED + startup.paths.bytes();
+    let allocation = FIXED + paths.bytes();
     let shared = Arc::new(Shared {
-        session: startup.session,
+        session,
         generation,
-        limits: startup.limits,
-        paths: startup.paths,
-        settings: startup.settings,
+        limits,
+        paths,
+        settings,
         notifier,
         waker,
         dispatch,
@@ -259,8 +385,7 @@ pub(super) fn create(startup: Startup) -> Result<Handles, Failure> {
     let owner = Owner {
         shared: Arc::clone(&shared),
         thread: thread::current().id(),
-        cleanup: None,
-        workers: Vec::new(),
+        run: Mutex::default(),
     };
     let communication = Communication {
         shared: Arc::clone(&shared),
@@ -274,8 +399,8 @@ pub(super) fn create(startup: Startup) -> Result<Handles, Failure> {
 
 /// The instance's own diagnostics and the descriptors they hold: a capped,
 /// private log file created at the caller's path, or nothing.
-fn diagnostics(diagnostics: &Diagnostics) -> Result<(Dispatch, u32), Failure> {
-    let Some(path) = &diagnostics.log else {
+fn log(diagnostics: Diagnostics) -> Result<(Dispatch, u32), Failure> {
+    let Some(path) = diagnostics.log else {
         return Ok((Dispatch::none(), 0));
     };
     let file = OpenOptions::new()
@@ -284,10 +409,19 @@ fn diagnostics(diagnostics: &Diagnostics) -> Result<(Dispatch, u32), Failure> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
-        .map_err(|_| Failure::new(INVALID_ARGUMENT, "log_path cannot be created as a new file"))?;
-    let dispatch = subscriber(CappedWriter::new(file), Some(diagnostics.filter))
-        .expect("startup validated the filter");
-    Ok((dispatch, 1))
+        .map_err(log_failure)?;
+    Ok((dispatch(CappedWriter::new(file), diagnostics.filter), 1))
+}
+
+/// Why the log file cannot be created: no descriptor left is a resource
+/// limit; anything else is the caller's path.
+fn log_failure(error: io::Error) -> Failure {
+    match error.raw_os_error() {
+        Some(libc::EMFILE | libc::ENFILE) => {
+            Failure::new(RESOURCE_LIMIT, "no descriptor is left for the log file")
+        }
+        _ => Failure::new(INVALID_ARGUMENT, "log_path cannot be created as a new file"),
+    }
 }
 
 /// This generation's terminal evidence. The connection is always closed by
@@ -306,7 +440,7 @@ fn evidence(generation: u64, stop: &Stop) -> Evidence {
     let terminal = native::Terminal {
         generation,
         client_outcome,
-        retry: failure.map_or(native::RETRY_NONE, |failed| failed.retry),
+        retry: failure.map_or(Retry::None, |failed| failed.retry).native(),
         leave: stop.departure.leave(),
         attachment_detached: u8::from(stop.departure.detached()),
         connection_closed: u8::from(true),
@@ -328,7 +462,7 @@ impl Shared {
         tracing::dispatcher::with_default(&self.dispatch, || self.span.in_scope(work))
     }
 
-    pub(super) fn session(&self) -> &str {
+    pub(super) fn session(&self) -> &SessionId {
         &self.session
     }
 
@@ -369,13 +503,14 @@ impl Shared {
     }
 
     /// The first failure ends the stream, unless it has already ended. A
-    /// failure after shutdown was requested calls for no retry.
+    /// failure once shutdown was requested, the caller asked to leave or the
+    /// command's final result is known calls for no retry.
     pub(super) fn fail(&self, failed: Failed) {
         let mut state = self.lock();
         if state.stop.failure.is_none() && self.terminal.get().is_none() {
             tracing::warn!(code = failed.fault.code(), "client instance failed");
-            let retry = if state.stop.shutdown {
-                native::RETRY_NONE
+            let retry = if state.stop.settled() {
+                Retry::None
             } else {
                 failed.retry
             };
@@ -406,12 +541,27 @@ impl Shared {
         }
     }
 
+    /// Notes that the caller asked to leave or the command's final result
+    /// is known, when `concluded`.
+    pub(super) fn conclude(&self, concluded: bool) {
+        self.lock().stop.concluded |= concluded;
+    }
+
+    /// Whether shutdown has been requested.
+    pub(super) fn shutting_down(&self) -> bool {
+        self.lock().stop.shutdown
+    }
+
+    /// Records the intent before anything that can fail, so even a failed
+    /// call ends the stream with no retry.
     pub(super) fn shutdown(&self) -> Result<(), Failure> {
         self.lock().stop.shutdown = true;
         self.changed.notify_all();
         self.waker.raise();
-        tracing::debug!("client instance shutdown requested");
-        Ok(())
+        self.guard("shutdown", || {
+            tracing::debug!("client instance shutdown requested");
+            Ok(())
+        })
     }
 
     /// Validates and copies a request, then queues it if the instance still
@@ -426,17 +576,9 @@ impl Shared {
     }
 
     fn admit(&self, state: &State, submitted: &Submitted) -> Result<(), Failure> {
-        state
-            .stop
-            .running()
-            .then_some(())
-            .ok_or(SUBMISSIONS_CLOSED)?;
-        (submitted.id > state.last_request)
-            .then_some(())
-            .ok_or(NOT_INCREASING)?;
-        self.room(state, submitted.bytes)
-            .then_some(())
-            .ok_or(QUEUE_FULL)
+        require(state.stop.running(), SUBMISSIONS_CLOSED)?;
+        require(submitted.id > state.last_request, NOT_INCREASING)?;
+        require(self.room(state, submitted.bytes), QUEUE_FULL)
     }
 
     /// Whether one more request of `bytes` fits the request queue, the
@@ -461,10 +603,11 @@ impl Shared {
             && self.events_fit(state, operations, 0, 0)
     }
 
-    /// What each outstanding operation reserves for its outcome: a record
-    /// and the largest Response the daemon may send.
+    /// What each outstanding operation reserves for its outcome: a record's
+    /// charge and the largest Response the daemon may send, whose payload
+    /// never exceeds its frame.
     fn reserve(&self) -> u64 {
-        RECORD + u64::from(self.limits.metadata_record_bytes)
+        CHARGE + u64::from(self.limits.metadata_record_bytes)
     }
 
     /// Whether the event allowance holds every queued and delivered record,
@@ -492,18 +635,15 @@ impl Shared {
 
     fn accept(&self, state: &mut State, submitted: Submitted) {
         state.last_request = submitted.id;
-        let measures = &mut state.measures;
-        measures.request_records.add(1);
-        measures.request_bytes.add(submitted.bytes);
-        measures.allocation.add(submitted.bytes);
-        measures.operations.add(1);
+        state.measures.queue_request(submitted.bytes);
+        state.measures.operations.add(1);
         state.requests.push_back(submitted);
         self.waker.raise();
     }
 
     /// What the connection does next: stop after a failure elsewhere, react
     /// to shutdown once, or take the oldest request when it can execute.
-    pub(super) fn next(&self, shutdown_seen: bool, leave_ready: bool) -> Next {
+    fn next(&self, shutdown_seen: bool, leave_ready: bool) -> Next {
         let mut state = self.lock();
         self.waker.clear();
         if state.stop.failure.is_some() {
@@ -524,7 +664,7 @@ impl Shared {
     }
 
     /// Queues an outcome into the room its request reserved.
-    pub(super) fn answer(&self, response: Response) {
+    fn answer(&self, response: Response) {
         let mut state = self.lock();
         self.respond(&mut state, response);
     }
@@ -547,30 +687,29 @@ impl Shared {
     }
 
     fn queue(&self, state: &mut State, event: Event) {
-        let charge = event.charge();
-        let measures = &mut state.measures;
-        measures.event_records.add(1);
-        measures.event_bytes.add(charge);
-        measures.allocation.add(charge);
+        state.measures.queue_event(event.charge());
         state.events.push_back(event);
         self.signal(state);
     }
 
-    pub(super) fn connected(&self) {
+    /// Counts the connection's socket among the instance's descriptors
+    /// while the returned guard lives.
+    pub(super) fn connected(&self) -> Descriptor<'_> {
         self.lock().measures.descriptors.add(1);
+        Descriptor(self)
     }
 
-    pub(super) fn disconnected(&self) {
-        self.lock().measures.descriptors.sub(1);
+    /// Settles the operations of `count` requests that will never be
+    /// answered.
+    fn settle(&self, count: u32) {
+        self.lock().measures.operations.sub(count);
     }
 
-    /// The connection is closed: its departure evidence, and the public
-    /// requests it sent that will never be answered.
-    fn end(&self, departure: Departure, unanswered: u32) {
+    /// The connection is closed, with its departure evidence.
+    fn end(&self, departure: Departure) {
         let mut state = self.lock();
         state.stop.departure = departure;
         state.stop.ended = true;
-        state.measures.operations.sub(unanswered);
         self.changed.notify_all();
     }
 
@@ -629,15 +768,11 @@ impl Shared {
     }
 
     fn deliver(self: &Arc<Self>, state: &mut State) -> Result<native::Drained, Failure> {
-        (state.measures.deliveries.current < self.limits.deliveries)
-            .then_some(())
-            .ok_or(DELIVERIES_FULL)?;
+        let outstanding = state.measures.deliveries.current;
+        require(outstanding < self.limits.deliveries, DELIVERIES_FULL)?;
         let count = self.batch(&state.events);
         let batch = Batch::new(self.generation, state.events.drain(..count).collect());
-        let measures = &mut state.measures;
-        measures.deliveries.add(1);
-        measures.allocation.add(DELIVERY);
-        measures.drained += u64::from(batch.len());
+        state.measures.deliver(batch.len());
         let delivery = Box::new(Delivery {
             shared: Arc::clone(self),
             batch,
@@ -652,19 +787,20 @@ impl Shared {
         })
     }
 
-    /// How many of the oldest records one delivery takes: at least one, and
-    /// more while both drain ceilings hold.
+    /// How many of the oldest records one delivery takes: as many as both
+    /// drain ceilings hold. The first always fits: a record's payload is
+    /// copied from one daemon frame of at most `metadata_record_bytes`,
+    /// which create never lets exceed `drain_payload_bytes`.
     fn batch(&self, events: &VecDeque<Event>) -> usize {
         let mut payload = 0;
-        let fitting = events
+        events
             .iter()
             .take(self.limits.drain_records as usize)
             .take_while(|event| {
                 payload += event.payload();
                 payload <= self.limits.drain_payload_bytes
             })
-            .count();
-        fitting.max(1)
+            .count()
     }
 
     fn ended(&self) -> native::Drained {
@@ -687,24 +823,17 @@ impl Shared {
         self.terminal.get().is_some() && state.events.is_empty()
     }
 
-    pub(super) fn release_communication(&self) -> Result<(), Failure> {
+    /// Releases one of the [`HANDLES`] once the stream has ended for its
+    /// consumer and nothing else keeps that handle `in_use`.
+    fn release_handle(
+        &self,
+        in_use: impl FnOnce(&State) -> bool,
+        busy: &'static str,
+    ) -> Result<(), Failure> {
         let mut state = self.lock();
-        (self.ended_for_consumer(&state) && state.measures.deliveries.current == 0)
-            .then_some(())
-            .ok_or(Failure::new(
-                BUSY,
-                "the stream has not ended, or deliveries are still outstanding",
-            ))?;
-        state.communication_released = true;
-        Ok(())
-    }
-
-    pub(super) fn release_control(&self) -> Result<(), Failure> {
-        let mut state = self.lock();
-        self.ended_for_consumer(&state)
-            .then_some(())
-            .ok_or(Failure::new(BUSY, "the stream has not ended"))?;
-        state.control_released = true;
+        let idle = self.ended_for_consumer(&state) && !in_use(&state);
+        require(idle, Failure::new(BUSY, busy))?;
+        state.released_handles += 1;
         Ok(())
     }
 
@@ -753,66 +882,139 @@ fn take(state: &mut State, leave_ready: bool) -> Option<Submitted> {
 
 fn dequeue(state: &mut State) -> Option<Submitted> {
     let request = state.requests.pop_front()?;
-    let measures = &mut state.measures;
-    measures.request_records.sub(1);
-    measures.request_bytes.sub(request.bytes);
-    measures.allocation.sub(request.bytes);
+    state.measures.dequeue_request(request.bytes);
     Some(request)
 }
 
-/// Releases one delivery through its own library; its records end here.
-pub(super) fn release(delivery: Box<Delivery>) {
-    let shared = Arc::clone(&delivery.shared);
-    let (records, bytes) = (delivery.batch.len(), delivery.batch.charge());
-    drop(delivery);
-    let mut state = shared.lock();
-    let measures = &mut state.measures;
-    measures.deliveries.sub(1);
-    measures.event_records.sub(records);
-    measures.event_bytes.sub(bytes);
-    measures.allocation.sub(DELIVERY + bytes);
-    measures.released += 1;
-    shared.waker.raise();
+/// The connection's socket, counted among the instance's descriptors until
+/// this guard drops, however the connection ends.
+pub(super) struct Descriptor<'a>(&'a Shared);
+
+impl Drop for Descriptor<'_> {
+    fn drop(&mut self) {
+        self.0.lock().measures.descriptors.sub(1);
+    }
+}
+
+/// The requests the connection took from the queue and has not answered:
+/// answering one settles its operation, and dropping the guard settles the
+/// rest, however the connection ended.
+pub(super) struct Taken<'a> {
+    shared: &'a Shared,
+    count: u32,
+}
+
+impl<'a> Taken<'a> {
+    pub(super) fn new(shared: &'a Shared) -> Self {
+        Self { shared, count: 0 }
+    }
+
+    /// What the connection does next; a request it takes is counted.
+    pub(super) fn next(&mut self, shutdown_seen: bool, leave_ready: bool) -> Next {
+        let next = self.shared.next(shutdown_seen, leave_ready);
+        if matches!(next, Next::Request(_)) {
+            self.count += 1;
+        }
+        next
+    }
+
+    /// Queues the outcome of a request the connection took.
+    pub(super) fn answer(&mut self, response: Response) {
+        self.count -= 1;
+        self.shared.answer(response);
+    }
+}
+
+impl Drop for Taken<'_> {
+    fn drop(&mut self) {
+        self.shared.settle(self.count);
+    }
+}
+
+impl Communication {
+    /// Busy until the stream has ended for its consumer and every delivery
+    /// is released.
+    pub(super) fn release(&self) -> Result<(), Failure> {
+        self.shared.release_handle(
+            |state| state.measures.deliveries.current > 0,
+            "the stream has not ended, or deliveries are still outstanding",
+        )
+    }
+}
+
+impl Control {
+    /// Busy until the stream has ended for its consumer.
+    pub(super) fn release(&self) -> Result<(), Failure> {
+        self.shared
+            .release_handle(|_| false, "the stream has not ended")
+    }
 }
 
 impl Owner {
     fn owned(&self) -> Result<(), Failure> {
-        (thread::current().id() == self.thread)
-            .then_some(())
-            .ok_or(Failure::new(
+        require(
+            thread::current().id() == self.thread,
+            Failure::new(
                 WRONG_THREAD,
                 "only the instance's owner thread may call this",
-            ))
+            ),
+        )
     }
 
-    /// Runs the connection until its stream ends, publishes terminal
-    /// evidence, then waits up to `cleanup_ms` for its workers. The report
-    /// is separate from the call's result: a failed run still reports what
-    /// it knows.
-    pub(super) fn run(&mut self) -> Result<(Result<(), Failure>, native::RunReport), Failure> {
+    fn run_state(&self) -> MutexGuard<'_, Run> {
+        self.run.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Runs until shutdown or failure, publishes terminal evidence, then
+    /// waits up to `cleanup_ms` for its workers. The report is separate from
+    /// the call's result: a failed run still reports what it knows.
+    pub(super) fn run(&self) -> Result<(Result<(), Failure>, native::RunReport), Failure> {
         self.owned()?;
-        self.cleanup
-            .is_none()
-            .then_some(())
-            .ok_or(Failure::new(CLOSED, "run has already returned"))?;
-        let shared = Arc::clone(&self.shared);
+        let mut run = self.run_state();
+        require(
+            run.cleanup.is_none(),
+            Failure::new(CLOSED, "run has already returned"),
+        )?;
+        let shared = &self.shared;
         let executed = shared.guard("run", || {
-            self.execute();
+            run.execute(shared);
             Ok(())
         });
         let terminal = shared.scope(|| shared.finish());
-        let (cleanup, cleaned) = shared.scope(|| self.clean_up());
-        self.cleanup = Some(cleanup);
+        let (cleanup, cleaned) = shared.scope(|| run.clean_up(shared));
+        run.cleanup = Some(cleanup);
         let report = native::RunReport {
-            workers_cleanup: cleanup,
+            workers_cleanup: cleanup.code(),
             reserved: 0,
             terminal,
         };
         Ok((executed.and(cleaned), report))
     }
 
-    fn execute(&mut self) {
-        let shared = &self.shared;
+    /// Busy until `run` has returned with complete worker cleanup and both
+    /// handles are released; deliveries are released before communication.
+    pub(super) fn destroy(&self) -> Result<(), Failure> {
+        self.owned()?;
+        require(
+            self.finished(),
+            Failure::new(
+                BUSY,
+                "run, workers, handles or deliveries are still outstanding",
+            ),
+        )?;
+        tracing::debug!("client instance destroyed");
+        Ok(())
+    }
+
+    /// Nothing of the instance remains in use.
+    fn finished(&self) -> bool {
+        self.run_state().cleanup == Some(Cleanup::Complete)
+            && self.shared.lock().released_handles == HANDLES
+    }
+}
+
+impl Run {
+    fn execute(&mut self, shared: &Arc<Shared>) {
         let settings = shared.settings;
         tracing::debug!(
             metadata = ?shared.paths.metadata,
@@ -822,19 +1024,19 @@ impl Owner {
             take_control = ?settings.take_control_key().map(ControlKey::byte),
             "client instance running"
         );
-        self.start_workers();
-        let (departure, unanswered) = connection::run(&self.shared);
-        self.shared.end(departure, unanswered);
+        self.start_workers(shared);
+        let departure = connection::run(shared);
+        shared.end(departure);
     }
 
     /// Waits up to `cleanup_ms` for every worker, then joins them; a worker
     /// still running is reported, never joined or abandoned as complete.
-    fn clean_up(&mut self) -> (u32, Result<(), Failure>) {
-        let deadline = Duration::from_millis(self.shared.limits.cleanup_ms.into());
-        if !self.shared.wait_for_workers(deadline) {
+    fn clean_up(&mut self, shared: &Shared) -> (Cleanup, Result<(), Failure>) {
+        let deadline = Duration::from_millis(shared.limits.cleanup_ms.into());
+        if !shared.wait_for_workers(deadline) {
             tracing::warn!("client instance worker cleanup incomplete");
             return (
-                native::CLEANUP_INCOMPLETE,
+                Cleanup::Incomplete,
                 Err(Failure::new(TIMEOUT, "worker cleanup exceeded cleanup_ms")),
             );
         }
@@ -842,60 +1044,58 @@ impl Owner {
             let _ = worker.join();
         }
         tracing::info!("client instance worker cleanup complete");
-        (native::CLEANUP_COMPLETE, Ok(()))
-    }
-
-    /// Busy until `run` has returned with complete worker cleanup and both
-    /// handles are released; deliveries are released before communication.
-    pub(super) fn destroy(&self) -> Result<(), Failure> {
-        self.owned()?;
-        self.finished().then_some(()).ok_or(Failure::new(
-            BUSY,
-            "run, workers, handles or deliveries are still outstanding",
-        ))?;
-        tracing::debug!("client instance destroyed");
-        Ok(())
-    }
-
-    /// Nothing of the instance remains in use.
-    fn finished(&self) -> bool {
-        let state = self.shared.lock();
-        self.cleanup == Some(native::CLEANUP_COMPLETE)
-            && state.communication_released
-            && state.control_released
+        (Cleanup::Complete, Ok(()))
     }
 
     /// Without the `test-hooks` faults, the connection needs no worker: it
     /// runs on the owner thread.
     #[cfg(not(feature = "test-hooks"))]
-    fn start_workers(&mut self) {}
+    fn start_workers(&mut self, _: &Arc<Shared>) {}
 
     /// `worker` and `stall-cleanup` start one worker, whose stack is the
     /// release's qualified worker stack.
     #[cfg(feature = "test-hooks")]
-    fn start_workers(&mut self) {
+    fn start_workers(&mut self, shared: &Arc<Shared>) {
         if let Some(stalls) = super::hooks::worker() {
-            let shared = Arc::clone(&self.shared);
-            shared.lock().measures.workers.add(1);
+            let counted = Counted::new(shared);
             let worker = thread::Builder::new()
                 .name("climon2-client-worker".into())
                 .stack_size(REQUIREMENTS.worker_stack_bytes as usize)
-                .spawn(move || work(&shared, stalls))
+                .spawn(move || work(counted, stalls))
                 .expect("the worker starts");
             self.workers.push(worker);
         }
     }
 }
 
+/// One worker in its instance's count, from its start until it ends, even
+/// by unwinding.
+#[cfg(feature = "test-hooks")]
+struct Counted(Arc<Shared>);
+
+#[cfg(feature = "test-hooks")]
+impl Counted {
+    fn new(shared: &Arc<Shared>) -> Self {
+        shared.lock().measures.workers.add(1);
+        Self(Arc::clone(shared))
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.lock().measures.workers.sub(1);
+        self.0.changed.notify_all();
+    }
+}
+
 /// A worker that ends with its instance's stream, or whose cleanup stalls.
 #[cfg(feature = "test-hooks")]
-fn work(shared: &Shared, stalls: bool) {
-    shared.wait_for_stop();
+fn work(worker: Counted, stalls: bool) {
+    worker.0.wait_for_stop();
     if stalls {
         loop {
             thread::park();
         }
     }
-    shared.lock().measures.workers.sub(1);
-    shared.changed.notify_all();
 }

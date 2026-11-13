@@ -20,7 +20,8 @@
 //! - `observe` and `release` the deliveries kept so far;
 //! - `snapshot`, `notification`, `shutdown`; `await_snapshot` until its
 //!   `gauge` reaches `value`;
-//! - `touch` a `path`; `probe` a `socket`'s hello `state`;
+//! - `touch` a `path`; `probe` a `socket`'s hello `state`; `signal` a
+//!   real daemon's `pid` to `stop` or `continue`;
 //! - `await_peer` until it received `frames` frames;
 //! - `finish`: run's report, drains to terminal evidence, handle releases,
 //!   destroy and join.
@@ -114,6 +115,7 @@ impl World<'_> {
         match action {
             "create" => return self.create(&name, step),
             "touch" => return touch(step),
+            "signal" => return signal(step),
             "probe" => return hello_state(Path::new(step["socket"].as_str().expect("a socket"))),
             _ => {}
         }
@@ -299,6 +301,20 @@ fn touch(step: &Value) -> Value {
     let path = step["path"].as_str().expect("a path");
     fs::write(path, b"").expect("the trigger file is written");
     json!("touched")
+}
+
+/// Stops or resumes a process, such as a real session daemon.
+fn signal(step: &Value) -> Value {
+    let pid = step["pid"].as_i64().expect("a pid") as libc::pid_t;
+    let signal = match step["signal"].as_str() {
+        Some("stop") => libc::SIGSTOP,
+        Some("continue") => libc::SIGCONT,
+        other => panic!("unknown signal {other:?}"),
+    };
+    // SAFETY: kill has no memory-safety preconditions.
+    let sent = unsafe { libc::kill(pid, signal) } == 0;
+    assert!(sent, "signal {pid}: {}", std::io::Error::last_os_error());
+    json!("signalled")
 }
 
 fn await_peer(instance: &Instance, step: &Value) -> Value {

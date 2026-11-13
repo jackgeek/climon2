@@ -12,7 +12,11 @@ mod support;
 
 use serde_json::{Value, json};
 use std::path::Path;
-use support::{Package, passive::*};
+use support::{
+    Package,
+    library::{CHARGE, INSTANCE_DESCRIPTORS},
+    passive::*,
+};
 
 /// A fake daemon's hello reply with `json` merged over a valid one.
 fn hello(json: Value) -> Value {
@@ -37,7 +41,11 @@ fn case(name: &'static str, peer: Value, startup: Value, request: &Value) -> Cas
     }
 }
 
-/// Every case in one script, four steps each.
+/// The steps of each case: create, submit, run, wait for run, a snapshot,
+/// then finish.
+const CASE_STEPS: usize = 6;
+
+/// Every case in one script.
 fn run_cases<'a>(package: &Package, root: &Path, cases: impl Iterator<Item = &'a Case>) -> Value {
     let steps: Vec<Value> = cases
         .flat_map(|case| {
@@ -46,6 +54,8 @@ fn run_cases<'a>(package: &Package, root: &Path, cases: impl Iterator<Item = &'a
                 json!({ "do": "create", "instance": name, "peer": case.peer, "startup": case.startup }),
                 json!({ "do": "submit", "instance": name, "request": case.request }),
                 json!({ "do": "run", "instance": name }),
+                json!({ "do": "wait_run", "instance": name }),
+                json!({ "do": "snapshot", "instance": name }),
                 json!({ "do": "finish", "instance": name }),
             ]
         })
@@ -53,14 +63,29 @@ fn run_cases<'a>(package: &Package, root: &Path, cases: impl Iterator<Item = &'a
     script(package, root, json!(steps))
 }
 
-/// Case `index`'s submit call, records and terminal evidence.
-fn outcome(report: &Value, index: usize) -> (&Value, Vec<Value>, Value) {
-    assert_success(&step(report, 4 * index)["call"]);
-    let (records, terminal) = finished(step(report, 4 * index + 3));
-    (step(report, 4 * index + 1), records, terminal.clone())
+/// Once run has returned, nothing is outstanding: no request, no operation
+/// and no connection descriptor.
+fn assert_settled(name: &str, snapshot: &Value) {
+    for (gauge, value) in [
+        ("request_records", 0),
+        ("operations", 0),
+        ("descriptors", INSTANCE_DESCRIPTORS),
+    ] {
+        assert_eq!(snapshot[gauge], value, "{name}: {gauge}: {snapshot:#}");
+    }
 }
 
-/// COM-01 Library and Fault (missing required support is rejected explicitly
+/// Case `index`'s submit call, records and terminal evidence, once its
+/// instance is settled.
+fn outcome<'a>(report: &'a Value, index: usize, name: &str) -> (&'a Value, Vec<Value>, Value) {
+    let start = CASE_STEPS * index;
+    assert_success(&step(report, start)["call"]);
+    assert_settled(name, &step(report, start + 4)["output"]);
+    let (records, terminal) = finished(step(report, start + 5));
+    (step(report, start + 1), records, terminal.clone())
+}
+
+/// COM-01 Fault (missing required support is rejected explicitly
 /// before any role takes effect, support is never inferred from the release,
 /// and incompatible peers are rejected): against fake daemons of this very
 /// release, the Open is rejected (never sent: each daemon saw only hello, or
@@ -233,7 +258,7 @@ fn installed_library_rejects_an_open_the_session_cannot_honour_before_any_role()
     let report = run_cases(&package, &root, cases.iter().map(|(case, ..)| case));
     for (index, (case, (origin, code), retry, frames)) in cases.iter().enumerate() {
         let name = case.name;
-        let (submit, records, terminal) = outcome(&report, index);
+        let (submit, records, terminal) = outcome(&report, index, name);
         assert_success(submit);
         assert_eq!(records.len(), 2, "{name}: {records:#?}");
         assert_rejected(&records[0], 1, 1, *origin, code);
@@ -340,7 +365,7 @@ fn opened_then(after: Vec<Value>) -> Value {
     json!({ "open": actions })
 }
 
-/// COM-02 Library and Fault (each boundary's framing, types and records,
+/// COM-02 Fault (each boundary's framing, types and records,
 /// with their rejection effects): a frame that is not JSON
 /// (`invalid_json`), a request type (`wrong_direction`), an undefined type
 /// (`unknown_message_type`), a zero length (`invalid_frame_length`), a
@@ -543,7 +568,7 @@ fn installed_library_fails_the_connection_on_traffic_revision_one_forbids() {
     let report = run_cases(&package, &root, cases.iter().map(|(case, ..)| case));
     for (index, (case, (origin, code), before)) in cases.iter().enumerate() {
         let name = case.name;
-        let (submit, records, terminal) = outcome(&report, index);
+        let (submit, records, terminal) = outcome(&report, index, name);
         assert_success(submit);
         assert_eq!(records.len(), before + 1, "{name}: {records:#?}");
         if *before > 0 {
@@ -675,14 +700,7 @@ fn assert_scenarios(package: &Package, root: &Path, scenarios: &[Scenario]) {
     for (scenario, start) in scenarios.iter().zip(starts) {
         let name = scenario.name;
         let last = start + scenario.steps.len() + ending.len() - 1;
-        let settled = &step(&report, last - 1)["output"];
-        for (gauge, value) in [
-            ("request_records", 0),
-            ("operations", 0),
-            ("descriptors", INSTANCE_DESCRIPTORS),
-        ] {
-            assert_eq!(settled[gauge], value, "{name}: {gauge}: {settled:#}");
-        }
+        assert_settled(name, &step(&report, last - 1)["output"]);
         let (mut records, terminal) = finished(step(&report, last));
         if let Some(drained) = scenario.drained {
             let mut earlier = step(&report, start + drained)["records"]
@@ -706,11 +724,13 @@ fn assert_scenarios(package: &Package, root: &Path, scenarios: &[Scenario]) {
 /// connection lost with an Open or a Leave unanswered gives no fabricated
 /// Response, only failed terminal evidence, which makes the caller's still
 /// unanswered IDs indeterminate (a lost Leave leaves the departure
-/// unconfirmed); a daemon's failed or indeterminate Leave is answered as
-/// such and ends the registration, and a failed one never counts as
-/// detaching, whatever result it knew; a failure's diagnostic is best
-/// effort, left out when the event queue's records are full, while terminal
-/// evidence keeps the error; a refused Open is answered with the
+/// unconfirmed); once the caller's Leave is sent, or the Initial metadata
+/// reports the command's final result, a failure calls for no retry; a
+/// daemon's failed or indeterminate Leave is answered as such and ends the
+/// registration, and a failed one never counts as detaching, whatever
+/// result it knew; a failure's diagnostic is best effort, left out when the
+/// event queue's records are full, while terminal evidence keeps the error;
+/// a refused Open is answered with the
 /// daemon's error and calls for no retry when the daemon knew the command's
 /// final result, for none possible when it lacks support, and for passive
 /// retry otherwise. Each fake daemon saw every request once.
@@ -725,6 +745,15 @@ fn installed_library_reports_lost_and_late_answers_truthfully_without_replay() {
     let lost = (ORIGIN_TRANSPORT, "io_error");
     let daemon = |code: &'static str| (ORIGIN_DAEMON, code);
     let refused = |outcome: &str, code: &str| json!({ "open": [response("$open", outcome, Value::Null, daemon_error(code))] });
+    let concluded = send(
+        0x41,
+        json!({
+            "title": { "available": true, "value": "t" },
+            "status": { "available": false, "value": null },
+            "progress": { "available": false, "value": null },
+            "command_result": { "kind": "exit", "code": 0 },
+        }),
+    );
     let answered = |outcome: &str| {
         passive_peer(json!([leave_answer(
             outcome,
@@ -772,7 +801,7 @@ fn installed_library_reports_lost_and_late_answers_truthfully_without_replay() {
                 Expect::Answer(2, INDETERMINATE, library("timeout")),
                 Expect::Diagnostic(library("timeout")),
             ],
-            terminal: (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_INDETERMINATE),
+            terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_INDETERMINATE),
             error: Some(library("timeout")),
             kinds: &["hello", "open", "leave"],
         },
@@ -785,9 +814,26 @@ fn installed_library_reports_lost_and_late_answers_truthfully_without_replay() {
                 Expect::Metadata,
                 Expect::Diagnostic(lost),
             ],
-            terminal: (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_INDETERMINATE),
+            terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_INDETERMINATE),
             error: Some(lost),
             kinds: &["hello", "open", "leave"],
+        },
+        Scenario {
+            name: "concluded",
+            steps: submitted(
+                json!({ "open": [opened(&SELECTED), concluded, "close"] }),
+                json!({}),
+                &alone,
+            ),
+            drained: None,
+            records: vec![
+                Expect::Opened(1),
+                Expect::Metadata,
+                Expect::Diagnostic(lost),
+            ],
+            terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_NOT_REQUIRED),
+            error: Some(lost),
+            kinds: &["hello", "open"],
         },
         Scenario {
             name: "leave-failed",
@@ -926,7 +972,7 @@ fn installed_library_reports_a_known_final_result_and_never_retries() {
     let queued = &step(&report, 4)["output"];
     let error = ("invalid_state".len() + "fake daemon".len()) as u64;
     assert_eq!(queued["event_records"], 2, "{queued:#}");
-    assert_eq!(queued["event_bytes"], 2 * (RECORD + error), "{queued:#}");
+    assert_eq!(queued["event_bytes"], 2 * (CHARGE + error), "{queued:#}");
     let (records, terminal) = finished(step(&report, 5));
     assert_eq!(records.len(), 2, "{records:#?}");
     let response = assert_response(&records[0], 1, 1, REJECTED);
@@ -957,7 +1003,9 @@ fn installed_library_reports_a_known_final_result_and_never_retries() {
 /// after shutdown; a rejected one is reported rejected. A rejected explicit
 /// Leave keeps the registration, and shutdown then leaves once more,
 /// confirmed. Shutdown during an Open still under way waits for it, then
-/// leaves once. A Leave before any Open, or while another is unanswered,
+/// leaves once, and if the connection is lost first, calls for no retry;
+/// shutdown during hello answers the Open, never sent, `cancelled`, and the
+/// instance stops with nothing to leave. A Leave before any Open, or while another is unanswered,
 /// is `invalid_state`, and the next Open or Leave proceeds.
 #[test]
 fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
@@ -980,6 +1028,8 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
         ]
     };
     let opening = root.join("go-opening");
+    let greeting = root.join("go-greeting");
+    let unanswered = root.join("go-unanswered");
     let second = root.join("go-second");
     let scenarios = [
         Scenario {
@@ -1067,6 +1117,40 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
             kinds: &["hello", "open", "leave"],
         },
         Scenario {
+            name: "opening-lost",
+            steps: vec![
+                json!({ "do": "create", "peer": {
+                    "open": [{ "wait": unanswered.to_str().unwrap() }, "close"],
+                } }),
+                json!({ "do": "submit", "request": titled }),
+                json!({ "do": "run" }),
+                json!({ "do": "await_peer", "frames": 2 }),
+                json!({ "do": "shutdown" }),
+                json!({ "do": "touch", "path": unanswered.to_str().unwrap() }),
+            ],
+            drained: None,
+            records: vec![Expect::Diagnostic(lost)],
+            terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_NOT_REQUIRED),
+            error: Some(lost),
+            kinds: &["hello", "open"],
+        },
+        Scenario {
+            name: "greeting",
+            steps: vec![
+                json!({ "do": "create", "peer": { "hello": { "after": greeting.to_str().unwrap() } } }),
+                json!({ "do": "submit", "request": titled }),
+                json!({ "do": "run" }),
+                json!({ "do": "await_peer", "frames": 1 }),
+                json!({ "do": "shutdown" }),
+                json!({ "do": "touch", "path": greeting.to_str().unwrap() }),
+            ],
+            drained: None,
+            records: vec![Expect::Answer(1, REJECTED, library("cancelled"))],
+            terminal: (CLIENT_STOPPED, RETRY_NONE, LEAVE_NOT_REQUIRED),
+            error: None,
+            kinds: &["hello"],
+        },
+        Scenario {
             name: "early",
             steps: vec![
                 json!({ "do": "create", "peer": passive_peer(json!([ok])) }),
@@ -1118,78 +1202,51 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
 
 /// LIB-05 Fault (the library never raises `SIGPIPE` in its embedder): in a
 /// host that leaves `SIGPIPE` at its default disposition, as a C embedder
-/// may, the shutdown Leave is written to a fake daemon that can no longer
-/// receive it. One stops reading after the Initial metadata (`EPIPE` on
-/// Linux; another system may refuse the write too, or accept it unread, and
-/// the Leave then outlives `leave_ms`). The other closes its connection
-/// after a title the library holds back, its two-record event queue being
-/// full, so the library reads nothing and its write fails. The host
-/// survives each; the departure is unconfirmed, with no retry after
-/// shutdown, and the full queue leaves no room for a diagnostic.
+/// may, a fake daemon closes its connection after a title the library holds
+/// back, its two-record event queue being full, so the library reads
+/// nothing and the shutdown Leave's write fails (`EPIPE`). The host
+/// survives; the departure is unconfirmed, with no retry after shutdown,
+/// and the full queue leaves no room for a diagnostic. Nothing drains until
+/// `run` has returned, so no drain can make room first.
 #[test]
 fn installed_library_never_raises_sigpipe_in_its_embedder() {
     let package = Package::new();
     let root = root(&package);
-    let end = root.join("end-deaf");
-    let deaf = json!({
-        "open": [
-            opened(&SELECTED),
-            initial(json!("t")),
-            "deaf",
-            { "wait": end.to_str().unwrap() },
-        ],
-    });
     let gone = json!({
         "open": [opened(&SELECTED), initial(json!("t")), title_changed(json!("x")), "close"],
     });
     let steps = json!([
-        { "do": "create", "peer": deaf, "startup": { "limits": { "leave_ms": 2000 } } },
+        { "do": "create", "peer": gone, "startup": { "limits": { "event_records": 2 } } },
         { "do": "submit", "request": open(1, &REQUIRED, &["title-v1"]) },
         { "do": "run" },
-        { "do": "drain", "until": { "tag": INITIAL_METADATA } },
+        { "do": "await_snapshot", "gauge": "event_records", "value": 2 },
         { "do": "await_peer", "frames": 3 },
         { "do": "shutdown" },
+        { "do": "wait_run" },
         { "do": "finish" },
-        { "do": "touch", "path": end.to_str().unwrap() },
-        { "do": "create", "instance": "gone", "peer": gone,
-          "startup": { "limits": { "event_records": 2 } } },
-        { "do": "submit", "instance": "gone", "request": open(1, &REQUIRED, &["title-v1"]) },
-        { "do": "run", "instance": "gone" },
-        { "do": "await_snapshot", "instance": "gone", "gauge": "event_records", "value": 2 },
-        { "do": "await_peer", "instance": "gone", "frames": 3 },
-        { "do": "shutdown", "instance": "gone" },
-        { "do": "finish", "instance": "gone" },
     ]);
     let report = script_with(&package, &root, steps, json!({ "sigpipe": "default" }));
-    let (records, terminal) = finished(step(&report, 6));
-    // Linux refuses the write at once; another system may instead accept it
-    // unread, and the Leave then outlives `leave_ms`.
-    let refused = cfg!(target_os = "linux") || terminal["error"]["code"] == "io_error";
-    let error = if refused {
-        (ORIGIN_TRANSPORT, "io_error")
-    } else {
-        (ORIGIN_LIBRARY, "timeout")
-    };
-    assert_eq!(records.len(), 1, "{records:#?}");
-    assert_diagnostic(&records[0], 1, error.0, error.1);
-    let unconfirmed = (CLIENT_FAILED, RETRY_NONE, LEAVE_INDETERMINATE);
-    assert_terminal(terminal, 1, unconfirmed, Some(error));
-    assert_eq!(report["peers"]["a"]["frames"][2]["deaf"], true);
-    assert_eq!(step(&report, 12), true);
-    let (records, terminal) = finished(step(&report, 14));
+    assert_eq!(step(&report, 4), true);
+    let (records, terminal) = finished(step(&report, 7));
     assert_eq!(records.len(), 2, "{records:#?}");
     assert_eq!(assert_response(&records[0], 1, 1, OK)["result_tag"], OPENED);
     assert_header(&records[1], INITIAL_METADATA, 1);
-    let lost = (ORIGIN_TRANSPORT, "io_error");
-    assert_terminal(terminal, 1, unconfirmed, Some(lost));
-    let peer = &report["peers"]["gone"];
+    let unconfirmed = (CLIENT_FAILED, RETRY_NONE, LEAVE_INDETERMINATE);
+    assert_terminal(
+        terminal,
+        1,
+        unconfirmed,
+        Some((ORIGIN_TRANSPORT, "io_error")),
+    );
+    let peer = &report["peers"]["a"];
     assert_eq!(peer["frames"][2]["closed"], true, "{peer:#}");
     assert_all_released(&report["ledger"]);
     package.assert_clean();
 }
 
-/// COM-02 Library (records exactly at their limits are accepted whole, and
-/// the command result maps exactly): a title of exactly `title_bytes`, in
+/// COM-02 Fault (records exactly at their limits are accepted whole, and
+/// the command result maps exactly): from the fake daemon peer, a title of
+/// exactly `title_bytes`, in
 /// the Initial metadata and in a change, arrives intact; so does a change
 /// whose frame is exactly `metadata_record_bytes`; and a command result in
 /// the Initial metadata, a signal with its name, is reported as such.
@@ -1272,6 +1329,41 @@ fn installed_library_accepts_records_exactly_at_their_limits() {
         assert!(rest.is_empty(), "{rest:#?}");
         assert_left(terminal, 1);
     }
+    assert_all_released(&report["ledger"]);
+    package.assert_clean();
+}
+
+/// LIB-04 and LIB-05 Fault (a panic contained inside a running connection
+/// leaves nothing counted): with `CLIMON2_LIBRARY_FAULT` panicking as the
+/// first record from the fake daemon arrives, run still returns with failed
+/// terminal evidence (`internal_error`, passive retry), and the instance no
+/// longer counts the connection's descriptor or the Open still outstanding.
+#[test]
+fn installed_library_panic_in_a_connection_leaves_nothing_counted() {
+    let package = Package::new();
+    let root = root(&package);
+    let steps = json!([
+        { "do": "create", "peer": passive_peer(json!([])) },
+        { "do": "submit", "request": open(1, &REQUIRED, &["title-v1"]) },
+        { "do": "run" },
+        { "do": "wait_run" },
+        { "do": "snapshot" },
+        { "do": "finish" },
+    ]);
+    let Some(report) = script_fault(&package, &root, steps, "panic:receive") else {
+        return;
+    };
+    assert_settled("panic", &step(&report, 4)["output"]);
+    let (records, terminal) = finished(step(&report, 5));
+    assert_eq!(records.len(), 1, "{records:#?}");
+    assert_diagnostic(&records[0], 1, ORIGIN_LIBRARY, "internal_error");
+    let contained = (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED);
+    assert_terminal(
+        terminal,
+        1,
+        contained,
+        Some((ORIGIN_LIBRARY, "internal_error")),
+    );
     assert_all_released(&report["ledger"]);
     package.assert_clean();
 }

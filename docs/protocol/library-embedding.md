@@ -5,11 +5,12 @@ instance lifetime is implemented: every installed version ships its
 [client library](../../GLOSSARY.md#sessions) file, exporting
 only `climon2_client_get_interface`
 ([#75](https://github.com/jackgeek/climon2/issues/75)), and its instances are
-created, run, cleaned up, released and destroyed on their owner threads as
-described below, with every panic contained and no process-global state
-changed ([#85](https://github.com/jackgeek/climon2/issues/85)). An instance
-opens a passive monitor connection to its session's daemon on its owner
-thread, never raising `SIGPIPE` in the process
+created, run, cleaned up and destroyed on their owner threads, and shut down,
+drained and released from any thread, as described below, with every panic
+contained and no process-global state changed
+([#85](https://github.com/jackgeek/climon2/issues/85)). An instance opens a
+passive monitor connection to its session's daemon on its owner thread,
+never raising `SIGPIPE` in the process
 ([#93](https://github.com/jackgeek/climon2/issues/93)). Loading by the
 [monitor](../../GLOSSARY.md#sessions) and the
 [client executable](../../GLOSSARY.md#sessions) is not implemented. The

@@ -131,39 +131,46 @@ Each instance is independent: its own state and lock, its own diagnostics, no
 process-global lock, and no change to the environment, working directory,
 signal handlers or standard streams.
 
-- `create` runs on the thread that becomes the instance's owner. It parses the
-  whole startup before creating anything (`src/library/startup.rs`): the
+- `create` runs on the thread that becomes the instance's owner. It parses
+  every startup field, copying the session ID that Open checks (#93), before
+  creating anything (`src/library/startup.rs`): the
   expected release must be this library's (else `CM1_RELEASE_MISMATCH`); the
   generation is nonzero; metadata, home and runtime paths are absolute native
   Unix paths, copied byte for byte (invalid UTF-8 is kept; NUL, another
   encoding or `PATH_MAX` bytes or more are rejected); keys are enabled with a
   C0 byte or disabled with zero, through core's `ClientSettings`; the
-  diagnostics filter is nonempty `CLIMON2_LOG` grammar even without a log file;
+  diagnostics filter is nonempty `CLIMON2_LOG` grammar, parsed once into
+  core's `diagnostics::Filter` even without a log file;
   reserved fields are zero. Limits are effective values: every field but
   `max_workers` is nonzero, `client_bytes` covers the described
-  `instance_bytes` and `max_workers` the described `workers`, else
+  `instance_bytes`, `max_workers` the described `workers`, and
+  `drain_payload_bytes` at least `metadata_record_bytes`, else
   `CM1_UNSUPPORTED_LIMIT`; accepted limits are returned unchanged. Malformed
-  input is `CM1_INVALID_ARGUMENT`. Then it creates the notification descriptor
-  and, last, the optional log file at the caller's absolute path (`create_new`,
+  input is `CM1_INVALID_ARGUMENT`. Then it creates the notification descriptor,
+  the waker and, last, the optional log file at the caller's absolute path (`create_new`,
   mode `0600`, `O_NOFOLLOW`; a path that exists or whose directory is missing
   is `CM1_INVALID_ARGUMENT`), so any failure returns no handles and leaves no
-  descriptor (no descriptor left: `CM1_RESOURCE_LIMIT`). No daemon I/O, no
-  worker.
+  descriptor (no descriptor left, for the notification descriptor, the waker
+  or the log file: `CM1_RESOURCE_LIMIT`). No daemon I/O, no worker.
 - The log uses core's subscriber with the instance's filter and the
   session-log cap (`CappedWriter`), through the instance's own dispatcher;
   every record carries a `client_instance{generation=N}` span. Records are
   lifecycle facts only; `client instance running` (debug) names the copied
   paths and keys.
 - `run` is owner-thread only (`CM1_WRONG_THREAD`) and once (a repeated run is
-  `CM1_CLOSED`). It executes accepted requests and the connection until the
-  stream ends (below), publishes terminal evidence after any queued record,
+  `CM1_CLOSED`). The instance is only ever borrowed shared, so a call from
+  another thread is refused safely while the owner thread runs. It executes
+  accepted requests and the connection until the stream ends (below),
+  publishes terminal evidence after any queued record,
   then waits up to `cleanup_ms` for its workers. The
   report is separate from terminal evidence: complete cleanup is
   `CM1_CLEANUP_COMPLETE`; a worker still running is `CM1_CLEANUP_INCOMPLETE`
   with `CM1_TIMEOUT`, and that instance can never be destroyed. Without Open,
   terminal evidence is stopped with no retry after shutdown, Leave is not
   required and every connection is closed.
-- `shutdown` is idempotent intent from any thread, and may precede `run`.
+- `shutdown` is idempotent intent from any thread, and may precede `run`. It
+  records the intent before anything that can fail, so even a failed shutdown
+  ends the stream with no retry.
 - `notification` returns the same borrowed descriptor every time: on Linux one
   `eventfd` (close-on-exec, nonblocking), on macOS the read end of a
   close-on-exec pipe (`src/library/macos.rs`, two descriptors). It is readable
@@ -185,17 +192,21 @@ signal handlers or standard streams.
   notification and waker descriptors, plus one for a log file and one for an
   open connection), with peaks, and the drained and released counters. No
   shared-release allocation is tracked; input and display measurements stay
-  zero.
+  zero. Allocation undercounts: each instance's diagnostics dispatcher (its
+  subscriber and filter) is not counted yet
+  ([#180](https://github.com/jackgeek/climon2/issues/180)).
 - A panic in an instance call, `submit` included, stops that instance: the
   call fails with
   `CM1_INTERNAL_ERROR`, one library `CM1_DIAGNOSTIC` record (`internal_error`)
   is queued when it fits `event_bytes`, and terminal evidence is failed with
-  that error, retried passively unless shutdown had already been requested.
+  that error, retried passively, or not at all when shutdown was requested
+  first or the panic is in `shutdown` itself.
   After terminal evidence a panic changes nothing else.
 
 With `test-hooks` only (`src/library/hooks.rs`), `CLIMON2_LIBRARY_FAULT`
 selects faults: `panic:<call>[,<call>...]` panics once at each named export's
-boundary (`bootstrap` names `climon2_client_get_interface`), `worker` makes
+boundary (`bootstrap` names `climon2_client_get_interface`), or at `receive`,
+as a running connection handles a frame from its daemon; `worker` makes
 `run` start a worker that ends with its stream, and `stall-cleanup` one whose
 cleanup never ends. Release builds start no workers: an instance's
 connection runs on its owner thread, inside `run`.
@@ -243,10 +254,14 @@ metadata, only with `title-v1`) and diagnostics. A frame over
 fails the connection (`resource_limit`); nothing is truncated. While the
 event queue is full, the library stops reading the socket, so daemon
 records wait instead of being dropped. A delivery takes the oldest records,
-at most `drain_records`, stopping before `drain_payload_bytes` but holding at
-least one. Each record is charged its header and the bytes it owns: copied
-text and token arrays; the library's own error text is static and costs
-nothing.
+at most `drain_records`, stopping before `drain_payload_bytes`; create
+refuses `drain_payload_bytes` below `metadata_record_bytes`
+(`unsupported_limit`), so a record never exceeds it alone. Each record is
+charged twice `sizeof(cm1_record)`, for the `cm1_record` and the library's
+own copy (a compile-time check keeps that copy no larger), plus the bytes it
+owns once: copied text and token arrays; the library's own error text is
+static and costs nothing. Each outstanding request reserves one record's
+charge plus `metadata_record_bytes` for its outcome.
 
 A wire violation, a closed or broken socket, a daemon Fatal error or an
 exceeded limit ends the connection: a diagnostic when it fits the event
@@ -270,17 +285,22 @@ unanswered it is `invalid_state`, as is a second Open. The daemon's answer
 ends the stream, except a rejection, which keeps the registration. Shutdown
 rejects queued work, waits for an Open under way, then sends one Leave of
 its own; a lost, late, rejected or failed one is reported, never replayed.
+An Open whose hello completes after shutdown is never sent: it is
+`CM1_REJECTED` `cancelled`.
 
 Terminal evidence is stopped, without an error, after a confirmed departure
 or a shutdown before any role; otherwise failed with the first failure's
-error, or the departure's. Retry is none after shutdown, for an answered
-Leave that was not confirmed and for a known final result; permanent for
-missing support, identity, configuration or frame limits; passive otherwise.
+error, or the departure's. Retry is none once shutdown is requested, once a
+Leave the caller asked for is sent (answered or lost), and once the
+command's final result is known (a known-final rejection or the Initial
+metadata's command result); otherwise permanent for missing support,
+identity, configuration or frame limits, and passive.
 Leave evidence is not required when no Leave was attempted, since closing
 the connection ends a passive registration; otherwise it is confirmed,
 rejected, failed or, when lost or late, indeterminate. Only a confirmed
-departure can report a detached attachment. Every connection is closed. Sends never raise
-`SIGPIPE`: Linux sends with `MSG_NOSIGNAL`, macOS sets `SO_NOSIGPIPE`.
+departure can report a detached attachment. Every connection is closed.
+Sends never raise `SIGPIPE`: Linux sends with `MSG_NOSIGNAL`, macOS sets
+`SO_NOSIGPIPE`.
 
 Loaders open the absolute `<executable home>/<version>/<library file>` with
 eager, local resolution (`RTLD_NOW | RTLD_LOCAL`); `current`, the working
@@ -319,32 +339,40 @@ private target directory and checks.
 | LIB-03, LIB-04 and LIB-05 Library: create, run, shutdown, drain to terminal evidence, release, destroy and join; run and destroy on the wrong thread, a repeated run, destroy and handle release while busy; terminal evidence apart from the cleanup report | `installed_library_instance_runs_create_run_shutdown_drain_release_destroy_join` (`climon2-e2e/tests/instance.rs`) |
 | LIB-03 Library: a failed create returns no handles and leaves no descriptor: null arguments, a mismatched release, the generation, native paths | `installed_library_create_rejects_invalid_identity_and_paths_without_handles` (`instance.rs`) |
 | LIB-03 Library: client keys, log path and filter | `installed_library_create_rejects_invalid_settings_and_diagnostics_without_handles` (`instance.rs`) |
-| LIB-03 Library: limits it cannot honour, each at its bound; no descriptor left | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` (`instance.rs`) |
+| LIB-03 Library: limits it cannot honour, each at its bound, including `drain_payload_bytes` below `metadata_record_bytes`; no descriptor left for the notification and waker descriptors or for the log file, one more is enough | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` (`instance.rs`) |
 | LIB-03 Library and Fault: caller startup memory scrambled and unmapped after create; lossless native paths; two instances' homes, settings, logs and allocations stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` (`instance.rs`) |
 | LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` (`instance.rs`) |
-| LIB-04 Library and Fault, Linux `eventfd`: the descriptor stays borrowed, counted once, and safe to poll while the stream ends and the handle is in use | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` (`instance.rs`) |
+| LIB-04 Library and Fault, Linux `eventfd`: the descriptor stays borrowed and counted once; in a scheduled race, polling sees the stream end while the handle is used before shutdown and after the end, and every call succeeds | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` (`instance.rs`) |
 | LIB-04 Fault (allocator pairing): a delivery stays charged until released through the library | `installed_library_charges_a_delivery_until_it_is_released` (`instance.rs`) |
 | LIB-04 Fault: the failure diagnostic is queued only within `event_bytes` | `installed_library_queues_the_failure_diagnostic_only_within_event_bytes` (`instance.rs`) |
 | LIB-05 Fault: a panic at the bootstrap or `create` fails only that call | `installed_library_contains_a_panic_at_the_bootstrap_or_create` (`instance.rs`) |
-| LIB-05 and LIB-04 Fault: a panic in a running instance, at `submit` too, stops it, with a diagnostic delivery and failed terminal evidence | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` (`instance.rs`) |
+| LIB-05 and LIB-04 Fault: a panic in a running instance, at `submit` too, stops it, with a diagnostic delivery and failed terminal evidence (no retry from `shutdown` on); a delivery held past terminal evidence alone keeps communication and destroy busy | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` (`instance.rs`) |
 | LIB-04 and LIB-05 Fault: a panic in a release or destroy keeps the object valid | `installed_library_contains_a_panic_in_a_release_and_keeps_the_object` (`instance.rs`) |
-| LIB-05 Library and Fault: worker completion reported apart from terminal evidence | `installed_library_reports_worker_completion_apart_from_terminal_evidence` (`instance.rs`) |
-| LIB-06 Library: stalled worker cleanup is incomplete, never complete, and the instance is never destroyed | `installed_library_reports_stalled_worker_cleanup_as_incomplete_and_never_destroys` (`instance.rs`) |
+| LIB-05 Fault (`worker` hook): worker completion reported apart from terminal evidence | `installed_library_reports_worker_completion_apart_from_terminal_evidence` (`instance.rs`) |
+| LIB-06 Fault (`stall-cleanup` hook): stalled worker cleanup is incomplete, never complete, and the instance is never destroyed | `installed_library_reports_stalled_worker_cleanup_as_incomplete_and_never_destroys` (`instance.rs`) |
 | CTL-01, CTL-03, COM-01, COM-03, LIB-04 and EXT-01 Library: passive registration with a real daemon, controlled or detached, never acquires control; Response, atomic Initial metadata and gap-free titles; explicit and shutdown Leave confirmed once | `installed_library_registers_passively_while_controlled_elsewhere_and_relays_titles`, `installed_library_registration_never_acquires_a_detached_session`, `installed_library_explicit_leave_departs_once_and_is_answered` (`climon2-e2e/tests/passive.rs`) |
+| EXT-02 Library: a Leave a stopped real daemon never answers is unconfirmed (`timeout`, Leave indeterminate, failed) | `installed_library_reports_a_lost_leave_to_a_stopped_daemon_as_unconfirmed` (`passive.rs`) |
 | COM-01 Library: frames over `wire_frame_bytes` rejected before any role | `installed_library_rejects_a_daemon_whose_frames_exceed_wire_frame_bytes` (`passive.rs`) |
+| COM-01 and COM-02 Library: an Open naming no family selects none, as a null, zero-count list | `installed_library_opens_naming_no_family_and_selects_none` (`passive.rs`) |
 | LIB-05 Library and Fault: a stalled instance never stops another; `submit`, `drain` and release return at once | `installed_library_instance_stalled_by_its_daemon_never_stops_another` (`passive.rs`) |
-| COM-01 Library and Fault: missing support, mismatched identity, unreachable or silent daemons rejected before any Open is sent; families intersect | `installed_library_rejects_an_open_the_session_cannot_honour_before_any_role`, `installed_library_selects_only_families_both_sides_support` (`climon2-e2e/tests/passive_faults.rs`) |
-| COM-02 Library and Fault: forbidden, malformed, truncated, oversized and out-of-order traffic fails the connection with its origin and code; limits exactly met are accepted | `installed_library_fails_the_connection_on_traffic_revision_one_forbids`, `installed_library_accepts_records_exactly_at_their_limits` (`passive_faults.rs`) |
+| COM-01 Fault: missing support, mismatched identity, unreachable or silent daemons rejected before any Open is sent; families intersect | `installed_library_rejects_an_open_the_session_cannot_honour_before_any_role`, `installed_library_selects_only_families_both_sides_support` (`climon2-e2e/tests/passive_faults.rs`) |
+| COM-02 Fault: forbidden, malformed, truncated, oversized and out-of-order traffic fails the connection with its origin and code; limits exactly met are accepted | `installed_library_fails_the_connection_on_traffic_revision_one_forbids`, `installed_library_accepts_records_exactly_at_their_limits` (`passive_faults.rs`) |
 | COM-03, EXT-01 and EXT-02 Fault: timeouts, lost answers without fabrication or replay, refusals and their retry, known final results, shutdown and explicit Leave evidence | `installed_library_reports_lost_and_late_answers_truthfully_without_replay`, `installed_library_reports_a_known_final_result_and_never_retries`, `installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures` (`passive_faults.rs`) |
+| LIB-04 and LIB-05 Fault: a panic inside a running connection leaves no descriptor or operation counted | `installed_library_panic_in_a_connection_leaves_nothing_counted` (`passive_faults.rs`) |
 | LIB-05 Fault: no `SIGPIPE` in an embedder that left it at its default | `installed_library_never_raises_sigpipe_in_its_embedder` (`passive_faults.rs`) |
 | COM-02 and COM-03 Library: native admission, every queue limit at and one past its bound, no ID consumed by a rejection | `installed_library_admits_only_valid_requests_and_rejections_cost_nothing`, `installed_library_bounds_requests_by_every_queue_limit` (`climon2-e2e/tests/passive_admission.rs`) |
-| LIB-04 Library: delivery lifetimes and limits, drain batching, a full event queue holding daemon records, per-record charges | `installed_library_holds_each_delivery_until_released`, `installed_library_batches_records_within_drain_payload_bytes`, `installed_library_holds_daemon_records_while_the_event_queue_is_full`, `installed_library_charges_each_record_its_header_and_the_bytes_it_owns` (`passive_admission.rs`) |
+| LIB-04 Library: delivery lifetimes and limits | `installed_library_holds_each_delivery_until_released` (`passive_admission.rs`) |
+| LIB-04 Fault: drain batching, a full event queue holding daemon records, per-record charges | `installed_library_batches_records_within_drain_payload_bytes`, `installed_library_holds_daemon_records_while_the_event_queue_is_full`, `installed_library_charges_each_record_its_header_and_the_bytes_it_owns` (`passive_admission.rs`) |
 | DOC-01 exported interface: only the bootstrap is exported, from the real release library and from a defective stand-in | `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`), `release_checks_reject_extra_exports` (`xtask/src/library.rs`) |
 | DOC-01 layout case on x86-64 GNU/Linux and both macOS architectures | `rust_native_declarations_match_the_published_header` (`climon2-core/tests/native_layout.rs`) |
 | #75 risk proof: `cargo test` builds the hooked library as a sibling artifact without nested builds (ELF on Linux, Mach-O on macOS); the plain library is the release build | `workspace_client_library_is_a_hooked_sibling_of_the_test_executables` (`climon2-fixtures/tests/hooks.rs`); plain: `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`) |
 | #75 packaging, Linux ([library embedding](../../docs/protocol/library-embedding.md#artifact-and-dependency-lookup)'s release-build rules): release checks reject a soname, RPATH, RUNPATH or a dependency beyond glibc | `release_checks_reject_a_soname_rpath_or_runpath`, `release_checks_reject_a_dependency_beyond_glibc` (`xtask/src/library.rs`) |
 | #75 packaging: release checks accept the exact library and reject a wrong architecture, another release's version or hook markers | `release_checks_accept_the_exact_library`, `release_checks_reject_a_wrong_architecture`, `release_checks_reject_a_wrong_version`, `release_checks_reject_test_hook_markers` (`xtask/src/library.rs`) |
 | Installed and packaged layouts carry the library | `fresh_install_publishes_complete_version_launcher_and_current` (`climon2-install`), `install_builds_production_artifacts_and_preserves_existing_versions` (`xtask/tests/install.rs`) |
+
+LIB-06 Library is not covered yet: without the fault hook this release starts
+no worker that could stall. Open
+([#93](https://github.com/jackgeek/climon2/issues/93)) brings the first.
 
 ## Behavioral evidence
 
