@@ -175,7 +175,7 @@ pub(crate) fn unhooked(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn verify_linux_binary(path: &Path) -> io::Result<()> {
+pub(crate) fn verify_linux_binary(path: &Path) -> io::Result<()> {
     let bytes = fs::read(path)?;
     // ELF64, little-endian, current ELF version, AMD64 e_machine.
     if !bytes.starts_with(b"\x7fELF\x02\x01\x01") || bytes.get(18..20) != Some(&[62, 0]) {
