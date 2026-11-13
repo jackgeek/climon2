@@ -43,6 +43,15 @@ impl Policy {
             repeats: 0,
         }
     }
+
+    /// The bytes the policy forwards to a host for `token`: the token
+    /// itself, or its replacement.
+    pub(crate) fn forwarded<'a>(&'a self, token: &'a Token) -> &'a [u8] {
+        match &self.live {
+            Live::Forward => &token.bytes,
+            Live::Replace(bytes) => bytes,
+        }
+    }
 }
 
 /// CSI requests the host must never see, by final byte and (when given) an

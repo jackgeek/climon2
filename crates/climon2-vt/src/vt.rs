@@ -1,5 +1,5 @@
 use crate::{
-    classify::{Clear, Live, classify},
+    classify::{Clear, classify},
     derive::{Cache, derive},
     engine::Engine,
     geometry::{Geometry, STEP},
@@ -209,7 +209,7 @@ impl Vt {
         let title = self.engine.title().map(str::to_owned);
         self.execute(&token.bytes, policy.clear, &mut fed.replies);
         self.latch.observe(policy.sync, now);
-        fed.live.extend_from_slice(live(token, &policy.live));
+        fed.live.extend_from_slice(policy.forwarded(token));
         if self.engine.title() != title.as_deref() {
             fed.live.extend(self.title());
         }
@@ -292,12 +292,5 @@ impl Vt {
             .title()
             .unwrap_or(&self.default_title)
             .to_owned()
-    }
-}
-
-fn live<'a>(token: &'a Token, live: &'a Live) -> &'a [u8] {
-    match live {
-        Live::Forward => &token.bytes,
-        Live::Replace(bytes) => bytes,
     }
 }

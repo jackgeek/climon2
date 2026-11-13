@@ -2,7 +2,7 @@
 //! Alacritty engine, never asked to grow past what its model admitted.
 
 use crate::{
-    classify::{Clear, Live, classify},
+    classify::{Clear, classify},
     cost,
     engine::Core,
     geometry::{Geometry, STEP},
@@ -229,13 +229,10 @@ impl Bounded {
     /// parse of the token.
     fn token(&mut self, token: Token, room: &mut Room) -> Result<(), Rejected> {
         let policy = classify(&token);
-        let bytes = match policy.live {
-            Live::Forward => token.bytes,
-            Live::Replace(bytes) => bytes,
-        };
-        self.admit(self.growth(token.kind, &bytes, policy.repeats), room)?;
+        let bytes = policy.forwarded(&token);
+        self.admit(self.growth(token.kind, bytes, policy.repeats), room)?;
         self.grow(bytes.len() + policy.repeats, room);
-        self.core.advance(&bytes);
+        self.core.advance(bytes);
         self.settle(policy.clear);
         Ok(())
     }
