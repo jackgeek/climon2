@@ -216,6 +216,48 @@ fn installed_headless_creation_failures_keep_exec_statuses_and_diagnostics() {
     }
 }
 
+/// HDL-01 (Monitor layer), failed creation, and CFG-01 (exec case): headless
+/// exec validates the `monitor` section too, a wrong type and an
+/// out-of-range limit alike, and refuses it with the climon2 error code 125
+/// before any session side effect: nothing is printed on stdout, the logs
+/// directory holds only the general log, and no session log, metadata, socket
+/// or process is left.
+#[test]
+fn installed_headless_exec_rejects_an_invalid_monitor_section_before_any_session_side_effect() {
+    let package = Package::new();
+    let logs = package.isolation.climon2_home().join("logs");
+    for (config, diagnostic) in [
+        (
+            r#"{"monitor":{"bell":null}}"#,
+            "invalid type: null, expected a boolean",
+        ),
+        (
+            r#"{"monitor":{"limits":{"retry":{"initial_ms":30001}}}}"#,
+            "monitor.limits.retry.initial_ms (30001) may not exceed",
+        ),
+    ] {
+        fs::write(
+            package.isolation.climon2_home().join("config.jsonc"),
+            config,
+        )
+        .unwrap();
+        let output = scripted(&package, "c2", &headless_args("exit 0"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(125), "{config}: {stderr}");
+        assert!(output.stdout.is_empty(), "{config}");
+        assert!(stderr.starts_with("climon2: error: "), "{stderr}");
+        assert!(stderr.contains(diagnostic), "{stderr}");
+        assert!(stderr.contains(" (logs: "), "{stderr}");
+        assert_eq!(stderr.lines().count(), 1, "{stderr}");
+        let written: Vec<_> = fs::read_dir(&logs)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(written, ["general"], "{config}");
+        package.assert_clean();
+    }
+}
+
 /// HDL-01 (Monitor layer), creation when the session ID cannot be printed
 /// (owner decision of 2026-11-13 on #78): success means the session was
 /// created, so with stdout unwritable headless exec still exits 0 with
