@@ -387,6 +387,12 @@ impl Attached {
     /// stream closes.
     pub(super) fn ended(&mut self, result: &CommandResult) {
         assert_eq!(self.next_after_display(), command_final(result));
+        self.session_ended();
+    }
+
+    /// Control ends with the session, after any Display, and the stream
+    /// closes.
+    pub(super) fn session_ended(&mut self) {
         self.revoked(RevocationReason::SessionEnding);
         assert_closed(&mut self.stream);
     }

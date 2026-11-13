@@ -11,8 +11,8 @@ use climon2_core::{
     hello::Lifecycle,
     protocol::{ClientMessage, HANGUP_GRACE, ServerMessage as PrivateMessage},
     wire::{
-        Acquire, AuthorityIds, Cleanup, CommandResult, Input, Leave, Mode, Outcome, Response,
-        ServerMessage, Success,
+        Acquire, AuthorityIds, Cleanup, CommandResult, Input, KnownResult, Leave, Mode, Outcome,
+        PartialCleanup, PartialTermination, Response, ServerMessage, Success,
     },
 };
 use climon2_platform::process;
@@ -239,5 +239,48 @@ fn a_known_result_reaches_later_opens_and_rejected_first_roles() {
     assert_closed(&mut early);
     assert_closed(&mut late);
     attached.ended(&result);
+    session.finish();
+}
+
+/// COM-06 (Fault, through the `end-hangup` test hook: a session ending
+/// without final evidence) and COM-03 (Contract, Kill cases: a partial
+/// result): when the daemon cannot confirm how the command ended, here
+/// because the hook fails the end of its hang-up, no connection gets a
+/// Command final. The monitor's stream just ends, and the attachment's
+/// control ends with the session before its stream closes. The standalone
+/// Kill fails with `cleanup_failed`, reporting no result and incomplete
+/// cleanup, while the private kill keeps its mapping: `Terminated` 125.
+#[test]
+fn a_session_ending_without_final_evidence_sends_no_command_final() {
+    let mut session = Session::configured("ignore-hup", |command, _| {
+        command.env("CLIMON2_DAEMON_FAULT", "end-hangup");
+    });
+    let mut attached = ready_attachment(&session, &[]);
+    let (mut watching, _) = monitor(&session, &[]);
+    let mut killer = peer(&session);
+    request(&mut killer, &kill(1, 1, &[]));
+    terminating(&session);
+    let mut private = session.connect();
+    crate::send(&mut private, ClientMessage::Kill);
+    let failure = match message(&mut killer) {
+        ServerMessage::Response(Response {
+            request_id,
+            outcome: Outcome::Failed(failure),
+        }) if request_id == counter(1) => failure,
+        other => panic!("expected the Kill to fail, got {other:?}"),
+    };
+    assert_eq!(failure.error().code.as_str(), "cleanup_failed");
+    let incomplete = KnownResult::Termination(PartialTermination {
+        command_result: None,
+        cleanup: PartialCleanup::Incomplete,
+    });
+    assert_eq!(failure.known(), Some(&incomplete));
+    assert_closed(&mut killer);
+    assert_eq!(
+        crate::receive(&mut private),
+        PrivateMessage::Terminated { code: 125 }
+    );
+    assert_closed(&mut watching);
+    attached.session_ended();
     session.finish();
 }

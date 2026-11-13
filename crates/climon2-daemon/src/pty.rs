@@ -152,6 +152,10 @@ impl Pty {
 
     /// Kills what remains of the command session; the command's result.
     pub fn end_hangup(&mut self) -> io::Result<CommandResult> {
+        #[cfg(feature = "test-hooks")]
+        if crate::startup::selected_fault("end-hangup") {
+            return Err(super::io_error("controlled hang-up fault"));
+        }
         match self.status.clone() {
             Some(result) => self.session.kill().map(|()| result),
             None => self.reap_hung_up(),
