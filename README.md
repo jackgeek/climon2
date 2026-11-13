@@ -126,12 +126,86 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
 ```jsonc
 {
   "client": {
-    // Ctrl+[ is Escape: delays bare Escape; planned monitor Alt+s/Alt+x/Alt+j may trigger s/x/j.
-    "escape_prefix": "Ctrl+]",     // null disables escape interception in ordinary attach
+    // Ctrl+[ is Escape: it delays bare Escape, and in the monitor legacy Alt+s/x/j/? may trigger the shortcuts.
+    "escape_prefix": "Ctrl+]",     // null disables escape interception in ordinary attach; the monitor refuses null
     "take_control_key": "Ctrl+T"   // null disables keyboard takeover
   },
   "scrollback": {
     "max_rows": 10000
+  },
+  "monitor": {
+    "show_key_hints": true,        // false hides the monitor's implicit key hints, never a binding
+    "bell": true,                  // false: no host bell as a toast first draws
+    "limits": {
+      "memory": {
+        "total_bytes": 536870912,
+        "client_bytes": 67108864,
+        "history_bytes_per_session": 16777216,
+        "history_bytes_total": 268435456,
+        "queue_bytes_total": 67108864
+      },
+      "history": { "max_rows": 10000 },
+      "resources": {
+        "stack_bytes": 2097152,
+        "max_workers_per_client": 2,
+        "descriptors_per_client": 8,
+        "descriptors_per_load": 4,
+        "descriptor_headroom": 64,
+        "release_bytes": 67108864
+      },
+      "queues": {
+        "request_bytes": 262144,
+        "request_records": 64,
+        "event_bytes": 1048576,
+        "event_records": 1024,
+        "progress_bytes": 65536,
+        "progress_records": 32,
+        "deliveries": 8,
+        "operations": 16
+      },
+      "transfer": { "chunk_bytes": 65536, "drain_records": 64, "drain_payload_bytes": 65536 },
+      "payload": {
+        "wire_frame_bytes": 1048576,
+        "metadata_record_bytes": 16384,
+        "title_bytes": 4096,
+        "notification_title_bytes": 4096,
+        "notification_body_bytes": 8192,
+        "assembly_records": 32,
+        "assembly_bytes": 65536
+      },
+      "scheduling": { "probes": 8, "loads": 2, "starts": 8, "newer_start_burst": 8 },
+      "discovery": {
+        "pass_ms": 30000,
+        "stall_ms": 5000,
+        "batch_records": 128,
+        "batch_bytes": 1048576,
+        "metadata_file_bytes": 262144,
+        "metadata_depth": 32
+      },
+      "deadlines": {
+        "load_ms": 10000,
+        "start_ms": 10000,
+        "operation_ms": 5000,
+        "kill_ms": 10000,
+        "restoration_stall_ms": 5000,
+        "restoration_total_ms": 60000,
+        "delivery_stall_ms": 5000,
+        "leave_ms": 5000,
+        "cleanup_ms": 10000,
+        "shutdown_ms": 10000,
+        "final_host_ms": 1000,
+        "assembly_ms": 5000
+      },
+      "retry": { "initial_ms": 1000, "cap_ms": 30000, "jitter_percent": 20, "admission_ms": 1000 },
+      "ui": {
+        "fps": 30,
+        "client_quantum_ms": 2,
+        "background_quantum_ms": 8,
+        "toast_records": 128,
+        "toast_bytes": 524288,
+        "search_bytes": 4096
+      }
+    }
   },
 }
 ```
@@ -150,8 +224,9 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
   when the session starts; attaching never changes it. 0 disables retained
   history, but the screen is still restored.
 
-`exec` validates the whole file before starting the session, `attach` and
-`monitor` validate only `client`, and `list` and `kill` do not read it. Any error, including
+`exec` validates the whole file, `monitor` section included, before starting
+the session; `attach` and `monitor` validate only `client`, and `list` and
+`kill` do not read it. Any error, including
 malformed JSONC, duplicate keys, wrong types, invalid keys, conflicting bindings
 and out-of-range values, exits 125 before anything starts. The file is read once
 per command; there is no environment override, auto-creation or live reload.
