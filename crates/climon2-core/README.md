@@ -160,12 +160,36 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   case; anything else is a `UsageError`. `select` picks exactly one candidate by
   unique prefix or full ID; no match or ambiguity (listing every full ID) is a
   `SelectionError`.
-- `config`: `ConfigSource::read` reads `config.jsonc` once (absent means
-  defaults, unreadable is an error). `exec()` validates the whole file into
-  `ExecConfig` (scrollback `MaxRows`, an integer 0..=100000, default 10000, plus
-  client settings); `attach()` validates only the `client` section into
-  `AttachConfig`. JSONC comments and trailing commas are accepted; unknown
-  fields are ignored; errors name their class.
+- `config`: `ConfigSource::read` reads `config.jsonc` once (absent reads as
+  `{}`, so every setting takes its default; unreadable is an error). `exec()`
+  validates the whole file into `ExecConfig` (scrollback `MaxRows`, an integer
+  0..=100000, default 10000, plus client settings), checking and dropping the
+  `monitor` section; `attach()` validates only the `client` section into
+  `AttachConfig`; `monitor()` validates `client` and `monitor` into
+  `MonitorConfig`, ignoring `scrollback`. JSONC comments and trailing commas are
+  accepted; unknown fields are ignored; errors name their class.
+  - `MonitorConfig` (spec #73 Configuration model) exists only with an escape
+    prefix (`client.escape_prefix may not be null for climon2 monitor`); its
+    take-control key may be null. `escape_prefix()` gives the prefix, and
+    `settings()` gives `MonitorSettings` with `show_key_hints` (default true)
+    and `limits`. The take-control key and `bell` (default true) are validated
+    and reported only; they gain accessors with their first consumer.
+    `Display` writes every effective value as JSON in the file's own shape.
+  - `config::Limits` holds the eleven `monitor.limits` groups of
+    docs/monitor-operational-limits.md, with its defaults. Each setting is
+    read as its native `u32` or `u64` (overflow, null and other types are
+    errors). `Limits` exists only once every setting is within its range and
+    the cross-field rules hold (sub-budgets, reservations and the other
+    monitor byte budgets within their totals, client queues within the queue
+    and client budgets, toasts within the queue budget, progress reserves,
+    chunk and record capacity, quanta, retry delays; the daemon's
+    notification assembly limits are in no monitor total). A range
+    refusal has `MaxRows`'s shape, `<setting> must be an integer from <min> to
+    <max>`, from the same range type; a broken rule names both settings and
+    their values. Its fields are private: it is only reported so far, and
+    gains accessors with the code that enforces it. Whether the mandatory
+    current model and recent page fit is not checked yet (#167), and
+    operating-system limits are left to admission (#120).
 - `keys`: `ControlKey` is one C0 control byte named in the `Ctrl+` vocabulary.
   `ClientSettings` holds the escape prefix (default `Ctrl+]`) and take-control
   key (default `Ctrl+T`); either may be disabled, take-control may not be
@@ -201,6 +225,10 @@ Integration tests call only these public boundaries:
 | #17/#18/#28 home, layout, hash and frozen invocation | `issue17_home_defaults_only_when_unset_and_never_accepts_empty_or_relative`, `adr0001_version_matched_client_has_exact_frozen_invocation`, `issue18_runtime_hash_is_sha256_of_exact_canonical_home_and_socket_is_bounded` |
 | #74 monitor executable home and the CLI's own-version monitor | `issue74_monitor_resolves_the_same_layout_as_the_cli` |
 | #74 `monitor`/`mon` take no arguments (INP-01 derived refusal) | `issue74_monitor_and_mon_take_no_arguments` |
+| CFG-01 (Contract): missing file, objects and fields mean every documented default; `show_key_hints` and `bell` are independent booleans; every setting's range at its limit and one past it, overflow of its native type included, a range refusal naming its setting; null, wrong types and duplicates at every level; unknown and unrelated settings ignored; the cross-field rules at their limit and one past, the daemon's assembly limits in no monitor total; one read of the home's file | `cfg01_missing_objects_and_fields_mean_every_documented_default`, `cfg01_hints_and_bell_are_independent_booleans`, `cfg01_every_setting_accepts_the_lower_limit_of_its_range`, `cfg01_every_setting_accepts_the_upper_limit_of_its_range`, `cfg01_one_past_every_range_is_rejected`, `cfg01_null_is_an_error_for_every_known_setting`, `cfg01_wrong_types_are_errors`, `cfg01_duplicate_known_fields_are_errors`, `cfg01_unknown_and_unrelated_settings_are_ignored`, `cfg01_sub_budgets_fit_their_totals`, `cfg01_reservations_fit_the_total`, `cfg01_other_monitor_byte_budgets_fit_the_total`, `cfg01_toasts_fit_the_aggregate_queue_budget`, `cfg01_daemon_owned_assembly_limits_are_outside_the_total`, `cfg01_client_queues_fit_the_queue_and_client_budgets`, `cfg01_progress_reserves_leave_room_in_their_event_allowances`, `cfg01_the_largest_chunk_fits_usable_capacity`, `cfg01_the_largest_record_fits_usable_capacity`, `cfg01_quanta_and_retry_delays_are_ordered`, `cfg01_the_snapshot_is_one_read_of_the_home_configuration` |
+| CFG-01 (Contract, exec and attach cases): exec validates the `monitor` section, attach ignores it, and neither refuses a null escape prefix | `cfg01_exec_validates_the_monitor_section_and_attach_ignores_it` |
+| INP-01 (Contract): the monitor shares the client bindings and their rules, refuses a null escape prefix and accepts a null take-control key | `inp01_the_monitor_needs_an_escape_prefix_but_not_a_take_control_key` |
+| CFG-01 (Docs): the README spells out every client and monitor default and keeps the Escape/Alt warning above `escape_prefix` | `cfg01_the_readme_documents_every_default_and_the_escape_warning` |
 | #29 recovered argv/environment/depth/ordinal rules | `issue29_exec_list_attach_and_kill_parse_exact_arguments_and_reject_usage_errors`, `issue29_help_and_version_flags_take_no_arguments`, `issue29_top_level_ignores_stray_depth_and_sets_session_vars_and_terminal_identity`, `projected_environment_replaces_term_and_colorterm_and_drops_startup_envelope`, `issue29_nested_depth_defaults_malformed_enclosing_to_one_and_replaces_empty_term`, `issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow` |
 | Continuity messages and connection choice | `continuity_messages_have_exact_wire_codes_and_json`, `continuity_bodies_are_typed_objects_and_each_code_has_one_direction`, `a_connection_chooses_attach_or_kill_once_and_attachment_requests_need_attach` |
 | #17 / #20 exit mapping | `issue17_failures_remain_distinct_from_command_status_and_signal_mapping` |
@@ -217,7 +245,9 @@ Integration tests call only these public boundaries:
 
 `tests/config.rs`, `tests/hello.rs`, `tests/keys.rs`, `tests/selector.rs`,
 `tests/startup_envelope.rs` and `tests/title.rs` specify those modules one rule
-per test.
+per test. `tests/monitor_config.rs` specifies the monitor's configuration
+snapshot from a hand-written table of every `monitor.limits` setting, its range
+and native type, and the documented defaults.
 
 `tests/wire_framing.rs`, `tests/wire_requests.rs`, `tests/wire_server.rs`,
 `tests/wire_binary.rs` and `tests/wire_examples.rs` specify the revision-1

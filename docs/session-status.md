@@ -480,12 +480,14 @@ prefix+j stays data and s/x stay unchanged.
 
 Needs-attention toasts hint the actual configured prefix plus lowercase j,
 describing the dynamic most-recent jump rather than guaranteeing their own session.
-Planned `monitor.show_key_hints` is boolean, default true; it controls all implicit
+`monitor.show_key_hints` is boolean, default true; it controls all implicit
 toast/chrome/selector/empty hints, not bindings or application text. Validate the
 startup snapshot before terminal changes; wrong type/duplicate known fields fail,
-missing fields default, no live reload, and no new monitor bindings.
+missing fields default, no live reload, and no new monitor bindings. The monitor
+validates it and honors it for its empty-state hint, the only hint implemented
+([#82](https://github.com/jackgeek/climon2/issues/82)).
 See the [canonical amendments](protocol/terminal-integration.md#attention-jump-and-configurable-hints)
-and [future configuration example](../README.md#planned-monitor-settings-not-implemented).
+and [configuration example](../README.md#configuration).
 
 ## Connection loss and retained terminal views
 
