@@ -594,14 +594,18 @@ fn retention_session(package: &Package, bash: &Path) -> Terminal {
 
 /// Section 6.1.7: a small `max_rows` keeps only the newest history rows,
 /// preceded by the truncation notice; `max_rows: 0` restores the screen
-/// without history or notice.
+/// without history or notice. CFG-01 (exec case): the monitor's own history
+/// limit, which exec validates too, never changes the daemon's.
 #[test]
 fn installed_scrollback_max_rows_bounds_restored_history() {
     let Some(bash) = controlled_bash() else {
         return;
     };
     let package = Package::new();
-    configure(&package, r#"{"scrollback": {"max_rows": 5}}"#);
+    configure(
+        &package,
+        r#"{"scrollback": {"max_rows": 5}, "monitor": {"limits": {"history": {"max_rows": 200}}}}"#,
+    );
     let mut small = retention_session(&package, &bash);
     let on_screen: Vec<u32> = (40 - (u32::from(ROWS) - 2)..=40).collect();
     let first_shown = on_screen[0];
@@ -615,7 +619,10 @@ fn installed_scrollback_max_rows_bounds_restored_history() {
     assert_eq!(small.wait_exit(TIMEOUT).unwrap(), 0);
     drop(small);
 
-    configure(&package, r#"{"scrollback": {"max_rows": 0}}"#);
+    configure(
+        &package,
+        r#"{"scrollback": {"max_rows": 0}, "monitor": {"limits": {"history": {"max_rows": 100000}}}}"#,
+    );
     let mut none = retention_session(&package, &bash);
     assert_eq!(numbered(&none, "row-"), on_screen, "{:?}", lines(&none));
     assert!(!lines(&none).iter().any(|line| line == NOTICE));
