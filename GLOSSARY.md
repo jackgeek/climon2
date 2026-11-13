@@ -172,6 +172,10 @@ _Avoid_: Space-to-control, hotkey
 The screen a non-controlling client shows instead of session content, saying the session is being viewed elsewhere.
 _Avoid_: Viewer mode, read-only view
 
+**Selector**:
+The monitor's overlaid list of every session row it tracks, opened with the client escape prefix and s, showing each row's status and label without resizing any session.
+_Avoid_: Session picker, menu, switcher, session list window
+
 **Key introduction**:
 The monitor's modal list of its key actions, spelled with the configured client escape prefix, shown at startup until the user declines it for that climon2 home, and on request as help.
 _Avoid_: Splash screen, onboarding, welcome screen
@@ -201,6 +205,10 @@ _Avoid_: Attachment, control ownership
 **Connection status**:
 A monitor's record of whether its client is connected to a session daemon, distinct from the session's last reported status.
 _Avoid_: Session status, daemon outcome
+
+**Not-connected row labels**:
+The status a monitor shows for a session row without a current daemon status: Starting while its client starts, Awaiting resources while it cannot be admitted, Unavailable when it cannot be reached or reports no status, This monitor for the monitor's own session, and Disconnected once its connection is lost or the session is proven gone.
+_Avoid_: Error state, dead, offline, unknown status
 
 ## Restoration and presentation
 

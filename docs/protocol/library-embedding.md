@@ -12,8 +12,16 @@ contained and no process-global state changed
 passive monitor connection to its session's daemon on its owner thread,
 never raising `SIGPIPE` in the process
 ([#93](https://github.com/jackgeek/climon2/issues/93)). The shared validated
-loader ([#84](https://github.com/jackgeek/climon2/issues/84)) is implemented
-and used by test tooling, but not yet by the monitor or client executable. The
+loader ([#84](https://github.com/jackgeek/climon2/issues/84)) is implemented.
+The [monitor](../../GLOSSARY.md#sessions) uses it
+([#106](https://github.com/jackgeek/climon2/issues/106)): it loads each
+session's exact-release library once per release on a worker thread, creates,
+runs and destroys each passive client's instance on that instance's own owner
+thread, submits monitor-mode Open, polls the borrowed notification
+descriptors, drains and releases every delivery, and on exit shuts every
+instance down and joins its owner within `deadlines.shutdown_ms`. Admission,
+recovery, acquisition and fail-stop remain unimplemented, and the client
+executable does not load the library yet. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
 requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)
 adds x86-64 GNU/Linux. [Native revision 1](monitor-client/core-v1.md), confirmed in

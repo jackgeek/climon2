@@ -54,8 +54,36 @@ logging. The CLI logs, on its own thread and under its own target, exactly the
 events it logged before the extraction, mapped from these outcomes and invalid
 entries ([CLI README](../climon2-cli/README.md)).
 
-Bounded probe concurrency, incremental passes that report incomplete progress,
-and fair continuation come with the monitor's discovery (#106).
+## Incremental passes (#106)
+
+The monitor runs bounded, incremental and fair passes instead:
+
+```rust
+pub fn Continuation::pass(&mut self, home: &HomeLayout, scan: &Scan, report: impl FnMut(Batch)) -> Progress
+```
+
+- A `Continuation` remembers where the next pass starts. A pass reaches the
+  `.pty` names after that point in byte order, then wraps to the names up to
+  it, so an entry added behind the pass's position waits for the next pass,
+  and an entry removed before it is reached is simply not reported.
+- It works one batch at a time: each lists the directory again, keeping only
+  the next `Scan::batch_records` names in a bounded heap, so no pass holds the
+  whole directory. It reads them in order until the next file would take the
+  batch past `Scan::batch_bytes` (its first entry is always read), applies
+  `Scan::limits`, and probes the valid entries with at most `Scan::probes`
+  frozen hello probes in flight, each under the two-second deadline.
+- `report` receives each `Batch` (`sessions` newest created first, then
+  ascending session ID, and `invalid`) as soon as it is probed.
+- No probe starts once `Scan::pass_time` has passed, except the pass's first,
+  so every pass makes progress. The pass then ends
+  `Progress::Incomplete(Incomplete::Deadline)` and the next continues after
+  the last entry it reported. A sessions directory that cannot be listed ends
+  it `Progress::Incomplete(Incomplete::Inaccessible(error))`. Otherwise it is
+  `Progress::Complete`, possibly with no batch: a completed empty pass.
+- It always retains stale metadata: monitor discovery never deletes anything.
+
+`discovery.stall_ms` is not applied yet: probes are bounded by their own
+deadline, and a stalled listing or read cannot be interrupted.
 
 ## Metadata limits (decision for #77)
 
@@ -93,4 +121,11 @@ hello peers.
 | DSC-04 Contract case (inaccessible discovery): a sessions directory that cannot be listed fails the pass with the listing error instead of reporting an empty home, and nothing is deleted | `a_sessions_directory_that_cannot_be_listed_fails_the_pass` |
 | DSC-01 Contract case (discovery order): newest created first, then ascending full session ID; a home without sessions is an empty pass | `sessions_are_newest_created_first_with_ascending_session_id_ties` |
 
-The monitor's own DSC-01, DSC-03, DSC-04 and DSC-06 cases arrive with #106.
+| DSC-03 and DSC-04 Contract cases (incremental passes): every entry once, in batches bounded by records and by bytes at and one byte short of the bound; complete versus completed empty passes; nothing deleted | `incremental_passes_report_every_entry_once_in_bounded_batches` |
+| DSC-03 Contract case (fair continuation while the directory changes) | `a_pass_continues_through_directory_changes_and_the_next_pass_reaches_what_it_missed` |
+| DSC-04 Contract and Fault cases (slow and dead probes, incomplete discovery) with DSC-03 fair continuation | `a_pass_deadline_reports_incomplete_progress_and_the_next_pass_continues_after_it` |
+| DSC-04 Contract case (bounded probes) | `probes_are_bounded_by_the_scans_concurrency`, `probes_run_concurrently_up_to_the_bound` |
+| DSC-04 Contract case (inaccessible discovery, incremental) | `an_unlistable_sessions_directory_makes_the_pass_incomplete` |
+
+The monitor's own DSC-01, DSC-03, DSC-04 and DSC-06 cases are mapped in the
+[monitor README](../climon2-monitor/README.md#specification-mapping).

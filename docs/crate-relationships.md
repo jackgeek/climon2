@@ -33,6 +33,7 @@ flowchart TB
         daemon --> vt
         install --> core
         monitor --> core
+        monitor --> discovery
         monitor --> platform
         monitor --> vt
         platform --> core
@@ -67,8 +68,6 @@ flowchart TB
     xtask --> install
     xtask --> platform
     xtask -.->|"dev"| fixtures
-
-    monitor -.->|"planned"| discovery
 ```
 
 The launcher has no workspace crate dependencies. Cycles through
@@ -83,7 +82,7 @@ test-only executable of the existing harness crate.
 
 **Current (#74):** the [monitor](../GLOSSARY.md#sessions) is its own shipped
 crate, `climon2-monitor`, with a library and the `climon2-monitor` binary. It
-consumes `core`, `platform` and `vt` (the only exception to
+consumes `core`, `discovery` (#106), `platform` and `vt` (the only exception to
 [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)'s daemon-only
 `climon2-vt` rule) and never the CLI, client or daemon crates.
 `climon2-test-term` consumes it only to unify `test-hooks` into the test build.
@@ -95,22 +94,24 @@ deliberately excluded from this workspace-only diagram.
 artifact of `climon2-client`, not another crate. The `#[repr(C)]` declarations
 of its native interface live in `climon2-core`, so the client library, the
 client executable and the monitor can share them without new edges; today the
-library, the library host fixture and xtask's release checks consume them.
+library, the monitor (#106), the library host fixture and xtask's release
+checks consume them.
 
 **Current (#77):** `climon2-discovery` holds the session discovery that
 [Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59)
-planned to share between the CLI and the monitor. It consumes only `core` and
-`platform`, and today only the CLI consumes it.
+shares between the CLI and the monitor. It consumes only `core` and
+`platform`; the CLI runs whole passes, and the monitor (#106) runs incremental,
+bounded passes continuously.
 
 **Current (#84):** the one validated loader for client libraries lives in
 `climon2-platform`, as [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)
-records. The library-host fixture and xtask release checks use it; the monitor
-and client executable do not yet. Test-only loader fixtures consume the
+records. The monitor (#106), the library-host fixture and xtask release checks
+use it; the client executable does not yet. Test-only loader fixtures consume the
 platform crate as dev-dependencies.
 
-**Planned:** the monitor will consume discovery continuously (#106) and load
-version-matched client libraries in-process through the shared loader, with one
-client thread per [live session](../GLOSSARY.md#sessions). Dynamic loading is
+**Current (#106):** the monitor loads version-matched client libraries
+in-process through the shared loader, with one owner thread per
+[live session](../GLOSSARY.md#sessions)'s passive client. Dynamic loading is
 shown in the artifact diagram, not as a Cargo dependency.
 
 The [status/activity revision](session-status.md) also requires the monitor

@@ -3,18 +3,20 @@
 **Status: developer-confirmed specification for
 [Define automated monitor acceptance criteria](https://github.com/jackgeek/climon2/issues/62),
 not implementation or executed acceptance evidence.** The
-[monitor](../GLOSSARY.md#sessions) exists only as the empty walking skeleton of
-[#74](https://github.com/jackgeek/climon2/issues/74); the daemon wire is partly
+[monitor](../GLOSSARY.md#sessions) is the walking skeleton of
+[#74](https://github.com/jackgeek/climon2/issues/74) with discovery, passive
+clients and the basic selector of
+[#106](https://github.com/jackgeek/climon2/issues/106), whose Monitor-layer
+cases are mapped in the monitor README; the daemon wire is partly
 implemented, and headless creation is implemented. Packaged
 [client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
 description ([#75](https://github.com/jackgeek/climon2/issues/75)), their
 local instance lifecycle
 ([#85](https://github.com/jackgeek/climon2/issues/85)) and open passive
 monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
-but no monitor loads them yet. Headless creation's HDL-01 Contract cases and
+which the monitor loads (#106). Headless creation's HDL-01 Contract cases and
 its Monitor-layer cases through the packaged CLI are mapped in the daemon and
-packaged-test READMEs, while the case that needs a running monitor waits for
-it. Resolving this specification does not pass a
+packaged-test READMEs, and its monitor-row case in the monitor README. Resolving this specification does not pass a
 [release gate](../GLOSSARY.md#testing).
 
 This document specifies evidence for the agreed thread-based Ratatui monitor.

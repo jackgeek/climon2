@@ -7,8 +7,7 @@ use climon2_core::keys::ControlKey;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Action {
     Exit,
-    /// The session list arrives with the selector (#106); until then this
-    /// action does nothing.
+    /// Opens the selector.
     SessionList,
     KeyIntroduction,
 }

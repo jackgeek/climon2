@@ -34,8 +34,8 @@ flowchart TB
         client -->|"daemon-client communication; current"| daemon
         daemon -->|"runs on session PTY"| command
         cli -->|"monitor / mon: execs own version"| monitor
-        monitor -.->|"hello probes for discovery; planned"| daemon
-        monitor -.->|"loads session-version library through shared loader; one client thread per live session; planned"| library
+        monitor -->|"hello probes for discovery"| daemon
+        monitor -->|"loads session-version library through shared loader; one owner thread per live session's passive client"| library
         client -.->|"loads same-release library through shared loader; versioned C interface planned"| library
         library -->|"daemon wire revision 1: passive monitor connections"| daemon
         library -.->|"daemon wire revision 1: control and display; planned"| daemon
@@ -116,27 +116,30 @@ session daemons' hello state. The Linux library links the GCC
 unwinder statically, because no unwinding leaves it, so it needs only glibc's
 libraries and has no soname, RPATH or RUNPATH, as the
 [Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for
-release isolation; release checks enforce each rule. Only test tooling loads it
-today, the library host fixture and xtask's release checks; the monitor's and
-client executable's loading remain planned. xtask's release-check tests compile
+release isolation; release checks enforce each rule. The monitor loads it (#106), and so do the
+test tooling, the library host fixture and xtask's release checks; the client
+executable's loading remains planned. xtask's release-check tests compile
 the C stand-in `xtask/tests/fixtures/client-library.c` into a test-only library,
 exact or with one defect, and load it through the same release checks as the
 real library; it is never shipped. Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`,
 `climon2-discovery` and `climon2-vt`, are not separately loaded dynamic
-libraries; the CLI's hello probes for discovery come from `climon2-discovery`
-linked into the CLI executable. System and third-party libraries
+libraries; the CLI's and the monitor's hello probes for discovery come from
+`climon2-discovery` linked into each executable. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
 
-**Planned:** the [monitor](../GLOSSARY.md#sessions) loads version-matched
-[client libraries](../GLOSSARY.md#sessions) directly into
-its own process, sharing a loaded library for sessions on the same release.
-Each live session has its own client thread. Clients start eagerly, newest
-first, with bounded concurrent progress; continuous discovery adds clients for
-new sessions. Background clients relay negotiated plugin data without taking
-control. Native client crashes can terminate the entire monitor. Ratatui powers
-the monitor's rendering; today it draws only the permanent top row and the empty
-state, and the rest of its terminal integration is agreed, unimplemented.
+**Current (#106):** the [monitor](../GLOSSARY.md#sessions) loads
+version-matched [client libraries](../GLOSSARY.md#sessions) directly into its
+own process through the shared loader, one load per release on a worker
+thread, sharing it for every session on that release. Each live session's
+passive client has its own owner thread. Clients start eagerly, newest created
+first, with bounded concurrent starts; continuous discovery adds clients for
+new sessions, and background clients never take control. Native client crashes
+can terminate the entire monitor. Ratatui draws the permanent top row, the
+body and the basic [selector](../GLOSSARY.md#attachment-and-control).
+
+**Planned:** background clients relay negotiated plugin data, and the rest of
+the monitor's terminal integration is agreed, unimplemented.
 The [agreed terminal contract](protocol/terminal-integration.md), not implemented,
 selects exact ordered terminal bytes/control/restoration through existing
 in-process record queues and monitor-owned `climon2-vt` models, with planned
@@ -181,10 +184,10 @@ The client executable will also load its same-release library for ordinary
 operations.
 
 **Current (#84):** one validated loader for client libraries is part of
-`climon2-platform`, not a separate artifact; the monitor and the client
-executable will both load through it. Today the library host and xtask's
-release checks load the client library through it, from a version folder of
-an executable home. The [client library stand-in](../GLOSSARY.md#testing),
+`climon2-platform`, not a separate artifact; the monitor loads through it
+(#106), and the client executable will. The library host and xtask's release
+checks load the client library through it too, from a version folder of an
+executable home. The [client library stand-in](../GLOSSARY.md#testing),
 `crates/climon2-fixtures/stand-in/client-library.c`, is compiled by tests,
 through `climon2_fixtures::stand_in`, into a test-only library, exact or with
 one defect: xtask's release-check tests
@@ -197,8 +200,8 @@ on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 mon`, or their `climon2`
 spellings, reach it through the launcher and the current version's CLI, which
 execs its own version's monitor exactly as it execs a version-matched client,
 so the monitor is always the current version. That handoff between executables
-of one release is not frozen. The monitor does not yet discover sessions or
-load libraries.
+of one release is not frozen. Since #106 it discovers sessions and loads their
+libraries.
 
 The agreed [embedding design](protocol/library-embedding.md) loads
 `<executable home>/<session version>/libclimon2_client.dylib` on macOS, or
@@ -207,7 +210,7 @@ release-private dependency resolution, and explicit memory ownership.
 Every successfully opened library handle stays loaded until monitor exit,
 including handles rejected by later validation. Such releases remain in use
 until process exit; completed instance cleanup and joins do not unload them.
-These loading relationships are planned; only the artifacts ship today. Complete interface
+The monitor's loading is current (#106); the client executable's is planned. Complete interface
 declarations are specified in [native revision 1](protocol/monitor-client/core-v1.md),
 with explicit startup/role, ownership, cleanup and fresh-instance recovery calls.
 No new artifact or consumption arrow is added. Monitor-client communication is

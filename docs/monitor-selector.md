@@ -7,8 +7,16 @@ that typed prefix+x exits it, with the
 [key introduction and help](#key-introduction-and-help) of
 [#105](https://github.com/jackgeek/climon2/issues/105) over its empty state.
 That dialog does not yet close on Escape when Escape is not the prefix, or open
-over a selector. Nothing else this document specifies is implemented: no
-selector or key-hint footer, Delete, toasts or bell.
+over a selector. The basic [selector](../GLOSSARY.md#attachment-and-control) of
+[#106](https://github.com/jackgeek/climon2/issues/106) is implemented: prefix+s
+overlays the captionless double border with status and title columns and a
+reversed highlight, Up and Down move it without wrapping, and Escape closes
+it, without resizing an application or acquiring anything. Rows list newest
+created first, connected rows show Unavailable without `status-v1` and no
+status otherwise, and not-connected rows show Starting, Unavailable, This
+monitor or Disconnected. Nothing else this document specifies is
+implemented: no search or separator, Enter, status order, key-hint footer,
+Delete, toasts or bell.
 The [throwaway prototype](https://github.com/jackgeek/climon2/pull/72) is a
 primary source, not monitor implementation or real daemon/client acceptance.
 Use the [terminal contract](protocol/terminal-integration.md) and

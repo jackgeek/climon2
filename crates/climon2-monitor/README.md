@@ -10,7 +10,8 @@ executables of one release is not frozen. The library boundary is
 `Error` and exits 125.
 
 This is the #74 walking skeleton of spec #73, with its key introduction and
-help (#105). It discovers no sessions and loads no client libraries yet.
+help (#105), session discovery, passive clients and the basic selector
+(#106). Nothing is selected or acquired yet (#107, #108).
 
 ## Startup, before the host terminal changes
 
@@ -67,13 +68,13 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   frame changes, and a resize always repaints it.
 - One table of prefix actions (`keys.rs`, `BINDINGS`: key, action, label)
   completes the actions after the prefix and gives the key introduction its
-  lines and the empty state's hint its key. Prefix+s is listed as the
-  documented session list, which arrives with the selector (#106): until then
-  it does nothing.
+  lines and the empty state's hint its key. Prefix+s opens the selector
+  (below).
 - Host input is read as raw bytes and classified byte by byte (`keys.rs`):
   typed prefix+x exits, typed prefix+? opens the key introduction, and every
   other typed byte outside a prefix, Ctrl+C included, goes to it while it is
-  open and is otherwise discarded, because no session exists. A doubled prefix
+  open, otherwise to the open selector, and is otherwise discarded, because
+  nothing is selected. A doubled prefix
   is one literal prefix, which goes there too, so with `Ctrl+M` as the prefix
   Enter Enter continues. A prefix and the byte after it that completes no
   action reach nothing. The key introduction acts only on Enter (close) and
@@ -101,6 +102,69 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   end of host input (a hung-up host terminal) end the monitor through the exit
   path below with status 125: `cannot wait for host input: …` or
   `the host terminal closed`.
+
+## Sessions (#106)
+
+- **Discovery** (`discovery.rs`) runs on its own thread through
+  `climon2_discovery::Continuation`: the first pass at once, each later one a
+  second after the previous one ended, so passes never overlap, bounded by
+  `scheduling.probes` and `monitor.limits.discovery` (`pass_ms`,
+  `batch_records`, `batch_bytes`, `metadata_file_bytes`, `metadata_depth`).
+  Each batch reaches the UI thread as it is probed. It never deletes metadata.
+  Invalid metadata is logged and adds no row; an incomplete pass shows
+  `Discovery incomplete: <why>` under the body until a pass completes. The
+  thread is never joined: a pass cannot be interrupted, and it changes
+  nothing.
+- **The registry** (`registry.rs`) is pure and the single owner of row state,
+  keyed by full session ID: the discovery outcome and metadata, the connection
+  status with the time the monitor entered it, the latest nonempty daemon
+  title and whether the row is the monitor's own session
+  (`CLIMON2_SESSION_ID`). A live session with no client and not the monitor's
+  own gets exactly one client request. Discovery never removes a row or
+  changes a client's connection; a stale session nobody knew adds no row. The
+  status column is This monitor, Starting, Unavailable (uncertain, failed, or
+  connected without `status-v1`), Disconnected (connection ended, or proven
+  stale without a client), or empty for a connected row with `status-v1`,
+  whose effective status arrives with #107. The label is the latest nonempty
+  title, otherwise the command and arguments joined by spaces, with control
+  characters escaped, never a session ID. Rows list newest created first, then
+  ascending full session ID.
+- **The client supervisor** (`supervisor.rs`) has its own thread. It loads
+  each release once through `climon2_platform::library::Loader` on a worker
+  thread (at most `scheduling.loads` at once; a session waiting on its release
+  holds no start slot) and starts clients newest created first, then
+  ascending session ID, at most `scheduling.starts` at once until each opens
+  or fails. Each instance has an owner thread that creates it with the
+  effective `monitor.limits` (`client_bytes` is all of `memory.client_bytes`:
+  the monitor reserves no model capacity yet), both client keys and the log
+  `logs/<session ID>/library-<stamp>-<pid>.log`, submits monitor Open (request
+  1, geometry 0x0; `daemon-wire-v1` and `monitor-v1` required, `title-v1`,
+  `status-v1`, `notification-v1`, `progress-v1` and `focus-v1` optional),
+  publishes its handles, runs it, and destroys it once the supervisor has
+  released them after terminal evidence. The supervisor polls the borrowed
+  notification descriptors every 20 ms tick, drains each ready instance until
+  it is empty, releases every delivery at once, and reports Open's outcome
+  (with whether `status-v1` was selected), titles from Initial metadata and
+  `CM1_TITLE`, and the end. A refused release, a failed create or Open, or a
+  client that ends before opening makes the row Unavailable; one that ends
+  after opening, Disconnected. Nothing is retried yet, and resource admission
+  arrives with #120. The general log records `client library loaded` or
+  `client library refused`, `client starting session=<id>`, `client opened`,
+  `client open refused`, `client ended` and client diagnostics, content-free.
+- **The selector** (`selector.rs`): prefix+s, unless the modal key
+  introduction is open, overlays the rows below the top row, one cell in from
+  each edge, with a captionless double border. Each row is its status, padded
+  to the widest status shown, a space and its label, clipped by display cell
+  without splitting a wide character; the highlighted row is reversed and
+  kept in view. It opens on the first row; prefix+s while open does nothing.
+  Typed Up and Down (`ESC [ A`/`B` or `ESC O A`/`B`) move the highlight
+  without wrapping, and an Escape that ends a host read closes it; the input
+  router (#109) replaces this per-read Escape rule. It never resizes an
+  application or acquires anything. While rows exist and the selector is
+  closed, the body reads `No session selected.` above the key hint.
+- **Exit** first asks the supervisor to shut every instance down and keeps
+  draining until each has ended, its handles are released and its owner is
+  joined, for at most `deadlines.shutdown_ms`, then releases the host.
 
 ## Exit
 
@@ -149,6 +213,17 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | EXT-03 (Fault, empty monitor): a render failure, or a failed wait for host input, releases the host before its one diagnostic, 125 | `debug_hook_render_failure_restores_the_host_before_its_diagnostic`, `debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic` (e2e) |
 | Spec #73 host terminal; TRM-04 (Monitor, empty monitor): SIGWINCH repaints without leftovers, erasing or showing the cursor | `resizing_the_host_redraws_the_monitor_at_the_new_size` (e2e) |
 | Spec #73 exit: content-free general log | `installed_monitor_logs_content_free_records_to_its_general_log` (e2e) |
+| DSC-03 (Monitor), CTL-01 (Monitor), COM-01 (Monitor), LIB-01 (Monitor, Linux maps), HDL-01 (Monitor rows): sessions created after an empty start appear unasked, one passive client and library log each, reused across passes; never attached or controlled; Unavailable without `status-v1`; titles and command fallback; exactly the version's `libclimon2_client.so` | `sessions_appear_as_they_are_created_each_with_one_passive_client` (e2e) |
+| DSC-04 (Monitor, Fault): malformed and oversized metadata, mismatched hello, silent probe, inaccessible discovery, uncertain disappearance; no metadata deleted, no client torn down | `uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients` (e2e) |
+| DSC-01 (Monitor, start order): bounded starts newest created first, ascending ID ties | `clients_start_one_at_a_time_newest_first_with_ascending_id_ties` (e2e) |
+| Own-session scenario (confirmed 2026-11-08), DSC-06 (Monitor), HDL-01 (Monitor rows), CTL-01 (controlled elsewhere), TRM-06 (wide labels), SEL-01 (cell-safe clipping) | `the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear` (e2e) |
+| SEL-01 (Monitor, basic cases): border, columns, highlight, Up/Down without wrap, Escape, no application resize or acquisition | `the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing` (e2e) |
+| DSC-01/DSC-03 (pure registry supplement): one client request per live session, newest-first order | `live_sessions_need_one_client_each_and_list_newest_first` (`src/registry.rs`) |
+| Own-session scenario (pure supplement) | `the_own_session_is_this_monitor_and_never_needs_a_client` (`src/registry.rs`) |
+| DSC-04 (pure supplement): uncertainty never removes rows or tears down clients | `uncertainty_never_removes_rows_or_tears_down_clients` (`src/registry.rs`) |
+| COM-01 and not-connected labels (pure supplement) | `connection_statuses_are_labelled_as_specified` (`src/registry.rs`) |
+| TRM-06 label cases (pure supplement): latest nonempty title, command fallback, literal, never IDs; cell-safe clipping | `labels_are_the_latest_nonempty_title_or_command_and_arguments_literally`, `clipping_is_display_cell_safe` (`src/registry.rs`) |
+| SEL-01 basic cases (pure supplement) | `the_selector_draws_a_captionless_double_border_with_two_columns`, `up_and_down_move_without_wrapping_and_escape_closes` (`src/selector.rs`) |
 | HLP-01 (Monitor): at every start with hints on and nothing saved, the introduction lists the actual prefix with x, s and ? and an unchecked box; Enter continues, closing saves nothing, prefix+x exits from it | `the_key_introduction_opens_at_every_start_until_dont_show_again_is_saved` (e2e) |
 | HLP-01 (Monitor): hints off or the choice saved keep it closed; prefix+? opens it regardless, showing the saved choice; prefix+? while open is a no-op; a later version's file with unknown fields is honoured | `the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say` (e2e) |
 | HLP-01 (Monitor): Space saves and reverses the choice per climon2 home, exact version 1 bytes, mode 0600 under umask 000, by rename (a hard link keeps the old bytes), nothing left behind, a file already under the temporary name replaced; restarts and another home | `dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible` (e2e) |
@@ -168,8 +243,10 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 
 Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), application input such
 as Ctrl+C (#109), mouse and focus report classification (#109) and their
-routing to applications (#111), HLP-02 over the selector (#113), prefix+s's
-session list (#106), Escape closing the key introduction when Escape is not
+routing to applications (#111), HLP-02 over the selector (#113), selector
+search, footer and Enter (#108, #113), status order and initial selection
+(#107), resource admission and fairness (#120), passive retry and
+`discovery.stall_ms`, Escape closing the key introduction when Escape is not
 the prefix (#109, whose input router tells a bare Escape from an escape
 sequence), and the universal archive's runtime on both architectures, which
 only CI's `dist` and `archive` jobs build and execute.
