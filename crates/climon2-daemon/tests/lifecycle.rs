@@ -1502,10 +1502,13 @@ fn an_unattached_session_ends_after_the_initial_deadline() {
     assert!(started.elapsed() < Duration::from_secs(7));
 }
 
-/// A session started like `climon2 exec --headless` would start it.
+/// A session started like `c2 exec --headless` would start it. Its fixture
+/// ends itself after two minutes, so a test killed before it ends its session
+/// cannot leave that session running forever.
 fn headless(mode: &str) -> Session {
     Session::configured(mode, |command, _| {
         *command = replace_option(command, "--lifetime", "headless");
+        command.env("DAEMON_FIXTURE_LIFE", "120");
     })
 }
 
@@ -1543,29 +1546,34 @@ fn a_headless_session_ends_with_its_command_and_zero_clients() {
     session.finish();
 }
 
-/// HDL-01 (Contract layer), unexpected loss: a headless session survives the
-/// loss of its last attachment, which ends an ordinary session
-/// (`every_controlling_leave_hangs_up_then_kills_after_real_grace`). It is
-/// detached again, accepts a new attachment, and its command still runs and
-/// reports its exit.
+/// HDL-01 (Contract layer), later attachments come and go: a headless session
+/// stays `detached` after its last attachment deliberately detaches and after
+/// its last attachment is lost, a loss that ends an ordinary session
+/// (`every_controlling_leave_hangs_up_then_kills_after_real_grace`). A later
+/// attachment still restores it, and its command still runs and reports its exit.
 #[test]
-fn a_headless_session_survives_the_unexpected_loss_of_its_last_attachment() {
+fn a_headless_session_survives_the_detach_and_the_loss_of_its_last_attachment() {
     let mut session = headless("exit");
     let mut first = session.attach();
     session.wait_marker(&mut first);
+    send(&mut first, ClientMessage::Detach);
+    assert_eq!(until_terminal(&mut first).1, ServerMessage::Detached);
+    assert_eq!(advertised_state(&session), (Lifecycle::Detached, 0, false));
+
+    let second = session.attach();
     assert_eq!(advertised_state(&session), (Lifecycle::Attached, 1, true));
     // The closed connection's EOF is readable before the probe connects, and
     // the daemon services connections in acceptance order, so the probe's
     // hello is answered after the loss.
-    drop(first);
+    drop(second);
     assert_eq!(advertised_state(&session), (Lifecycle::Detached, 0, false));
 
-    let mut second = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
-    let (period, restored) = restoration(&mut second);
+    let mut third = attach_at(&session, TerminalSize { cols: 91, rows: 37 });
+    let (period, restored) = restoration(&mut third);
     assert_eq!(count(&restored, b"fixture-ready"), 1);
-    send(&mut second, ClientMessage::Ready { period });
-    send(&mut second, ClientMessage::Input(b"go\n".to_vec()));
-    let (output, result) = until_terminal(&mut second);
+    send(&mut third, ClientMessage::Ready { period });
+    send(&mut third, ClientMessage::Input(b"go\n".to_vec()));
+    let (output, result) = until_terminal(&mut third);
     assert_eq!(result, ServerMessage::Exit { code: 42 });
     assert_eq!(count(&output, b"final-bytes"), 1);
     session.finish();
@@ -2700,6 +2708,12 @@ fn record_input(file: &str, query: Option<&str>) -> ! {
 #[ignore = "owned generic terminal fixture subprocess"]
 fn fixture_child() {
     let mode = std::env::var("DAEMON_FIXTURE_MODE").unwrap();
+    if let Ok(life) = std::env::var("DAEMON_FIXTURE_LIFE") {
+        // The default SIGALRM action ends the fixture after `life` seconds.
+        unsafe {
+            libc::alarm(life.parse().unwrap());
+        }
+    }
     if let Some(job) = mode.strip_prefix("job-") {
         job_fixture(job);
     }
