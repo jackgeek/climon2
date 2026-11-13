@@ -110,6 +110,12 @@ impl Failure {
     }
 }
 
+/// Refuses with `refusal` unless `holds`: every check that can refuse
+/// reads as one condition and the refusal it gives.
+pub(super) fn require<E>(holds: bool, refusal: E) -> Result<(), E> {
+    if holds { Ok(()) } else { Err(refusal) }
+}
+
 /// A call's result: success, or its explicit failure.
 pub(super) fn call(result: Result<(), Failure>) -> Call {
     result.map_or_else(Failure::call, |()| SUCCESS)

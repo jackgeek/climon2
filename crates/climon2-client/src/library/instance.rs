@@ -16,7 +16,7 @@ use super::{
     connection,
     failure::{
         BUSY, CLOSED, FULL, Failed, Failure, Fault, INVALID_ARGUMENT, INVALID_REQUEST_ID, PANIC,
-        RESOURCE_LIMIT, TIMEOUT, WRONG_THREAD,
+        RESOURCE_LIMIT, TIMEOUT, WRONG_THREAD, require,
     },
     hook,
     platform::Notifier,
@@ -426,17 +426,9 @@ impl Shared {
     }
 
     fn admit(&self, state: &State, submitted: &Submitted) -> Result<(), Failure> {
-        state
-            .stop
-            .running()
-            .then_some(())
-            .ok_or(SUBMISSIONS_CLOSED)?;
-        (submitted.id > state.last_request)
-            .then_some(())
-            .ok_or(NOT_INCREASING)?;
-        self.room(state, submitted.bytes)
-            .then_some(())
-            .ok_or(QUEUE_FULL)
+        require(state.stop.running(), SUBMISSIONS_CLOSED)?;
+        require(submitted.id > state.last_request, NOT_INCREASING)?;
+        require(self.room(state, submitted.bytes), QUEUE_FULL)
     }
 
     /// Whether one more request of `bytes` fits the request queue, the
@@ -629,9 +621,8 @@ impl Shared {
     }
 
     fn deliver(self: &Arc<Self>, state: &mut State) -> Result<native::Drained, Failure> {
-        (state.measures.deliveries.current < self.limits.deliveries)
-            .then_some(())
-            .ok_or(DELIVERIES_FULL)?;
+        let outstanding = state.measures.deliveries.current;
+        require(outstanding < self.limits.deliveries, DELIVERIES_FULL)?;
         let count = self.batch(&state.events);
         let batch = Batch::new(self.generation, state.events.drain(..count).collect());
         let measures = &mut state.measures;

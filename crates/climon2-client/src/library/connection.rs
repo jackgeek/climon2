@@ -7,7 +7,7 @@
 //! connection.
 
 use super::{
-    failure::{Failed, Fault},
+    failure::{Failed, Fault, require},
     handshake::{self, Expected, Peer},
     instance::{Next, Shared},
     link::{self, Link, TIMEOUT},
@@ -283,9 +283,8 @@ impl<'a> Session<'a> {
     /// is truncated into a healthy one.
     fn decode(&mut self, frame: &Frame) -> Result<Effect, Fault> {
         let length = frame.body().len() as u64 + 1;
-        (length <= self.shared.limits().metadata_record_bytes.into())
-            .then_some(())
-            .ok_or(OVERSIZED)?;
+        let limit = self.shared.limits().metadata_record_bytes.into();
+        require(length <= limit, OVERSIZED)?;
         self.stream.receive(frame)
     }
 

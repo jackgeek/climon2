@@ -6,7 +6,7 @@
 
 use super::{
     RELEASE,
-    failure::{Failed, Fault},
+    failure::{Failed, Fault, require},
     families,
     link::{Link, TIMEOUT, remaining},
     request::Open,
@@ -100,7 +100,7 @@ pub(super) fn socket(expected: &Expected) -> Result<PathBuf, Failed> {
 }
 
 fn agree(found: &str, expected: &str, refusal: Failed) -> Result<(), Failed> {
-    (found == expected).then_some(()).ok_or(refusal)
+    require(found == expected, refusal)
 }
 
 /// Connects and exchanges the frozen hello before `deadline`, then checks
@@ -150,9 +150,7 @@ fn reply(frame: &Frame) -> Result<HelloReply, Failed> {
 /// This session, the frozen protocol and this release.
 fn identity(reply: &HelloReply, session: &str) -> Result<(), Failed> {
     agree(reply.session_id.as_str(), session, ANOTHER_SESSION)?;
-    (reply.protocol == PROTOCOL_VERSION)
-        .then_some(())
-        .ok_or(UNSUPPORTED_PROTOCOL)?;
+    require(reply.protocol == PROTOCOL_VERSION, UNSUPPORTED_PROTOCOL)?;
     agree(reply.climon2_version.as_str(), RELEASE, ANOTHER_RELEASE)
 }
 
@@ -171,14 +169,13 @@ fn supported(
     required: &[&'static str],
     wire_frame_bytes: u32,
 ) -> Result<Peer, Failed> {
-    families::supports(&advertisement, required)
-        .then_some(())
-        .ok_or(UNSUPPORTED_FAMILY)?;
+    require(
+        families::supports(&advertisement, required),
+        UNSUPPORTED_FAMILY,
+    )?;
     let limits = advertisement.limits();
     let server = limits.max_server_frame_bytes.get();
-    (server <= wire_frame_bytes)
-        .then_some(())
-        .ok_or(UNFIT_FRAMES)?;
+    require(server <= wire_frame_bytes, UNFIT_FRAMES)?;
     let send = limits.max_request_frame_bytes.get().min(wire_frame_bytes);
     Ok(Peer {
         receive: limits.max_server_frame_bytes,

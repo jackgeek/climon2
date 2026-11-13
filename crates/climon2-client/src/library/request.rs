@@ -5,7 +5,7 @@
 use super::{
     failure::{
         FULL, Failure, INVALID_ARGUMENT, INVALID_REQUEST_ID, UNSUPPORTED_CAPABILITY,
-        UNSUPPORTED_OPERATION,
+        UNSUPPORTED_OPERATION, require,
     },
     families,
     startup::buffer,
@@ -69,13 +69,9 @@ pub(super) unsafe fn parse(request: &native::Request, capacity: u64) -> Result<S
 
 /// A known tag, reserved zero, then a positive ID.
 fn header(request: &native::Request) -> Result<u64, Failure> {
-    (native::OPEN..=native::FOCUS)
-        .contains(&request.tag)
-        .then_some(())
-        .ok_or(invalid("unknown request tag"))?;
-    (request.reserved == 0)
-        .then_some(())
-        .ok_or(invalid("reserved must be zero"))?;
+    let known = (native::OPEN..=native::FOCUS).contains(&request.tag);
+    require(known, invalid("unknown request tag"))?;
+    require(request.reserved == 0, invalid("reserved must be zero"))?;
     (request.request_id != 0)
         .then_some(request.request_id)
         .ok_or(Failure::new(
@@ -131,9 +127,10 @@ fn monitor(open: &native::Open) -> Result<(), Failure> {
 
 fn passive(open: &native::Open) -> Result<(), Failure> {
     let zero = [open.reserved, open.geometry.cols, open.geometry.rows] == [0; 3];
-    zero.then_some(()).ok_or(invalid(
-        "monitor Open needs zero geometry and reserved zero",
-    ))
+    require(
+        zero,
+        invalid("monitor Open needs zero geometry and reserved zero"),
+    )
 }
 
 /// Validated tokens, borrowed from the caller for the call.

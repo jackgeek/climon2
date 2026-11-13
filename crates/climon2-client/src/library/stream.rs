@@ -5,7 +5,7 @@
 //! is skipped or fabricated.
 
 use super::{
-    failure::{Failed, Fault},
+    failure::{Failed, Fault, require},
     families,
     link::fatal,
     records::{Answer, Command, Event, Metadata, Response, Title},
@@ -295,9 +295,7 @@ impl Stream {
     }
 
     fn answered(&mut self, request_id: Counter) -> Result<Sent, Fault> {
-        (!self.awaiting_metadata())
-            .then_some(())
-            .ok_or(UNEXPECTED)?;
+        require(!self.awaiting_metadata(), UNEXPECTED)?;
         let index = self
             .pending
             .iter()
@@ -367,7 +365,7 @@ impl Stream {
     }
 
     fn initial(&mut self, metadata: &wire::InitialMetadata) -> Result<Event, Fault> {
-        self.awaiting_metadata().then_some(()).ok_or(UNEXPECTED)?;
+        require(self.awaiting_metadata(), UNEXPECTED)?;
         let event = self.metadata(metadata)?;
         self.synchronized = true;
         Ok(event)
@@ -398,9 +396,7 @@ impl Stream {
     }
 
     fn changed(&self, title: Option<&str>) -> Result<Event, Fault> {
-        (self.synchronized && self.title == Some(true))
-            .then_some(())
-            .ok_or(UNEXPECTED)?;
+        require(self.synchronized && self.title == Some(true), UNEXPECTED)?;
         self.value(title).map(Event::Title)
     }
 
