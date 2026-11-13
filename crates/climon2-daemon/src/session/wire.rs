@@ -5,7 +5,10 @@
 use super::Session;
 use crate::{
     connection::{Connection, frame_limit},
-    control::{self, Authority, Authorized, CommandEnd, ConnectionId, Needs, Period, Restoration},
+    control::{
+        self, Authority, Authorized, CleanupResult, CommandEnd, ConnectionId, Needs, Period,
+        Restoration, SessionEnd,
+    },
 };
 use climon2_core::{
     protocol::TerminalSize,
@@ -611,8 +614,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// A standalone Kill's answer once the session ended, then the end of
     /// its stream.
-    pub(super) fn answer_kill(&mut self, id: u64, request_id: Counter, ended: &control::Outcome) {
-        self.respond(id, request_id, termination(ended));
+    pub(super) fn answer_kill(&mut self, id: u64, request_id: Counter, end: &SessionEnd) {
+        self.respond(id, request_id, kill_answer(end));
         self.end_stream(id);
     }
 
@@ -732,12 +735,14 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 /// A Kill succeeds only with the command's confirmed result after complete
 /// cleanup. Otherwise it failed: its termination or cleanup did not
 /// complete, and it reports the result the daemon knew, if any.
-fn termination(ended: &control::Outcome) -> Outcome {
-    match (&ended.command, ended.cleaned) {
-        (CommandEnd::Confirmed(command_result), true) => Outcome::Ok(Success::Termination {
-            command_result: command_result.clone(),
-            cleanup: Cleanup::Complete,
-        }),
+fn kill_answer(end: &SessionEnd) -> Outcome {
+    match (&end.command, end.cleanup) {
+        (CommandEnd::Confirmed(command_result), CleanupResult::Complete) => {
+            Outcome::Ok(Success::Termination {
+                command_result: command_result.clone(),
+                cleanup: Cleanup::Complete,
+            })
+        }
         (command, _) => Outcome::Failed(incomplete(command.known().cloned())),
     }
 }

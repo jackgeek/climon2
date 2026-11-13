@@ -32,7 +32,7 @@ use climon2_core::{
     protocol::TerminalSize,
     wire::{GrantReason, OperationalCode},
 };
-pub use shutdown::{CommandEnd, Outcome};
+pub use shutdown::{CleanupResult, CommandEnd, PrivateResult, SessionEnd};
 use shutdown::{Members, Shutdown};
 
 /// Identifies one daemon connection: an attachment, a probe or a kill requester.
@@ -156,10 +156,7 @@ pub enum Effect {
     /// Send an attachment `Error` describing the authoritative failure.
     DeliverError { conn: ConnectionId },
     /// Answer a kill requester with how the session ended.
-    ConfirmKill {
-        conn: ConnectionId,
-        outcome: Outcome,
-    },
+    ConfirmKill { conn: ConnectionId, end: SessionEnd },
     /// Flush connections under the shared short deadline, then exit.
     Finish,
 }
@@ -669,16 +666,16 @@ mod tests {
     }
 
     /// A session that ended with `command` and cleaned up, without failing.
-    fn ended(command: CommandEnd) -> Outcome {
-        Outcome {
+    fn ended(command: CommandEnd) -> SessionEnd {
+        SessionEnd {
             command,
             failed: false,
-            cleaned: true,
+            cleanup: CleanupResult::Complete,
         }
     }
 
-    fn confirmed(conn: ConnectionId, outcome: Outcome) -> Effect {
-        ConfirmKill { conn, outcome }
+    fn confirmed(conn: ConnectionId, end: SessionEnd) -> Effect {
+        ConfirmKill { conn, end }
     }
 
     fn granted(effects: Vec<Effect>) -> Authority {
@@ -1676,7 +1673,7 @@ mod tests {
         assert_eq!(control.attach(C, host()), [Refuse { conn: C }]);
         assert_eq!(control.kill(K), NONE);
         assert_eq!(control.command_exited(signal(1)), [Cleanup]);
-        let failed = Outcome {
+        let failed = SessionEnd {
             failed: true,
             ..ended(signal(1))
         };
@@ -1700,7 +1697,7 @@ mod tests {
         control.kill(K);
         assert_eq!(control.authoritative_failure(), NONE);
         control.command_exited(exit(0));
-        let failed = Outcome {
+        let failed = SessionEnd {
             failed: true,
             ..ended(exit(0))
         };
@@ -1723,8 +1720,8 @@ mod tests {
         let mut control = session(&[A]);
         control.kill(K);
         control.command_exited(exit(0));
-        let uncleaned = Outcome {
-            cleaned: false,
+        let uncleaned = SessionEnd {
+            cleanup: CleanupResult::Failed,
             ..ended(exit(0))
         };
         assert_eq!(
@@ -1764,28 +1761,27 @@ mod tests {
     /// and an error after a failure of the session or of its cleanup.
     #[test]
     fn the_private_protocol_keeps_its_exit_mapping() {
-        assert_eq!(ended(exit(0)).private_code(), Some(0));
-        assert_eq!(ended(exit(143)).private_code(), Some(143));
-        assert_eq!(ended(signal(15)).private_code(), Some(143));
+        use PrivateResult::Status;
+        assert_eq!(ended(exit(0)).private_result(), Status(0));
+        assert_eq!(ended(exit(143)).private_result(), Status(143));
+        assert_eq!(ended(signal(15)).private_result(), Status(143));
         let known = Some(CommandResult::Exit { code: 7 });
         let unconfirmed = CommandEnd::Unconfirmed(known.clone());
         assert_eq!(unconfirmed.known(), known.as_ref());
-        assert_eq!(ended(unconfirmed).private_code(), Some(125));
-        assert_eq!(
-            ended(CommandEnd::Unconfirmed(None)).private_code(),
-            Some(125)
-        );
+        assert_eq!(ended(unconfirmed).private_result(), Status(125));
+        let unknown = ended(CommandEnd::Unconfirmed(None));
+        assert_eq!(unknown.private_result(), Status(125));
         assert_eq!(exit(3).known(), Some(&CommandResult::Exit { code: 3 }));
-        let failed = Outcome {
+        let failed = SessionEnd {
             failed: true,
             ..ended(exit(0))
         };
-        assert_eq!(failed.private_code(), None);
-        let uncleaned = Outcome {
-            cleaned: false,
+        assert_eq!(failed.private_result(), PrivateResult::Error);
+        let uncleaned = SessionEnd {
+            cleanup: CleanupResult::Failed,
             ..ended(exit(0))
         };
-        assert_eq!(uncleaned.private_code(), None);
+        assert_eq!(uncleaned.private_result(), PrivateResult::Error);
     }
 
     #[test]

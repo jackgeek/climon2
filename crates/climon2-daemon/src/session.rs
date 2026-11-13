@@ -12,7 +12,8 @@ use crate::{
     args::Options,
     connection::{Connection, Failure, Received},
     control::{
-        Authority, CommandEnd, ConnectionId, Control, Effect, Lifecycle, Outcome, Restoration,
+        Authority, CommandEnd, ConnectionId, Control, Effect, Lifecycle, PrivateResult,
+        Restoration, SessionEnd,
     },
     pty::Pty,
 };
@@ -721,7 +722,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn final_effect(&mut self, effect: Effect) {
         match effect {
-            Effect::ConfirmKill { conn, outcome } => self.confirm_kill(conn.0, &outcome),
+            Effect::ConfirmKill { conn, end } => self.confirm_kill(conn.0, &end),
             Effect::Finish => self.finish(),
             other => self.grant_effect(other),
         }
@@ -871,10 +872,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// A kill requester's answer: a standalone Kill's Response, or the
     /// private protocol's confirmation.
-    fn confirm_kill(&mut self, id: u64, outcome: &Outcome) {
+    fn confirm_kill(&mut self, id: u64, end: &SessionEnd) {
         match self.kill_request(id) {
-            Some(request_id) => self.answer_kill(id, request_id, outcome),
-            None => self.terminal(id, private_confirmation(outcome)),
+            Some(request_id) => self.answer_kill(id, request_id, end),
+            None => self.terminal(id, private_confirmation(end)),
         }
     }
 
@@ -1021,10 +1022,10 @@ fn ending_effects(
 }
 
 /// `Terminated` with the private protocol's status, or `Error`.
-fn private_confirmation(outcome: &Outcome) -> ServerMessage {
-    match outcome.private_code() {
-        Some(code) => ServerMessage::Terminated { code },
-        None => failure_message(),
+fn private_confirmation(end: &SessionEnd) -> ServerMessage {
+    match end.private_result() {
+        PrivateResult::Status(code) => ServerMessage::Terminated { code },
+        PrivateResult::Error => failure_message(),
     }
 }
 
