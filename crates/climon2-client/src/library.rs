@@ -12,6 +12,10 @@ use climon2_core::native::{
 };
 use std::ptr;
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[path = "library/linux.rs"]
+mod linux;
+
 /// The release identity: the version folder name, compiled in.
 const RELEASE: &str = env!("CARGO_PKG_VERSION");
 
