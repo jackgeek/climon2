@@ -10,20 +10,14 @@
 #[allow(dead_code)]
 mod support;
 
-use climon2_test_term::{Terminal, process_command};
+use climon2_test_term::Terminal;
 use nix::{
     sys::signal::{Signal, kill},
     unistd::Pid,
 };
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::Path,
-    process::{Output, Stdio},
-    thread,
-    time::{Duration, Instant},
-};
-use support::{Package, TIMEOUT};
+use std::{fs, process::Output};
+use support::{Package, TIMEOUT, detach, kill_session, scripted, scripted_to, wait_file};
 
 /// A bash loop that waits for `$HOME/<name>`, giving up after two minutes.
 fn until_file(name: &str) -> String {
@@ -48,38 +42,6 @@ fn outlive_the_window() -> String {
         until_file("go"),
         until_file("finish")
     )
-}
-
-/// `<launcher> <args>` as a script runs it: stdin from /dev/null, stdout and
-/// stderr into pipes, so none of them is a terminal.
-fn scripted(package: &Package, launcher: &str, args: &[&str]) -> Output {
-    scripted_to(package, launcher, args, Stdio::piped())
-}
-
-/// Like [`scripted`], with stdout going to `stdout`. A CLI still running at
-/// the deadline is killed and reaped, and the test fails.
-fn scripted_to(package: &Package, launcher: &str, args: &[&str], stdout: Stdio) -> Output {
-    let isolated = package.command(launcher);
-    let mut cli = process_command(package.executable_home().join(launcher))
-        .args(args)
-        .env_clear()
-        .envs(isolated.iter_full_env_as_str())
-        .current_dir(package.isolation.home())
-        .stdin(Stdio::null())
-        .stdout(stdout)
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + TIMEOUT;
-    while cli.try_wait().unwrap().is_none() {
-        if Instant::now() >= deadline {
-            cli.kill().unwrap();
-            cli.wait().unwrap();
-            panic!("{launcher} {args:?} was still running after {TIMEOUT:?}");
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    cli.wait_with_output().unwrap()
 }
 
 fn headless_args(script: &str) -> [&str; 5] {
@@ -121,19 +83,6 @@ fn detached() -> Value {
     json!({"lifecycle": "detached", "attachments": 0, "controlled": false})
 }
 
-fn wait_file(path: &Path) -> String {
-    let deadline = Instant::now() + TIMEOUT;
-    while !path.exists() {
-        assert!(
-            Instant::now() < deadline,
-            "{} never appeared",
-            path.display()
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-    fs::read_to_string(path).unwrap()
-}
-
 fn touch(package: &Package, name: &str) {
     fs::write(package.isolation.home().join(name), "").unwrap();
 }
@@ -142,37 +91,6 @@ fn attach(package: &Package, id: &str) -> Terminal {
     let mut command = package.command("c2");
     command.args(["attach", id]);
     Terminal::spawn(command, 30, 120).unwrap()
-}
-
-/// Explicit detach once `client` is ready for input: the escape prefix and `d`,
-/// sent once, then status 0 and the reattach hint on stderr.
-fn detach(client: &mut Terminal, id: &str) {
-    client.wait_for_input_ready(TIMEOUT).unwrap();
-    client.send(b"\x1dd").unwrap();
-    assert_eq!(client.wait_exit(TIMEOUT).unwrap(), 0, "{}", client.screen());
-    client
-        .wait_for_bytes(
-            format!("climon2: detached from session {id}; reattach with: climon2 attach {id}")
-                .as_bytes(),
-            TIMEOUT,
-        )
-        .unwrap();
-}
-
-/// `climon2 kill`, the same launcher as `c2 kill`, keeps its existing
-/// semantics for a headless session: silent, status 0, confirmed only after
-/// the session is gone.
-fn kill_session(package: &Package, id: &str) {
-    let output = scripted(package, "climon2", &["kill", id]);
-    assert_eq!(
-        (
-            output.status.code(),
-            output.stdout.as_slice(),
-            output.stderr.as_slice()
-        ),
-        (Some(0), &b""[..], &b""[..])
-    );
-    assert!(package.list().is_empty());
 }
 
 /// Confirmed scenario (headless GUID output, no-TTY 80x24 start) and HDL-01
@@ -227,6 +145,7 @@ fn installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it()
     assert_eq!(wait_file(&package.isolation.home().join("size")), "31 97\n");
 
     kill_session(&package, &id);
+    assert!(package.list().is_empty());
     package.assert_clean();
 }
 
@@ -329,5 +248,6 @@ fn installed_headless_session_survives_zero_clients_a_killed_client_and_a_detach
     assert_eq!(listed_state(&package, &id), detached());
 
     kill_session(&package, &id);
+    assert!(package.list().is_empty());
     package.assert_clean();
 }

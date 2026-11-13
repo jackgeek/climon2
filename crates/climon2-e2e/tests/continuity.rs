@@ -14,9 +14,10 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use support::{Package, TIMEOUT, assert_released, outer, quote};
+use support::{
+    DETACH, Package, TIMEOUT, assert_released, detach, kill_session, outer, quote, wait_file,
+};
 
-const DETACH: &[u8] = b"\x1dd";
 const TAKE_CONTROL: &[u8] = b"\x14";
 const PLACEHOLDER: &str = "This session is being viewed elsewhere.";
 const NOTICE: &str = "[climon2: older session scrollback was discarded]";
@@ -101,18 +102,6 @@ fn session_id(package: &Package) -> String {
     package.metadata().session_id.to_string()
 }
 
-fn wait_file(path: &Path) {
-    let deadline = Instant::now() + TIMEOUT;
-    while !path.exists() {
-        assert!(
-            Instant::now() < deadline,
-            "{} never appeared",
-            path.display()
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
 fn wait_contents(path: &Path, done: impl Fn(&[u8]) -> bool) -> Vec<u8> {
     let deadline = Instant::now() + TIMEOUT;
     loop {
@@ -128,24 +117,6 @@ fn wait_contents(path: &Path, done: impl Fn(&[u8]) -> bool) -> Vec<u8> {
         );
         thread::sleep(Duration::from_millis(10));
     }
-}
-
-/// Explicit detach: status 0, then the reattach hint on stderr.
-fn detach(terminal: &mut Terminal, id: &str) {
-    terminal.send(DETACH).unwrap();
-    assert_eq!(
-        terminal.wait_exit(TIMEOUT).unwrap(),
-        0,
-        "{}",
-        terminal.screen()
-    );
-    terminal
-        .wait_for_bytes(
-            format!("climon2: detached from session {id}; reattach with: climon2 attach {id}")
-                .as_bytes(),
-            TIMEOUT,
-        )
-        .unwrap();
 }
 
 /// Native scrollback then the visible screen, one trimmed line per row.
@@ -294,7 +265,6 @@ fn installed_session_detaches_and_reattaches_on_an_occupied_host() {
         .unwrap();
     // Detaching discards input not yet written to the PTY; wait for the echo.
     first.wait_for_text(": > ~/done", TIMEOUT).unwrap();
-    first.wait_for_input_ready(TIMEOUT).unwrap();
     let id = session_id(&package);
     detach(&mut first, &id);
     drop(first);
@@ -323,7 +293,6 @@ fn installed_session_detaches_and_reattaches_on_an_occupied_host() {
     );
     second.send("echo typed-$((2+3))\n").unwrap();
     second.wait_for_text("typed-5", TIMEOUT).unwrap();
-    second.wait_for_input_ready(TIMEOUT).unwrap();
     detach(&mut second, &id);
     drop(second);
 
@@ -360,7 +329,6 @@ fn installed_alternate_screen_is_reattached_and_quitting_shows_normal_content() 
     first.wait_for_text("NORMAL-2", TIMEOUT).unwrap();
     first.send(format!("{}\n", quote(&tui))).unwrap();
     first.wait_for_text("ALT-DISPLAY", TIMEOUT).unwrap();
-    first.wait_for_input_ready(TIMEOUT).unwrap();
     let id = session_id(&package);
     detach(&mut first, &id);
     drop(first);
@@ -670,7 +638,6 @@ fn installed_session_answers_queries_without_the_host() {
     let detached = home.join("detached");
     first.send("~/query.sh ~/detached DETACHED-DONE\n").unwrap();
     first.wait_for_text("DETACHED-DONE", TIMEOUT).unwrap();
-    first.wait_for_input_ready(TIMEOUT).unwrap();
     detach(&mut first, &id);
     let first_requests = first.host_requests();
     drop(first);
@@ -782,7 +749,6 @@ fn installed_detached_session_absorbs_a_large_write() {
         ))
         .unwrap();
     first.wait_for_text(": > ~/done", TIMEOUT).unwrap();
-    first.wait_for_input_ready(TIMEOUT).unwrap();
     let id = session_id(&package);
     detach(&mut first, &id);
     drop(first);
@@ -810,11 +776,6 @@ const TUI: &str = r#"printf '\e[?1049h\e[?1000h\e[?1006h\e[?1004h\e[?2004h\e[?25
 stty raw -echo
 dd bs=1 count=1 >/dev/null 2>&1 || exec sleep 1000
 "#;
-
-fn kill_session(package: &Package, id: &str) {
-    let mut kill = climon2(package, &["kill", id], ROWS, COLS);
-    assert_eq!(kill.wait_exit(TIMEOUT).unwrap(), 0);
-}
 
 /// Section 6.1.11: detach, natural exit with modes left set, kill, and a
 /// non-controlling departure each return the host to the documented baseline
@@ -1026,7 +987,6 @@ fn installed_large_restoration_is_complete_and_ordered() {
         ))
         .unwrap();
     first.wait_for_text("42-producer-ready", TIMEOUT).unwrap();
-    first.wait_for_input_ready(TIMEOUT).unwrap();
     let id = session_id(&package);
     detach(&mut first, &id);
     drop(first);
