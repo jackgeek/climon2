@@ -232,8 +232,10 @@ fn kill(daemons: [Daemon; 2]) {
             receive(&mut killer),
             ServerMessage::Terminated { .. }
         ));
-        assert!(daemon_exit(daemon.pid).is_some());
-        daemon.pid = 0;
+        // The daemon is reaped even when it fails the assertion, so `Drop` must not signal or
+        // wait for it again.
+        let pid = std::mem::take(&mut daemon.pid);
+        assert!(daemon_exit(pid).is_some());
     }
 }
 
