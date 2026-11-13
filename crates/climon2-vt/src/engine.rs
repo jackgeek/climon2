@@ -131,13 +131,20 @@ impl<L: EventListener> Core<L> {
         if !self.alternate() {
             return f(self);
         }
-        let alternate = mem::replace(self.term.grid_mut(), Grid::new(1, 2, 0));
+        let placeholder = placeholder(self.term.grid());
+        let alternate = mem::replace(self.term.grid_mut(), placeholder);
         self.term.swap_alt();
         let result = f(self);
         self.term.swap_alt();
         *self.term.grid_mut() = alternate;
         result
     }
+}
+
+/// A two-cell stand-in for the alternate grid while it is moved aside, as
+/// empty of history as the alternate screen always is.
+fn placeholder(alternate: &Grid<Cell>) -> Grid<Cell> {
+    Grid::new(1, 2, alternate.history_size())
 }
 
 /// A grid's cursor as a 1-based (row, column).
