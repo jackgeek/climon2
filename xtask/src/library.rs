@@ -41,13 +41,16 @@ fn verify_exports(path: &Path) -> io::Result<()> {
 
 #[cfg(target_os = "macos")]
 mod platform {
+    use crate::quality::{TOOL_TIMEOUT, output_within};
     use std::{io, path::Path, process::Command};
 
     /// The C names of the defined external symbols of every architecture
     /// slice; Mach-O spells each C name with a leading underscore.
     pub(super) fn exported_symbols(path: &Path) -> io::Result<Vec<Vec<String>>> {
-        let symbols =
-            crate::quality::output(Command::new("nm").args(["-gUj", "-arch", "all"]).arg(path))?;
+        let symbols = output_within(
+            Command::new("nm").args(["-gUj", "-arch", "all"]).arg(path),
+            TOOL_TIMEOUT,
+        )?;
         Ok(slices(&String::from_utf8_lossy(&symbols.stdout)))
     }
 
@@ -76,6 +79,7 @@ mod platform {
 
 #[cfg(target_os = "linux")]
 mod platform {
+    use crate::quality::{TOOL_TIMEOUT, output_within};
     use std::{io, path::Path, process::Command};
 
     /// The glibc libraries that Rust's standard library can need on x86-64
@@ -92,8 +96,10 @@ mod platform {
 
     /// The defined dynamic symbols of the one ELF object, as one slice.
     pub(super) fn exported_symbols(path: &Path) -> io::Result<Vec<Vec<String>>> {
-        let symbols =
-            crate::quality::output(Command::new("nm").args(["-D", "--defined-only"]).arg(path))?;
+        let symbols = output_within(
+            Command::new("nm").args(["-D", "--defined-only"]).arg(path),
+            TOOL_TIMEOUT,
+        )?;
         let names = String::from_utf8_lossy(&symbols.stdout)
             .lines()
             .filter_map(|line| line.split_whitespace().last())
@@ -106,10 +112,11 @@ mod platform {
     /// loader can then never bind one release's library or dependency for
     /// another's (library embedding).
     pub(super) fn verify_dynamic_section(path: &Path) -> io::Result<()> {
-        let dynamic = crate::quality::output(
+        let dynamic = output_within(
             Command::new("readelf")
                 .args(["--dynamic", "--wide"])
                 .arg(path),
+            TOOL_TIMEOUT,
         )?;
         for line in String::from_utf8_lossy(&dynamic.stdout).lines() {
             let Some((tag, value)) = entry(line) else {
@@ -185,6 +192,7 @@ fn release(path: &Path) -> io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::quality::{TOOL_TIMEOUT, output_within};
     use std::{fs, path::PathBuf, process::Command};
 
     const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -220,17 +228,19 @@ mod tests {
         for arch in archs {
             clang.args(["-arch", arch]);
         }
-        crate::quality::run(
+        output_within(
             clang
                 .arg("-o")
                 .arg(&output)
                 .arg(root.join("xtask/tests/fixtures/client-library.c")),
+            TOOL_TIMEOUT,
         )
         .unwrap();
-        crate::quality::run(
+        output_within(
             Command::new("codesign")
                 .args(["--force", "-s", "-"])
                 .arg(&output),
+            TOOL_TIMEOUT,
         )
         .unwrap();
         output
@@ -245,7 +255,7 @@ mod tests {
         let output = directory.join(name);
         let exports = directory.join(format!("{name}.exports"));
         fs::write(&exports, "{ global: climon2_client_*; local: *; };\n").unwrap();
-        crate::quality::run(
+        output_within(
             Command::new("cc")
                 .args([
                     "-shared", "-fPIC", "-std=c11", "-Wall", "-Wextra", "-Werror",
@@ -258,6 +268,7 @@ mod tests {
                 .arg("-o")
                 .arg(&output)
                 .arg(root.join("xtask/tests/fixtures/client-library.c")),
+            TOOL_TIMEOUT,
         )
         .unwrap();
         output

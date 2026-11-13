@@ -3,9 +3,12 @@ use std::{
     collections::BTreeSet,
     env,
     ffi::OsStr,
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 const CRAPPER: &str = "6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d";
@@ -80,6 +83,58 @@ pub(crate) fn run(command: &mut Command) -> io::Result<()> {
 
 pub(crate) fn output(command: &mut Command) -> io::Result<Output> {
     let output = command.output()?;
+    checked(command, output)
+}
+
+/// How long one inspection or compiler run of a release check (nm, readelf,
+/// codesign, lipo, clang or cc on one small file) may take before it is killed.
+pub(crate) const TOOL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Like `output`, with null stdin, but a command still running at `timeout` is
+/// killed and reaped, and fails naming its process, so no tool hangs a check.
+pub(crate) fn output_within(command: &mut Command, timeout: Duration) -> io::Result<Output> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = drain(child.stdout.take().expect("piped stdout"));
+    let stderr = drain(child.stderr.take().expect("piped stderr"));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            child.wait()?;
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "{command:?} (pid {}) did not exit within {timeout:?}; killed and reaped",
+                    child.id()
+                ),
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let output = Output {
+        status,
+        stdout: stdout.join().expect("stdout reader")?,
+        stderr: stderr.join().expect("stderr reader")?,
+    };
+    checked(command, output)
+}
+
+fn drain(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<io::Result<Vec<u8>>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes).map(|_| bytes)
+    })
+}
+
+/// A finished command's output, or its failure with its diagnostics.
+fn checked(command: &Command, output: Output) -> io::Result<Output> {
     if output.status.success() {
         Ok(output)
     } else {
@@ -1019,6 +1074,46 @@ esac
         assert_eq!(verify_observation(correct).unwrap(), "zero-to-one");
         assert!(verify_observation("truncated").is_err());
         assert!(verify_observation("unknown\n---\n\n---\n0").is_err());
+    }
+
+    /// #75 bounded tool runs: a tool still running at its deadline is killed
+    /// and reaped, and the run fails naming its process instead of hanging.
+    #[cfg(unix)]
+    #[test]
+    fn output_within_kills_and_reaps_a_tool_that_outlives_its_deadline() {
+        let started = Instant::now();
+        let error = output_within(Command::new("sleep").arg("600"), Duration::from_secs(1))
+            .unwrap_err()
+            .to_string();
+        assert!(started.elapsed() < Duration::from_secs(60), "{error}");
+        assert!(
+            error.ends_with("did not exit within 1s; killed and reaped"),
+            "{error}"
+        );
+        let pid: libc::pid_t = error
+            .split_once("(pid ")
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(pid, _)| pid.parse().unwrap())
+            .unwrap();
+        // SAFETY: signal 0 only asks whether the process still exists.
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "the tool survives");
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    }
+
+    /// #75 bounded tool runs: a tool that finishes in time yields its output,
+    /// and one that fails reports its diagnostics.
+    #[cfg(unix)]
+    #[test]
+    fn output_within_returns_a_finished_tools_output_or_its_failure() {
+        let timeout = Duration::from_secs(60);
+        let output = output_within(Command::new("echo").arg("listed"), timeout).unwrap();
+        assert_eq!(output.stdout, b"listed\n");
+        let error = output_within(
+            Command::new("sh").args(["-c", "echo diagnosis >&2; exit 3"]),
+            timeout,
+        )
+        .unwrap_err();
+        assert!(error.to_string().ends_with(": diagnosis\n"), "{error}");
     }
 
     fn commit(root: &Path) {

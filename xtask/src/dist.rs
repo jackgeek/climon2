@@ -241,12 +241,16 @@ fn validate_tag(tag: &str, expected: &str) -> io::Result<()> {
 }
 
 pub(crate) fn verify_macos_binary(path: &Path) -> io::Result<()> {
-    quality::run(
+    quality::output_within(
         Command::new("codesign")
             .args(["--verify", "--strict"])
             .arg(path),
+        quality::TOOL_TIMEOUT,
     )?;
-    let archs = quality::output(Command::new("lipo").arg("-archs").arg(path))?;
+    let archs = quality::output_within(
+        Command::new("lipo").arg("-archs").arg(path),
+        quality::TOOL_TIMEOUT,
+    )?;
     let archs = String::from_utf8(archs.stdout).map_err(io::Error::other)?;
     if archs.split_whitespace().collect::<BTreeSet<_>>() != BTreeSet::from(["arm64", "x86_64"]) {
         return Err(io::Error::other(format!(
