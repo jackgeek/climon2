@@ -206,10 +206,11 @@ This is not native-crash isolation. Abort, native faults, and panic-abort builds
 can terminate the monitor and every hosted client. No new session-survival
 guarantee exists: ordinary sessions retain the daemon's existing
 [leave policy](../../GLOSSARY.md#attachment-and-control) and agreed succession.
-Future [headless sessions](../../GLOSSARY.md#sessions) explicitly survive zero
+[Headless sessions](../../GLOSSARY.md#sessions) explicitly survive zero
 clients even after later attachment loss, until completion or
 [Kill](../../GLOSSARY.md#attachment-and-control); that lifetime
-exception is agreed, not implemented, and adds no native-crash isolation.
+exception is implemented on the current private protocol and adds no
+native-crash isolation.
 
 ## Required automated evidence
 

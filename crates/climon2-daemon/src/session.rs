@@ -917,7 +917,7 @@ mod tests {
     use climon2_core::{lifetime::Lifetime, protocol::TerminalSize};
     use std::time::{Duration, Instant};
 
-    /// HDL-01 (Contract layer, pure decision): an ordinary session keeps an
+    /// HDL-01 (pure decision): an ordinary session keeps an
     /// early command exit for its first attachment until its initial attach
     /// window closes; a headless session, `detached` from startup, never holds it.
     #[test]

@@ -32,7 +32,8 @@ The planned [session status, attention, and activity mechanics](docs/session-sta
 include both daemon state machines and the monitor's ordering/recovery behavior.
 The agreed [monitor acceptance criteria](docs/monitor-acceptance.md) define
 the required real-monitor, packaged-library and measured evidence; only the
-monitor's entry, startup refusals and exits have tests so far.
+monitor's entry, startup refusals and exits, and headless sessions (HDL-01),
+have tests so far.
 
 ## Sessions
 

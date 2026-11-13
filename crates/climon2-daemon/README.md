@@ -282,14 +282,19 @@ cleanup; logs intentionally survive.
 ### Monitor acceptance scenarios
 
 Contract-layer cases of the [acceptance matrix](../../docs/monitor-acceptance.md),
-through the real daemon binary and raw-socket peers in `tests/lifecycle.rs`.
-Each test's doc comment cites its ID and case.
+through the real daemon binary and raw-socket peers in `tests/lifecycle.rs`,
+supplemented by pure decisions in the control state machine and the session
+loop. Each test's doc comment cites its ID and case. A headless session's
+fixture ends itself after two minutes (`DAEMON_FIXTURE_LIFE`), so a test killed
+before it ends its session cannot leave that session running forever.
 
 | Scenario | Named test |
 |---|---|
 | HDL-01 zero clients from startup: `detached` from readiness, outlives the initial attach window that ends an ordinary session started after it, exit reported to a later attachment | `a_headless_session_advertises_detached_and_outlives_the_initial_attach_window` |
-| HDL-01 command completion with zero clients, without the initial attach hold | `a_headless_session_ends_with_its_command_without_the_initial_attach_hold` |
-| HDL-01 survives the unexpected loss of its last attachment, then accepts another | `a_headless_session_survives_the_unexpected_loss_of_its_last_attachment` |
+| HDL-01 command completion with zero clients | `a_headless_session_ends_with_its_command_and_zero_clients` |
+| HDL-01 no initial attach hold: only an unattached ordinary session keeps an early exit until its initial deadline | `session::tests::only_an_unattached_ordinary_session_holds_an_early_exit_until_its_initial_deadline` (unit) |
+| HDL-01 survives the deliberate detach and the unexpected loss of its last attachment, then accepts another | `a_headless_session_survives_the_detach_and_the_loss_of_its_last_attachment` |
+| HDL-01 pure decisions: `detached` from startup, the initial deadline ends nothing, the last attachment's detach or loss keeps it `detached`, Kill ends it | `control::tests::a_new_headless_session_is_detached_and_outlives_its_initial_deadline`, `control::tests::a_headless_session_survives_the_departure_of_its_last_attachment` (unit) |
 | HDL-01 Kill with zero clients, confirmed after cleanup | `kill_ends_a_headless_session_with_zero_clients` |
 | HDL-01 ordinary leave policy unchanged | `every_controlling_leave_hangs_up_then_kills_after_real_grace`, `an_unattached_session_ends_after_the_initial_deadline` |
 | Startup policy: a missing or unknown `--lifetime` is an invalid invocation | `repeated_unknown_zero_pid_and_relative_options_are_invalid_invocations`; `args::tests::daemon_requires_a_known_lifetime` (unit) |
