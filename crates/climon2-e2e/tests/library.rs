@@ -8,14 +8,13 @@
 #[allow(dead_code)]
 mod support;
 
-use climon2_test_term::{bin_path, copy_executable, output_within, process_command};
+use climon2_test_term::copy_executable;
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
+use std::{fs, path::Path};
+use support::{
+    LIBRARY, Package,
+    library::{host, installed_library, observe},
 };
-use support::{LIBRARY, Package, TIMEOUT};
 
 const SUCCESS: u64 = 0;
 const UNSUPPORTED_REVISION: u64 = 1;
@@ -23,16 +22,6 @@ const INVALID_ARGUMENT: u64 = 2;
 const UNSUPPORTED_OPERATION: u64 = 3;
 const ORIGIN_LIBRARY: u64 = 1;
 const MIB: u64 = 1024 * 1024;
-
-/// The installed library of this package's version, by absolute path.
-fn installed_library(package: &Package) -> PathBuf {
-    package
-        .executable_home()
-        .join(env!("CARGO_PKG_VERSION"))
-        .join(LIBRARY)
-        .canonicalize()
-        .unwrap()
-}
 
 /// The version folder name, which is the library's release identity.
 fn version_folder(library: &Path) -> &str {
@@ -43,26 +32,6 @@ fn version_folder(library: &Path) -> &str {
         .unwrap()
         .to_str()
         .unwrap()
-}
-
-/// The host with a cleared environment; instrumented builds keep their profile.
-fn host(library: &Path, directory: &Path) -> Command {
-    let mut command = process_command(bin_path("climon2-library-host"));
-    command.arg(library).current_dir(directory).env_clear();
-    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-        command.env("LLVM_PROFILE_FILE", profile);
-    }
-    command
-}
-
-fn observe(mut host: Command) -> Value {
-    let output = output_within(&mut host, TIMEOUT);
-    assert!(output.status.success(), "{output:?}");
-    assert!(
-        output.stderr.is_empty(),
-        "library or loader wrote: {output:?}"
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
 }
 
 /// LIB-01 Library case (absolute exact-release load): the installed library,

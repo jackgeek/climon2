@@ -1,3 +1,7 @@
+/// Only the Library-layer suites use it.
+#[allow(dead_code)]
+pub mod library;
+
 use climon2_install::{Payload, install};
 use climon2_test_term::{Isolation, Modes, Terminal, bin_path};
 use portable_pty::CommandBuilder;

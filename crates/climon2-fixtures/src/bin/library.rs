@@ -1,34 +1,106 @@
-//! Library-layer test host (#75): loads one client library by absolute path
-//! through the frozen C ABI and prints what it observed as one JSON object.
+//! Library-layer test host (#75, #85): loads one client library by absolute
+//! path through the frozen C ABI and prints what it observed as one JSON
+//! object.
 //!
 //! It uses only `dlopen(RTLD_NOW | RTLD_LOCAL)`, `dlsym` of the bootstrap and
 //! the returned function table; never a Rust call into the library. It reports
 //! observations, not verdicts: tests decide what is correct. The library is
 //! never unloaded, as the embedding contract requires.
+//!
+//! `climon2-library-host <library>` describes the library.
+//! `climon2-library-host <library> <scenario> <json>` drives instances through
+//! one scenario (`lifecycle`, `create`, `fault`, `workers`, `independence`,
+//! `ambient` or `race`) with the instrumentation every Library-layer test
+//! shares: caller startup memory the library can neither keep nor free
+//! (`startup`), an ownership ledger and a timeline of every call and its
+//! thread (`abi`), and descriptor and process-state probes (`probe`).
 
-use climon2_core::native::{self, Bootstrap, Bytes, Call, Description, Interface, Tokens};
+#[path = "library/abi.rs"]
+mod abi;
+#[path = "library/faults.rs"]
+mod faults;
+#[path = "library/isolation.rs"]
+mod isolation;
+#[path = "library/probe.rs"]
+mod probe;
+#[path = "library/scenarios.rs"]
+mod scenarios;
+#[path = "library/startup.rs"]
+mod startup;
+
+use abi::{call, filled, state, text};
+use climon2_core::native::{self, Bootstrap, Description, Interface, Tokens};
 use serde_json::{Map, Value, json};
 use std::{
     ffi::{CStr, CString, c_void},
-    mem::{MaybeUninit, size_of},
+    mem::MaybeUninit,
     os::unix::ffi::OsStrExt,
     ptr::{self, NonNull},
 };
 
-const FILL: u8 = 0xa5;
 const UNTOUCHED_DESCRIPTOR: i32 = 0x5a5a_5a5a;
 const OTHER_REVISIONS: [u32; 3] = [0, 2, u32::MAX];
 
 fn main() {
-    let Some(path) = std::env::args_os().nth(1) else {
-        eprintln!("usage: climon2-library-host <absolute library path>");
+    let mut arguments = std::env::args_os().skip(1);
+    let Some(path) = arguments.next() else {
+        eprintln!("usage: climon2-library-host <absolute library path> [<scenario> <json>]");
         std::process::exit(2);
     };
-    let report = match load(&CString::new(path.as_bytes()).expect("path without NUL")) {
-        Ok(library) => observe(library),
-        Err(error) => json!({ "error": error }),
+    let scenario = arguments.next().map(|scenario| {
+        let input = arguments.next().expect("a scenario's JSON input");
+        let input = serde_json::from_slice(input.as_bytes()).expect("JSON input");
+        (scenario.to_string_lossy().into_owned(), input)
+    });
+    let report = match (
+        load(&CString::new(path.as_bytes()).expect("path without NUL")),
+        scenario,
+    ) {
+        (Ok(library), Some((name, input))) => drive(&library, &name, input),
+        (Ok(library), None) => observe(library),
+        (Err(error), _) => json!({ "error": error }),
     };
     println!("{report}");
+}
+
+/// Bootstraps revision 1, once more if the first bootstrap failed explicitly
+/// with `CM1_INTERNAL_ERROR` (a contained panic), then runs one scenario.
+fn drive(library: &Library, name: &str, input: Value) -> Value {
+    let mut bootstrap = Vec::new();
+    let description = loop {
+        let (status, description, output) = request(library, native::REVISION);
+        bootstrap.push(json!({ "status": status, "output": output }));
+        if status != native::INTERNAL_ERROR || bootstrap.len() > 1 {
+            break description;
+        }
+    };
+    assert!(!description.is_null(), "bootstrap failed: {bootstrap:?}");
+    // SAFETY: success returns an immutable description that lives until exit.
+    let description: &'static Description = unsafe { &*description };
+    let setup = scenarios::Setup {
+        api: abi::Api::new(&description.functions),
+        release: abi::text(description.release)
+            .as_str()
+            .expect("UTF-8 release text")
+            .to_owned(),
+        input,
+    };
+    let mut report = match name {
+        "lifecycle" => scenarios::lifecycle(&setup),
+        "create" => scenarios::creates(&setup),
+        "fault" => faults::fault(&setup),
+        "workers" => faults::workers(&setup),
+        "independence" => isolation::independence(&setup),
+        "ambient" => isolation::ambient(&setup),
+        "race" => isolation::race(&setup),
+        _ => panic!("unknown scenario {name}"),
+    };
+    if let Some(object) = report.as_object_mut() {
+        object.insert("bootstrap".into(), Value::Array(bootstrap));
+    } else {
+        report = json!({ "cases": report, "bootstrap": bootstrap });
+    }
+    report
 }
 
 struct Library {
@@ -73,15 +145,6 @@ fn image(address: *const c_void) -> Value {
     // SAFETY: dladdr succeeded, so dli_fname is a NUL-terminated path.
     let name = unsafe { CStr::from_ptr(info.assume_init().dli_fname) };
     json!(name.to_string_lossy())
-}
-
-fn text(bytes: Bytes) -> Value {
-    if bytes.data.is_null() || bytes.length > 65_536 {
-        return json!({ "null": bytes.data.is_null(), "length": bytes.length });
-    }
-    // SAFETY: a nonnull buffer covers `length` readable bytes by contract.
-    let slice = unsafe { std::slice::from_raw_parts(bytes.data, bytes.length as usize) };
-    json!(String::from_utf8_lossy(slice))
 }
 
 fn tokens(list: Tokens) -> Value {
@@ -152,43 +215,6 @@ fn describe(description: &Description) -> Value {
         },
         "functions": functions(&description.functions),
     })
-}
-
-fn call(call: Call) -> Map<String, Value> {
-    let error = call.error;
-    let mut result = Map::new();
-    result.insert("code".into(), json!(call.code));
-    result.insert("reserved".into(), json!(call.reserved));
-    result.insert("origin".into(), json!(error.origin));
-    result.insert("error_reserved".into(), json!(error.reserved));
-    result.insert("error_code".into(), text(error.code));
-    result.insert("message".into(), text(error.message));
-    result
-}
-
-/// Output storage filled with a pattern, to see whether a call clears it.
-fn filled<T>() -> MaybeUninit<T> {
-    let mut value = MaybeUninit::<T>::uninit();
-    // SAFETY: the pointer covers exactly one T.
-    unsafe {
-        value
-            .as_mut_ptr()
-            .cast::<u8>()
-            .write_bytes(FILL, size_of::<T>())
-    };
-    value
-}
-
-fn state<T>(value: &MaybeUninit<T>) -> &'static str {
-    // SAFETY: every byte was initialized by `filled` or by the library.
-    let bytes = unsafe { std::slice::from_raw_parts(value.as_ptr().cast::<u8>(), size_of::<T>()) };
-    if bytes.iter().all(|byte| *byte == 0) {
-        "zeroed"
-    } else if bytes.iter().all(|byte| *byte == FILL) {
-        "untouched"
-    } else {
-        "modified"
-    }
 }
 
 fn with_output<T>(mut result: Map<String, Value>, output: &MaybeUninit<T>) -> Value {
