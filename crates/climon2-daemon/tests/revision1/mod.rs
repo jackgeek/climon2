@@ -122,9 +122,9 @@ fn leave(stream: &mut UnixStream, request_id: u64) {
 fn assert_rejected(stream: &mut UnixStream, request_id: u64, code: &str) {
     let (answered, rejection) = match message(stream) {
         ServerMessage::Response(Response {
-            request_id,
+            request_id: answered,
             outcome: Outcome::Rejected(rejection),
-        }) => (request_id, rejection),
+        }) => (answered, rejection),
         other => panic!("expected a rejection of request {request_id}, got {other:?}"),
     };
     assert_eq!(answered, counter(request_id));
