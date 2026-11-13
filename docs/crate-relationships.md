@@ -54,9 +54,11 @@ flowchart TB
     e2e -.->|"dev"| install
     e2e -.->|"dev"| test_term
     fixtures --> core
+    fixtures --> platform
     fixtures -.->|"dev"| test_term
     xtask --> core
     xtask --> install
+    xtask --> platform
 
     subgraph planned["Planned crate; not implemented"]
         discovery["climon2-discovery"]
@@ -89,6 +91,13 @@ artifact of `climon2-client`, not another crate. The `#[repr(C)]` declarations
 of its native interface live in `climon2-core`, so the client library, the
 client executable and the monitor can share them without new edges; today the
 library, the library host fixture and xtask's release checks consume them.
+
+**Current (#84):** the one validated loader for client libraries lives in
+`climon2-platform`, as [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)
+records, so the monitor and the client executable will share it through their
+existing `platform` edges. Today the library host fixture
+(`climon2-fixtures`) and xtask's release checks consume it, which adds their
+`platform` edges.
 
 **Planned:** a separate discovery crate will share session discovery between
 the CLI and monitor, retained in

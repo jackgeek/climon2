@@ -70,14 +70,18 @@ no compatibility evidence was fabricated.
 `tests/library.rs` loads the installed client library,
 `<executable home>/<version>/libclimon2_client.dylib` on macOS or
 `libclimon2_client.so` on Linux, through the test-only `climon2-library-host`
-fixture, which uses only `dlopen` (`RTLD_NOW | RTLD_LOCAL`), `dlsym` of
-`climon2_client_get_interface` and the returned function table, never Rust
-calls, static linking or a mock table. The host prints its observations as
-JSON; the tests decide what is correct. Each host run is bounded; one that
-outlives its deadline is killed, reaped and failed. In archive mode the same
-tests load the exact archive's library, so the CI archive jobs exercise both
-macOS architectures' slices and the Linux library. The exported symbol set is
-a release check (`xtask`), not a Library-layer test.
+fixture. Given an executable home and a version, the host loads through the
+shared validated loader (`climon2_platform::library`, #84), which opens the
+library with `dlopen` (`RTLD_NOW | RTLD_LOCAL`), and then calls only the
+bootstrap and the returned function table, never Rust calls, static linking or
+a mock table. The host prints its observations as JSON, including the loader's
+refusal, whether a second load shared the first, every loaded file named like
+the client library, and its environment; the tests decide what is correct.
+Each host run is bounded; one that outlives its deadline is killed, reaped and
+failed. In archive mode the same tests load the exact archive's library, so
+the CI archive jobs exercise both macOS architectures' slices and the Linux
+library. The exported symbol set is a release check (`xtask`), not a
+Library-layer test; the loader's Fault-layer cases are `climon2-platform`'s.
 
 ## Session continuity scenarios
 
@@ -114,12 +118,15 @@ session continuity (plan section 6.1), `tests/continuity.rs`.
 | #19/#25 client panic after exec, diagnostic/log suffix, actual daemon leave policy | `debug_hook_client_panic_after_exec_logs_and_uses_daemon_leave_policy` |
 | #25/#39 actual release default INFO-or-above | smoke's `assert_archive_default_levels` in archive mode |
 
-### Library layer (`tests/library.rs`, #75)
+### Library layer (`tests/library.rs`, #75, #84)
 
 | Scenario | Named test |
 |---|---|
-| LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; bounded requirements; no unimplemented capability | `installed_library_describes_revision_one_with_its_version_identity` |
-| LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths (`LD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`), the absolute path maps the requested file (the system loader's lookup, which no library change can alter); the library answers from its own image with its own folder's release, not `current`'s, and a misplaced copy reports its compiled-in release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
+| LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; bounded requirements; no unimplemented capability; a second load of the version shares the first, and only that file is loaded | `installed_library_describes_revision_one_with_its_version_identity` |
+| LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths (`LD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`), the absolute path maps the requested file and only it (the system loader's lookup, which no library change can alter); the library answers from its own image with its own folder's release, not `current`'s | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
+| LIB-02 Library: a version folder holding a copy that describes another release is refused as the wrong release, naming the compiled-in release; the copy stays loaded and the release it describes is not substituted; a folder without a library is a missing library and nothing loads | `installed_library_of_another_release_or_none_is_refused_without_substitution` |
+| LIB-01 Library, Linux: with `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` set, the library loads and all four stay as they were | `installed_library_loads_under_the_users_loader_environment` |
+| LIB-01 Library, macOS (#84 owner decision): a copy found through `DYLD_LIBRARY_PATH` is refused as a substituted image, naming both files, and stays loaded | `installed_library_substituted_through_dyld_library_path_is_refused` |
 | LIB-02 Library: unsupported revisions rejected with a null description; null output storage | `installed_library_rejects_other_revisions_without_a_description` |
 | DOC-01: all eleven table entries report unsupported operation by the frozen call rules | `installed_library_table_reports_every_instance_call_unsupported` |
 

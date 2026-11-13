@@ -300,6 +300,10 @@ _Avoid_: Test shell, dummy command
 A climon2-owned full-screen test program that exercises alternate screen, cursor queries, focus reporting, mouse, bracketed paste, and resize redraws.
 _Avoid_: Fake app, mock TUI
 
+**Client library stand-in**:
+A clearly labelled, test-only client library that is exact or carries one deliberate defect, and is never shipped; carrying a defect, it is a faulty library.
+_Avoid_: Mock library, fake library
+
 **Terminal oracle**:
 The test harness's emulated host, whose visible cells, cursor, modes, bells and status reports stand for what a user observes in their terminal.
 

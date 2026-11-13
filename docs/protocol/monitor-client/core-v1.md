@@ -2,7 +2,9 @@
 
 **Status: developer-confirmed specification for [#71](https://github.com/jackgeek/climon2/issues/71).
 Implemented only for the bootstrap and the immutable description
-([#75](https://github.com/jackgeek/climon2/issues/75)).** The shipped
+([#75](https://github.com/jackgeek/climon2/issues/75)), and for their
+validation before create by the shared loader
+([#84](https://github.com/jackgeek/climon2/issues/84)).** The shipped
 [client library](../../../GLOSSARY.md#sessions) (`libclimon2_client.dylib` on
 macOS, `libclimon2_client.so` on Linux)
 returns revision 1's description and rejects other revisions as specified

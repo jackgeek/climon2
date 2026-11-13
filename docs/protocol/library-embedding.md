@@ -4,9 +4,14 @@
 implemented: every installed version ships its
 [client library](../../GLOSSARY.md#sessions) file, exporting
 only `climon2_client_get_interface`
-([#75](https://github.com/jackgeek/climon2/issues/75)). Loading by the
-[monitor](../../GLOSSARY.md#sessions) and the
-[client executable](../../GLOSSARY.md#sessions) is not implemented. The
+([#75](https://github.com/jackgeek/climon2/issues/75)). The one shared loader
+that the [monitor](../../GLOSSARY.md#sessions) and the
+[client executable](../../GLOSSARY.md#sessions) will both use is implemented
+([#84](https://github.com/jackgeek/climon2/issues/84)): it performs the
+[lookup](#artifact-and-dependency-lookup), the load-failure classification and
+the description validation below, and keeps every handle it opens. Only test
+tooling uses it so far; loading by the monitor and the client executable is
+not implemented. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
 requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)
 adds x86-64 GNU/Linux. [Native revision 1](monitor-client/core-v1.md), confirmed in
@@ -58,11 +63,13 @@ filename beside itself and verifies its own exact release.
 
 On macOS, [dyld](TERMS.md#dynamic-loader) searches each `DYLD_LIBRARY_PATH`
 directory for the library file's name before it opens an absolute path, so
-that variable can substitute another release's file. How the loader detects or
-permits such a substitution is not yet decided; it belongs to the shared loader
-([#84](https://github.com/jackgeek/climon2/issues/84)). The working directory,
-`current` and `DYLD_FALLBACK_LIBRARY_PATH` never change which file an absolute
-path loads.
+that variable can substitute another file, such as another release's. After
+loading, the loader asks `dladdr` which file the loaded image came from. When
+it is not the requested path, the loader refuses the substitute with an
+explicit error and keeps its handle loaded, like every opened handle (owner
+decision on [#84](https://github.com/jackgeek/climon2/issues/84)). The working
+directory, `current` and `DYLD_FALLBACK_LIBRARY_PATH` never change which file
+an absolute path loads.
 
 Load with eager symbol resolution and local symbol visibility. Bundled private
 dependencies resolve relative to the library, not the current working directory
@@ -93,7 +100,11 @@ Classify Linux load failures from the loader's own checks, never from
 header that is not x86-64 is an incompatible architecture. A `dlopen` failure
 after both checks pass is a missing dependency, reported with the `dlerror()`
 text only for diagnosis. A missing `climon2_client_get_interface` is a missing
-symbol.
+symbol. macOS classifies the same way, except that a file without a
+[Mach-O slice](TERMS.md#mach-o-and-slices) dyld would load into the running
+process is an incompatible architecture. As implemented, the shared loader
+also counts a file it cannot open at all, missing or unreadable, as a missing
+library, and an ELF header it cannot read as not x86-64.
 
 `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` come from the
 user's environment and still affect the glibc libraries the client library

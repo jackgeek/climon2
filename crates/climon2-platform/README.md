@@ -98,6 +98,40 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
   `Signals::daemon()` ignores HUP/INT/PIPE and defers TERM. Registrations are
   unregistered on drop; no terminal operations run in signal handlers.
 
+## Client libraries
+
+- `library::Loader::new(executable_home)` loads the client libraries of one
+  absolute, canonical climon2 executable home (a relative home panics: the
+  dynamic loader would resolve it against the working directory).
+  `load(&VersionName)` opens `<home>/<version>/<library file>` with
+  `dlopen(RTLD_NOW | RTLD_LOCAL)`, never `current`, another version or a
+  search path, and never closes a handle, including one it then refuses. The
+  first successful load of a version is shared: later loads return the same
+  `&'static Library`. A refusal is not remembered, so a later load retries.
+- A refusal is a `LoadError` naming the requested file, with one `Failure`
+  per explicit cause. After a failed `dlopen` the loader's own checks decide,
+  never `dlerror()` text, which is only quoted: a file it cannot open is a
+  `MissingLibrary`; a file that is not an x86-64 ELF library on Linux, or has
+  no slice dyld would load on macOS (`macho_best_slice_in_fd`), is an
+  `IncompatibleArchitecture`; otherwise a `MissingDependency`. Then, with the
+  handle kept: no `climon2_client_get_interface` is a `MissingSymbol`; on
+  macOS an image `dladdr` names other than the requested file (found through
+  `DYLD_LIBRARY_PATH`) is a `SubstitutedImage`; a refused revision 1 is an
+  `UnsupportedRevision`; a release text other than the version is a
+  `WrongRelease`; and any other answer without a description, another
+  revision or a nonzero reserved field, a release text that is null or longer
+  than 255 bytes (no version folder name is longer), missing requirements
+  (no instance allocation, owner stack or instance descriptor, workers
+  without stacks, a nonzero reserved field) or an incomplete function table
+  is a `MalformedDescription`.
+- `Library` exists only validated: `requirements()`, `functions()` (a
+  `Functions` table whose eleven entries cannot be absent) and `bootstrap()`
+  for observers of the C ABI itself. The monitor (#106) and the client
+  executable (#100) will load through it; today the Library-layer host and
+  xtask's release checks do. Environment variables such as `LD_PRELOAD`,
+  `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` are neither cleared nor
+  a reason to refuse.
+
 ## Behavioral evidence
 
 `tests/runtime.rs`: `issue18_private_directory_refuses_symlink_file_and_permissive_mode_without_repair`,
@@ -128,6 +162,22 @@ It exercises the public identity API without replacing procfs or mocking I/O.
 `issue19_daemon_exec_is_detached_and_readiness_preserves_launch_failure`,
 `issue19_empty_readiness_kills_daemon_and_cleans_metadata_before_socket`,
 `issue19_readiness_uses_real_five_second_absolute_deadline`.
+
+`tests/library.rs` (Fault layer, #84) loads the
+[client library stand-in](../../GLOSSARY.md#testing), compiled by each test
+into a private executable home, exact or with one defect, through `Loader`.
+Its calls abort, so a test that survives a refusal proves nothing called them.
+
+| Scenario | Test |
+|---|---|
+| LIB-02 missing library, no substituted release: nothing loaded, not even the version `current` names | `missing_library_is_refused_without_substituting_another_release` |
+| LIB-01 same-release instances share one load: two loads share one library; its requirements and table are its own | `two_loads_of_one_version_share_one_library` |
+| LIB-02 missing symbol, handle kept | `library_without_the_bootstrap_is_refused_and_stays_loaded` |
+| LIB-02 unsupported revision; a bootstrap answer without a description is malformed | `bootstrap_without_a_revision_one_description_is_refused` |
+| LIB-02 wrong release at the release text's bounds (255 bytes wrong, 256 bytes or none malformed) | `library_describing_another_release_is_refused` |
+| LIB-02 malformed description: revision, reserved, each missing requirement, incomplete table; no workers need no stack | `malformed_description_is_refused_before_any_instance` |
+| LIB-02 missing dependency and incompatible architecture, decided by the loader's own checks; nothing loaded | `library_the_dynamic_loader_cannot_load_is_classified_by_the_loaders_checks` |
+| Absolute lookup: a relative executable home is refused | `loader_refuses_a_relative_executable_home` |
 
 `tests/terminal.rs`: `issue20_real_pty_raw_mode_restores_on_drop_and_panic_without_screen_sequences`,
 `issue20_real_pty_size_and_zero_fallback`,

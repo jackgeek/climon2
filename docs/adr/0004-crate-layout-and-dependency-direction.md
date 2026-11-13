@@ -15,7 +15,7 @@ The monitor is the one exception to the daemon-only `climon2-vt` rule: the
 documented normal-shell baseline from that crate. This adds no cross-release
 cell schema.
 
-The workspace has one package per shipped binary. The CLI, daemon, client and monitor never link each other; they reach each other only by path at runtime (the CLI starts the daemon and execs into the version-matched client or its own version's monitor). Shared code lives in two libraries: `climon2-core`, which is platform-neutral and has no `cfg(target_os)`, and `climon2-platform`, which holds the shared seam modules (ADR 0003). The crate boundary keeps neutral code out of the seams, so `core` builds and runs its tests on Linux and Windows without the rest of the workspace.
+The workspace has one package per shipped binary. The CLI, daemon, client and monitor never link each other; they reach each other only by path at runtime (the CLI starts the daemon and execs into the version-matched client or its own version's monitor). Shared code lives in two libraries: `climon2-core`, which is platform-neutral and has no `cfg(target_os)`, and `climon2-platform`, which holds the shared seam modules (ADR 0003) and the one client-library loader. The crate boundary keeps neutral code out of the seams, so `core` builds and runs its tests on Linux and Windows without the rest of the workspace.
 
 ## Packages (`crates/`, plus `xtask/` at the root)
 
@@ -34,6 +34,8 @@ The workspace has one package per shipped binary. The CLI, daemon, client and mo
 
 Shipped crates may use test-only crates only as dev-dependencies. A workspace test reads `cargo metadata` to enforce these edges, and also checks that every package that owns a binary has at least one integration test.
 
+One validated loader for client libraries lives in `climon2-platform` (`library`, #84; confirmed with the developer on 2026-11-08). The monitor and the client executable must apply exactly the same lookup, failure classification and description validation, and both already depend on `platform`, so sharing the loader adds no crate edge. It calls the system's `dlopen` through `libc`; no third-party loader crate is used. This replaces spec #73's note that a dynamic-library loader dependency belongs to the monitor only. Its Linux and macOS checks live in `platform`'s OS-specific files, and the native `#[repr(C)]` declarations it validates stay in `core`.
+
 The client library is an artifact of `climon2-client`, not another crate: its library target is `crate-type = ["lib", "cdylib"]`, producing `libclimon2_client.dylib` on macOS and `libclimon2_client.so` on x86-64 GNU/Linux for every version folder. `climon2_core::layout::client_library_name` derives that file name from the target's dynamic-library prefix and suffix; the installer and xtask take it from there. It exports only the frozen `climon2_client_get_interface` bootstrap of the native client interface; Rust layouts, unwinding and allocators never cross it. The `#[repr(C)]` declarations of that interface live in `climon2-core` (`native`), so the library, the client executable and the monitor can share them without new crate edges; the monitor reaches libraries only by path at runtime and never depends on `climon2-client`.
 
 ## Considered options
@@ -41,6 +43,7 @@ The client library is an artifact of `climon2-client`, not another crate: its li
 - **One `climon2` package with three bins:** rejected. Each binary keeps its own dependencies, and the client library mustn't grow code that only the daemon needs. A future monitor loads version-matched client libraries by path, using a separately specified embedding interface rather than a Cargo dependency on another release.
 - **One shared library containing both the core and platform modules:** rejected. `compile_error!` would stop the neutral code building on Linux and Windows.
 - **Building the CLI as `climon2` and renaming the launcher:** rejected. The CLI is `climon2-cli` everywhere, so the launcher alone is `climon2`, and Cargo binary names don't collide.
+- **The client-library loader in the monitor only, or a third-party loader crate:** rejected (#84). The client executable needs the same checks, and two loaders would drift apart; a few `libc` calls do the loading, and the classification and validation rules are climon2's own.
 - **The monitor inside the CLI package or binary:** rejected. Ratatui, the monitor's `climon2-vt` models and its library loading would join every CLI invocation's dependencies; a separate executable keeps them in the monitor package alone.
 
 ## Consequences

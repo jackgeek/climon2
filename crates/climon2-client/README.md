@@ -124,10 +124,11 @@ distinguishable.
 Loaders open the absolute `<executable home>/<version>/<library file>` with
 eager, local resolution (`RTLD_NOW | RTLD_LOCAL`); `current`, the working
 directory, `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` do not change
-which file loads. On macOS `DYLD_LIBRARY_PATH` can, which
+which file loads. On macOS `DYLD_LIBRARY_PATH` can, so the shared loader
+(#84) refuses an image loaded from any other file than the one requested, as
 [library embedding](../../docs/protocol/library-embedding.md#artifact-and-dependency-lookup)
-records as a decision for the shared loader (#84). The macOS library's install
-name is its build path; nothing links against it.
+specifies. The macOS library's install name is its build path; nothing links
+against it.
 
 On Linux the library target links the GCC unwinder (`gcc_eh`) statically, from
 the Linux-only `src/library/linux.rs`, because Rust's standard library would
