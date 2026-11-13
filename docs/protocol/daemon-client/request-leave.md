@@ -1,7 +1,9 @@
 # Leave — `0x37`
 
-**Status: agreed; implemented for passive monitor connections**, owned by
-[#67](https://github.com/jackgeek/climon2/issues/67); attachments leave with
+**Status: agreed; implemented for
+[passive monitor connections](../../../GLOSSARY.md#attachment-and-control)**,
+owned by [#67](https://github.com/jackgeek/climon2/issues/67);
+[attachments](../../../GLOSSARY.md#attachment-and-control) leave with
 [#87](https://github.com/jackgeek/climon2/issues/87).
 The [client](../../../GLOSSARY.md#sessions) requests accepted departure from the
 [session daemon](../../../GLOSSARY.md#sessions) after Open.

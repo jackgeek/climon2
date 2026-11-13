@@ -66,8 +66,9 @@ Related: [Command final](event-command-final.md).
 The [session daemon](../../../GLOSSARY.md#sessions) validates a first-role
 Kill like Open: `unsupported_revision` unless revision 1, and
 `unsupported_capability` for an unknown or unadvertised required family; each
-rejection has no effects and ends the stream. A Kill on a registered passive
-monitor connection is `invalid_state` and keeps the registration. Until
+rejection has no effects and ends the stream. A Kill on a registered
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) is
+`invalid_state` and keeps the registration. Until
 [#88](https://github.com/jackgeek/climon2/issues/88) serves it, a valid
 standalone Kill is rejected without effects with `internal_error`, and the
 session goes on; `c2 kill` still uses the private protocol.
