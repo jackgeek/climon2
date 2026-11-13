@@ -3,13 +3,14 @@ use crate::{introduction::KeyIntroduction, keys::EXIT, registry::View, selector:
 use climon2_core::{keys::ControlKey, protocol::TerminalSize};
 use ratatui::{
     backend::{Backend, CrosstermBackend},
-    buffer::Buffer,
+    buffer::{Buffer, Cell},
     layout::{Constraint, Rect},
     style::Stylize,
     text::Line,
     widgets::{Paragraph, Widget},
 };
 use std::io::{self, Stdout};
+use unicode_width::UnicodeWidthStr;
 
 /// The permanent top row's height.
 const TOP_ROW: u16 = 1;
@@ -75,16 +76,34 @@ impl Screen {
     fn paint(&mut self, frame: Buffer) -> io::Result<()> {
         #[cfg(feature = "test-hooks")]
         crate::hooks::fail("draw")?;
-        let cells = frame.content().iter().enumerate().map(|(index, cell)| {
-            let (x, y) = frame.pos_of(index);
-            (x, y, cell)
-        });
-        self.backend.draw(cells)?;
+        self.backend.draw(painted(&frame))?;
         Backend::flush(&mut self.backend)?;
         self.painted = frame;
         Ok(())
     }
+}
 
+/// Every cell of `frame` with its position, except those a wide character
+/// before them covers: painting one would overwrite that character's second
+/// half.
+fn painted(frame: &Buffer) -> impl Iterator<Item = (u16, u16, &Cell)> {
+    let mut covered = 0;
+    frame
+        .content()
+        .iter()
+        .enumerate()
+        .filter_map(move |(index, cell)| {
+            if covered > 0 {
+                covered -= 1;
+                return None;
+            }
+            covered = cell.symbol().width().saturating_sub(1);
+            let (x, y) = frame.pos_of(index);
+            Some((x, y, cell))
+        })
+}
+
+impl Screen {
     /// The permanent top row, and below it the body, centred, under the
     /// selector and then the key introduction while they are open. The body
     /// is the empty state until a row exists, then says nothing is selected;

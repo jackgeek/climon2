@@ -1371,8 +1371,24 @@ fn headless(package: &Package, script: &str, finish: &str) -> String {
 /// waits until their metadata is gone.
 fn finish_sessions(package: &Package, finish: &str) {
     fs::write(package.isolation.home().join(finish), b"").unwrap();
+    // Session metadata, not a listing, which could race an ending session.
+    let sessions = package.isolation.climon2_home().join("sessions");
+    let metadata = || {
+        fs::read_dir(&sessions).map_or(0, |entries| {
+            entries
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .unwrap()
+                        .path()
+                        .extension()
+                        .is_some_and(|ext| ext == "pty")
+                })
+                .count()
+        })
+    };
     let deadline = Instant::now() + TIMEOUT;
-    while !package.list().is_empty() {
+    while metadata() > 0 {
         assert!(Instant::now() < deadline, "sessions never ended");
         thread::sleep(Duration::from_millis(20));
     }
@@ -1408,7 +1424,9 @@ fn client_starts(package: &Package, id: &str) -> usize {
 /// Waits until a row of the host screen contains `text`.
 fn shows_row(terminal: &mut Terminal, text: &str) {
     terminal
-        .wait_for_screen(TIMEOUT, |screen| screen.lines().any(|line| line.contains(text)))
+        .wait_for_screen(TIMEOUT, |screen| {
+            screen.lines().any(|line| line.contains(text))
+        })
         .unwrap_or_else(|_| panic!("{text:?} never shown:\n{}", terminal.screen()));
 }
 
@@ -1475,5 +1493,476 @@ fn sessions_appear_as_they_are_created_each_with_one_passive_client() {
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// How a fake daemon answers each connection.
+#[derive(Clone, Copy)]
+enum Answer {
+    /// The frozen hello as `id`, then hang up.
+    Hello(&'static str),
+    /// Read the hello and never answer, until the prober hangs up.
+    Silent,
+}
+
+/// A fake daemon on its own socket, answering every connection until
+/// dropped; its metadata file goes with it.
+struct FakeDaemon {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+    socket: PathBuf,
+    metadata: PathBuf,
+}
+
+/// Valid metadata for `id` created at `created`, of this package's version,
+/// whose daemon socket is `socket`.
+fn fake_metadata(package: &Package, id: &str, created: &str, socket: &Path) -> PathBuf {
+    let sessions = package.isolation.climon2_home().join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let path = sessions.join(format!("{id}.pty"));
+    let metadata = serde_json::json!({
+        "format_version": 1, "session_id": id, "socket_path": socket,
+        "daemon_pid": std::process::id(), "daemon_start_time": 1,
+        "daemon_linux_identity": {"boot_id": "00000000-0000-4000-8000-000000000000", "start_ticks": 1},
+        "command": "fake", "args": [id], "cwd": package.isolation.home(), "depth": 1,
+        "created_at": created, "climon2_version": VERSION,
+    });
+    fs::write(&path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    path
+}
+
+impl FakeDaemon {
+    fn start(package: &Package, id: &str, created: &str, answer: Answer) -> Self {
+        let socket = package
+            .isolation
+            .home()
+            .join(format!("{}.sock", &id[id.len() - 4..]));
+        let metadata = fake_metadata(package, id, created, &socket);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = stop.clone();
+        let thread = thread::spawn(move || {
+            while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                let Ok((mut connection, _)) = listener.accept() else {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                connection.set_nonblocking(false).unwrap();
+                thread::spawn(move || answer_once(&mut connection, answer));
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+            socket,
+            metadata,
+        }
+    }
+}
+
+fn answer_once(connection: &mut std::os::unix::net::UnixStream, answer: Answer) {
+    use std::io::Read;
+    let _ = climon2_core::protocol::read_frame(connection);
+    match answer {
+        Answer::Hello(id) => {
+            let body = format!(
+                "{{\"session_id\":\"{id}\",\"climon2_version\":\"{VERSION}\",\"protocol\":1}}"
+            );
+            let reply = climon2_core::protocol::Frame::new(1, body.into_bytes()).unwrap();
+            let _ = climon2_core::protocol::write_frame(connection, &reply);
+        }
+        Answer::Silent => {
+            let _ = connection.set_read_timeout(Some(TIMEOUT));
+            let _ = connection.read_to_end(&mut Vec::new());
+        }
+    }
+}
+
+impl Drop for FakeDaemon {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        let _ = fs::remove_file(&self.socket);
+        let _ = fs::remove_file(&self.metadata);
+    }
+}
+
+/// Writes `config.jsonc` with these `monitor.limits` values.
+fn limits_config(package: &Package, limits: serde_json::Value) {
+    fs::write(
+        config_file(package),
+        serde_json::json!({"monitor": {"limits": limits}}).to_string(),
+    )
+    .unwrap();
+}
+
+/// DSC-04 (Monitor, Fault): malformed and oversized metadata add no row and
+/// stay; a mismatched hello and a silent daemon show Unavailable rows, the
+/// silent one only after the frozen hello deadline, and get no client. An
+/// inaccessible sessions directory shows incomplete discovery while every
+/// row and the live session's client stay, and a live session's metadata
+/// disappearing never removes its row or tears its client down. No metadata
+/// is ever deleted.
+#[test]
+fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        serde_json::json!({"discovery": {"metadata_file_bytes": 4096}}),
+    );
+    let live = headless(&package, "printf '\\033]2;Live\\007'", "finish");
+    let sessions = package.isolation.climon2_home().join("sessions");
+    let malformed = sessions.join("not-a-session.pty");
+    fs::write(&malformed, b"{}").unwrap();
+    let oversized_id = "0d5c0000-0000-4000-8000-0000000000f1";
+    let oversized = fake_metadata(
+        &package,
+        oversized_id,
+        "2026-01-01T00:00:00.000Z",
+        Path::new("/tmp/none"),
+    );
+    let mut padded = fs::read(&oversized).unwrap();
+    padded.resize(4097, b' ');
+    fs::write(&oversized, &padded).unwrap();
+    let mismatched = FakeDaemon::start(
+        &package,
+        "0d5c0000-0000-4000-8000-0000000000f2",
+        "2026-01-01T00:00:00.000Z",
+        Answer::Hello("0d5c0000-0000-4000-8000-0000000000ff"),
+    );
+    let silent = FakeDaemon::start(
+        &package,
+        "0d5c0000-0000-4000-8000-0000000000f3",
+        "2025-01-01T00:00:00.000Z",
+        Answer::Silent,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "║Unavailable Live");
+    shows_row(
+        &mut terminal,
+        "║Unavailable fake 0d5c0000-0000-4000-8000-0000000000f2",
+    );
+    shows_row(
+        &mut terminal,
+        "║Unavailable fake 0d5c0000-0000-4000-8000-0000000000f3",
+    );
+    assert!(
+        !terminal.screen().contains("0000000000f1"),
+        "{}",
+        terminal.screen()
+    );
+
+    terminal.send("\x1b").unwrap();
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    let parked = package.isolation.home().join("parked.pty");
+    let live_metadata = sessions.join(format!("{live}.pty"));
+    fs::rename(&live_metadata, &parked).unwrap();
+    fs::set_permissions(&sessions, fs::Permissions::from_mode(0o000)).unwrap();
+    shows_row(
+        &mut terminal,
+        "Discovery incomplete: cannot list sessions: Permission denied (os error 13)",
+    );
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "║Unavailable Live");
+    terminal.send("\x1b").unwrap();
+    fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| !screen.contains("Discovery incomplete"))
+        .unwrap();
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "║Unavailable Live");
+    fs::rename(&parked, &live_metadata).unwrap();
+    assert_eq!(client_starts(&package, &live), 1);
+    assert_eq!(library_logs(&package, &live).len(), 1);
+    for fake in ["0000000000f2", "0000000000f3"] {
+        assert!(!monitor_log(&package).contains(&format!(
+            "client starting session=0d5c0000-0000-4000-8000-{fake}"
+        )));
+    }
+    for file in [
+        &malformed,
+        &oversized,
+        &mismatched.metadata,
+        &silent.metadata,
+    ] {
+        assert!(file.exists(), "{}", file.display());
+    }
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    drop((mismatched, silent));
+    fs::remove_file(&malformed).unwrap();
+    fs::remove_file(&oversized).unwrap();
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// DSC-01 (Monitor, start-order case): with `scheduling.starts` at 1, clients
+/// start one at a time, newest created first, with ascending full session ID
+/// breaking ties; each start waits for the one before it to open or fail.
+#[test]
+fn clients_start_one_at_a_time_newest_first_with_ascending_id_ties() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(&package, serde_json::json!({"scheduling": {"starts": 1}}));
+    let ids = [
+        (
+            "0d5c0000-0000-4000-8000-0000000000a2",
+            "2026-01-01T00:00:02.000Z",
+        ),
+        (
+            "0d5c0000-0000-4000-8000-0000000000b0",
+            "2026-01-01T00:00:01.000Z",
+        ),
+        (
+            "0d5c0000-0000-4000-8000-0000000000a3",
+            "2026-01-01T00:00:03.000Z",
+        ),
+        (
+            "0d5c0000-0000-4000-8000-0000000000a1",
+            "2026-01-01T00:00:02.000Z",
+        ),
+    ];
+    let fakes: Vec<_> = ids
+        .iter()
+        .map(|&(id, created)| FakeDaemon::start(&package, id, created, Answer::Hello(id)))
+        .collect();
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    terminal.send("\x1ds").unwrap();
+    for (id, _) in ids {
+        shows_row(&mut terminal, &format!("║Unavailable fake {id}"));
+    }
+    let log = monitor_log(&package);
+    let events: Vec<_> = log
+        .lines()
+        .filter_map(|line| {
+            let kind = ["client starting", "client ended", "client open refused"]
+                .into_iter()
+                .find(|kind| line.contains(kind))?;
+            let id = ids.iter().find(|(id, _)| line.contains(id))?.0;
+            Some((kind, id))
+        })
+        .collect();
+    let starts: Vec<_> = events
+        .iter()
+        .filter(|(kind, _)| *kind == "client starting")
+        .map(|(_, id)| *id)
+        .collect();
+    assert_eq!(starts, [ids[2].0, ids[3].0, ids[0].0, ids[1].0], "{log}");
+    for pair in starts.windows(2) {
+        let start = |id| {
+            events
+                .iter()
+                .position(|event| *event == ("client starting", id))
+                .unwrap()
+        };
+        let settled = events
+            .iter()
+            .position(|(kind, id)| *id == pair[0] && *kind != "client starting")
+            .unwrap_or(usize::MAX);
+        assert!(settled < start(pair[1]), "{log}");
+    }
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    drop(fakes);
+    package.assert_clean();
+}
+
+/// Bash that sets its session's title to `title`, then holds as
+/// [`headless`]'s scripts do.
+fn titled_hold(title: &str) -> String {
+    format!(
+        "printf '\\033]2;{title}\\007'; until [ -e \"$HOME/finish\" ] || [ \"$SECONDS\" -ge 120 ]; do sleep 0.05; done"
+    )
+}
+
+/// The listed session whose arguments contain `text`.
+fn listed(package: &Package, text: &str) -> Value {
+    package
+        .list()
+        .into_iter()
+        .find(|session| session["args"].to_string().contains(text))
+        .unwrap_or_else(|| panic!("no session runs {text:?}"))
+}
+
+/// Own-session scenario (confirmed 2026-11-08), DSC-06 (Monitor), HDL-01
+/// (Monitor rows) and CTL-01 (Monitor): a monitor running inside a session
+/// shows that session as This monitor and starts no client for it, while a
+/// nested headless session and a session controlled elsewhere appear with
+/// their titles, wide text included, in the home they share; labels keep the
+/// selector's border whole however wide or long (TRM-06 label cases, SEL-01
+/// cell-safe clipping). Passive clients leave the controller in control.
+#[test]
+fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut elsewhere = package.command("c2");
+    elsewhere.args(["exec", "/bin/bash", "-c", &titled_hold("Elsewhere")]);
+    let mut elsewhere = Terminal::spawn(elsewhere, ROWS, COLS).unwrap();
+    // The controlled session's metadata, not a listing that could race its
+    // creation.
+    let sessions = package.isolation.climon2_home().join("sessions");
+    let deadline = Instant::now() + TIMEOUT;
+    while fs::read_dir(&sessions).map_or(true, |mut entries| entries.next().is_none()) {
+        assert!(
+            Instant::now() < deadline,
+            "the controlled session never started"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    let nested = format!(
+        "c2 exec --headless /bin/bash -c {}",
+        quote(Path::new(&titled_hold("Nested 日本")))
+    );
+    headless(&package, &nested, "finish");
+    let mut terminal = outer(&package, "c2 exec /bin/bash -c 'c2 monitor'");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "║This monitor /bin/bash -c c2 monitor ");
+    // The host's screen text follows each wide character with its covered cell.
+    shows_row(&mut terminal, "║Unavailable  Nested 日 本 ");
+    shows_row(&mut terminal, "║Unavailable  Elsewhere");
+    shows_row(
+        &mut terminal,
+        "║Unavailable  /bin/bash -c c2 exec --headless",
+    );
+    // Wide labels, and the long one clipped to the list, keep the border whole.
+    for row in terminal.screen().lines().filter(|row| row.contains('║')) {
+        assert!(row.ends_with("║ "), "{row:?}");
+    }
+
+    let own = listed(&package, "c2 monitor");
+    let own = own["session_id"].as_str().unwrap();
+    assert_eq!(client_starts(&package, own), 0);
+    assert!(library_logs(&package, own).is_empty());
+    assert_eq!(listed(&package, "Nested")["depth"], 2);
+    assert_eq!(
+        listed(&package, "Elsewhere")["state"],
+        serde_json::json!({"lifecycle": "attached", "attachments": 1, "controlled": true})
+    );
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    assert_eq!(elsewhere.wait_exit(TIMEOUT).unwrap(), 0);
+    package.assert_clean();
+}
+
+/// The basic selector over `screen` as SEL-01 specifies it for #106: a
+/// captionless double border one cell in from the rows below the top row,
+/// and each `(status, label)` row with the status column as wide as its
+/// widest status.
+fn with_selector(screen: &str, rows: &[(&str, &str)]) -> String {
+    let mut lines: Vec<String> = screen.split('\n').map(str::to_owned).collect();
+    let (height, width) = (lines.len(), lines[0].chars().count());
+    let inner = width - 4;
+    let status = rows
+        .iter()
+        .map(|(status, _)| status.len())
+        .max()
+        .unwrap_or(0);
+    let mut boxed = vec![format!(" ╔{}╗ ", "═".repeat(inner))];
+    for index in 0..height - 5 {
+        let text = rows
+            .get(index)
+            .map(|(state, label)| format!("{state:status$} {label}"))
+            .unwrap_or_default();
+        boxed.push(format!(" ║{text:<inner$}║ "));
+    }
+    boxed.push(format!(" ╚{}╝ ", "═".repeat(inner)));
+    lines.splice(2..height - 1, boxed);
+    lines.join("\n")
+}
+
+/// The rows of the open selector's list whose cells are reversed.
+fn highlighted_rows(terminal: &Terminal) -> Vec<usize> {
+    (3..usize::from(ROWS) - 2)
+        .filter(|&row| terminal.cells(row)[2].rendition.inverse)
+        .collect()
+}
+
+/// SEL-01 (Monitor, basic cases): prefix+s overlays the captionless double
+/// border with status and title columns and the first row highlighted,
+/// reversed; Up and Down move the highlight without wrapping, prefix+s while
+/// open changes nothing, and Escape closes it, back to the body. Opening it
+/// never resizes or acquires a session: the sessions keep their size and
+/// stay detached.
+#[test]
+fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
+    let package = Package::new();
+    without_introduction(&package);
+    let sized = |name: &str| {
+        format!(
+            "stty size > \"$HOME/{name}.size\"; trap 'touch \"$HOME/{name}.winch\"' WINCH; printf '\\033]2;{name}\\007'"
+        )
+    };
+    headless(&package, &sized("A1"), "finish");
+    headless(&package, &sized("B2"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    let body = empty_monitor(
+        ROWS,
+        COLS,
+        &["No session selected.", "Press Ctrl+] then x to exit."],
+    );
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    terminal.send("\x1ds").unwrap();
+    let open = with_selector(&body, &[("Unavailable", "B2"), ("Unavailable", "A1")]);
+    shows(&mut terminal, &open);
+    assert_eq!(highlighted_rows(&terminal), [3]);
+    for (keys, expected) in [
+        (&b"\x1b[A"[..], 3),
+        (b"\x1b[B", 4),
+        (b"\x1b[B", 4),
+        (b"\x1ds", 4),
+        (b"\x1b[A", 3),
+    ] {
+        terminal.send(keys).unwrap();
+        let deadline = Instant::now() + TIMEOUT;
+        while highlighted_rows(&terminal) != [expected] {
+            assert!(
+                Instant::now() < deadline,
+                "{keys:?}: {:?}",
+                highlighted_rows(&terminal)
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(terminal.screen(), open);
+    }
+    terminal.send("\x1b").unwrap();
+    shows(&mut terminal, &body);
+    for session in package.list() {
+        assert_eq!(session["state"]["lifecycle"], "detached", "{session}");
+    }
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    let home = package.isolation.home();
+    for name in ["A1", "B2"] {
+        assert_eq!(
+            fs::read_to_string(home.join(format!("{name}.size")))
+                .unwrap()
+                .trim(),
+            "24 80"
+        );
+        assert!(
+            !home.join(format!("{name}.winch")).exists(),
+            "{name} was resized"
+        );
+    }
     package.assert_clean();
 }
