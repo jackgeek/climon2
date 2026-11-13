@@ -28,6 +28,7 @@ fn assert_forwarded(bytes: &[u8]) {
             replies: Vec::new(),
             dropped: 0,
             titles: Vec::new(),
+            focus_enabled: false,
         },
         "{:?}",
         String::from_utf8_lossy(bytes)
@@ -213,6 +214,7 @@ fn oversized_tokens_are_dropped_and_counted() {
             replies: Vec::new(),
             dropped: 1,
             titles: Vec::new(),
+            focus_enabled: false,
         }
     );
 }
@@ -313,6 +315,27 @@ fn an_expired_update_is_rearmed_by_a_new_begin_before_tick() {
     vt.feed(b"\x1b[?2026h", start);
     vt.feed(b"\x1b[?2026h", start + Duration::from_millis(160));
     assert!(vt.sync_pending(start + Duration::from_millis(309)));
+}
+
+/// The daemon reports the current application focus once when the
+/// application newly enables focus reporting (mode 1004), so each feed says
+/// whether a token turned it on and it is still on, however the tokens were
+/// split across reads.
+#[test]
+fn focus_reporting_reports_the_mode_and_each_feed_that_newly_enabled_it() {
+    let mut vt = vt();
+    assert!(!vt.focus_reporting());
+    assert!(!feed(&mut vt, b"plain \x1b[?2004h").focus_enabled);
+    assert!(feed(&mut vt, b"a\x1b[?1004hb").focus_enabled);
+    assert!(vt.focus_reporting());
+    assert!(!feed(&mut vt, b"\x1b[?1004h").focus_enabled);
+    assert!(!feed(&mut vt, b"c").focus_enabled);
+    assert!(feed(&mut vt, b"\x1b[?1004l\x1b[?1004h").focus_enabled);
+    assert!(!feed(&mut vt, b"\x1b[?1004h\x1b[?1004l").focus_enabled);
+    assert!(!vt.focus_reporting());
+    assert!(!feed(&mut vt, b"\x1b[?1004").focus_enabled);
+    assert!(feed(&mut vt, b"h").focus_enabled);
+    assert!(vt.focus_reporting());
 }
 
 #[test]
