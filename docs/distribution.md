@@ -69,9 +69,12 @@ requires the unchanged full-workspace worker baseline before mutation.
 Both scopes keep CRAP <= 5 and zero surviving mutants.
 Windows retains its platform-neutral contract job.
 
-Complete local qualification (`cargo xtask check`) measures mutation load
-before mutation, even when no changed source needs mutation. After warming the
-mutation build and timing one unloaded run, five rounds each run 8 unchanged
+Local qualification measures mutation load before mutation, even when no
+changed source needs mutation. The ticket gate (`cargo xtask check`) runs one
+round and mutates only added or changed functions; the full gate
+(`cargo xtask check --full`, run before a feature branch merges to `main`)
+runs five rounds and mutates whole changed files. After warming the
+mutation build and timing one unloaded run, each round runs 8 unchanged
 full-workspace test suites concurrently. As in mutation, each suite uses a
 private warm-build copy and its own session. Zero failures are required, and no
 suite may outlive the mutator's timeout (10 times the unloaded run): the
@@ -99,7 +102,7 @@ the same platform. The first Linux release does not pretend a macOS archive
 is a prior Linux release. Only an explicitly absent previous platform archive
 permits the first-platform-release exception.
 
-Before tagging, the maintainer must run `cargo xtask check --mutate-all` locally
+Before tagging, the maintainer must run `cargo xtask check --full --mutate-all` locally
 for the exact release commit. CI cannot certify that local result. Tagged
 releases require all macOS-exclusive source to pass CRAP and mutation in CI,
 plus every native runtime and archive job.
