@@ -310,3 +310,32 @@ fn a_failed_kill_keeps_the_result_the_daemon_knew() {
     attached.ended(&result);
     session.finish();
 }
+
+/// COM-03 (Contract, Kill cases: a partial result) and COM-06 (Fault,
+/// through the `cleanup` test hook): when the daemon's cleanup fails after
+/// it confirmed how the command ended, a Kill fails with `cleanup_failed`
+/// and incomplete cleanup, but carries that confirmed result, signal 9, as
+/// every Command final did. The private kill gets `Error`, as after any
+/// failed cleanup.
+#[test]
+fn a_failed_cleanup_fails_the_kill_but_keeps_the_confirmed_result() {
+    let mut session = Session::configured("ignore-hup", |command, _| {
+        command.env("CLIMON2_DAEMON_FAULT", "cleanup");
+    });
+    let mut attached = ready_attachment(&session, &[]);
+    let (mut watching, _) = monitor(&session, &[]);
+    let mut killer = peer(&session);
+    request(&mut killer, &kill(1, 1, &[]));
+    terminating(&session);
+    let mut private = session.connect();
+    crate::send(&mut private, ClientMessage::Kill);
+    let killed = signalled(9);
+    assert_kill_failed(&mut killer, Some(killed.clone()));
+    assert!(matches!(
+        crate::receive(&mut private),
+        PrivateMessage::Error { .. }
+    ));
+    assert_final_then_closed(&mut watching, &killed);
+    attached.ended(&killed);
+    session.finish();
+}

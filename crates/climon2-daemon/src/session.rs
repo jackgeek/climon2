@@ -785,11 +785,20 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn run_cleanup(&mut self) -> io::Result<()> {
-        let effects = match (self.cleanup)() {
+        let effects = match self.clean_up() {
             Ok(()) => self.control.cleanup_finished(),
             Err(_) => self.control.authoritative_failure(),
         };
         self.effects(effects)
+    }
+
+    /// Removes the session metadata and socket.
+    fn clean_up(&mut self) -> io::Result<()> {
+        #[cfg(feature = "test-hooks")]
+        if crate::startup::selected_fault("cleanup") {
+            return Err(super::io_error("controlled cleanup fault"));
+        }
+        (self.cleanup)()
     }
 
     fn finish(&mut self) {
