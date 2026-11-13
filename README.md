@@ -375,7 +375,7 @@ terminal hangs up or can no longer be read, the monitor leaves with status 125.
 On every exit the monitor returns your terminal to the normal shell state
 described for clients above, restores its settings (termios) exactly and never
 changes its title; only then does it print any error, with status 125. It logs
-to the general log in the climon2 home, starting with its effective
+to the general log in the climon2 home, including its effective
 configuration as JSON, never your input.
 
 ## Terminal compatibility
