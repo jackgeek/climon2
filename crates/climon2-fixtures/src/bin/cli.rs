@@ -58,8 +58,6 @@ fn main() {
             let size = unsafe { size.assume_init() };
             println!("SIZE:{}x{}", size.ws_col, size.ws_row);
             io::stdout().flush().unwrap();
-            let mut line = String::new();
-            io::stdin().read_line(&mut line).unwrap();
         }
         Some("removed-cwd") => {
             use std::os::unix::process::CommandExt;
