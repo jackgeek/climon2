@@ -14,19 +14,15 @@ pub enum Lifetime {
     Headless,
 }
 
-/// The daemon's `--lifetime` startup argument values.
-const NAMES: [(Lifetime, &str); 2] = [
-    (Lifetime::Ordinary, "ordinary"),
-    (Lifetime::Headless, "headless"),
-];
-
 impl Lifetime {
+    const ALL: [Self; 2] = [Self::Ordinary, Self::Headless];
+
+    /// The daemon's `--lifetime` startup argument value.
     pub fn name(self) -> &'static str {
-        NAMES
-            .iter()
-            .find(|(lifetime, _)| *lifetime == self)
-            .expect("every lifetime is named")
-            .1
+        match self {
+            Self::Ordinary => "ordinary",
+            Self::Headless => "headless",
+        }
     }
 }
 
@@ -34,10 +30,9 @@ impl FromStr for Lifetime {
     type Err = ContractError;
 
     fn from_str(name: &str) -> Result<Self, Self::Err> {
-        NAMES
-            .iter()
-            .find(|(_, known)| *known == name)
-            .map(|(lifetime, _)| *lifetime)
+        Self::ALL
+            .into_iter()
+            .find(|lifetime| lifetime.name() == name)
             .ok_or_else(|| ContractError("unknown session lifetime".into()))
     }
 }
