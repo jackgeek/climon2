@@ -1120,12 +1120,12 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
 /// host that leaves `SIGPIPE` at its default disposition, as a C embedder
 /// may, the shutdown Leave is written to a fake daemon that can no longer
 /// receive it. One stops reading after the Initial metadata (`EPIPE` on
-/// Linux; another system may accept the write unread, and the Leave then
-/// outlives `leave_ms`). The other closes its connection after a title the
-/// library holds back, its two-record event queue being full, so the library
-/// reads nothing and its write fails. The host survives each; the departure
-/// is unconfirmed, with no retry after shutdown, and the full queue leaves
-/// no room for a diagnostic.
+/// Linux; another system may refuse the write too, or accept it unread, and
+/// the Leave then outlives `leave_ms`). The other closes its connection
+/// after a title the library holds back, its two-record event queue being
+/// full, so the library reads nothing and its write fails. The host
+/// survives each; the departure is unconfirmed, with no retry after
+/// shutdown, and the full queue leaves no room for a diagnostic.
 #[test]
 fn installed_library_never_raises_sigpipe_in_its_embedder() {
     let package = Package::new();
@@ -1162,9 +1162,10 @@ fn installed_library_never_raises_sigpipe_in_its_embedder() {
     ]);
     let report = script_with(&package, &root, steps, json!({ "sigpipe": "default" }));
     let (records, terminal) = finished(step(&report, 6));
-    // Linux refuses the write at once; another system may accept it unread,
-    // and the Leave then outlives `leave_ms`.
-    let error = if cfg!(target_os = "linux") {
+    // Linux refuses the write at once; another system may instead accept it
+    // unread, and the Leave then outlives `leave_ms`.
+    let refused = cfg!(target_os = "linux") || terminal["error"]["code"] == "io_error";
+    let error = if refused {
         (ORIGIN_TRANSPORT, "io_error")
     } else {
         (ORIGIN_LIBRARY, "timeout")
