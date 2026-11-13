@@ -347,24 +347,24 @@ fn cfg01_hints_and_bell_are_independent_booleans() {
     }
 }
 
-/// CFG-01 (Contract): every setting accepts the lower limit of its range.
-/// The two event allowances are the exception: each must exceed its
-/// progress reserve, so their smallest valid value is 2 (see the reserve rule).
+/// CFG-01 (Contract): every setting accepts the lower limit of its range,
+/// except where the rules between settings forbid it: each event allowance
+/// must exceed its progress reserve, so its smallest valid value is 2, and
+/// the event bytes must fit the aggregate queue, client and total budgets.
 #[test]
 fn cfg01_every_setting_accepts_the_lower_limit_of_its_range() {
     let settings: Vec<_> = FIELDS
         .iter()
         .map(|(path, kind)| match *path {
-            "queues.event_bytes" | "queues.event_records" => (*path, json!(2)),
+            "queues.event_bytes"
+            | "queues.event_records"
+            | "memory.total_bytes"
+            | "memory.client_bytes"
+            | "memory.queue_bytes_total" => (*path, json!(2)),
             _ => (*path, json!(kind.min)),
         })
         .collect();
-    let text = limits(&settings).to_string();
-    let mut expected = limits(&settings);
-    set(&mut expected, "client", defaults()["client"].clone());
-    set(&mut expected, "monitor.show_key_hints", json!(true));
-    set(&mut expected, "monitor.bell", json!(true));
-    assert_eq!(effective(&text), expected);
+    accepted(&settings);
 }
 
 /// CFG-01 (Contract): every setting accepts the upper limit of its range,
@@ -381,17 +381,7 @@ fn cfg01_every_setting_accepts_the_upper_limit_of_its_range() {
             _ => (*path, json!(kind.max)),
         })
         .collect();
-    let text = limits(&settings).to_string();
-    let mut expected = limits(&settings);
-    set(&mut expected, "client", defaults()["client"].clone());
-    set(&mut expected, "monitor.show_key_hints", json!(true));
-    set(&mut expected, "monitor.bell", json!(true));
-    assert_eq!(effective(&text), expected);
-    let limits = monitor(&text).unwrap().settings().limits;
-    let total: u64 = limits.memory.total_bytes.get();
-    let frame: u32 = limits.payload.wire_frame_bytes.get();
-    let workers: u32 = limits.resources.max_workers_per_client.get();
-    assert_eq!((total, frame, workers), (u64::MAX, u32::MAX, u32::MAX));
+    accepted(&settings);
 }
 
 /// CFG-01 (Contract): one past either end of every range is an explicit
@@ -613,11 +603,50 @@ fn cfg01_sub_budgets_fit_their_totals() {
     );
 }
 
+/// CFG-01 (Contract): reservations consume the total too: a thread stack and
+/// a release reservation each fit `memory.total_bytes`.
+#[test]
+fn cfg01_reservations_fit_the_total() {
+    for reservation in ["stack_bytes", "release_bytes"] {
+        let path = format!("resources.{reservation}");
+        accepted(&[at(&path, TOTAL)]);
+        assert!(refused(&[at(&path, TOTAL + 1)]).contains(&format!(
+            "monitor.limits.resources.{reservation} (536870913) may not exceed monitor.limits.memory.total_bytes (536870912)"
+        )));
+    }
+}
+
+/// CFG-01 (Contract): each client's request and event queues fit both the
+/// aggregate queue budget and the client's own budget.
+#[test]
+fn cfg01_client_queues_fit_the_queue_and_client_budgets() {
+    let budget = 67_108_864;
+    let roomy_total = at("memory.queue_bytes_total", TOTAL);
+    let roomy_client = at("memory.client_bytes", TOTAL);
+    for queue in ["request_bytes", "event_bytes"] {
+        let path = format!("queues.{queue}");
+        accepted(&[at(&path, budget)]);
+        assert!(
+            refused(&[roomy_client.clone(), at(&path, budget + 1)]).contains(&format!(
+                "monitor.limits.queues.{queue} (67108865) may not exceed monitor.limits.memory.queue_bytes_total (67108864)"
+            ))
+        );
+        assert!(
+            refused(&[roomy_total.clone(), at(&path, budget + 1)]).contains(&format!(
+                "monitor.limits.queues.{queue} (67108865) may not exceed monitor.limits.memory.client_bytes (67108864)"
+            ))
+        );
+    }
+}
+
 /// CFG-01 (Contract): each progress reserve sits inside its event allowance
 /// and leaves room for ordinary work, up to the native maximum.
 #[test]
 fn cfg01_progress_reserves_leave_room_in_their_event_allowances() {
     let tiny = [
+        ("memory.total_bytes", json!(u64::MAX)),
+        ("memory.client_bytes", json!(u64::MAX)),
+        ("memory.queue_bytes_total", json!(u64::MAX)),
         ("transfer.chunk_bytes", json!(1)),
         ("payload.metadata_record_bytes", json!(1)),
         ("queues.event_bytes", json!(u64::MAX)),

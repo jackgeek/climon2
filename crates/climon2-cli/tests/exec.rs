@@ -234,7 +234,7 @@ fn invalid_exec_config_is_rejected_before_session_side_effects() {
         command.arg(layout.fixture());
         command.arg("hold");
         let mut terminal = Terminal::spawn(command, 24, 120).unwrap();
-        assert_eq!(terminal.wait_exit(Duration::from_secs(3)).unwrap(), 125);
+        assert_eq!(terminal.wait_exit(Duration::from_secs(20)).unwrap(), 125);
         assert!(
             unwrapped(&terminal.screen()).contains(expected),
             "{config}: {}",

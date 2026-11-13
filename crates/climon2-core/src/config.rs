@@ -1,14 +1,14 @@
 //! `<home>/config.jsonc` (plan 1.3). A lexical normaliser turns JSONC into JSON
 //! (comments become whitespace, trailing commas are dropped), then serde reads
 //! operation-specific structs, so attach never validates scrollback it ignores.
-pub mod limits;
+mod limits;
 
 use crate::{
     json::{self, Field, Object},
     keys::{ClientSettings, ControlKey, SettingsError},
     layout::HomeLayout,
 };
-use limits::Limits;
+pub use limits::Limits;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{DeserializeOwned, Error as _},

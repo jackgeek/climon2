@@ -172,11 +172,7 @@ fn installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys() {
             r#"climon2: error: config.jsonc is invalid: invalid key string "Ctrl+\n""#,
         ),
     ] {
-        fs::write(
-            package.isolation.climon2_home().join("config.jsonc"),
-            config,
-        )
-        .unwrap();
+        fs::write(config_file(&package), config).unwrap();
         let mut terminal = outer(&package, "climon2 monitor");
         let diagnostic = refusal(&mut terminal);
         assert!(diagnostic.starts_with(expected), "{diagnostic:?}");
@@ -505,7 +501,7 @@ fn installed_monitor_and_mon_open_the_same_monitor() {
 fn installed_monitor_hints_and_exits_with_the_configured_prefix() {
     let package = Package::new();
     fs::write(
-        package.isolation.climon2_home().join("config.jsonc"),
+        config_file(&package),
         r#"{"client": {"escape_prefix": "Ctrl+B", "take_control_key": null}}"#,
     )
     .unwrap();
@@ -714,17 +710,7 @@ fn a_hung_up_host_input_releases_the_host_before_its_diagnostic() {
         "climon2: error: the host terminal closed (logs: ",
     );
     assert_released(&package, &mut terminal, 125);
-    let logs = package.logs();
-    let log = logs
-        .iter()
-        .find(|path| {
-            path.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("monitor-")
-        })
-        .map(|path| fs::read_to_string(path).unwrap())
-        .unwrap();
+    let log = monitor_log(&package);
     assert!(
         log.contains("monitor failed error=the host terminal closed"),
         "{log}"
@@ -742,26 +728,14 @@ fn installed_monitor_logs_content_free_records_to_its_general_log() {
     terminal.send("typed-secret-not-for-logs-5e1").unwrap();
     terminal.send(b"\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
-    let logs = package.logs();
-    let monitor: Vec<_> = logs
-        .iter()
-        .filter(|path| {
-            path.file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .starts_with("monitor-")
-        })
-        .collect();
-    assert_eq!(monitor.len(), 1, "{logs:?}");
-    let log = fs::read_to_string(monitor[0]).unwrap();
+    let log = monitor_log(&package);
     assert!(log.contains(" role=monitor "), "{log}");
     assert!(
         log.contains(&format!("monitor started version={VERSION}")),
         "{log}"
     );
     assert!(log.contains("monitor stopped status=0"), "{log}");
-    for path in &logs {
+    for path in package.logs() {
         assert!(!fs::read_to_string(path).unwrap().contains("typed-secret"));
     }
     package.assert_clean();

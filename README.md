@@ -241,9 +241,12 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
     other than `assembly_bytes`, or 18446744073709551615 for the other byte
     budgets.
 - The limits must also agree with each other:
-  - `memory.client_bytes`, `history_bytes_total` and `queue_bytes_total` fit
-    `total_bytes`, and `history_bytes_per_session` fits both
+  - `memory.client_bytes`, `history_bytes_total` and `queue_bytes_total`, and
+    the `resources.stack_bytes` and `release_bytes` reservations, fit
+    `memory.total_bytes`; `history_bytes_per_session` fits both
     `history_bytes_total` and `client_bytes`;
+  - `queues.request_bytes` and `event_bytes` each fit both
+    `memory.queue_bytes_total` and `memory.client_bytes`;
   - `queues.progress_bytes` is less than `event_bytes`, and `progress_records`
     less than `event_records`, leaving room for ordinary work;
   - `transfer.chunk_bytes` fits `queues.request_bytes`, the ordinary event

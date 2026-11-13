@@ -153,13 +153,17 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     take-control key may be `None`. `settings()` gives `MonitorSettings`:
     `show_key_hints` and `bell` (default true) and `limits`. `Display` writes
     every effective value as JSON in the file's own shape.
-  - `config::limits::Limits` holds the eleven `monitor.limits` groups of
-    docs/monitor-operational-limits.md, with its defaults. Each setting is a
-    `Limit<T, MIN, MAX>`: read as its native `u32` or `u64` (overflow, null and
-    other types are errors), range-checked as it is read, and read back with
-    `get()`. `Limits` exists only once the cross-field rules hold (sub-budgets,
-    progress reserves, chunk and record capacity, quanta, retry delays); a
-    broken rule names both settings and their values.
+  - `config::Limits` holds the eleven `monitor.limits` groups of
+    docs/monitor-operational-limits.md, with its defaults. Each setting is
+    read as its native `u32` or `u64` (overflow, null and other types are
+    errors) and range-checked as it is read. `Limits` exists only once the
+    cross-field rules hold (sub-budgets and reservations within their totals,
+    client queues within the queue and client budgets, progress reserves,
+    chunk and record capacity, quanta, retry delays); a broken rule names both
+    settings and their values. Its fields are private: it is only reported so
+    far, and gains accessors with the code that enforces it. The mandatory
+    current model and recent page, and operating-system limits, are not
+    checked.
 - `keys`: `ControlKey` is one C0 control byte named in the `Ctrl+` vocabulary.
   `ClientSettings` holds the escape prefix (default `Ctrl+]`) and take-control
   key (default `Ctrl+T`); either may be disabled, take-control may not be
@@ -195,7 +199,7 @@ Integration tests call only these public boundaries:
 | #17/#18/#28 home, layout, hash and frozen invocation | `issue17_home_defaults_only_when_unset_and_never_accepts_empty_or_relative`, `adr0001_version_matched_client_has_exact_frozen_invocation`, `issue18_runtime_hash_is_sha256_of_exact_canonical_home_and_socket_is_bounded` |
 | #74 monitor executable home and the CLI's own-version monitor | `issue74_monitor_resolves_the_same_layout_as_the_cli` |
 | #74 `monitor`/`mon` take no arguments (INP-01 derived refusal) | `issue74_monitor_and_mon_take_no_arguments` |
-| CFG-01 (Contract): missing file, objects and fields mean every documented default; `show_key_hints` and `bell` are independent booleans; every setting's range at its limit and one past it, overflow of its native type included; null, wrong types and duplicates at every level; unknown and unrelated settings ignored; the cross-field rules at their limit and one past; one read of the home's file | `cfg01_missing_objects_and_fields_mean_every_documented_default`, `cfg01_hints_and_bell_are_independent_booleans`, `cfg01_every_setting_accepts_the_lower_limit_of_its_range`, `cfg01_every_setting_accepts_the_upper_limit_of_its_range`, `cfg01_one_past_every_range_is_rejected`, `cfg01_null_is_an_error_for_every_known_setting`, `cfg01_wrong_types_are_errors`, `cfg01_duplicate_known_fields_are_errors`, `cfg01_unknown_and_unrelated_settings_are_ignored`, `cfg01_sub_budgets_fit_their_totals`, `cfg01_progress_reserves_leave_room_in_their_event_allowances`, `cfg01_the_largest_chunk_fits_usable_capacity`, `cfg01_the_largest_record_fits_usable_capacity`, `cfg01_quanta_and_retry_delays_are_ordered`, `cfg01_the_snapshot_is_one_read_of_the_home_configuration` |
+| CFG-01 (Contract): missing file, objects and fields mean every documented default; `show_key_hints` and `bell` are independent booleans; every setting's range at its limit and one past it, overflow of its native type included; null, wrong types and duplicates at every level; unknown and unrelated settings ignored; the cross-field rules at their limit and one past; one read of the home's file | `cfg01_missing_objects_and_fields_mean_every_documented_default`, `cfg01_hints_and_bell_are_independent_booleans`, `cfg01_every_setting_accepts_the_lower_limit_of_its_range`, `cfg01_every_setting_accepts_the_upper_limit_of_its_range`, `cfg01_one_past_every_range_is_rejected`, `cfg01_null_is_an_error_for_every_known_setting`, `cfg01_wrong_types_are_errors`, `cfg01_duplicate_known_fields_are_errors`, `cfg01_unknown_and_unrelated_settings_are_ignored`, `cfg01_sub_budgets_fit_their_totals`, `cfg01_reservations_fit_the_total`, `cfg01_client_queues_fit_the_queue_and_client_budgets`, `cfg01_progress_reserves_leave_room_in_their_event_allowances`, `cfg01_the_largest_chunk_fits_usable_capacity`, `cfg01_the_largest_record_fits_usable_capacity`, `cfg01_quanta_and_retry_delays_are_ordered`, `cfg01_the_snapshot_is_one_read_of_the_home_configuration` |
 | CFG-01 (Contract, exec and attach cases): exec validates the `monitor` section, attach ignores it, and neither refuses a null escape prefix | `cfg01_exec_validates_the_monitor_section_and_attach_ignores_it` |
 | INP-01 (Contract): the monitor shares the client bindings and their rules, refuses a null escape prefix and accepts a null take-control key | `inp01_the_monitor_needs_an_escape_prefix_but_not_a_take_control_key` |
 | CFG-01 (Docs): the README spells out every client and monitor default and keeps the Escape/Alt warning above `escape_prefix` | `cfg01_the_readme_documents_every_default_and_the_escape_warning` |

@@ -25,8 +25,8 @@ no client libraries yet.
 4. One configuration snapshot is read, `ConfigSource::monitor()`: the
    `client` bindings with their defaults, refusing a null
    `client.escape_prefix`, and the `monitor` section (`show_key_hints`, `bell`
-   and every `monitor.limits` group, range and cross-field rule). Nothing reads
-   the file again, so editing it changes nothing until the next start.
+   and `monitor.limits` with the ranges and rules the README lists). Nothing
+   reads the file again, so editing it changes nothing until the next start.
 
 Every failure prints one escaped line, with the general-log suffix once that log
 exists, and exits 125 before raw mode, the alternate screen or any OSC output.
