@@ -105,6 +105,18 @@ pub fn wait_readable(descriptor: i32, deadline: Instant) -> bool {
     false
 }
 
+/// Waits until `condition` holds, bounded; returns whether it held.
+pub fn until(condition: impl Fn() -> bool) -> bool {
+    let deadline = deadline();
+    while !condition() {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::yield_now();
+    }
+    true
+}
+
 /// The descriptor's open-file properties, as the library leaves them.
 pub fn descriptor(descriptor: i32) -> Value {
     // SAFETY (both): fcntl queries take no pointers.

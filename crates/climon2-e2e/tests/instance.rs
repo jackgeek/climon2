@@ -1361,8 +1361,10 @@ fn installed_library_leaves_environment_cwd_signals_and_streams_unchanged() {
 /// destroy closes it), close-on-exec, counted once in the instance's
 /// descriptors (on Linux one nonblocking `eventfd`), not readable until
 /// terminal evidence, and readable from then on until the library clears it.
-/// A thread polling it sees the stream end while another uses the
-/// communication handle throughout; every call succeeds.
+/// The host schedules the race: a thread polling it and another using the
+/// communication handle have both made progress on the live stream before
+/// shutdown, polling sees the stream end, and the handle is used again after
+/// that; every call succeeds and returns the same descriptor.
 #[test]
 fn installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end() {
     let package = Package::new();
@@ -1394,11 +1396,23 @@ fn installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing
     assert_eq!(snapshot["peak_descriptors"], NOTIFIER_DESCRIPTORS);
     assert_eq!(report["readable_after_create"], false);
     assert_success(&report["shutdown"]);
+    assert_eq!(
+        report["scheduled"],
+        json!({ "live": true, "ended": true }),
+        "the racer and the poller overlapped the end: {report:#}"
+    );
     assert_eq!(report["poller_saw_end"], true);
     let racer = &report["racer"];
-    assert_eq!(racer["failures"], 0, "{racer}");
-    assert!(racer["calls"].as_u64().unwrap() > 0, "{racer}");
-    assert_eq!(racer["descriptors"].as_array().unwrap().len(), 1, "{racer}");
+    let number = &report["descriptor_number"];
+    for phase in ["running", "ending", "ended"] {
+        assert_eq!(racer[phase]["failures"], 0, "{phase}: {racer}");
+    }
+    // The ending phase may hold no round, so only the others must have one.
+    for phase in ["running", "ended"] {
+        assert_eq!(racer[phase]["descriptors"], json!([number]), "{racer}");
+    }
+    let ending = racer["ending"]["descriptors"].as_array().unwrap();
+    assert!(ending.iter().all(|used| used == number), "{racer}");
     assert_eq!(report["readable_twice"], json!([true, true]));
     let (_, terminal) = drains_to_terminal(&report["drains"]);
     assert_eq!(terminal, &stopped(1));
