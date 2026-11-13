@@ -37,7 +37,7 @@ fn version_folder(library: &Path) -> &str {
 /// loaded by absolute path with eager local resolution, returns revision 1's
 /// immutable description. Its release text is exactly the version folder name,
 /// it advertises exactly the families it relays (#93: core, passive monitor
-/// entry and titles), its requirements are present and bounded, and a second
+/// entry and titles; #94: focus), its requirements are present and bounded, and a second
 /// bootstrap returns the same description.
 #[test]
 fn installed_library_describes_revision_one_with_its_version_identity() {
@@ -57,8 +57,8 @@ fn installed_library_describes_revision_one_with_its_version_identity() {
         description["capabilities"],
         json!({
             "null": false,
-            "count": 3,
-            "tokens": ["daemon-wire-v1", "monitor-v1", "title-v1"],
+            "count": 4,
+            "tokens": ["daemon-wire-v1", "monitor-v1", "title-v1", "focus-v1"],
         })
     );
     assert_bounded(&description["requirements"]);

@@ -173,7 +173,7 @@ impl Session {
 }
 
 /// A record's active presentation member, after its header.
-pub fn presented<'a>(record: &'a Value, tag: u64, generation: u64) -> &'a Value {
+pub fn presented(record: &Value, tag: u64, generation: u64) -> &Value {
     assert_header(record, tag, generation);
     &record["presentation"]
 }
@@ -187,7 +187,7 @@ pub fn ids(value: &Value) -> [u64; 2] {
 }
 
 /// A successful Response to `id` carrying `result_tag`: its result.
-pub fn assert_ok<'a>(record: &'a Value, generation: u64, id: u64, result_tag: u64) -> &'a Value {
+pub fn assert_ok(record: &Value, generation: u64, id: u64, result_tag: u64) -> &Value {
     let response = assert_response(record, generation, id, OK);
     assert_eq!(response["result_tag"], result_tag, "{record:#}");
     assert_eq!(response["error"], no_error(), "{record:#}");

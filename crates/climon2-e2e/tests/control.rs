@@ -84,7 +84,7 @@ fn installed_library_attaches_and_relays_binary_input_and_display_unchanged() {
     let authority = assert_attached(attached, 1, 3, [100, 30]);
     let readied = step(&report, 5)["records"].as_array().unwrap();
     assert_authority(
-        &assert_ok(answer(readied, 2), 3, 2, READY_RESULT),
+        assert_ok(answer(readied, 2), 3, 2, READY_RESULT),
         1,
         authority,
     );
@@ -212,7 +212,7 @@ fn installed_library_stale_authority_never_re_enables_input() {
     assert_refused(&readied, 4, 5, ORIGIN_DAEMON, "not_ready");
     assert_refused(&readied, 4, 6, ORIGIN_LIBRARY, "stale_generation");
     assert_authority(
-        &assert_ok(answer(&readied, 7), 4, 7, READY_RESULT),
+        assert_ok(answer(&readied, 7), 4, 7, READY_RESULT),
         1,
         second,
     );
@@ -226,11 +226,11 @@ fn installed_library_stale_authority_never_re_enables_input() {
     assert_refused(&regained, 4, 8, ORIGIN_DAEMON, "not_controller");
     let third = assert_restored(&regained, 4, TAKE_CONTROL, [90, 25]);
     assert!(third[0] > second[0], "a new period");
-    assert_authority(&assert_ok(answer(&regained, 9), 4, 9, ACQUIRED), 1, third);
+    assert_authority(assert_ok(answer(&regained, 9), 4, 9, ACQUIRED), 1, third);
     let last = records(&report, &[24]);
     assert_refused(&last, 4, 10, ORIGIN_DAEMON, "stale_period");
     assert_refused(&last, 4, 11, ORIGIN_DAEMON, "not_ready");
-    assert_authority(&assert_ok(answer(&last, 12), 4, 12, READY_RESULT), 1, third);
+    assert_authority(assert_ok(answer(&last, 12), 4, 12, READY_RESULT), 1, third);
     assert!(tagged(&readied, DISPLAY).is_empty(), "nothing echoed");
     assert_eq!(display(&records(&report, &[24]), 4, third), "454e44");
     let (rest, terminal) = finished(step(&report, 26));
@@ -427,7 +427,7 @@ fn installed_library_acquisition_switches_and_takeover_keep_the_last_accepted() 
     let a1 = granted(9, 1, 2);
     let again = records(&report, &[11]);
     assert_eq!(again.len(), 1, "no new restoration: {again:#?}");
-    assert_authority(&assert_ok(&again[0], 1, 3, ACQUIRED), 0, a1);
+    assert_authority(assert_ok(&again[0], 1, 3, ACQUIRED), 0, a1);
     let b1 = granted(13, 2, 2);
     assert!(b1[0] > a1[0], "a new period");
     let revoked = |index: usize, generation: u64, authority: [u64; 2]| {
@@ -507,7 +507,7 @@ fn installed_library_promotes_the_newest_registration_with_a_canonical_restorati
     let p2 = assert_restored(&promoted, 2, SUCCESSOR, [100, 30]);
     assert!(p2[0] > held[0], "a new period");
     let readied = records(&report, &[16]);
-    assert_authority(&assert_ok(answer(&readied, 2), 2, 2, READY_RESULT), 1, p2);
+    assert_authority(assert_ok(answer(&readied, 2), 2, 2, READY_RESULT), 1, p2);
     let quiet = &step(&report, 17)["drains"][0]["drained"];
     assert_eq!(quiet["kind"], EMPTY, "p1 is not promoted: {quiet:#}");
     let (rest, terminal) = finished(step(&report, 19));
