@@ -74,12 +74,15 @@ alternate screen blindly, so alternate-screen and other unknown state (for
 example the title) cannot be restored without a daemon response. On expiry
 pending output is discarded and the reset gets one non-blocking attempt.
 
-## Client library (`libclimon2_client.dylib`)
+## Client library (`libclimon2_client.dylib`, `libclimon2_client.so`)
 
 This package's library target is also a cdylib (`crate-type = ["lib",
-"cdylib"]`), so every release ships `libclimon2_client.dylib` in its version
-folder, published atomically by the installer. It is an artifact, not another
-crate. It exports only the frozen `climon2_client_get_interface` bootstrap of
+"cdylib"]`), so every release ships the client library in its version folder,
+published atomically by the installer: `libclimon2_client.dylib` (universal
+arm64/x86_64) on macOS and `libclimon2_client.so` on x86-64 GNU/Linux. The
+file name comes from `climon2_core::layout::client_library_name`. It is an
+artifact, not another crate. It exports only the frozen
+`climon2_client_get_interface` bootstrap of
 [native client interface revision 1](../../docs/protocol/monitor-client/core-v1.md),
 using the shared `#[repr(C)]` declarations in `climon2_core::native`; Rust
 layouts, unwinding and allocators never cross it. The bootstrap and the table
@@ -118,28 +121,38 @@ description; null output storage returns `CM1_INVALID_ARGUMENT`. The bootstrap
 carries the `test_hook_marker!`, so hooked and release builds stay
 distinguishable.
 
-Loaders open the absolute `<executable home>/<version>/libclimon2_client.dylib`
-with eager, local resolution; `current`, the working directory and
-`DYLD_FALLBACK_LIBRARY_PATH` do not change which file loads. dyld does,
-however, search `DYLD_LIBRARY_PATH` for the leaf name before an absolute
-`dlopen` path, so the shared loader (#84) must confirm which image it loaded.
-The library's install name is its build path; nothing links against it.
+Loaders open the absolute `<executable home>/<version>/<library file>` with
+eager, local resolution (`RTLD_NOW | RTLD_LOCAL`); `current`, the working
+directory, `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` do not change
+which file loads. On macOS `DYLD_LIBRARY_PATH` can, which
+[library embedding](../../docs/protocol/library-embedding.md#artifact-and-dependency-lookup)
+records as a decision for the shared loader (#84). The macOS library's install
+name is its build path; nothing links against it.
 
-`cargo test` builds the hooked dylib beside the test executables in
+On Linux the library target links the GCC unwinder (`gcc_eh`) statically, from
+the Linux-only `src/library/linux.rs`, because Rust's standard library would
+otherwise need the shared `libgcc_s.so.1`; unwinding never leaves the library.
+The `.so` therefore needs only `libc.so.6` and the dynamic loader, exports only
+the bootstrap, and has no soname, RPATH or RUNPATH, as library embedding
+requires. Linking the crate has the same effect on the client executable.
+
+`cargo test` builds the hooked library beside the test executables in
 `target/debug/deps/` (Cargo uplifts only binaries), where tests and the
 installer's `Payload::from_siblings` find it without nested builds. Release
-builds (`cargo build --release -p climon2-client`) uplift the unhooked dylib.
+builds (`cargo build --release -p climon2-client`) uplift the unhooked library.
 
 | Scenario | Named test |
 |---|---|
-| LIB-01 Library: absolute exact-release load, one shared load | `installed_library_describes_revision_one_with_its_version_identity` (`climon2-e2e/tests/library.rs`) |
-| LIB-01 Library: `current`, working directory and fallback search paths; LIB-02 Library: misplaced copy reports its own release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` (`climon2-e2e`) |
+| LIB-01 Library: absolute exact-release load, one stable description | `installed_library_describes_revision_one_with_its_version_identity` (`climon2-e2e/tests/library.rs`) |
+| LIB-01 Library: `current`, working directory and ambient search paths; a misplaced copy reports its own compiled-in release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` (`climon2-e2e`) |
 | LIB-02 Library: unsupported revisions and null output storage | `installed_library_rejects_other_revisions_without_a_description` (`climon2-e2e`) |
 | DOC-01: unsupported table calls follow the frozen call rules | `installed_library_table_reports_every_instance_call_unsupported` (`climon2-e2e`) |
-| DOC-01: exported symbol set is only the bootstrap | `installed_library_exports_only_the_frozen_bootstrap` (`climon2-e2e`) |
-| DOC-01 layout case | `rust_native_declarations_match_the_published_header` (`climon2-core/tests/native_layout.rs`) |
-| Hooked sibling dylib under `cargo test` | `workspace_client_library_is_a_hooked_sibling_of_the_test_executables` (`climon2-fixtures/tests/hooks.rs`) |
-| Release checks: architecture, exact version, hook markers, exported symbols | `release_checks_*` (`xtask/src/library.rs`), `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`) |
+| DOC-01 exported interface: only the bootstrap is exported, from the real release library and from a defective stand-in | `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`), `release_checks_reject_extra_exports` (`xtask/src/library.rs`) |
+| DOC-01 layout case on x86-64 GNU/Linux and both macOS architectures | `rust_native_declarations_match_the_published_header` (`climon2-core/tests/native_layout.rs`) |
+| Hooked sibling library under `cargo test` (ELF on Linux, Mach-O on macOS) | `workspace_client_library_is_a_hooked_sibling_of_the_test_executables` (`climon2-fixtures/tests/hooks.rs`) |
+| LIB-01 Linux cross-binding: release checks reject a soname, RPATH, RUNPATH or a dependency beyond glibc | `release_checks_reject_a_soname_rpath_or_runpath`, `release_checks_reject_a_dependency_beyond_glibc` (`xtask/src/library.rs`) |
+| Release checks: architecture, exact version (LIB-01 identity), hook markers | `release_checks_accept_the_exact_library`, `release_checks_reject_a_wrong_architecture`, `release_checks_reject_a_wrong_version`, `release_checks_reject_test_hook_markers` (`xtask/src/library.rs`) |
+| Installed and packaged layouts carry the library | `fresh_install_publishes_complete_version_launcher_and_current` (`climon2-install`), `install_builds_production_artifacts_and_preserves_existing_versions` (`xtask/tests/install.rs`) |
 
 ## Behavioral evidence
 

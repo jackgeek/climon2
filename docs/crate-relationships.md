@@ -84,11 +84,11 @@ Ratatui is a dependency of this crate alone; third-party crates are
 deliberately excluded from this workspace-only diagram.
 
 **Current (#75):** the [client library](../GLOSSARY.md#sessions)'s `cdylib`,
-`libclimon2_client.dylib`, is an artifact of `climon2-client`, not another
-crate. The `#[repr(C)]` declarations of its native interface live in
-`climon2-core`, so the client library, the client executable and the monitor
-can share them without new edges; today the library, the library host fixture
-and xtask's release checks consume them.
+`libclimon2_client.dylib` on macOS and `libclimon2_client.so` on Linux, is an
+artifact of `climon2-client`, not another crate. The `#[repr(C)]` declarations
+of its native interface live in `climon2-core`, so the client library, the
+client executable and the monitor can share them without new edges; today the
+library, the library host fixture and xtask's release checks consume them.
 
 **Planned:** a separate discovery crate will share session discovery between
 the CLI and monitor, retained in

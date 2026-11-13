@@ -1,7 +1,7 @@
 # Client library embedding and lifetime
 
 **Status:** agreed design. Only the library side of the bootstrap is
-implemented: every installed version ships `libclimon2_client.dylib`, exporting
+implemented: every installed version ships its client library file, exporting
 only `climon2_client_get_interface`
 ([#75](https://github.com/jackgeek/climon2/issues/75)). Loading by the
 [monitor](../../GLOSSARY.md#sessions) and the
@@ -54,6 +54,14 @@ GNU/Linux; the version folder, not the file name, carries the release. Never
 substitute `current`, another installed release, or a library found through a
 search path. The [client executable](../../GLOSSARY.md#sessions) loads the same
 filename beside itself and verifies its own exact release.
+
+On macOS, [dyld](TERMS.md#dynamic-loader) searches each `DYLD_LIBRARY_PATH`
+directory for the library file's name before it opens an absolute path, so
+that variable can substitute another release's file. How the loader detects or
+permits such a substitution is not yet decided; it belongs to the shared loader
+([#84](https://github.com/jackgeek/climon2/issues/84)). The working directory,
+`current` and `DYLD_FALLBACK_LIBRARY_PATH` never change which file an absolute
+path loads.
 
 Load with eager symbol resolution and local symbol visibility. Bundled private
 dependencies resolve relative to the library, not the current working directory

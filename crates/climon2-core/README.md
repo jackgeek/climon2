@@ -125,6 +125,11 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   from the explicit input, never from a target cfg.
   `VersionBinary` enumerates CLI/daemon/client/monitor; `parse_current` validates the
   current file, permitting one LF or CRLF terminator, not arbitrary trimming.
+- `layout::client_library_name` is the client library's file name in every
+  version folder: Cargo's name for `climon2-client`'s cdylib on the target,
+  built from `std::env::consts::{DLL_PREFIX, DLL_SUFFIX}`
+  (`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux), never
+  from a target cfg.
 - `layout::home_hash8` hashes exact canonical-home encoded bytes, not lossy
   text. `RuntimeLayout::{new,directory,socket_path}` supplies naming and a
   caller-selected socket byte limit. The platform supplies the runtime root,

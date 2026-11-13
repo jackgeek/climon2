@@ -491,10 +491,12 @@ universal slices and signature checks. Linux builds verify native ELF
 executables; published Linux artifacts are built on Ubuntu 24.04, not Arch,
 to establish the glibc baseline. Both builds isolate unhooked packages and
 write their native archive, stamped `install.sh` and `SHA256SUMS` to
-`target/dist/`. The macOS archive's version folder also holds the client
-library `libclimon2_client.dylib`, which must export only its bootstrap and
-describe exactly the archive's version; `release-check` applies those two
-checks to the local per-package release build too.
+`target/dist/`. Each version folder also holds the client library,
+`libclimon2_client.dylib` on macOS or `libclimon2_client.so` on Linux, which
+must export only its bootstrap and describe exactly the archive's version; the
+Linux library must also have no soname, RPATH or RUNPATH and need only glibc's
+libraries. `release-check` applies these library checks to the local
+per-package release build too.
 Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
 
 `xtask install` builds and verifies the same production payload as `dist`, then

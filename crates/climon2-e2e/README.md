@@ -64,13 +64,17 @@ no compatibility evidence was fabricated.
 
 ## Library layer
 
-`tests/library.rs` loads the installed `<executable home>/<version>/libclimon2_client.dylib`
-through the test-only `climon2-library-host` fixture, which uses only `dlopen`
-(`RTLD_NOW | RTLD_LOCAL`), `dlsym` of `climon2_client_get_interface` and the
-returned function table, never Rust calls, static linking or a mock table. The
-host prints its observations as JSON; the tests decide what is correct. In
-archive mode the same tests load the exact archive's universal library, so the
-CI archive job exercises both architectures' slices.
+`tests/library.rs` loads the installed client library,
+`<executable home>/<version>/libclimon2_client.dylib` on macOS or
+`libclimon2_client.so` on Linux, through the test-only `climon2-library-host`
+fixture, which uses only `dlopen` (`RTLD_NOW | RTLD_LOCAL`), `dlsym` of
+`climon2_client_get_interface` and the returned function table, never Rust
+calls, static linking or a mock table. The host prints its observations as
+JSON; the tests decide what is correct. Each host run is bounded; one that
+outlives its deadline is killed, reaped and failed. In archive mode the same
+tests load the exact archive's library, so the CI archive jobs exercise both
+macOS architectures' slices and the Linux library. The exported symbol set is
+a release check (`xtask`), not a Library-layer test.
 
 ## Session continuity scenarios
 
@@ -111,11 +115,10 @@ session continuity (plan section 6.1), `tests/continuity.rs`.
 
 | Scenario | Named test |
 |---|---|
-| LIB-01 Library: absolute exact-release load; release text is the version folder name; one shared load and description; bounded requirements; no unimplemented capability | `installed_library_describes_revision_one_with_its_version_identity` |
-| LIB-01 Library: `current`, working directory and fallback search paths never change the loaded file; LIB-02 Library: a misplaced copy reports its own compiled-in release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
+| LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; bounded requirements; no unimplemented capability | `installed_library_describes_revision_one_with_its_version_identity` |
+| LIB-01 Library: `current`, the working directory and ambient search paths (`LD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`) never change the loaded file; a misplaced copy reports its own compiled-in release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
 | LIB-02 Library: unsupported revisions rejected with a null description; null output storage | `installed_library_rejects_other_revisions_without_a_description` |
 | DOC-01: all eleven table entries report unsupported operation by the frozen call rules | `installed_library_table_reports_every_instance_call_unsupported` |
-| DOC-01: every slice exports only the frozen bootstrap | `installed_library_exports_only_the_frozen_bootstrap` |
 
 ### Session continuity (plan section 6.1)
 

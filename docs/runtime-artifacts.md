@@ -94,20 +94,22 @@ Commands that explicitly close inherited descriptors cannot retain this
 additional evidence. macOS keeps its kernel process/image ancestry tracking
 and does not use this adapter.
 
-**Current:** every release builds and ships `libclimon2_client.dylib` in its
-version folder: a Rust cdylib artifact of `climon2-client` that exports only
-the frozen `climon2_client_get_interface` bootstrap. It implements the
-bootstrap and description of [native revision 1](protocol/monitor-client/core-v1.md);
-its instance calls report unsupported operation. Only test tooling loads it
+**Current (#75):** every release builds and ships the client library in its
+version folder: `libclimon2_client.dylib` (universal arm64/x86_64) on macOS and
+`libclimon2_client.so` on x86-64 GNU/Linux, both from one Rust cdylib artifact
+of `climon2-client`. Each exports only the frozen
+`climon2_client_get_interface` bootstrap and implements the bootstrap and
+description of [native revision 1](protocol/monitor-client/core-v1.md); its
+instance calls report unsupported operation. The Linux library links the GCC
+unwinder statically, because no unwinding leaves it, so it needs only glibc's
+libraries and has no soname, RPATH or RUNPATH, as the
+[Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for
+release isolation; release checks enforce each rule. Only test tooling loads it
 today, the library host fixture and xtask's release checks; the monitor's and
 client executable's loading remain planned. Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,
 are not separately loaded dynamic libraries. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
-The planned node names both platforms' library files: `.dylib` on macOS and
-`.so` on x86-64 GNU/Linux. The
-[monitor integration decision](https://github.com/jackgeek/climon2/issues/125)
-agreed Linux loading and release isolation; neither library is built yet.
 
 **Planned:** the [monitor](../GLOSSARY.md#sessions) loads version-matched
 [client libraries](../GLOSSARY.md#sessions) directly into
@@ -176,7 +178,7 @@ release-private dependency resolution, and explicit memory ownership.
 Every successfully opened library handle stays loaded until monitor exit,
 including handles rejected by later validation. Such releases remain in use
 until process exit; completed instance cleanup and joins do not unload them.
-These loading relationships are planned; only the artifact ships today. Complete interface
+These loading relationships are planned; only the artifacts ship today. Complete interface
 declarations are specified in [native revision 1](protocol/monitor-client/core-v1.md),
 with explicit startup/role, ownership, cleanup and fresh-instance recovery calls.
 No new artifact or consumption arrow is added. Monitor-client communication and the

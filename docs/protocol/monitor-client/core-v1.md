@@ -2,9 +2,10 @@
 
 **Status: developer-confirmed specification for [#71](https://github.com/jackgeek/climon2/issues/71).
 Implemented only for the bootstrap and the immutable description
-([#75](https://github.com/jackgeek/climon2/issues/75)).** The shipped
-`libclimon2_client.dylib` returns revision 1's description and rejects other
-revisions as specified below. Its requirements are provisional bounded values
+([#75](https://github.com/jackgeek/climon2/issues/75)).** The shipped client
+library (`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux)
+returns revision 1's description and rejects other revisions as specified
+below. Its requirements are provisional bounded values
 until [#121](https://github.com/jackgeek/climon2/issues/121) records qualified
 ones, and every [function-table](../TERMS.md#function-table) call reports
 `CM1_UNSUPPORTED_OPERATION` until it is implemented. Everything else on this

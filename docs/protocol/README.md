@@ -31,8 +31,11 @@ Current local runtime communication is implemented on macOS and x86_64
 GNU/Linux. The frozen [session metadata](../../GLOSSARY.md#sessions)
 [contract](../adr/0005-frozen-session-metadata-core.md) includes an optional
 clock-independent Linux daemon identity; the eleven frozen fields and hello
-messages are unchanged. The native monitor/library remains unimplemented on
-both systems. The [Linux decision](https://github.com/jackgeek/climon2/issues/125)
+messages are unchanged. Native monitor-client communication remains
+unimplemented on both systems: each release ships its client library with only
+the bootstrap and description implemented
+([#75](https://github.com/jackgeek/climon2/issues/75)), and no monitor loads it
+yet. The [Linux decision](https://github.com/jackgeek/climon2/issues/125)
 agreed Linux in-process loading in the
 [embedding design](library-embedding.md#artifact-and-dependency-lookup): the
 monitor and its client library ship on both systems in the same release.
@@ -587,7 +590,7 @@ contracts and remaining open decisions are distinguished below:
 | [Lifecycle #61](https://github.com/jackgeek/climon2/issues/61) | Agreed [lifecycle contract](../monitor-lifecycle.md), not implemented: exponential passive recovery, concurrent truthful shutdown, bounded whole-process fail-stop, Delete/removal and headless lifetime. Numerical schedules remain #69; no general native-crash survival guarantee. |
 | [Operational limits #69](https://github.com/jackgeek/climon2/issues/69) | Agreed [numerical specification](../monitor-operational-limits.md), not implemented: configurable byte/record/object and aggregate budgets, progress/stall deadlines, fair admission, protected recent history, payload/transfer limits and measurement thresholds. |
 | [Interface schemas #71](https://github.com/jackgeek/climon2/issues/71) | Agreed [native revision 1](monitor-client/core-v1.md), header, operation/event schemas, ownership/cleanup calls, errors, limits/measurements and C examples. Declaration checks do not replace future real same/mixed-release compatibility/rejection evidence. |
-| [Linux integration #125](https://github.com/jackgeek/climon2/issues/125) | Agreed Linux loading in the [embedding design](library-embedding.md#artifact-and-dependency-lookup) and [native revision 1](monitor-client/core-v1.md), not implemented: `libclimon2_client.so` by exact path, one self-contained library per release, an `eventfd` notification descriptor, and Linux qualified alongside both macOS architectures. |
+| [Linux integration #125](https://github.com/jackgeek/climon2/issues/125) | Agreed Linux loading in the [embedding design](library-embedding.md#artifact-and-dependency-lookup) and [native revision 1](monitor-client/core-v1.md). Every Linux release ships `libclimon2_client.so` as one self-contained library, and release checks enforce its single export, no soname, RPATH or RUNPATH, and glibc-only dependencies ([#75](https://github.com/jackgeek/climon2/issues/75)). Not implemented: loading it by exact path, the `eventfd` notification descriptor, and Linux qualification alongside both macOS architectures. |
 
 ## Compatibility, errors, and limits
 
@@ -665,7 +668,8 @@ alone do not provide retry safety or exactly-once execution.
 
 ### Monitor-client: agreed native revision 1, bootstrap implemented
 
-Every release ships `libclimon2_client.dylib`, whose
+Every release ships the client library (`libclimon2_client.dylib` on macOS,
+`libclimon2_client.so` on Linux), whose
 [compatibility check](monitor-client/request-hello.md) bootstrap and
 description are implemented. Every other entry below is agreed, not implemented.
 All entries inherit the [shared communication contract](#shared-in-process-communication-contract)
