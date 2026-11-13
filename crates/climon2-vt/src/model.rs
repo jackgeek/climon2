@@ -55,6 +55,14 @@ impl Model {
         })
     }
 
+    /// The mandatory allocation `Model::new` admits a blank model with: the
+    /// engine for `geometry`, vte's buffer and the reserve, and, when it keeps
+    /// any of `history_rows`, the first history chunk, which holds the
+    /// protected newest page.
+    pub fn mandatory(geometry: Geometry, history_rows: usize) -> usize {
+        Bounded::mandatory(geometry, history_rows)
+    }
+
     /// Begin a restoration at `geometry`: a blank model to stage it into,
     /// replacing any restoration already staged. The current model's oldest
     /// history yields first, a chunk at a time; if both models still cannot

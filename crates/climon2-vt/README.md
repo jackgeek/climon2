@@ -81,7 +81,9 @@ place.
   vte's 2 MiB synchronized-update buffer, a 32 KiB reserve for what the front
   filter and the engine hold briefly, and, when it keeps history, the first
   1000-row chunk, which holds the protected newest page. Otherwise it returns
-  `Rejected { needed, limit }`.
+  `Rejected { needed, limit }`. `Model::mandatory(geometry, history_rows)` is
+  that allocation, 6,948,039 bytes at 500x200 without history and 19,063,239
+  with it; the monitor checks its limits against it at startup (#167).
 - `Model::feed(bytes)` applies terminal bytes token by token. Only what the
   live output policy forwards to a Direct controller reaches the engine; a
   stripped token leaves only the C0 controls vte executes in it. Each token's
@@ -127,6 +129,7 @@ monitor's evidence.
 | Scenario | Test (`tests/bound.rs` unless another file is named) |
 |---|---|
 | LIM-03 Contract: mandatory model admitted at its bytes, rejected one below | `a_model_is_admitted_at_its_mandatory_bytes_and_rejected_one_below` |
+| LIM-03 Contract and CFG-01 Contract: `Model::mandatory` is the allocation `Model::new` admits, at the bound and one byte below it, with and without history; at 500x200 the documented 6,948,039 bytes without history and 19,063,239 with it | `a_models_mandatory_bytes_are_what_it_is_admitted_with` |
 | LIM-03 Contract: plain text grows nothing beyond held cells | `plain_text_fills_held_cells_without_growth` |
 | LIM-03 Contract: history chunk at the bound, oldest row discarded one past it | `history_grows_at_the_bound_and_discards_its_oldest_row_one_byte_past_it` |
 | LIM-03 Contract: history grows only before output that could fill it, by every chunk one token could fill (a long repeat, released line feeds: at the bound and one past it), never past its configured rows, and is not shown over the alternate screen | `history_grows_only_before_output_that_could_fill_it`, `one_token_admits_every_history_chunk_it_could_fill`, `history_never_grows_past_its_configured_rows`, `the_alternate_screen_shows_no_history` |

@@ -118,6 +118,32 @@ fn a_model_is_admitted_at_its_mandatory_bytes_and_rejected_one_below() {
     assert_eq!(model.footprint(), mandatory);
 }
 
+/// LIM-03 Contract and CFG-01 Contract: `Model::mandatory` is the allocation
+/// `Model::new` admits a blank model with, at the bound and one byte below
+/// it, with and without history. At the largest geometry, 500x200, it is the
+/// documented 6,948,039 bytes without history and 19,063,239 with the first
+/// history chunk, which holds the protected newest page
+/// (docs/monitor-operational-limits.md).
+#[test]
+fn a_models_mandatory_bytes_are_what_it_is_admitted_with() {
+    let largest = geometry(500, 200);
+    assert_eq!(Model::mandatory(largest, NO_HISTORY), 6_948_039);
+    assert_eq!(Model::mandatory(largest, 10_000), 19_063_239);
+    let small = geometry(80, 24);
+    for (at, rows) in [(small, NO_HISTORY), (small, 10_000), (largest, 10_000)] {
+        let mandatory = Model::mandatory(at, rows);
+        assert_eq!(
+            Model::new(at, limits(mandatory - 1, rows)).err(),
+            Some(Rejected {
+                needed: mandatory,
+                limit: mandatory - 1
+            })
+        );
+        let model = Model::new(at, limits(mandatory, rows)).unwrap();
+        assert_eq!(model.footprint(), mandatory);
+    }
+}
+
 const ROOMY: usize = 64 * 1024 * 1024;
 
 /// LIM-03 Contract: plain text, invalid bytes included, fills cells the
