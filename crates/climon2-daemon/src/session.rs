@@ -11,18 +11,17 @@ mod writes;
 use crate::{
     args::Options,
     connection::{Connection, Failure, Received},
-    control::{Authority, ConnectionId, Control, Effect, Lifecycle, Restoration},
+    control::{Authority, ConnectionId, Control, Effect, Lifecycle, Outcome, Restoration},
     pty::Pty,
 };
 use climon2_core::{
-    exit::CLIMON2_ERROR,
     hello::{SessionState, advertise_revision1},
     protocol::{
         ClientMessage, Frame, HANGUP_GRACE, HelloReply, MAX_DATA_FRAME_LENGTH, PROTOCOL_VERSION,
         PTY_DRAIN_CAP, ServerMessage, TerminalSize,
     },
     title::default_title,
-    wire::{GrantReason, RevocationReason},
+    wire::{CommandResult, GrantReason, RevocationReason},
 };
 use climon2_platform::{
     peer,
@@ -59,9 +58,11 @@ struct Session<'a, C> {
     cleanup: C,
     connections: BTreeMap<u64, Connection>,
     deliveries: BTreeMap<u64, Delivery>,
-    /// Revision-1 connections after their Open: passive monitor connections
-    /// and interactive attachments.
+    /// Revision-1 connections after their first role: passive monitor
+    /// connections, interactive attachments and standalone Kills.
     opened: BTreeMap<u64, wire::Opened>,
+    /// The command's result, once the daemon knows it.
+    command_result: Option<CommandResult>,
     control: Control,
     vt: Vt,
     next_id: u64,
@@ -94,6 +95,7 @@ pub(crate) fn serve(
         connections: BTreeMap::new(),
         deliveries: BTreeMap::new(),
         opened: BTreeMap::new(),
+        command_result: None,
         control: Control::new(options.size, options.lifetime),
         vt,
         next_id: Default::default(),
@@ -300,17 +302,21 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.initial_deadline(now)
     }
 
+    /// A hang-up the daemon cannot confirm leaves the command's result unknown.
     fn end_hangup(&mut self, now: Instant) -> io::Result<()> {
         if !self.command.hung_up(now) {
             return Ok(());
         }
-        let code = self.pty.end_hangup().unwrap_or(CLIMON2_ERROR);
-        self.end_command(code)
+        let ended = self.pty.end_hangup().ok();
+        if let Some(result) = &ended {
+            self.publish(result);
+        }
+        self.end_command(ended)
     }
 
-    fn end_command(&mut self, code: u32) -> io::Result<()> {
+    fn end_command(&mut self, command: Option<CommandResult>) -> io::Result<()> {
         self.command = Command::Ended;
-        self.react(|control| control.command_exited(code))
+        self.react(|control| control.command_exited(command))
     }
 
     fn terminate_on_signal(&mut self) -> io::Result<()> {
@@ -332,9 +338,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let Ok(status) = observed else {
             return self.fail("cannot observe the command");
         };
-        if let Some(code) = status {
+        if let Some(result) = status {
+            self.publish(&result);
             self.command = Command::Draining {
-                code,
+                result,
                 drain: Drain::new(now),
             };
         }
@@ -588,13 +595,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// The exit is reported once output drained, the initial attachment had
     /// its chance and no grant awaits `Ready`.
     fn report_exit(&mut self, now: Instant) -> io::Result<()> {
-        let Some(code) = self.command.drained(now) else {
+        let Some(result) = self.command.drained(now) else {
             return Ok(());
         };
         if self.awaiting(now) {
             return Ok(());
         }
-        self.end_command(code)
+        self.end_command(Some(result))
     }
 
     fn awaiting(&self, now: Instant) -> bool {
@@ -658,6 +665,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         match effect {
             Effect::Admit { conn } => self.admit(conn.0),
             Effect::Refuse { conn } => self.refuse(conn.0),
+            Effect::Convert { conn } => self.convert(conn.0),
             other => self.input_effect(other),
         }
     }
@@ -704,9 +712,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn final_effect(&mut self, effect: Effect) {
         match effect {
-            Effect::ConfirmKill { conn, code } => {
-                self.terminal(conn.0, ServerMessage::Terminated { code });
-            }
+            Effect::ConfirmKill { conn, outcome } => self.confirm_kill(conn.0, &outcome),
             Effect::Finish => self.finish(),
             other => self.grant_effect(other),
         }
@@ -757,10 +763,11 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// The grace is a loop deadline, so probes, refusals and joining kills
-    /// are served while the command session hangs up.
+    /// are served while the command session hangs up. A failed hang-up
+    /// leaves the command's result unknown.
     fn begin_shutdown(&mut self) -> io::Result<()> {
         if self.pty.hang_up().is_err() {
-            return self.end_command(CLIMON2_ERROR);
+            return self.end_command(None);
         }
         self.command = Command::HangingUp {
             until: Instant::now() + HANGUP_GRACE,
@@ -842,6 +849,15 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.forget_controller(id);
         self.reply(id, ServerMessage::Revoked);
         self.report_revocation(id, RevocationReason::Takeover);
+    }
+
+    /// A kill requester's answer: a standalone Kill's Response, or the
+    /// private protocol's confirmation.
+    fn confirm_kill(&mut self, id: u64, outcome: &Outcome) {
+        match self.kill_request(id) {
+            Some(request_id) => self.answer_kill(id, request_id, outcome),
+            None => self.terminal(id, private_confirmation(outcome)),
+        }
     }
 
     /// An attachment's result: control it still holds ends as the session
@@ -984,6 +1000,14 @@ fn ending_effects(
         return control.kill(conn);
     }
     control.lost(conn)
+}
+
+/// `Terminated` with the private protocol's status, or `Error`.
+fn private_confirmation(outcome: &Outcome) -> ServerMessage {
+    match outcome.private_code() {
+        Some(code) => ServerMessage::Terminated { code },
+        None => failure_message(),
+    }
 }
 
 fn failure_message() -> ServerMessage {

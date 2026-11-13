@@ -29,6 +29,18 @@ change as the application's focus report while the application has focus
 reporting on, in request order after earlier input, and sends the known
 state once when reporting is newly enabled.
 
+**Implemented with Contract evidence ([#89](https://github.com/jackgeek/climon2/issues/89)):**
+the session daemon's side of
+[canonical monitor presentation](#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1).
+A [passive monitor connection](../../GLOSSARY.md#attachment-and-control) that
+its Acquire or a [promotion](../../GLOSSARY.md#attachment-and-control) makes an
+attachment is granted at the session's current geometry, receives
+restorations with
+[canonical presentation](../../GLOSSARY.md#restoration-and-presentation),
+serialized at the effective session geometry for a fresh terminal of that
+size, and receives a new restoration at every new effective geometry before
+any byte at it.
+
 Everything else in this document remains agreed and unimplemented.
 
 The later [selector and attention-presentation decision](../monitor-selector.md)
@@ -106,10 +118,17 @@ against the outer host or an unclamped requested size. The geometry in
 The monitor parses at those dimensions and paints local margins itself.
 No additional presentation-geometry field is introduced.
 
-This is an agreed, unimplemented amendment, not existing behavior at `cb585d0`.
-Current ordinary-client restoration can use host coordinates: a 600x250 host
-around a 500x200 session cannot safely be reparsed as a 500x200 model.
-The single wire geometry suffices only with this new monitor policy.
+The session daemon implements this amendment
+([#89](https://github.com/jackgeek/climon2/issues/89)); the monitor's parsing
+and painting remain unimplemented. Ordinary-client restoration can use host
+coordinates: a 600x250 host around a 500x200 session cannot safely be
+reparsed as a 500x200 model. The single wire geometry suffices only with this
+monitor policy. A monitor model is never reflowed in place: every change of
+the effective geometry is followed by a
+[Restoration begin](daemon-client/event-restoration-begin.md) at that
+geometry before any [Display](daemon-client/event-display.md) at it
+(developer decision on [#76](https://github.com/jackgeek/climon2/issues/76),
+2026-11-13).
 Ordinary interactive attach,
 [direct/derived presentation](../../GLOSSARY.md#restoration-and-presentation),
 [native scrollback](../../GLOSSARY.md#restoration-and-presentation), and

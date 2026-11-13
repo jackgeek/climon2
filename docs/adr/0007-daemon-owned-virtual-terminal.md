@@ -64,12 +64,14 @@ one other consumer allowed by ADR 0004, uses it only for the documented
 normal-shell baseline.
 No native cross-release cell schema or new workspace crate is selected.
 
-Monitor-mode display/restoration will use effective session geometry canonically,
-not host/requested dimensions, including passive promotion and background grants.
-Current host-coordinate restoration cannot safely be reparsed at a smaller
-effective size. This is an agreed unimplemented presentation-policy amendment;
-ordinary direct/derived attach, native history and release below are unchanged.
-The monitor uses its own alternate screen and internal normal history, replaces
+Monitor-mode display/restoration uses effective session geometry canonically,
+not host/requested dimensions, including passive promotion and background grants,
+because host-coordinate restoration cannot safely be reparsed at a smaller
+effective size. The session daemon implements this
+[canonical presentation](#canonical-monitor-presentation)
+([#89](https://github.com/jackgeek/climon2/issues/89)); ordinary direct/derived
+attach, native history and release below are unchanged.
+The planned monitor uses its own alternate screen and internal normal history, replaces
 whole models/history transactionally, and never writes session bytes directly
 to the host or emits duplicate query replies. Selected input also waits for
 coherent paint, while applied background models can report Ready without paint.
@@ -81,8 +83,8 @@ permanent rejection instead shows a disconnected/error overlay. Recovery removes
 the overlay but requires explicit acquisition for a non-controller's live
 presentation. No history/retry binding is added. Selector removal discards cache
 only after definitive termination and local instance cleanup/join, for this
-monitor run only. All are unimplemented and leave daemon query authority and
-ordinary presentation unchanged.
+monitor run only. These monitor behaviors are unimplemented and leave daemon
+query authority and ordinary presentation unchanged.
 
 ## Restoration: three phases, produced incrementally
 
@@ -95,6 +97,16 @@ The normal screen is read while the application is on the alternate screen by cl
 ## Direct and Derived presentation
 
 Session geometry is the controller's host size clamped to 2..=500 columns and 1..=200 rows. A host of exactly that size gets **Direct** presentation: filtered tokens forwarded unchanged. Absolute positioning in a restoration fixes only the initial image; a larger host would then wrap and scroll unchanged live bytes at its own width and bottom row, not the session's, so it gets **Derived** presentation: live output is rendered from engine state inside the session rectangle, pushed history rows enter native scrollback, and only rows that changed are repainted. Hosts narrower than 2 columns (Alacritty's minimum) are unsupported, and the scroll region is not carried across a switch between Direct and Derived.
+
+## Canonical monitor presentation
+
+A [monitor](../../GLOSSARY.md#sessions) parses a session's bytes into its own model of exactly the effective session geometry and paints that model; its host is never the session's terminal. Every restoration and live byte the daemon sends a monitor-mode attachment, a [passive monitor connection](../../GLOSSARY.md#attachment-and-control) that its Acquire or a [promotion](../../GLOSSARY.md#attachment-and-control) made an attachment, therefore has [canonical presentation](../../GLOSSARY.md#restoration-and-presentation): it is serialized at the session geometry for a fresh terminal of exactly that size, whatever size the monitor reports, and the monitor parses each restoration into a fresh model.
+
+- **Restoration.** Phase A is only the prologue, whose scroll-region reset homes the cursor, and any truncation notice: there is no host content to preserve. Phase B prints the retained history from the top of the fresh screen, and C1 scrolls off exactly the lines printed, a wrapped notice counting as the rows it wraps onto, so the model's history holds exactly the retained rows, with no blank row added. Phase C is the Direct one. `Vt::canonical` takes the snapshot and gives the attachment a fresh Direct presentation record of the session geometry.
+- **Live output** is Direct: the filtered tokens apply to a model of the session geometry exactly as to the daemon's engine. Synchronized-update ends and the presentation release work as for any attachment.
+- **Geometry.** Every grant of a monitor-mode attachment keeps the session geometry, so acquiring or inheriting control resizes nothing. Only its own Resize while it controls changes the geometry. A model is never reflowed in place: every change of the effective geometry is followed by a restoration at the new geometry before any live byte at it. Once the attachment is ready, Geometry reports the change and a replacement restoration within the period follows at once; before readiness the replacement alone reports it. A host change that keeps the geometry changes nothing.
+
+Considered (developer decision on [#76](https://github.com/jackgeek/climon2/issues/76), 2026-11-13): resizing a model in place was rejected, because reflowing a large history can allocate far beyond the model's bound (about 62,000 cells per row on a 500-to-2-column shrink) and needs a staged copy anyway. A monitor model that receives a Display at a geometry it does not have marks itself stale until the next restoration, as a defence only ([#108](https://github.com/jackgeek/climon2/issues/108)).
 
 ## Presentation release
 

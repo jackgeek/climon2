@@ -10,10 +10,14 @@ uses it today only for the documented normal-shell baseline in its release.
 [#63 terminal contract](../../docs/protocol/terminal-integration.md) plans
 monitor-owned models and read-only Rust cell/mode/cursor/history views for Ratatui.
 This would extend the monitor's baseline-only use; it is not a current public
-cell API or native cross-release cell schema. Monitor-mode daemon presentation must be
-serialized at effective session geometry; ordinary host direct/derived
-presentation below is unchanged. The daemon remains the sole query authority;
-the monitor never forwards parser replies or session bytes directly to its host.
+cell API or native cross-release cell schema. The daemon remains the sole query
+authority; the monitor never forwards parser replies or session bytes directly
+to its host.
+
+**Implemented ([#89](https://github.com/jackgeek/climon2/issues/89)):** the
+canonical restoration (`Vt::canonical`) that the session daemon serializes
+for monitor-mode connections at the effective session geometry. Ordinary
+host Direct/Derived presentation below is unchanged.
 
 ## Public boundaries
 
@@ -61,6 +65,18 @@ the monitor never forwards parser replies or session bytes directly to its host.
   snapshot point; `Vt::produce(&mut restoration, &mut presentation, budget)
   -> Chunk { bytes, done }` yields whole history rows up to about `budget`
   bytes, then the screen suffix. Commit `RestoreEnd` after the `done` chunk.
+- `Vt::canonical(&mut presentation) -> (phase A, Restoration)` takes the
+  snapshot point of a canonical restoration, produced the same way: the
+  session at its own geometry for a fresh terminal of exactly that size,
+  whatever host `presentation` described. Phase A is only the prologue (whose
+  scroll-region reset homes the cursor) and any truncation notice, history
+  rows are printed from the top of the fresh screen, and C1 scrolls off
+  exactly the lines printed (a wrapped notice counts as the rows it wraps
+  onto), so the fresh terminal's history is exactly the retained rows. No
+  host content is preserved and no byte depends on a host's size.
+  `presentation` becomes a fresh Direct record of a host of the session
+  geometry, so live output for it stays Direct; a monitor-mode connection
+  parses each restoration into a fresh model.
 - `Vt::derive(&mut presentation)`: the live update for a Derived controller
   after `RestoreEnd`; empty when nothing changed.
 - `Vt::present(&mut presentation, host_cols, host_rows)`: after a ready
@@ -95,3 +111,4 @@ layer and the monitor's evidence.
 |---|---|
 | CTL-03 (crate case): application title changes are reported by value, in order and one per change; unset, empty and a value stay distinct; an oversized title is ignored | `application_title_changes_are_reported_in_order_by_value` |
 | FOC-01 (crate case): the application's focus reporting mode (1004) is reported, and each feed says whether it newly enabled the mode, however its tokens were split across reads | `focus_reporting_reports_the_mode_and_each_feed_that_newly_enabled_it` |
+| TRM-03 and CTL-04 (crate case, canonical monitor-mode serialization): a canonical restoration rebuilds exactly the retained history, screen and cursor in a fresh terminal of the session geometry, with identical bytes whatever host the presentation described; no blank row is added and none lost, with a wrapped truncation notice, a gap notice during production, more rows than the screen, a soft-wrapped row and a one-row screen | `a_canonical_restoration_is_the_session_at_its_geometry_for_a_fresh_terminal`, `a_canonical_restoration_scrolls_off_exactly_the_history_it_printed`, `a_canonical_restoration_counts_a_gap_notice_among_the_rows_it_scrolls_off` |

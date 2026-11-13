@@ -28,6 +28,9 @@ pub(super) struct Overflow;
 /// section 3.3, delivery per attachment).
 pub(super) struct Delivery {
     presentation: Presentation,
+    /// A monitor-mode attachment's: every restoration is canonical, at the
+    /// session geometry, and its host size never changes its presentation.
+    canonical: bool,
     granted: Option<Granted>,
     backlog: Vec<u8>,
     /// Output arrived since the last derived update. A derive with nothing new emits
@@ -47,11 +50,21 @@ impl Delivery {
     pub fn new(host: TerminalSize) -> Self {
         Self {
             presentation: Presentation::new(host.cols, host.rows),
+            canonical: false,
             granted: None,
             backlog: Vec::new(),
             // A grant's restoration starts from the current screen, not from this.
             stale: Default::default(),
             resized: None,
+        }
+    }
+
+    /// A monitor-mode attachment's delivery, at the session geometry
+    /// `session`.
+    pub fn canonical(session: TerminalSize) -> Self {
+        Self {
+            canonical: true,
+            ..Self::new(session)
         }
     }
 
@@ -66,8 +79,7 @@ impl Delivery {
         now: Instant,
     ) -> Vec<u8> {
         self.retire();
-        self.presentation.resize_host(host.cols, host.rows);
-        let (lead, restoration) = vt.grant(&mut self.presentation);
+        let (lead, restoration) = self.snapshot(vt, host);
         self.granted = Some(Granted {
             authority,
             awaiting_ready: Some(now),
@@ -75,6 +87,16 @@ impl Delivery {
             restoration: Some(restoration),
         });
         lead
+    }
+
+    /// The snapshot point of a restoration for a host of size `host`, or of
+    /// a canonical one, whatever the host.
+    fn snapshot(&mut self, vt: &mut Vt, host: TerminalSize) -> (Vec<u8>, Restoration) {
+        if self.canonical {
+            return vt.canonical(&mut self.presentation);
+        }
+        self.presentation.resize_host(host.cols, host.rows);
+        vt.grant(&mut self.presentation)
     }
 
     /// The controller confirmed readiness: its restoration deadline ends.
@@ -101,9 +123,12 @@ impl Delivery {
     }
 
     /// The ready controller's host size changed; presented by the next
-    /// [`Delivery::produce`] outside a synchronized update.
+    /// [`Delivery::produce`] outside a synchronized update. A canonical
+    /// presentation stays at the session geometry: a new one replaces it.
     pub fn resize(&mut self, host: TerminalSize) {
-        self.resized = Some(host);
+        if !self.canonical {
+            self.resized = Some(host);
+        }
     }
 
     /// Routes one read's live output. Direct output is committed unless a

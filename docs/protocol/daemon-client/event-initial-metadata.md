@@ -1,8 +1,8 @@
 # Initial metadata — `0x41`
 
-**Status: agreed; implemented for the title**, owned by
-[#67](https://github.com/jackgeek/climon2/issues/67); status, progress and a
-known command result arrive with their families.
+**Status: agreed; implemented for the title and a known command result**,
+owned by [#67](https://github.com/jackgeek/climon2/issues/67); status and
+progress arrive with their families.
 The [session daemon](../../../GLOSSARY.md#sessions) supplies an atomic report
 to the [client](../../../GLOSSARY.md#sessions) after successful Open.
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
@@ -65,6 +65,7 @@ precedes the [Control granted](event-control-granted.md) of its
 [attachment](../../../GLOSSARY.md#attachment-and-control), in the same step. With `title-v1` selected, `title` is
 available with the application's title by value: null while unset, `""` when
 set empty. Without it, `title` is unavailable. `status` and `progress` are
-always unavailable for now, and `command_result` is null: the daemon cannot
-yet tell a normal exit from a signal, which a known result needs
-([#88](https://github.com/jackgeek/climon2/issues/88)).
+always unavailable for now. `command_result` is null until the daemon knows
+how the command ended, then that result, which the connections open at that
+moment received as [Command final](event-command-final.md#implemented-behavior);
+a connection that receives the result here receives no Command final.

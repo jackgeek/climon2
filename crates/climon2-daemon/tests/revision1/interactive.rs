@@ -2,23 +2,23 @@
 //! binary Input and Display, Acquire, Focus and Leave over revision 1,
 //! beside the private protocol and its attachments.
 use super::{
-    assert_closed, assert_rejected, counter, encoded, message, open, peer, raw_frame, request,
-    send, write_in_pieces,
+    assert_closed, assert_final_then_closed, assert_rejected, command_final, counter, encoded,
+    exited, message, open, peer, raw_frame, request, send, write_in_pieces,
 };
 use crate::Session;
 use climon2_core::{
     hello::Lifecycle,
     protocol::{self, ClientMessage, ServerMessage as PrivateMessage, TerminalSize},
     wire::{
-        self, Acknowledge, Acquire, AuthorityIds, AuthorityResult, ControlRecord, ControlRevoked,
-        Counter, Display, Focus, FocusBytes, Frame, Geometry, GrantReason, Input, Kill, Leave,
-        Mode, Outcome, Ready, Resize, Response, RestorationBegin, RestorationComplete,
-        RevocationReason, ServerMessage, SetViewing, Success,
+        self, Acknowledge, Acquire, ActualGeometry, AuthorityIds, AuthorityResult, CommandResult,
+        ControlRecord, ControlRevoked, Counter, Display, Focus, FocusBytes, Frame, Geometry,
+        GrantReason, Input, Kill, Leave, Mode, Outcome, Ready, Resize, Response, RestorationBegin,
+        RestorationComplete, RevocationReason, ServerMessage, SetViewing, Success,
     },
 };
 use std::{fs, io::Write, num::NonZeroU32, os::unix::net::UnixStream, time::Duration};
 
-fn geometry(cols: u32, rows: u32) -> Geometry {
+pub(super) fn geometry(cols: u32, rows: u32) -> Geometry {
     Geometry {
         cols: NonZeroU32::new(cols).unwrap(),
         rows: NonZeroU32::new(rows).unwrap(),
@@ -28,8 +28,8 @@ fn geometry(cols: u32, rows: u32) -> Geometry {
 /// An interactive attachment: its stream, the authority of its current
 /// restoration, whether it still controls, its last request ID and the
 /// terminal bytes it received.
-struct Attached {
-    stream: UnixStream,
+pub(super) struct Attached {
+    pub(super) stream: UnixStream,
     /// The families its Open selected, sorted.
     selected: Vec<String>,
     period: u64,
@@ -37,7 +37,7 @@ struct Attached {
     /// From its Control granted until its Control revoked.
     controlling: bool,
     request: u64,
-    display: Vec<u8>,
+    pub(super) display: Vec<u8>,
 }
 
 impl Attached {
@@ -45,7 +45,12 @@ impl Attached {
     /// `optional`, and checks every record of the documented order: the
     /// Response, Initial metadata, Control granted (`attach`) at the session
     /// geometry `granted`, then the restoration.
-    fn open(session: &Session, host: Geometry, optional: &[&str], granted: Geometry) -> Self {
+    pub(super) fn open(
+        session: &Session,
+        host: Geometry,
+        optional: &[&str],
+        granted: Geometry,
+    ) -> Self {
         let mut stream = peer(session);
         request(
             &mut stream,
@@ -58,6 +63,27 @@ impl Attached {
         let mut attached = Self::opened_begun(stream, granted);
         attached.completed();
         attached
+    }
+
+    /// A passive monitor connection registered with request 1, selecting
+    /// `optional`: not an attachment, and without control, until its
+    /// Acquire or a promotion grants it control.
+    pub(super) fn registered(session: &Session, optional: &[&str]) -> Self {
+        Self::passive(super::monitor(session, optional).0)
+    }
+
+    /// The passive monitor connection `stream`, whose Open with request 1
+    /// was answered with its Initial metadata.
+    pub(super) fn passive(stream: UnixStream) -> Self {
+        Self {
+            stream,
+            selected: Vec::new(),
+            period: 0,
+            restoration: 0,
+            controlling: false,
+            request: 1,
+            display: Vec::new(),
+        }
     }
 
     /// The Response, Initial metadata, Control granted (`attach`) at the
@@ -98,7 +124,7 @@ impl Attached {
 
     /// The next record is Control granted for `reason` at `geometry`, under a
     /// period newer than any this attachment had; its restoration follows.
-    fn granted(&mut self, reason: GrantReason, geometry: Geometry) {
+    pub(super) fn granted(&mut self, reason: GrantReason, geometry: Geometry) {
         self.grant(reason, geometry);
         self.completed();
     }
@@ -129,6 +155,19 @@ impl Attached {
         self.completed();
     }
 
+    /// The effective geometry of a monitor-mode controller changed to
+    /// `geometry`: Geometry under its period comes next, then, before any
+    /// Display at that geometry, the Restoration begin of the period's next
+    /// restoration at it, then that restoration.
+    pub(super) fn regeometried(&mut self, geometry: Geometry) {
+        let actual = ActualGeometry {
+            period: counter(self.period),
+            geometry,
+        };
+        assert_eq!(message(&mut self.stream), ServerMessage::Geometry(actual));
+        self.restored(self.restoration + 1, geometry);
+    }
+
     /// Restoration begin for `restoration` of the current period at
     /// `geometry`.
     fn begun(&mut self, restoration: u64, geometry: Geometry) {
@@ -145,7 +184,7 @@ impl Attached {
 
     /// The current restoration's Display chunks, then its Restoration
     /// complete.
-    fn completed(&mut self) {
+    pub(super) fn completed(&mut self) {
         let complete = RestorationComplete {
             authority: self.authority(),
         };
@@ -157,7 +196,7 @@ impl Attached {
 
     /// The next record that is not a Display of the current authority,
     /// whose payloads are kept in order.
-    fn next_after_display(&mut self) -> ServerMessage {
+    pub(super) fn next_after_display(&mut self) -> ServerMessage {
         loop {
             match message(&mut self.stream) {
                 ServerMessage::Display(display) => self.displayed(display),
@@ -182,7 +221,7 @@ impl Attached {
     }
 
     /// Reads Display until the bytes received hold `needle` `times` times.
-    fn until_displayed(&mut self, needle: &[u8], times: usize) {
+    pub(super) fn until_displayed(&mut self, needle: &[u8], times: usize) {
         while crate::count(&self.display, needle) < times {
             match message(&mut self.stream) {
                 ServerMessage::Display(display) => self.displayed(display),
@@ -192,12 +231,12 @@ impl Attached {
     }
 
     /// The next request ID.
-    fn next(&mut self) -> Counter {
+    pub(super) fn next(&mut self) -> Counter {
         self.request += 1;
         counter(self.request)
     }
 
-    fn authority(&self) -> AuthorityIds {
+    pub(super) fn authority(&self) -> AuthorityIds {
         AuthorityIds {
             period: counter(self.period),
             restoration_id: counter(self.restoration),
@@ -205,7 +244,7 @@ impl Attached {
     }
 
     /// The Response to the latest request, after any Display.
-    fn response(&mut self) -> Outcome {
+    pub(super) fn response(&mut self) -> Outcome {
         match self.next_after_display() {
             ServerMessage::Response(response) => {
                 assert_eq!(response.request_id, counter(self.request));
@@ -237,12 +276,12 @@ impl Attached {
         })
     }
 
-    fn ready(&mut self) -> Outcome {
+    pub(super) fn ready(&mut self) -> Outcome {
         self.ready_as(self.authority())
     }
 
     /// Confirms readiness for the first time under this authority.
-    fn confirm_ready(&mut self) {
+    pub(super) fn confirm_ready(&mut self) {
         let authority = self.authority();
         let ready = Success::Ready(AuthorityResult {
             changed: true,
@@ -267,7 +306,7 @@ impl Attached {
     }
 
     /// Input accepted whole for forwarding.
-    fn typed(&mut self, payload: &[u8]) {
+    pub(super) fn typed(&mut self, payload: &[u8]) {
         let accepted_bytes = NonZeroU32::new(payload.len() as u32).unwrap();
         assert_eq!(
             self.input(payload),
@@ -286,7 +325,7 @@ impl Attached {
         })
     }
 
-    fn resize(&mut self, cols: u32, rows: u32) -> Outcome {
+    pub(super) fn resize(&mut self, cols: u32, rows: u32) -> Outcome {
         self.resize_as(self.authority(), cols, rows)
     }
 
@@ -340,7 +379,7 @@ impl Attached {
     /// Acquire by a non-controlling attachment: its grant and the beginning
     /// of its restoration precede the success, then the restoration
     /// completes.
-    fn acquire(&mut self, geometry: Geometry) {
+    pub(super) fn acquire(&mut self, geometry: Geometry) {
         let request_id = self.next();
         request(&mut self.stream, &Acquire { request_id });
         self.grant(GrantReason::Acquire, geometry);
@@ -355,7 +394,7 @@ impl Attached {
 
     /// Any release Display, then Control revoked for `reason` under the
     /// current authority; no Display may follow it.
-    fn revoked(&mut self, reason: RevocationReason) {
+    pub(super) fn revoked(&mut self, reason: RevocationReason) {
         let authority = self.authority();
         let revoked = ControlRevoked { authority, reason };
         assert_eq!(
@@ -367,7 +406,7 @@ impl Attached {
 
     /// Leaves as an accepted detach: its Response reports an attachment
     /// detached, and the stream then ends.
-    fn leave(&mut self) {
+    pub(super) fn leave(&mut self) {
         let request_id = self.next();
         request(&mut self.stream, &Leave { request_id });
         let left = Success::Left {
@@ -377,15 +416,24 @@ impl Attached {
         assert_closed(&mut self.stream);
     }
 
-    /// The session ended: control ends with it, then the stream.
-    fn ended(&mut self) {
+    /// The command ended with `result`: its Command final arrives once,
+    /// after any Display, then control ends with the session and the
+    /// stream closes.
+    pub(super) fn ended(&mut self, result: &CommandResult) {
+        assert_eq!(self.next_after_display(), command_final(result));
+        self.session_ended();
+    }
+
+    /// Control ends with the session, after any Display, and the stream
+    /// closes.
+    pub(super) fn session_ended(&mut self) {
         self.revoked(RevocationReason::SessionEnding);
         assert_closed(&mut self.stream);
     }
 }
 
 /// The rejection of the latest request with `code`, carrying no result.
-fn rejected(outcome: Outcome, code: &str) {
+pub(super) fn rejected(outcome: Outcome, code: &str) {
     match outcome {
         Outcome::Rejected(rejection) => {
             assert_eq!(rejection.error.code.as_str(), code);
@@ -470,7 +518,7 @@ fn interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order
         attached.response(),
         Outcome::Ok(Success::InputAccepted { accepted_bytes })
     );
-    attached.ended();
+    attached.ended(&exited(0));
     session.finish();
     assert_eq!(
         fs::read_to_string(session.directory.path().join("resized")).unwrap(),
@@ -481,7 +529,7 @@ fn interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order
 
 /// An interactive attachment at the fixtures' 91x37 session size, ready and
 /// with the fixture's `fixture-ready` received.
-fn ready_attachment(session: &Session, optional: &[&str]) -> Attached {
+pub(super) fn ready_attachment(session: &Session, optional: &[&str]) -> Attached {
     let mut attached = Attached::open(session, geometry(91, 37), optional, geometry(91, 37));
     attached.confirm_ready();
     attached.until_displayed(b"fixture-ready", 1);
@@ -536,8 +584,8 @@ fn stale_and_superseded_authority_is_rejected_and_never_re_enables_input() {
     rejected(first.input(b"late\n"), "not_ready");
     first.confirm_ready();
     first.typed(b"a2\nend\n");
-    first.ended();
-    assert_closed(&mut second.stream);
+    first.ended(&exited(0));
+    assert_final_then_closed(&mut second.stream, &exited(0));
     session.finish();
     assert_eq!(
         fs::read_to_string(session.directory.path().join("lines")).unwrap(),
@@ -583,7 +631,7 @@ fn a_ready_controllers_resize_reports_the_actual_geometry_after_its_acceptance()
     );
     assert_eq!(attached.next_after_display(), geometry_report(100, 30));
     attached.typed(b"y\nend\n");
-    attached.ended();
+    attached.ended(&exited(0));
     session.finish();
     assert_eq!(
         fs::read_to_string(session.directory.path().join("lines")).unwrap(),
@@ -606,7 +654,7 @@ fn binary_input_and_display_pass_unchanged() {
     for chunk in [&payload[..3], &payload[3..40000], &payload[40000..]] {
         attached.typed(chunk);
     }
-    attached.ended();
+    attached.ended(&exited(0));
     session.finish();
     let echoed = &attached.display[start..];
     assert_eq!(&echoed[..payload.len()], payload);
@@ -691,8 +739,8 @@ fn bracketed_paste_is_exact_and_an_open_paste_is_closed_when_admission_ends() {
     first.revoked(RevocationReason::Takeover);
     second.confirm_ready();
     second.typed(b"after-END");
-    second.ended();
-    assert_closed(&mut first.stream);
+    second.ended(&exited(0));
+    assert_final_then_closed(&mut first.stream, &exited(0));
     session.finish();
     let expected = [written.as_slice(), b"\x1b[201~after-END"].concat();
     assert_eq!(fs::read(&path).unwrap(), expected);
@@ -712,7 +760,7 @@ fn session_queries_are_answered_by_the_daemon_alone() {
         contents.len() > 1 && contents.ends_with(b"c")
     });
     attached.typed(b"END");
-    attached.ended();
+    attached.ended(&exited(0));
     session.finish();
     let recorded = fs::read(&path).unwrap();
     let reply = recorded
@@ -761,7 +809,7 @@ fn titles_reach_an_attachment_as_inert_text() {
         1
     );
     crate::issue(&session, "exit");
-    attached.ended();
+    attached.ended(&exited(0));
     let mut session = session;
     session.finish();
 }
@@ -837,8 +885,8 @@ fn focus_reaches_the_application_once_per_change_and_resynchronizes_on_new_readi
     );
     expect(b"\x1b[I");
     first.typed(b"END");
-    first.ended();
-    assert_closed(&mut second.stream);
+    first.ended(&exited(0));
+    assert_final_then_closed(&mut second.stream, &exited(0));
     session.finish();
     assert_eq!(
         fs::read(&path).unwrap(),
@@ -880,7 +928,7 @@ fn focus_reports_follow_the_input_accepted_before_them() {
     attached.type_then_focus(b"second\x1b[201~", false);
     expect(b"second\x1b[201~\x1b[O");
     attached.typed(b"END");
-    attached.ended();
+    attached.ended(&exited(0));
     session.finish();
     assert_eq!(
         fs::read(&path).unwrap(),
@@ -928,7 +976,7 @@ fn interactive_open_selects_supported_families_and_rejects_without_effects() {
         (Lifecycle::Attached, 1, true)
     );
     attached.typed(b"go\n");
-    attached.ended();
+    attached.ended(&exited(42));
     session.finish();
 }
 
@@ -1171,7 +1219,7 @@ fn ready_needs_the_complete_current_restoration() {
     attached.confirm_ready();
     attached.typed(b"x");
     crate::issue(&session, "exit");
-    attached.ended();
-    assert_closed(&mut first.stream);
+    attached.ended(&exited(0));
+    assert_final_then_closed(&mut first.stream, &exited(0));
     session.finish();
 }

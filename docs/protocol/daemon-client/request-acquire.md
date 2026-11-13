@@ -1,6 +1,6 @@
 # Acquire — `0x33`
 
-**Status: agreed; implemented for [attachments](../../../GLOSSARY.md#attachment-and-control) ([#87](https://github.com/jackgeek/climon2/issues/87)); refused on passive monitor connections until [#89](https://github.com/jackgeek/climon2/issues/89) serves them**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** for [attachments](../../../GLOSSARY.md#attachment-and-control) ([#87](https://github.com/jackgeek/climon2/issues/87)) and [passive monitor connections](../../../GLOSSARY.md#attachment-and-control) ([#89](https://github.com/jackgeek/climon2/issues/89)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) explicitly requests
 [control](../../../GLOSSARY.md#attachment-and-control) from the
 [session daemon](../../../GLOSSARY.md#sessions) after Open.
@@ -33,7 +33,8 @@ included. Acceptance is not
 [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts).
 
 Discovery, menu browsing and passive reconnect do not originate Acquire.
-See [succession](core-v1.md#membership-and-succession) for promotion without
+See [succession](core-v1.md#membership-and-succession) for
+[promotion](../../../GLOSSARY.md#attachment-and-control) without
 selection, input, resize or acknowledgement.
 Invalid state, terminating session and resource/I/O failures use
 [explicit errors](core-v1.md#errors-and-bounded-delivery).
@@ -62,9 +63,24 @@ the connection drains. The controller's own Acquire is an explicit no-op:
 `changed:false` with its current period and restoration ID, and nothing
 else. During committed termination Acquire is `session_terminating`.
 
-On a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control)
-Acquire is rejected without effects with `internal_error`, the interim code
-until #89 converts a registration into an attachment: no control is
-acquired and the registration stays. Before any Open there is nothing to
-convert, so Acquire is `invalid_state`, like an early
-[Leave](request-leave.md). A rejection never ends the stream.
+On a passive monitor connection Acquire converts the registration into an
+attachment, which takes control at once in the same way, even of a
+[detached](../../../GLOSSARY.md#sessions) or starting session: any previous
+controller first receives its release and Control revoked (`takeover`), then
+the requester receives Control granted with reason `acquire` and the
+Restoration begin of its first restoration, then the success with
+`changed:true`. The grant keeps the session's current geometry, whoever sized
+it last, and nothing is sent to the command: acquiring never resizes the
+session or types into it. From then on the connection is an attachment,
+which the hello `state` counts. It stays one, in the background, when
+another client takes control from it; its Acquire then takes control back,
+and its Leave is an accepted detach. Its restorations and Display have
+[canonical presentation](../../../GLOSSARY.md#restoration-and-presentation),
+as [Restoration begin](event-restoration-begin.md#implemented-behavior)
+describes. During committed termination a registration's Acquire is
+`session_terminating` too, and the registration stays.
+
+Before any Open, or on a standalone
+[Kill](request-kill.md#implemented-behavior)'s connection, there is nothing
+to convert, so Acquire is `invalid_state`, like [Leave](request-leave.md)
+there. A rejection never ends the stream.

@@ -119,6 +119,15 @@ control returns to the most recently controlling client that is still attached.
   ends. If its command exits sooner, the exit is kept for that first client
   until then. A headless session has no such window.
 - When the command exits, every attached client exits with its status.
+- A monitor watching a session keeps it alive through succession. When the
+  controller leaves, by detaching or any other way, and no other client is
+  attached, control passes to the monitor that started watching most
+  recently, which becomes an attached client in the background, without
+  resizing the session or typing into it. The rules above then apply only
+  when no monitor is left watching. Watching alone is not attaching, so it
+  does not stop the five-second rule for a starting session, and a session
+  being killed passes control to no one. (The shipped monitor does not watch
+  sessions yet.)
 
 **Kill** one session with `c2 kill <session>` (same selector rules), whether
 or not clients are attached. It needs no terminal and prints nothing. The
@@ -368,7 +377,9 @@ CREATED, VERSION, STATE, CLIENTS, COMMAND and ARGS. STATE is `starting`,
 report it. A headless session is never `starting`: it is `detached` whenever no
 client is attached. CLIENTS counts attached clients, or shows `-` when unknown. A
 monitor watching a session without attaching to it (a passive monitor
-connection) is not an attachment: it never counts in CLIENTS or changes STATE.
+connection) is not an attachment: it never counts in CLIENTS or changes STATE
+until it takes control or inherits it (see the leave policy), when it counts
+as an attached client.
 
 `c2 list --json` prints an array of session metadata objects. Each has a
 `state` key holding `{"lifecycle": …, "attachments": …, "controlled": …}`, or
