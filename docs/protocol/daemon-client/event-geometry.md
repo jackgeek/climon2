@@ -1,6 +1,7 @@
 # Geometry — `0x4b`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented for interactive attachments**
+([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) reports actual geometry to
 the [client](../../../GLOSSARY.md#sessions).
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
@@ -44,3 +45,14 @@ Required geometry records retain causal ordering or explicitly fail delivery;
 numeric limits #69 and actual sizing/clamping/rendering/application #63 remain
 separate decisions. Related: [Control granted](event-control-granted.md),
 [Restoration begin](event-restoration-begin.md).
+
+## Implemented behavior
+
+After a ready [controller](../../../GLOSSARY.md#attachment-and-control)'s
+[Resize](request-resize.md) applies, the
+[session daemon](../../../GLOSSARY.md#sessions) sends Geometry under the
+current period when the session geometry differs from the one the
+controller last learned; a host change that leaves the session geometry as
+it was sends none. Geometry follows the Resize success. Before readiness, a
+changed geometry is reported by the replacement
+[Restoration begin](event-restoration-begin.md) instead.

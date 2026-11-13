@@ -1,7 +1,7 @@
 //! Helpers shared by core's integration tests; each test uses a subset.
 #![allow(dead_code)]
 
-use climon2_core::wire::{Counter, Families, FrameLimit, Geometry};
+use climon2_core::wire::{AuthorityIds, Counter, Families, FrameLimit, Geometry};
 use std::{
     fs,
     io::{self, Read, Write},
@@ -66,6 +66,13 @@ pub fn page_dumps(page: &str) -> Vec<Vec<u8>> {
 
 pub fn counter(value: u64) -> Counter {
     Counter::new(value).unwrap()
+}
+
+pub fn ids(period: u64, restoration_id: u64) -> AuthorityIds {
+    AuthorityIds {
+        period: counter(period),
+        restoration_id: counter(restoration_id),
+    }
 }
 
 pub fn families(tokens: &[&str]) -> Families {

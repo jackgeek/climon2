@@ -95,13 +95,14 @@ restoration prefix is also lost. Probes remain serviceable throughout.
 ### Daemon wire revision 1 beside the private protocol
 
 Hello advertises the frozen tokens and `state`, then `daemon-wire-v1`,
-`monitor-v1` and `title-v1`, and `daemon_wire_v1` with 1,048,576-byte request
-and server frame limits (`core::hello::advertise_revision1`). The first frame
-after hello selects the protocol by its type: a revision-1 type (`0x30`–`0x39`
-or `0x40`–`0x4d`, `core::wire::defines`) selects
+`monitor-v1`, `title-v1` and `focus-v1`, and `daemon_wire_v1` with
+1,048,576-byte request and server frame limits
+(`core::hello::advertise_revision1`). The first frame after hello selects
+the protocol by its type: a revision-1 type (`0x30`–`0x39` or
+`0x40`–`0x4d`, `core::wire::defines`) selects
 [daemon wire revision 1](../../docs/protocol/daemon-client/core-v1.md) for the
 rest of the connection; any other type continues the private protocol, which
-still serves attach and kill exactly as before. That frame's length is checked
+still serves attach and kill as before. That frame's length is checked
 under the frozen hello limit before its type is known. Every revision-1 frame
 is read and written by core's `wire` codec: a frame its prefix declares
 oversized is refused before its body arrives, request IDs must strictly
@@ -131,32 +132,76 @@ Leave removes the registration in the same step, answers `left` with
 served. Leave before any Open, and a later Open or Kill on a registered
 connection, are `invalid_state` and the stream goes on. A rejected first role
 (an unsupported revision, or an unknown or unsupported required family) has
-no effects and ends the stream. Until #87 and #88 serve them, an interactive
-Open and a valid standalone Kill are rejected without effects
-(`internal_error`) and end their stream. Every other request is rejected
-without effects, and the stream goes on with any registration kept: Input,
-Resize, Ready, Set viewing, Acknowledge and Focus with `invalid_state`, since
-no revision-1 connection is an attachment yet; Acquire with `internal_error`
-on a registration until #89 serves it, and with `invalid_state` before any
-Open, which leaves nothing to convert. Registrations share the connection
-cap, the 16 MiB queue and the five-second no-progress loss.
+no effects and ends the stream. Until #88 serves it, a valid standalone Kill
+is rejected without effects (`internal_error`) and ends its stream. On a
+connection without an attachment, Input, Resize and Ready are rejected
+without effects and the stream goes on, with any registration kept:
+`invalid_state` before any Open, `not_attached` on a registration. Focus is
+`unsupported_capability` unless the connection's Open selected `focus-v1`,
+then `not_attached` on a registration. Set viewing and Acknowledge are
+`invalid_state` on every connection until #91 serves them, and Acquire is
+`internal_error` on a registration until #89 serves it, and `invalid_state`
+before any Open, which leaves nothing to convert. Registrations share the
+connection cap, the 16 MiB queue and the five-second no-progress loss.
+
+An interactive Open attaches an ordinary **interactive attachment**: the same
+attachment, control and leave policy as a private-protocol attach, which it
+can take control from and hand back to. Its success Response and Initial
+metadata come first, then, in the same loop step, Control granted (`attach`)
+and Restoration begin; the restoration's Display chunks and Restoration
+complete follow as the connection drains, then live Display under the same
+period and restoration ID. Grants and replacement restorations are reported
+at once, before their snapshot, which waits for the pending size to apply
+and for any synchronized update to end. A host dimension above 65,535 is
+`invalid_geometry`, and an interactive Open during committed termination is
+`session_terminating`; both end the stream. Input, Resize, Ready and Focus
+are checked in the
+[documented order](../../docs/protocol/daemon-client/core-v1.md#implemented-authority-checks):
+family, role, attachment, termination, control, period, restoration, then
+readiness, and finally their own arguments (empty Input is
+`invalid_argument`, a geometry beyond 65,535 `invalid_geometry`). Display
+carries restoration, live output and the release of the presentation, at
+most 65,535 bytes per frame and never empty; Control revoked follows the
+release, with `takeover` when another attachment takes control and
+`session_ending` when the session ends while it controls. A ready
+controller's applied resize reports Geometry when the session geometry
+changed. Acquire by a non-controlling attachment takes control at once: its
+Control granted (`acquire`) and Restoration begin precede the changed
+success, and its restoration follows; the controller's own Acquire is a
+no-op naming its current authority. Leave is an accepted detach: the
+release, then hand-back (`hand_back`) to the most recently controlling
+remaining attachment, then `left` with `attachment_detached: true`; during
+committed termination it still removes the attachment after releasing a
+presentation it has. Focus (`focus-v1`) remembers the controller's desired
+focus for its control period: a change while the application has mode 1004
+on queues `ESC [ I` or `ESC [ O` with the controller's input, in request
+order (3 bytes accepted), nothing otherwise, and newly enabled reporting
+(`Fed::focus_enabled`) queues the known state once with the daemon's
+terminal replies. Command final arrives with #88.
 
 Every PTY byte goes through one ordered write queue (`PtyWrites`): terminal
-replies and paste cleanup bytes ahead of queued input, and a partly written
-unit always completes before the next starts, so sequences never interleave
-across partial writes. Input is admitted only from the controller of the
-current control period after its `Ready`; when admission ends, its unwritten
-input is discarded and, if an application paste is open while mode 2004 is
-set, closing-marker cleanup bytes are queued. A PTY write failure is an
-authoritative session failure.
+replies, the Focus report on newly enabled reporting and paste cleanup bytes
+ahead of queued input, which holds a controller's Input and Focus reports in
+request order, and a partly written unit always completes before the next
+starts, so sequences never interleave across partial writes. Input is admitted only from the
+controller of the current control period after its `Ready`; when admission
+ends, its unwritten input is discarded and, if an application paste is open
+while mode 2004 is set, closing-marker cleanup bytes are queued. A PTY write
+failure is an authoritative session failure.
 
-Control is a pure state machine (`control.rs`): each attach or take-control is
-granted at once in a new period (attaches in one iteration grant only the
-last), the previous controller gets its release then `Revoked`, and a departing
-controller hands back to the most recently controlling attachment still
-present. Only the controller's size drives the PTY and VT; the session geometry
-is its host size clamped to 2..=500 columns and 1..=200 rows, and a host larger
-than that gets Derived presentation. Resizes are coalesced to one per iteration.
+Control is a pure state machine (`control.rs`): each attach, take-control and
+hand-back is granted at once under a new authority, a control period with its
+first restoration ID (attaches in one iteration are each granted and the last
+wins), the previous controller gets its release then `Revoked`, and a
+departing controller hands back to the most recently controlling attachment
+still present. A host change before readiness replaces the restoration
+within its period under a new restoration ID, and Ready needs the complete
+current restoration. Both protocols share these counters; the private
+protocol names each restoration by its ID in `Granted`, `RestoreEnd` and
+`Ready`, which its client only echoes. Only the controller's size drives the
+PTY and VT; the session geometry is its host size clamped to 2..=500 columns
+and 1..=200 rows, and a host larger than that gets Derived presentation.
+Resizes are coalesced to one per iteration.
 
 Early exits and PTY output remain available for the first attachment of an
 ordinary session: the exit of a command that ends first is reported once that
@@ -314,20 +359,30 @@ clients and owned generic terminal fixtures:
 test binary, so it shares the harness and fixtures above: raw-socket peers
 that encode and decode with core's codec and check hand-written expectations
 from the wire reference. The `script` fixture mode sets titles on command
-(`title`, `title-empty`, `title-bytes`, `titles`, `reset`) and can `exit`.
+(`title`, `title-empty`, `title-bytes`, `titles`, `reset`), prints `text` and
+fully coloured rows (`colors`) and can `exit`; the `focus-record` mode records
+its input and turns focus reporting on and off on command.
 Each test's doc comment cites the acceptance-matrix IDs it covers.
 
 | Scenario | Named tests |
 |---|---|
 | COM-01 (Contract): hello advertises revision 1 beside the frozen tokens and `state`, exactly as the published complete reply does; Open selects only supported families; a peer that does not select an optional family receives nothing for it | `hello_advertises_revision1_beside_the_frozen_tokens_and_state`, `monitor_open_selects_supported_families_then_reports_initial_metadata`, `a_monitor_without_title_v1_receives_nothing_for_titles` |
-| COM-02 (Contract): broken framing, non-strict JSON or UTF-8, server, private and unknown types, non-increasing request IDs and truncation are connection-fatal with their exact codes; a frame at the 1,048,576-byte limit is served and one byte more refused from its prefix; fragmented and coalesced frames are each answered in order; a Fatal error replaces a stalled stream's unstarted backlog without splitting a frame; out-of-state requests are `invalid_state`, never fatal | `revision1_traffic_that_breaks_the_rules_is_connection_fatal`, `a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal`, `coalesced_and_fragmented_revision1_frames_are_each_answered_in_order`, `a_fatal_error_replaces_a_backlog_without_splitting_a_frame`, `requests_that_need_an_attachment_are_invalid_state_and_the_stream_goes_on` |
-| COM-03 (Contract, passive cases): Open, Leave and the rejections of a first role, a later Open or Kill, an early Leave or Acquire and every request that needs an attachment have their documented outcomes and effects, including during committed termination | `monitor_open_selects_supported_families_then_reports_initial_metadata`, `passive_requests_get_their_documented_outcomes`, `a_monitor_registers_and_leaves_during_committed_termination`, `requests_that_need_an_attachment_are_invalid_state_and_the_stream_goes_on`, `acquire_is_refused_without_effects_until_it_is_served` |
+| COM-01 (Contract, interactive and parity cases): an interactive Open selects the supported families, `focus-v1` included; takeover, hand-back and the leave policy match the private protocol, across both protocols | `interactive_open_selects_supported_families_and_rejects_without_effects`, `takeover_hand_back_and_leave_policy_match_the_private_protocol` |
+| COM-02 (Contract): broken framing, non-strict JSON or UTF-8, malformed binary Input headers, server, private and unknown types, non-increasing request IDs and truncation are connection-fatal with their exact codes; a frame at the 1,048,576-byte limit is served and one byte more refused from its prefix; fragmented and coalesced frames are each answered in order; a Fatal error replaces a stalled stream's unstarted backlog without splitting a frame; out-of-state requests are rejected, never fatal | `revision1_traffic_that_breaks_the_rules_is_connection_fatal`, `malformed_binary_input_is_connection_fatal`, `a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal`, `coalesced_and_fragmented_revision1_frames_are_each_answered_in_order`, `a_fatal_error_replaces_a_backlog_without_splitting_a_frame`, `requests_that_need_an_attachment_are_refused_and_the_stream_goes_on`, `requests_on_an_interactive_attachment_get_their_documented_results` |
+| COM-03 (Contract, passive cases): Open, Leave and the rejections of a first role, a later Open or Kill, an early Leave or Acquire and every request that needs an attachment have their documented outcomes and effects, including during committed termination | `monitor_open_selects_supported_families_then_reports_initial_metadata`, `passive_requests_get_their_documented_outcomes`, `a_monitor_registers_and_leaves_during_committed_termination`, `requests_that_need_an_attachment_are_refused_and_the_stream_goes_on`, `acquire_is_refused_without_effects_until_it_is_served` |
+| COM-03 (Contract, interactive cases): interactive Open, Input, Resize, Ready, Acquire, Focus and Leave have their documented results and rejections, without effects when rejected; a terminating session rejects new interactive work with `session_terminating` while Leave still works | `interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order`, `interactive_open_selects_supported_families_and_rejects_without_effects`, `requests_on_an_interactive_attachment_get_their_documented_results`, `committed_termination_rejects_new_interactive_work_and_leave_still_works`, `takeover_hand_back_and_leave_policy_match_the_private_protocol` |
+| COM-04 (Contract): binary Input and Display carry `00 ff 41`, NUL and invalid UTF-8 unchanged, across Input requests and Display chunks | `binary_input_and_display_pass_unchanged` |
 | COM-05 (Contract, Initial metadata case): Initial metadata is captured atomically and title changes follow it gap-free, including around a burst | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata` |
+| COM-05 (Contract, interactive order): Response, Initial metadata, grant, Restoration begin, matching Display chunks and Restoration complete arrive in order under fragmented and coalesced I/O; a large restoration is produced as it drains; Geometry follows a Resize's acceptance | `interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order`, `ready_needs_the_complete_current_restoration`, `a_ready_controllers_resize_reports_the_actual_geometry_after_its_acceptance` |
 | CTL-01 (Contract): a passive registration never acquires control, of a detached session or one controlled elsewhere, and is not an attachment: hello `state` and so `list` are unchanged; core metadata flows before control | `a_passive_registration_never_acquires_control_and_is_not_an_attachment`, `a_monitor_registers_and_leaves_during_committed_termination` |
-| CTL-03 (Contract, title case): titles reach monitors by value, in order and whatever the control; unset, empty, a value and unavailable stay distinct; an oversized title is ignored, never truncated | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_monitor_without_title_v1_receives_nothing_for_titles`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata`, `an_oversized_title_is_ignored_never_truncated` |
+| CTL-03 (Contract, title case): titles reach monitors by value, in order and whatever the control; unset, empty, a value and unavailable stay distinct; an oversized title is ignored, never truncated | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_monitor_without_title_v1_receives_nothing_for_titles`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata`, `an_oversized_title_is_ignored_never_truncated`, `titles_reach_an_attachment_as_inert_text` |
+| CTL-05 (Contract and Fault, stale authority from a raw peer): Input, Resize and Ready under an earlier period or a superseded restoration are `stale_period` or `stale_restoration`; Ready needs the complete current restoration; late authority never re-enables input | `stale_and_superseded_authority_is_rejected_and_never_re_enables_input`, `ready_needs_the_complete_current_restoration` |
+| INP-03 (Contract): bracketed-paste bytes reach the application exactly; an open application paste is closed when admission ends; a focus report never lands inside a paste that earlier Input requests carry | `bracketed_paste_is_exact_and_an_open_paste_is_closed_when_admission_ends`, `focus_reports_follow_the_input_accepted_before_them` |
+| TRM-02 (Contract): the daemon alone answers session queries; titles stay inert text and title-looking output stays text | `session_queries_are_answered_by_the_daemon_alone`, `titles_reach_an_attachment_as_inert_text` |
+| FOC-01 (Contract): Focus emits no duplicates, newly enabled reporting receives the current state, and new readiness synchronizes the latest intent without replay; a focus report follows the Input accepted before it, however the requests were read | `focus_reaches_the_application_once_per_change_and_resynchronizes_on_new_readiness`, `focus_reports_follow_the_input_accepted_before_them` |
 
-`interactive_open_and_standalone_kill_are_refused_until_they_are_served` pins
-the interim refusal that #87 and #88 replace; it covers no matrix scenario.
+`standalone_kill_is_refused_until_it_is_served` pins the interim refusal
+that #88 replaces; it covers no matrix scenario.
 `acquire_is_refused_without_effects_until_it_is_served` also pins the interim
 `internal_error` refusal of Acquire on a registration, which #89 replaces.
 

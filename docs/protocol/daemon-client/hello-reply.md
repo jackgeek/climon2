@@ -113,14 +113,14 @@ reports this advertisement as valid, absent or malformed, and
 [its tests](../../../crates/climon2-core/tests/hello.rs) cover each case.
 The [session daemon](../../../GLOSSARY.md#sessions) sends it through
 [`climon2-core`](../../../crates/climon2-core/README.md), after the frozen
-tokens and `state`: `daemon-wire-v1`, `monitor-v1` and `title-v1`, with
-`max_request_frame_bytes` and `max_server_frame_bytes` both 1,048,576, the
-release constant from the
+tokens and `state`: `daemon-wire-v1`, `monitor-v1`, `title-v1` and
+`focus-v1`, with `max_request_frame_bytes` and `max_server_frame_bytes` both
+1,048,576, the release constant from the
 [operational limits](../../monitor-operational-limits.md#payloads-and-parser-state).
 It advertises only the families it implements; `status-v1`,
-`notification-v1`, `progress-v1` and `focus-v1` follow with their
-implementations. The [post-hello boundary](post-hello.md#choosing-a-protocol)
-explains how the first frame after hello then chooses a protocol.
+`notification-v1` and `progress-v1` follow with their implementations. The
+[post-hello boundary](post-hello.md#choosing-a-protocol) explains how the
+first frame after hello then chooses a protocol.
 Existing optional-field behavior and required fields remain frozen;
 this is not permission to apply post-hello strict unknown-field rejection to
 hello. Optional family meanings are in the

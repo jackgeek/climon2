@@ -90,8 +90,13 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     (Input) or 17 (Display) bytes plus the payload, so callers chunk
     payloads to the frame limit.
   - Shared types: `Counter` (canonical decimal string 1 through
-    18446744073709551615), `Guid` (lowercase canonical hyphenated, validated
-    exactly like `SessionId`), `Geometry` (positive columns and rows), `Utc`
+    18446744073709551615), `AuthorityIds` (a control period and restoration
+    ID named together: one `authority` field in Rust, while every record
+    that carries them keeps its flat `period` and `restoration_id` members,
+    or the same header counters, on the wire; `Success::Acquired` and
+    `Success::Ready` carry an `AuthorityResult` with `changed`), `Guid`
+    (lowercase canonical hyphenated, validated exactly like `SessionId`),
+    `Geometry` (positive columns and rows), `Utc`
     (`YYYY-MM-DDTHH:MM:SS.mmmZ` on a real date, seconds 00-59; stricter than
     the frozen `Timestamp`, whose RFC 3339 also admits a leap second and a
     `t` or space separator), `CommandResult` (raw u32 exit or signal number with
