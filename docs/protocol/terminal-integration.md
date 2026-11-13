@@ -17,7 +17,13 @@ followed by x acts: pasted [bytes](TERMS.md#byte) are data, never complete a
 pending prefix and leave none pending. A host resize repaints the whole screen
 without blanking it or showing the cursor. Every exit writes the
 [release](../../GLOSSARY.md#restoration-and-presentation) bytes to the host
-before any diagnostic. Everything else in this document remains agreed and
+before any diagnostic.
+
+**Implemented with crate tests only ([#83](https://github.com/jackgeek/climon2/issues/83)):**
+`climon2-vt`'s read-only Rust views of a monitor's
+[virtual terminal](../../GLOSSARY.md#sessions), described
+[below](#ownership-representation-and-fidelity), which the monitor does not
+paint from yet. Everything else in this document remains agreed and
 unimplemented.
 
 The later [selector and attention-presentation decision](../monitor-selector.md)

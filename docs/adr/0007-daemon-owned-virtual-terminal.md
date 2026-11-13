@@ -189,11 +189,16 @@ generates are not checked.
 
 The model records truncation until the history is cleared: rows beyond
 `history_rows`, and rows that yielding or `Model::shorten_history()` drops,
-are known exactly. At capacity, though, the engine replaces its oldest row for
-each row pushed without reporting it, so a model whose history output leaves
-full reports truncation even if no row went. Counting exactly there would need
-counting headroom like the daemon's ([below](#restoration-three-phases-produced-incrementally)),
-which no model allocates.
+are known exactly, and output the admitted chunks had room for loses no row,
+even when it fills them exactly. Once `history_rows` caps the history's
+growth or the bound refuses it, though, the engine replaces the oldest row of
+a full history for each row pushed without reporting it. **Decided (owner,
+2026-11-13, #83):** such a history reports truncation as soon as output that
+could push a row out leaves it full, even before a row is lost. Exact
+counting, which would need counting headroom like the daemon's
+([below](#restoration-three-phases-produced-incrementally)), is decided with
+[#112](https://github.com/jackgeek/climon2/issues/112), whose anchored
+viewport (TRM-05) may need it.
 
 ## Live output policy and query authority
 

@@ -168,8 +168,9 @@ only, so items a macro generates are not checked.
   because the allocation bound refused the history a chunk or took one back
   (beside a staged restoration too), or by `Model::shorten_history()`.
   Shortening is exact: a chunk admitted ahead of rows that never came yields
-  without truncating. Applying a restoration replaces the history and its
-  state whole.
+  without truncating. Output the admitted chunks had room for discards
+  nothing, even when it fills them exactly. Applying a restoration replaces
+  the history and its state whole.
 
 ## Scenario-to-test mapping
 
@@ -225,12 +226,13 @@ bounds, so it can reject output before memory is strictly exhausted.
 The views show what the engine holds. It ignores blinking text (SGR 5 and 6),
 so no cell blinks. A fresh model has alternate scroll on, as Alacritty
 starts, and the daemon's restoration sets it on hosts too, until #179 starts
-the engine with it off. At capacity the
-engine discards a history's oldest row for each row pushed without reporting
-it, so a full history (all the rows its admitted chunks hold, when that is no
-more than `history_rows`, as with the monitor's default 10,000) reports
-truncation once output leaves it full, even if no row went; a model keeping no
-history reports it as soon as it is fed.
+the engine with it off. Once `history_rows` caps a history's growth (as at
+the monitor's default 10,000, ten whole chunks) or the bound refuses it, a
+full history loses its oldest row to each row pushed without the engine
+reporting it, so it reports truncation as soon as output that could push a
+row out leaves it full, even before one is lost (the owner's decision on
+#83; exact counting is decided with #112). A model keeping no history reports
+it as soon as it is fed.
 
 Titles are decoded by Alacritty 0.26.0: it trims surrounding whitespace,
 drops a title parameter that is not valid UTF-8, and keeps at most the first

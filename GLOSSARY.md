@@ -36,6 +36,10 @@ _Avoid_: Dashboard, multiplexer, switcher
 A model of a session's screen, kept current from the session's output; the session daemon's is the source of truth, and a monitor's is a copy.
 _Avoid_: Screen buffer, emulator, scrollback
 
+**Read-only view**:
+What a monitor paints a session from: its virtual terminal copy's cells, cursor, modes and normal history, which painting cannot change.
+_Avoid_: Placeholder, snapshot, cell schema
+
 **Hello handshake**:
 The first exchange on every connection to a session daemon, in which the daemon identifies its session; frozen across all climon2 versions.
 _Avoid_: Ping, version check
@@ -158,7 +162,7 @@ _Avoid_: Space-to-control, hotkey
 
 **Placeholder**:
 The screen a non-controlling client shows instead of session content, saying the session is being viewed elsewhere.
-_Avoid_: Viewer mode, read-only view
+_Avoid_: Viewer mode, read-only view (what a monitor paints session content from)
 
 ## Status and attention
 
