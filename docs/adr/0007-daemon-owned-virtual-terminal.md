@@ -183,7 +183,7 @@ A front filter that mirrors vte 0.15.0's state machine splits PTY output into co
 - `CSI ? 47/1047 h/l` parameters are removed, because the engine does not implement them and the host must not diverge from it;
 - everything else is forwarded unchanged.
 
-A token is classified by the sequence vte dispatches for it. vte executes a C0 control between `ESC` and the introducer without leaving its escape state, so such controls never change a token's kind ([#152](https://github.com/jackgeek/climon2/issues/152)). The policy reads each escape sequence, CSI sequence and control string with vte once. When it strips a token or removes screen modes from it, the C0 controls vte executed in that token still reach the host, in order.
+A token is classified by the sequence vte dispatches for it. Between `ESC` and the introducer, vte executes C0 controls without leaving its escape state, so they never change a token's kind ([#152](https://github.com/jackgeek/climon2/issues/152)); CAN and SUB, however, cancel the sequence, and ESC restarts it. The policy reads each escape sequence, CSI sequence and control string with vte once. When it strips a token or removes screen modes from it, the C0 controls vte executed in that token still reach the host, in order.
 
 The engine is fed in steps of at most 64 bytes of text and C0 controls; every escape sequence is its own step(s).
 
