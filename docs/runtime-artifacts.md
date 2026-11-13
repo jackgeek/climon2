@@ -51,6 +51,7 @@ flowchart TB
         terminal_fixture["climon2-fixture"]
         tui_fixture["climon2-tui-fixture"]
         library_host["climon2-library-host"]
+        library_stand_in[["Client library stand-in<br/>test-only C dylib / .so"]]
         owned_exec["climon2-test-owned<br/>Linux test ownership exec adapter"]
         terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
@@ -65,6 +66,7 @@ flowchart TB
         tests -->|"uses directly or as a session command"| tui_fixture
         tests -->|"runs as the Library-layer host"| library_host
         library_host -->|"loads through the C ABI"| library
+        tests -->|"loads in release-check tests"| library_stand_in
         tests -->|"execs registered terminal roots through; Linux only"| owned_exec
         owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
@@ -106,7 +108,10 @@ libraries and has no soname, RPATH or RUNPATH, as the
 [Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for
 release isolation; release checks enforce each rule. Only test tooling loads it
 today, the library host fixture and xtask's release checks; the monitor's and
-client executable's loading remain planned. Cargo's ordinary
+client executable's loading remain planned. xtask's release-check tests compile
+the C stand-in `xtask/tests/fixtures/client-library.c` into a test-only library,
+exact or with one defect, and load it through the same release checks as the
+real library; it is never shipped. Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,
 are not separately loaded dynamic libraries. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
