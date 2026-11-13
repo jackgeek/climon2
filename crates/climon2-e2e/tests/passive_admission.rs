@@ -328,8 +328,9 @@ fn installed_library_holds_each_delivery_until_released() {
     package.assert_clean();
 }
 
-/// LIB-04 Library (a delivery stops before `drain_payload_bytes`, and
-/// always holds a record): four 10-byte titles, queued while nothing
+/// LIB-04 Fault (a delivery stops before `drain_payload_bytes`, and
+/// always holds a record): from the fake daemon peer, four 10-byte titles,
+/// queued while nothing
 /// drains, come two to a delivery at a 20-byte ceiling, one at a time at 19,
 /// and one at a time at 1, where a record alone exceeds it.
 #[test]
@@ -379,8 +380,8 @@ fn installed_library_batches_records_within_drain_payload_bytes() {
     package.assert_clean();
 }
 
-/// COM-02 Library (frames split anywhere or coalesced are reassembled
-/// exactly) and LIB-04 Library (the event queue is bounded, and the daemon's
+/// COM-02 Fault (frames split anywhere or coalesced are reassembled
+/// exactly) and LIB-04 Fault (the event queue is bounded, and the daemon's
 /// records wait for room instead of being dropped or overrunning it): a
 /// fake daemon sends its Open response and Initial metadata a byte at a
 /// time, then eight Title changed records in one write, to an instance
@@ -438,8 +439,9 @@ fn installed_library_holds_daemon_records_while_the_event_queue_is_full() {
     package.assert_clean();
 }
 
-/// LIB-04 Library (each record is charged its header and the bytes it owns,
-/// nothing else, until released): with every record still queued, the
+/// LIB-04 Fault (each record is charged its header and the bytes it owns,
+/// nothing else, until released): from the fake daemon peer, with every
+/// record still queued, the
 /// event queue holds exactly the records' headers plus the Open's selected
 /// token array, the Initial metadata's title and signal name copies, the
 /// titles' copies (none for an unset one) and the copied text of the

@@ -60,7 +60,7 @@ fn outcome(report: &Value, index: usize) -> (&Value, Vec<Value>, Value) {
     (step(report, 4 * index + 1), records, terminal.clone())
 }
 
-/// COM-01 Library and Fault (missing required support is rejected explicitly
+/// COM-01 Fault (missing required support is rejected explicitly
 /// before any role takes effect, support is never inferred from the release,
 /// and incompatible peers are rejected): against fake daemons of this very
 /// release, the Open is rejected (never sent: each daemon saw only hello, or
@@ -340,7 +340,7 @@ fn opened_then(after: Vec<Value>) -> Value {
     json!({ "open": actions })
 }
 
-/// COM-02 Library and Fault (each boundary's framing, types and records,
+/// COM-02 Fault (each boundary's framing, types and records,
 /// with their rejection effects): a frame that is not JSON
 /// (`invalid_json`), a request type (`wrong_direction`), an undefined type
 /// (`unknown_message_type`), a zero length (`invalid_frame_length`), a
@@ -1188,8 +1188,9 @@ fn installed_library_never_raises_sigpipe_in_its_embedder() {
     package.assert_clean();
 }
 
-/// COM-02 Library (records exactly at their limits are accepted whole, and
-/// the command result maps exactly): a title of exactly `title_bytes`, in
+/// COM-02 Fault (records exactly at their limits are accepted whole, and
+/// the command result maps exactly): from the fake daemon peer, a title of
+/// exactly `title_bytes`, in
 /// the Initial metadata and in a change, arrives intact; so does a change
 /// whose frame is exactly `metadata_record_bytes`; and a command result in
 /// the Initial metadata, a signal with its name, is reported as such.
