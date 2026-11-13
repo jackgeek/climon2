@@ -134,7 +134,8 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   projection; never reconstruct runtime argv/cwd from metadata.
 - `layout::HomeLayout::resolve`: only an absent override defaults to
   `<user-home>/.climon2`. Explicit empty/relative overrides fail.
-  `root`, `sessions`, `metadata`, `session_logs`, `general_logs` return paths.
+  `root`, `config`, `monitor_preferences`, `sessions`, `metadata`,
+  `session_logs`, `general_logs` return paths.
 - `layout::ExecutableLayout::from_cli_path`: accepts a caller-canonicalized
   absolute CLI path with a validated SemVer parent; `from_binary_path` does the
   same for any `VersionBinary`, so the monitor resolves its executable home
@@ -190,6 +191,16 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     gains accessors with the code that enforces it. Whether the mandatory
     current model and recent page fit is not checked yet (#167), and
     operating-system limits are left to admission (#120).
+- `preferences::MonitorPreferences` (spec #73 Introduction preference): the
+  schema of `monitor-preferences.json` (`FILE_NAME`), which keeps the key
+  introduction's **Don't show again** choice apart from `config.jsonc`.
+  `to_json` writes version 1, `{"version":1,"suppress_key_introduction":<bool>}`
+  and a newline. The schema is additive, so `parse` reads any version from 1
+  to the largest `u32`, ignoring unknown fields; anything else (broken JSON,
+  another JSON type, a missing or invalid `version`, a missing or
+  non-boolean choice, a known field twice) is `MalformedPreferences`,
+  `monitor-preferences.json is malformed: <reason>`. Reading and writing the
+  file belong to the monitor.
 - `keys`: `ControlKey` is one C0 control byte named in the `Ctrl+` vocabulary.
   `ClientSettings` holds the escape prefix (default `Ctrl+]`) and take-control
   key (default `Ctrl+T`); either may be disabled, take-control may not be
@@ -227,6 +238,7 @@ Integration tests call only these public boundaries:
 | #74 `monitor`/`mon` take no arguments (INP-01 derived refusal) | `issue74_monitor_and_mon_take_no_arguments` |
 | CFG-01 (Contract): missing file, objects and fields mean every documented default; `show_key_hints` and `bell` are independent booleans; every setting's range at its limit and one past it, overflow of its native type included, a range refusal naming its setting; null, wrong types and duplicates at every level; unknown and unrelated settings ignored; the cross-field rules at their limit and one past, the daemon's assembly limits in no monitor total; one read of the home's file | `cfg01_missing_objects_and_fields_mean_every_documented_default`, `cfg01_hints_and_bell_are_independent_booleans`, `cfg01_every_setting_accepts_the_lower_limit_of_its_range`, `cfg01_every_setting_accepts_the_upper_limit_of_its_range`, `cfg01_one_past_every_range_is_rejected`, `cfg01_null_is_an_error_for_every_known_setting`, `cfg01_wrong_types_are_errors`, `cfg01_duplicate_known_fields_are_errors`, `cfg01_unknown_and_unrelated_settings_are_ignored`, `cfg01_sub_budgets_fit_their_totals`, `cfg01_reservations_fit_the_total`, `cfg01_other_monitor_byte_budgets_fit_the_total`, `cfg01_toasts_fit_the_aggregate_queue_budget`, `cfg01_daemon_owned_assembly_limits_are_outside_the_total`, `cfg01_client_queues_fit_the_queue_and_client_budgets`, `cfg01_progress_reserves_leave_room_in_their_event_allowances`, `cfg01_the_largest_chunk_fits_usable_capacity`, `cfg01_the_largest_record_fits_usable_capacity`, `cfg01_quanta_and_retry_delays_are_ordered`, `cfg01_the_snapshot_is_one_read_of_the_home_configuration` |
 | CFG-01 (Contract, exec and attach cases): exec validates the `monitor` section, attach ignores it, and neither refuses a null escape prefix | `cfg01_exec_validates_the_monitor_section_and_attach_ignores_it` |
+| HLP-01 (Contract; derived scenario: the preference file's versioning and malformed files): one file per climon2 home; a saved choice is one line of version 1; a version 1 file holds the choice; later versions, up to the largest, are read ignoring unknown fields, one past it malformed; every malformed shape refused with its reason | `hlp01_each_home_keeps_its_own_preference_file`, `hlp01_a_saved_choice_is_one_line_of_version_1_json`, `hlp01_a_version_1_file_holds_the_dont_show_again_choice`, `hlp01_later_versions_are_read_ignoring_unknown_fields`, `hlp01_malformed_files_are_refused_with_their_reason` |
 | INP-01 (Contract): the monitor shares the client bindings and their rules, refuses a null escape prefix and accepts a null take-control key | `inp01_the_monitor_needs_an_escape_prefix_but_not_a_take_control_key` |
 | CFG-01 (Docs): the README spells out every client and monitor default and keeps the Escape/Alt warning above `escape_prefix` | `cfg01_the_readme_documents_every_default_and_the_escape_warning` |
 | #29 recovered argv/environment/depth/ordinal rules | `issue29_exec_list_attach_and_kill_parse_exact_arguments_and_reject_usage_errors`, `issue29_help_and_version_flags_take_no_arguments`, `issue29_top_level_ignores_stray_depth_and_sets_session_vars_and_terminal_identity`, `projected_environment_replaces_term_and_colorterm_and_drops_startup_envelope`, `issue29_nested_depth_defaults_malformed_enclosing_to_one_and_replaces_empty_term`, `issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow` |
