@@ -16,7 +16,7 @@ use super::{
     connection,
     failure::{
         BUSY, CANCELLED, CLOSED, FULL, Failed, Failure, Fault, INVALID_ARGUMENT,
-        INVALID_REQUEST_ID, PANIC, RESOURCE_LIMIT, TIMEOUT, WRONG_THREAD, require,
+        INVALID_REQUEST_ID, PANIC, RESOURCE_LIMIT, Retry, TIMEOUT, WRONG_THREAD, require,
     },
     hook,
     platform::Notifier,
@@ -347,7 +347,7 @@ fn evidence(generation: u64, stop: &Stop) -> Evidence {
     let terminal = native::Terminal {
         generation,
         client_outcome,
-        retry: failure.map_or(native::RETRY_NONE, |failed| failed.retry),
+        retry: failure.map_or(Retry::None, |failed| failed.retry).native(),
         leave: stop.departure.leave(),
         attachment_detached: u8::from(stop.departure.detached()),
         connection_closed: u8::from(true),
@@ -416,7 +416,7 @@ impl Shared {
         if state.stop.failure.is_none() && self.terminal.get().is_none() {
             tracing::warn!(code = failed.fault.code(), "client instance failed");
             let retry = if state.stop.shutdown {
-                native::RETRY_NONE
+                Retry::None
             } else {
                 failed.retry
             };

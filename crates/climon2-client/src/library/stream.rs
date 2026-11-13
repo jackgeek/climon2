@@ -5,7 +5,7 @@
 //! is skipped or fabricated.
 
 use super::{
-    failure::{Failed, Fault, require},
+    failure::{Failed, Fault, Retry, require},
     families,
     link::fatal,
     records::{Answer, Command, Event, Metadata, Response, Title},
@@ -39,9 +39,6 @@ const UNFIT: Fault = Fault::library(
     "unsupported_limit",
     "a request frame exceeds the frame ceilings",
 );
-
-/// The daemon codes that reject an Open for good: support it lacks.
-const PERMANENT: [&str; 2] = ["unsupported_revision", "unsupported_capability"];
 
 /// A request the library sent and the daemon has not answered.
 #[derive(Clone, Debug)]
@@ -306,12 +303,13 @@ impl Stream {
             outcome,
             fault,
             carried,
+            retry,
         } = verdict;
         let answer = match carried {
             None => Answer::None,
             Some(carried) => self.result(carried, required, requested)?,
         };
-        let refused = fault.clone().map(|fault| refusal(fault, &answer));
+        let refused = fault.clone().map(|fault| refusal(fault, retry, &answer));
         let response = Response {
             id,
             outcome,
@@ -407,6 +405,7 @@ fn left(id: Option<u64>, verdict: Verdict) -> Result<Effect, Fault> {
         outcome,
         fault,
         carried,
+        ..
     } = verdict;
     let answer = match carried {
         None => Answer::None,
@@ -428,13 +427,12 @@ fn left(id: Option<u64>, verdict: Verdict) -> Result<Effect, Fault> {
     Ok(Effect::Left(response, departure))
 }
 
-/// An Open the daemon did not open: for good when it lacks support, never
-/// again when it knew the command's final result, otherwise passively.
-fn refusal(fault: Fault, answer: &Answer) -> Failed {
+/// An Open the daemon did not open: never again when it knew the command's
+/// final result, otherwise as its refusal calls for.
+fn refusal(fault: Fault, retry: Retry, answer: &Answer) -> Failed {
     match answer {
-        Answer::KnownFinal(_) => Failed::new(fault, native::RETRY_NONE),
-        _ if PERMANENT.contains(&fault.code()) => Failed::permanent(fault),
-        _ => Failed::passive(fault),
+        Answer::KnownFinal(_) => Failed::new(fault, Retry::None),
+        _ => Failed::new(fault, retry),
     }
 }
 
@@ -446,20 +444,27 @@ enum Carried {
     KnownFinal(wire::CommandResult),
 }
 
-/// A response's native outcome, its error and the result it carries.
+/// A response's native outcome, its error, the result it carries and, for
+/// a non-success, the retry its error calls for.
 struct Verdict {
     outcome: u32,
     fault: Option<Fault>,
     carried: Option<Carried>,
+    retry: Retry,
 }
 
 impl Verdict {
     fn from(outcome: Outcome) -> Result<Self, Fault> {
         match outcome {
-            Outcome::Ok(success) => Ok(Self::of(native::OK, None, Some(Carried::Success(success)))),
+            Outcome::Ok(success) => Ok(Self {
+                outcome: native::OK,
+                fault: None,
+                carried: Some(Carried::Success(success)),
+                retry: Retry::None,
+            }),
             Outcome::Rejected(rejection) => Ok(Self::of(
                 native::REJECTED,
-                Some(Fault::daemon(&rejection.error)),
+                &rejection.error,
                 rejection.known_final.map(Carried::KnownFinal),
             )),
             Outcome::Failed(failure) => Self::failure(native::FAILED, &failure),
@@ -467,11 +472,13 @@ impl Verdict {
         }
     }
 
-    fn of(outcome: u32, fault: Option<Fault>, carried: Option<Carried>) -> Self {
+    /// A non-success with the daemon's `error`.
+    fn of(outcome: u32, error: &wire::Error, carried: Option<Carried>) -> Self {
         Self {
             outcome,
-            fault,
+            fault: Some(Fault::daemon(error)),
             carried,
+            retry: Retry::refused(&error.code),
         }
     }
 
@@ -483,10 +490,6 @@ impl Verdict {
             Some(KnownResult::Operation(success)) => Some(Carried::Success(success.clone())),
             Some(KnownResult::Termination(_)) => return Err(MISMATCHED),
         };
-        Ok(Self::of(
-            outcome,
-            Some(Fault::daemon(failure.error())),
-            carried,
-        ))
+        Ok(Self::of(outcome, failure.error(), carried))
     }
 }
