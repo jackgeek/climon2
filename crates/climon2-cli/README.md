@@ -14,7 +14,8 @@ climon2 failures are 125; daemon startup preserves 126/127.
 Home is resolved, created and canonicalized once. Common dispatch opens the
 general log and prunes old logs before any command. Exec checks stdin and
 stdout TTYs before spawning, then reads and validates the whole
-`config.jsonc` before any session side effect. It resolves canonical companions
+`config.jsonc`, its `monitor` section included, before any session side
+effect. It resolves canonical companions
 from its own canonical version-layout path, generates one v4 GUID and socket,
 and switches to the linked session log. Core projects the exact OS-string
 command environment and provides depth/ordinal rules; `TERM=xterm-256color` and
@@ -102,6 +103,13 @@ client start.
 `kill_selects_exactly_one_live_session`,
 `kill_refuses_an_older_session_without_capabilities` and
 `kill_of_an_uninstalled_version_names_that_version_and_ignores_config`.
+
+Monitor acceptance-matrix cases proven here:
+
+| Scenario | Named test |
+|---|---|
+| CFG-01 (exec case): exec refuses invalid `monitor` settings, as it does an invalid `scrollback`, before a session exists | `invalid_exec_config_is_rejected_before_session_side_effects` (`tests/exec.rs`) |
+| CFG-01 (attach case): attach ignores an invalid `monitor` section, validating only `client` | `attach_validates_only_the_client_configuration` (`tests/attach.rs`) |
 
 The `monitor`/`mon` hand-off is proven through the installed launcher, as `c2`
 and `climon2`, by `climon2-e2e` `tests/monitor.rs`:
