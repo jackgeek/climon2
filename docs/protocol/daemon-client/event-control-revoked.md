@@ -53,6 +53,6 @@ before its stream closes. Each time, the
 [Display](event-display.md), and Control revoked carries the
 [control period](../../../GLOSSARY.md#attachment-and-control) and
 [restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts) that Display used; no
-Display follows it.
-[Command final](event-command-final.md) is not sent yet: it arrives with
-[#88](https://github.com/jackgeek/climon2/issues/88).
+Display follows it. The [Command final](event-command-final.md#implemented-behavior)
+of a command whose result the daemon knows reaches the attachment before its
+`session_ending` revocation.

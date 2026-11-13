@@ -101,5 +101,6 @@ takes control from any current
 included,
 and the hello `state` counts it like any attachment. During committed
 termination an interactive Open is rejected with `session_terminating` and
-ends its stream. Rejections carry no `known_final` yet: a known command
-result arrives with [#88](https://github.com/jackgeek/climon2/issues/88).
+ends its stream. Once the daemon knows how the command ended (see
+[Command final](event-command-final.md#implemented-behavior)), every
+rejection of an Open carries that result as `known_final`.

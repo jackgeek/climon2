@@ -22,23 +22,27 @@ pages and re-encode it to identical [bytes](../TERMS.md#byte).
 
 The [session daemon](../../../GLOSSARY.md#sessions) implements this revision
 for [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
-([#86](https://github.com/jackgeek/climon2/issues/86)) and ordinary
+([#86](https://github.com/jackgeek/climon2/issues/86)), ordinary
 interactive [attachments](../../../GLOSSARY.md#attachment-and-control)
-([#87](https://github.com/jackgeek/climon2/issues/87)): the
+([#87](https://github.com/jackgeek/climon2/issues/87)) and standalone
+[Kill](../../../GLOSSARY.md#attachment-and-control)
+([#88](https://github.com/jackgeek/climon2/issues/88)): the
 [hello advertisement](hello-reply.md#revision-1-advertisement), framing and
 validation with their connection-fatal codes, Open in both modes, Leave,
-Input, Resize, Ready, Acquire between attachments, Focus, Response, Fatal
-error, Initial metadata (the title; status and progress reported
-unavailable), Title changed, Control granted and revoked, Restoration begin
-and complete, Display and Geometry, with the private protocol's takeover,
+Input, Resize, Ready, Acquire between attachments, Focus, Kill, Response,
+Fatal error, Initial metadata (the title and a known command result; status
+and progress reported unavailable), Title changed, Control granted and
+revoked, Restoration begin and complete, Display, Geometry and
+[Command final](event-command-final.md#implemented-behavior) without status,
+with the private protocol's takeover,
 [hand-back](../../../GLOSSARY.md#attachment-and-control) and
 [leave policy](../../../GLOSSARY.md#attachment-and-control). Until it serves them, it
 rejects the other
-requests without effects, as each request's page describes. Standalone
-Kill, Acquire by a passive monitor connection, Set viewing, Acknowledge, the
-status, notification, progress and final-result messages, promotion of
-passive registrations, canonical monitor-mode presentation and bounded
-delivery remain unimplemented, and no
+requests without effects, as each request's page describes. Acquire by a
+passive monitor connection, Set viewing, Acknowledge, the status,
+notification and progress messages, promotion of passive registrations,
+canonical monitor-mode presentation and bounded delivery remain
+unimplemented, and no
 [client](../../../GLOSSARY.md#sessions) speaks this revision yet. The
 [daemon's contract tests](../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
 are the evidence for the implemented parts.
@@ -148,8 +152,10 @@ number or null. Only the current normalized value is retained, not an archive.
 Command results preserve raw unsigned 32-bit normal exits, including future
 Windows values. Normal exit 143 and termination by signal 15 are different
 results. Signal numbers describe the source host, not local commands to send.
-The existing implementation loses that distinction; this document does not
-claim it now preserves it.
+Session daemons keep that distinction on this revision
+([#88](https://github.com/jackgeek/climon2/issues/88)); only their
+[private protocol](post-hello.md) still folds a signal into 128 plus its
+number.
 
 ## Capability families
 
@@ -300,8 +306,8 @@ unmet condition without effects; the stream goes on:
 1. Focus only: the connection's Open selected `focus-v1`, otherwise
    `unsupported_capability`.
 2. The connection has a role, otherwise `invalid_state`.
-3. It is an attachment, otherwise `not_attached`: a passive monitor
-   connection is not one.
+3. It is an attachment, otherwise `not_attached`: neither a passive monitor
+   connection nor a standalone Kill's connection is one.
 4. The session is not in committed termination, otherwise
    `session_terminating`.
 5. It is the [controller](../../../GLOSSARY.md#attachment-and-control),
@@ -459,7 +465,11 @@ passive registration, Leave, atomic Initial metadata and title changes, and
 for interactive attachments the record order under partial I/O, binary
 Input header failures, stale authority and readiness, arbitrary bytes, paste
 closure, query authority, inert titles, Focus, and takeover, hand-back and
-leave-policy parity; the rest remains future.
+leave-policy parity. They also cover exit versus signal in Command final,
+known results in Initial metadata and first-role rejections, no final
+without evidence, and standalone Kill: its answer after termination and
+cleanup, Kills of both protocols joining one grace, and a partial result;
+the rest remains future.
 Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent
