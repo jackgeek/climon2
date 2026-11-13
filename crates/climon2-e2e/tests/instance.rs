@@ -696,7 +696,9 @@ fn installed_library_create_rejects_invalid_settings_and_diagnostics_without_han
 /// `CM1_UNSUPPORTED_LIMIT`, never silently raised or lowered: every limit
 /// but `max_workers` must be nonzero, `client_bytes` must cover the
 /// described instance allocation and `max_workers` the described workers,
-/// each exactly at its bound. With no descriptor left, create fails with
+/// each exactly at its bound, and `drain_payload_bytes` must hold a whole
+/// record of `metadata_record_bytes`, at that bound too (owner decision 4 on
+/// #93: no delivery ever holds one oversized record). With no descriptor left, create fails with
 /// `CM1_RESOURCE_LIMIT` and no handles.
 #[test]
 fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors() {
@@ -735,6 +737,18 @@ fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descri
             "unsupported_limit",
         ),
         (
+            "drain_payload_bytes below metadata_record_bytes",
+            limits(json!({ "metadata_record_bytes": 4096, "drain_payload_bytes": 4095 })),
+            UNSUPPORTED_LIMIT,
+            "unsupported_limit",
+        ),
+        (
+            "drain_payload_bytes at metadata_record_bytes",
+            limits(json!({ "metadata_record_bytes": 4096, "drain_payload_bytes": 4096 })),
+            SUCCESS,
+            "",
+        ),
+        (
             "every limit at one",
             limits(json!({
                 "request_bytes": 1, "event_bytes": 1, "progress_bytes": 1, "drain_payload_bytes": 1,
@@ -767,7 +781,7 @@ fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descri
         }
     }
     let report = creates(&package, &root, &cases);
-    assert_eq!(report["cases"].as_array().unwrap().len(), 7 + 25);
+    assert_eq!(report["cases"].as_array().unwrap().len(), 9 + 25);
     package.assert_clean();
 }
 

@@ -329,16 +329,18 @@ fn installed_library_holds_each_delivery_until_released() {
 }
 
 /// LIB-04 Fault (a delivery stops before `drain_payload_bytes`, and
-/// always holds a record): from the fake daemon peer, four 10-byte titles,
-/// queued while nothing
-/// drains, come two to a delivery at a 20-byte ceiling, one at a time at 19,
-/// and one at a time at 1, where a record alone exceeds it.
+/// always holds a record): from the fake daemon peer, four 100-byte titles,
+/// queued while nothing drains, come two to a delivery at a 200-byte
+/// ceiling and one at a time at 199. `metadata_record_bytes` is 199, so a
+/// whole record always fits a delivery (create refuses a smaller ceiling).
 #[test]
 fn installed_library_batches_records_within_drain_payload_bytes() {
     let package = Package::new();
     let root = root(&package);
-    let titles: Vec<String> = (1..=4).map(|index| format!("title-{index:04}")).collect();
-    let cases = [("exact", 20), ("under", 19), ("single", 1)];
+    let titles: Vec<String> = (1..=4)
+        .map(|index| format!("title-{index:04}{}", "x".repeat(90)))
+        .collect();
+    let cases = [("exact", 200), ("under", 199)];
     let mut steps = Vec::new();
     for (name, ceiling) in cases {
         let go = root.join(format!("go-{name}"));
@@ -346,7 +348,7 @@ fn installed_library_batches_records_within_drain_payload_bytes() {
         actions.push(json!({ "wait": go.to_str().unwrap() }));
         actions.extend(titles.iter().map(|title| title_changed(json!(title))));
         let peer = json!({ "open": actions, "leave": [leave_answer("ok", false, Value::Null)] });
-        let limits = json!({ "drain_payload_bytes": ceiling });
+        let limits = json!({ "drain_payload_bytes": ceiling, "metadata_record_bytes": 199 });
         steps.extend([
             json!({ "do": "create", "instance": name, "peer": peer, "startup": { "limits": limits } }),
             json!({ "do": "submit", "instance": name, "request": open(1, &REQUIRED, &["title-v1"]) }),
@@ -360,7 +362,7 @@ fn installed_library_batches_records_within_drain_payload_bytes() {
         ]);
     }
     let report = script(&package, &root, json!(steps));
-    let expected: [&[u64]; 3] = [&[2, 2], &[1, 1, 1, 1], &[1, 1, 1, 1]];
+    let expected: [&[u64]; 2] = [&[2, 2], &[1, 1, 1, 1]];
     for (index, expected) in expected.into_iter().enumerate() {
         let start = 9 * index;
         let drained = step(&report, start + 6);

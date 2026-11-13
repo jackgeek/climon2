@@ -170,7 +170,9 @@ The current session-log cap remains unchanged.
 All `cm1_limits` fields are required effective values, never zero-as-default.
 The caller resolves configuration defaults and checks aggregate admission.
 Create rejects values it cannot honor with `CM1_UNSUPPORTED_LIMIT`; it never
-raises or silently lowers them. `effective_limits` equals the accepted snapshot.
+raises or silently lowers them; `drain_payload_bytes` below
+`metadata_record_bytes` is one such value, since a delivery must hold a whole
+record. `effective_limits` equals the accepted snapshot.
 The library owns allocations only within its remaining share of `client_bytes`;
 the caller subtracts/reserves monitor-owned model/history/staging capacity before
 supplying that ceiling. No double-counted independent 64 MiB allowances.
@@ -492,8 +494,9 @@ are the evidence for this section
   copied text and token arrays. The library's own error text is static and
   costs nothing. While the event queue is full, the library stops reading the
   connection, so daemon records wait. A delivery holds the oldest records, at
-  most `drain_records`, stopping before `drain_payload_bytes` but holding at
-  least one; `drain` is `CM1_FULL` while `deliveries` deliveries are
+  most `drain_records`, stopping before `drain_payload_bytes`; a record never
+  exceeds it alone, because create refuses `drain_payload_bytes` below
+  `metadata_record_bytes`. `drain` is `CM1_FULL` while `deliveries` deliveries are
   outstanding. Every received [frame](../TERMS.md#frame), type byte included,
   must fit `metadata_record_bytes`, and every title `title_bytes`; either
   breach fails the connection with library `resource_limit`.

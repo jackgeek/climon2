@@ -698,19 +698,20 @@ impl Shared {
         })
     }
 
-    /// How many of the oldest records one delivery takes: at least one, and
-    /// more while both drain ceilings hold.
+    /// How many of the oldest records one delivery takes: as many as both
+    /// drain ceilings hold. The first always fits: a record's payload is
+    /// copied from one daemon frame of at most `metadata_record_bytes`,
+    /// which create never lets exceed `drain_payload_bytes`.
     fn batch(&self, events: &VecDeque<Event>) -> usize {
         let mut payload = 0;
-        let fitting = events
+        events
             .iter()
             .take(self.limits.drain_records as usize)
             .take_while(|event| {
                 payload += event.payload();
                 payload <= self.limits.drain_payload_bytes
             })
-            .count();
-        fitting.max(1)
+            .count()
     }
 
     fn ended(&self) -> native::Drained {

@@ -244,8 +244,9 @@ metadata, only with `title-v1`) and diagnostics. A frame over
 fails the connection (`resource_limit`); nothing is truncated. While the
 event queue is full, the library stops reading the socket, so daemon
 records wait instead of being dropped. A delivery takes the oldest records,
-at most `drain_records`, stopping before `drain_payload_bytes` but holding at
-least one. Each record is charged its header and the bytes it owns: copied
+at most `drain_records`, stopping before `drain_payload_bytes`; create
+refuses `drain_payload_bytes` below `metadata_record_bytes`
+(`unsupported_limit`), so a record never exceeds it alone. Each record is charged its header and the bytes it owns: copied
 text and token arrays; the library's own error text is static and costs
 nothing.
 
@@ -325,7 +326,7 @@ private target directory and checks.
 | LIB-03, LIB-04 and LIB-05 Library: create, run, shutdown, drain to terminal evidence, release, destroy and join; run and destroy on the wrong thread, a repeated run, destroy and handle release while busy; terminal evidence apart from the cleanup report | `installed_library_instance_runs_create_run_shutdown_drain_release_destroy_join` (`climon2-e2e/tests/instance.rs`) |
 | LIB-03 Library: a failed create returns no handles and leaves no descriptor: null arguments, a mismatched release, the generation, native paths | `installed_library_create_rejects_invalid_identity_and_paths_without_handles` (`instance.rs`) |
 | LIB-03 Library: client keys, log path and filter | `installed_library_create_rejects_invalid_settings_and_diagnostics_without_handles` (`instance.rs`) |
-| LIB-03 Library: limits it cannot honour, each at its bound; no descriptor left | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` (`instance.rs`) |
+| LIB-03 Library: limits it cannot honour, each at its bound, including `drain_payload_bytes` below `metadata_record_bytes`; no descriptor left | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` (`instance.rs`) |
 | LIB-03 Library and Fault: caller startup memory scrambled and unmapped after create; lossless native paths; two instances' homes, settings, logs and allocations stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` (`instance.rs`) |
 | LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` (`instance.rs`) |
 | LIB-04 Library and Fault, Linux `eventfd`: the descriptor stays borrowed, counted once, and safe to poll while the stream ends and the handle is in use | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` (`instance.rs`) |
