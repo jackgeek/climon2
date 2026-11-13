@@ -815,13 +815,12 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
     let payload_root = package.isolation.home().join("controlled-payload");
     let fixture_folder = payload_root.join(fixture_version);
     fs::create_dir_all(&fixture_folder).unwrap();
-    fs::copy(
-        package.executable_home().join("climon2"),
-        payload_root.join("climon2"),
-    )
-    .unwrap();
+    copy_executable(
+        &package.executable_home().join("climon2"),
+        &payload_root.join("climon2"),
+    );
     for binary in ["climon2-cli", "climon2-daemon", "climon2-monitor", LIBRARY] {
-        fs::copy(old_folder.join(binary), fixture_folder.join(binary)).unwrap();
+        copy_executable(&old_folder.join(binary), &fixture_folder.join(binary));
     }
     executable_script(
         &fixture_folder.join("climon2-client"),
