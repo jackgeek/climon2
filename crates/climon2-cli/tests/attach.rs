@@ -323,15 +323,20 @@ fn kill_of_an_uninstalled_version_names_that_version_and_ignores_config() {
     isolation.assert_clean();
 }
 
-/// Attach validates the client section only: an unused bad retention is ignored,
-/// but a malformed file still fails before dispatch.
+/// Attach validates the client section only: an unused bad retention or
+/// monitor section is ignored (CFG-01, attach case), but a malformed file
+/// still fails before dispatch.
 #[test]
 fn attach_validates_only_the_client_configuration() {
     let isolation = Isolation::new();
     let cli = installed_cli(&isolation);
     let home = home(&isolation);
     let config = home.join("config.jsonc");
-    fs::write(&config, r#"{"scrollback":{"max_rows":100001}}"#).unwrap();
+    fs::write(
+        &config,
+        r#"{"scrollback":{"max_rows":100001},"monitor":{"bell":null,"limits":{"ui":{"fps":0}}}}"#,
+    )
+    .unwrap();
     let session = FakeSession::start(&home, 11, current);
     let (status, screen) = attach_in_terminal(&isolation, &cli, "12345678", None);
     assert_eq!(status, 125);
