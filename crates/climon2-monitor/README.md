@@ -28,8 +28,8 @@ no client libraries yet.
    and `monitor.limits` with the ranges and rules the README lists). Nothing
    reads the file again, so editing it changes nothing until the next start.
    Its limits must then hold one session's mandatory allocation at the
-   largest geometry a session can have, 500x200 (`Geometry::for_host` of the
-   largest host), as `climon2-vt`'s `Model::mandatory` charges a blank model
+   largest geometry a session can have, `climon2-vt`'s `Geometry::LARGEST`
+   (500x200), by the parts its `Model::mandatory` charges a blank model
    keeping `history.max_rows` (#167): `memory.total_bytes`, then
    `client_bytes`, the current model and the history chunk holding its recent
    page together, and `history_bytes_total`, then `history_bytes_per_session`,

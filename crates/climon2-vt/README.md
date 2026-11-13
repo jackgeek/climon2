@@ -20,7 +20,8 @@ the monitor never forwards parser replies or session bytes directly to its host.
 
 - `Geometry::for_host(cols, rows)`: the controller's host size clamped to
   2..=500 columns and 1..=200 rows; `None` for a zero dimension (callers keep
-  their previous size or the 80x24 fallback). `push_bound()` is the most rows
+  their previous size or the 80x24 fallback). `Geometry::LARGEST`, 500x200, is
+  what every larger host is clamped to. `push_bound()` is the most rows
   one engine step can push into history; the engine keeps twice that as
   counting headroom beyond `max_history_rows`.
 - `Vt::new(geometry, VtConfig { max_history_rows, default_title })`.
@@ -82,8 +83,10 @@ place.
   filter and the engine hold briefly, and, when it keeps history, the first
   1000-row chunk, which holds the protected newest page. Otherwise it returns
   `Rejected { needed, limit }`. `Model::mandatory(geometry, history_rows)` is
-  that allocation, 6,948,039 bytes at 500x200 without history and 19,063,239
-  with it; the monitor checks its limits against it at startup (#167).
+  that allocation by part, `Mandatory { current_model, recent_page }`: at
+  500x200, a 6,948,039-byte current model and a 12,115,200-byte first chunk
+  (none without history). The monitor checks its limits against it at
+  startup (#167).
 - `Model::feed(bytes)` applies terminal bytes token by token. Only what the
   live output policy forwards to a Direct controller reaches the engine; a
   stripped token leaves only the C0 controls vte executes in it. Each token's
@@ -129,7 +132,7 @@ monitor's evidence.
 | Scenario | Test (`tests/bound.rs` unless another file is named) |
 |---|---|
 | LIM-03 Contract: mandatory model admitted at its bytes, rejected one below | `a_model_is_admitted_at_its_mandatory_bytes_and_rejected_one_below` |
-| LIM-03 Contract and CFG-01 Contract: `Model::mandatory` is the allocation `Model::new` admits, at the bound and one byte below it, with and without history; at 500x200 the documented 6,948,039 bytes without history and 19,063,239 with it | `a_models_mandatory_bytes_are_what_it_is_admitted_with` |
+| LIM-03 Contract and CFG-01 Contract: `Model::mandatory` gives the current model and the first history chunk as written by hand from ADR 0007's charges, at 80x24 and 500x200, with and without history; `Model::new` admits their sum, refuses one byte below it, and building allocates no more (counting allocator) | `a_models_mandatory_allocation_is_its_current_model_and_recent_page` |
 | LIM-03 Contract: plain text grows nothing beyond held cells | `plain_text_fills_held_cells_without_growth` |
 | LIM-03 Contract: history chunk at the bound, oldest row discarded one past it | `history_grows_at_the_bound_and_discards_its_oldest_row_one_byte_past_it` |
 | LIM-03 Contract: history grows only before output that could fill it, by every chunk one token could fill (a long repeat, released line feeds: at the bound and one past it), never past its configured rows, and is not shown over the alternate screen | `history_grows_only_before_output_that_could_fill_it`, `one_token_admits_every_history_chunk_it_could_fill`, `history_never_grows_past_its_configured_rows`, `the_alternate_screen_shows_no_history` |

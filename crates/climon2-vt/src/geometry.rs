@@ -7,12 +7,19 @@ pub struct Geometry {
 }
 
 impl Geometry {
+    /// The largest geometry a session can have: what every larger host size
+    /// is clamped to.
+    pub const LARGEST: Self = Self {
+        cols: 500,
+        rows: 200,
+    };
+
     /// Clamp a host size to 2..=500 columns and 1..=200 rows; a zero
     /// dimension is rejected so the caller keeps its previous size.
     pub fn for_host(cols: u16, rows: u16) -> Option<Self> {
         (cols != 0 && rows != 0).then(|| Self {
-            cols: cols.clamp(2, 500),
-            rows: rows.min(200),
+            cols: cols.clamp(2, Self::LARGEST.cols),
+            rows: rows.min(Self::LARGEST.rows),
         })
     }
 

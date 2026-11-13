@@ -6,7 +6,7 @@ use crate::{
     cost,
     engine::Core,
     geometry::{Geometry, STEP},
-    model::Rejected,
+    model::{Mandatory, Rejected},
     render::cells,
     token::{Kind, Token, Tokenizer},
 };
@@ -175,17 +175,20 @@ impl<'a> Room<'a> {
         geometry: Geometry,
         history_rows: usize,
     ) -> Result<Bounded, Rejected> {
-        self.fit(Bounded::mandatory(geometry, history_rows))?;
+        self.fit(Bounded::mandatory(geometry, history_rows).total())?;
         Ok(Bounded::new(geometry, history_rows))
     }
 }
 
 impl Bounded {
-    /// What a fresh instance holds and may grow to before any output: the
-    /// engine, both screens and the first chunk of history, which holds the
-    /// protected newest page.
-    pub(crate) fn mandatory(geometry: Geometry, history_rows: usize) -> usize {
-        cost::fixed(geometry) + History::new(history_rows).cost(geometry)
+    /// What a fresh instance holds and may grow to before any output, by
+    /// part: the engine and both screens, and the first chunk of history,
+    /// which holds the protected newest page.
+    pub(crate) fn mandatory(geometry: Geometry, history_rows: usize) -> Mandatory {
+        Mandatory {
+            current_model: cost::fixed(geometry),
+            recent_page: History::new(history_rows).cost(geometry),
+        }
     }
 
     pub(crate) fn new(geometry: Geometry, history_rows: usize) -> Self {

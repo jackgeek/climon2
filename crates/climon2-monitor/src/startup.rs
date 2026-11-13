@@ -10,7 +10,7 @@ use climon2_core::{
     protocol::TerminalSize,
 };
 use climon2_platform::{logging::LogFile, runtime, terminal};
-use climon2_vt::{Geometry, Model};
+use climon2_vt::{Geometry, Mandatory, Model};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -81,23 +81,25 @@ fn configuration(home: &Path) -> io::Result<MonitorConfig> {
 fn admissible(config: MonitorConfig) -> Result<MonitorConfig, ConfigError> {
     let limits = config.settings().limits;
     limits
-        .hold(largest_session(limits.history_rows()))
+        .hold(largest_mandatory_allocation(limits.history_rows()))
         .map(|()| config)
 }
 
-/// What `climon2-vt` charges a blank model keeping `history_rows` rows at the
-/// largest geometry, the one the largest host clamps to: the model alone,
+/// The mandatory allocation `climon2-vt` charges a blank model keeping
+/// `history_rows` rows at the largest session geometry: the current model,
 /// and the first history chunk, which holds the recent page.
-fn largest_session(history_rows: u32) -> MandatoryAllocation {
-    let at = Geometry::for_host(u16::MAX, u16::MAX).expect("a nonzero size");
-    let current_model = Model::mandatory(at, 0);
-    let with_page = Model::mandatory(at, history_rows as usize);
+fn largest_mandatory_allocation(history_rows: u32) -> MandatoryAllocation {
+    let largest = Geometry::LARGEST;
+    let Mandatory {
+        current_model,
+        recent_page,
+    } = Model::mandatory(largest, history_rows as usize);
     MandatoryAllocation {
         size: TerminalSize {
-            cols: at.cols(),
-            rows: at.rows(),
+            cols: largest.cols(),
+            rows: largest.rows(),
         },
         current_model: current_model as u64,
-        recent_page: (with_page - current_model) as u64,
+        recent_page: recent_page as u64,
     }
 }

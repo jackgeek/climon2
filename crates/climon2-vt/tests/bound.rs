@@ -4,7 +4,7 @@
 //! thread holds, so a model that grew past its limit, or charged less than it
 //! held, fails here whatever the model believes about itself.
 
-use climon2_vt::{Geometry, Limits, Model, Rejected};
+use climon2_vt::{Geometry, Limits, Mandatory, Model, Rejected};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -118,29 +118,41 @@ fn a_model_is_admitted_at_its_mandatory_bytes_and_rejected_one_below() {
     assert_eq!(model.footprint(), mandatory);
 }
 
-/// LIM-03 Contract and CFG-01 Contract: `Model::mandatory` is the allocation
-/// `Model::new` admits a blank model with, at the bound and one byte below
-/// it, with and without history. At the largest geometry, 500x200, it is the
-/// documented 6,948,039 bytes without history and 19,063,239 with the first
-/// history chunk, which holds the protected newest page
-/// (docs/monitor-operational-limits.md).
+/// LIM-03 Contract and CFG-01 Contract: `Model::mandatory` gives a blank
+/// model's mandatory allocation by part, written here from ADR 0007's
+/// charges: the current model (vte's 2 MiB buffer, the 32 KiB reserve, both
+/// screens, tab stops, line damage and the semantic escape characters) and,
+/// when it keeps history, the first 1000-row history chunk, which holds the
+/// protected newest page. `Model::new` admits a blank model at their sum and
+/// refuses it one byte below, and building it allocates no more than that.
 #[test]
-fn a_models_mandatory_bytes_are_what_it_is_admitted_with() {
-    let largest = geometry(500, 200);
-    assert_eq!(Model::mandatory(largest, NO_HISTORY), 6_948_039);
-    assert_eq!(Model::mandatory(largest, 10_000), 19_063_239);
-    let small = geometry(80, 24);
-    for (at, rows) in [(small, NO_HISTORY), (small, 10_000), (largest, 10_000)] {
-        let mandatory = Model::mandatory(at, rows);
+fn a_models_mandatory_allocation_is_its_current_model_and_recent_page() {
+    for (cols, rows, history_rows, current_model, recent_page) in [
+        (80, 24, NO_HISTORY, 2_224_291, 0),
+        (80, 24, 10_000, 2_224_291, 2_018_304),
+        (500, 200, NO_HISTORY, 6_948_039, 0),
+        (500, 200, 10_000, 6_948_039, 12_115_200),
+    ] {
+        let at = geometry(cols, rows);
         assert_eq!(
-            Model::new(at, limits(mandatory - 1, rows)).err(),
+            Model::mandatory(at, history_rows),
+            Mandatory {
+                current_model,
+                recent_page
+            }
+        );
+        let total = current_model + recent_page;
+        assert_eq!(
+            Model::new(at, limits(total - 1, history_rows)).err(),
             Some(Rejected {
-                needed: mandatory,
-                limit: mandatory - 1
+                needed: total,
+                limit: total - 1
             })
         );
-        let model = Model::new(at, limits(mandatory, rows)).unwrap();
-        assert_eq!(model.footprint(), mandatory);
+        let meter = Meter::watch();
+        let model = Model::new(at, limits(total, history_rows)).unwrap();
+        assert!(meter.peak() <= total, "{} > {total}", meter.peak());
+        assert_eq!(model.footprint(), total);
     }
 }
 
