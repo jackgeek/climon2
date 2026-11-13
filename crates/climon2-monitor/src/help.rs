@@ -17,6 +17,7 @@ const BINDINGS: [(char, &str); 3] = [
     ('?', "Show this dialog"),
 ];
 const ENTER: u8 = b'\r';
+const SPACE: u8 = b' ';
 
 /// The dialog, open or closed, and the choice it shows.
 pub(crate) struct Help {
@@ -51,10 +52,16 @@ impl Help {
         self.open = true;
     }
 
-    /// A typed key, which the dialog owns while it is open: Enter continues.
+    /// A typed key, which the dialog owns while it is open: Enter continues,
+    /// and Space reverses the saved choice.
     pub(crate) fn key(&mut self, byte: u8) {
-        if byte == ENTER {
-            self.open = false;
+        if !self.open {
+            return;
+        }
+        match byte {
+            ENTER => self.open = false,
+            SPACE => self.preference.reverse(),
+            _ => {}
         }
     }
 

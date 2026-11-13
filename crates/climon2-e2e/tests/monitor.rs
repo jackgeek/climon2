@@ -15,6 +15,7 @@ use nix::{
 use serde_json::Value;
 use std::{
     env, fs,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
     thread,
@@ -200,6 +201,32 @@ fn preferences_file(package: &Package) -> PathBuf {
 /// introduction.
 fn without_introduction(package: &Package) {
     fs::write(preferences_file(package), SUPPRESSED).unwrap();
+}
+
+/// The climon2 home holds the choice `suppressed` exactly as a release saves
+/// it, readable and writable only by its owner, and nothing else a save could
+/// have left there.
+fn assert_saved(package: &Package, suppressed: bool) {
+    let path = preferences_file(package);
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        format!("{{\"version\":1,\"suppress_key_introduction\":{suppressed}}}\n")
+    );
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+        0o600
+    );
+    assert_eq!(home_entries(package), ["logs", "monitor-preferences.json"]);
+}
+
+/// The names in the test's climon2 home, sorted.
+fn home_entries(package: &Package) -> Vec<String> {
+    let mut entries: Vec<_> = fs::read_dir(package.isolation.climon2_home())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    entries.sort();
+    entries
 }
 
 /// CFG-01 (Monitor): every invalid configuration, unreadable and malformed
@@ -911,5 +938,207 @@ fn help_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say() 
         fs::read_to_string(preferences_file(&package)).unwrap(),
         later
     );
+    package.assert_clean();
+}
+
+/// HLP-01 (Monitor): Space checks Don't show again and saves it in the
+/// climon2 home's preference file, private to its owner even under umask 000,
+/// and atomically: a temporary file renamed over the old one, so a hard link
+/// to the old file keeps its bytes, and no temporary file is left behind. The
+/// next start opens on the empty monitor; prefix+? shows the box checked, and
+/// Space reverses the choice, so the following start shows the introduction
+/// again. Another climon2 home keeps its own choice.
+#[test]
+fn dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible() {
+    let package = Package::new();
+    let empty = expected_screen(ROWS, COLS, "Ctrl+]");
+    let introduction = overlaid(&empty, &dialog("Ctrl+]", false, None));
+    let checked = overlaid(&empty, &dialog("Ctrl+]", true, None));
+    let mut first = outer(&package, "umask 000; climon2 monitor");
+    opened_on(&mut first, &introduction);
+    first.send(b" ").unwrap();
+    first
+        .wait_for_screen(TIMEOUT, |screen| screen == checked)
+        .unwrap();
+    assert_saved(&package, true);
+    first.send(b"\r").unwrap();
+    first
+        .wait_for_screen(TIMEOUT, |screen| screen == empty)
+        .unwrap();
+    first.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut first, 0);
+
+    let old = package.isolation.home().join("old preferences");
+    fs::hard_link(preferences_file(&package), &old).unwrap();
+    let mut second = outer(&package, "umask 000; climon2 monitor");
+    opened_on(&mut second, &empty);
+    second.send(b"\x1d?").unwrap();
+    second
+        .wait_for_screen(TIMEOUT, |screen| screen == checked)
+        .unwrap();
+    second.send(b" ").unwrap();
+    second
+        .wait_for_screen(TIMEOUT, |screen| screen == introduction)
+        .unwrap();
+    assert_saved(&package, false);
+    assert_eq!(fs::read_to_string(&old).unwrap(), SUPPRESSED);
+    second.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut second, 0);
+
+    let mut third = outer(&package, "climon2 monitor");
+    opened_on(&mut third, &introduction);
+    third.send(b" ").unwrap();
+    third
+        .wait_for_screen(TIMEOUT, |screen| screen == checked)
+        .unwrap();
+    third.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut third, 0);
+    assert_saved(&package, true);
+
+    let other = package.isolation.home().join("other home");
+    let mut elsewhere = outer(
+        &package,
+        &format!("CLIMON2_HOME={} climon2 monitor", quote(&other)),
+    );
+    opened_on(&mut elsewhere, &introduction);
+    elsewhere.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut elsewhere, 0);
+    assert!(!other.join("monitor-preferences.json").exists());
+    assert_saved(&package, true);
+    let logs = monitor_logs(&package);
+    for record in [
+        "monitor preference saved suppressed=true",
+        "monitor preference saved suppressed=false",
+    ] {
+        assert!(logs.contains(record), "{logs}");
+    }
+    package.assert_clean();
+}
+
+/// Every record the monitor runs wrote to their general logs.
+fn monitor_logs(package: &Package) -> String {
+    package
+        .logs()
+        .iter()
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("monitor-")
+        })
+        .map(|path| fs::read_to_string(path).unwrap())
+        .collect()
+}
+
+/// HLP-01 (Monitor; derived scenario: an unreadable or malformed preference
+/// file): such a file means not suppressed, so the introduction opens with
+/// the reason under its unchecked box, and the general log records it. The
+/// monitor never rewrites the file implicitly: Enter and prefix+x leave it
+/// as it was. A directory in place of the file is unreadable.
+#[test]
+fn an_unreadable_or_malformed_preference_file_shows_why_beside_the_introduction() {
+    let package = Package::new();
+    let empty = expected_screen(ROWS, COLS, "Ctrl+]");
+    for (text, reason) in [
+        (
+            r#"{"suppress_key_introduction":true}"#,
+            "monitor-preferences.json is malformed: missing field `version` at line 1 column 34",
+        ),
+        (
+            r#"{"version":1,"suppress_key_introduction":"yes"}"#,
+            "monitor-preferences.json is malformed: invalid type: string \"yes\", expected a boolean at line 1 column 46",
+        ),
+    ] {
+        fs::write(preferences_file(&package), text).unwrap();
+        let mut terminal = outer(&package, "climon2 monitor");
+        opened_on(
+            &mut terminal,
+            &overlaid(&empty, &dialog("Ctrl+]", false, Some(reason))),
+        );
+        terminal.send(b"\r").unwrap();
+        terminal
+            .wait_for_screen(TIMEOUT, |screen| screen == empty)
+            .unwrap();
+        terminal.send(b"\x1dx").unwrap();
+        assert_released(&package, &mut terminal, 0);
+        assert_eq!(
+            fs::read_to_string(preferences_file(&package)).unwrap(),
+            text
+        );
+        assert!(
+            monitor_logs(&package)
+                .contains(&format!("monitor preference unusable problem={reason}")),
+            "{}",
+            monitor_logs(&package)
+        );
+    }
+    fs::remove_file(preferences_file(&package)).unwrap();
+    fs::create_dir(preferences_file(&package)).unwrap();
+    let mut terminal = outer(&package, "climon2 monitor");
+    let unreadable = "cannot read monitor-preferences.json: Is a directory (os error 21)";
+    opened_on(
+        &mut terminal,
+        &overlaid(&empty, &dialog("Ctrl+]", false, Some(unreadable))),
+    );
+    terminal.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert!(preferences_file(&package).is_dir());
+    package.assert_clean();
+}
+
+/// HLP-01 (Fault: a temporary file or the preference file that cannot be
+/// written): a save that fails is reported in the dialog, never claimed: the
+/// box stays as saved, nothing is left behind, and the next start still opens
+/// the introduction. Here a directory occupies the monitor's temporary file
+/// (`monitor-preferences.json.<pid>.tmp`), so the save cannot write it, and
+/// then a directory in place of the preference file, which is unreadable and
+/// cannot be replaced, so the written temporary file is removed again.
+#[test]
+fn a_failing_save_is_reported_in_the_dialog_and_saves_nothing() {
+    let package = Package::new();
+    let empty = expected_screen(ROWS, COLS, "Ctrl+]");
+    let introduction = overlaid(&empty, &dialog("Ctrl+]", false, None));
+    let not_saved = "cannot save monitor-preferences.json: Is a directory (os error 21)";
+    let mut blocked = outer(&package, "climon2 monitor");
+    opened_on(&mut blocked, &introduction);
+    let monitor = monitor_process(&package).0;
+    let temporary = package
+        .isolation
+        .climon2_home()
+        .join(format!("monitor-preferences.json.{monitor}.tmp"));
+    fs::create_dir(&temporary).unwrap();
+    blocked.send(b" ").unwrap();
+    let reported = overlaid(&empty, &dialog("Ctrl+]", false, Some(not_saved)));
+    blocked
+        .wait_for_screen(TIMEOUT, |screen| screen == reported)
+        .unwrap();
+    blocked.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut blocked, 0);
+    assert!(!preferences_file(&package).exists());
+    assert!(
+        monitor_logs(&package)
+            .contains(&format!("monitor preference not saved problem={not_saved}"))
+    );
+    fs::remove_dir(&temporary).unwrap();
+    let mut again = outer(&package, "climon2 monitor");
+    opened_on(&mut again, &introduction);
+    again.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut again, 0);
+
+    fs::create_dir(preferences_file(&package)).unwrap();
+    let mut replaced = outer(&package, "climon2 monitor");
+    let unreadable = "cannot read monitor-preferences.json: Is a directory (os error 21)";
+    opened_on(
+        &mut replaced,
+        &overlaid(&empty, &dialog("Ctrl+]", false, Some(unreadable))),
+    );
+    replaced.send(b" ").unwrap();
+    replaced
+        .wait_for_screen(TIMEOUT, |screen| screen == reported)
+        .unwrap();
+    assert_eq!(home_entries(&package), ["logs", "monitor-preferences.json"]);
+    replaced.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut replaced, 0);
+    assert!(preferences_file(&package).is_dir());
     package.assert_clean();
 }

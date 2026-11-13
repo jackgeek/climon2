@@ -90,6 +90,9 @@ pub fn run() -> Result<u32, Error> {
 fn monitor(startup: Startup) -> io::Result<u32> {
     tracing::info!(version = %startup.version, "monitor started");
     tracing::info!(effective = %startup.config, "monitor configuration");
+    if let Some(problem) = startup.preference.problem() {
+        tracing::warn!(%problem, "monitor preference unusable");
+    }
     let status = owned(&startup.config, startup.preference)
         .inspect_err(|error| tracing::error!(%error, "monitor failed"))?;
     tracing::info!(status, "monitor stopped");
