@@ -86,9 +86,11 @@ once if it already had:
 - success, `{"kind":"termination","command_result":<CommandResult>,"cleanup":"complete"}`,
   when the daemon confirmed how the command ended and its cleanup completed;
 - otherwise outcome `failed` with `cleanup_failed` and
-  `{"kind":"termination","command_result":<CommandResult or null>,"cleanup":"incomplete"}`,
-  with the result only if the daemon confirmed it: the daemon could not
-  confirm the command's end, or its cleanup failed.
+  `{"kind":"termination","command_result":<CommandResult or null>,"cleanup":"incomplete"}`:
+  the daemon could not confirm the command's end, or its cleanup of the
+  session metadata and socket failed. The result is the one the daemon
+  knew, even when it could not confirm the end; it is null only when the
+  daemon never learned it.
 
 The stream then ends. An authoritative failure of the session, such as a
 failed write to the command's terminal, does not by itself fail a Kill whose

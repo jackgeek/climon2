@@ -806,8 +806,9 @@ are agreed, not implemented.
 - [Freeze daemon-client communication contract](https://github.com/jackgeek/climon2/issues/67):
   agreed [revision-1 post-hello wire](daemon-client/core-v1.md), passive
   succession, metadata, outcomes and validation; session daemons implement
-  its passive monitor connections ([#86](https://github.com/jackgeek/climon2/issues/86))
-  and interactive attachments ([#87](https://github.com/jackgeek/climon2/issues/87)),
+  its passive monitor connections ([#86](https://github.com/jackgeek/climon2/issues/86)),
+  interactive attachments ([#87](https://github.com/jackgeek/climon2/issues/87)),
+  and Command final with standalone Kill ([#88](https://github.com/jackgeek/climon2/issues/88)),
   and the rest is unimplemented.
 - [Choose the monitor terminal integration contract](https://github.com/jackgeek/climon2/issues/63):
   agreed [terminal/input/geometry/restoration contract](terminal-integration.md),
