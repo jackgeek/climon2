@@ -202,13 +202,20 @@ fn installed_headless_exec_from_a_script_prints_only_the_guid_and_starts_at_80x2
 }
 
 /// Confirmed scenario (headless TTY size) and HDL-01 (Monitor layer), Kill case:
-/// with a terminal on stdin, the session starts at that terminal's size; the
-/// GUID is the only output; existing `c2 kill` ends the headless session.
+/// as in the README's `id=$(c2 exec --headless …)`, stdin is a terminal and
+/// stdout is not. The session starts at the stdin terminal's size, the GUID
+/// and its newline are the only output, and existing `c2 kill` ends the
+/// headless session.
 #[test]
 fn installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it() {
     let package = Package::new();
-    let mut command = package.command("c2");
-    command.args(headless_args(&size_then_hold()));
+    let mut command = package.command("/bin/bash");
+    command.args([
+        "-c",
+        r#"c2 exec --headless /bin/bash -c "$1" > "$HOME/id""#,
+        "headless",
+        &size_then_hold(),
+    ]);
     let mut terminal = Terminal::spawn(command, 31, 97).unwrap();
     assert_eq!(
         terminal.wait_exit(TIMEOUT).unwrap(),
@@ -216,8 +223,12 @@ fn installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it()
         "{}",
         terminal.screen()
     );
+    assert_eq!(terminal.screen().trim(), "");
     let id = package.metadata().session_id.to_string();
-    assert_eq!(terminal.screen().trim(), id);
+    assert_eq!(
+        fs::read_to_string(package.isolation.home().join("id")).unwrap(),
+        format!("{id}\n")
+    );
     drop(terminal);
     assert_eq!(wait_file(&package.isolation.home().join("size")), "31 97\n");
 
