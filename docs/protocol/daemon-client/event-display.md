@@ -10,7 +10,8 @@ See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
 ## Binary body and example
 
 The 16-byte header is two nonzero unsigned 64-bit
-[big-endian](../TERMS.md#big-endian) integers: period,
+[big-endian](../TERMS.md#big-endian) integers:
+[period](../../../GLOSSARY.md#attachment-and-control),
 [restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts).
 Nonempty binary bytes follow unchanged, including [NUL](../TERMS.md#nul)/
 invalid [UTF-8](../TERMS.md#unicode-and-utf-8).
@@ -49,7 +50,9 @@ replies are emitted. Native cell serialization is not introduced.
 Delivery is not applied [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts),
 application consumption or command completion.
 Empty Display is an invalid operation; malformed framing/header/authority is
-invalid under [shared validation](core-v1.md#framing-and-validation).
+invalid under [shared validation](core-v1.md#framing-and-validation): a body
+shorter than the 16-byte header, or a zero period or restoration ID, is
+`invalid_record`.
 No optional fields/defaults/text replacement.
 Required bytes cannot be silently lost on healthy streams; explicitly fail
 the affected connection under #69 policy instead.
