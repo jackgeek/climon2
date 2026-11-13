@@ -36,11 +36,12 @@ fn linux_process_identity_is_additive_and_rejects_malformed_boot_ids() {
     assert!(read(&record).is_err());
 }
 
-/// #157 / ADR 0005: a Linux `boot_id` is accepted, exactly as written, only
-/// when it is a canonical lowercase hyphenated GUID of any version, the rule
-/// session IDs and wire GUIDs share. Each boundary input (case, length,
-/// hyphen positions, hex digits, whitespace and the other spellings a GUID
-/// parser accepts) has a hand-written verdict that all three must give.
+/// #157 / ADR 0005, and COM-02 (codec case) for wire GUIDs: a Linux `boot_id`
+/// is accepted, exactly as written, only when it is a canonical lowercase
+/// hyphenated GUID of any version, the rule session IDs and wire GUIDs share.
+/// Each boundary input (case, length, hyphen positions, hex digits, whitespace
+/// and the other spellings a GUID parser accepts) has a hand-written verdict
+/// that all three must give.
 #[test]
 fn adr0005_linux_boot_ids_accept_exactly_the_canonical_guids_session_ids_accept() {
     use climon2_core::{SessionId, wire::Guid};
