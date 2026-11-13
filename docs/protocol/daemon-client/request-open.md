@@ -45,7 +45,8 @@ geometry or takeover. Interactive mode attaches and
 [grants](../../../GLOSSARY.md#attachment-and-control)
 [control](../../../GLOSSARY.md#attachment-and-control) using requested geometry
 under daemon policy. See [succession](core-v1.md#membership-and-succession).
-Monitor-mode display/restoration after acquisition or promotion uses effective
+Monitor-mode display/restoration after acquisition or
+[promotion](../../../GLOSSARY.md#attachment-and-control) uses effective
 session geometry regardless of outer host or requested size under the
 [canonical terminal contract](../terminal-integration.md#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1).
 Ordinary interactive [direct](../../../GLOSSARY.md#restoration-and-presentation)/[derived](../../../GLOSSARY.md#restoration-and-presentation)/native-history behavior is unchanged.

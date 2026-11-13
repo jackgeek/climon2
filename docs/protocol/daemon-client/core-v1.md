@@ -3,8 +3,9 @@
 **Status: developer-agreed specification in [#67](https://github.com/jackgeek/climon2/issues/67), partly implemented.**
 This is the maintained contract, not evidence that any release conforms.
 The [#63 terminal contract](../terminal-integration.md) adds optional core
-[Focus](request-focus.md) and canonical monitor-mode presentation below;
-these amendments are also agreed, and Focus is implemented.
+[Focus](request-focus.md) and
+[canonical presentation](../../../GLOSSARY.md#restoration-and-presentation) of monitor-mode connections below;
+these amendments are also agreed, and the session daemon implements both.
 The [private protocol](post-hello.md) is not this revision;
 [session daemons](../../../GLOSSARY.md#sessions) now speak both, and the
 first [frame](../TERMS.md#frame) after [hello](../../../GLOSSARY.md#sessions)

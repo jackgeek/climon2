@@ -2,7 +2,7 @@
 //! connection, succession on a controller's departure, Leave and Kill racing
 //! a promotion, and the canonical presentation of monitor-mode connections.
 use super::{
-    assert_closed, assert_final_then_closed, assert_rejected, counter,
+    assert_closed, assert_final_then_closed, assert_rejected, counter, exited,
     interactive::{Attached, geometry, ready_attachment, rejected},
     kill, leave, message, monitor, open, peer, request, signalled, terminating,
 };
@@ -173,6 +173,52 @@ fn a_registration_takes_control_only_by_its_own_acquire() {
     );
     session.finish();
     assert_eq!(recorded(&session), "first 91x37\nother 91x37\n");
+}
+
+/// CTL-01 (Contract, a registration's Acquire of a starting session):
+/// before any attachment, a registration's Acquire converts it into the
+/// session's first attachment, which takes control at once at the session's
+/// geometry: Control granted (`acquire`), its restoration, then the changed
+/// success. The session then counts it as attached, and its input reaches
+/// the command once it is ready.
+#[test]
+fn a_registration_acquires_a_starting_session() {
+    let mut session = Session::start("lines");
+    let mut watching = Attached::registered(&session, &[]);
+    assert_eq!(
+        crate::advertised_state(&session),
+        (Lifecycle::Starting, 0, false)
+    );
+    watching.acquire(geometry(91, 37));
+    assert_eq!(
+        crate::advertised_state(&session),
+        (Lifecycle::Attached, 1, true)
+    );
+    watching.confirm_ready();
+    watching.typed(b"acquired\n");
+    crate::wait_line(&session, "acquired 91x37");
+    watching.typed(b"end\n");
+    watching.ended(&exited(0));
+    session.finish();
+}
+
+/// CTL-01 (Contract, watching is not attaching): a registration does not
+/// stop an ordinary session's five-second initial attach rule. A session
+/// that only a passive monitor connection watches stays `starting`, ends
+/// at its initial deadline, and the registration receives the Command
+/// final of the hung-up command, then its stream ends.
+#[test]
+fn watching_does_not_stop_the_initial_attach_rule() {
+    let mut session = Session::start("lines");
+    let started = Instant::now();
+    let (mut watching, _) = monitor(&session, &[]);
+    assert_eq!(
+        crate::advertised_state(&session),
+        (Lifecycle::Starting, 0, false)
+    );
+    assert_final_then_closed(&mut watching, &signalled(1));
+    assert!(started.elapsed() >= Duration::from_millis(4500));
+    session.finish();
 }
 
 /// CTL-04 (Contract, succession): when a controller departs, control goes
