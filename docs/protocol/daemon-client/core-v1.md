@@ -481,13 +481,18 @@ Input header failures, stale authority and readiness, arbitrary bytes, paste
 closure, query authority, inert titles, Focus, and takeover, hand-back and
 leave-policy parity. They also cover exit versus signal in Command final,
 known results in Initial metadata and first-role rejections, no final
-without evidence, and standalone Kill: its answer after termination and
-cleanup, Kills of both protocols joining one grace, and a partial result.
-For monitors they cover Acquire by a registration, succession (hand-back
-before the newest registration's promotion, leave policy only after it),
-Leave and a committed Kill racing a promotion, and canonical restorations at
-the effective geometry, with a Restoration begin after every geometry
-change; the rest remains future.
+without evidence (an unconfirmed hang-up, or the end of the command's output
+while it runs), and standalone Kill: its answer after termination and
+cleanup, Kills of both protocols joining one
+[hang-up grace](../../../GLOSSARY.md#attachment-and-control), its success
+after a session failure, and its partial result after a failed cleanup or
+an unconfirmed termination. For monitors they cover Acquire by a
+registration, of a starting session too and after the Command final,
+succession (hand-back before the newest registration's promotion, leave
+policy only after it, in headless sessions too), Leave, a committed Kill and
+a registration's queue overflow racing a promotion, and canonical
+restorations at the effective geometry, with a Restoration begin after every
+geometry change; the rest remains future.
 Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent

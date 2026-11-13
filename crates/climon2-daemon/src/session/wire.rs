@@ -5,7 +5,10 @@
 use super::{Session, delivery::Delivery};
 use crate::{
     connection::{Connection, frame_limit},
-    control::{self, Authority, Authorized, ConnectionId, Needs, Period, Restoration},
+    control::{
+        self, Authority, Authorized, CleanupResult, CommandEnd, ConnectionId, Needs, Period,
+        Restoration, SessionEnd,
+    },
 };
 use climon2_core::{
     protocol::TerminalSize,
@@ -45,9 +48,9 @@ pub(super) fn advertisement() -> Advertisement {
     )
 }
 
-/// A revision-1 connection after its first role: an Open's, with the
-/// families it selected, which decide the core metadata it receives, or a
-/// standalone Kill's, which selects none.
+/// A revision-1 connection after its successful Open: the families it
+/// selected, which decide the core metadata it receives, and its role. A
+/// standalone Kill's connection is not one: it opened nothing.
 pub(super) struct Opened {
     selected: BTreeSet<Family>,
     role: Role,
@@ -60,9 +63,6 @@ enum Role {
     /// An attachment: an ordinary interactive one, or a converted passive
     /// monitor connection.
     Attachment(Attachment),
-    /// A standalone Kill, answered once the session ended: never an
-    /// attachment, and it receives no core metadata.
-    Kill(Counter),
 }
 
 /// The connection's role, for requests that depend on it.
@@ -70,7 +70,6 @@ enum Role {
 enum Kind {
     Monitor,
     Attachment,
-    Kill,
 }
 
 impl Role {
@@ -78,7 +77,20 @@ impl Role {
         match self {
             Self::Monitor => Kind::Monitor,
             Self::Attachment(_) => Kind::Attachment,
-            Self::Kill(_) => Kind::Kill,
+        }
+    }
+
+    fn attachment(&self) -> Option<&Attachment> {
+        match self {
+            Self::Attachment(attachment) => Some(attachment),
+            Self::Monitor => None,
+        }
+    }
+
+    fn attachment_mut(&mut self) -> Option<&mut Attachment> {
+        match self {
+            Self::Attachment(attachment) => Some(attachment),
+            Self::Monitor => None,
         }
     }
 }
@@ -151,7 +163,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// A later Open never repurposes an existing role.
     fn open(&mut self, id: u64, open: Open) -> io::Result<()> {
-        if self.opened.contains_key(&id) {
+        if self.holds_role(id) {
             self.has_role(id, open.request_id);
             return Ok(());
         }
@@ -233,15 +245,18 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     pub(super) fn refused(&mut self, id: u64) {
         if let Some(request_id) = self.open_request(id) {
             let error = error(OperationalCode::SessionTerminating, TERMINATING);
-            self.refuse_role(id, request_id, error);
+            self.reject_role(id, request_id, error);
         }
     }
 
     fn open_request(&self, id: u64) -> Option<Counter> {
-        match &self.opened.get(&id)?.role {
-            Role::Attachment(attachment) => attachment.open,
-            _ => None,
-        }
+        self.opened.get(&id)?.role.attachment()?.open
+    }
+
+    /// Whether the connection has a revision-1 role: an Open's or a
+    /// standalone Kill's.
+    pub(super) fn holds_role(&self, id: u64) -> bool {
+        self.opened.contains_key(&id) || self.kills.contains_key(&id)
     }
 
     /// A passive monitor connection became an attachment, by its Acquire
@@ -283,10 +298,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// Leave removes the role in one step and reports whether an attachment
     /// was detached, then closes the stream. A connection that opened
-    /// nothing has nothing to leave.
+    /// nothing, a standalone Kill's included, has nothing to leave.
     fn leave(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
         match self.kind(id) {
-            None | Some(Kind::Kill) => {
+            None => {
                 self.reject(id, request_id, OperationalCode::InvalidState, NOT_OPENED);
                 Ok(())
             }
@@ -315,11 +330,11 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// Acquire takes control for a non-controlling attachment, converting
     /// a passive monitor connection into one, and is an explicit no-op for
-    /// the controller. A connection that opened nothing has nothing to
-    /// convert.
+    /// the controller. A connection that opened nothing, a standalone
+    /// Kill's included, has nothing to convert.
     fn acquire(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
         match self.kind(id) {
-            None | Some(Kind::Kill) => {
+            None => {
                 self.reject(id, request_id, OperationalCode::InvalidState, NOT_OPENED);
                 Ok(())
             }
@@ -449,12 +464,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         request_id: Counter,
         (requested, needs): (AuthorityIds, Needs),
     ) -> Option<Authorized> {
-        let authorized = match self.kind(id) {
-            None => Err(error(OperationalCode::InvalidState, NO_ROLE)),
-            Some(_) => self
-                .control
+        let authorized = if self.holds_role(id) {
+            self.control
                 .authorize(ConnectionId(id), authority(requested), needs)
-                .map_err(refusal),
+                .map_err(refusal)
+        } else {
+            Err(error(OperationalCode::InvalidState, NO_ROLE))
         };
         authorized
             .inspect_err(|error| self.reject_with(id, request_id, error.clone()))
@@ -472,19 +487,14 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn attachment_mut(&mut self, id: u64) -> Option<&mut Attachment> {
-        match &mut self.opened.get_mut(&id)?.role {
-            Role::Attachment(attachment) => Some(attachment),
-            _ => None,
-        }
+        self.opened.get_mut(&id)?.role.attachment_mut()
     }
 
     /// The authority under which an interactive attachment receives
     /// Display, or `None` for a private connection.
     pub(super) fn display_authority(&self, id: u64) -> Option<Authority> {
-        match &self.opened.get(&id)?.role {
-            Role::Attachment(attachment) => attachment.held.map(|held| held.authority),
-            _ => None,
-        }
+        let attachment = self.opened.get(&id)?.role.attachment()?;
+        attachment.held.map(|held| held.authority)
     }
 
     /// A grant: Control granted, then its restoration's beginning, both
@@ -598,7 +608,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// repurposes an existing role. A valid one commits the session's
     /// termination, or joins the one under way.
     fn wire_kill(&mut self, id: u64, kill: Kill) -> io::Result<()> {
-        if self.opened.contains_key(&id) {
+        if self.holds_role(id) {
             self.has_role(id, kill.request_id);
             return Ok(());
         }
@@ -607,33 +617,27 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             self.reject_role(id, kill.request_id, error);
             return Ok(());
         }
-        let killing = Opened {
-            selected: BTreeSet::new(),
-            role: Role::Kill(kill.request_id),
-        };
-        self.opened.insert(id, killing);
+        self.kills.insert(id, kill.request_id);
         self.react(|control| control.kill(ConnectionId(id)))
     }
 
     /// The request a standalone Kill connection awaits the answer to.
     pub(super) fn kill_request(&self, id: u64) -> Option<Counter> {
-        match self.opened.get(&id)?.role {
-            Role::Kill(request_id) => Some(request_id),
-            _ => None,
-        }
+        self.kills.get(&id).copied()
     }
 
     /// A standalone Kill's answer once the session ended, then the end of
     /// its stream.
-    pub(super) fn answer_kill(&mut self, id: u64, request_id: Counter, ended: &control::Outcome) {
-        self.respond(id, request_id, termination(ended));
+    pub(super) fn answer_kill(&mut self, id: u64, request_id: Counter, end: &SessionEnd) {
+        self.respond(id, request_id, kill_answer(end));
         self.end_stream(id);
     }
 
     /// The command's result, once the daemon first knows it: every opened
-    /// connection receives it as Command final, a standalone Kill's in its
-    /// answer instead, and later Opens in their Initial metadata. Knowing it
-    /// again publishes nothing.
+    /// connection receives it as Command final (a standalone Kill's
+    /// connection, which opened nothing, gets it in its answer instead), and
+    /// later Opens in their Initial metadata. Knowing it again publishes
+    /// nothing.
     pub(super) fn publish(&mut self, result: &CommandResult) {
         if self.command_result.is_some() {
             return;
@@ -642,19 +646,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let frame = CommandFinal::new(result.clone(), None)
             .expect("no status disagrees with a result")
             .to_frame();
-        for id in self.subscribed() {
+        let opened: Vec<u64> = self.opened.keys().copied().collect();
+        for id in opened {
             self.send_wire(id, &frame);
         }
-    }
-
-    /// The connections that opened: passive monitor connections and
-    /// interactive attachments.
-    fn subscribed(&self) -> Vec<u64> {
-        self.opened
-            .iter()
-            .filter(|(_, opened)| !matches!(opened.role, Role::Kill(_)))
-            .map(|(id, _)| *id)
-            .collect()
     }
 
     /// Sends a Title changed to every connection that selected `title-v1`,
@@ -686,20 +681,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.reject_with(id, request_id, error(code, message));
     }
 
-    /// A rejected first role has no effects and ends its stream.
+    /// A rejected first role has no effects, carries the command's result
+    /// once the daemon knows it, and ends its stream.
     fn reject_role(&mut self, id: u64, request_id: Counter, error: Error) {
-        self.refuse_role(id, request_id, error);
+        let known_final = self.command_result.clone();
+        self.rejection(id, request_id, error, known_final);
         self.end_stream(id);
-    }
-
-    /// A first role's rejection carries the command's result once the
-    /// daemon knows it.
-    fn refuse_role(&mut self, id: u64, request_id: Counter, error: Error) {
-        let rejection = Rejection {
-            error,
-            known_final: self.command_result.clone(),
-        };
-        self.respond(id, request_id, Outcome::Rejected(rejection));
     }
 
     fn answer(&mut self, id: u64, request_id: Counter, result: Result<Success, OperationalCode>) {
@@ -709,11 +696,19 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
+    /// A rejected later request has no effects, and its stream goes on.
     fn reject_with(&mut self, id: u64, request_id: Counter, error: Error) {
-        let rejection = Rejection {
-            error,
-            known_final: None,
-        };
+        self.rejection(id, request_id, error, None);
+    }
+
+    fn rejection(
+        &mut self,
+        id: u64,
+        request_id: Counter,
+        error: Error,
+        known_final: Option<CommandResult>,
+    ) {
+        let rejection = Rejection { error, known_final };
         self.respond(id, request_id, Outcome::Rejected(rejection));
     }
 
@@ -758,14 +753,16 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
 /// A Kill succeeds only with the command's confirmed result after complete
 /// cleanup. Otherwise it failed: its termination or cleanup did not
-/// complete, and the result is reported if it was confirmed.
-fn termination(ended: &control::Outcome) -> Outcome {
-    match (&ended.command, ended.cleaned) {
-        (Some(command_result), true) => Outcome::Ok(Success::Termination {
-            command_result: command_result.clone(),
-            cleanup: Cleanup::Complete,
-        }),
-        (command_result, _) => Outcome::Failed(incomplete(command_result.clone())),
+/// complete, and it reports the result the daemon knew, if any.
+fn kill_answer(end: &SessionEnd) -> Outcome {
+    match (&end.command, end.cleanup) {
+        (CommandEnd::Confirmed(command_result), CleanupResult::Complete) => {
+            Outcome::Ok(Success::Termination {
+                command_result: command_result.clone(),
+                cleanup: Cleanup::Complete,
+            })
+        }
+        (command, _) => Outcome::Failed(incomplete(command.known().cloned())),
     }
 }
 

@@ -185,10 +185,10 @@ fn title_changes_follow_initial_metadata_by_value_whatever_the_control() {
     let mut first = Attached::passive(stream);
     assert_eq!(title, Available::Available(None));
     crate::script(&session, "title one");
-    assert_eq!(title_changed(&mut first.stream).as_deref(), Some("one"));
+    assert_eq!(first.title_changed().as_deref(), Some("one"));
     crate::script(&session, "title one");
     crate::script(&session, "title two");
-    assert_eq!(title_changed(&mut first.stream).as_deref(), Some("two"));
+    assert_eq!(first.title_changed().as_deref(), Some("two"));
 
     crate::send(&mut controlling, ClientMessage::Detach);
     assert_eq!(

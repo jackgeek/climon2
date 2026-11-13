@@ -192,6 +192,31 @@ fn a_registration_acquires_a_starting_session() {
     session.finish();
 }
 
+/// CTL-01 and COM-06 (Contract, Acquire after the Command final): the
+/// Command final reaches a registration as soon as the command exits, but
+/// until the output drained and the controller confirmed Ready the session
+/// goes on, so the registration's Acquire is still granted: the previous
+/// controller gets its Command final, then its release and Control revoked
+/// (`takeover`). Once the new controller confirms Ready the session ends:
+/// it gets its release and Control revoked (`session_ending`), and no
+/// connection gets a second Command final.
+#[test]
+fn a_registration_acquires_after_the_command_final_until_the_session_ends() {
+    let mut session = Session::start("script");
+    let mut attached = Attached::open(&session, geometry(91, 37), &[], geometry(91, 37));
+    let mut watching = Attached::registered(&session);
+    crate::issue(&session, "exit 7");
+    let result = exited(7);
+    assert_eq!(watching.next_after_display(), command_final(&result));
+    watching.acquire(geometry(91, 37));
+    assert_eq!(attached.next_after_display(), command_final(&result));
+    attached.revoked(RevocationReason::Takeover);
+    watching.confirm_ready();
+    watching.session_ended();
+    attached.closed();
+    session.finish();
+}
+
 /// CTL-01 (Contract, watching is not attaching): a registration does not
 /// stop an ordinary session's five-second initial attach rule. A session
 /// that only a passive monitor connection watches stays `starting`, ends

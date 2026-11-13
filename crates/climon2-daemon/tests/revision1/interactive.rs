@@ -29,7 +29,7 @@ pub(super) fn geometry(cols: u32, rows: u32) -> Geometry {
 /// restoration, whether it still controls, its last request ID and the
 /// terminal bytes it received.
 pub(super) struct Attached {
-    pub(super) stream: UnixStream,
+    stream: UnixStream,
     /// The families its Open selected, sorted.
     selected: Vec<String>,
     period: u64,
@@ -264,6 +264,11 @@ impl Attached {
     /// The stream ended exactly between frames.
     pub(super) fn closed(&mut self) {
         assert_closed(&mut self.stream);
+    }
+
+    /// The title of the next record, which must be a Title changed.
+    pub(super) fn title_changed(&mut self) -> Option<String> {
+        super::title_changed(&mut self.stream)
     }
 
     /// Sends the request `record` builds from the next request ID and

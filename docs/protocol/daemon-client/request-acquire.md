@@ -63,7 +63,8 @@ the connection drains. The controller's own Acquire is an explicit no-op:
 `changed:false` with its current period and restoration ID, and nothing
 else. During committed termination Acquire is `session_terminating`.
 
-On a passive monitor connection Acquire converts the registration into an
+On a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control)
+Acquire converts the registration into an
 attachment, which takes control at once in the same way, even of a
 [detached](../../../GLOSSARY.md#sessions) or starting session: any previous
 controller first receives its release and Control revoked (`takeover`), then
