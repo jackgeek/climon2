@@ -15,8 +15,8 @@ use super::REQUIREMENTS;
 use super::{
     connection,
     failure::{
-        BUSY, CLOSED, FULL, Failed, Failure, Fault, INVALID_ARGUMENT, INVALID_REQUEST_ID, PANIC,
-        RESOURCE_LIMIT, TIMEOUT, WRONG_THREAD, require,
+        BUSY, CANCELLED, CLOSED, FULL, Failed, Failure, Fault, INVALID_ARGUMENT,
+        INVALID_REQUEST_ID, PANIC, RESOURCE_LIMIT, TIMEOUT, WRONG_THREAD, require,
     },
     hook,
     platform::Notifier,
@@ -76,7 +76,6 @@ const DELIVERIES_FULL: Failure = Failure::new(
     FULL,
     "every delivery the limits allow is outstanding; release one first",
 );
-const CANCELLED: Fault = Fault::library("cancelled", "the request was accepted but never executed");
 
 /// A current measurement and its peak.
 #[derive(Clone, Copy, Default)]
@@ -404,6 +403,11 @@ impl Shared {
             state.readable = ready;
             self.notifier.set(ready);
         }
+    }
+
+    /// Whether shutdown has been requested.
+    pub(super) fn shutting_down(&self) -> bool {
+        self.lock().stop.shutdown
     }
 
     pub(super) fn shutdown(&self) -> Result<(), Failure> {

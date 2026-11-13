@@ -7,7 +7,7 @@
 //! connection.
 
 use super::{
-    failure::{Failed, Fault, require},
+    failure::{CANCELLED, Failed, Fault, require},
     handshake::{self, Expected, Peer},
     instance::{Next, Shared},
     link::{self, Link, TIMEOUT},
@@ -172,6 +172,7 @@ impl<'a> Driver<'a> {
         self.start = Some(started + start_ms);
         let deadline = (started + HELLO_TIMEOUT).min(started + start_ms);
         match self.handshake(open, deadline) {
+            Ok(_) if self.shared.shutting_down() => self.reject(id, CANCELLED),
             Ok((link, peer)) => self.request(id, open, link, peer),
             Err(failed) => self.refuse(id, failed),
         }

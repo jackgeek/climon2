@@ -110,6 +110,11 @@ impl Failure {
     }
 }
 
+/// A request accepted but never executed: shutdown or the stream's end
+/// came first.
+pub(super) const CANCELLED: Fault =
+    Fault::library("cancelled", "the request was accepted but never executed");
+
 /// Refuses with `refusal` unless `holds`: every check that can refuse
 /// reads as one condition and the refusal it gives.
 pub(super) fn require<E>(holds: bool, refusal: E) -> Result<(), E> {

@@ -270,6 +270,8 @@ unanswered it is `invalid_state`, as is a second Open. The daemon's answer
 ends the stream, except a rejection, which keeps the registration. Shutdown
 rejects queued work, waits for an Open under way, then sends one Leave of
 its own; a lost, late, rejected or failed one is reported, never replayed.
+An Open whose hello completes after shutdown is never sent: it is
+`CM1_REJECTED` `cancelled`.
 
 Terminal evidence is stopped, without an error, after a confirmed departure
 or a shutdown before any role; otherwise failed with the first failure's

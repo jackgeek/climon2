@@ -524,7 +524,8 @@ are the evidence for this section
 - **Leave.** A Leave waits for the Initial metadata. The daemon's answer ends
   the stream, except a rejection, which keeps the registration. Shutdown
   rejects queued requests, waits for an Open under way, then attempts its own
-  Leave once.
+  Leave once; an Open whose hello completes after shutdown is never sent and
+  is `CM1_REJECTED` `cancelled`.
 - **Terminal evidence.** Retry is none after shutdown, for an answered Leave
   that was not confirmed and for a known final result; permanent for the
   library's `unsupported_revision`, `unsupported_capability`,

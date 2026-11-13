@@ -10,8 +10,9 @@
 //!   metadata and hello name (default the library's); `metadata`: overrides
 //!   of the metadata's fields;
 //! - `hello`: the reply (`{"json": ...}` merged over a valid revision-1
-//!   reply, less the members `without` names, or `{"frame": action}`), or
-//!   `"close"` or `"hold"`;
+//!   reply, less the members `without` names, or `{"frame": action}`, sent
+//!   once the file `after` names exists, if it names one), or `"close"` or
+//!   `"hold"`;
 //! - `open` and `leave`: the actions after the library's Open, and after
 //!   each Leave; `leaves`, a list of action lists, overrides `leave` for the
 //!   first Leaves in turn.
@@ -207,6 +208,13 @@ impl Serving {
         self.received.lock().unwrap().push(entry);
     }
 
+    /// Waits, bounded, for the file at `path`; an expired wait is recorded.
+    fn wait(&self, path: &str) {
+        if !wait_file(Path::new(path)) {
+            self.record(json!({ "wait_expired": path }));
+        }
+    }
+
     /// The frozen hello: the library's request, then the scripted reply.
     fn hello(&mut self, stream: &mut UnixStream) -> Next {
         let Ok(request) = protocol::read_frame(stream) else {
@@ -215,6 +223,9 @@ impl Serving {
         let protocol = ClientMessage::from_frame(request).ok();
         self.record(json!({ "hello": format!("{protocol:?}") }));
         let reply = self.script["hello"].clone();
+        if let Some(path) = reply["after"].as_str() {
+            self.wait(path);
+        }
         match &reply {
             Value::String(word) if word == "close" => Next::Close,
             Value::String(word) if word == "hold" => Next::Hold,
@@ -306,9 +317,7 @@ impl Serving {
             Value::String(word) if word == "hold" => Next::Hold,
             action => {
                 if let Some(path) = action["wait"].as_str() {
-                    if !wait_file(Path::new(path)) {
-                        self.record(json!({ "wait_expired": path }));
-                    }
+                    self.wait(path);
                     return Next::Continue;
                 }
                 let bytewise = action.get("bytewise").is_some();

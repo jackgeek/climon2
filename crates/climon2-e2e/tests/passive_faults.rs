@@ -961,7 +961,8 @@ fn installed_library_reports_a_known_final_result_and_never_retries() {
 /// after shutdown; a rejected one is reported rejected. A rejected explicit
 /// Leave keeps the registration, and shutdown then leaves once more,
 /// confirmed. Shutdown during an Open still under way waits for it, then
-/// leaves once. A Leave before any Open, or while another is unanswered,
+/// leaves once; shutdown during hello answers the Open, never sent,
+/// `cancelled`, and the instance stops with nothing to leave. A Leave before any Open, or while another is unanswered,
 /// is `invalid_state`, and the next Open or Leave proceeds.
 #[test]
 fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
@@ -984,6 +985,7 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
         ]
     };
     let opening = root.join("go-opening");
+    let greeting = root.join("go-greeting");
     let second = root.join("go-second");
     let scenarios = [
         Scenario {
@@ -1069,6 +1071,22 @@ fn installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures() {
             terminal: confirmed,
             error: None,
             kinds: &["hello", "open", "leave"],
+        },
+        Scenario {
+            name: "greeting",
+            steps: vec![
+                json!({ "do": "create", "peer": { "hello": { "after": greeting.to_str().unwrap() } } }),
+                json!({ "do": "submit", "request": titled }),
+                json!({ "do": "run" }),
+                json!({ "do": "await_peer", "frames": 1 }),
+                json!({ "do": "shutdown" }),
+                json!({ "do": "touch", "path": greeting.to_str().unwrap() }),
+            ],
+            drained: None,
+            records: vec![Expect::Answer(1, REJECTED, library("cancelled"))],
+            terminal: (CLIENT_STOPPED, RETRY_NONE, LEAVE_NOT_REQUIRED),
+            error: None,
+            kinds: &["hello"],
         },
         Scenario {
             name: "early",
