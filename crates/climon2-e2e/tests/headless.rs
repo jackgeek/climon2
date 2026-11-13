@@ -144,19 +144,12 @@ fn attach(package: &Package, id: &str) -> Terminal {
     Terminal::spawn(command, 30, 120).unwrap()
 }
 
-/// Detaches `client` with the escape prefix and `d`. A client drops keys typed
-/// before it confirmed its restoration, and nothing on the screen says when it
-/// has, so the keys are retyped until the client exits.
+/// Explicit detach once `client` is ready for input: the escape prefix and `d`,
+/// sent once, then status 0 and the reattach hint on stderr.
 fn detach(client: &mut Terminal, id: &str) {
-    let deadline = Instant::now() + TIMEOUT;
-    let status = loop {
-        let _ = client.send(b"\x1dd");
-        if let Ok(status) = client.wait_exit(Duration::from_secs(1)) {
-            break status;
-        }
-        assert!(Instant::now() < deadline, "{}", client.screen());
-    };
-    assert_eq!(status, 0, "{}", client.screen());
+    client.wait_for_input_ready(TIMEOUT).unwrap();
+    client.send(b"\x1dd").unwrap();
+    assert_eq!(client.wait_exit(TIMEOUT).unwrap(), 0, "{}", client.screen());
     client
         .wait_for_bytes(
             format!("climon2: detached from session {id}; reattach with: climon2 attach {id}")
