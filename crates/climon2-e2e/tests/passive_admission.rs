@@ -10,7 +10,7 @@
 mod support;
 
 use serde_json::{Value, json};
-use support::{Package, passive::*};
+use support::{Package, library::RECORD, passive::*};
 
 /// Requests of public ID 7 that `submit` rejects, each with its result code
 /// and stable error code.

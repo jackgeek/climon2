@@ -12,7 +12,11 @@ mod support;
 
 use serde_json::{Value, json};
 use std::path::Path;
-use support::{Package, passive::*};
+use support::{
+    Package,
+    library::{INSTANCE_DESCRIPTORS, RECORD},
+    passive::*,
+};
 
 /// A fake daemon's hello reply with `json` merged over a valid one.
 fn hello(json: Value) -> Value {

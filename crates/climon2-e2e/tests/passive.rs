@@ -16,7 +16,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-use support::{Package, TIMEOUT, passive::*};
+use support::{Package, TIMEOUT, library::INSTANCE_DESCRIPTORS, passive::*};
 
 /// A session daemon of the installed release: `climon2 exec` of the generic
 /// fixture, which sets the title `first`, prints `TITLE-SET`, waits for

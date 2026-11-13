@@ -21,7 +21,7 @@ use std::{
 };
 use support::{
     Package,
-    library::{archive, scenario},
+    library::{INSTANCE_DESCRIPTORS, RECORD, archive, scenario},
 };
 
 const SUCCESS: u64 = 0;
@@ -49,15 +49,6 @@ const CLEANUP_INCOMPLETE: u64 = 2;
 /// The description's instance allocation and worker requirements.
 const INSTANCE_BYTES: u64 = 1024 * 1024;
 const WORKERS: u64 = 2;
-/// `sizeof(cm1_record)` on every supported target.
-const RECORD: u64 = size_of::<climon2_core::native::Record>() as u64;
-/// The descriptors one instance holds before any connection: its
-/// notification descriptor and its waker, an `eventfd` each on Linux and a
-/// pipe's two ends each on macOS.
-#[cfg(target_os = "linux")]
-const INSTANCE_DESCRIPTORS: u64 = 2;
-#[cfg(target_os = "macos")]
-const INSTANCE_DESCRIPTORS: u64 = 4;
 const PATH_MAX: u64 = nix::libc::PATH_MAX as u64;
 
 /// The documented default `monitor.limits` values the host's startup uses.
