@@ -2542,7 +2542,8 @@ fn record_lines() -> ! {
 /// UTF-8 bytes, `é` repeated) and `titles A B` (`t-A` through `t-B` in one
 /// write); `text TEXT` prints TEXT as a line, `colors N` prints `N` rows
 /// whose every cell changes colour, `reset` is `ESC c`, and `exit` ends the
-/// fixture with status 0.
+/// fixture with status 0, `exit N` with status `N` and `signal N` by signal
+/// `N`.
 fn follow_script() -> ! {
     print!("fixture-ready\r\n");
     io::stdout().flush().unwrap();
@@ -2567,6 +2568,11 @@ fn follow_script() -> ! {
                 ["clear"] => write!(out, "\x1b[3J").unwrap(),
                 ["sync"] => write!(out, "\x1b[?2026h").unwrap(),
                 ["exit"] => std::process::exit(0),
+                ["exit", code] => std::process::exit(code.parse().unwrap()),
+                ["signal", number] => {
+                    unsafe { libc::raise(number.parse().unwrap()) };
+                    unreachable!("signal {number} did not end the fixture");
+                }
                 ["reset"] => write!(out, "\x1bc").unwrap(),
                 ["title-empty"] => write!(out, "\x1b]2;\x07").unwrap(),
                 ["title-bytes", bytes] => {

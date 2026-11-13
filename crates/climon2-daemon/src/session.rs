@@ -305,6 +305,9 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             return Ok(());
         }
         let ended = self.pty.end_hangup().ok();
+        if let Some(result) = &ended {
+            self.publish(result);
+        }
         self.end_command(ended)
     }
 
@@ -333,6 +336,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             return self.fail("cannot observe the command");
         };
         if let Some(result) = status {
+            self.publish(&result);
             self.command = Command::Draining {
                 result,
                 drain: Drain::new(now),

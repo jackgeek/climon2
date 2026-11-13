@@ -9,11 +9,12 @@ use crate::{
 use climon2_core::{
     protocol::TerminalSize,
     wire::{
-        ActualGeometry, Advertisement, AuthorityIds, AuthorityResult, Available, ControlGranted,
-        ControlRecord, ControlRevoked, Counter, Display, Error, Families, Family, Focus,
-        FocusBytes, Frame, FrameLimits, Geometry, GrantReason, Guid, InitialMetadata, Input, Kill,
-        Mode, Open, OperationalCode, Outcome, Ready, Rejection, Request, Resize, Response,
-        RestorationBegin, RestorationComplete, RevocationReason, Success, TitleChanged,
+        ActualGeometry, Advertisement, AuthorityIds, AuthorityResult, Available, CommandFinal,
+        CommandResult, ControlGranted, ControlRecord, ControlRevoked, Counter, Display, Error,
+        Families, Family, Focus, FocusBytes, Frame, FrameLimits, Geometry, GrantReason, Guid,
+        InitialMetadata, Input, Kill, Mode, Open, OperationalCode, Outcome, Ready, Rejection,
+        Request, Resize, Response, RestorationBegin, RestorationComplete, RevocationReason,
+        Success, TitleChanged,
     },
 };
 use std::{collections::BTreeSet, io, num::NonZeroU32};
@@ -574,6 +575,18 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let none = Families::default();
         let selected = select(kill.revision, &kill.required_capabilities, &none);
         self.reject_role(id, kill.request_id, selected.err().unwrap_or_else(not_yet));
+    }
+
+    /// The command's result, once the daemon knows it: every opened
+    /// connection receives it as Command final.
+    pub(super) fn publish(&mut self, result: &CommandResult) {
+        let frame = CommandFinal::new(result.clone(), None)
+            .expect("no status disagrees with a result")
+            .to_frame();
+        let opened: Vec<u64> = self.opened.keys().copied().collect();
+        for id in opened {
+            self.send_wire(id, &frame);
+        }
     }
 
     /// Sends a Title changed to every connection that selected `title-v1`,

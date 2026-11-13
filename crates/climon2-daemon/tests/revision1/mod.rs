@@ -4,18 +4,20 @@
 //! tests; expectations are written out by hand from the wire reference.
 mod interactive;
 mod passive;
+mod termination;
 
 use super::Session;
 use climon2_core::{
     hello::Lifecycle,
     protocol::ClientMessage,
     wire::{
-        self, Available, ControlRecord, Counter, Families, FatalError, Frame, FrameLimit, Leave,
-        Mode, Open, Outcome, Requested, Response, ServerMessage, Success,
+        self, Available, CommandFinal, CommandResult, ControlRecord, Counter, Families, FatalError,
+        Frame, FrameLimit, Leave, Mode, Open, Outcome, Requested, Response, ServerMessage, Success,
     },
 };
 use std::{
     io::Write,
+    num::NonZeroU32,
     os::unix::net::UnixStream,
     time::{Duration, Instant},
 };
@@ -139,6 +141,29 @@ fn assert_rejected(stream: &mut UnixStream, request_id: u64, code: &str) {
     assert_eq!(answered, counter(request_id));
     assert_eq!(rejection.error.code.as_str(), code);
     assert_eq!(rejection.known_final, None);
+}
+
+fn exited(code: u32) -> CommandResult {
+    CommandResult::Exit { code }
+}
+
+fn signalled(number: u32) -> CommandResult {
+    let number = NonZeroU32::new(number).unwrap();
+    CommandResult::Signal { number, name: None }
+}
+
+/// The Command final of `result`. Its status is null: no connection can
+/// select `status-v1` yet.
+fn command_final(result: &CommandResult) -> ServerMessage {
+    ServerMessage::CommandFinal(CommandFinal::new(result.clone(), None).unwrap())
+}
+
+/// The next record is the Command final of `result`, and the stream then
+/// ends with nothing more: a passive monitor connection's, or a revoked
+/// attachment's.
+fn assert_final_then_closed(stream: &mut UnixStream, result: &CommandResult) {
+    assert_eq!(message(stream), command_final(result));
+    assert_closed(stream);
 }
 
 /// The next record is a Fatal error with `code`, and the stream then ends.

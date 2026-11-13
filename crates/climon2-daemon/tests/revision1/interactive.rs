@@ -2,17 +2,17 @@
 //! binary Input and Display, Acquire, Focus and Leave over revision 1,
 //! beside the private protocol and its attachments.
 use super::{
-    assert_closed, assert_rejected, counter, encoded, message, open, peer, raw_frame, request,
-    send, write_in_pieces,
+    assert_closed, assert_final_then_closed, assert_rejected, command_final, counter, encoded,
+    exited, message, open, peer, raw_frame, request, send, write_in_pieces,
 };
 use crate::Session;
 use climon2_core::{
     hello::Lifecycle,
     protocol::{self, ClientMessage, ServerMessage as PrivateMessage, TerminalSize},
     wire::{
-        self, Acknowledge, Acquire, AuthorityIds, AuthorityResult, ControlRecord, ControlRevoked,
-        Counter, Display, Focus, FocusBytes, Frame, Geometry, GrantReason, Input, Kill, Leave,
-        Mode, Outcome, Ready, Resize, Response, RestorationBegin, RestorationComplete,
+        self, Acknowledge, Acquire, AuthorityIds, AuthorityResult, CommandResult, ControlRecord,
+        ControlRevoked, Counter, Display, Focus, FocusBytes, Frame, Geometry, GrantReason, Input,
+        Kill, Leave, Mode, Outcome, Ready, Resize, Response, RestorationBegin, RestorationComplete,
         RevocationReason, ServerMessage, SetViewing, Success,
     },
 };
@@ -28,7 +28,7 @@ fn geometry(cols: u32, rows: u32) -> Geometry {
 /// An interactive attachment: its stream, the authority of its current
 /// restoration, whether it still controls, its last request ID and the
 /// terminal bytes it received.
-struct Attached {
+pub(super) struct Attached {
     stream: UnixStream,
     /// The families its Open selected, sorted.
     selected: Vec<String>,
@@ -157,7 +157,7 @@ impl Attached {
 
     /// The next record that is not a Display of the current authority,
     /// whose payloads are kept in order.
-    fn next_after_display(&mut self) -> ServerMessage {
+    pub(super) fn next_after_display(&mut self) -> ServerMessage {
         loop {
             match message(&mut self.stream) {
                 ServerMessage::Display(display) => self.displayed(display),
@@ -377,8 +377,11 @@ impl Attached {
         assert_closed(&mut self.stream);
     }
 
-    /// The session ended: control ends with it, then the stream.
-    fn ended(&mut self) {
+    /// The command ended with `result`: its Command final arrives once,
+    /// after any Display, then control ends with the session and the
+    /// stream closes.
+    pub(super) fn ended(&mut self, result: &CommandResult) {
+        assert_eq!(self.next_after_display(), command_final(result));
         self.revoked(RevocationReason::SessionEnding);
         assert_closed(&mut self.stream);
     }
@@ -470,7 +473,7 @@ fn interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order
         attached.response(),
         Outcome::Ok(Success::InputAccepted { accepted_bytes })
     );
-    attached.ended();
+    attached.ended(&exited(0));
     session.finish();
     assert_eq!(
         fs::read_to_string(session.directory.path().join("resized")).unwrap(),
@@ -481,7 +484,7 @@ fn interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order
 
 /// An interactive attachment at the fixtures' 91x37 session size, ready and
 /// with the fixture's `fixture-ready` received.
-fn ready_attachment(session: &Session, optional: &[&str]) -> Attached {
+pub(super) fn ready_attachment(session: &Session, optional: &[&str]) -> Attached {
     let mut attached = Attached::open(session, geometry(91, 37), optional, geometry(91, 37));
     attached.confirm_ready();
     attached.until_displayed(b"fixture-ready", 1);
@@ -536,8 +539,8 @@ fn stale_and_superseded_authority_is_rejected_and_never_re_enables_input() {
     rejected(first.input(b"late\n"), "not_ready");
     first.confirm_ready();
     first.typed(b"a2\nend\n");
-    first.ended();
-    assert_closed(&mut second.stream);
+    first.ended(&exited(0));
+    assert_final_then_closed(&mut second.stream, &exited(0));
     session.finish();
     assert_eq!(
         fs::read_to_string(session.directory.path().join("lines")).unwrap(),
@@ -583,7 +586,7 @@ fn a_ready_controllers_resize_reports_the_actual_geometry_after_its_acceptance()
     );
     assert_eq!(attached.next_after_display(), geometry_report(100, 30));
     attached.typed(b"y\nend\n");
-    attached.ended();
+    attached.ended(&exited(0));
     session.finish();
     assert_eq!(
         fs::read_to_string(session.directory.path().join("lines")).unwrap(),
@@ -606,7 +609,7 @@ fn binary_input_and_display_pass_unchanged() {
     for chunk in [&payload[..3], &payload[3..40000], &payload[40000..]] {
         attached.typed(chunk);
     }
-    attached.ended();
+    attached.ended(&exited(0));
     session.finish();
     let echoed = &attached.display[start..];
     assert_eq!(&echoed[..payload.len()], payload);
@@ -691,8 +694,8 @@ fn bracketed_paste_is_exact_and_an_open_paste_is_closed_when_admission_ends() {
     first.revoked(RevocationReason::Takeover);
     second.confirm_ready();
     second.typed(b"after-END");
-    second.ended();
-    assert_closed(&mut first.stream);
+    second.ended(&exited(0));
+    assert_final_then_closed(&mut first.stream, &exited(0));
     session.finish();
     let expected = [written.as_slice(), b"\x1b[201~after-END"].concat();
     assert_eq!(fs::read(&path).unwrap(), expected);
@@ -712,7 +715,7 @@ fn session_queries_are_answered_by_the_daemon_alone() {
         contents.len() > 1 && contents.ends_with(b"c")
     });
     attached.typed(b"END");
-    attached.ended();
+    attached.ended(&exited(0));
     session.finish();
     let recorded = fs::read(&path).unwrap();
     let reply = recorded
@@ -761,7 +764,7 @@ fn titles_reach_an_attachment_as_inert_text() {
         1
     );
     crate::issue(&session, "exit");
-    attached.ended();
+    attached.ended(&exited(0));
     let mut session = session;
     session.finish();
 }
@@ -837,8 +840,8 @@ fn focus_reaches_the_application_once_per_change_and_resynchronizes_on_new_readi
     );
     expect(b"\x1b[I");
     first.typed(b"END");
-    first.ended();
-    assert_closed(&mut second.stream);
+    first.ended(&exited(0));
+    assert_final_then_closed(&mut second.stream, &exited(0));
     session.finish();
     assert_eq!(
         fs::read(&path).unwrap(),
@@ -880,7 +883,7 @@ fn focus_reports_follow_the_input_accepted_before_them() {
     attached.type_then_focus(b"second\x1b[201~", false);
     expect(b"second\x1b[201~\x1b[O");
     attached.typed(b"END");
-    attached.ended();
+    attached.ended(&exited(0));
     session.finish();
     assert_eq!(
         fs::read(&path).unwrap(),
@@ -928,7 +931,7 @@ fn interactive_open_selects_supported_families_and_rejects_without_effects() {
         (Lifecycle::Attached, 1, true)
     );
     attached.typed(b"go\n");
-    attached.ended();
+    attached.ended(&exited(42));
     session.finish();
 }
 
@@ -1171,7 +1174,7 @@ fn ready_needs_the_complete_current_restoration() {
     attached.confirm_ready();
     attached.typed(b"x");
     crate::issue(&session, "exit");
-    attached.ended();
-    assert_closed(&mut first.stream);
+    attached.ended(&exited(0));
+    assert_final_then_closed(&mut first.stream, &exited(0));
     session.finish();
 }
