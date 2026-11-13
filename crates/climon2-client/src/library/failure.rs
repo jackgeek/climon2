@@ -108,3 +108,8 @@ const fn text(value: &'static str) -> Bytes {
 pub(super) fn call(result: Result<(), Failure>) -> Call {
     result.map_or_else(Failure::call, |()| SUCCESS)
 }
+
+/// Succeeds when `holds`; otherwise fails with `failure`.
+pub(super) fn require(holds: bool, failure: Failure) -> Result<(), Failure> {
+    holds.then_some(()).ok_or(failure)
+}
