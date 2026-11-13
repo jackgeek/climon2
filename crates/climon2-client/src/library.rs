@@ -12,16 +12,16 @@ use climon2_core::native::{
     Interface, Metrics, Request, Requirements, RunReport, Startup, Tokens,
 };
 use failure::{Failure, INVALID_ARGUMENT, PANIC};
+use instance::{Object, Shared};
 use std::{
     panic::{self, AssertUnwindSafe},
     ptr,
-    sync::{Arc, Once},
+    sync::{Arc, LazyLock, Once},
 };
 
 mod connection;
 mod failure;
 mod families;
-mod guid;
 mod handshake;
 #[cfg(feature = "test-hooks")]
 mod hooks;
@@ -61,36 +61,38 @@ struct Immutable<T>(T);
 
 // SAFETY: the value is immutable and points only to static data.
 unsafe impl<T> Sync for Immutable<T> {}
+// SAFETY: as above.
+unsafe impl<T> Send for Immutable<T> {}
 
 /// The families this release relays, as the description lists them.
-static CAPABILITIES: Immutable<[Bytes; 3]> = Immutable([
-    failure::bytes(families::RELAYED[0]),
-    failure::bytes(families::RELAYED[1]),
-    failure::bytes(families::RELAYED[2]),
-]);
+static CAPABILITIES: LazyLock<Immutable<[Bytes; 3]>> =
+    LazyLock::new(|| Immutable(families::RELAYED.map(|family| failure::bytes(family.token()))));
 
-static DESCRIPTION: Immutable<Description> = Immutable(Description {
-    revision: native::REVISION,
-    reserved: 0,
-    release: failure::bytes(RELEASE),
-    capabilities: Tokens {
-        data: CAPABILITIES.0.as_ptr(),
-        count: CAPABILITIES.0.len() as u64,
-    },
-    requirements: REQUIREMENTS,
-    functions: Interface {
-        create: Some(create),
-        run: Some(run),
-        destroy: Some(destroy),
-        submit: Some(submit),
-        drain: Some(drain),
-        release_delivery: Some(release_delivery),
-        shutdown: Some(shutdown),
-        release_communication: Some(release_communication),
-        release_control: Some(release_control),
-        notification: Some(notification),
-        snapshot: Some(snapshot),
-    },
+/// Built once, then immutable until process exit.
+static DESCRIPTION: LazyLock<Immutable<Description>> = LazyLock::new(|| {
+    Immutable(Description {
+        revision: native::REVISION,
+        reserved: 0,
+        release: failure::bytes(RELEASE),
+        capabilities: Tokens {
+            data: CAPABILITIES.0.as_ptr(),
+            count: CAPABILITIES.0.len() as u64,
+        },
+        requirements: REQUIREMENTS,
+        functions: Interface {
+            create: Some(create),
+            run: Some(run),
+            destroy: Some(destroy),
+            submit: Some(submit),
+            drain: Some(drain),
+            release_delivery: Some(release_delivery),
+            shutdown: Some(shutdown),
+            release_communication: Some(release_communication),
+            release_control: Some(release_control),
+            notification: Some(notification),
+            snapshot: Some(snapshot),
+        },
+    })
 });
 
 /// A null handle or output pointer: the one invalid native address the library
@@ -154,6 +156,55 @@ fn describe(requested_revision: u32) -> (u32, *const Description) {
     }
 }
 
+/// Releases one library object: `release` decides under the object's
+/// instance guard, then the object is freed. A failed release keeps it.
+///
+/// # Safety
+///
+/// `object` must be null or this library's live, unreleased `T`, no longer
+/// in concurrent use once `release` succeeds.
+unsafe fn release<T: Object>(
+    object: *mut T,
+    call: &'static str,
+    release: impl FnOnce(&T) -> Result<(), Failure>,
+) -> Result<(), Failure> {
+    // SAFETY: guaranteed by the caller.
+    let shared = unsafe { object.as_ref() }.map(|object| Arc::clone(object.shared()));
+    // SAFETY: as above.
+    shared
+        .ok_or(NULL)?
+        .guard(call, || release(unsafe { &*object }))?;
+    // SAFETY: released, so nothing uses it again.
+    drop(unsafe { Box::from_raw(object) });
+    Ok(())
+}
+
+/// One call on the communication handle that writes one output, which the
+/// caller has already cleared.
+///
+/// # Safety
+///
+/// `communication` must be null or this library's live handle; `output` null
+/// or writable storage.
+unsafe fn query<T>(
+    communication: *mut Communication,
+    output: *mut T,
+    call: &'static str,
+    work: impl FnOnce(&Arc<Shared>) -> Result<T, Failure>,
+) -> Call {
+    contained(|| {
+        // SAFETY: the caller supplies null or valid pointers.
+        let (Some(handle), Some(output)) = (
+            unsafe { communication.cast::<instance::Communication>().as_ref() },
+            unsafe { output.as_mut() },
+        ) else {
+            return Err(NULL);
+        };
+        *output = handle.shared.guard(call, || work(&handle.shared))?;
+        Ok(())
+    })
+}
+
 /// Failed calls clear their output structs; a null output is never written.
 ///
 /// # Safety
@@ -203,9 +254,10 @@ unsafe extern "C" fn run(instance: *mut Instance, report: *mut RunReport) -> Cal
     // SAFETY: the caller supplies null or writable output storage.
     unsafe { clear(report) };
     contained(|| {
-        // SAFETY: the caller supplies null or valid pointers.
+        // SAFETY: the caller supplies null or valid pointers. The instance is
+        // only ever borrowed shared, even by its running owner thread.
         let (Some(owner), Some(report)) = (
-            unsafe { instance.cast::<instance::Owner>().as_mut() },
+            unsafe { instance.cast::<instance::Owner>().as_ref() },
             unsafe { report.as_mut() },
         ) else {
             return Err(NULL);
@@ -220,17 +272,14 @@ unsafe extern "C" fn run(instance: *mut Instance, report: *mut RunReport) -> Cal
 ///
 /// `instance` must be null or this library's live instance.
 unsafe extern "C" fn destroy(instance: *mut Instance) -> Call {
-    contained(|| {
-        let owner = instance.cast::<instance::Owner>();
-        // SAFETY: the caller supplies null or a live instance.
-        let shared = unsafe { owner.as_ref() }.map(|owner| Arc::clone(&owner.shared));
-        // SAFETY: as above; only the owner thread passes `destroy`'s check.
-        shared
-            .ok_or(NULL)?
-            .guard("destroy", || unsafe { &*owner }.destroy())?;
-        // SAFETY: destroy succeeded, so nothing else uses the instance.
-        drop(unsafe { Box::from_raw(owner) });
-        Ok(())
+    // SAFETY: the caller supplies null or a live instance; only its owner
+    // thread passes `destroy`'s check, after its last use.
+    contained(|| unsafe {
+        release(
+            instance.cast::<instance::Owner>(),
+            "destroy",
+            instance::Owner::destroy,
+        )
     })
 }
 
@@ -258,34 +307,23 @@ unsafe extern "C" fn submit(communication: *mut Communication, request: *const R
 /// `communication` must be null or this library's live handle; `drained` null
 /// or writable storage.
 unsafe extern "C" fn drain(communication: *mut Communication, drained: *mut Drained) -> Call {
-    // SAFETY: the caller supplies null or writable output storage.
+    // SAFETY (both calls): guaranteed by the caller.
     unsafe { clear(drained) };
-    contained(|| {
-        // SAFETY: the caller supplies null or valid pointers.
-        let (Some(handle), Some(drained)) = (
-            unsafe { communication.cast::<instance::Communication>().as_ref() },
-            unsafe { drained.as_mut() },
-        ) else {
-            return Err(NULL);
-        };
-        *drained = handle.shared.guard("drain", || handle.shared.drain())?;
-        Ok(())
-    })
+    unsafe { query(communication, drained, "drain", Shared::drain) }
 }
 
 /// # Safety
 ///
 /// `delivery` must be null or this library's unreleased delivery.
 unsafe extern "C" fn release_delivery(delivery: *mut Delivery) -> Call {
-    contained(|| {
-        let delivery = delivery.cast::<instance::Delivery>();
-        // SAFETY: the caller supplies null or an unreleased delivery.
-        let shared = unsafe { delivery.as_ref() }.map(|delivery| Arc::clone(&delivery.shared));
-        shared.ok_or(NULL)?.guard("release_delivery", || {
-            // SAFETY: released exactly once, after its readers finished.
-            instance::release(unsafe { Box::from_raw(delivery) });
-            Ok(())
-        })
+    // SAFETY: the caller supplies null or an unreleased delivery whose
+    // readers have finished.
+    contained(|| unsafe {
+        release(
+            delivery.cast::<instance::Delivery>(),
+            "release_delivery",
+            |_| Ok(()),
+        )
     })
 }
 
@@ -296,7 +334,7 @@ unsafe extern "C" fn shutdown(control: *mut Control) -> Call {
     contained(|| {
         // SAFETY: the caller supplies null or a live handle.
         let handle = unsafe { control.cast::<instance::Control>().as_ref() }.ok_or(NULL)?;
-        handle.shared.guard("shutdown", || handle.shared.shutdown())
+        handle.shared.shutdown()
     })
 }
 
@@ -305,17 +343,13 @@ unsafe extern "C" fn shutdown(control: *mut Control) -> Call {
 /// `communication` must be null or this library's live handle, no longer in
 /// concurrent use.
 unsafe extern "C" fn release_communication(communication: *mut Communication) -> Call {
-    contained(|| {
-        let handle = communication.cast::<instance::Communication>();
-        // SAFETY: the caller supplies null or a live handle.
-        let shared = unsafe { handle.as_ref() }.map(|handle| Arc::clone(&handle.shared));
-        shared.ok_or(NULL)?.guard("release_communication", || {
-            // SAFETY: as above.
-            unsafe { &*handle }.shared.release_communication()
-        })?;
-        // SAFETY: released, so the caller makes no later call with it.
-        drop(unsafe { Box::from_raw(handle) });
-        Ok(())
+    // SAFETY: the caller supplies null or a live handle.
+    contained(|| unsafe {
+        release(
+            communication.cast::<instance::Communication>(),
+            "release_communication",
+            instance::Communication::release,
+        )
     })
 }
 
@@ -324,17 +358,13 @@ unsafe extern "C" fn release_communication(communication: *mut Communication) ->
 /// `control` must be null or this library's live handle, no longer in
 /// concurrent use.
 unsafe extern "C" fn release_control(control: *mut Control) -> Call {
-    contained(|| {
-        let handle = control.cast::<instance::Control>();
-        // SAFETY: the caller supplies null or a live handle.
-        let shared = unsafe { handle.as_ref() }.map(|handle| Arc::clone(&handle.shared));
-        shared.ok_or(NULL)?.guard("release_control", || {
-            // SAFETY: as above.
-            unsafe { &*handle }.shared.release_control()
-        })?;
-        // SAFETY: released, so the caller makes no later call with it.
-        drop(unsafe { Box::from_raw(handle) });
-        Ok(())
+    // SAFETY: the caller supplies null or a live handle.
+    contained(|| unsafe {
+        release(
+            control.cast::<instance::Control>(),
+            "release_control",
+            instance::Control::release,
+        )
     })
 }
 
@@ -349,19 +379,12 @@ unsafe extern "C" fn notification(communication: *mut Communication, descriptor:
     if let Some(descriptor) = unsafe { descriptor.as_mut() } {
         *descriptor = -1;
     }
-    contained(|| {
-        // SAFETY: the caller supplies null or valid pointers.
-        let (Some(handle), Some(descriptor)) = (
-            unsafe { communication.cast::<instance::Communication>().as_ref() },
-            unsafe { descriptor.as_mut() },
-        ) else {
-            return Err(NULL);
-        };
-        *descriptor = handle
-            .shared
-            .guard("notification", || Ok(handle.shared.descriptor()))?;
-        Ok(())
-    })
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        query(communication, descriptor, "notification", |shared| {
+            Ok(shared.descriptor())
+        })
+    }
 }
 
 /// # Safety
@@ -369,19 +392,11 @@ unsafe extern "C" fn notification(communication: *mut Communication, descriptor:
 /// `communication` must be null or this library's live handle; `metrics` null
 /// or writable storage.
 unsafe extern "C" fn snapshot(communication: *mut Communication, metrics: *mut Metrics) -> Call {
-    // SAFETY: the caller supplies null or writable output storage.
+    // SAFETY (both calls): guaranteed by the caller.
     unsafe { clear(metrics) };
-    contained(|| {
-        // SAFETY: the caller supplies null or valid pointers.
-        let (Some(handle), Some(metrics)) = (
-            unsafe { communication.cast::<instance::Communication>().as_ref() },
-            unsafe { metrics.as_mut() },
-        ) else {
-            return Err(NULL);
-        };
-        *metrics = handle
-            .shared
-            .guard("snapshot", || Ok(handle.shared.snapshot()))?;
-        Ok(())
-    })
+    unsafe {
+        query(communication, metrics, "snapshot", |shared| {
+            Ok(shared.snapshot())
+        })
+    }
 }

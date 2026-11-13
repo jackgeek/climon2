@@ -4,7 +4,7 @@
 
 use climon2_core::{
     native::{self, Bytes, Call, Error},
-    wire,
+    wire::{self, ErrorCode, OperationalCode},
 };
 use std::{borrow::Cow, mem};
 
@@ -110,31 +110,74 @@ impl Failure {
     }
 }
 
+/// A request accepted but never executed: shutdown or the stream's end
+/// came first.
+pub(super) const CANCELLED: Fault =
+    Fault::library("cancelled", "the request was accepted but never executed");
+
+/// Refuses with `refusal` unless `holds`: every check that can refuse
+/// reads as one condition and the refusal it gives.
+pub(super) fn require<E>(holds: bool, refusal: E) -> Result<(), E> {
+    if holds { Ok(()) } else { Err(refusal) }
+}
+
 /// A call's result: success, or its explicit failure.
 pub(super) fn call(result: Result<(), Failure>) -> Call {
     result.map_or_else(Failure::call, |()| SUCCESS)
+}
+
+/// What the end of an instance's stream calls for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Retry {
+    /// Nothing to retry.
+    None,
+    /// Recoverable by a fresh passive instance.
+    Passive,
+    /// Never: the session cannot be monitored as configured.
+    Permanent,
+}
+
+impl Retry {
+    pub(super) fn native(self) -> u32 {
+        match self {
+            Self::None => native::RETRY_NONE,
+            Self::Passive => native::RETRY_PASSIVE,
+            Self::Permanent => native::RETRY_PERMANENT,
+        }
+    }
+
+    /// A daemon's refusal: for good when it lacks the revision or a family,
+    /// passively otherwise.
+    pub(super) fn refused(code: &ErrorCode) -> Self {
+        match code.operational() {
+            Some(OperationalCode::UnsupportedRevision | OperationalCode::UnsupportedCapability) => {
+                Self::Permanent
+            }
+            _ => Self::Passive,
+        }
+    }
 }
 
 /// A failure that ends an instance's stream, and the retry it calls for.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Failed {
     pub(super) fault: Fault,
-    pub(super) retry: u32,
+    pub(super) retry: Retry,
 }
 
 impl Failed {
-    pub(super) const fn new(fault: Fault, retry: u32) -> Self {
+    pub(super) const fn new(fault: Fault, retry: Retry) -> Self {
         Self { fault, retry }
     }
 
     /// Recoverable: transport loss, startup failure or a contained panic.
     pub(super) const fn passive(fault: Fault) -> Self {
-        Self::new(fault, native::RETRY_PASSIVE)
+        Self::new(fault, Retry::Passive)
     }
 
     /// For good: missing support or invalid configuration.
     pub(super) const fn permanent(fault: Fault) -> Self {
-        Self::new(fault, native::RETRY_PERMANENT)
+        Self::new(fault, Retry::Permanent)
     }
 }
 

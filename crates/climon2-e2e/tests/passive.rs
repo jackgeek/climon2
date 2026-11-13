@@ -16,7 +16,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-use support::{Package, TIMEOUT, passive::*};
+use support::{Package, TIMEOUT, library::INSTANCE_DESCRIPTORS, passive::*};
 
 /// A session daemon of the installed release: `climon2 exec` of the generic
 /// fixture, which sets the title `first`, prints `TITLE-SET`, waits for
@@ -316,6 +316,57 @@ fn installed_library_explicit_leave_departs_once_and_is_answered() {
     package.assert_clean();
 }
 
+/// EXT-02 Library (an unconfirmed required Leave is a failure, never a false
+/// departure): a passive registration of a real session whose daemon then
+/// stops (`SIGSTOP`) before shutdown. Shutdown's own Leave is written but
+/// never answered, so after `leave_ms` the departure is unconfirmed: a
+/// library `timeout` diagnostic, then failed terminal evidence with Leave
+/// indeterminate, nothing detached, the connection closed and no retry once
+/// shutdown was requested. The daemon then resumes and the session ends
+/// normally.
+#[test]
+fn installed_library_reports_a_lost_leave_to_a_stopped_daemon_as_unconfirmed() {
+    let package = Package::new();
+    let root = root(&package);
+    let session = Session::start(&package, &root);
+    let daemon = package.metadata().daemon_pid;
+    let mut startup = session.startup(&package, 8);
+    startup["limits"] = json!({ "leave_ms": 300 });
+    let steps = json!([
+        { "do": "create", "startup": startup },
+        { "do": "submit", "request": open(1, &REQUIRED, &["title-v1"]) },
+        { "do": "run" },
+        { "do": "drain", "until": { "tag": INITIAL_METADATA } },
+        { "do": "signal", "pid": daemon, "signal": "stop" },
+        { "do": "shutdown" },
+        { "do": "wait_run" },
+        { "do": "finish" },
+        { "do": "signal", "pid": daemon, "signal": "continue" },
+    ]);
+    let report = script(&package, &root, steps);
+    assert_opened(
+        step(&report, 3)["records"].as_array().unwrap(),
+        1,
+        8,
+        &["daemon-wire-v1", "monitor-v1", "title-v1"],
+    );
+    assert_eq!(step(&report, 4), "signalled");
+    assert_success(step(&report, 5));
+    let (records, terminal) = finished(step(&report, 7));
+    assert_eq!(records.len(), 1, "{records:#?}");
+    assert_diagnostic(&records[0], 8, ORIGIN_LIBRARY, "timeout");
+    assert_terminal(
+        terminal,
+        8,
+        (CLIENT_FAILED, RETRY_NONE, LEAVE_INDETERMINATE),
+        Some((ORIGIN_LIBRARY, "timeout")),
+    );
+    assert_eq!(step(&report, 8), "signalled");
+    assert_all_released(&report["ledger"]);
+    session.end();
+    package.assert_clean();
+}
+
 /// COM-01 Library (incompatible peers are rejected before any role takes
 /// effect): the real daemon advertises 1,048,576-byte server frames, which
 /// fit an instance's `wire_frame_bytes` exactly at that limit (the other
@@ -438,6 +489,45 @@ fn installed_library_instance_stalled_by_its_daemon_never_stops_another() {
         kinds(&report["peers"]["stalled"]),
         ["hello", "open", "leave"]
     );
+    assert_all_released(&report["ledger"]);
+    session.end();
+    package.assert_clean();
+}
+
+/// COM-01 Library (core and monitor support are implicit: an Open naming no
+/// family, as the native contract's minimal example does, still registers
+/// passively, and the daemon selects none) and COM-02 Library (an empty
+/// selection is null and zero, as every empty native list is): the
+/// Response's selection is a null list of zero tokens, the Initial metadata
+/// reports the title unavailable, and shutdown leaves, confirmed.
+#[test]
+fn installed_library_opens_naming_no_family_and_selects_none() {
+    let package = Package::new();
+    let root = root(&package);
+    let session = Session::start(&package, &root);
+    let minimal = json!({ "tag": "open", "request_id": 1, "open": { "mode": 1 } });
+    let steps = json!([
+        { "do": "create", "startup": session.startup(&package, 3) },
+        { "do": "submit", "request": minimal },
+        { "do": "run" },
+        { "do": "drain", "until": { "tag": INITIAL_METADATA } },
+        { "do": "shutdown" },
+        { "do": "finish" },
+    ]);
+    let report = script(&package, &root, steps);
+    assert_success(step(&report, 1));
+    let records = step(&report, 3)["records"].as_array().unwrap();
+    assert_eq!(records.len(), 2, "{records:#?}");
+    let response = assert_response(&records[0], 3, 1, OK);
+    assert_eq!(response["result_tag"], OPENED, "{response:#}");
+    let none = json!({ "null": true, "count": 0 });
+    assert_eq!(response["result"]["selected"], none, "{response:#}");
+    assert_header(&records[1], INITIAL_METADATA, 3);
+    let title_record = &records[1]["metadata"]["title"];
+    assert_eq!(title_record, &title(UNAVAILABLE, None), "{title_record:#}");
+    let (rest, terminal) = finished(step(&report, 5));
+    assert!(rest.is_empty(), "{rest:#?}");
+    assert_left(terminal, 3);
     assert_all_released(&report["ledger"]);
     session.end();
     package.assert_clean();

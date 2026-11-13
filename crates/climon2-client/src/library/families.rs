@@ -1,65 +1,76 @@
-//! The capability families this release relays (#93), in one place: its
-//! description advertises exactly these, an Open may require only these, and
-//! only these are ever selected. Support comes from the daemon's hello
-//! advertisement, never from a release.
+//! The capability families this release relays (#93), in one place and in
+//! core's own type: its description advertises exactly these, an Open may
+//! require only these, and only these are ever selected. Support comes from
+//! the daemon's hello advertisement, never from a release.
 
-use climon2_core::wire::{Advertisement, Family};
+use climon2_core::wire::{Advertisement, Families, Family, Requested};
 
 /// Core (Open, Leave, Response and Fatal error), passive monitor entry and
 /// titles. `focus-v1` joins with #94, `status-v1` with #95, and
 /// `notification-v1` and `progress-v1` with #98.
-pub(super) const RELAYED: [&str; 3] = ["daemon-wire-v1", "monitor-v1", TITLE];
-
-/// Current titles and their changes.
-pub(super) const TITLE: &str = "title-v1";
-
-/// What a monitor-mode Open needs the daemon to advertise, whatever the
-/// caller lists, beside `daemon-wire-v1`, which every valid advertisement has.
-const MONITOR: Family = Family::MonitorV1;
+pub(super) const RELAYED: [Family; 3] = [Family::DaemonWireV1, Family::MonitorV1, Family::TitleV1];
 
 /// The relayed family `token` names, if any.
-pub(super) fn relayed(token: &[u8]) -> Option<&'static str> {
-    RELAYED
-        .into_iter()
-        .find(|family| family.as_bytes() == token)
+pub(super) fn relayed(token: &str) -> Option<Family> {
+    Family::from_token(token).filter(|family| RELAYED.contains(family))
 }
 
-/// Whether the daemon advertises `family`.
-fn advertised(advertisement: &Advertisement, family: &str) -> bool {
-    Family::from_token(family).is_some_and(|family| advertisement.supports(family))
+/// Whether the daemon advertises the relayed family `token` names.
+fn advertised(advertisement: &Advertisement, token: &str) -> bool {
+    relayed(token).is_some_and(|family| advertisement.supports(family))
 }
 
-/// Whether the daemon advertises everything a monitor Open requires.
-pub(super) fn supports(advertisement: &Advertisement, required: &[&str]) -> bool {
-    advertisement.supports(MONITOR)
-        && required
+/// Whether the daemon advertises everything a monitor Open requires:
+/// `monitor-v1`, whatever the caller lists, and every required family.
+pub(super) fn supports(advertisement: &Advertisement, requested: &Requested) -> bool {
+    advertisement.supports(Family::MonitorV1)
+        && requested
+            .required()
+            .tokens()
             .iter()
-            .all(|family| advertised(advertisement, family))
+            .all(|token| advertised(advertisement, token))
 }
 
-/// The optional families to request: those the caller asked for and the
-/// daemon advertises, all of them relayed.
-pub(super) fn offered(
-    advertisement: &Advertisement,
-    optional: &[&'static str],
-) -> Vec<&'static str> {
-    optional
-        .iter()
-        .copied()
-        .filter(|family| advertised(advertisement, family))
-        .collect()
+/// The Open to send: every required family, and the optional ones the
+/// daemon advertises.
+pub(super) fn offered(advertisement: &Advertisement, requested: &Requested) -> Requested {
+    requested.retain_optional(|token| advertised(advertisement, token))
 }
 
-/// The daemon's selection, as relayed families, if it is one the request
-/// allows: every required family, and nothing that was not requested.
-pub(super) fn selected(
-    selection: &[String],
-    required: &[&'static str],
-    requested: &[&'static str],
-) -> Option<Vec<&'static str>> {
-    let selected: Option<Vec<_>> = selection
-        .iter()
-        .map(|token| requested.iter().copied().find(|family| family == token))
-        .collect();
-    selected.filter(|selected| required.iter().all(|family| selected.contains(family)))
+/// The families a daemon selected, in its order, held inline: a request
+/// names each relayed family at most once, so at most all of them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct Selection([Option<Family>; RELAYED.len()]);
+
+impl Selection {
+    pub(super) fn families(&self) -> impl Iterator<Item = Family> + '_ {
+        self.0.iter().flatten().copied()
+    }
+
+    pub(super) fn contains(&self, family: Family) -> bool {
+        self.0.contains(&Some(family))
+    }
+}
+
+/// The daemon's selection, if it is one `sent` allows: every required
+/// family, and nothing that was not requested. Every requested family is
+/// relayed, and a selection names each once, so it fits a [`Selection`].
+pub(super) fn selected(selection: &Families, sent: &Requested) -> Option<Selection> {
+    let tokens = selection.tokens();
+    let requested = |token: &String| {
+        sent.required().tokens().contains(token) || sent.optional().tokens().contains(token)
+    };
+    let allowed = tokens.iter().all(requested)
+        && sent
+            .required()
+            .tokens()
+            .iter()
+            .all(|token| tokens.contains(token));
+    allowed.then(|| {
+        let mut chosen = Selection::default();
+        for (slot, token) in chosen.0.iter_mut().zip(tokens) {
+            *slot = relayed(token);
+        }
+        chosen
+    })
 }

@@ -12,9 +12,13 @@ returns revision 1's description and rejects other revisions as specified
 below. Its requirements are provisional bounded values
 until [#121](https://github.com/jackgeek/climon2/issues/121) records qualified
 ones. All eleven [function-table](../TERMS.md#function-table) calls follow
-the rules below. `submit` accepts monitor-mode `CM1_OPEN` and `CM1_LEAVE`;
-interactive Open ([#94](https://github.com/jackgeek/climon2/issues/94)) and
-every other request report `CM1_UNSUPPORTED_OPERATION`. An instance opens a
+the rules below, with one gap: snapshot reports no shared-release allocation
+and undercounts instance allocation, because it does not yet count each
+instance's diagnostics dispatcher
+([#180](https://github.com/jackgeek/climon2/issues/180)). `submit` accepts
+monitor-mode `CM1_OPEN` and `CM1_LEAVE`; interactive Open
+([#94](https://github.com/jackgeek/climon2/issues/94)) and every other request
+report `CM1_UNSUPPORTED_OPERATION`. An instance opens a
 [passive monitor connection](../../../GLOSSARY.md#attachment-and-control) to
 its [session daemon](../../../GLOSSARY.md#sessions) over
 [daemon wire revision 1](../daemon-client/core-v1.md), delivers Response,
@@ -173,7 +177,9 @@ The current session-log cap remains unchanged.
 All `cm1_limits` fields are required effective values, never zero-as-default.
 The caller resolves configuration defaults and checks aggregate admission.
 Create rejects values it cannot honor with `CM1_UNSUPPORTED_LIMIT`; it never
-raises or silently lowers them. `effective_limits` equals the accepted snapshot.
+raises or silently lowers them; `drain_payload_bytes` below
+`metadata_record_bytes` is one such value, since a delivery must hold a whole
+record. `effective_limits` equals the accepted snapshot.
 The library owns allocations only within its remaining share of `client_bytes`;
 the caller subtracts/reserves monitor-owned model/history/staging capacity before
 supplying that ceiling. No double-counted independent 64 MiB allowances.
@@ -387,7 +393,10 @@ Asynchronous daemon errors preserve the
 with daemon origin; framing/transport failure uses transport origin.
 Native execution errors additionally use `stale_generation`, `cancelled`,
 `release_mismatch`, `invalid_configuration`, `unsupported_limit`, `timeout`,
-`delivery_stalled`, `worker_panic`, `cleanup_failed`, `internal_error`.
+`delivery_stalled`, `worker_panic`, `cleanup_failed`, `internal_error`, and,
+with library origin, `invalid_state`, `resource_limit`, `io_error`,
+`unsupported_revision` and `unsupported_capability`
+([decided on #93](https://github.com/jackgeek/climon2/issues/93)).
 Malformed core responses/events are `invalid_record` with explicit failure,
 not success-shaped defaults. Unknown error strings stay explicit non-success;
 text is not a retry classification. Stable origin/code and known partial effects
@@ -489,15 +498,18 @@ are the evidence for this section
   `request_bytes` before any token is read. A request counts against
   `request_records` and `request_bytes` until it executes and against
   `operations` until its Response is queued. Each outstanding request
-  reserves one record and `metadata_record_bytes` of `event_records` and
-  `event_bytes` for its outcome; without room, `submit` is `CM1_FULL`
+  reserves one record of `event_records`, and one record's charge plus
+  `metadata_record_bytes` of `event_bytes`, for its outcome; without room, `submit` is `CM1_FULL`
   (`queue_full`).
-- **Records.** A record is charged `sizeof(cm1_record)` plus the bytes it owns:
-  copied text and token arrays. The library's own error text is static and
+- **Records.** A record is charged twice `sizeof(cm1_record)`, for the
+  `cm1_record` and the library's own copy it points into, plus the bytes it
+  owns once: copied text and token arrays. It is charged from its queueing
+  until its delivery's release. The library's own error text is static and
   costs nothing. While the event queue is full, the library stops reading the
   connection, so daemon records wait. A delivery holds the oldest records, at
-  most `drain_records`, stopping before `drain_payload_bytes` but holding at
-  least one; `drain` is `CM1_FULL` while `deliveries` deliveries are
+  most `drain_records`, stopping before `drain_payload_bytes`; a record never
+  exceeds it alone, because create refuses `drain_payload_bytes` below
+  `metadata_record_bytes`. `drain` is `CM1_FULL` while `deliveries` deliveries are
   outstanding. Every received [frame](../TERMS.md#frame), type byte included,
   must fit `metadata_record_bytes`, and every title `title_bytes`; either
   breach fails the connection with library `resource_limit`.
@@ -531,9 +543,12 @@ are the evidence for this section
 - **Leave.** A Leave waits for the Initial metadata. The daemon's answer ends
   the stream, except a rejection, which keeps the registration. Shutdown
   rejects queued requests, waits for an Open under way, then attempts its own
-  Leave once.
-- **Terminal evidence.** Retry is none after shutdown, for an answered Leave
-  that was not confirmed and for a known final result; permanent for the
+  Leave once; an Open whose hello completes after shutdown is never sent and
+  is `CM1_REJECTED` `cancelled`.
+- **Terminal evidence.** Retry is none once shutdown is requested, once a
+  Leave the caller asked for is sent, answered or lost, and once the
+  command's final result is known, from a known-final rejection or the
+  Initial metadata's command result; otherwise permanent for the
   library's `unsupported_revision`, `unsupported_capability`,
   `invalid_configuration`, `release_mismatch` and `unsupported_limit`
   refusals and the daemon's `unsupported_revision` and

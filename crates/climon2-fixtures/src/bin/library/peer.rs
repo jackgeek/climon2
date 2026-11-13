@@ -10,8 +10,9 @@
 //!   metadata and hello name (default the library's); `metadata`: overrides
 //!   of the metadata's fields;
 //! - `hello`: the reply (`{"json": ...}` merged over a valid revision-1
-//!   reply, less the members `without` names, or `{"frame": action}`), or
-//!   `"close"` or `"hold"`;
+//!   reply, less the members `without` names, or `{"frame": action}`, sent
+//!   once the file `after` names exists, if it names one), or `"close"` or
+//!   `"hold"`;
 //! - `open` and `leave`: the actions after the library's Open, and after
 //!   each Leave; `leaves`, a list of action lists, overrides `leave` for the
 //!   first Leaves in turn.
@@ -22,8 +23,7 @@
 //! `{"together": [action, ...]}` (several actions' bytes in one write),
 //! `{"bytewise": action}` (an action's bytes one at a time),
 //! `{"wait": "<path>"}` (until that file exists, bounded; an expired wait is
-//! recorded as `wait_expired`), `"deaf"` (shut down the
-//! reading side, so the library's next write fails, and record `deaf`),
+//! recorded as `wait_expired`),
 //! `"close"` (recorded as `closed` once the connection is dropped), or
 //! `"hold"` (stop answering; keep the connection until the library closes
 //! it).
@@ -37,7 +37,6 @@ use serde_json::{Map, Value, json};
 use std::{
     fs,
     io::Write,
-    net::Shutdown,
     os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
     sync::{
@@ -209,6 +208,13 @@ impl Serving {
         self.received.lock().unwrap().push(entry);
     }
 
+    /// Waits, bounded, for the file at `path`; an expired wait is recorded.
+    fn wait(&self, path: &str) {
+        if !wait_file(Path::new(path)) {
+            self.record(json!({ "wait_expired": path }));
+        }
+    }
+
     /// The frozen hello: the library's request, then the scripted reply.
     fn hello(&mut self, stream: &mut UnixStream) -> Next {
         let Ok(request) = protocol::read_frame(stream) else {
@@ -217,6 +223,9 @@ impl Serving {
         let protocol = ClientMessage::from_frame(request).ok();
         self.record(json!({ "hello": format!("{protocol:?}") }));
         let reply = self.script["hello"].clone();
+        if let Some(path) = reply["after"].as_str() {
+            self.wait(path);
+        }
         match &reply {
             Value::String(word) if word == "close" => Next::Close,
             Value::String(word) if word == "hold" => Next::Hold,
@@ -306,16 +315,9 @@ impl Serving {
         match action {
             Value::String(word) if word == "close" => Next::Close,
             Value::String(word) if word == "hold" => Next::Hold,
-            Value::String(word) if word == "deaf" => {
-                let shut = stream.shutdown(Shutdown::Read);
-                self.record(json!({ "deaf": shut.is_ok() }));
-                Next::Continue
-            }
             action => {
                 if let Some(path) = action["wait"].as_str() {
-                    if !wait_file(Path::new(path)) {
-                        self.record(json!({ "wait_expired": path }));
-                    }
+                    self.wait(path);
                     return Next::Continue;
                 }
                 let bytewise = action.get("bytewise").is_some();

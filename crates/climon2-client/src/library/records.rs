@@ -3,12 +3,21 @@
 //! released: every buffer a delivered record points to lives in that
 //! delivery.
 
-use super::failure::{Fault, bytes};
+use super::{
+    failure::{Fault, bytes},
+    families::Selection,
+};
 use climon2_core::{native, wire};
 use std::mem;
 
-/// Bytes every record is charged before its variable data.
-pub(super) const RECORD: u64 = mem::size_of::<native::Record>() as u64;
+/// Bytes every record is charged before its variable data: a delivered
+/// record is held twice, as its `cm1_record` and as the library's own copy,
+/// each charged `sizeof(cm1_record)`. Every buffer either points to is the
+/// library copy's, charged once as its payload.
+pub(super) const CHARGE: u64 = 2 * mem::size_of::<native::Record>() as u64;
+
+// The library's own copy never outgrows the `cm1_record` charged for it.
+const _: () = assert!(mem::size_of::<Event>() <= mem::size_of::<native::Record>());
 const TOKEN: u64 = mem::size_of::<native::Bytes>() as u64;
 
 // SAFETY (all three): every field is an integer, a raw pointer or a union of
@@ -34,30 +43,57 @@ pub(super) enum Event {
 pub(super) struct Response {
     /// The caller's public request ID.
     pub(super) id: u64,
-    /// `CM1_OK`, `CM1_REJECTED`, `CM1_FAILED` or `CM1_INDETERMINATE`.
-    pub(super) outcome: u32,
+    pub(super) outcome: Outcome,
     pub(super) answer: Answer,
-    /// Every non-success has one; success none.
-    pub(super) fault: Option<Fault>,
+}
+
+/// A response's outcome: success, or a non-success with the error that
+/// explains it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Outcome {
+    Ok,
+    /// The request never executed.
+    Rejected(Fault),
+    Failed(Fault),
+    /// Its effect is unknown.
+    Indeterminate(Fault),
+}
+
+impl Outcome {
+    /// `CM1_OK`, `CM1_REJECTED`, `CM1_FAILED` or `CM1_INDETERMINATE`.
+    fn code(&self) -> u32 {
+        match self {
+            Self::Ok => native::OK,
+            Self::Rejected(_) => native::REJECTED,
+            Self::Failed(_) => native::FAILED,
+            Self::Indeterminate(_) => native::INDETERMINATE,
+        }
+    }
+
+    pub(super) fn fault(&self) -> Option<&Fault> {
+        match self {
+            Self::Ok => None,
+            Self::Rejected(fault) | Self::Failed(fault) | Self::Indeterminate(fault) => Some(fault),
+        }
+    }
 }
 
 impl Response {
     /// A request that never executed.
     pub(super) fn rejected(id: u64, fault: Fault) -> Self {
-        Self::failed(id, native::REJECTED, fault)
+        Self::unanswered(id, Outcome::Rejected(fault))
     }
 
     /// A request whose effect is unknown.
     pub(super) fn uncertain(id: u64, fault: Fault) -> Self {
-        Self::failed(id, native::INDETERMINATE, fault)
+        Self::unanswered(id, Outcome::Indeterminate(fault))
     }
 
-    fn failed(id: u64, outcome: u32, fault: Fault) -> Self {
+    fn unanswered(id: u64, outcome: Outcome) -> Self {
         Self {
             id,
             outcome,
             answer: Answer::None,
-            fault: Some(fault),
         }
     }
 }
@@ -68,7 +104,7 @@ pub(super) enum Answer {
     None,
     Opened {
         connection: [u8; 16],
-        selected: Vec<&'static str>,
+        selected: Selection,
     },
     Left {
         detached: bool,
@@ -165,7 +201,7 @@ impl Event {
     /// What the record costs the event allowance: the record and every
     /// buffer it owns.
     pub(super) fn charge(&self) -> u64 {
-        RECORD + self.payload()
+        CHARGE + self.payload()
     }
 
     /// The bytes of its variable data.
@@ -184,11 +220,11 @@ impl Event {
 impl Response {
     fn bytes(&self) -> u64 {
         let answer = match &self.answer {
-            Answer::Opened { selected, .. } => TOKEN * selected.len() as u64,
+            Answer::Opened { selected, .. } => TOKEN * selected.families().count() as u64,
             Answer::KnownFinal(command) => command.bytes(),
             _ => 0,
         };
-        answer + self.fault.as_ref().map_or(0, Fault::bytes)
+        answer + self.outcome.fault().map_or(0, Fault::bytes)
     }
 }
 
@@ -286,8 +322,8 @@ impl Response {
         // them, for which zero (null) is valid.
         let mut response: native::Response = unsafe { mem::zeroed() };
         response.request_id = self.id;
-        response.outcome = self.outcome;
-        response.error = self.fault.as_ref().map_or(NO_ERROR, Fault::error);
+        response.outcome = self.outcome.code();
+        response.error = self.outcome.fault().map_or(NO_ERROR, Fault::error);
         match &self.answer {
             Answer::None => {}
             Answer::Opened {
@@ -295,7 +331,7 @@ impl Response {
                 selected,
             } => {
                 response.result_tag = native::OPENED;
-                response.result.opened = opened(*connection, selected, tokens);
+                response.result.opened = opened(*connection, *selected, tokens);
             }
             Answer::Left { detached } => {
                 response.result_tag = native::LEFT;
@@ -310,16 +346,31 @@ impl Response {
     }
 }
 
-fn opened(
-    connection: [u8; 16],
-    selected: &[&'static str],
-    tokens: &mut Vec<Box<[native::Bytes]>>,
-) -> native::Opened {
-    let list: Box<[native::Bytes]> = selected.iter().map(|token| bytes(token)).collect();
-    let selected = native::Tokens {
+/// A list's native view: null and zero when empty, as every empty native
+/// list is.
+fn listed(list: &[native::Bytes]) -> native::Tokens {
+    if list.is_empty() {
+        return native::Tokens {
+            data: std::ptr::null(),
+            count: 0,
+        };
+    }
+    native::Tokens {
         data: list.as_ptr(),
         count: list.len() as u64,
-    };
+    }
+}
+
+fn opened(
+    connection: [u8; 16],
+    selected: Selection,
+    tokens: &mut Vec<Box<[native::Bytes]>>,
+) -> native::Opened {
+    let list: Box<[native::Bytes]> = selected
+        .families()
+        .map(|family| bytes(family.token()))
+        .collect();
+    let selected = listed(&list);
     tokens.push(list);
     native::Opened {
         connection_id: native::Guid { bytes: connection },
