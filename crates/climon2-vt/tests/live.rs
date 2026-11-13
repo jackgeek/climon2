@@ -1,4 +1,4 @@
-use climon2_vt::{Fed, Geometry, Vt, VtConfig};
+use climon2_vt::{Fed, Geometry, Presentation, Vt, VtConfig};
 use std::time::{Duration, Instant};
 
 fn vt() -> Vt {
@@ -28,6 +28,7 @@ fn assert_forwarded(bytes: &[u8]) {
             replies: Vec::new(),
             dropped: 0,
             titles: Vec::new(),
+            focus_enabled: false,
         },
         "{:?}",
         String::from_utf8_lossy(bytes)
@@ -70,6 +71,82 @@ fn c0_controls_survive_a_stripped_query_in_their_original_order() {
     let fed = feed(&mut vt(), b"\x1b[6\x1cn");
     assert_eq!(fed.live, b"\x1c");
     assert_eq!(fed.replies, b"\x1b[1;1R");
+}
+
+/// Plan section 1.9: the host performs the controls inside a sequence whose
+/// unsupported screen modes are removed, before the replacement.
+#[test]
+fn c0_controls_survive_a_replaced_sequence_before_its_replacement() {
+    assert_eq!(live(b"\x1b[?47\x1c;25l"), b"\x1c\x1b[?25l");
+}
+
+/// Plan section 1.9 (TRM-02): vte executes a C0 control between `ESC` and
+/// an introducer and then dispatches the sequence, so the engine and the host
+/// both execute the control, and the sequence is filtered as it is without
+/// it.
+#[test]
+fn a_control_after_esc_reaches_the_host_without_the_filtered_sequence() {
+    for (bytes, live, replies) in [
+        (&b"\x1b\x07]52;c;aGVsbG8=\x07"[..], &b"\x07"[..], &b""[..]),
+        (b"\x1b\x1f]52;c;aGVsbG8=\x07", b"\x1f", b""),
+        (b"\x1b\r]52;c;?\x1b\\", b"\r", b""),
+        (b"\x1b\x07\x08]52;c;aGVsbG8=\x07", b"\x07\x08", b""),
+        (b"\x1b\x07]11;?\x07", b"\x07", b""),
+        (b"\x1b\x07]7;file://host/tmp\x07", b"\x07", b""),
+        (b"\x1b\x07[14t", b"\x07", b""),
+        (b"\x1b\x07[c", b"\x07", b"\x1b[?6c"),
+        (b"\x1b\n[6n", b"\n", b"\x1b[2;1R"),
+        (b"\x1b\x07[>1u", b"\x07", b""),
+        (b"\x1b\x07[?1047h", b"\x07", b""),
+        (b"\x1b\x07[?47;25l", b"\x07\x1b[?25l", b""),
+        (b"\x1b\x07P$qm\x1b\\", b"\x07", b""),
+        (b"\x1b\x07_Gq\x1b\\", b"\x07", b""),
+        (b"\x1b\x07^pm\x1b\\", b"\x07", b""),
+        (b"\x1b\x07Xsos\x1b\\", b"\x07", b""),
+    ] {
+        assert_eq!(
+            feed(&mut vt(), bytes),
+            Fed {
+                live: live.to_vec(),
+                replies: replies.to_vec(),
+                dropped: 0,
+                titles: Vec::new(),
+                focus_enabled: false,
+            },
+            "{:?}",
+            String::from_utf8_lossy(bytes)
+        );
+    }
+}
+
+/// Plan section 1.9: a title or link after a control is still re-encoded or
+/// reduced to plain text.
+#[test]
+fn titles_and_links_after_a_control_are_still_reencoded_or_plain() {
+    assert_eq!(live(b"\x1b\x07]0;hi\x07a"), b"\x07\x1b]2;hi\x1b\\a");
+    assert_eq!(
+        live(b"\x1b\x07]8;;http://x/\x07link\x1b\x07]8;;\x07"),
+        b"\x07link\x07"
+    );
+}
+
+/// Plan sections 1.7.1 and 1.9: an alternate screen and a synchronized update
+/// begun after a control are tracked by the presentation and the latch, so the
+/// latch holds snapshots and the release leaves what the host entered.
+#[test]
+fn modes_set_after_a_control_are_tracked_by_the_presentation_and_the_latch() {
+    let mut vt = vt();
+    let now = Instant::now();
+    let mut presentation = Presentation::new(80, 24);
+    let live = vt.feed(b"\x1b\x07[?1049h\x1b\x07[?2026h", now).live;
+    vt.commit_live(&mut presentation, &live);
+    assert!(vt.sync_pending(now));
+    assert_eq!(presentation.end_sync(), b"\x1b[?2026l");
+    assert!(
+        presentation
+            .release()
+            .starts_with(b"\x1b[?2026l\x1b[?1049l")
+    );
 }
 
 #[test]
@@ -213,6 +290,7 @@ fn oversized_tokens_are_dropped_and_counted() {
             replies: Vec::new(),
             dropped: 1,
             titles: Vec::new(),
+            focus_enabled: false,
         }
     );
 }
@@ -313,6 +391,27 @@ fn an_expired_update_is_rearmed_by_a_new_begin_before_tick() {
     vt.feed(b"\x1b[?2026h", start);
     vt.feed(b"\x1b[?2026h", start + Duration::from_millis(160));
     assert!(vt.sync_pending(start + Duration::from_millis(309)));
+}
+
+/// FOC-01 (crate case): the daemon reports the current application focus
+/// once when the application newly enables focus reporting (mode 1004), so
+/// each feed says whether a token turned it on and it is still on, however
+/// the tokens were split across reads.
+#[test]
+fn focus_reporting_reports_the_mode_and_each_feed_that_newly_enabled_it() {
+    let mut vt = vt();
+    assert!(!vt.focus_reporting());
+    assert!(!feed(&mut vt, b"plain \x1b[?2004h").focus_enabled);
+    assert!(feed(&mut vt, b"a\x1b[?1004hb").focus_enabled);
+    assert!(vt.focus_reporting());
+    assert!(!feed(&mut vt, b"\x1b[?1004h").focus_enabled);
+    assert!(!feed(&mut vt, b"c").focus_enabled);
+    assert!(feed(&mut vt, b"\x1b[?1004l\x1b[?1004h").focus_enabled);
+    assert!(!feed(&mut vt, b"\x1b[?1004h\x1b[?1004l").focus_enabled);
+    assert!(!vt.focus_reporting());
+    assert!(!feed(&mut vt, b"\x1b[?1004").focus_enabled);
+    assert!(feed(&mut vt, b"h").focus_enabled);
+    assert!(vt.focus_reporting());
 }
 
 #[test]
