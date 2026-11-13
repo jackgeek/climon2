@@ -1,4 +1,4 @@
-use climon2_core::metadata::SessionMetadata;
+use climon2_core::{layout::HomeLayout, metadata::SessionMetadata};
 use climon2_discovery::{Cleanup, MetadataLimits, Options, Outcome, StaleMetadata, Uncertainty};
 use climon2_platform::presentation;
 use std::{io, io::Write, path::Path};
@@ -56,7 +56,9 @@ const DISCOVERY: Options = Options {
 
 /// Diagnostics are logged here, on the caller's thread, so its subscriber records them.
 pub fn discover_live(home: &Path) -> io::Result<Vec<LiveSession>> {
-    let pass = climon2_discovery::discover(home, DISCOVERY)?;
+    let layout =
+        HomeLayout::resolve(Some(home.as_os_str()), Path::new("/")).map_err(io::Error::other)?;
+    let pass = climon2_discovery::discover(&layout, DISCOVERY)?;
     for _ in &pass.invalid {
         tracing::warn!("invalid session metadata");
     }

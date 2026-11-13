@@ -2,6 +2,7 @@
 //! reported, never deleted.
 use climon2_core::{
     ContractError,
+    layout::HomeLayout,
     metadata::{SessionMetadata, metadata_session_id},
 };
 use std::{
@@ -64,7 +65,7 @@ impl Entries {
 }
 
 /// Every `.pty` entry of the home's sessions directory; other names are not metadata.
-pub(crate) fn entries(home: &Path, limits: MetadataLimits) -> io::Result<Entries> {
+pub(crate) fn entries(home: &HomeLayout, limits: MetadataLimits) -> io::Result<Entries> {
     let mut entries = Entries::default();
     for path in candidates(home)?
         .into_iter()
@@ -75,8 +76,8 @@ pub(crate) fn entries(home: &Path, limits: MetadataLimits) -> io::Result<Entries
     Ok(entries)
 }
 
-fn candidates(home: &Path) -> io::Result<Vec<PathBuf>> {
-    match fs::read_dir(home.join("sessions")) {
+fn candidates(home: &HomeLayout) -> io::Result<Vec<PathBuf>> {
+    match fs::read_dir(home.sessions()) {
         Ok(entries) => entries
             .map(|entry| entry.map(|entry| entry.path()))
             .collect(),

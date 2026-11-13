@@ -45,26 +45,31 @@ const NESTED: &str = "0d5c0000-0000-4000-8000-000000000002";
 const CHILD: &str = "CLIMON2_DISCOVERY_SILENT_PASSES";
 
 /// A canonical climon2 home of its own.
-fn home() -> (tempfile::TempDir, PathBuf) {
+fn home() -> (tempfile::TempDir, HomeLayout) {
     let directory = tempfile::tempdir().unwrap();
-    let home = runtime::canonical_home(&directory.path().join("climon2")).unwrap();
-    (directory, home)
+    let root = runtime::canonical_home(&directory.path().join("climon2")).unwrap();
+    (directory, layout(&root))
+}
+
+/// The layout of a canonical climon2 home, which is what a pass reads.
+fn layout(root: &Path) -> HomeLayout {
+    HomeLayout::resolve(Some(root.as_os_str()), Path::new("/")).unwrap()
 }
 
 /// Valid metadata whose socket is missing and whose daemon identity is provably gone: this
 /// process's PID, with a start time (macOS) and Linux start ticks it never had.
-fn record(home: &Path, suffix: u8, created: &str) -> SessionMetadata {
+fn record(home: &HomeLayout, suffix: u8, created: &str) -> SessionMetadata {
     let id: SessionId = format!("12345678-1234-4234-8234-123456789a{suffix:02x}")
         .parse()
         .unwrap();
-    let socket = runtime::RuntimeDirectory::prepare(home)
+    let socket = runtime::RuntimeDirectory::prepare(home.root())
         .unwrap()
         .socket_path(&id)
         .unwrap();
     let mut metadata: SessionMetadata = serde_json::from_value(serde_json::json!({
         "format_version":1,"session_id":id.as_str(),"socket_path":socket,
         "daemon_pid":std::process::id(),"daemon_start_time":0,
-        "command":"bash","args":[],"cwd":home,"depth":1,"created_at":created,
+        "command":"bash","args":[],"cwd":home.root(),"depth":1,"created_at":created,
         "climon2_version":"0.1.0"
     }))
     .unwrap();
@@ -80,13 +85,14 @@ fn own_identity() -> Option<LinuxProcessIdentity> {
     process::linux_identity(std::process::id()).unwrap()
 }
 
-fn path(home: &Path, metadata: &SessionMetadata) -> PathBuf {
-    home.join("sessions")
+fn path(home: &HomeLayout, metadata: &SessionMetadata) -> PathBuf {
+    home.root()
+        .join("sessions")
         .join(format!("{}.pty", metadata.session_id))
 }
 
-fn save(home: &Path, metadata: &SessionMetadata) -> PathBuf {
-    fs::create_dir_all(home.join("sessions")).unwrap();
+fn save(home: &HomeLayout, metadata: &SessionMetadata) -> PathBuf {
+    fs::create_dir_all(home.root().join("sessions")).unwrap();
     let path = path(home, metadata);
     fs::write(&path, metadata.to_json().unwrap()).unwrap();
     path
@@ -104,10 +110,10 @@ fn ids(sessions: &[Outcome]) -> Vec<&str> {
 }
 
 /// The CLI's own resolution of `CLIMON2_HOME`, created and canonicalized once.
-fn resolved(isolation: &Isolation) -> PathBuf {
+fn resolved(isolation: &Isolation) -> HomeLayout {
     let climon2_home = isolation.climon2_home();
-    let layout = HomeLayout::resolve(Some(climon2_home.as_os_str()), isolation.home()).unwrap();
-    runtime::canonical_home(layout.root()).unwrap()
+    let resolved = HomeLayout::resolve(Some(climon2_home.as_os_str()), isolation.home()).unwrap();
+    layout(&runtime::canonical_home(resolved.root()).unwrap())
 }
 
 fn send(stream: &mut UnixStream, message: ClientMessage) {
@@ -161,9 +167,9 @@ struct Daemon {
 }
 
 impl Daemon {
-    fn start(isolation: &Isolation, home: &Path, id: &str, depth: u32) -> Self {
+    fn start(isolation: &Isolation, home: &HomeLayout, id: &str, depth: u32) -> Self {
         let id: SessionId = id.parse().unwrap();
-        let socket = runtime::RuntimeDirectory::prepare(home)
+        let socket = runtime::RuntimeDirectory::prepare(home.root())
             .unwrap()
             .socket_path(&id)
             .unwrap();
@@ -177,7 +183,7 @@ impl Daemon {
             .env("CLIMON2_SESSION_DEPTH", depth.to_string())
             .env("CLIMON2_SESSION_ID", id.as_str())
             .args(["--session-id", id.as_str(), "--home"])
-            .arg(home)
+            .arg(home.root())
             .arg("--socket")
             .arg(&socket)
             .args(["--version", env!("CARGO_PKG_VERSION"), "--cli-pid"])
@@ -329,7 +335,7 @@ fn sessions_are_newest_created_first_with_ascending_session_id_ties() {
 #[test]
 fn a_sessions_directory_that_cannot_be_listed_fails_the_pass() {
     let (_directory, home) = home();
-    let sessions = home.join("sessions");
+    let sessions = home.root().join("sessions");
     fs::write(&sessions, b"not a directory").unwrap();
     for options in [RETAIN, REMOVE] {
         let error = discover(&home, options).unwrap_err();
@@ -376,7 +382,7 @@ fn every_outcome_in_three_passes() {
     ];
     // A stream connection to a datagram socket fails, with EPROTOTYPE, on both platforms.
     let _datagram = UnixDatagram::bind(unreachable.socket_path.as_str()).unwrap();
-    let sessions_directory = home.join("sessions");
+    let sessions_directory = home.root().join("sessions");
     let malformed = sessions_directory.join("not-a-session-id.pty");
     fs::write(&malformed, b"{}").unwrap();
     let corrupt = path(&home, &record(&home, 0x12, "2026-10-28T07:21:02.000Z"));
@@ -510,14 +516,14 @@ fn every_outcome_is_structured_and_no_pass_prints() {
 
 const CREATED: &str = "2026-10-28T07:21:02.930Z";
 
-fn write(home: &Path, metadata: &SessionMetadata, contents: &[u8]) -> PathBuf {
+fn write(home: &HomeLayout, metadata: &SessionMetadata, contents: &[u8]) -> PathBuf {
     let path = path(home, metadata);
     fs::write(&path, contents).unwrap();
     path
 }
 
 /// Valid metadata padded with trailing whitespace to exactly `bytes` bytes.
-fn sized(home: &Path, suffix: u8, bytes: usize) -> PathBuf {
+fn sized(home: &HomeLayout, suffix: u8, bytes: usize) -> PathBuf {
     let metadata = record(home, suffix, CREATED);
     let mut json = metadata.to_json().unwrap();
     json.resize(bytes, b' ');
@@ -526,7 +532,7 @@ fn sized(home: &Path, suffix: u8, bytes: usize) -> PathBuf {
 
 /// Valid metadata whose first, unknown member nests `nesting` objects and arrays in all,
 /// followed by strings that hide brackets, quotes and backslashes.
-fn nested(home: &Path, suffix: u8, nesting: usize) -> PathBuf {
+fn nested(home: &HomeLayout, suffix: u8, nesting: usize) -> PathBuf {
     let metadata = record(home, suffix, CREATED);
     let json = String::from_utf8(metadata.to_json().unwrap()).unwrap();
     let strings = [
@@ -570,7 +576,7 @@ fn reasons(pass: &Pass) -> Vec<(&Path, &'static str)> {
 #[test]
 fn metadata_limits_accept_their_bound_and_reject_one_past_it() {
     let (_directory, home) = home();
-    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::create_dir_all(home.root().join("sessions")).unwrap();
     let at_size = sized(&home, 0x41, 4096);
     let past_size = sized(&home, 0x42, 4097);
     let at_depth = nested(&home, 0x43, 8);

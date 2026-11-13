@@ -10,7 +10,8 @@ mod outcome;
 pub use metadata::{InvalidMetadata, InvalidReason, MetadataLimits};
 pub use outcome::{Cleanup, LiveSession, Outcome, Uncertainty};
 
-use std::{cmp::Ordering, io, path::Path};
+use climon2_core::layout::HomeLayout;
+use std::{cmp::Ordering, io};
 
 /// How a pass reads metadata, and what it may do besides observing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,8 +40,9 @@ pub struct Pass {
 }
 
 /// Probes every valid entry concurrently, each under the frozen two-second hello deadline.
-/// Fails only when the sessions directory cannot be listed or a probe panics.
-pub fn discover(home: &Path, options: Options) -> io::Result<Pass> {
+/// `home` is the layout of a resolved, canonical climon2 home. Fails only when its sessions
+/// directory cannot be listed or a probe panics.
+pub fn discover(home: &HomeLayout, options: Options) -> io::Result<Pass> {
     let entries = metadata::entries(home, options.limits)?;
     let mut sessions = outcome::probe_all(home, entries.valid, options.stale)?;
     sessions.sort_by(newest_first);

@@ -9,10 +9,12 @@ seams, supports macOS and x86-64 GNU/Linux; it has no OS-specific code of its
 own.
 
 ```rust
-pub fn discover(home: &Path, options: Options) -> io::Result<Pass>
+pub fn discover(home: &HomeLayout, options: Options) -> io::Result<Pass>
 ```
 
-`home` is a resolved, canonical climon2 home, as the CLI computes it. A pass:
+`home` is the `climon2-core` layout of a resolved, canonical climon2 home, as
+the CLI computes it; the layout names its sessions directory and each session's
+metadata file. A pass:
 
 1. Lists `sessions/` once. A missing directory is an empty pass. Any other
    listing error is returned, and that and a panicked probe are the only

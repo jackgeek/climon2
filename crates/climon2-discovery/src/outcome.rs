@@ -3,6 +3,7 @@
 use crate::{StaleMetadata, hello};
 use climon2_core::{
     hello::{HelloExtensions, SessionState},
+    layout::HomeLayout,
     metadata::SessionMetadata,
     protocol::HELLO_TIMEOUT,
 };
@@ -82,7 +83,7 @@ impl Outcome {
 
 /// One probe thread per session, so a slow daemon delays only its own outcome.
 pub(crate) fn probe_all(
-    home: &Path,
+    home: &HomeLayout,
     sessions: Vec<SessionMetadata>,
     stale: StaleMetadata,
 ) -> io::Result<Vec<Outcome>> {
@@ -102,7 +103,7 @@ pub(crate) fn probe_all(
     })
 }
 
-fn probe(home: &Path, metadata: SessionMetadata, stale: StaleMetadata) -> Outcome {
+fn probe(home: &HomeLayout, metadata: SessionMetadata, stale: StaleMetadata) -> Outcome {
     let deadline = Instant::now() + HELLO_TIMEOUT;
     match connection::connect(Path::new(metadata.socket_path.as_str()), HELLO_TIMEOUT) {
         Ok(stream) => answered(hello::hello(stream, deadline, &metadata), metadata),
@@ -123,7 +124,7 @@ fn answered(result: io::Result<Option<HelloExtensions>>, metadata: SessionMetada
 
 /// Only a missing or refusing socket can begin to prove a session stale.
 fn connection_failed(
-    home: &Path,
+    home: &HomeLayout,
     metadata: SessionMetadata,
     error: io::Error,
     stale: StaleMetadata,
@@ -139,7 +140,7 @@ fn connection_failed(
 }
 
 /// Only a proven dead daemon identity makes such a session stale.
-fn identity(home: &Path, metadata: SessionMetadata, stale: StaleMetadata) -> Outcome {
+fn identity(home: &HomeLayout, metadata: SessionMetadata, stale: StaleMetadata) -> Outcome {
     match process::is_same_daemon(&metadata) {
         Ok(false) => {
             let cleanup = clean_up(home, &metadata, stale);
@@ -150,7 +151,7 @@ fn identity(home: &Path, metadata: SessionMetadata, stale: StaleMetadata) -> Out
     }
 }
 
-fn clean_up(home: &Path, metadata: &SessionMetadata, stale: StaleMetadata) -> Cleanup {
+fn clean_up(home: &HomeLayout, metadata: &SessionMetadata, stale: StaleMetadata) -> Cleanup {
     match stale {
         StaleMetadata::Retain => Cleanup::Retained,
         StaleMetadata::Remove => remove(home, metadata),
@@ -159,10 +160,8 @@ fn clean_up(home: &Path, metadata: &SessionMetadata, stale: StaleMetadata) -> Cl
 
 /// A path that is not a socket is never unlinked as one, so it is checked before anything
 /// is deleted.
-fn remove(home: &Path, metadata: &SessionMetadata) -> Cleanup {
-    let path = home
-        .join("sessions")
-        .join(format!("{}.pty", metadata.session_id));
+fn remove(home: &HomeLayout, metadata: &SessionMetadata) -> Cleanup {
+    let path = home.metadata(&metadata.session_id);
     let socket = Path::new(metadata.socket_path.as_str());
     let result = runtime::validate_stale_socket(socket)
         .and_then(|()| remove_if_present(&path))
