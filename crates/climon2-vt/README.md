@@ -126,8 +126,11 @@ place.
 
 `Model::view()` borrows the current model for one frame as a `view::View`; the
 model cannot change while it is held. Every type is climon2's own:
-`xtask/tests/vt_interface.rs` parses this crate's sources and fails if its
-public interface names an engine type.
+`xtask/tests/vt_interface.rs` parses this crate's sources and fails if a
+public item, in any module, or a trait impl of a public type names an engine
+type, whether by path, through a `use` or re-export, or through a crate type
+alias of one; a glob import of the engine fails it too. It reads source
+only, so items a macro generates are not checked.
 
 - `View::screen()` is `Screen::Normal { rows, history }` or, after
   `CSI ? 1049 h`, `Screen::Alternate { rows }`, which keeps no history.

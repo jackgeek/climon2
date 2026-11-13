@@ -182,8 +182,10 @@ combining marks and width, its colours and rendition; the cursor; the active
 screen, normal or 1049 alternate; the modes the input router and painter
 honour; and the normal screen's history with its truncation state. They are
 Rust types, not a cross-release cell schema. A test in
-`xtask/tests/vt_interface.rs` parses the crate and fails if its public
-interface names an engine type.
+`xtask/tests/vt_interface.rs` parses the crate's sources and fails if a
+public item or a trait impl of a public type names an engine type, by path,
+through a `use` or re-export, or through a crate type alias; items a macro
+generates are not checked.
 
 The model records truncation until the history is cleared: rows beyond
 `history_rows`, and rows that yielding or `Model::shorten_history()` drops,
