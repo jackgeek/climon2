@@ -167,7 +167,7 @@ leave a session running forever.
 | Scenario | Named packaged test |
 |---|---|
 | Confirmed scenario: from a script with no terminal, exactly the full lowercase GUID and a newline, status 0 only once the session is listed `detached` with no client, 80x24 start; HDL-01 command completion with zero clients | `installed_headless_exec_from_a_script_prints_only_the_guid_and_starts_at_80x24` |
-| Confirmed scenario: a terminal on stdin sets the initial size; HDL-01 existing `c2 kill` ends a headless session | `installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it` |
+| Confirmed scenario: a terminal on stdin sets the initial size, with stdout captured as in `id=$(c2 exec --headless …)`; HDL-01 existing `c2 kill` ends a headless session | `installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it` |
 | HDL-01 failed creation: 127, 126 and 125 with exec's diagnostics, nothing on stdout, nothing left | `installed_headless_creation_failures_keep_exec_statuses_and_diagnostics` |
 | HDL-01 failed creation: an unwritable stdout ends the session and fails with 125, nothing left | `installed_headless_exec_that_cannot_print_the_guid_ends_the_session_and_fails` |
 | HDL-01 zero clients past the initial attach window, after a killed client and after a deliberate detach, then Kill | `installed_headless_session_survives_zero_clients_a_killed_client_and_a_detach` |
