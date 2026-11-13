@@ -24,7 +24,7 @@ use climon2_core::{
         PTY_DRAIN_CAP, ServerMessage, TerminalSize,
     },
     title::default_title,
-    wire::{CommandResult, GrantReason, RevocationReason},
+    wire::{CommandResult, Counter, GrantReason, RevocationReason},
 };
 use climon2_platform::{
     peer,
@@ -61,9 +61,12 @@ struct Session<'a, C> {
     cleanup: C,
     connections: BTreeMap<u64, Connection>,
     deliveries: BTreeMap<u64, Delivery>,
-    /// Revision-1 connections after their first role: passive monitor
-    /// connections, interactive attachments and standalone Kills.
+    /// Revision-1 connections after their Open: passive monitor connections
+    /// and interactive attachments.
     opened: BTreeMap<u64, wire::Opened>,
+    /// Revision-1 connections whose standalone Kill awaits its answer: the
+    /// Kill's request ID.
+    kills: BTreeMap<u64, Counter>,
     /// The command's result, once the daemon knows it.
     command_result: Option<CommandResult>,
     control: Control,
@@ -98,6 +101,7 @@ pub(crate) fn serve(
         connections: BTreeMap::new(),
         deliveries: BTreeMap::new(),
         opened: BTreeMap::new(),
+        kills: BTreeMap::new(),
         command_result: None,
         control: Control::new(options.size, options.lifetime),
         vt,
@@ -911,7 +915,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// A private message; a revision-1 connection never receives one.
     fn reply(&mut self, id: u64, message: ServerMessage) {
-        if self.opened.contains_key(&id) {
+        if self.holds_role(id) {
             return;
         }
         let Some(connection) = self.connections.get_mut(&id) else {
@@ -959,6 +963,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn remove_delivery(&mut self, id: u64) {
         self.deliveries.remove(&id);
         self.opened.remove(&id);
+        self.kills.remove(&id);
         self.pty_writes.discard(id);
         self.pending_restorations.remove(&id);
         self.forget_controller(id);
