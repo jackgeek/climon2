@@ -43,9 +43,11 @@ fn main() {
             println!("{report}");
             println!("FIXTURE_READY");
             io::stdout().flush().unwrap();
-            if std::env::var_os("FIXTURE_REPORT_NO_WAIT").is_none() {
-                let mut line = String::new();
-                io::stdin().read_line(&mut line).unwrap();
+            // The test creates the release file when it is done, instead of typing.
+            if let Some(release) = std::env::var_os("FIXTURE_REPORT_RELEASE") {
+                while !std::path::Path::new(&release).exists() {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
             }
         }
         Some("exit") => std::process::exit(args[1].to_str().unwrap().parse().unwrap()),
