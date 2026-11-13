@@ -1,6 +1,14 @@
 # Monitor operational limits
 
-**Status: agreed future specification, not implemented behavior.** This resolves
+**Status: agreed future specification, not implemented behavior, except that
+the monitor and `exec` validate the `monitor.limits` configuration and the
+monitor reports its effective values
+([#82](https://github.com/jackgeek/climon2/issues/82)). That validation does
+not yet check that the mandatory current model and recent page fit
+([#167](https://github.com/jackgeek/climon2/issues/167)). Operating-system
+limits are left to admission
+([#120](https://github.com/jackgeek/climon2/issues/120)), and nothing enforces
+the limits yet.** This resolves
 [Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69).
 It supplies requirements and evidence, not executable code or a benchmark suite.
 
@@ -97,8 +105,9 @@ An illustrative override is:
 }
 ```
 
-This is planned configuration, not a supported setting in the current monitor
-or daemon. It does not modify daemon `scrollback.max_rows`.
+The monitor and `exec` validate this configuration, but no limit is enforced
+yet; the status note names the checks still to come. It does not modify daemon
+`scrollback.max_rows`.
 
 ## Memory, history and admission
 

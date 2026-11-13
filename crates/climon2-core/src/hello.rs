@@ -28,7 +28,8 @@ const TOKENS: [(Capability, &str); 4] = [
 ];
 
 impl Capability {
-    /// Everything this daemon advertises. Never `nesting-v1`.
+    /// The frozen tokens, which lead the capabilities this daemon advertises.
+    /// Never `nesting-v1`.
     pub const ADVERTISED: [Self; 4] = [
         Self::Attach,
         Self::Kill,
@@ -246,8 +247,7 @@ struct AdvertisedHello<'a> {
     reply: &'a HelloReply,
     capabilities: Vec<&'static str>,
     state: StateBody,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    daemon_wire_v1: Option<FrameLimits>,
+    daemon_wire_v1: FrameLimits,
 }
 
 #[derive(Serialize)]
@@ -257,30 +257,17 @@ struct StateBody {
     controlled: bool,
 }
 
-/// The daemon's hello reply: the frozen mandatory fields plus every advertised
-/// capability and the current state snapshot.
-pub fn advertise(reply: &HelloReply, state: SessionState) -> io::Result<Frame> {
-    encode(reply, state, None)
-}
-
-/// The same reply once the daemon speaks revision 1: its families follow the
-/// frozen tokens, and `daemon_wire_v1` follows the state. No reply can omit
-/// the tokens and state that admission and `list` rely on.
+/// The daemon's hello reply: the frozen mandatory fields, the frozen tokens
+/// followed by its revision-1 families, the current state snapshot, then
+/// `daemon_wire_v1`. No reply can omit the tokens and state that admission
+/// and `list` rely on.
 pub fn advertise_revision1(
     reply: &HelloReply,
     state: SessionState,
     revision1: &Advertisement,
 ) -> io::Result<Frame> {
-    encode(reply, state, Some(revision1))
-}
-
-fn encode(
-    reply: &HelloReply,
-    state: SessionState,
-    revision1: Option<&Advertisement>,
-) -> io::Result<Frame> {
     let frozen = Capability::ADVERTISED.map(Capability::token);
-    let families = revision1.into_iter().flat_map(Advertisement::tokens);
+    let families = revision1.tokens();
     protocol::control(
         protocol::HELLO,
         &AdvertisedHello {
@@ -291,7 +278,7 @@ fn encode(
                 attachments: state.attachments,
                 controlled: state.controlled,
             },
-            daemon_wire_v1: revision1.map(Advertisement::limits),
+            daemon_wire_v1: revision1.limits(),
         },
     )
 }

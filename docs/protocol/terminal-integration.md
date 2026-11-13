@@ -345,9 +345,11 @@ prefix+j is data; s/x behavior is unchanged.
 
 Needs-attention toasts hint the actual configured prefix and lowercase j.
 The hint describes a dynamic jump to the most recent attention, not necessarily
-the toast's own session. `monitor.show_key_hints` is a planned boolean setting,
+the toast's own session. `monitor.show_key_hints` is a boolean setting,
 default `true`, controlling **all implicit monitor hints** in toast, chrome,
 selector, and empty UI. It changes neither bindings nor application text.
+So far only the empty monitor's hint exists to honor it
+([#82](https://github.com/jackgeek/climon2/issues/82)).
 The [selector](../monitor-selector.md#selector) shows its enabled hints in a
 footer below the session list, inside the menu. Disabling hints removes the
 footer and its reserved space without changing selector actions.
@@ -360,15 +362,16 @@ must be an object and `show_key_hints` a boolean; missing means default,
 wrong type or duplicate known field is an explicit error, unknown/unrelated
 settings remain ignored, and there is no live reload.
 No new monitor-specific binding settings are introduced.
-Planned `monitor.bell` is independently boolean and defaults to true.
+`monitor.bell` is independently boolean and defaults to true; it is validated,
+but toasts and the bell are not implemented.
 It emits one [host bell](monitor-host/bell.md) when each eligible toast first
 begins drawing, not per animation frame. Validate it in the same startup
 snapshot; wrong types/null or duplicate known fields fail before terminal setup.
 Disabling it does not hide toasts or suppress monitor-generated OSC 7501 reports.
 The [selector reference](../monitor-selector.md#toasts-and-bell) defines the
 three-row title toast/four-row hinted toast and clockwise draw/fade/erase order.
-The [README configuration example](../../README.md#configuration) distinguishes
-these planned fields from the current parser.
+The [README configuration example](../../README.md#configuration) documents both
+fields, which the current parser validates.
 
 ## Required implementation evidence
 

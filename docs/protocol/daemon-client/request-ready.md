@@ -1,6 +1,6 @@
 # Ready — `0x34`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed, not implemented; rejected until served**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) reports applied
 [restoration](../../../GLOSSARY.md#restoration-and-presentation) to the
 [session daemon](../../../GLOSSARY.md#sessions), as current
@@ -44,3 +44,12 @@ termination and operational failures use the
 No optional fields/defaults/unknown members; malformed records or IDs are
 fatal. Request bounds/deadlines remain #69, application mechanics #63.
 Related: [Input](request-input.md), [Set viewing](request-viewing.md).
+
+## Implemented behavior
+
+No revision-1 connection is an attachment yet, so until
+[#87](https://github.com/jackgeek/climon2/issues/87) serves Ready the
+[session daemon](../../../GLOSSARY.md#sessions) rejects it as impermissible
+with `invalid_state`, whether it is a connection's first request or arrives on
+a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control).
+No readiness changes; the stream goes on and a registration stays.

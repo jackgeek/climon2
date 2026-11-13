@@ -27,7 +27,7 @@ pub use frame::{Frame, FrameLimit, WireError, read_frame, write_frame};
 pub use metadata::{
     Available, CommandResult, Percent, Progress, ProgressState, Status, StatusState,
 };
-pub use record::ControlRecord;
+pub use record::{ControlRecord, defines};
 pub use request::{
     Acknowledge, Acquire, Focus, Kill, Leave, Mode, Open, Ready, Request, Resize, SetViewing,
 };

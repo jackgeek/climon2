@@ -260,4 +260,20 @@ impl Request {
     pub fn from_frame(frame: &Frame) -> Result<Self, FatalCode> {
         record::dispatch(frame, &DECODERS, record::SERVER_TYPES)
     }
+
+    /// The ID every request carries: its Response echoes it, and a
+    /// well-formed request consumes it even when it is then rejected.
+    pub fn request_id(&self) -> Counter {
+        let (Self::Open(Open { request_id, .. })
+        | Self::Input(Input { request_id, .. })
+        | Self::Resize(Resize { request_id, .. })
+        | Self::Acquire(Acquire { request_id })
+        | Self::Ready(Ready { request_id, .. })
+        | Self::SetViewing(SetViewing { request_id, .. })
+        | Self::Acknowledge(Acknowledge { request_id, .. })
+        | Self::Leave(Leave { request_id })
+        | Self::Kill(Kill { request_id, .. })
+        | Self::Focus(Focus { request_id, .. })) = self;
+        *request_id
+    }
 }

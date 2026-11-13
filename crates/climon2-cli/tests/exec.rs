@@ -205,29 +205,47 @@ fn exec_rejects_non_tty_before_creating_a_session() {
     layout.clean();
 }
 
+/// Section 1.3; CFG-01 (exec case): exec validates the whole file, including
+/// the `monitor` section, and refuses any invalid setting before a session
+/// exists.
 #[test]
 fn invalid_exec_config_is_rejected_before_session_side_effects() {
     let layout = Layout::new();
     fs::create_dir_all(layout.home()).unwrap();
-    fs::write(
-        layout.home().join("config.jsonc"),
-        r#"{"scrollback":{"max_rows":100001}}"#,
-    )
-    .unwrap();
-    let pid_path = layout.directory.path().join("command-pid");
-    let mut command = layout.command();
-    command.env("FIXTURE_PID_PATH", &pid_path);
-    command.args(["exec"]);
-    command.arg(layout.fixture());
-    command.arg("hold");
-    let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
-    assert_eq!(terminal.wait_exit(Duration::from_secs(3)).unwrap(), 125);
-    assert!(terminal.screen().contains("scrollback.max_rows"));
-    assert!(!pid_path.exists());
-    assert!(
-        !layout.home().join("sessions").exists(),
-        "invalid config must be rejected before session creation"
-    );
+    for (config, expected) in [
+        (
+            r#"{"scrollback":{"max_rows":100001}}"#,
+            "scrollback.max_rows",
+        ),
+        (
+            r#"{"monitor":{"bell":null}}"#,
+            "invalid type: null, expected a boolean",
+        ),
+        (
+            r#"{"monitor":{"limits":{"retry":{"initial_ms":30001}}}}"#,
+            "monitor.limits.retry.initial_ms (30001) may not exceed",
+        ),
+    ] {
+        fs::write(layout.home().join("config.jsonc"), config).unwrap();
+        let pid_path = layout.directory.path().join("command-pid");
+        let mut command = layout.command();
+        command.env("FIXTURE_PID_PATH", &pid_path);
+        command.args(["exec"]);
+        command.arg(layout.fixture());
+        command.arg("hold");
+        let mut terminal = Terminal::spawn(command, 24, 120).unwrap();
+        assert_eq!(terminal.wait_exit(Duration::from_secs(20)).unwrap(), 125);
+        assert!(
+            unwrapped(&terminal.screen()).contains(expected),
+            "{config}: {}",
+            terminal.screen()
+        );
+        assert!(!pid_path.exists());
+        assert!(
+            !layout.home().join("sessions").exists(),
+            "invalid config must be rejected before session creation"
+        );
+    }
     layout.clean();
 }
 
@@ -1043,8 +1061,9 @@ fn attach_overwrites_an_inherited_kill_envelope() {
 /// A session that answers every hello as kill-capable but never confirms.
 fn unconfirming_session(layout: &Layout) -> climon2_core::metadata::SessionMetadata {
     use climon2_core::{
-        hello::{Lifecycle, SessionState, advertise},
+        hello::{Lifecycle, SessionState, advertise_revision1},
         protocol::{HelloReply, PROTOCOL_VERSION, read_frame, write_frame},
+        wire::{Advertisement, FrameLimit, FrameLimits},
     };
     let home = climon2_platform::runtime::canonical_home(&layout.home()).unwrap();
     let id: climon2_core::SessionId = "12345678-1234-4234-8234-123456789abc".parse().unwrap();
@@ -1074,13 +1093,22 @@ fn unconfirming_session(layout: &Layout) -> climon2_core::metadata::SessionMetad
         climon2_version: metadata.climon2_version.clone(),
         protocol: PROTOCOL_VERSION,
     };
+    let limit = FrameLimit::new(1_048_576).unwrap();
+    let revision1 = Advertisement::new(
+        [],
+        FrameLimits {
+            max_request_frame_bytes: limit,
+            max_server_frame_bytes: limit,
+        },
+    );
     std::thread::spawn(move || {
         let mut held = Vec::new();
         for socket in listener.incoming() {
             let mut socket = socket.unwrap();
             if read_frame(&mut socket).is_ok() {
                 let state = SessionState::new(Lifecycle::Detached, 0, false).unwrap();
-                let _ = write_frame(&mut socket, &advertise(&reply, state).unwrap());
+                let hello = advertise_revision1(&reply, state, &revision1).unwrap();
+                let _ = write_frame(&mut socket, &hello);
             }
             held.push(socket);
         }

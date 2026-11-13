@@ -186,9 +186,13 @@ until process exit; completed instance cleanup and joins do not unload them.
 These loading relationships are planned; only the artifacts ship today. Complete interface
 declarations are specified in [native revision 1](protocol/monitor-client/core-v1.md),
 with explicit startup/role, ownership, cleanup and fresh-instance recovery calls.
-No new artifact or consumption arrow is added. Monitor-client communication and the
-[daemon wire revision 1](protocol/daemon-client/core-v1.md) are agreed
-specifications, not implemented.
+No new artifact or consumption arrow is added. Monitor-client communication is
+an agreed specification, not implemented.
+[Daemon wire revision 1](protocol/daemon-client/core-v1.md) is agreed and
+partly implemented: session daemons serve
+[passive monitor connections](../GLOSSARY.md#attachment-and-control) over it,
+beside the private protocol, but no climon2 executable or library consumes it
+yet, so no arrow changes.
 
 The planned wire core is independent of the current private Unix socket carrier.
 The main/downstream monitor consumes source-monitor sessions over

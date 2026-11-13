@@ -34,6 +34,8 @@ pub struct Fed {
     /// Oversized tokens dropped from both engine and output; log their count
     /// without content.
     pub dropped: u32,
+    /// Each change of the application's title, in order; `None` is unset.
+    pub titles: Vec<Option<String>>,
 }
 
 /// The session's virtual terminal: the front filter, the engine and the
@@ -203,6 +205,12 @@ impl Vt {
         self.engine.mode().contains(TermMode::BRACKETED_PASTE)
     }
 
+    /// The application's own title: `None` while it has set none (or reset
+    /// it) and the default title shows.
+    pub fn application_title(&self) -> Option<&str> {
+        self.engine.title()
+    }
+
     fn token(&mut self, token: &Token, now: Instant, fed: &mut Fed) {
         fed.dropped += u32::from(token.kind == Kind::Oversized);
         let policy = classify(token);
@@ -213,6 +221,7 @@ impl Vt {
             .extend_from_slice(live(token, &policy.live).as_ref());
         if self.engine.title() != title.as_deref() {
             fed.live.extend(self.title());
+            fed.titles.push(self.application_title().map(str::to_owned));
         }
     }
 
