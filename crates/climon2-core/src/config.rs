@@ -108,12 +108,12 @@ impl AttachConfig {
 /// The `monitor` section, which `exec` validates too.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
-#[non_exhaustive]
 pub struct MonitorSettings {
     /// Whether implicit key hints show; bindings never change.
     pub show_key_hints: bool,
-    /// Whether a toast rings the host bell as it first draws.
-    pub bell: bool,
+    /// Whether a toast rings the host bell as it first draws; only reported
+    /// until toasts read it.
+    bell: bool,
     #[serde(deserialize_with = "object")]
     pub limits: Limits,
 }
@@ -140,6 +140,8 @@ pub struct MonitorConfig {
     monitor: MonitorSettings,
 }
 
+/// The client bindings as the monitor reports them; it acts only on the
+/// escape prefix so far.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 struct MonitorKeys {
     #[serde(serialize_with = "key_name")]
@@ -166,10 +168,6 @@ impl MonitorConfig {
 
     pub fn escape_prefix(&self) -> ControlKey {
         self.client.escape_prefix
-    }
-
-    pub fn take_control_key(&self) -> Option<ControlKey> {
-        self.client.take_control_key
     }
 
     pub fn settings(&self) -> &MonitorSettings {

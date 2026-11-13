@@ -150,9 +150,11 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   accepted; unknown fields are ignored; errors name their class.
   - `MonitorConfig` (spec #73 Configuration model) exists only with an escape
     prefix (`client.escape_prefix may not be null for climon2 monitor`); its
-    take-control key may be `None`. `settings()` gives `MonitorSettings`:
-    `show_key_hints` and `bell` (default true) and `limits`. `Display` writes
-    every effective value as JSON in the file's own shape.
+    take-control key may be null. `escape_prefix()` gives the prefix, and
+    `settings()` gives `MonitorSettings` with `show_key_hints` (default true)
+    and `limits`. The take-control key and `bell` (default true) are validated
+    and reported only; they gain accessors with their first consumer.
+    `Display` writes every effective value as JSON in the file's own shape.
   - `config::Limits` holds the eleven `monitor.limits` groups of
     docs/monitor-operational-limits.md, with its defaults. Each setting is
     read as its native `u32` or `u64` (overflow, null and other types are
