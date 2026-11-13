@@ -1,13 +1,14 @@
 # climon2-cli
 
 CLI orchestration for `exec COMMAND [ARG...]`, `attach SESSION-ID`,
-`kill SESSION-ID` and `list [--json]`. The usage string is
-`usage: c2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json]`.
+`kill SESSION-ID`, `list [--json]` and `monitor` (alias `mon`). The usage string is
+`usage: c2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.
 A successful exec or attach replaces the CLI process with the metadata
-version's client. Usage errors (including a malformed session selector) are 2;
+version's client; a successful monitor replaces it with the CLI's own version's
+`climon2-monitor`. Usage errors (including a malformed session selector) are 2;
 climon2 failures are 125; daemon startup preserves 126/127.
 
 Home is resolved, created and canonicalized once. Common dispatch opens the
@@ -44,6 +45,14 @@ Attach discovers live sessions and resolves an exact ID or unique prefix (1 to
 (`climon2 attach needs a terminal`), validates only the `client` configuration,
 and replaces the CLI with the version-matched client carrying an `attach`
 envelope, overwriting any inherited one.
+
+Monitor takes no arguments (any is a usage error, 2). After the common general
+log is opened, it finds `<executable home>/<own version>/climon2-monitor` with
+the same layout code used for the client and daemon, then replaces the CLI with
+it, passing no arguments or envelope: the handoff is between executables of one
+release and is not frozen. If that fails it reports
+`cannot start the climon2 <version> monitor: …` with 125. The monitor resolves
+the home and reads its configuration itself.
 
 Kill never reads configuration. It selects one live session the same way,
 requires the `kill` and `client-startup-v1` capabilities, and spawns that
@@ -93,6 +102,13 @@ client start.
 `kill_selects_exactly_one_live_session`,
 `kill_refuses_an_older_session_without_capabilities` and
 `kill_of_an_uninstalled_version_names_that_version_and_ignores_config`.
+
+The `monitor`/`mon` hand-off is proven through the installed launcher, as `c2`
+and `climon2`, by `climon2-e2e` `tests/monitor.rs`:
+`installed_monitor_and_mon_open_the_same_monitor` (ENT-01),
+`installed_monitor_arguments_are_a_usage_error` (derived argument refusal) and
+`missing_installed_monitor_fails_naming_its_version`.
+`tests/scaffold.rs` checks the exact usage line.
 
 `tests/list.rs` covers discovery, stale cleanup and presentation, including
 `list_shows_version_state_and_clients_only_when_advertised`,

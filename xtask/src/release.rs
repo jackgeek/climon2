@@ -5,6 +5,7 @@ const BINARIES: &[&str] = &[
     "climon2-daemon",
     "climon2-client",
     "climon2-install",
+    "climon2-monitor",
 ];
 const MARKER: &[u8] = b"CLIMON2_TEST_HOOKS_ENABLED";
 pub(crate) const PACKAGES: &[(&str, &str)] = &[
@@ -13,6 +14,7 @@ pub(crate) const PACKAGES: &[(&str, &str)] = &[
     ("climon2-daemon", "climon2-daemon"),
     ("climon2-client", "climon2-client"),
     ("climon2-install", "climon2-install"),
+    ("climon2-monitor", "climon2-monitor"),
 ];
 
 pub(crate) fn build(

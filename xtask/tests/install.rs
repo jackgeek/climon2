@@ -27,6 +27,7 @@ fn assert_installed(destination: &Path) {
         destination.join(version).join("climon2-cli"),
         destination.join(version).join("climon2-daemon"),
         destination.join(version).join("climon2-client"),
+        destination.join(version).join("climon2-monitor"),
     ] {
         let bytes = fs::read(path).unwrap();
         assert!(
