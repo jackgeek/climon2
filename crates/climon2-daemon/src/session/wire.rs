@@ -706,8 +706,8 @@ fn authorize(
 fn focus_report(focused: bool, due: bool) -> (&'static [u8], FocusBytes) {
     match (due, focused) {
         (false, _) => (b"", FocusBytes::None),
-        (true, true) => (b"[I", FocusBytes::Sequence),
-        (true, false) => (b"[O", FocusBytes::Sequence),
+        (true, true) => (b"\x1b[I", FocusBytes::Sequence),
+        (true, false) => (b"\x1b[O", FocusBytes::Sequence),
     }
 }
 
