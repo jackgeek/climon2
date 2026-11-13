@@ -1,6 +1,12 @@
+pub mod stand_in;
+
 use std::{
+    fs::{self, File},
     io::{self, Read},
     os::fd::AsRawFd,
+    path::Path,
+    process::{Command, Stdio},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -8,6 +14,35 @@ use std::{
 /// test waits on a fixture under load, and short enough that a fixture left by
 /// a killed test ends soon.
 pub const BOUND: Duration = Duration::from_secs(60);
+
+/// Runs `command` with its output in `log`, waiting at most `BOUND`; a
+/// command still running then is killed and reaped. A failure carries the
+/// output.
+pub fn run(command: &mut Command, log: &Path) -> io::Result<()> {
+    let output = File::create(log)?;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(output.try_clone()?)
+        .stderr(output)
+        .spawn()?;
+    let deadline = Instant::now() + BOUND;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            child.wait()?;
+            return Err(io::Error::other(format!("{command:?} outlived {BOUND:?}")));
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    if !status.success() {
+        let output = fs::read_to_string(log)?;
+        return Err(io::Error::other(format!("{command:?}: {status}\n{output}")));
+    }
+    Ok(())
+}
 
 pub fn size() -> io::Result<[u16; 2]> {
     let mut size = nix::libc::winsize {

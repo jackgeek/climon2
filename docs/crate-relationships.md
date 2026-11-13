@@ -60,9 +60,13 @@ flowchart TB
     e2e -.->|"dev"| install
     e2e -.->|"dev"| test_term
     fixtures --> core
+    fixtures --> platform
     fixtures -.->|"dev"| test_term
+    platform -.->|"dev"| fixtures
     xtask --> core
     xtask --> install
+    xtask --> platform
+    xtask -.->|"dev"| fixtures
 
     monitor -.->|"planned"| discovery
 ```
@@ -98,10 +102,16 @@ library, the library host fixture and xtask's release checks consume them.
 planned to share between the CLI and the monitor. It consumes only `core` and
 `platform`, and today only the CLI consumes it.
 
+**Current (#84):** the one validated loader for client libraries lives in
+`climon2-platform`, as [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)
+records. The library-host fixture and xtask release checks use it; the monitor
+and client executable do not yet. Test-only loader fixtures consume the
+platform crate as dev-dependencies.
+
 **Planned:** the monitor will consume discovery continuously (#106) and load
-version-matched client libraries in-process, with one client thread per
-[live session](../GLOSSARY.md#sessions). Dynamic loading is shown in the
-artifact diagram, not as a Cargo dependency.
+version-matched client libraries in-process through the shared loader, with one
+client thread per [live session](../GLOSSARY.md#sessions). Dynamic loading is
+shown in the artifact diagram, not as a Cargo dependency.
 
 The [status/activity revision](session-status.md) also requires the monitor
 to keep one `climon2-vt` terminal model per session across uncertain

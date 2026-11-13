@@ -35,8 +35,8 @@ flowchart TB
         daemon -->|"runs on session PTY"| command
         cli -->|"monitor / mon: execs own version"| monitor
         monitor -.->|"hello probes for discovery; planned"| daemon
-        monitor -.->|"loads session-version library; one client thread per live session; planned"| library
-        client -.->|"loads same-release library; versioned C interface planned"| library
+        monitor -.->|"loads session-version library through shared loader; one client thread per live session; planned"| library
+        client -.->|"loads same-release library through shared loader; versioned C interface planned"| library
         library -->|"daemon wire revision 1: passive monitor connections"| daemon
         library -.->|"daemon wire revision 1: control and display; planned"| daemon
         monitor -.->|"consumes forwarded sessions over TCP/IP; future"| source_monitor
@@ -52,24 +52,24 @@ flowchart TB
         terminal_fixture["climon2-fixture"]
         tui_fixture["climon2-tui-fixture"]
         library_host["climon2-library-host"]
-        library_stand_in[["Client library stand-in<br/>test-only C dylib / .so"]]
+        library_stand_in[["Client library stand-in<br/>test-only C dylib / .so; faulty library"]]
         owned_exec["climon2-test-owned<br/>Linux test ownership exec adapter"]
         terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
         xtask -->|"runs builds and tests"| cargo
         xtask -->|"install: runs verified production payload"| installer
         xtask -->|"runs runtime probes"| cli
-        xtask -->|"loads in release checks"| library
+        xtask -->|"loads through the shared loader in release checks"| library
         cargo -->|"runs"| tests
         tests -->|"uses directly or as a session command"| cli_fixture
         tests -->|"uses directly or as a session command"| daemon_fixture
         tests -->|"uses directly or as a session command"| terminal_fixture
         tests -->|"uses directly or as a session command"| tui_fixture
         tests -->|"runs as the Library-layer host"| library_host
-        library_host -->|"loads through the C ABI"| library
+        library_host -->|"loads through the shared loader and calls through the C ABI"| library
         library_host -->|"hello probes for a session's state"| daemon
         library -->|"daemon wire revision 1 to the host's fake daemon peer"| library_host
-        tests -->|"loads in release-check tests"| library_stand_in
+        tests -->|"loads the test stand-in through the shared loader"| library_stand_in
         tests -->|"execs registered terminal roots through; Linux only"| owned_exec
         owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
@@ -179,6 +179,18 @@ consumption arrow, and does not sandbox trusted native code.
 
 The client executable will also load its same-release library for ordinary
 operations.
+
+**Current (#84):** one validated loader for client libraries is part of
+`climon2-platform`, not a separate artifact; the monitor and the client
+executable will both load through it. Today the library host and xtask's
+release checks load the client library through it, from a version folder of
+an executable home. The [client library stand-in](../GLOSSARY.md#testing),
+`crates/climon2-fixtures/stand-in/client-library.c`, is compiled by tests,
+through `climon2_fixtures::stand_in`, into a test-only library, exact or with
+one defect: xtask's release-check tests
+load it through the same release checks as the real library, and
+`climon2-platform`'s loader tests load it, as the faulty library, through the
+loader. It is never shipped.
 
 **Current (#74):** every version folder ships the `climon2-monitor` executable,
 on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 mon`, or their `climon2`
