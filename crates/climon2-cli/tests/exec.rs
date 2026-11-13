@@ -257,6 +257,29 @@ fn packaged_exec_preserves_final_command_status() {
     layout.clean();
 }
 
+/// Types `command` until `output` appears, as `climon2-e2e`'s packaged tests do. A
+/// client discards keys typed while it restores and nothing on the screen marks the end
+/// of that, so `command` must be harmless to repeat; once its output appears the client
+/// forwards input, and the input a test needs is then sent once.
+fn type_until(terminal: &mut Terminal, command: &str, output: &str) {
+    let timeout = Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        terminal.wait_for_input_ready(timeout).unwrap();
+        terminal.send(command).unwrap();
+        if terminal
+            .wait_for_text(output, Duration::from_secs(1))
+            .is_ok()
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{output:?} never appeared"
+        );
+    }
+}
+
 #[test]
 fn exec_restores_a_waiting_alternate_screen_without_application_redraw() {
     use std::os::unix::fs::PermissionsExt;
@@ -295,6 +318,7 @@ fn exec_restores_a_waiting_alternate_screen_without_application_redraw() {
         "1"
     );
 
+    type_until(&mut terminal, "probe", "probe");
     terminal.send(b"x").unwrap();
     terminal
         .wait_for_bytes(b"INPUT-ACCEPTED", Duration::from_secs(2))
@@ -322,6 +346,7 @@ fn packaged_client_can_detach_and_reattach_to_a_live_session() {
         .unwrap();
     let metadata = only_metadata(&layout);
 
+    type_until(&mut first, "probe-1\n", "probe-1");
     first.send(b"\x1dd").unwrap();
     let status = first.wait_exit(Duration::from_secs(8)).unwrap();
     assert_eq!(status, 0, "detach failed: {}", first.screen());
@@ -338,6 +363,7 @@ fn packaged_client_can_detach_and_reattach_to_a_live_session() {
     second
         .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
         .unwrap();
+    type_until(&mut second, "probe-2\n", "probe-2");
     second.send(b"exit\n").unwrap();
     assert_eq!(second.wait_exit(Duration::from_secs(8)).unwrap(), 0);
     layout.clean();
@@ -414,6 +440,8 @@ fn packaged_exec_preserves_runtime_argv_cwd_environment_and_initial_size() {
     command.env("SHELL", "");
     let report_path = layout.directory.path().join("runtime-report.json");
     command.env("FIXTURE_REPORT_PATH", &report_path);
+    let release = layout.directory.path().join("release-report");
+    command.env("FIXTURE_REPORT_RELEASE", &release);
     command.args(["exec"]);
     command.arg(layout.fixture());
     command.args(["report", "", "--looks-like-option", "literal $ ; ' \""]);
@@ -447,6 +475,7 @@ fn packaged_exec_preserves_runtime_argv_cwd_environment_and_initial_size() {
         ("CLIMON2_SESSION_ID", metadata.session_id.as_str().into()),
         ("CLIMON2_SESSION_DEPTH", "1".into()),
         ("FIXTURE_REPORT_PATH", report_path.as_os_str().to_owned()),
+        ("FIXTURE_REPORT_RELEASE", release.as_os_str().to_owned()),
     ]
     .into_iter()
     .map(|(key, value)| (hex(OsStr::new(key)), hex(&value)))
@@ -456,7 +485,7 @@ fn packaged_exec_preserves_runtime_argv_cwd_environment_and_initial_size() {
         report["env"],
         serde_json::to_value(expected_environment).unwrap()
     );
-    terminal.send(b"\n").unwrap();
+    fs::write(&release, b"").unwrap();
     assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
     let logs = layout
         .home()
@@ -541,7 +570,6 @@ fn actual_nested_bash_session_increments_depth_and_sees_the_fixed_terminal_ident
     let mut command = layout.command();
     command.env("TERM", "dumb");
     command.env("COLORTERM", "24bit");
-    command.env("FIXTURE_REPORT_NO_WAIT", "1");
     let report_path = layout.directory.path().join("nested-report.json");
     command.env("FIXTURE_REPORT_PATH", &report_path);
     command.args([
@@ -619,6 +647,7 @@ fn resizing_outer_terminal_resizes_the_running_command() {
     terminal
         .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
         .unwrap();
+    type_until(&mut terminal, "probe\n", "probe");
     terminal.resize(44, 132).unwrap();
     terminal.send(b"size\n").unwrap();
     terminal
@@ -732,6 +761,7 @@ fn zero_initial_terminal_size_falls_back_to_80_by_24() {
     let mut command = layout.command();
     command.arg("exec");
     command.arg(layout.fixture());
+    // Prints the size and exits: nothing is typed while the client may still be restoring.
     command.arg("size");
     let mut reader = pair.master.try_clone_reader().unwrap();
     let fd = pair.master.as_raw_fd().unwrap();
@@ -740,24 +770,15 @@ fn zero_initial_terminal_size_falls_back_to_80_by_24() {
         unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) },
         0
     );
-    let mut writer = pair.master.take_writer().unwrap();
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
     let mut output = Vec::new();
     let mut bytes = [0; 4096];
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    let mut sent = false;
     loop {
         match reader.read(&mut bytes) {
             Ok(0) => break,
-            Ok(count) => {
-                output.extend_from_slice(&bytes[..count]);
-                if !sent && String::from_utf8_lossy(&output).contains("SIZE:80x24") {
-                    use std::io::Write;
-                    writer.write_all(b"\n").unwrap();
-                    sent = true;
-                }
-            }
+            Ok(count) => output.extend_from_slice(&bytes[..count]),
             Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(std::time::Instant::now() < deadline);
@@ -877,6 +898,8 @@ fn log_filter_is_forwarded_to_companions_without_changing_command_environment() 
     let layout = Layout::new();
     let mut command = layout.command();
     command.env("CLIMON2_LOG", "warn");
+    let release = layout.directory.path().join("release-report");
+    command.env("FIXTURE_REPORT_RELEASE", &release);
     command.arg("exec");
     command.arg(layout.fixture());
     command.arg("report");
@@ -892,7 +915,7 @@ fn log_filter_is_forwarded_to_companions_without_changing_command_environment() 
     let report = unwrapped(&terminal.screen());
     assert!(report.contains(&pair), "{report}");
     let metadata = only_metadata(&layout);
-    terminal.send(b"\n").unwrap();
+    fs::write(&release, b"").unwrap();
     assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
     for role in ["cli", "daemon", "client"] {
         let log = role_log(
@@ -969,6 +992,7 @@ fn kill_session(layout: &Layout, selector: &str) -> (i32, String, String) {
 fn kill_terminates_a_detached_session_silently_after_cleanup() {
     let layout = Layout::new();
     let (mut terminal, metadata) = held_session(&layout, "hold");
+    type_until(&mut terminal, "probe\n", "probe");
     terminal.send(b"\x1dd").unwrap();
     assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
 
@@ -1004,6 +1028,7 @@ fn kill_while_attached_gives_the_client_the_signal_status() {
 fn attach_overwrites_an_inherited_kill_envelope() {
     let layout = Layout::new();
     let (mut first, metadata) = held_session(&layout, "hold");
+    type_until(&mut first, "probe-1\n", "probe-1");
     first.send(b"\x1dd").unwrap();
     assert_eq!(first.wait_exit(Duration::from_secs(8)).unwrap(), 0);
 
@@ -1017,6 +1042,7 @@ fn attach_overwrites_an_inherited_kill_envelope() {
     second
         .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
         .unwrap();
+    type_until(&mut second, "probe-2\n", "probe-2");
     second.send(b"exit\n").unwrap();
     assert_eq!(second.wait_exit(Duration::from_secs(8)).unwrap(), 0);
     layout.clean();
@@ -1150,6 +1176,7 @@ fn a_config_edit_before_the_client_starts_changes_neither_client_nor_daemon() {
             .unwrap()
             .contains("--scrollback-max-rows 123 ")
     );
+    type_until(&mut terminal, "probe\n", "probe");
     terminal.send(b"\x02d").unwrap();
     assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
     let selector = metadata.session_id.as_str();

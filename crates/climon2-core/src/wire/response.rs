@@ -4,7 +4,7 @@
 //! stateless codec does not know which request a request ID names.
 use super::{
     CommandResult, Counter, Error, Families, Guid,
-    record::{ControlRecord, nullable},
+    record::{ControlRecord, by_name, nullable},
 };
 use crate::{ContractError, json::Object};
 use serde::{Deserialize, Serialize, Serializer};
@@ -108,6 +108,7 @@ pub enum Success {
     /// Confirmed termination: a command result and complete daemon cleanup.
     Termination {
         command_result: CommandResult,
+        #[serde(deserialize_with = "by_name")]
         cleanup: Cleanup,
     },
     Focus {
@@ -161,6 +162,7 @@ impl From<FocusBytes> for u32 {
 pub struct PartialTermination {
     #[serde(deserialize_with = "nullable")]
     pub command_result: Option<CommandResult>,
+    #[serde(deserialize_with = "by_name")]
     pub cleanup: PartialCleanup,
 }
 
@@ -245,6 +247,7 @@ enum ResultBody {
 #[serde(deny_unknown_fields)]
 struct ResponseFields {
     request_id: Counter,
+    #[serde(deserialize_with = "by_name")]
     outcome: OutcomeName,
     #[serde(deserialize_with = "nullable")]
     result: Option<ResultBody>,

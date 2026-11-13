@@ -1,6 +1,9 @@
 //! Core metadata shapes: status, progress, command results and
 //! availability.
-use super::{Counter, Utc, record::nullable};
+use super::{
+    Counter, Utc,
+    record::{by_name, nullable},
+};
 use crate::{ContractError, json::Object};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
@@ -118,6 +121,7 @@ impl Status {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StatusFields {
+    #[serde(deserialize_with = "by_name")]
     state: StatusState,
     changed_at: Utc,
     #[serde(deserialize_with = "nullable")]
@@ -180,6 +184,7 @@ impl Progress {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProgressFields {
+    #[serde(deserialize_with = "by_name")]
     state: ProgressState,
     #[serde(deserialize_with = "nullable")]
     percent: Option<Percent>,
