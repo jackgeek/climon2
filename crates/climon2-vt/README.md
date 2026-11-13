@@ -30,14 +30,18 @@ the monitor never forwards parser replies or session bytes directly to its host.
   the PTY; `live` is the filtered output for a Direct controller (queries,
   host-dependent requests, keyboard negotiation, OSC 52, OSC 8 and every
   other OSC/DCS/SOS/PM/APC stripped; titles re-encoded; `CSI ? 47/1047`
-  removed because the engine implements only 1049). `titles` lists each
-  change of the application's own title in order, one per change even within
-  one read, by value: `None` is unset (the default title shows, including
-  after `ESC c`), and an unchanged title is not listed again. The body cap
-  ignores a title sequence longer than 4,096 bytes, so with its `2;` the
-  longest OSC 0/2 title is 4,094 bytes. `focus_enabled` says a token of this
-  feed turned focus reporting (mode 1004) on and it is still on, however
-  the tokens were split across reads.
+  removed because the engine implements only 1049). A token is classified
+  by the sequence vte dispatches, whatever C0 controls vte executes before
+  its introducer (CAN and SUB cancel the sequence instead, and ESC restarts
+  it), and the controls vte executes in a stripped or rewritten token still
+  reach the host, in order. `titles` lists each change of the application's
+  own title in order, one per change even within one read, by value: `None`
+  is unset (the default title shows, including after `ESC c`), and an
+  unchanged title is not listed again. The body cap ignores a title sequence
+  longer than 4,096 bytes, so with its `2;` the longest OSC 0/2 title is
+  4,094 bytes. `focus_enabled` says a token of this feed turned focus
+  reporting (mode 1004) on and it is still on, however the tokens were split
+  across reads.
 - `Vt::application_title()`: the application's current title, `None` while
   unset; the session daemon reports it as inert core metadata.
 - `Vt::sync_pending(now)` / `Vt::tick(now)`: the first-begin synchronized
