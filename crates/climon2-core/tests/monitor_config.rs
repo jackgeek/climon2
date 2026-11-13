@@ -610,6 +610,51 @@ fn cfg01_reservations_fit_the_total() {
     }
 }
 
+/// CFG-01 (Contract): every other monitor byte budget fits the total that
+/// includes it: one delivery's payload, a discovery batch, a metadata file and
+/// the search text each fit `memory.total_bytes`.
+#[test]
+fn cfg01_other_monitor_byte_budgets_fit_the_total() {
+    for budget in [
+        "transfer.drain_payload_bytes",
+        "discovery.batch_bytes",
+        "discovery.metadata_file_bytes",
+        "ui.search_bytes",
+    ] {
+        accepted(&[at(budget, TOTAL)]);
+        assert!(refused(&[at(budget, TOTAL + 1)]).contains(&format!(
+            "monitor.limits.{budget} (536870913) may not exceed monitor.limits.memory.total_bytes (536870912)"
+        )));
+    }
+}
+
+/// CFG-01 (Contract): toasts are a UI queue, and the aggregate queue budget
+/// includes the UI queues, so `ui.toast_bytes` fits
+/// `memory.queue_bytes_total`, not merely `memory.total_bytes`.
+#[test]
+fn cfg01_toasts_fit_the_aggregate_queue_budget() {
+    let queued = 67_108_864;
+    accepted(&[at("ui.toast_bytes", queued)]);
+    assert!(
+        refused(&[at("ui.toast_bytes", queued + 1)]).contains(
+            "monitor.limits.ui.toast_bytes (67108865) may not exceed monitor.limits.memory.queue_bytes_total (67108864)"
+        )
+    );
+}
+
+/// CFG-01 (Contract): the daemon owns notification assembly, so
+/// `payload.assembly_bytes` and `payload.assembly_records` are not monitor
+/// budgets: past `memory.total_bytes` and at their native maxima, they are
+/// accepted.
+#[test]
+fn cfg01_daemon_owned_assembly_limits_are_outside_the_total() {
+    accepted(&[at("payload.assembly_bytes", TOTAL + 1)]);
+    accepted(&[
+        at("payload.assembly_bytes", u64::MAX),
+        at("payload.assembly_records", u64::from(u32::MAX)),
+    ]);
+}
+
 /// CFG-01 (Contract): each client's request and event queues fit both the
 /// aggregate queue budget and the client's own budget.
 #[test]

@@ -477,13 +477,15 @@ impl Groups {
     }
 
     /// The first rule between settings these limits break, in this order:
-    /// sub-budgets and reservations fit the totals that include them (each
-    /// client's queues fit both the aggregate queue budget and the client's
-    /// own); progress reserves leave room for ordinary work; the largest chunk
-    /// fits one request, the ordinary event capacity and one delivery, and the
-    /// largest metadata record fits the reserve, that capacity and one
-    /// delivery; the per-client quantum fits the aggregate one; the initial
-    /// retry delay fits its cap.
+    /// sub-budgets, reservations and every other monitor byte budget fit the
+    /// totals that include them (each client's queues fit both the aggregate
+    /// queue budget and the client's own, and toasts, a UI queue, fit the
+    /// aggregate one; the daemon's notification assembly limits are not
+    /// monitor budgets); progress reserves leave room for ordinary work; the
+    /// largest chunk fits one request, the ordinary event capacity and one
+    /// delivery, and the largest metadata record fits the reserve, that
+    /// capacity and one delivery; the per-client quantum fits the aggregate
+    /// one; the initial retry delay fits its cap.
     fn disagreement(&self) -> Option<String> {
         let Self {
             memory,
@@ -491,6 +493,7 @@ impl Groups {
             queues,
             transfer,
             payload,
+            discovery,
             retry,
             ui,
             ..
@@ -516,10 +519,15 @@ impl Groups {
             at_most(queued, total),
             at_most(named!(resources.stack_bytes), total),
             at_most(named!(resources.release_bytes), total),
+            at_most(delivery, total),
+            at_most(named!(discovery.batch_bytes), total),
+            at_most(named!(discovery.metadata_file_bytes), total),
+            at_most(named!(ui.search_bytes), total),
             at_most(per_session, history),
             at_most(per_session, client),
             at_most(request, queued),
             at_most(events, queued),
+            at_most(named!(ui.toast_bytes), queued),
             at_most(request, client),
             at_most(events, client),
             below(reserve, events),
