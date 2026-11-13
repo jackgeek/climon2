@@ -7,7 +7,10 @@ publish.workspace = true
 
 [dependencies]
 climon2-install = { version = "0.1.0", path = "../crates/climon2-install" }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
 serde_json.workspace = true
+syn = { version = "2", features = ["full", "visit", "visit-mut"] }
 tempfile = "3"
 
 [dev-dependencies]

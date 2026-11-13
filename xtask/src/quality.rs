@@ -1,4 +1,7 @@
-use crate::coverage::Coverage;
+use crate::{
+    coverage::Coverage,
+    mutation_plan::{ChangedItem, changed_items},
+};
 use std::{
     collections::BTreeSet,
     env,
@@ -14,7 +17,10 @@ const LLVM_COV: &str = "0.9.1";
 /// Full-host mutation workers, and so the suites the mutation-load measurement runs at once;
 /// 8 leaves room for another agent's tests on the shared development host.
 const MUTATION_WORKERS: &str = "8";
+/// Rounds of the full gate's mutation-load measurement (`cargo xtask check --full`).
 const MUTATION_LOAD_ROUNDS: &str = "5";
+/// Rounds of the ticket gate's mutation-load measurement (`cargo xtask check`).
+const TICKET_MUTATION_LOAD_ROUNDS: &str = "1";
 /// A mutant's test run times out, counting as killed, after this multiple of the baseline run.
 const MUTATION_TIMEOUT_FACTOR: &str = "10";
 /// Owner-set maximum CRAP score for every shipped function (#21, amended to 5).
@@ -33,8 +39,10 @@ const TEST_COMMAND: &str = r#""$CLIMON2_MUTATION_PYTHON" tools/test-mutation.py"
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum Scope {
-    /// `cargo xtask check`: host source, after the unchanged workspace passes under mutation load.
-    Complete,
+    /// `cargo xtask check`: changed functions of host source, after one round of mutation load.
+    Ticket,
+    /// `cargo xtask check --full`: changed host source files, after five rounds of mutation load.
+    Full,
     /// `cargo xtask mutate`: host source.
     Host,
     /// `cargo xtask mutate --native-only`: only host-exclusive native source.
@@ -51,7 +59,7 @@ impl Scope {
 
     fn workers(self) -> io::Result<String> {
         match self {
-            Self::Complete | Self::Host => Ok(MUTATION_WORKERS.to_owned()),
+            Self::Ticket | Self::Full | Self::Host => Ok(MUTATION_WORKERS.to_owned()),
             Self::Native => Ok(std::thread::available_parallelism()?
                 .get()
                 .min(16)
@@ -61,7 +69,53 @@ impl Scope {
 
     /// Rounds of the mutation-load measurement required before mutation, if any.
     fn load_rounds(self) -> Option<&'static str> {
-        (self == Self::Complete).then_some(MUTATION_LOAD_ROUNDS)
+        match self {
+            Self::Ticket => Some(TICKET_MUTATION_LOAD_ROUNDS),
+            Self::Full => Some(MUTATION_LOAD_ROUNDS),
+            Self::Host | Self::Native => None,
+        }
+    }
+
+    /// Changed sources to mutate without `--mutate-all`, since `CLIMON2_MUTATION_BASE`.
+    fn changed_targets(self, root: &Path) -> io::Result<Vec<Target>> {
+        // Upstream --changed reads only git status and cannot limit itself to shipped crates.
+        let base = env::var_os("CLIMON2_MUTATION_BASE").unwrap_or_else(|| "HEAD".into());
+        if self == Self::Ticket {
+            return function_targets(root, &base);
+        }
+        Ok(Target::whole(self.select(changed_sources(root, &base)?)))
+    }
+}
+
+/// One file's mutation selection: changed items, or the whole file when `items` is `None`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Target {
+    path: PathBuf,
+    items: Option<Vec<ChangedItem>>,
+}
+
+impl Target {
+    fn whole(paths: Vec<PathBuf>) -> Vec<Self> {
+        paths
+            .into_iter()
+            .map(|path| Self { path, items: None })
+            .collect()
+    }
+
+    /// The mutator's `--lines` value, or `None` to mutate the whole file.
+    fn lines(&self) -> Option<String> {
+        let items = self.items.as_ref()?;
+        let lines: BTreeSet<usize> = items
+            .iter()
+            .flat_map(|item| item.lines.iter().cloned().flatten())
+            .collect();
+        Some(
+            lines
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        )
     }
 }
 
@@ -202,18 +256,32 @@ fn mutation_command(root: &Path) -> io::Result<Command> {
 }
 
 fn changed_sources(root: &Path, base: &OsStr) -> io::Result<Vec<PathBuf>> {
+    let (_, files) = changed_files(root, base)?;
+    let paths: BTreeSet<_> = files.into_iter().map(|(path, _)| path).collect();
+    Ok(paths.into_iter().collect())
+}
+
+/// A changed source and its path at the base, which is `None` when the file is new.
+type ChangedFile = (PathBuf, Option<PathBuf>);
+
+/// Changed shipped sources, each with its path at `base` unless git reports it as new.
+/// Renames compare against their old path; added, copied and untracked files are new.
+fn changed_files(root: &Path, base: &OsStr) -> io::Result<(String, Vec<ChangedFile>)> {
     let commit = output(
         Command::new("git")
             .current_dir(root)
             .args(["rev-parse", "--verify", "--end-of-options"])
             .arg(format!("{}^{{commit}}", base.to_string_lossy())),
     )?;
-    let commit = String::from_utf8(commit.stdout).map_err(io::Error::other)?;
+    let commit = String::from_utf8(commit.stdout)
+        .map_err(io::Error::other)?
+        .trim()
+        .to_owned();
     let changed = output(
         Command::new("git")
             .current_dir(root)
-            .args(["diff", "--name-only", "-z", "--diff-filter=ACMR"])
-            .arg(commit.trim())
+            .args(["diff", "--name-status", "-z", "-M", "--diff-filter=ACMR"])
+            .arg(&commit)
             .arg("--")
             .args(SHIPPED),
     )?;
@@ -223,7 +291,90 @@ fn changed_sources(root: &Path, base: &OsStr) -> io::Result<Vec<PathBuf>> {
             .args(["ls-files", "--others", "--exclude-standard", "-z", "--"])
             .args(SHIPPED),
     )?;
-    source_paths(root, &[changed.stdout, untracked.stdout])
+    let mut files = name_status(&changed.stdout)?;
+    for path in nul_separated(&untracked.stdout)? {
+        files.push((path, None));
+    }
+    files.retain(|(path, _)| is_active_source(root, path));
+    files.sort();
+    Ok((commit, files))
+}
+
+/// `git diff --name-status -z` records as (path, base path).
+fn name_status(bytes: &[u8]) -> io::Result<Vec<ChangedFile>> {
+    let mut fields = nul_separated(bytes)?.into_iter();
+    let mut files = Vec::new();
+    while let Some(status) = fields.next() {
+        let status = status.to_string_lossy().into_owned();
+        let first = fields
+            .next()
+            .ok_or_else(|| io::Error::other("truncated git diff"))?;
+        let file = match status.chars().next() {
+            Some('M') => (first.clone(), Some(first)),
+            Some('R') => {
+                let new = fields
+                    .next()
+                    .ok_or_else(|| io::Error::other("truncated rename"))?;
+                (new, Some(first))
+            }
+            Some('C') => (
+                fields
+                    .next()
+                    .ok_or_else(|| io::Error::other("truncated copy"))?,
+                None,
+            ),
+            _ => (first, None),
+        };
+        files.push(file);
+    }
+    Ok(files)
+}
+
+fn nul_separated(bytes: &[u8]) -> io::Result<Vec<PathBuf>> {
+    bytes
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            Ok(PathBuf::from(
+                std::str::from_utf8(path).map_err(io::Error::other)?,
+            ))
+        })
+        .collect()
+}
+
+/// The ticket gate's selection: each changed file's changed items; new files whole.
+fn function_targets(root: &Path, base: &OsStr) -> io::Result<Vec<Target>> {
+    let (commit, files) = changed_files(root, base)?;
+    let mut targets = Vec::new();
+    for (path, base_path) in files {
+        let items = match base_path {
+            None => None,
+            Some(base_path) => Some(file_changes(root, &commit, &base_path, &path)?),
+        };
+        if items.as_ref().is_none_or(|items| !items.is_empty()) {
+            targets.push(Target { path, items });
+        }
+    }
+    Ok(targets)
+}
+
+fn file_changes(
+    root: &Path,
+    commit: &str,
+    base_path: &Path,
+    path: &Path,
+) -> io::Result<Vec<ChangedItem>> {
+    let base = output(
+        Command::new("git")
+            .current_dir(root)
+            .args(["cat-file", "-p"])
+            .arg(format!("{commit}:{}", base_path.display())),
+    )?;
+    changed_items(
+        &String::from_utf8_lossy(&base.stdout),
+        &fs::read_to_string(root.join(path))?,
+    )
+    .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))
 }
 
 fn shipped_sources(root: &Path) -> io::Result<Vec<PathBuf>> {
@@ -264,20 +415,19 @@ fn native_source_is_active(path: &Path) -> bool {
 fn source_paths(root: &Path, outputs: &[Vec<u8>]) -> io::Result<Vec<PathBuf>> {
     let mut paths = BTreeSet::new();
     for bytes in outputs {
-        for path in bytes
-            .split(|byte| *byte == 0)
-            .filter(|path| !path.is_empty())
-        {
-            let path = PathBuf::from(std::str::from_utf8(path).map_err(io::Error::other)?);
-            if path.extension().is_some_and(|extension| extension == "rs")
-                && root.join(&path).is_file()
-                && native_source_is_active(&path)
-            {
+        for path in nul_separated(bytes)? {
+            if is_active_source(root, &path) {
                 paths.insert(path);
             }
         }
     }
     Ok(paths.into_iter().collect())
+}
+
+fn is_active_source(root: &Path, path: &Path) -> bool {
+    path.extension().is_some_and(|extension| extension == "rs")
+        && root.join(path).is_file()
+        && native_source_is_active(path)
 }
 
 fn verify_native_coverage(root: &Path, report: &Path) -> io::Result<()> {
@@ -297,22 +447,54 @@ fn verify_native_coverage(root: &Path, report: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn mutation_targets(root: &Path, all: bool, scope: Scope) -> io::Result<Vec<Target>> {
+    if all {
+        Ok(Target::whole(scope.select(shipped_sources(root)?)))
+    } else {
+        scope.changed_targets(root)
+    }
+}
+
+/// Prints what the gate would mutate, without running anything else.
+pub fn plan(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
+    let targets = mutation_targets(root, all, scope)?;
+    if targets.is_empty() {
+        println!("No changed shipped Rust source to mutate.");
+    }
+    for target in &targets {
+        let total = fs::read_to_string(root.join(&target.path))?.lines().count();
+        let Some(items) = &target.items else {
+            println!("{}: whole file, {total} lines", target.path.display());
+            continue;
+        };
+        let lines = target.lines().map_or(0, |lines| lines.split(',').count());
+        println!(
+            "{}: {} changed items, {lines} of {total} lines",
+            target.path.display(),
+            items.len()
+        );
+        for item in items {
+            let spans: Vec<_> = item
+                .lines
+                .iter()
+                .map(|span| format!("{}-{}", span.start(), span.end()))
+                .collect();
+            println!("  {}  lines {}", item.name, spans.join(","));
+        }
+    }
+    Ok(())
+}
+
 pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
     let sources = shipped_sources(root)?;
     let scored = scope.select(sources.clone());
-    let paths = if all {
-        scored.clone()
-    } else {
-        // Upstream --changed reads only git status and cannot limit itself to shipped crates.
-        let base = env::var_os("CLIMON2_MUTATION_BASE").unwrap_or_else(|| "HEAD".into());
-        scope.select(changed_sources(root, &base)?)
-    };
-    if scope == Scope::Native && paths.is_empty() {
+    let targets = mutation_targets(root, all, scope)?;
+    if scope == Scope::Native && targets.is_empty() {
         eprintln!("No selected native Rust source to qualify; shared source is checked locally.");
         return Ok(());
     }
     verify_llvm_cov()?;
-    let mut mutation = mutation_command(root)?;
+    mutation_command(root)?;
     let report = root.join("target/coverage/rust/lcov.info");
     fs::create_dir_all(report.parent().expect("report directory"))?;
     if report.try_exists()? {
@@ -329,12 +511,6 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
         .args(["--use-existing-coverage", "--threshold", CRAP_THRESHOLD])
         .args(&scored))?;
     let workers = scope.workers()?;
-    mutation.args([
-        "--use-existing-coverage",
-        "--mutate-all",
-        "--max-workers",
-        &workers,
-    ]);
     if let Some(rounds) = scope.load_rounds() {
         run(python_script(root, "check-mutation-load.py").args([
             "--workers",
@@ -345,13 +521,52 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
             MUTATION_TIMEOUT_FACTOR,
         ]))?;
     }
-    if paths.is_empty() {
+    if targets.is_empty() {
         eprintln!("No changed shipped Rust source to mutate.");
         return Ok(());
     }
-    mutation.args(paths);
     verify_worker_baseline(root, &sources)?;
-    run(&mut mutation)
+    mutate(root, &workers, targets)
+}
+
+/// Whole files in one mutator run; each line-scoped file in its own, as `--lines` is global.
+/// Every run happens, so one file's survivors do not hide another's.
+fn mutate(root: &Path, workers: &str, targets: Vec<Target>) -> io::Result<()> {
+    let (whole, scoped): (Vec<_>, Vec<_>) = targets
+        .into_iter()
+        .partition(|target| target.items.is_none());
+    let mut runs: Vec<(Vec<String>, Vec<PathBuf>)> = Vec::new();
+    if !whole.is_empty() {
+        runs.push((
+            Vec::new(),
+            whole.into_iter().map(|target| target.path).collect(),
+        ));
+    }
+    for target in scoped {
+        let lines = target.lines().expect("scoped target has lines");
+        runs.push((vec!["--lines".to_owned(), lines], vec![target.path]));
+    }
+    let mut failures = Vec::new();
+    for (lines, paths) in runs {
+        let mut mutation = mutation_command(root)?;
+        mutation
+            .args([
+                "--use-existing-coverage",
+                "--mutate-all",
+                "--max-workers",
+                workers,
+            ])
+            .args(lines)
+            .args(paths);
+        if let Err(error) = run(&mut mutation) {
+            failures.push(error.to_string());
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(io::Error::other(failures.join("\n")))
+    }
 }
 
 /// A repository quality script, run by the pinned tools' Python with the workspace and Cargo.
@@ -752,7 +967,8 @@ mod tests {
     fn owned_load_gate_fixture() {
         let root = env::var_os("CLIMON2_LOAD_GATE_FIXTURE").unwrap();
         let scope = match env::var("LOAD_GATE_SCOPE").unwrap().as_str() {
-            "complete" => Scope::Complete,
+            "ticket" => Scope::Ticket,
+            "full" => Scope::Full,
             "host" => Scope::Host,
             "native" => Scope::Native,
             other => panic!("unknown load-gate scope {other}"),
@@ -822,7 +1038,7 @@ mod tests {
             "crates/climon2-core/src/lib.rs".to_owned()
         };
         fs::create_dir_all(root.join(&source).parent().unwrap()).unwrap();
-        fs::write(root.join(&source), "").unwrap();
+        fs::write(root.join(&source), "pub fn changed() -> u8 { 1 }\n").unwrap();
         fs::write(
             root.join("Cargo.toml"),
             format!(
@@ -844,7 +1060,8 @@ mod tests {
              *mutator*rev-parse*) echo {MUTATOR} ;;\n\
              *'rev-parse --verify'*) echo fixture ;;\n\
              *'ls-files --cached'*) printf '%s\\0' \"$LOAD_GATE_SOURCE\" ;;\n\
-             *'diff --name-only'*) if [ \"$LOAD_GATE_CHANGED\" = yes ]; then printf '%s\\0' \"$LOAD_GATE_SOURCE\"; fi ;;\n\
+             *'diff --name-status'*) if [ \"$LOAD_GATE_CHANGED\" = yes ]; then printf 'M\\0%s\\0' \"$LOAD_GATE_SOURCE\"; fi ;;\n\
+             *'cat-file'*) echo 'pub fn changed() -> u8 {{ 0 }}' ;;\n\
              esac\n"
             ),
         );
@@ -928,7 +1145,7 @@ esac
     #[test]
     fn complete_qualification_measures_load_with_mutations_workers_before_mutating() {
         let run = run_gate(Gate {
-            scope: "complete",
+            scope: "full",
             load_fails: false,
             changed: true,
         });
@@ -949,7 +1166,7 @@ esac
     #[test]
     fn a_failed_load_measurement_prevents_mutation() {
         let run = run_gate(Gate {
-            scope: "complete",
+            scope: "full",
             load_fails: true,
             changed: true,
         });
@@ -962,14 +1179,14 @@ esac
     #[test]
     fn complete_qualification_measures_load_even_without_mutation_candidates() {
         let run = run_gate(Gate {
-            scope: "complete",
+            scope: "full",
             load_fails: true,
             changed: false,
         });
         assert!(!run.success, "{}", run.output);
         assert!(run.output.contains("flaky_fixture"), "{}", run.output);
         let run = run_gate(Gate {
-            scope: "complete",
+            scope: "full",
             load_fails: false,
             changed: false,
         });
@@ -996,6 +1213,52 @@ esac
                 run.events
             );
         }
+    }
+
+    /// 2026-11-13 owner decision: the full gate keeps five load rounds and whole-file mutation.
+    #[cfg(unix)]
+    #[test]
+    fn the_full_gate_measures_five_rounds_and_mutates_whole_changed_files() {
+        let run = run_gate(Gate {
+            scope: "full",
+            load_fails: false,
+            changed: true,
+        });
+        assert!(run.success, "{}", run.output);
+        assert_eq!(run.option("load", "--rounds"), "5");
+        let mutation = &run.events[run.started("mutation").unwrap()];
+        assert!(!mutation.contains("--lines"), "{mutation}");
+        assert!(
+            mutation.ends_with(" crates/climon2-core/src/lib.rs"),
+            "{mutation}"
+        );
+    }
+
+    /// 2026-11-13 owner decision: the ticket gate measures one round and mutates changed functions.
+    #[cfg(unix)]
+    #[test]
+    fn the_ticket_gate_measures_one_round_and_mutates_only_changed_function_lines() {
+        let run = run_gate(Gate {
+            scope: "ticket",
+            load_fails: false,
+            changed: true,
+        });
+        assert!(run.success, "{}", run.output);
+        assert_eq!(run.option("load", "--rounds"), "1");
+        assert!(
+            run.started("load") < run.started("mutation"),
+            "{:?}",
+            run.events
+        );
+        assert_eq!(run.option("mutation", "--lines"), "1");
+        let run = run_gate(Gate {
+            scope: "ticket",
+            load_fails: false,
+            changed: false,
+        });
+        assert!(run.success, "{}", run.output);
+        assert_eq!(run.option("load", "--rounds"), "1");
+        assert_eq!(run.started("mutation"), None, "{:?}", run.events);
     }
 
     /// #21 isolation amendment: a reported kill cannot stand in for the selected binary.
@@ -1079,6 +1342,70 @@ esac
             vec![core.to_owned()]
         );
         assert!(changed_sources(root, OsStr::new("missing-base")).is_err());
+    }
+
+    fn git(root: &Path, args: &[&str]) {
+        run(Command::new("git").current_dir(root).args(args)).unwrap();
+    }
+
+    /// Ticket gate: functions changed since the base, compared through renames; new files whole.
+    #[test]
+    fn ticket_selection_scopes_changed_functions_through_renames_and_keeps_new_files_whole() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        git(root, &["init", "--quiet"]);
+        let edited = "crates/climon2-cli/src/lib.rs";
+        let renamed = "crates/climon2-core/src/old.rs";
+        let comment = "crates/climon2-vt/src/lib.rs";
+        let base_source = "pub fn kept() -> u8 {\n    1\n}\n\npub fn edited() -> u8 {\n    2\n}\n";
+        for path in [edited, renamed, comment] {
+            fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            fs::write(root.join(path), base_source).unwrap();
+        }
+        commit(root);
+        let changed = base_source.replace("    2", "    3");
+        fs::write(root.join(edited), &changed).unwrap();
+        git(root, &["mv", renamed, "crates/climon2-core/src/new.rs"]);
+        fs::write(root.join("crates/climon2-core/src/new.rs"), &changed).unwrap();
+        fs::write(
+            root.join(comment),
+            format!("// Only a comment.\n{base_source}"),
+        )
+        .unwrap();
+        commit(root);
+        let untracked = "crates/climon2-daemon/src/lib.rs";
+        fs::create_dir_all(root.join(untracked).parent().unwrap()).unwrap();
+        fs::write(root.join(untracked), "pub fn fresh() {}\n").unwrap();
+
+        let edited_function = Some(vec![ChangedItem {
+            name: "edited".to_owned(),
+            lines: vec![5..=7],
+        }]);
+        assert_eq!(
+            function_targets(root, OsStr::new("HEAD~1")).unwrap(),
+            vec![
+                Target {
+                    path: edited.into(),
+                    items: edited_function.clone(),
+                },
+                Target {
+                    path: "crates/climon2-core/src/new.rs".into(),
+                    items: edited_function,
+                },
+                Target {
+                    path: untracked.into(),
+                    items: None,
+                },
+            ]
+        );
+        assert_eq!(
+            function_targets(root, OsStr::new("HEAD"))
+                .unwrap()
+                .iter()
+                .map(Target::lines)
+                .collect::<Vec<_>>(),
+            vec![None]
+        );
     }
 
     #[test]
