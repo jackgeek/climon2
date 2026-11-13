@@ -41,7 +41,11 @@ fn case(name: &'static str, peer: Value, startup: Value, request: &Value) -> Cas
     }
 }
 
-/// Every case in one script, four steps each.
+/// The steps of each case: create, submit, run, wait for run, a snapshot,
+/// then finish.
+const CASE_STEPS: usize = 6;
+
+/// Every case in one script.
 fn run_cases<'a>(package: &Package, root: &Path, cases: impl Iterator<Item = &'a Case>) -> Value {
     let steps: Vec<Value> = cases
         .flat_map(|case| {
@@ -50,6 +54,8 @@ fn run_cases<'a>(package: &Package, root: &Path, cases: impl Iterator<Item = &'a
                 json!({ "do": "create", "instance": name, "peer": case.peer, "startup": case.startup }),
                 json!({ "do": "submit", "instance": name, "request": case.request }),
                 json!({ "do": "run", "instance": name }),
+                json!({ "do": "wait_run", "instance": name }),
+                json!({ "do": "snapshot", "instance": name }),
                 json!({ "do": "finish", "instance": name }),
             ]
         })
@@ -57,11 +63,26 @@ fn run_cases<'a>(package: &Package, root: &Path, cases: impl Iterator<Item = &'a
     script(package, root, json!(steps))
 }
 
-/// Case `index`'s submit call, records and terminal evidence.
-fn outcome(report: &Value, index: usize) -> (&Value, Vec<Value>, Value) {
-    assert_success(&step(report, 4 * index)["call"]);
-    let (records, terminal) = finished(step(report, 4 * index + 3));
-    (step(report, 4 * index + 1), records, terminal.clone())
+/// Once run has returned, nothing is outstanding: no request, no operation
+/// and no connection descriptor.
+fn assert_settled(name: &str, snapshot: &Value) {
+    for (gauge, value) in [
+        ("request_records", 0),
+        ("operations", 0),
+        ("descriptors", INSTANCE_DESCRIPTORS),
+    ] {
+        assert_eq!(snapshot[gauge], value, "{name}: {gauge}: {snapshot:#}");
+    }
+}
+
+/// Case `index`'s submit call, records and terminal evidence, once its
+/// instance is settled.
+fn outcome<'a>(report: &'a Value, index: usize, name: &str) -> (&'a Value, Vec<Value>, Value) {
+    let start = CASE_STEPS * index;
+    assert_success(&step(report, start)["call"]);
+    assert_settled(name, &step(report, start + 4)["output"]);
+    let (records, terminal) = finished(step(report, start + 5));
+    (step(report, start + 1), records, terminal.clone())
 }
 
 /// COM-01 Fault (missing required support is rejected explicitly
@@ -237,7 +258,7 @@ fn installed_library_rejects_an_open_the_session_cannot_honour_before_any_role()
     let report = run_cases(&package, &root, cases.iter().map(|(case, ..)| case));
     for (index, (case, (origin, code), retry, frames)) in cases.iter().enumerate() {
         let name = case.name;
-        let (submit, records, terminal) = outcome(&report, index);
+        let (submit, records, terminal) = outcome(&report, index, name);
         assert_success(submit);
         assert_eq!(records.len(), 2, "{name}: {records:#?}");
         assert_rejected(&records[0], 1, 1, *origin, code);
@@ -547,7 +568,7 @@ fn installed_library_fails_the_connection_on_traffic_revision_one_forbids() {
     let report = run_cases(&package, &root, cases.iter().map(|(case, ..)| case));
     for (index, (case, (origin, code), before)) in cases.iter().enumerate() {
         let name = case.name;
-        let (submit, records, terminal) = outcome(&report, index);
+        let (submit, records, terminal) = outcome(&report, index, name);
         assert_success(submit);
         assert_eq!(records.len(), before + 1, "{name}: {records:#?}");
         if *before > 0 {
@@ -679,14 +700,7 @@ fn assert_scenarios(package: &Package, root: &Path, scenarios: &[Scenario]) {
     for (scenario, start) in scenarios.iter().zip(starts) {
         let name = scenario.name;
         let last = start + scenario.steps.len() + ending.len() - 1;
-        let settled = &step(&report, last - 1)["output"];
-        for (gauge, value) in [
-            ("request_records", 0),
-            ("operations", 0),
-            ("descriptors", INSTANCE_DESCRIPTORS),
-        ] {
-            assert_eq!(settled[gauge], value, "{name}: {gauge}: {settled:#}");
-        }
+        assert_settled(name, &step(&report, last - 1)["output"]);
         let (mut records, terminal) = finished(step(&report, last));
         if let Some(drained) = scenario.drained {
             let mut earlier = step(&report, start + drained)["records"]
@@ -1265,6 +1279,41 @@ fn installed_library_accepts_records_exactly_at_their_limits() {
         assert!(rest.is_empty(), "{rest:#?}");
         assert_left(terminal, 1);
     }
+    assert_all_released(&report["ledger"]);
+    package.assert_clean();
+}
+
+/// LIB-04 and LIB-05 Fault (a panic contained inside a running connection
+/// leaves nothing counted): with `CLIMON2_LIBRARY_FAULT` panicking as the
+/// first record from the fake daemon arrives, run still returns with failed
+/// terminal evidence (`internal_error`, passive retry), and the instance no
+/// longer counts the connection's descriptor or the Open still outstanding.
+#[test]
+fn installed_library_panic_in_a_connection_leaves_nothing_counted() {
+    let package = Package::new();
+    let root = root(&package);
+    let steps = json!([
+        { "do": "create", "peer": passive_peer(json!([])) },
+        { "do": "submit", "request": open(1, &REQUIRED, &["title-v1"]) },
+        { "do": "run" },
+        { "do": "wait_run" },
+        { "do": "snapshot" },
+        { "do": "finish" },
+    ]);
+    let Some(report) = script_fault(&package, &root, steps, "panic:receive") else {
+        return;
+    };
+    assert_settled("panic", &step(&report, 4)["output"]);
+    let (records, terminal) = finished(step(&report, 5));
+    assert_eq!(records.len(), 1, "{records:#?}");
+    assert_diagnostic(&records[0], 1, ORIGIN_LIBRARY, "internal_error");
+    let contained = (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED);
+    assert_terminal(
+        terminal,
+        1,
+        contained,
+        Some((ORIGIN_LIBRARY, "internal_error")),
+    );
     assert_all_released(&report["ledger"]);
     package.assert_clean();
 }

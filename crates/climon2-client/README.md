@@ -195,7 +195,8 @@ signal handlers or standard streams.
 
 With `test-hooks` only (`src/library/hooks.rs`), `CLIMON2_LIBRARY_FAULT`
 selects faults: `panic:<call>[,<call>...]` panics once at each named export's
-boundary (`bootstrap` names `climon2_client_get_interface`), `worker` makes
+boundary (`bootstrap` names `climon2_client_get_interface`), or at `receive`,
+as a running connection handles a frame from its daemon; `worker` makes
 `run` start a worker that ends with its stream, and `stall-cleanup` one whose
 cleanup never ends. Release builds start no workers: an instance's
 connection runs on its owner thread, inside `run`.
@@ -339,6 +340,7 @@ private target directory and checks.
 | COM-01 Fault: missing support, mismatched identity, unreachable or silent daemons rejected before any Open is sent; families intersect | `installed_library_rejects_an_open_the_session_cannot_honour_before_any_role`, `installed_library_selects_only_families_both_sides_support` (`climon2-e2e/tests/passive_faults.rs`) |
 | COM-02 Fault: forbidden, malformed, truncated, oversized and out-of-order traffic fails the connection with its origin and code; limits exactly met are accepted | `installed_library_fails_the_connection_on_traffic_revision_one_forbids`, `installed_library_accepts_records_exactly_at_their_limits` (`passive_faults.rs`) |
 | COM-03, EXT-01 and EXT-02 Fault: timeouts, lost answers without fabrication or replay, refusals and their retry, known final results, shutdown and explicit Leave evidence | `installed_library_reports_lost_and_late_answers_truthfully_without_replay`, `installed_library_reports_a_known_final_result_and_never_retries`, `installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures` (`passive_faults.rs`) |
+| LIB-04 and LIB-05 Fault: a panic inside a running connection leaves no descriptor or operation counted | `installed_library_panic_in_a_connection_leaves_nothing_counted` (`passive_faults.rs`) |
 | LIB-05 Fault: no `SIGPIPE` in an embedder that left it at its default | `installed_library_never_raises_sigpipe_in_its_embedder` (`passive_faults.rs`) |
 | COM-02 and COM-03 Library: native admission, every queue limit at and one past its bound, no ID consumed by a rejection | `installed_library_admits_only_valid_requests_and_rejections_cost_nothing`, `installed_library_bounds_requests_by_every_queue_limit` (`climon2-e2e/tests/passive_admission.rs`) |
 | LIB-04 Library: delivery lifetimes and limits | `installed_library_holds_each_delivery_until_released` (`passive_admission.rs`) |

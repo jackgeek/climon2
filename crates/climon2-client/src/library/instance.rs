@@ -112,6 +112,48 @@ struct Measures {
     released: u64,
 }
 
+/// Each charge has one owner here: what enters a queue or a delivery is
+/// counted, with the allocation it holds, where it leaves.
+impl Measures {
+    /// A request enters the queue, with its bytes.
+    fn queue_request(&mut self, bytes: u64) {
+        self.request_records.add(1);
+        self.request_bytes.add(bytes);
+        self.allocation.add(bytes);
+    }
+
+    /// A request leaves the queue, to execute or be cancelled.
+    fn dequeue_request(&mut self, bytes: u64) {
+        self.request_records.sub(1);
+        self.request_bytes.sub(bytes);
+        self.allocation.sub(bytes);
+    }
+
+    /// A record enters the event queue, charged until its delivery's
+    /// release.
+    fn queue_event(&mut self, charge: u64) {
+        self.event_records.add(1);
+        self.event_bytes.add(charge);
+        self.allocation.add(charge);
+    }
+
+    /// A delivery of `records` queued records is drained.
+    fn deliver(&mut self, records: u32) {
+        self.deliveries.add(1);
+        self.allocation.add(DELIVERY);
+        self.drained += u64::from(records);
+    }
+
+    /// A delivery is released, with its records and their charge.
+    fn release(&mut self, records: u32, charge: u64) {
+        self.deliveries.sub(1);
+        self.event_records.sub(records);
+        self.event_bytes.sub(charge);
+        self.allocation.sub(DELIVERY + charge);
+        self.released += 1;
+    }
+}
+
 /// Why the stream ends, once it does.
 struct Stop {
     shutdown: bool,
@@ -488,18 +530,15 @@ impl Shared {
 
     fn accept(&self, state: &mut State, submitted: Submitted) {
         state.last_request = submitted.id;
-        let measures = &mut state.measures;
-        measures.request_records.add(1);
-        measures.request_bytes.add(submitted.bytes);
-        measures.allocation.add(submitted.bytes);
-        measures.operations.add(1);
+        state.measures.queue_request(submitted.bytes);
+        state.measures.operations.add(1);
         state.requests.push_back(submitted);
         self.waker.raise();
     }
 
     /// What the connection does next: stop after a failure elsewhere, react
     /// to shutdown once, or take the oldest request when it can execute.
-    pub(super) fn next(&self, shutdown_seen: bool, leave_ready: bool) -> Next {
+    fn next(&self, shutdown_seen: bool, leave_ready: bool) -> Next {
         let mut state = self.lock();
         self.waker.clear();
         if state.stop.failure.is_some() {
@@ -520,7 +559,7 @@ impl Shared {
     }
 
     /// Queues an outcome into the room its request reserved.
-    pub(super) fn answer(&self, response: Response) {
+    fn answer(&self, response: Response) {
         let mut state = self.lock();
         self.respond(&mut state, response);
     }
@@ -543,30 +582,29 @@ impl Shared {
     }
 
     fn queue(&self, state: &mut State, event: Event) {
-        let charge = event.charge();
-        let measures = &mut state.measures;
-        measures.event_records.add(1);
-        measures.event_bytes.add(charge);
-        measures.allocation.add(charge);
+        state.measures.queue_event(event.charge());
         state.events.push_back(event);
         self.signal(state);
     }
 
-    pub(super) fn connected(&self) {
+    /// Counts the connection's socket among the instance's descriptors
+    /// while the returned guard lives.
+    pub(super) fn connected(&self) -> Descriptor<'_> {
         self.lock().measures.descriptors.add(1);
+        Descriptor(self)
     }
 
-    pub(super) fn disconnected(&self) {
-        self.lock().measures.descriptors.sub(1);
+    /// Settles the operations of `count` requests that will never be
+    /// answered.
+    fn settle(&self, count: u32) {
+        self.lock().measures.operations.sub(count);
     }
 
-    /// The connection is closed: its departure evidence, and the public
-    /// requests it sent that will never be answered.
-    fn end(&self, departure: Departure, unanswered: u32) {
+    /// The connection is closed, with its departure evidence.
+    fn end(&self, departure: Departure) {
         let mut state = self.lock();
         state.stop.departure = departure;
         state.stop.ended = true;
-        state.measures.operations.sub(unanswered);
         self.changed.notify_all();
     }
 
@@ -629,10 +667,7 @@ impl Shared {
         require(outstanding < self.limits.deliveries, DELIVERIES_FULL)?;
         let count = self.batch(&state.events);
         let batch = Batch::new(self.generation, state.events.drain(..count).collect());
-        let measures = &mut state.measures;
-        measures.deliveries.add(1);
-        measures.allocation.add(DELIVERY);
-        measures.drained += u64::from(batch.len());
+        state.measures.deliver(batch.len());
         let delivery = Box::new(Delivery {
             shared: Arc::clone(self),
             batch,
@@ -748,10 +783,7 @@ fn take(state: &mut State, leave_ready: bool) -> Option<Submitted> {
 
 fn dequeue(state: &mut State) -> Option<Submitted> {
     let request = state.requests.pop_front()?;
-    let measures = &mut state.measures;
-    measures.request_records.sub(1);
-    measures.request_bytes.sub(request.bytes);
-    measures.allocation.sub(request.bytes);
+    state.measures.dequeue_request(request.bytes);
     Some(request)
 }
 
@@ -760,14 +792,53 @@ pub(super) fn release(delivery: Box<Delivery>) {
     let shared = Arc::clone(&delivery.shared);
     let (records, bytes) = (delivery.batch.len(), delivery.batch.charge());
     drop(delivery);
-    let mut state = shared.lock();
-    let measures = &mut state.measures;
-    measures.deliveries.sub(1);
-    measures.event_records.sub(records);
-    measures.event_bytes.sub(bytes);
-    measures.allocation.sub(DELIVERY + bytes);
-    measures.released += 1;
+    shared.lock().measures.release(records, bytes);
     shared.waker.raise();
+}
+
+/// The connection's socket, counted among the instance's descriptors until
+/// this guard drops, however the connection ends.
+pub(super) struct Descriptor<'a>(&'a Shared);
+
+impl Drop for Descriptor<'_> {
+    fn drop(&mut self) {
+        self.0.lock().measures.descriptors.sub(1);
+    }
+}
+
+/// The requests the connection took from the queue and has not answered:
+/// answering one settles its operation, and dropping the guard settles the
+/// rest, however the connection ended.
+pub(super) struct Taken<'a> {
+    shared: &'a Shared,
+    count: u32,
+}
+
+impl<'a> Taken<'a> {
+    pub(super) fn new(shared: &'a Shared) -> Self {
+        Self { shared, count: 0 }
+    }
+
+    /// What the connection does next; a request it takes is counted.
+    pub(super) fn next(&mut self, shutdown_seen: bool, leave_ready: bool) -> Next {
+        let next = self.shared.next(shutdown_seen, leave_ready);
+        if matches!(next, Next::Request(_)) {
+            self.count += 1;
+        }
+        next
+    }
+
+    /// Queues the outcome of a request the connection took.
+    pub(super) fn answer(&mut self, response: Response) {
+        self.count -= 1;
+        self.shared.answer(response);
+    }
+}
+
+impl Drop for Taken<'_> {
+    fn drop(&mut self) {
+        self.shared.settle(self.count);
+    }
 }
 
 impl Owner {
@@ -818,8 +889,8 @@ impl Owner {
             "client instance running"
         );
         self.start_workers();
-        let (departure, unanswered) = connection::run(&self.shared);
-        self.shared.end(departure, unanswered);
+        let departure = connection::run(&self.shared);
+        self.shared.end(departure);
     }
 
     /// Waits up to `cleanup_ms` for every worker, then joins them; a worker

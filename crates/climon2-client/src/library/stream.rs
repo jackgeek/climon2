@@ -239,15 +239,6 @@ impl Stream {
         self.synchronized
     }
 
-    /// Public requests sent and never answered.
-    pub(super) fn unanswered(&self) -> u32 {
-        let public = self.pending.iter().filter(|(_, sent)| match sent {
-            Sent::Open { .. } => true,
-            Sent::Leave { id } => id.is_some(),
-        });
-        public.count() as u32
-    }
-
     /// One frame from the daemon.
     pub(super) fn receive(&mut self, frame: &Frame) -> Result<Effect, Fault> {
         match ServerMessage::from_frame(frame).map_err(fatal)? {
