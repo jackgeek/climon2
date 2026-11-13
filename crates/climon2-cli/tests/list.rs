@@ -76,7 +76,7 @@ fn list_presentation_quotes_controls_and_fits_terminal_width() {
     assert!(json.contains("\"depth\":3"));
 }
 
-/// #37: malformed metadata is hidden, warned about, and retained.
+/// #37, DSC-06 (CLI part): malformed metadata is hidden, warned about, and retained.
 #[test]
 fn malformed_metadata_is_hidden_warned_and_never_deleted() {
     let home = tempfile::tempdir().unwrap();
@@ -100,7 +100,8 @@ fn malformed_metadata_is_hidden_warned_and_never_deleted() {
     );
 }
 
-/// #37/#26: no socket plus a reused PID is stale; a matching live identity protects files.
+/// #37/#26, DSC-06 (CLI part): no socket plus a reused PID is stale; a matching live identity
+/// protects files.
 #[test]
 fn stale_cleanup_requires_connection_refusal_and_proven_dead_identity() {
     let home = tempfile::tempdir().unwrap();
@@ -122,6 +123,8 @@ fn stale_cleanup_requires_connection_refusal_and_proven_dead_identity() {
     fs::remove_file(live.socket_path.as_str()).unwrap();
 }
 
+/// DSC-06 (CLI part), Linux: a session with no socket and no recorded Linux daemon identity is
+/// uncertain: hidden, warned about and never deleted.
 #[cfg(target_os = "linux")]
 #[test]
 fn uncertain_linux_daemon_identity_is_warned_and_metadata_is_retained() {
@@ -141,6 +144,8 @@ fn uncertain_linux_daemon_identity_is_warned_and_metadata_is_retained() {
     );
 }
 
+/// DSC-06 (CLI part): stale metadata whose socket is already gone is removed, and the absent
+/// socket is not reported as a failed cleanup.
 #[test]
 fn already_missing_stale_socket_does_not_report_cleanup_failure() {
     let home = tempfile::tempdir().unwrap();
@@ -182,7 +187,8 @@ fn refusing_socket(path: &str) {
     assert_eq!(unsafe { libc::close(socket) }, 0);
 }
 
-/// #37: missing sockets with a gone PID are stale, unlike failed hello exchanges.
+/// #37, DSC-06 (CLI part): missing sockets with a gone PID are stale, unlike failed hello
+/// exchanges.
 #[test]
 fn gone_pid_is_stale_but_wrong_or_malformed_hello_never_is() {
     use climon2_core::protocol::{Frame, read_frame, write_frame};
@@ -218,7 +224,8 @@ fn gone_pid_is_stale_but_wrong_or_malformed_hello_never_is() {
     }
 }
 
-/// #37: ARGS truncation follows the real stdout terminal width, not a fixed character cap.
+/// #37, DSC-06 (CLI part): ARGS truncation follows the real stdout terminal width, not a fixed
+/// character cap.
 #[test]
 fn list_args_fit_the_real_stdout_terminal_width() {
     use climon2_core::protocol::{Frame, read_frame, write_frame};
@@ -282,7 +289,8 @@ fn list_created_column_uses_the_local_timezone() {
     assert!(output.status.success(), "{output:?}");
 }
 
-/// #37: list probes do not attach, interrupt the controller, or need version companions.
+/// #37, DSC-06 (CLI part): list probes do not attach, interrupt the controller, or need
+/// version companions.
 #[test]
 fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
     use climon2_core::protocol::{
@@ -401,7 +409,7 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
     isolation.assert_clean();
 }
 
-/// #37: partial hello replies never justify deletion.
+/// #37, DSC-06 (CLI part): partial hello replies never justify deletion.
 #[test]
 fn failed_hello_retains_artifacts_under_a_single_two_second_deadline() {
     assert_failed_hello_retains_artifacts(|socket| {
@@ -414,6 +422,8 @@ fn failed_hello_retains_artifacts_under_a_single_two_second_deadline() {
     });
 }
 
+/// DSC-06 (CLI part): a hello reply that stalls after one byte still ends its probe at the
+/// single two-second discovery deadline, and nothing is deleted.
 #[test]
 fn stalled_partial_hello_does_not_block_past_the_discovery_deadline() {
     assert_failed_hello_retains_artifacts(|socket| {
@@ -449,7 +459,8 @@ fn assert_failed_hello_retains_artifacts(
     fs::remove_file(metadata.socket_path.as_str()).unwrap();
 }
 
-/// #37: a dead identity must never turn a non-socket path into a deletion target.
+/// #37, DSC-06 (CLI part): a dead identity must never turn a non-socket path into a deletion
+/// target.
 #[test]
 fn stale_metadata_cannot_unlink_a_regular_file_as_a_socket() {
     let home = tempfile::tempdir().unwrap();
@@ -469,7 +480,8 @@ fn stale_metadata_cannot_unlink_a_regular_file_as_a_socket() {
     fs::remove_file(metadata.socket_path.as_str()).unwrap();
 }
 
-/// ADR0001/#37: probes use only frozen hello, ignore version/protocol and future fields.
+/// ADR0001/#37, DSC-06 (CLI part): probes use only frozen hello, ignore version/protocol and
+/// future fields.
 #[test]
 fn frozen_probes_are_concurrent_and_sort_newest_first() {
     let home = tempfile::tempdir().unwrap();
@@ -579,7 +591,8 @@ fn list_json_adds_the_state_object_or_null() {
     assert_eq!(value[1], expected);
 }
 
-/// Section 1.11: malformed optional hello data is logged; the session stays listed.
+/// Section 1.11, DSC-06 (CLI part): malformed optional hello data is logged; the session stays
+/// listed.
 #[test]
 fn malformed_hello_extensions_are_logged_and_the_session_stays_live() {
     use climon2_core::protocol::{Frame, read_frame, write_frame};
@@ -655,11 +668,11 @@ fn list_args_that_exactly_fit_are_whole_and_one_cell_less_is_truncated() {
     );
 }
 
-/// #77, DSC-06: discovery moved into `climon2-discovery`, and `list` still logs each probe's
-/// diagnostic in the general log once per session, at its old level, under the CLI's own
-/// target and with its errno: a hello from another session or a failed exchange, an
-/// unreachable socket, a session whose daemon still runs or whose identity is unknown, and a
-/// failed stale cleanup. Uncertain sessions keep their metadata.
+/// #77, DSC-06 (CLI part): discovery moved into `climon2-discovery`, and `list` still logs
+/// each probe's diagnostic in the general log once per session, at its old level, under the
+/// CLI's own target and with its errno: a hello from another session or a failed exchange,
+/// an unreachable socket, a session whose daemon still runs or whose identity is unknown,
+/// and a failed stale cleanup. Uncertain sessions keep their metadata.
 #[test]
 fn every_probe_diagnostic_is_logged_once_with_its_errno() {
     use climon2_test_term::{Isolation, bin_path, exit_within, hello_peer, process_command};
