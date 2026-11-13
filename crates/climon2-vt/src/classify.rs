@@ -124,9 +124,15 @@ fn parse(bytes: &[u8]) -> Dispatch {
     dispatch
 }
 
+/// The token replaced: first the controls the parser executed in it, then
+/// `replacement`.
+fn replace(dispatch: &Dispatch, replacement: &[u8]) -> Live {
+    Live::Replace([&dispatch.executed[..], replacement].concat())
+}
+
 /// Only the controls the parser executed reach the host.
 fn strip(dispatch: &Dispatch) -> Live {
-    Live::Replace(dispatch.executed.clone())
+    replace(dispatch, b"")
 }
 
 fn escape(dispatch: &Dispatch) -> Policy {
@@ -195,7 +201,7 @@ fn without_screens(kept: &[u16], dispatch: &Dispatch) -> Live {
     if kept.is_empty() {
         strip(dispatch)
     } else {
-        Live::Replace([&dispatch.executed[..], &decset(kept, dispatch.action)].concat())
+        replace(dispatch, &decset(kept, dispatch.action))
     }
 }
 
