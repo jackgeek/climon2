@@ -146,14 +146,15 @@ fn connection_failed(metadata: SessionMetadata, error: io::Error, removal: Remov
         error.raw_os_error(),
         Some(libc::ENOENT | libc::ECONNREFUSED)
     ) {
-        identity(metadata, removal)
+        prove_stale_and_clean_up(metadata, removal)
     } else {
         Outcome::Uncertain(metadata, Uncertainty::Unreachable(error))
     }
 }
 
-/// Only a proven dead daemon identity makes such a session stale.
-fn identity(metadata: SessionMetadata, removal: Removal) -> Outcome {
+/// Only a proven dead daemon identity makes such a session stale, and only a stale session's
+/// files are cleaned up, as the pass's removal says.
+fn prove_stale_and_clean_up(metadata: SessionMetadata, removal: Removal) -> Outcome {
     match process::is_same_daemon(&metadata) {
         Ok(false) => {
             let cleanup = removal.clean_up(&metadata);
