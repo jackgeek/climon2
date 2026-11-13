@@ -339,3 +339,38 @@ fn a_failed_cleanup_fails_the_kill_but_keeps_the_confirmed_result() {
     attached.ended(&killed);
     session.finish();
 }
+
+/// COM-03 (Contract, Kill cases) and COM-06 (Fault, through the
+/// `pty-write` test hook): an authoritative failure of the session, here a
+/// failed write of the controller's Input to the command's terminal, ends
+/// it but does not by itself fail a Kill. Once the daemon confirmed how the
+/// command ended (it ignores SIGHUP, so SIGKILL after the grace) and its
+/// cleanup completed, a standalone Kill sent during the grace succeeds with
+/// signal 9, the monitor's Command final says the same, and only the
+/// private protocol's attachment and kill report `Error`.
+#[test]
+fn a_kill_succeeds_after_a_session_failure_once_termination_is_confirmed() {
+    let mut session = Session::configured("ignore-hup", |command, _| {
+        command.env("CLIMON2_DAEMON_FAULT", "pty-write");
+    });
+    let mut controlling = session.attach();
+    session.wait_marker(&mut controlling);
+    let (mut watching, _) = monitor(&session, &[]);
+    crate::send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
+    terminating(&session);
+    let mut killer = peer(&session);
+    request(&mut killer, &kill(1, 1, &[]));
+    let mut private = session.connect();
+    crate::send(&mut private, ClientMessage::Kill);
+    let killed = signalled(9);
+    assert_eq!(message(&mut killer), terminated(1, &killed));
+    assert_closed(&mut killer);
+    assert!(matches!(
+        crate::receive(&mut private),
+        PrivateMessage::Error { .. }
+    ));
+    let (_, result) = crate::until_terminal(&mut controlling);
+    assert!(matches!(result, PrivateMessage::Error { .. }), "{result:?}");
+    assert_final_then_closed(&mut watching, &killed);
+    session.finish();
+}
