@@ -1,7 +1,8 @@
 # Control revoked — `0x47`
 
-**Status: agreed and implemented for interactive attachments**
-([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** for interactive attachments
+([#87](https://github.com/jackgeek/climon2/issues/87)) and monitor-mode
+connections ([#89](https://github.com/jackgeek/climon2/issues/89)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) reports the end of the
 receiving [client](../../../GLOSSARY.md#sessions)'s
 [control](../../../GLOSSARY.md#attachment-and-control).
@@ -43,7 +44,9 @@ Related: [Ready](request-ready.md), [Leave](request-leave.md).
 ## Implemented behavior
 
 The [session daemon](../../../GLOSSARY.md#sessions) sends Control revoked to
-an interactive [attachment](../../../GLOSSARY.md#attachment-and-control)
+an [attachment](../../../GLOSSARY.md#attachment-and-control), interactive or a
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) its
+Acquire or a [promotion](../../../GLOSSARY.md#attachment-and-control) converted,
 whose control ends while the attachment stays: with reason `takeover` when
 another attachment, of either protocol, attaches or takes control, and with
 reason `session_ending` when the session ends while it still controls, just

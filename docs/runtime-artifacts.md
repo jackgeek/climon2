@@ -131,8 +131,9 @@ in-process record queues and monitor-owned `climon2-vt` models, with planned
 read-only Rust views for Ratatui. Session bytes never go directly to the host;
 daemon query authority stays unique. Monitor-mode daemon presentation uses
 effective session geometry, not host/requested dimensions, including background
-promotion. Optional core Focus is not a plugin/artifact addition. No new dynamic
-library is chosen by this amendment.
+[promotion](../GLOSSARY.md#attachment-and-control); session daemons already
+serialize it so. Optional core Focus is not
+a plugin/artifact addition. No new dynamic library is chosen by this amendment.
 
 The [status/activity revision](session-status.md) puts title detection and both
 state machines and terminal-signal interpretation in
@@ -193,8 +194,11 @@ partly implemented: session daemons serve
 [passive monitor connections](../GLOSSARY.md#attachment-and-control),
 interactive [attachments](../GLOSSARY.md#attachment-and-control) and
 standalone [Kill](../GLOSSARY.md#attachment-and-control) over it, with the
-command's final result, beside the private protocol, but no climon2
-executable or library consumes it yet, so no arrow changes.
+command's final result, and passive monitor connections that acquire or
+inherit control with
+[canonical presentation](../GLOSSARY.md#restoration-and-presentation),
+beside the private protocol, but no climon2 executable or library consumes
+it yet, so no arrow changes.
 
 The planned wire core is independent of the current private Unix socket carrier.
 The main/downstream monitor consumes source-monitor sessions over

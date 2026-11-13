@@ -24,25 +24,28 @@ The [session daemon](../../../GLOSSARY.md#sessions) implements this revision
 for [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
 ([#86](https://github.com/jackgeek/climon2/issues/86)), ordinary
 interactive [attachments](../../../GLOSSARY.md#attachment-and-control)
-([#87](https://github.com/jackgeek/climon2/issues/87)) and standalone
+([#87](https://github.com/jackgeek/climon2/issues/87)), standalone
 [Kill](../../../GLOSSARY.md#attachment-and-control)
-([#88](https://github.com/jackgeek/climon2/issues/88)): the
+([#88](https://github.com/jackgeek/climon2/issues/88)) and monitors that
+acquire and inherit control
+([#89](https://github.com/jackgeek/climon2/issues/89)): the
 [hello advertisement](hello-reply.md#revision-1-advertisement), framing and
 validation with their connection-fatal codes, Open in both modes, Leave,
-Input, Resize, Ready, Acquire between attachments, Focus, Kill, Response,
+Input, Resize, Ready, Acquire, Focus, Kill, Response,
 Fatal error, Initial metadata (the title and a known command result; status
 and progress reported unavailable), Title changed, Control granted and
 revoked, Restoration begin and complete, Display, Geometry and
 [Command final](event-command-final.md#implemented-behavior) without status,
 with the private protocol's takeover,
 [hand-back](../../../GLOSSARY.md#attachment-and-control) and
-[leave policy](../../../GLOSSARY.md#attachment-and-control). Until it serves them, it
+[leave policy](../../../GLOSSARY.md#attachment-and-control), the
+[promotion](../../../GLOSSARY.md#attachment-and-control) of passive registrations
+and the [canonical presentation](../../../GLOSSARY.md#restoration-and-presentation)
+of monitor-mode connections. Until it serves them, it
 rejects the other
-requests without effects, as each request's page describes. Acquire by a
-passive monitor connection, Set viewing, Acknowledge, the status,
-notification and progress messages, promotion of passive registrations,
-canonical monitor-mode presentation and bounded delivery remain
-unimplemented, and no
+requests without effects, as each request's page describes. Set viewing,
+Acknowledge, the status, notification and progress messages and bounded
+delivery remain unimplemented, and no
 [client](../../../GLOSSARY.md#sessions) speaks this revision yet. The
 [daemon's contract tests](../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
 are the evidence for the implemented parts.
@@ -280,8 +283,11 @@ Monitor-mode Display/restoration is always serialized at effective session
 geometry, including promotion/background grants, not host/requested geometry.
 The existing Grant/Restoration begin/Geometry fields suffice with this new
 [canonical policy](../terminal-integration.md#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1);
-no presentation-size field is added. Ordinary interactive direct/derived/
-native-history behavior is unchanged.
+no presentation-size field is added. Every change of the effective geometry is
+followed by a Restoration begin at that geometry before any Display at it, so
+a monitor model is never reflowed in place (developer decision on
+[#76](https://github.com/jackgeek/climon2/issues/76), 2026-11-13). Ordinary
+interactive direct/derived/native-history behavior is unchanged.
 Applied model readiness permits Ready and resize progress without selection or
 paint; selected application input additionally waits for a coherent painted
 current target. Focus validates current authority and readiness, but focus-out
@@ -468,8 +474,12 @@ closure, query authority, inert titles, Focus, and takeover, hand-back and
 leave-policy parity. They also cover exit versus signal in Command final,
 known results in Initial metadata and first-role rejections, no final
 without evidence, and standalone Kill: its answer after termination and
-cleanup, Kills of both protocols joining one grace, and a partial result;
-the rest remains future.
+cleanup, Kills of both protocols joining one grace, and a partial result.
+For monitors they cover Acquire by a registration, succession (hand-back
+before the newest registration's promotion, leave policy only after it),
+Leave and a committed Kill racing a promotion, and canonical restorations at
+the effective geometry, with a Restoration begin after every geometry
+change; the rest remains future.
 Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent

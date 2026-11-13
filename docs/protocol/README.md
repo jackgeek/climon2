@@ -22,7 +22,7 @@ and daemon wire pages assign exact agreed schemas, separately from implementatio
 | Interface | Status | Reference |
 |---|---|---|
 | [Client](../../GLOSSARY.md#sessions) to session daemon: [hello handshake](../../GLOSSARY.md#sessions) | Implemented and frozen | [Request](daemon-client/hello-request.md) and [reply](daemon-client/hello-reply.md). |
-| Client to session daemon: after hello | Private protocol implemented for attach and kill; wire revision 1 agreed and partly implemented beside it: session daemons serve passive monitor connections, interactive attachments and standalone Kill, with the command's final result, chosen by the first frame after hello | [Decision boundary](daemon-client/post-hello.md), [complete wire rules](daemon-client/core-v1.md). |
+| Client to session daemon: after hello | Private protocol implemented for attach and kill; wire revision 1 agreed and partly implemented beside it: session daemons serve passive monitor connections, interactive attachments and standalone Kill, with the command's final result, and monitors that acquire and inherit control with canonical presentation, chosen by the first frame after hello | [Decision boundary](daemon-client/post-hello.md), [complete wire rules](daemon-client/core-v1.md). |
 | Monitor to [client library](../../GLOSSARY.md#sessions) | Complete native revision-1 specification agreed. Only the library's [compatibility check](monitor-client/request-hello.md) bootstrap and description are implemented; every [function-table](TERMS.md#function-table) call reports `CM1_UNSUPPORTED_OPERATION`. The monitor side is not implemented. | [Library embedding](library-embedding.md), [native contract/header/examples](monitor-client/core-v1.md), and [shared communication contract](#shared-in-process-communication-contract). |
 | [Client executable](../../GLOSSARY.md#sessions) to same-release library | Same-release loading agreed, not implemented | [Library embedding](library-embedding.md). |
 | Monitor to [host](../../GLOSSARY.md#sessions) | Program-status advertising and toast bell agreed, not implemented | [Reports and bell](#monitor-to-host-status-and-bell). |
@@ -110,12 +110,15 @@ per-[session](../../GLOSSARY.md#sessions) `climon2-vt`, with planned read-only R
 views for painting. Session bytes never go directly to the host. Monitor-mode
 daemon presentation is canonically serialized at effective session
 [geometry](TERMS.md#geometry),
-not outer-host dimensions; ordinary attach is unchanged.
+not outer-host dimensions; ordinary attach is unchanged. Session daemons
+implement this [canonical presentation](../../GLOSSARY.md#restoration-and-presentation)
+([#89](https://github.com/jackgeek/climon2/issues/89)), following every
+effective geometry change with a restoration at that geometry.
 [Restoration](../../GLOSSARY.md#restoration-and-presentation) replaces
 the whole model/history transactionally. Applied
 [readiness](../../GLOSSARY.md#protocol-and-plugin-concepts) permits wire progress;
 selected input additionally waits for a coherent current frame to be painted.
-These #63 amendments are agreed, not implemented.
+The monitor's side of these #63 amendments is agreed, not implemented.
 
 Each client has its own connection and per-session state. The
 [embedding reference](library-embedding.md) specifies exact-release lookup,

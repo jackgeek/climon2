@@ -1,7 +1,9 @@
 # Display — `0x49`
 
-**Status: agreed and implemented for interactive attachments**
-([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** for interactive attachments
+([#87](https://github.com/jackgeek/climon2/issues/87)) and, with canonical
+presentation, for monitor-mode connections
+([#89](https://github.com/jackgeek/climon2/issues/89)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) delivers ordered terminal
 [bytes](../TERMS.md#byte) to the controlling
 [client](../../../GLOSSARY.md#sessions), including background control.
@@ -63,7 +65,7 @@ Related: [Input](request-input.md).
 ## Implemented behavior
 
 The [session daemon](../../../GLOSSARY.md#sessions) sends Display to an
-interactive [attachment](../../../GLOSSARY.md#attachment-and-control) while
+[attachment](../../../GLOSSARY.md#attachment-and-control) while
 it controls: its restoration chunks, live output, and the
 [release](../../../GLOSSARY.md#restoration-and-presentation) of its
 [presentation](../../../GLOSSARY.md#restoration-and-presentation) when its control or
@@ -74,3 +76,12 @@ restoration and at most 65,535 payload bytes, the chunk size of the private
 protocol's output. The daemon never sends an empty Display. Bytes are exact:
 the daemon's live-output policy decides what reaches the attachment, as for
 an ordinary attach, and terminal queries are answered by the daemon alone.
+An interactive attachment's bytes are presented for its host, Direct or
+Derived. A monitor-mode connection's, once its Acquire or a
+[promotion](../../../GLOSSARY.md#attachment-and-control) made it an attachment, have
+[canonical presentation](../../../GLOSSARY.md#restoration-and-presentation)
+whatever host size it reports: its restorations are canonical, as
+[Restoration begin](event-restoration-begin.md#implemented-behavior)
+describes, and its live output is the filtered output of Direct presentation
+at the session geometry. No Display reaches it at a new effective geometry
+before the Restoration begin at that geometry.

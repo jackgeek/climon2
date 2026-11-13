@@ -78,7 +78,12 @@ fresh random `connection_id`.
 
 A monitor-mode Open registers a passive monitor connection, answers success,
 then sends the Initial metadata in the same daemon loop step. It never
-changes the hello `state`. It is accepted during committed termination too,
+changes the hello `state`, and registering never takes control. From then on
+the registration may inherit control: a controller's departure that leaves
+no attachment promotes the newest registration, and the registration's own
+[Acquire](request-acquire.md#implemented-behavior) converts it into an
+attachment (see [Control granted](event-control-granted.md#implemented-behavior)).
+It is accepted during committed termination too,
 which rejects new interactive work only, so a monitor can still learn the
 outcome passively. A later Open on a registered connection is
 `invalid_state` and keeps the registration.

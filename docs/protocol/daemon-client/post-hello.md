@@ -9,10 +9,13 @@ core contract; it is implemented for
 [passive monitor connections](../../../GLOSSARY.md#attachment-and-control),
 ordinary interactive
 [attachments](../../../GLOSSARY.md#attachment-and-control) and standalone
-[Kill](request-kill.md), with the command's final result, and is added
+[Kill](request-kill.md), with the command's final result, and for passive
+monitor connections that acquire or inherit control, and is added
 beside the private protocol, which it is to replace before release. Both
 protocols share one session control: an attachment of either can take
-control from the other, and control is handed back across them.
+control from the other, control is handed back across them, and a
+departure of either can [promote](../../../GLOSSARY.md#attachment-and-control)
+a passive monitor connection.
 These are not interchangeable formats.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
@@ -42,7 +45,7 @@ The revision-1 advertisement in the [hello reply](hello-reply.md#revision-1-adve
 never changes the frozen tokens and `state` that admission and `climon2 list`
 use. A [passive monitor connection](../../../GLOSSARY.md#attachment-and-control)
 is not an [attachment](../../../GLOSSARY.md#attachment-and-control), so `state`
-never counts it.
+never counts it until its Acquire or a promotion makes it one.
 
 ## The private protocol
 

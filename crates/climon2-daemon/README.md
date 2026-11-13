@@ -109,8 +109,9 @@ ending between frames just closes. Frames read before the end are still
 served, so a peer may send Leave and half-close.
 
 A monitor Open registers a **passive monitor connection**. It is not an
-attachment: control, the leave policy and the hello `state` (so `climon2
-list`'s STATE and CLIENTS) never count it, and it never acquires control.
+attachment: the leave policy and the hello `state` (so `climon2 list`'s
+STATE and CLIENTS) never count it, and registering never acquires control,
+though the registration may inherit it (see below).
 Open selects the requested families this daemon supports (required ones must
 all be; unknown or unsupported optional ones are dropped) under a fresh
 connection GUID. Its success Response is followed by one Initial metadata
@@ -123,9 +124,9 @@ registration that selected `title-v1`, whatever the control state; titles are
 inert text, never logged. A monitor Open is accepted during committed
 termination too, since that rejects new interactive work only.
 
-Leave removes the registration in the same step, answers `left` with
-`attachment_detached: false`, and closes the stream; nothing sent after it is
-served. Leave before any Open, and a later Open or Kill on a registered
+Leave removes the registration in the same step, before any later
+departure can promote it, answers `left` with `attachment_detached: false`,
+and closes the stream; nothing sent after it is served. Leave before any Open, and a later Open or Kill on a registered
 connection, are `invalid_state` and the stream goes on. A rejected first role
 (an unsupported revision, or an unknown or unsupported required family) has
 no effects, carries the command's result as `known_final` once the daemon
@@ -136,9 +137,8 @@ registration or a standalone Kill's connection. Focus is
 `unsupported_capability` unless the connection's Open selected `focus-v1`,
 then `not_attached` on a registration. Set viewing and Acknowledge are
 `invalid_state` on every connection until #91 serves them, and Acquire is
-`internal_error` on a registration until #89 serves it, and `invalid_state`
-before any Open or on a standalone Kill's connection, which leave nothing to
-convert. Registrations share the
+`invalid_state` before any Open or on a standalone Kill's connection, which
+leave nothing to convert. Registrations share the
 connection cap, the 16 MiB queue and the five-second no-progress loss.
 
 An interactive Open attaches an ordinary **interactive attachment**: the same
@@ -176,6 +176,32 @@ order (3 bytes accepted), nothing otherwise, and newly enabled reporting
 (`Fed::focus_enabled`) queues the known state once with the daemon's
 terminal replies.
 
+A registration's Acquire converts it into an attachment that takes control
+at once, of a starting or detached session too: any previous controller gets
+its release and Control revoked (`takeover`), then the registration gets
+Control granted (`acquire`) and Restoration begin before the changed success;
+the hello `state` then counts it, and it stays an attachment when another
+client takes over. **Succession:** when a controller departs, by Leave,
+private detach or any loss, control is handed back (`hand_back`) to the most
+recently controlling remaining attachment; when none remains, the newest
+registration is promoted (`successor`): it becomes an attachment with a
+grant and a restoration. Only then does the leave policy apply, so a
+registered monitor keeps a session alive through its last attachment's
+departure. Committed termination refuses Acquire (`session_terminating`)
+and promotes nobody; a registration promoted before the termination
+committed ends with it like any attachment. A Leave read after a promotion
+is that attachment's accepted detach (`attachment_detached: true`).
+
+A converted registration has **canonical presentation** (`Effect::Convert`,
+`Delivery::canonical`): each of its grants keeps the session geometry, so
+acquiring or inheriting resizes nothing, and each of its restorations is
+`Vt::canonical`'s, serialized at the session geometry for a fresh terminal
+of that size whatever host size anyone reported, with live output Direct.
+A host change that keeps the geometry keeps its restoration; once ready, a
+Resize that changes the geometry is followed, when applied, by Geometry and
+at once a replacement Restoration begin at the new geometry within the same
+period, before any Display at it, so its model is never reflowed in place.
+
 The daemon keeps the command's result as its wait status gives it
 (`core::wire::CommandResult`): a normal exit's raw status, or a signal's
 number, never folded together; only the private protocol's `Exit` and
@@ -209,12 +235,13 @@ ends, its unwritten input is discarded and, if an application paste is open
 while mode 2004 is set, closing-marker cleanup bytes are queued. A PTY write
 failure is an authoritative session failure.
 
-Control is a pure state machine (`control.rs`): each attach, take-control and
-hand-back is granted at once under a new authority, a control period with its
-first restoration ID (attaches in one iteration are each granted and the last
-wins), the previous controller gets its release then `Revoked`, and a
-departing controller hands back to the most recently controlling attachment
-still present. A host change before readiness replaces the restoration
+Control is a pure state machine (`control.rs`): each attach, take-control,
+hand-back and promotion is granted at once under a new authority, a control
+period with its first restoration ID (attaches in one iteration are each
+granted and the last wins), the previous controller gets its release then
+`Revoked`, and a departing controller hands back to the most recently
+controlling attachment still present, otherwise promotes the newest passive
+registration, which it keeps in acceptance order. A host change before readiness replaces the restoration
 within its period under a new restoration ID, and Ready needs the complete
 current restoration. Both protocols share these counters; the private
 protocol names each restoration by its ID in `Granted`, `RestoreEnd` and
@@ -234,8 +261,9 @@ revision-1 controller gets Control revoked), and final flushing is bounded
 to one further second. A receiver that
 never reads cannot be guaranteed delivery after this bound.
 
-The leave policy: while another attachment remains, the session continues;
-after an accepted final detach it keeps running with no idle timeout; a final
+The leave policy applies after succession: while another attachment remains,
+or a passive registration is promoted, the session continues; after an
+accepted final detach it keeps running with no idle timeout; a final
 unexpected departure, `Kill`, daemon TERM, an authoritative failure or no
 attachment within five seconds of readiness begins shutdown. Shutdown closes
 every master handle without writing to it, then runs a real five-second hang-up grace as a loop
@@ -385,24 +413,23 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | COM-01 (Contract): hello advertises revision 1 beside the frozen tokens and `state`, exactly as the published complete reply does; Open selects only supported families; a peer that does not select an optional family receives nothing for it | `hello_advertises_revision1_beside_the_frozen_tokens_and_state`, `monitor_open_selects_supported_families_then_reports_initial_metadata`, `a_monitor_without_title_v1_receives_nothing_for_titles` |
 | COM-01 (Contract, interactive and parity cases): an interactive Open selects the supported families, `focus-v1` included; takeover, hand-back and the leave policy match the private protocol, across both protocols | `interactive_open_selects_supported_families_and_rejects_without_effects`, `takeover_hand_back_and_leave_policy_match_the_private_protocol` |
 | COM-02 (Contract): broken framing, non-strict JSON or UTF-8, malformed binary Input headers, server, private and unknown types, non-increasing request IDs and truncation are connection-fatal with their exact codes; a frame at the 1,048,576-byte limit is served and one byte more refused from its prefix; fragmented and coalesced frames are each answered in order; a Fatal error replaces a stalled stream's unstarted backlog without splitting a frame; out-of-state requests are rejected, never fatal | `revision1_traffic_that_breaks_the_rules_is_connection_fatal`, `malformed_binary_input_is_connection_fatal`, `a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal`, `coalesced_and_fragmented_revision1_frames_are_each_answered_in_order`, `a_fatal_error_replaces_a_backlog_without_splitting_a_frame`, `requests_that_need_an_attachment_are_refused_and_the_stream_goes_on`, `requests_on_an_interactive_attachment_get_their_documented_results` |
-| COM-03 (Contract, passive cases): Open, Leave and the rejections of a first role, a later Open or Kill, an early Leave or Acquire and every request that needs an attachment have their documented outcomes and effects, including during committed termination | `monitor_open_selects_supported_families_then_reports_initial_metadata`, `passive_requests_get_their_documented_outcomes`, `a_monitor_registers_and_leaves_during_committed_termination`, `requests_that_need_an_attachment_are_refused_and_the_stream_goes_on`, `acquire_is_refused_without_effects_until_it_is_served` |
+| COM-03 (Contract, passive cases): Open, Leave and the rejections of a first role, a later Open or Kill, an early Leave or Acquire and every request that needs an attachment have their documented outcomes and effects, including during committed termination; a registration's Acquire converts it into an attachment that takes control, and is `session_terminating` during committed termination | `monitor_open_selects_supported_families_then_reports_initial_metadata`, `passive_requests_get_their_documented_outcomes`, `a_monitor_registers_and_leaves_during_committed_termination`, `requests_that_need_an_attachment_are_refused_and_the_stream_goes_on`, `a_registration_takes_control_only_by_its_own_acquire`, `a_committed_kill_overrides_succession` |
 | COM-03 (Contract, interactive cases): interactive Open, Input, Resize, Ready, Acquire, Focus and Leave have their documented results and rejections, without effects when rejected; a terminating session rejects new interactive work with `session_terminating` while Leave still works | `interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order`, `interactive_open_selects_supported_families_and_rejects_without_effects`, `requests_on_an_interactive_attachment_get_their_documented_results`, `committed_termination_rejects_new_interactive_work_and_leave_still_works`, `takeover_hand_back_and_leave_policy_match_the_private_protocol` |
 | COM-03 (Contract, Kill cases): a standalone Kill is answered only after the real hang-up grace, with the session's files removed and the command gone; standalone and private kills sent during the grace join it without restarting it; a Kill's connection rejects a later Open or Kill, Leave and Acquire (`invalid_state`) and Input (`not_attached`); a Kill whose termination the daemon cannot confirm fails with a partial result | `a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_join_it`, `a_session_ending_without_final_evidence_sends_no_command_final` |
 | COM-04 (Contract): binary Input and Display carry `00 ff 41`, NUL and invalid UTF-8 unchanged, across Input requests and Display chunks | `binary_input_and_display_pass_unchanged` |
 | COM-05 (Contract, Initial metadata case): Initial metadata is captured atomically and title changes follow it gap-free, including around a burst; it carries a command result already known, and no Command final follows it | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata`, `a_known_result_reaches_later_opens_and_rejected_first_roles` |
 | COM-05 (Contract, interactive order): Response, Initial metadata, grant, Restoration begin, matching Display chunks and Restoration complete arrive in order under fragmented and coalesced I/O; a large restoration is produced as it drains; Geometry follows a Resize's acceptance | `interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order`, `ready_needs_the_complete_current_restoration`, `a_ready_controllers_resize_reports_the_actual_geometry_after_its_acceptance` |
+| COM-05 (Contract, monitor-mode geometry): once a monitor-mode controller is ready, each applied Resize that changes the effective geometry is followed by Geometry, then a Restoration begin at that geometry before any Display at it, then a canonical restoration needing a new Ready; a host change that keeps the geometry is followed by nothing, before readiness too | `monitor_mode_restorations_are_canonical_at_the_effective_geometry_whatever_the_host` |
 | COM-06 (Contract): exit zero, an arbitrary nonzero exit (143) and a signal (15, and 9 after a kill) each reach every opened connection as exactly one Command final, exit kept apart from signal, while the private protocol keeps `Exit` 0, 143 and 143 and `Terminated` 137; a known result reaches later Opens' Initial metadata and rejected first roles' `known_final`, and is never published twice | `command_final_reports_each_exit_and_signal_once`, `a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_join_it`, `a_known_result_reaches_later_opens_and_rejected_first_roles` |
 | COM-06 (Fault, `end-hangup` hook): a session ending without final evidence sends no Command final to any connection; its standalone Kill fails with `cleanup_failed`, no result and incomplete cleanup, and the private kill keeps `Terminated` 125 | `a_session_ending_without_final_evidence_sends_no_command_final` |
-| CTL-01 (Contract): a passive registration never acquires control, of a detached session or one controlled elsewhere, and is not an attachment: hello `state` and so `list` are unchanged; core metadata flows before control | `a_passive_registration_never_acquires_control_and_is_not_an_attachment`, `a_monitor_registers_and_leaves_during_committed_termination` |
-| CTL-03 (Contract, title case): titles reach monitors by value, in order and whatever the control; unset, empty, a value and unavailable stay distinct; an oversized title is ignored, never truncated | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_monitor_without_title_v1_receives_nothing_for_titles`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata`, `an_oversized_title_is_ignored_never_truncated`, `titles_reach_an_attachment_as_inert_text` |
+| CTL-01 (Contract): a passive registration never acquires control, of a detached session or one controlled elsewhere, and is not an attachment: hello `state` and so `list` are unchanged; core metadata flows before control; only its own Acquire takes control, at the session's geometry, with no input | `a_passive_registration_never_acquires_control_and_is_not_an_attachment`, `a_monitor_registers_and_leaves_during_committed_termination`, `a_registration_takes_control_only_by_its_own_acquire` |
+| CTL-03 (Contract, title case): titles reach monitors by value, in order and whatever the control, a promoted monitor's background control included; unset, empty, a value and unavailable stay distinct; an oversized title is ignored, never truncated | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_monitor_without_title_v1_receives_nothing_for_titles`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata`, `an_oversized_title_is_ignored_never_truncated`, `titles_reach_an_attachment_as_inert_text` |
+| CTL-04 (Contract): a departing controller, by Leave or by loss, hands control back to the most recently controlling remaining attachment first, otherwise the newest registration is promoted (`successor`) at the session's geometry, with no resize or input; the leave policy applies only after succession, so a registered monitor keeps the session alive; the promotion's restoration is canonical at the effective geometry, while an ordinary attachment on an oversized host keeps its Derived restoration | `departures_hand_control_back_first_then_promote_the_newest_registration`, `monitor_mode_restorations_are_canonical_at_the_effective_geometry_whatever_the_host` |
+| CTL-04 (Fault, races): a Leave read after a promotion detaches the promoted attachment (`attachment_detached: true`), and one read first removes the registration, which is then never promoted; a committed Kill overrides succession, and a registration promoted before the Kill ends with the session as an attachment | `leave_racing_a_promotion_removes_the_registration_or_the_attachment_atomically`, `a_committed_kill_overrides_succession`, `a_registration_promoted_before_a_kill_ends_as_an_attachment` |
 | CTL-05 (Contract and Fault, stale authority from a raw peer): Input, Resize and Ready under an earlier period or a superseded restoration are `stale_period` or `stale_restoration`; Ready needs the complete current restoration; late authority never re-enables input | `stale_and_superseded_authority_is_rejected_and_never_re_enables_input`, `ready_needs_the_complete_current_restoration` |
 | INP-03 (Contract): bracketed-paste bytes reach the application exactly; an open application paste is closed when admission ends; a focus report never lands inside a paste that earlier Input requests carry | `bracketed_paste_is_exact_and_an_open_paste_is_closed_when_admission_ends`, `focus_reports_follow_the_input_accepted_before_them` |
 | TRM-02 (Contract): the daemon alone answers session queries; titles stay inert text and title-looking output stays text | `session_queries_are_answered_by_the_daemon_alone`, `titles_reach_an_attachment_as_inert_text` |
 | FOC-01 (Contract): Focus emits no duplicates, newly enabled reporting receives the current state, and new readiness synchronizes the latest intent without replay; a focus report follows the Input accepted before it, however the requests were read | `focus_reaches_the_application_once_per_change_and_resynchronizes_on_new_readiness`, `focus_reports_follow_the_input_accepted_before_them` |
-
-`acquire_is_refused_without_effects_until_it_is_served` pins the interim
-`internal_error` refusal of Acquire on a registration, which #89 replaces;
-it covers no matrix scenario.
 
 Every wait for a daemon is bounded: `Session::finish`, its drop and
 `run_unsupervised` kill and reap a daemon still running 20 seconds after it
