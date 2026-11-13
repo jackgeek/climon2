@@ -105,9 +105,11 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             selected_capabilities: tokens(&selected),
         };
         self.respond(id, request_id, Outcome::Ok(opened));
-        let title = selected
-            .contains(&Family::TitleV1)
-            .then(|| self.vt.application_title().map(str::to_owned));
+        let title = if selected.contains(&Family::TitleV1) {
+            Available::Available(self.vt.application_title().map(str::to_owned))
+        } else {
+            Available::Unavailable
+        };
         self.send_wire(id, &initial_metadata(title).to_frame());
         self.monitors.insert(id, Monitor { selected });
     }
@@ -246,11 +248,10 @@ fn tokens(selected: &BTreeSet<Family>) -> Families {
     Families::new(tokens.collect()).expect("a set holds each token once")
 }
 
-/// The title by value when `title-v1` is selected (`Some(None)` is unset),
-/// with status and progress explicitly unavailable. No command result is
-/// reported: the exit-or-signal result it needs arrives with #88.
-fn initial_metadata(title: Option<Option<String>>) -> InitialMetadata {
-    let title = title.map_or(Available::Unavailable, Available::Available);
+/// The title by value when `title-v1` is selected (an available `None` is
+/// unset), with status and progress explicitly unavailable. No command result
+/// is reported: the exit-or-signal result it needs arrives with #88.
+fn initial_metadata(title: Available<Option<String>>) -> InitialMetadata {
     InitialMetadata::new(title, Available::Unavailable, Available::Unavailable, None)
         .expect("unavailable status agrees with any command result")
 }
