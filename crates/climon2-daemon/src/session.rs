@@ -66,8 +66,8 @@ struct Session<'a, C> {
     vt: Vt,
     next_id: u64,
     controller: Option<u64>,
-    /// Grants and replacement restorations awaiting their snapshot.
-    pending_grants: BTreeMap<u64, (Authority, TerminalSize)>,
+    /// Restorations, of grants and replacements, awaiting their snapshot.
+    pending_restorations: BTreeMap<u64, (Authority, TerminalSize)>,
     pending_lost: BTreeSet<u64>,
     pty_writes: PtyWrites,
     paste: PasteTracker,
@@ -98,7 +98,7 @@ pub(crate) fn serve(
         vt,
         next_id: Default::default(),
         controller: None,
-        pending_grants: BTreeMap::new(),
+        pending_restorations: BTreeMap::new(),
         pending_lost: BTreeSet::new(),
         pty_writes: PtyWrites::default(),
         paste: PasteTracker::default(),
@@ -358,7 +358,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn output(&mut self, now: Instant) -> io::Result<()> {
         self.read_pty(now)?;
         self.end_sync(now);
-        self.start_grants(now);
+        self.start_restorations(now);
         self.deliver(now);
         Ok(())
     }
@@ -421,22 +421,22 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
-    fn start_grants(&mut self, now: Instant) {
+    fn start_restorations(&mut self, now: Instant) {
         if self.vt.sync_pending(now) {
             return;
         }
-        for (id, (authority, host)) in std::mem::take(&mut self.pending_grants) {
-            self.grant(id, authority, host, now);
+        for (id, (authority, host)) in std::mem::take(&mut self.pending_restorations) {
+            self.snapshot(id, authority, host, now);
         }
     }
 
-    /// The snapshot for a grant or a replacement restoration. The private
-    /// protocol's `period` field carries the restoration ID.
-    fn grant(&mut self, id: u64, authority: Authority, host: TerminalSize, now: Instant) {
+    /// The snapshot for a restoration, of a grant or a replacement. The
+    /// private protocol's `period` field carries the restoration ID.
+    fn snapshot(&mut self, id: u64, authority: Authority, host: TerminalSize, now: Instant) {
         let Some(delivery) = self.deliveries.get_mut(&id) else {
             return;
         };
-        let lead = delivery.grant(&mut self.vt, authority, host, now);
+        let lead = delivery.restore(&mut self.vt, authority, host, now);
         self.controller = Some(id);
         let restoration = authority.restoration.0;
         self.reply(
@@ -607,7 +607,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn awaiting_ready(&self) -> bool {
-        !self.pending_grants.is_empty()
+        !self.pending_restorations.is_empty()
             || self
                 .controller
                 .is_some_and(|id| !self.control.admits_input(ConnectionId(id)))
@@ -731,7 +731,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// to apply and for any synchronized update to end.
     fn granted(&mut self, id: u64, authority: Authority, host: TerminalSize, reason: GrantReason) {
         self.report_grant(id, authority, host, reason);
-        self.pending_grants.insert(id, (authority, host));
+        self.pending_restorations.insert(id, (authority, host));
     }
 
     /// A replaced restoration's output ends at once.
@@ -740,7 +740,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             delivery.retire();
         }
         self.report_restoration(id, authority, host);
-        self.pending_grants.insert(id, (authority, host));
+        self.pending_restorations.insert(id, (authority, host));
     }
 
     fn resize_session(&mut self, size: TerminalSize) -> io::Result<()> {
@@ -822,7 +822,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn release(&mut self, id: u64) {
-        self.pending_grants.remove(&id);
+        self.pending_restorations.remove(&id);
         if let Some(delivery) = self.deliveries.get_mut(&id) {
             let bytes = delivery.release();
             self.send_output(id, &bytes);
@@ -830,7 +830,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn revoke(&mut self, id: u64) {
-        self.pending_grants.remove(&id);
+        self.pending_restorations.remove(&id);
         if let Some(delivery) = self.deliveries.get_mut(&id) {
             let bytes = delivery.end_sync();
             delivery.retire();
@@ -922,7 +922,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.deliveries.remove(&id);
         self.opened.remove(&id);
         self.pty_writes.discard(id);
-        self.pending_grants.remove(&id);
+        self.pending_restorations.remove(&id);
         self.forget_controller(id);
     }
 

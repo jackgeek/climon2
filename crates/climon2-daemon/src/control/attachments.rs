@@ -25,7 +25,7 @@ pub(super) struct Controller {
     attachment: Attachment,
     authority: Authority,
     /// The host size its current restoration is serialized for.
-    restored: TerminalSize,
+    restoration_host: TerminalSize,
     phase: Phase,
     /// The desired application focus in this control period, once known.
     focus: Option<bool>,
@@ -44,7 +44,7 @@ impl Controller {
         let controller = Self {
             attachment,
             authority,
-            restored: attachment.host,
+            restoration_host: attachment.host,
             phase: Phase::Restoring { complete: false },
             focus: None,
         };
@@ -127,7 +127,7 @@ impl Controller {
 
     fn replace(&mut self, issued: &mut Issued) -> Vec<Effect> {
         self.authority = issued.restore(self.authority.period);
-        self.restored = self.host();
+        self.restoration_host = self.host();
         self.phase = Phase::Restoring { complete: false };
         vec![Effect::Restore {
             conn: self.conn(),
@@ -138,7 +138,7 @@ impl Controller {
 
     /// A restoration no longer matches a host that changed before readiness.
     fn invalidate(&mut self) {
-        if matches!(self.phase, Phase::Restoring { .. }) && self.host() != self.restored {
+        if matches!(self.phase, Phase::Restoring { .. }) && self.host() != self.restoration_host {
             self.phase = Phase::Replacing;
         }
     }

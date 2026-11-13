@@ -55,9 +55,10 @@ impl Delivery {
         }
     }
 
-    /// Retires any previous period and returns phase A of the new one.
-    /// Never call while the VT's synchronized update is pending.
-    pub fn grant(
+    /// Retires any previous restoration and returns phase A of the new
+    /// one, for a grant or a replacement. Never call while the VT's
+    /// synchronized update is pending.
+    pub fn restore(
         &mut self,
         vt: &mut Vt,
         authority: Authority,
@@ -138,7 +139,7 @@ impl Delivery {
             self.present(vt, &mut out);
         }
         if queued < RESTORE_WINDOW {
-            self.restore(vt, &mut out);
+            self.produce_restoration(vt, &mut out);
         }
         if self.derives(sync_pending) {
             out.push(Out::Live(vt.derive(&mut self.presentation)));
@@ -154,7 +155,7 @@ impl Delivery {
         }
     }
 
-    fn restore(&mut self, vt: &mut Vt, out: &mut Vec<Out>) {
+    fn produce_restoration(&mut self, vt: &mut Vt, out: &mut Vec<Out>) {
         let Some(granted) = &mut self.granted else {
             return;
         };
@@ -279,7 +280,7 @@ mod tests {
 
     fn granted(vt: &mut Vt, host: TerminalSize) -> Delivery {
         let mut delivery = Delivery::new(host);
-        delivery.grant(vt, authority(1), host, NOW());
+        delivery.restore(vt, authority(1), host, NOW());
         delivery
     }
 
@@ -350,12 +351,12 @@ mod tests {
                 .count()
         };
         assert_eq!(
-            leaves(delivery.grant(&mut vt, authority(2), size(20, 4), NOW())),
+            leaves(delivery.restore(&mut vt, authority(2), size(20, 4), NOW())),
             1
         );
         delivery.live(&vt, b"dropped".to_vec(), 0).unwrap();
         assert_eq!(
-            leaves(delivery.grant(&mut vt, authority(3), size(20, 4), NOW())),
+            leaves(delivery.restore(&mut vt, authority(3), size(20, 4), NOW())),
             0
         );
         let restored = text(&restore(&mut delivery, &mut vt));
@@ -436,7 +437,7 @@ mod tests {
         let mut vt = vt(20, 4);
         let start = NOW();
         let mut delivery = Delivery::new(size(20, 4));
-        let lead = delivery.grant(&mut vt, authority(4), size(20, 4), start);
+        let lead = delivery.restore(&mut vt, authority(4), size(20, 4), start);
         let due = deadline(start, lead.len());
         assert_eq!(delivery.expired(due - Duration::from_nanos(1)), None);
         assert_eq!(delivery.expired(due), Some(authority(4)));
