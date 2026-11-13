@@ -2,7 +2,10 @@
 //! introduction and help"): the configured prefix followed by x, s and ?, the
 //! **Don't show again** checkbox showing the saved choice, and the Continue
 //! action that Enter takes.
-use crate::preference::Preference;
+use crate::{
+    keys::{EXIT, HELP},
+    preference::Preference,
+};
 use climon2_core::keys::ControlKey;
 use ratatui::{
     buffer::Buffer,
@@ -11,10 +14,10 @@ use ratatui::{
     widgets::{Block, Clear, Padding, Paragraph, Widget},
 };
 
-const BINDINGS: [(char, &str); 3] = [
-    ('x', "Exit the monitor"),
-    ('s', "Open the session list"),
-    ('?', "Show this dialog"),
+const BINDINGS: [(u8, &str); 3] = [
+    (EXIT, "Exit the monitor"),
+    (b's', "Open the session list"),
+    (HELP, "Show this dialog"),
 ];
 const ENTER: u8 = b'\r';
 const SPACE: u8 = b' ';
@@ -97,7 +100,9 @@ impl Dialog {
         let prefix = self.prefix;
         let mut lines: Vec<_> = BINDINGS
             .iter()
-            .map(|(key, action)| Line::from(format!("{prefix} then {key}  {action}")))
+            .map(|&(key, action)| {
+                Line::from(format!("{prefix} then {}  {action}", char::from(key)))
+            })
             .collect();
         let mark = if self.checked { 'x' } else { ' ' };
         lines.push(Line::default());

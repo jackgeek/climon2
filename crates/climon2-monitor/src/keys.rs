@@ -4,6 +4,10 @@
 //! exist.
 use climon2_core::keys::ControlKey;
 
+/// The keys that complete the monitor's actions after the prefix.
+pub(crate) const EXIT: u8 = b'x';
+pub(crate) const HELP: u8 = b'?';
+
 /// The bracketed-paste markers the host sends once the monitor enables them.
 const PASTE_START: &[u8; MARKER] = b"\x1b[200~";
 const PASTE_END: &[u8; MARKER] = b"\x1b[201~";
@@ -16,8 +20,8 @@ pub(crate) enum Key {
     Exit,
     /// Prefix+?.
     Help,
-    /// A typed byte that completes no action. A prefix before a byte it does
-    /// not complete reaches no target yet, and neither does pasted data.
+    /// A typed byte outside a prefix. A prefix and the byte after it that
+    /// completes no action reach no target yet, and neither does pasted data.
     Typed(u8),
 }
 
@@ -64,7 +68,7 @@ impl Keys {
         }
         self.input = Input::Typed { pending: false };
         if pending {
-            return Some(action(byte));
+            return action(byte);
         }
         if byte == self.prefix {
             self.input = Input::Typed { pending: true };
@@ -89,12 +93,12 @@ impl Keys {
     }
 }
 
-/// The key a typed byte completes after a prefix.
-fn action(byte: u8) -> Key {
+/// The action a typed byte completes after a prefix, if any.
+fn action(byte: u8) -> Option<Key> {
     match byte {
-        b'x' => Key::Exit,
-        b'?' => Key::Help,
-        other => Key::Typed(other),
+        EXIT => Some(Key::Exit),
+        HELP => Some(Key::Help),
+        _ => None,
     }
 }
 
@@ -132,21 +136,20 @@ mod tests {
         );
     }
 
-    /// HLP-02 (pure input-router supplement): typed keys that complete no
-    /// action reach the dialog: plain bytes, the byte after a prefix it does
-    /// not complete, and one literal prefix for a doubled one. Pasted Space,
-    /// Enter, prefix+? and prefix+x are data, never keys.
+    /// HLP-02 (pure input-router supplement): only typed keys outside a
+    /// prefix reach the dialog. A prefix with a key it does not complete,
+    /// a doubled prefix included, reaches nothing. Pasted Space, Enter,
+    /// prefix+? and prefix+x are data, never keys.
     #[test]
-    fn typed_keys_that_complete_no_action_reach_the_dialog() {
+    fn only_unprefixed_typed_keys_reach_the_dialog() {
         let mut keys = keys("Ctrl+]");
         assert_eq!(
-            keys.all(b" \r\x03\x1d\r\x1d\x1d"),
+            keys.all(b" \r\x03\x1d\r\x1d \x1d\x1dq"),
             [
                 Key::Typed(b' '),
                 Key::Typed(b'\r'),
                 Key::Typed(0x03),
-                Key::Typed(b'\r'),
-                Key::Typed(0x1d)
+                Key::Typed(b'q')
             ]
         );
         let pasted = keys.all(b"\x1b[200~ \r\x1d?\x1dx\x1b[201~");

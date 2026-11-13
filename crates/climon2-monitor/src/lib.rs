@@ -151,23 +151,24 @@ impl Monitor {
         }
     }
 
-    /// Acts on each byte in turn, then shows the dialog as they leave it.
+    /// Acts on each byte in turn until one ends the monitor, then shows the
+    /// dialog as they leave it.
     fn input(&mut self, bytes: &[u8]) -> io::Result<Option<Ending>> {
-        if bytes.iter().any(|&byte| self.exits(byte)) {
-            return Ok(Some(Ending::Exit));
+        match bytes.iter().find_map(|&byte| self.act(byte)) {
+            Some(ending) => Ok(Some(ending)),
+            None => self.screen.show(self.help.dialog()).map(|()| None),
         }
-        self.screen.show(self.help.dialog()).map(|()| None)
     }
 
-    /// Whether `byte` completes prefix+x. Prefix+? opens the dialog, and a
-    /// typed key goes to it.
-    fn exits(&mut self, byte: u8) -> bool {
+    /// Acts on the key `byte` completes: prefix+x ends the monitor, prefix+?
+    /// opens the dialog, and a typed key goes to it.
+    fn act(&mut self, byte: u8) -> Option<Ending> {
         match self.keys.key(byte) {
-            Some(Key::Exit) => return true,
+            Some(Key::Exit) => return Some(Ending::Exit),
             Some(Key::Help) => self.help.open(),
             Some(Key::Typed(byte)) => self.help.key(byte),
             None => {}
         }
-        false
+        None
     }
 }

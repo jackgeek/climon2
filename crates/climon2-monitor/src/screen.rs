@@ -1,5 +1,5 @@
 //! What the monitor draws on its own alternate screen, through Ratatui.
-use crate::help::Dialog;
+use crate::{help::Dialog, keys::EXIT};
 use climon2_core::{keys::ControlKey, protocol::TerminalSize};
 use ratatui::{
     backend::{Backend, CrosstermBackend},
@@ -34,7 +34,8 @@ impl Screen {
         hints: bool,
         dialog: Option<Dialog>,
     ) -> io::Result<Self> {
-        let hint = hints.then(|| Line::from(format!("Press {prefix} then x to exit.")));
+        let exit = char::from(EXIT);
+        let hint = hints.then(|| Line::from(format!("Press {prefix} then {exit} to exit.")));
         let mut screen = Self {
             backend: CrosstermBackend::new(io::stdout()),
             lines: std::iter::once(Line::from(EMPTY)).chain(hint).collect(),

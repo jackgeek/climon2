@@ -56,18 +56,19 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   `monitor.show_key_hints` is true and **Don't show again** is not saved, and
   on prefix+? whatever either says (a no-op while open). It is a box titled
   `Keys`, one column of space inside its border, centred in the rows below the
-  top row (an odd spare row falls above it, an odd spare column to its left)
-  and clipped by small hosts: `<prefix> then x  Exit the monitor`, `… s  Open
+  top row (an odd spare row falls above it, an odd spare column to its left):
+  `<prefix> then x  Exit the monitor`, `… s  Open
   the session list`, `… ?  Show this dialog`, a blank line, `[ ] Don't show
   again (Space)` (`[x]` once saved), any problem with the saved choice, a
-  blank line and `Continue (Enter)`. The screen repaints only when the dialog
-  changes, and a resize repaints it too.
+  blank line and `Continue (Enter)`. With key hints off, the problem shows
+  only once prefix+? opens the dialog (and in the general log). The screen
+  repaints only when the dialog changes, and a resize repaints it too.
 - Host input is read as raw bytes and classified byte by byte (`keys.rs`):
   typed prefix+x exits, typed prefix+? opens the dialog, and every other typed
-  byte, including Ctrl+C, the one literal prefix a doubled prefix gives and the
-  byte after a prefix it does not complete, goes to the dialog while it is
-  open and is otherwise discarded, because no session exists. The dialog acts only on
-  Enter (close) and Space (reverse the saved choice). A bracketed paste is
+  byte outside a prefix, Ctrl+C included, goes to the dialog while it is open
+  and is otherwise discarded, because no session exists. A prefix and the byte
+  after it that completes no action, a doubled prefix included, reach nothing.
+  The dialog acts only on Enter (close) and Space (reverse the saved choice). A bracketed paste is
   data, however the host splits its reads: it never exits or reaches the
   dialog, it discards a pending prefix, and it leaves none pending. Mouse and
   focus reports are not classified yet: they never exit and the dialog ignores
@@ -76,8 +77,10 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
 - Space saves the reversed choice (`preference.rs`): the new
   `MonitorPreferences` goes to `monitor-preferences.json.<pid>.tmp` beside the
   file, created afresh (`create_new`, mode 0600, so private under any umask;
-  a leftover from an interrupted save is removed first) and synced, then
-  renamed over the file. A failed save removes what it wrote and shows `cannot
+  a file already under that name, left by an interrupted save of a process
+  with the same pid, is removed first) and synced, then renamed over the file.
+  A save interrupted before its rename leaves its temporary file behind; the
+  preference file itself is always whole. A failed save removes what it wrote and shows `cannot
   save monitor-preferences.json: <error>` under the box, which keeps the saved
   choice. Nothing else writes the file.
 - A failed wait for host input, other than one a signal interrupts, and the
@@ -134,14 +137,14 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | Spec #73 exit: content-free general log | `installed_monitor_logs_content_free_records_to_its_general_log` (e2e) |
 | HLP-01 (Monitor): at every start with hints on and nothing saved, the introduction lists the actual prefix with x, s and ? and an unchecked box; Enter continues, closing saves nothing, prefix+x exits from it | `the_key_introduction_opens_at_every_start_until_dont_show_again_is_saved` (e2e) |
 | HLP-01 (Monitor): hints off or the choice saved keep it closed; prefix+? opens it regardless, showing the saved choice; prefix+? while open is a no-op; a later version's file with unknown fields is honoured | `help_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say` (e2e) |
-| HLP-01 (Monitor): Space saves and reverses the choice per climon2 home, exact version 1 bytes, mode 0600 under umask 000, by rename (a hard link keeps the old bytes), nothing left behind, even after an interrupted save; restarts and another home | `dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible` (e2e) |
+| HLP-01 (Monitor): Space saves and reverses the choice per climon2 home, exact version 1 bytes, mode 0600 under umask 000, by rename (a hard link keeps the old bytes), nothing left behind, a file already under the temporary name replaced; restarts and another home | `dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible` (e2e) |
 | HLP-01 (Monitor; derived scenario: unreadable or malformed preference file): not suppressed, the reason under the box and in the log, the file never rewritten implicitly | `an_unreadable_or_malformed_preference_file_shows_why_beside_the_introduction` (e2e) |
 | HLP-01 (Fault): a save that cannot create its temporary file or replace the preference file is reported in the dialog and logged, saves nothing and leaves nothing behind | `a_failing_save_is_reported_in_the_dialog_and_saves_nothing` (e2e) |
-| HLP-02 (Monitor, over the empty monitor): the dialog owns typed keys, reports and pastes, none acts; Enter closes, prefix+? reopens, prefix+x exits | `help_is_modal_and_prefix_x_still_exits_from_it` (e2e) |
+| HLP-02 (Monitor, over the empty monitor): the dialog owns typed keys, prefixed keys, reports and pastes, none acts; Enter closes, prefix+? reopens, prefix+x exits | `help_is_modal_and_prefix_x_still_exits_from_it` (e2e) |
 | HLP-02 (Monitor, over the empty monitor): with Ctrl+[ as the prefix, Escape cannot close the dialog and prefix+x still exits | `with_escape_as_the_prefix_escape_cannot_close_help_and_prefix_x_still_exits` (e2e) |
 | INP-01 (pure input-router supplement): prefix+x across reads; no other key exits; only the configured prefix | `prefix_then_x_exits_across_read_boundaries`, `every_other_key_is_not_an_exit`, `only_the_configured_prefix_begins_the_action` (`src/keys.rs`) |
 | HLP-01 (pure input-router supplement): prefix+? across reads, only after the configured prefix | `prefix_then_question_mark_is_help_across_read_boundaries` (`src/keys.rs`) |
-| HLP-02 (pure input-router supplement): typed keys that complete no action reach the dialog, pasted ones never | `typed_keys_that_complete_no_action_reach_the_dialog` (`src/keys.rs`) |
+| HLP-02 (pure input-router supplement): only typed keys outside a prefix reach the dialog; prefixed and pasted ones never | `only_unprefixed_typed_keys_reach_the_dialog` (`src/keys.rs`) |
 | INP-02/INP-03 (pure input-router supplement): pasted prefix+x is data; a paste leaves no pending prefix; markers split into single bytes; Ctrl+[ as prefix; only a complete start marker begins a paste | `a_pasted_prefix_and_x_never_exit`, `a_paste_leaves_no_pending_prefix`, `paste_markers_split_into_single_bytes_are_recognised`, `an_escape_prefix_still_recognises_pastes`, `only_a_complete_start_marker_begins_a_paste` (`src/keys.rs`) |
 | #74 risk proof: plain and hooked sibling binaries without nested builds | `cargo_builds_the_plain_or_hooked_monitor_binary_for_its_tests` (`tests/build.rs`, plain and hooked runs); fixtures `workspace_binaries_contain_test_hooks`; xtask `release_check_builds_unhooked_binaries_in_a_private_target` |
 | #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`; Linux `linux_packaging_rejects_a_non_x86_64_or_hooked_monitor`; macOS `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
@@ -149,6 +152,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), application input such
 as Ctrl+C (#109), mouse and focus report classification (#109) and their
 routing to applications (#111), HLP-02 over the selector (#113), prefix+s
-(#106), Escape closing the dialog when Escape is not the prefix (how a bare
-Escape is told from an escape sequence is undecided), and the universal archive's runtime on both architectures, which only
+(#106), Escape closing the dialog when Escape is not the prefix (undecided:
+telling a bare Escape from an escape sequence needs the input router's
+classification, #109), and the universal archive's runtime on both architectures, which only
 CI's `dist` and `archive` jobs build and execute.

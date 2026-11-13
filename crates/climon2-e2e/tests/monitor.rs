@@ -955,10 +955,11 @@ fn temporary_file(package: &Package) -> PathBuf {
 /// climon2 home's preference file, private to its owner even under umask 000,
 /// and atomically: a new temporary file renamed over the old one, so a hard
 /// link to the old file keeps its bytes, and no temporary file is left
-/// behind, not even one an interrupted save left. The next start opens on the
-/// empty monitor; prefix+? shows the box checked, and Space reverses the
-/// choice, so the following start shows the introduction again. Another
-/// climon2 home keeps its own choice.
+/// behind. A longer, readable file already under the temporary name, as an
+/// interrupted save by a process with the same pid would leave, is replaced.
+/// The next start opens on the empty monitor; prefix+? shows the box checked,
+/// and Space reverses the choice, so the following start shows the
+/// introduction again. Another climon2 home keeps its own choice.
 #[test]
 fn dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible() {
     let package = Package::new();
@@ -1160,9 +1161,10 @@ fn a_failing_save_is_reported_in_the_dialog_and_saves_nothing() {
 
 /// Keys, reports and a paste that the open dialog owns and that change
 /// nothing: Ctrl+C, plain x, s, j and ?, Tab and Backspace, prefix+s,
-/// prefix+j, prefix+d, a doubled (literal) prefix, a focus report, an SGR
-/// mouse click, and a paste holding Space, Enter, prefix+x and prefix+?.
-const INERT: &[u8] = b"\x03xsj?\t\x7f\x1ds\x1dj\x1dd\x1d\x1d\x1b[I\x1b[<0;6;6M\x1b[<0;6;6m\x1b[200~ \r\x1dx\x1d?\x1b[201~";
+/// prefix+j, prefix+d, prefix+Space, prefix+Enter, a doubled (literal)
+/// prefix, a focus report, an SGR mouse click, and a paste holding Space,
+/// Enter, prefix+x and prefix+?.
+const INERT: &[u8] = b"\x03xsj?\t\x7f\x1ds\x1dj\x1dd\x1d \x1d\r\x1d\x1d\x1b[I\x1b[<0;6;6M\x1b[<0;6;6m\x1b[200~ \r\x1dx\x1d?\x1b[201~";
 
 /// HLP-02 (Monitor, over the empty monitor): the open dialog owns every
 /// typed key and paste, and only its own actions and prefix+x act. Once the

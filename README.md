@@ -416,8 +416,8 @@ release reads it, whatever its version, ignoring fields it does not know. The
 monitor writes it only when you change the box, as a new file readable only by
 you (`monitor-preferences.json.<pid>.tmp`) renamed over the old one. If the
 file cannot be read or is malformed, the introduction opens with the reason
-under its unchecked box, and the file is left as it is until you change the
-box. If a save fails, the dialog says why under the box, which keeps showing
+under its unchecked box (with key hints off, the reason shows when you open
+the dialog), and the file is left as it is until you change the box. If a save fails, the dialog says why under the box, which keeps showing
 the saved choice. The general log records these problems and each saved
 choice.
 
