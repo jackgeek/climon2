@@ -52,7 +52,7 @@ flowchart TB
         tui_fixture["climon2-tui-fixture"]
         library_host["climon2-library-host"]
         library_stand_in[["Client library stand-in<br/>test-only C dylib / .so; faulty library"]]
-        owned_exec["climon2-test-owned<br/>Linux test ownership exec adapter"]
+        owned_exec["climon2-test-owned<br/>test ownership exec adapter"]
         terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
         xtask -->|"runs builds and tests"| cargo
@@ -67,7 +67,7 @@ flowchart TB
         tests -->|"runs as the Library-layer host"| library_host
         library_host -->|"loads through the shared loader; calls through the C ABI"| library
         tests -->|"loads through the shared loader in release-check and Fault-layer tests"| library_stand_in
-        tests -->|"execs registered terminal roots through; Linux only"| owned_exec
+        tests -->|"execs registered terminal roots through"| owned_exec
         owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
 
@@ -86,15 +86,15 @@ Installation relationships are outside this consumption diagram.
 
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
 
-On Linux, `climon2-test-term` builds `climon2-test-owned` as test tooling, never
-as a release payload. It opens one test-owned file descriptor before execing
-the requested terminal root. Forked descendants inherit that descriptor across
-environment clearing and reparenting, so procfs leak checks do not depend on
-catching short-lived parents. Process identity, sampled ancestry, session
-membership and environment markers remain additional ownership evidence.
-Commands that explicitly close inherited descriptors cannot retain this
-additional evidence. macOS keeps its kernel process/image ancestry tracking
-and does not use this adapter.
+`climon2-test-term` builds `climon2-test-owned` as test tooling on Linux and
+macOS, never as a release payload. It opens one test-owned file descriptor
+before execing the requested terminal root. Forked descendants inherit that
+descriptor across environment clearing, new sessions and reparenting, so leak
+checks (procfs on Linux, `libproc` on macOS) do not depend on a sample catching
+short-lived parents. Process identity, sampled ancestry (macOS kernel
+process/image ids), session membership and environment markers remain
+additional ownership evidence. Commands that explicitly close inherited
+descriptors keep only that additional evidence.
 
 **Current (#75):** every release builds and ships the client library in its
 version folder: `libclimon2_client.dylib` (universal arm64/x86_64) on macOS and

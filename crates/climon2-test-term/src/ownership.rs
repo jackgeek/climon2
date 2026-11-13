@@ -3,13 +3,17 @@
 //! A test owns the terminal roots it spawns, every process carrying its environment marker,
 //! every process forked by an owned process image, and every member of a session led by an
 //! owned process. macOS supplies kernel unique ids and image versions; Linux supplies pid and
-//! start ticks plus a test-owned descriptor inherited by terminal descendants. Neither needs
-//! a short-lived orphan's parent to remain alive until the next sample.
+//! start ticks. On both, terminal roots exec through `climon2-test-owned`, so every
+//! descendant inherits a test-owned descriptor that any later sample finds: ownership of an
+//! orphan never depends on a sample having seen its short-lived parents (#21.5).
 
 #[cfg(target_os = "macos")]
 use nix::libc;
 use std::{
     collections::{HashMap, HashSet},
+    fs,
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
     sync::{LazyLock, Mutex, MutexGuard, Once},
     thread,
     time::Duration,
@@ -30,6 +34,28 @@ const SAMPLE_INTERVAL: Duration = Duration::from_millis(25);
 const USER_ONLY: u32 = 4;
 #[cfg(target_os = "macos")]
 const BSD_INFO_WITH_UNIQUE_IDS: libc::c_int = 18;
+// <sys/proc_info.h>: PROC_PIDFDVNODEINFO.
+#[cfg(target_os = "macos")]
+const FD_VNODE_INFO: libc::c_int = 1;
+
+/// A file every descendant of a test's terminal roots holds open, inherited across exec,
+/// environment clearing, new sessions and reparenting; identified by device and inode.
+struct Lease {
+    path: PathBuf,
+    identity: (u64, u64),
+}
+
+impl Lease {
+    fn new(directory: &Path) -> Self {
+        let path = directory.join("process-ownership");
+        let file = fs::File::create(&path).expect("create process ownership lease");
+        let metadata = file.metadata().expect("process ownership lease identity");
+        Self {
+            path,
+            identity: (metadata.dev(), metadata.ino()),
+        }
+    }
+}
 
 /// `struct proc_uniqidentifierinfo` from <sys/proc_info.h>.
 #[repr(C)]
@@ -70,8 +96,7 @@ struct Owned {
     processes: HashSet<(u64, i32)>,
     images: HashSet<i32>,
     sessions: HashSet<i32>,
-    #[cfg(target_os = "linux")]
-    lease: Option<linux::Lease>,
+    lease: Option<Lease>,
 }
 
 impl Owned {
@@ -133,7 +158,6 @@ struct Tracker {
 impl Tracker {
     fn scan(&mut self) -> Vec<Process> {
         let mut table: Vec<_> = pids().into_iter().filter_map(process).collect();
-        #[cfg(target_os = "linux")]
         let leases: HashMap<_, _> = self
             .tests
             .iter()
@@ -151,7 +175,8 @@ impl Tracker {
                     .markers
                     .entry(process.image.expect("macOS process image"))
                     .or_insert_with(|| marker_of(process.pid, &mut self.arguments))
-                    .clone();
+                    .clone()
+                    .or_else(|| lease_marker(process.pid, &leases));
             }
             #[cfg(target_os = "linux")]
             {
@@ -178,10 +203,9 @@ fn tracker() -> MutexGuard<'static, Tracker> {
     TRACKER.lock().expect("process tracker lock")
 }
 
-pub(crate) fn register(marker: &str, _directory: &std::path::Path) {
+pub(crate) fn register(marker: &str, directory: &Path) {
     let owned = Owned {
-        #[cfg(target_os = "linux")]
-        lease: Some(linux::Lease::new(_directory)),
+        lease: Some(Lease::new(directory)),
         ..Owned::default()
     };
     tracker().tests.insert(marker.to_owned(), owned);
@@ -200,7 +224,7 @@ pub(crate) fn register(marker: &str, _directory: &std::path::Path) {
     });
 }
 
-#[cfg(target_os = "linux")]
+/// Execs a marked terminal root through `climon2-test-owned`, which hands it the test's lease.
 pub(crate) fn prepare(mut command: portable_pty::CommandBuilder) -> portable_pty::CommandBuilder {
     let lease = command
         .get_env(MARKER)
@@ -360,6 +384,76 @@ fn environment_marker(arguments: &[u8]) -> Option<String> {
         .take_while(|entry| !entry.is_empty())
         .find_map(|entry| entry.strip_prefix(prefix.as_bytes()))
         .map(|value| String::from_utf8_lossy(value).into_owned())
+}
+
+/// The test whose lease this process holds open, if any.
+#[cfg(target_os = "macos")]
+fn lease_marker(pid: i32, leases: &HashMap<(u64, u64), String>) -> Option<String> {
+    if leases.is_empty() {
+        return None;
+    }
+    let entry = mem::size_of::<libc::proc_fdinfo>();
+    // A null buffer asks how many bytes the current descriptor list needs.
+    let needed =
+        unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0) };
+    let count = usize::try_from(needed).ok()? / entry + 16;
+    let mut descriptors: Vec<libc::proc_fdinfo> = Vec::with_capacity(count);
+    let bytes = i32::try_from(count * entry).ok()?;
+    // proc_pidinfo writes at most `bytes` bytes of proc_fdinfo records and returns how many.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDLISTFDS,
+            0,
+            descriptors.as_mut_ptr().cast(),
+            bytes,
+        )
+    };
+    // The kernel initialised the first `written` bytes, whole records only.
+    unsafe { descriptors.set_len(usize::try_from(written).ok()? / entry) };
+    descriptors
+        .iter()
+        .filter(|descriptor| descriptor.proc_fdtype == libc::PROX_FDTYPE_VNODE as u32)
+        .find_map(|descriptor| {
+            let identity = vnode_identity(pid, descriptor.proc_fd)?;
+            leases.get(&identity).cloned()
+        })
+}
+
+/// `struct proc_fileinfo` from <sys/proc_info.h>.
+#[repr(C)]
+#[cfg(target_os = "macos")]
+struct FileInfo {
+    open_flags: u32,
+    status: u32,
+    offset: libc::off_t,
+    kind: i32,
+    guard_flags: u32,
+}
+
+/// `struct vnode_fdinfo` from <sys/proc_info.h>.
+#[repr(C)]
+#[cfg(target_os = "macos")]
+struct VnodeDescriptorInfo {
+    file: FileInfo,
+    vnode: libc::vnode_info,
+}
+
+/// Device and inode of the file open at `fd` in `pid`, comparable with `MetadataExt`.
+#[cfg(target_os = "macos")]
+fn vnode_identity(pid: i32, fd: i32) -> Option<(u64, u64)> {
+    let mut info = mem::MaybeUninit::<VnodeDescriptorInfo>::zeroed();
+    let size = i32::try_from(mem::size_of::<VnodeDescriptorInfo>()).ok()?;
+    // proc_pidfdinfo writes at most `size` bytes and returns how many it wrote.
+    let written =
+        unsafe { libc::proc_pidfdinfo(pid, fd, FD_VNODE_INFO, info.as_mut_ptr().cast(), size) };
+    if written != size {
+        return None;
+    }
+    // The kernel filled the whole structure, and every field is plain data.
+    let stat = unsafe { info.assume_init() }.vnode.vi_stat;
+    // std widens the signed dev_t to u64; vinfo_stat stores the same bits unsigned.
+    Some((stat.vst_dev as i32 as u64, stat.vst_ino))
 }
 
 #[cfg(target_os = "macos")]
