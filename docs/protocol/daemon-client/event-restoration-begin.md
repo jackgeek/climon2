@@ -1,6 +1,8 @@
 # Restoration begin — `0x48`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented for interactive attachments**
+([#87](https://github.com/jackgeek/climon2/issues/87)); canonical
+monitor-mode serialization arrives with [#89](https://github.com/jackgeek/climon2/issues/89), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) begins a distinct
 [restoration](../../../GLOSSARY.md#restoration-and-presentation) for the
 controlling [client](../../../GLOSSARY.md#sessions).
@@ -44,3 +46,15 @@ No [request ID](../TERMS.md#request-id)/defaults/unknown fields; invalid records
 Required boundaries are preserved or explicitly fail the affected connection.
 [#63](https://github.com/jackgeek/climon2/issues/63) owns rendering/application;
 #69 transfer budgets/deadlines/exhaustion.
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) sends Restoration begin
+right after each [Control granted](event-control-granted.md), and on its
+own when a controller's host changes before
+[readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts): that
+replacement restoration keeps the period and gets a new restoration ID, and
+the superseded restoration gets no completion. The geometry is the session
+geometry. The restoration bytes are those of an ordinary attach, serialized
+for the attachment's host with Direct or Derived presentation, and the
+daemon takes their snapshot once any synchronized update ends.

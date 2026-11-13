@@ -1,6 +1,7 @@
 # Display — `0x49`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented for interactive attachments**
+([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) delivers ordered terminal
 [bytes](../TERMS.md#byte) to the controlling
 [client](../../../GLOSSARY.md#sessions), including background control.
@@ -58,3 +59,16 @@ Required bytes cannot be silently lost on healthy streams; explicitly fail
 the affected connection under #69 policy instead.
 #63 owns rendering/application/fidelity, #69 numeric transfer/queue limits.
 Related: [Input](request-input.md).
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) sends Display to an
+interactive [attachment](../../../GLOSSARY.md#attachment-and-control) while
+it controls: its restoration chunks, live output, and the release of its
+presentation when its control or attachment ends, before
+[Control revoked](event-control-revoked.md) or the [Leave](request-leave.md)
+success. Each frame carries the period and restoration ID of the current
+restoration and at most 65,535 payload bytes, the chunk size of the private
+protocol's output. The daemon never sends an empty Display. Bytes are exact:
+the daemon's live-output policy decides what reaches the attachment, as for
+an ordinary attach, and terminal queries are answered by the daemon alone.

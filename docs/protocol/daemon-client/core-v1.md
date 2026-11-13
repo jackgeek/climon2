@@ -4,7 +4,7 @@
 This is the maintained contract, not evidence that any release conforms.
 The [#63 terminal contract](../terminal-integration.md) adds optional core
 [Focus](request-focus.md) and canonical monitor-mode presentation below;
-these amendments are also agreed, unimplemented.
+these amendments are also agreed, and Focus is implemented.
 The [private protocol](post-hello.md) is not this revision;
 [session daemons](../../../GLOSSARY.md#sessions) now speak both, and the
 first [frame](../TERMS.md#frame) after [hello](../../../GLOSSARY.md#sessions)
@@ -22,15 +22,21 @@ pages and re-encode it to identical [bytes](../TERMS.md#byte).
 
 The [session daemon](../../../GLOSSARY.md#sessions) implements this revision
 for [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
-([#86](https://github.com/jackgeek/climon2/issues/86)): the
+([#86](https://github.com/jackgeek/climon2/issues/86)) and ordinary
+interactive [attachments](../../../GLOSSARY.md#attachment-and-control)
+([#87](https://github.com/jackgeek/climon2/issues/87)): the
 [hello advertisement](hello-reply.md#revision-1-advertisement), framing and
-validation with their connection-fatal codes, monitor-mode Open, Leave,
-Response, Fatal error, Initial metadata (the title; status and progress
-reported unavailable) and Title changed. Until it serves them, it rejects the
-other requests without effects, as each request's page describes.
-Interactive Open, standalone Kill,
-the control, terminal, status, notification, progress and final-result
-messages, succession and bounded delivery remain unimplemented, and no
+validation with their connection-fatal codes, Open in both modes, Leave,
+Input, Resize, Ready, Acquire between attachments, Focus, Response, Fatal
+error, Initial metadata (the title; status and progress reported
+unavailable), Title changed, Control granted and revoked, Restoration begin
+and complete, Display and Geometry, with the private protocol's takeover,
+hand-back and leave policy. Until it serves them, it rejects the other
+requests without effects, as each request's page describes. Standalone
+Kill, Acquire by a passive monitor connection, Set viewing, Acknowledge, the
+status, notification, progress and final-result messages, promotion of
+passive registrations, canonical monitor-mode presentation and bounded
+delivery remain unimplemented, and no
 [client](../../../GLOSSARY.md#sessions) speaks this revision yet. The
 [daemon's contract tests](../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
 are the evidence for the implemented parts.
@@ -283,6 +289,36 @@ When terminal status and result are both present, completed requires normal
 exit zero and failed requires nonzero exit or signal. No later event
 revives terminal activity/attention.
 
+### Implemented authority checks
+
+The session daemon checks Input, [Resize](request-resize.md),
+[Ready](request-ready.md) and Focus in this order and rejects the first
+unmet condition without effects; the stream goes on:
+
+1. Focus only: the connection's Open selected `focus-v1`, otherwise
+   `unsupported_capability`.
+2. The connection has a role, otherwise `invalid_state`.
+3. It is an attachment, otherwise `not_attached`: a passive monitor
+   connection is not one.
+4. The session is not in committed termination, otherwise
+   `session_terminating`.
+5. It is the [controller](../../../GLOSSARY.md#attachment-and-control),
+   otherwise `not_controller`.
+6. The request's control period is the current one, otherwise
+   `stale_period`.
+7. Its restoration ID is the current one of that period, otherwise
+   `stale_restoration`: a replacement restoration supersedes the earlier one.
+8. The current restoration is far enough along: Resize needs nothing more,
+   Ready needs a complete restoration, whose Restoration complete was sent,
+   and Input and Focus need readiness. Otherwise `not_ready`.
+
+Each request then checks its own arguments. Periods and restoration IDs are
+session-wide and only increase: every grant starts a new period with its
+first restoration, and a replacement restoration within a period, after the
+controller's host changed before readiness, gets a new restoration ID.
+Private-protocol attachments share the same control, so the numbers one
+connection sees can skip.
+
 ## Viewing, acknowledgement and local notifications
 
 [Viewing](../../../GLOSSARY.md#status-and-attention) means this monitor's own
@@ -417,7 +453,10 @@ menus/focus/local toast scope/deduplication; exit/signal versus disconnect;
 kill cleanup failures; bounded stalled consumers and independent control.
 The daemon's contract tests already cover the hello advertisement, framing,
 JSON, ID, direction and truncation failures, capability intersection,
-passive registration, Leave, atomic Initial metadata and title changes;
+passive registration, Leave, atomic Initial metadata and title changes, and
+for interactive attachments the record order under partial I/O, stale
+authority and readiness, arbitrary bytes, paste closure, query authority,
+inert titles, Focus, and takeover, hand-back and leave-policy parity;
 the rest remains future.
 Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)

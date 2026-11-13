@@ -1,10 +1,11 @@
 # Leave — `0x37`
 
-**Status: agreed; implemented for
-[passive monitor connections](../../../GLOSSARY.md#attachment-and-control)**,
-owned by [#67](https://github.com/jackgeek/climon2/issues/67);
-[attachments](../../../GLOSSARY.md#attachment-and-control) leave with
-[#87](https://github.com/jackgeek/climon2/issues/87).
+**Status: agreed and implemented** for
+[passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
+([#86](https://github.com/jackgeek/climon2/issues/86)) and
+[attachments](../../../GLOSSARY.md#attachment-and-control)
+([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67);
+promotion races arrive with [#89](https://github.com/jackgeek/climon2/issues/89).
 The [client](../../../GLOSSARY.md#sessions) requests accepted departure from the
 [session daemon](../../../GLOSSARY.md#sessions) after Open.
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
@@ -66,3 +67,13 @@ Response is written; requests sent after Leave are not served, and no core
 metadata follows it. Leave before any Open is `invalid_state` and the stream
 goes on. A peer may half-close after sending Leave and still read its
 Response.
+
+An interactive attachment's Leave is an accepted detach. A controller first
+receives the release of its presentation as [Display](event-display.md),
+then control is handed back to the most recently controlling remaining
+attachment, of either protocol, with reason `hand_back`. The success reports
+`attachment_detached:true`, and the stream then closes. The leave policy is
+the private protocol's: a final deliberate Leave keeps the session running,
+detached, while a final unexpected departure, closing without Leave, ends
+it. During committed termination Leave still removes the attachment, after
+releasing a presentation it still has, and hands nothing back.

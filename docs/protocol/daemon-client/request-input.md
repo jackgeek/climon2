@@ -1,6 +1,6 @@
 # Input — `0x31`
 
-**Status: agreed, not implemented; rejected until served**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** ([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) sends actual user application
 [bytes](../TERMS.md#byte) to the
 [session daemon](../../../GLOSSARY.md#sessions), only as current ready
@@ -69,9 +69,16 @@ neither enters real-user Input or clears attention.
 
 ## Implemented behavior
 
-No revision-1 connection is an attachment yet, so until
-[#87](https://github.com/jackgeek/climon2/issues/87) serves Input the
-[session daemon](../../../GLOSSARY.md#sessions) rejects it as impermissible
-with `invalid_state`, whether it is a connection's first request or arrives on
-a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control).
-No byte reaches the command; the stream goes on and a registration stays.
+The [session daemon](../../../GLOSSARY.md#sessions) accepts Input that passes
+the [authority checks](core-v1.md#implemented-authority-checks), which need
+readiness: it comes from the ready controller under its current period and
+restoration ID. An empty payload is then `invalid_argument`. Every rejection
+has no effects, and the stream goes on. An accepted payload is queued whole
+for the command's terminal, after the requests accepted before it; the
+success reports its length. Payload bytes reach the application exactly,
+including `00 ff 41`, NUL and invalid UTF-8, and a payload larger than one
+frame is sent as several Input requests, each with its own request ID.
+When the controller's input admission ends, by revocation, departure or
+termination, its input not yet written is discarded and an open application
+paste is closed with its end marker, as for an ordinary private-protocol
+attachment.

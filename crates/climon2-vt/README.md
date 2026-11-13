@@ -23,7 +23,7 @@ the monitor never forwards parser replies or session bytes directly to its host.
   one engine step can push into history; the engine keeps twice that as
   counting headroom beyond `max_history_rows`.
 - `Vt::new(geometry, VtConfig { max_history_rows, default_title })`.
-- `Vt::feed(bytes, now) -> Fed { live, replies, dropped, titles }`: the front filter
+- `Vt::feed(bytes, now) -> Fed { live, replies, dropped, titles, focus_enabled }`: the front filter
   holds partial tokens across reads (4096-byte body cap; oversized tokens are
   dropped and only counted), feeds complete tokens to the engine in steps of
   at most 64 bytes, and applies the live output policy: write `replies` to
@@ -35,7 +35,9 @@ the monitor never forwards parser replies or session bytes directly to its host.
   one read, by value: `None` is unset (the default title shows, including
   after `ESC c`), and an unchanged title is not listed again. The body cap
   ignores a title sequence longer than 4,096 bytes, so with its `2;` the
-  longest OSC 0/2 title is 4,094 bytes.
+  longest OSC 0/2 title is 4,094 bytes. `focus_enabled` says a token of this
+  feed turned focus reporting (mode 1004) on and it is still on, however
+  the tokens were split across reads.
 - `Vt::application_title()`: the application's current title, `None` while
   unset; the session daemon reports it as inert core metadata.
 - `Vt::sync_pending(now)` / `Vt::tick(now)`: the first-begin synchronized
@@ -44,6 +46,8 @@ the monitor never forwards parser replies or session bytes directly to its host.
   still have an update open.
 - `Vt::resize(geometry)`: equal geometry is a no-op.
 - `Vt::bracketed_paste()`: the application's mode 2004, for paste cleanup.
+- `Vt::focus_reporting()`: the application's mode 1004, for the daemon's
+  revision-1 Focus reports.
 - `Presentation::new(host_cols, host_rows)`: one per attachment, owned by the
   daemon. Every byte string returned for it (`grant`, `produce`, `derive`,
   `present`, `end_sync`, `release`) must be committed; committed Direct live
