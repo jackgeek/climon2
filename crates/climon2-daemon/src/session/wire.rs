@@ -5,7 +5,7 @@
 use super::Session;
 use crate::{
     connection::{Connection, frame_limit},
-    control::{self, Authority, Authorized, ConnectionId, Needs, Period, Restoration},
+    control::{self, Authority, Authorized, CommandEnd, ConnectionId, Needs, Period, Restoration},
 };
 use climon2_core::{
     protocol::TerminalSize,
@@ -731,14 +731,14 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
 /// A Kill succeeds only with the command's confirmed result after complete
 /// cleanup. Otherwise it failed: its termination or cleanup did not
-/// complete, and the result is reported if it was confirmed.
+/// complete, and it reports the result the daemon knew, if any.
 fn termination(ended: &control::Outcome) -> Outcome {
     match (&ended.command, ended.cleaned) {
-        (Some(command_result), true) => Outcome::Ok(Success::Termination {
+        (CommandEnd::Confirmed(command_result), true) => Outcome::Ok(Success::Termination {
             command_result: command_result.clone(),
             cleanup: Cleanup::Complete,
         }),
-        (command_result, _) => Outcome::Failed(incomplete(command_result.clone())),
+        (command, _) => Outcome::Failed(incomplete(command.known().cloned())),
     }
 }
 

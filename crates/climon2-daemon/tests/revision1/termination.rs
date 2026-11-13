@@ -45,6 +45,26 @@ fn assert_refused_knowing(stream: &mut UnixStream, code: &str, result: &CommandR
     assert_closed(stream);
 }
 
+/// The next record fails Kill request 1 with `cleanup_failed`: the
+/// termination's cleanup is incomplete, and it carries `result` when the
+/// daemon knew one. The stream then ends.
+fn assert_kill_failed(stream: &mut UnixStream, result: Option<CommandResult>) {
+    let failure = match message(stream) {
+        ServerMessage::Response(Response {
+            request_id,
+            outcome: Outcome::Failed(failure),
+        }) if request_id == counter(1) => failure,
+        other => panic!("expected the Kill to fail, got {other:?}"),
+    };
+    assert_eq!(failure.error().code.as_str(), "cleanup_failed");
+    let incomplete = KnownResult::Termination(PartialTermination {
+        command_result: result,
+        cleanup: PartialCleanup::Incomplete,
+    });
+    assert_eq!(failure.known(), Some(&incomplete));
+    assert_closed(stream);
+}
+
 /// The command fixture's process ID, which it records as it starts.
 fn fixture_pid(session: &Session) -> u32 {
     let pid = fs::read_to_string(session.directory.path().join("fixture-pid")).unwrap();
@@ -248,25 +268,45 @@ fn a_session_ending_without_final_evidence_sends_no_command_final() {
     terminating(&session);
     let mut private = session.connect();
     crate::send(&mut private, ClientMessage::Kill);
-    let failure = match message(&mut killer) {
-        ServerMessage::Response(Response {
-            request_id,
-            outcome: Outcome::Failed(failure),
-        }) if request_id == counter(1) => failure,
-        other => panic!("expected the Kill to fail, got {other:?}"),
-    };
-    assert_eq!(failure.error().code.as_str(), "cleanup_failed");
-    let incomplete = KnownResult::Termination(PartialTermination {
-        command_result: None,
-        cleanup: PartialCleanup::Incomplete,
-    });
-    assert_eq!(failure.known(), Some(&incomplete));
-    assert_closed(&mut killer);
+    assert_kill_failed(&mut killer, None);
     assert_eq!(
         crate::receive(&mut private),
         PrivateMessage::Terminated { code: 125 }
     );
     assert_closed(&mut watching);
     attached.session_ended();
+    session.finish();
+}
+
+/// COM-06 (Fault, through the `end-hangup` test hook) and COM-03 (Contract,
+/// Kill cases: a partial result): a Kill whose termination the daemon
+/// cannot confirm still reports the result it already knew. Here the
+/// command exits 7 while its only controller withholds Ready, a Kill
+/// follows, and the hook fails the final kill of what remained of the
+/// command's terminal session. The Kill fails with `cleanup_failed` and
+/// incomplete cleanup, but with exit 7, as the monitor's Command final
+/// reported it; the private kill keeps `Terminated` 125.
+#[test]
+fn a_failed_kill_keeps_the_result_the_daemon_knew() {
+    let mut session = Session::configured("script", |command, _| {
+        command.env("CLIMON2_DAEMON_FAULT", "end-hangup");
+    });
+    let mut attached = Attached::open(&session, geometry(91, 37), &[], geometry(91, 37));
+    let (mut watching, _) = monitor(&session, &[]);
+    crate::issue(&session, "exit 7");
+    let result = exited(7);
+    assert_eq!(message(&mut watching), command_final(&result));
+    let mut killer = peer(&session);
+    request(&mut killer, &kill(1, 1, &[]));
+    terminating(&session);
+    let mut private = session.connect();
+    crate::send(&mut private, ClientMessage::Kill);
+    assert_kill_failed(&mut killer, Some(result.clone()));
+    assert_eq!(
+        crate::receive(&mut private),
+        PrivateMessage::Terminated { code: 125 }
+    );
+    assert_closed(&mut watching);
+    attached.ended(&result);
     session.finish();
 }

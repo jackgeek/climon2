@@ -11,7 +11,9 @@ mod writes;
 use crate::{
     args::Options,
     connection::{Connection, Failure, Received},
-    control::{Authority, ConnectionId, Control, Effect, Lifecycle, Outcome, Restoration},
+    control::{
+        Authority, CommandEnd, ConnectionId, Control, Effect, Lifecycle, Outcome, Restoration,
+    },
     pty::Pty,
 };
 use climon2_core::{
@@ -302,19 +304,27 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.initial_deadline(now)
     }
 
-    /// A hang-up the daemon cannot confirm leaves the command's result unknown.
+    /// A hang-up the daemon cannot confirm keeps only what it already knew.
     fn end_hangup(&mut self, now: Instant) -> io::Result<()> {
         if !self.command.hung_up(now) {
             return Ok(());
         }
-        let ended = self.pty.end_hangup().ok();
-        if let Some(result) = &ended {
-            self.publish(result);
-        }
-        self.end_command(ended)
+        let end = match self.pty.end_hangup() {
+            Ok(result) => {
+                self.publish(&result);
+                CommandEnd::Confirmed(result)
+            }
+            Err(_) => self.unconfirmed(),
+        };
+        self.end_command(end)
     }
 
-    fn end_command(&mut self, command: Option<CommandResult>) -> io::Result<()> {
+    /// The command's end, unconfirmed, with any result already known.
+    fn unconfirmed(&self) -> CommandEnd {
+        CommandEnd::Unconfirmed(self.command_result.clone())
+    }
+
+    fn end_command(&mut self, command: CommandEnd) -> io::Result<()> {
         self.command = Command::Ended;
         self.react(|control| control.command_exited(command))
     }
@@ -601,7 +611,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         if self.awaiting(now) {
             return Ok(());
         }
-        self.end_command(Some(result))
+        self.end_command(CommandEnd::Confirmed(result))
     }
 
     fn awaiting(&self, now: Instant) -> bool {
@@ -763,10 +773,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// The grace is a loop deadline, so probes, refusals and joining kills
     /// are served while the command session hangs up. A failed hang-up
-    /// leaves the command's result unknown.
+    /// confirms nothing.
     fn begin_shutdown(&mut self) -> io::Result<()> {
         if self.pty.hang_up().is_err() {
-            return self.end_command(None);
+            return self.end_command(self.unconfirmed());
         }
         self.command = Command::HangingUp {
             until: Instant::now() + HANGUP_GRACE,

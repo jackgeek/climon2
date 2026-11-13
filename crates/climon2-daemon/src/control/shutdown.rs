@@ -68,12 +68,41 @@ fn to_attachment(conn: ConnectionId, code: Option<u32>) -> Effect {
     }
 }
 
+/// How the daemon learned that the command ended.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommandEnd {
+    /// The command ended with this result, and nothing of its terminal
+    /// session remains.
+    Confirmed(CommandResult),
+    /// The daemon could not confirm the end: its hang-up, or the kill of
+    /// what remained of the command's terminal session, failed. The result
+    /// it knew already, from reaping the command earlier, if any.
+    Unconfirmed(Option<CommandResult>),
+}
+
+impl CommandEnd {
+    /// The command's result, whether or not its end was confirmed.
+    pub fn known(&self) -> Option<&CommandResult> {
+        match self {
+            Self::Confirmed(result) => Some(result),
+            Self::Unconfirmed(result) => result.as_ref(),
+        }
+    }
+
+    /// The private protocol reports climon2's own status for an end it
+    /// could not confirm, whatever it knew.
+    fn private_status(&self) -> u32 {
+        match self {
+            Self::Confirmed(result) => private_status(result),
+            Self::Unconfirmed(_) => CLIMON2_ERROR,
+        }
+    }
+}
+
 /// How the session ended, as every result it delivers reports it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Outcome {
-    /// The command's result, once the daemon confirmed how the command
-    /// ended; `None` when it could not.
-    pub command: Option<CommandResult>,
+    pub command: CommandEnd,
     /// An authoritative failure ended the session.
     pub failed: bool,
     /// The daemon's cleanup of the session completed.
@@ -89,7 +118,7 @@ impl Outcome {
         if self.failed || !self.cleaned {
             return None;
         }
-        Some(self.command.as_ref().map_or(CLIMON2_ERROR, private_status))
+        Some(self.command.private_status())
     }
 }
 
@@ -110,7 +139,7 @@ enum Ending {
     },
     /// The command ended; the daemon is cleaning up.
     CleaningUp {
-        command: Option<CommandResult>,
+        command: CommandEnd,
         failed: bool,
     },
     Finished(Outcome),
@@ -133,7 +162,7 @@ impl Shutdown {
         }
     }
 
-    pub fn exited(members: Members, command: Option<CommandResult>) -> Self {
+    pub fn exited(members: Members, command: CommandEnd) -> Self {
         Self {
             members,
             killers: Vec::new(),
@@ -177,9 +206,8 @@ impl Shutdown {
         Vec::new()
     }
 
-    /// The command ended: its result, or `None` when the daemon could not
-    /// confirm how.
-    pub fn command_exited(&mut self, command: Option<CommandResult>) -> Vec<Effect> {
+    /// The command ended, as the daemon learned it.
+    pub fn command_exited(&mut self, command: CommandEnd) -> Vec<Effect> {
         let Ending::AwaitingCommand { failed } = self.ending else {
             return Vec::new();
         };

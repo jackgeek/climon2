@@ -30,9 +30,9 @@ use attachments::{Attachment, Attachments, Departure, Phase};
 use climon2_core::{
     lifetime::Lifetime,
     protocol::TerminalSize,
-    wire::{CommandResult, GrantReason, OperationalCode},
+    wire::{GrantReason, OperationalCode},
 };
-pub use shutdown::Outcome;
+pub use shutdown::{CommandEnd, Outcome};
 use shutdown::{Members, Shutdown};
 
 /// Identifies one daemon connection: an attachment, a probe or a kill requester.
@@ -306,7 +306,7 @@ fn begin_shutdown(open: Open, killers: Vec<ConnectionId>, failed: bool) -> (Stag
     (Stage::Terminating(shutdown), effects)
 }
 
-fn command_exited(open: Open, command: Option<CommandResult>) -> (Stage, Vec<Effect>) {
+fn command_exited(open: Open, command: CommandEnd) -> (Stage, Vec<Effect>) {
     let (members, mut effects) = open.into_members();
     effects.push(Effect::Cleanup);
     (
@@ -537,9 +537,9 @@ impl Control {
         [vec![Effect::Disconnect { conn }], self.lost(conn)].concat()
     }
 
-    /// The command ended: its result, or `None` when the daemon could not
-    /// confirm how. After a natural exit, report it once the output drained.
-    pub fn command_exited(&mut self, command: Option<CommandResult>) -> Vec<Effect> {
+    /// The command ended, as the daemon learned it. After a natural exit,
+    /// report it once the output drained.
+    pub fn command_exited(&mut self, command: CommandEnd) -> Vec<Effect> {
         match &mut self.stage {
             Stage::Terminating(shutdown) => shutdown.command_exited(command),
             Stage::Open(_) => self.open(|open, _| command_exited(open, command)),
@@ -595,6 +595,7 @@ mod tests {
     use super::GrantReason::{Acquire, Attach, HandBack};
     use super::Lifecycle::*;
     use super::*;
+    use climon2_core::wire::CommandResult;
 
     const A: ConnectionId = ConnectionId(1);
     const B: ConnectionId = ConnectionId(2);
@@ -658,17 +659,17 @@ mod tests {
     const RESTORING: Phase = Phase::Restoring { complete: false };
     const RESTORED: Phase = Phase::Restoring { complete: true };
 
-    fn exit(code: u32) -> Option<CommandResult> {
-        Some(CommandResult::Exit { code })
+    fn exit(code: u32) -> CommandEnd {
+        CommandEnd::Confirmed(CommandResult::Exit { code })
     }
 
-    fn signal(number: u32) -> Option<CommandResult> {
+    fn signal(number: u32) -> CommandEnd {
         let number = std::num::NonZeroU32::new(number).unwrap();
-        Some(CommandResult::Signal { number, name: None })
+        CommandEnd::Confirmed(CommandResult::Signal { number, name: None })
     }
 
     /// A session that ended with `command` and cleaned up, without failing.
-    fn ended(command: Option<CommandResult>) -> Outcome {
+    fn ended(command: CommandEnd) -> Outcome {
         Outcome {
             command,
             failed: false,
@@ -1739,20 +1740,20 @@ mod tests {
         assert_eq!(control.snapshot(), state(Terminating, 0, false));
     }
 
-    /// A command end the daemon could not confirm has no result: the
-    /// private protocol reports climon2's own status, and a kill learns
-    /// that nothing was confirmed.
+    /// A command end the daemon could not confirm: the private protocol
+    /// reports climon2's own status, and a kill learns what was known.
     #[test]
     fn an_unconfirmed_command_end_reports_climon2s_own_status() {
         let mut control = session(&[A]);
         control.kill(K);
-        assert_eq!(control.command_exited(None), [Cleanup]);
+        let unconfirmed = CommandEnd::Unconfirmed(None);
+        assert_eq!(control.command_exited(unconfirmed.clone()), [Cleanup]);
         assert_eq!(
             control.cleanup_finished(),
             [
                 Release { conn: A },
                 DeliverExit { conn: A, code: 125 },
-                confirmed(K, ended(None)),
+                confirmed(K, ended(unconfirmed)),
                 Finish
             ]
         );
@@ -1766,7 +1767,15 @@ mod tests {
         assert_eq!(ended(exit(0)).private_code(), Some(0));
         assert_eq!(ended(exit(143)).private_code(), Some(143));
         assert_eq!(ended(signal(15)).private_code(), Some(143));
-        assert_eq!(ended(None).private_code(), Some(125));
+        let known = Some(CommandResult::Exit { code: 7 });
+        let unconfirmed = CommandEnd::Unconfirmed(known.clone());
+        assert_eq!(unconfirmed.known(), known.as_ref());
+        assert_eq!(ended(unconfirmed).private_code(), Some(125));
+        assert_eq!(
+            ended(CommandEnd::Unconfirmed(None)).private_code(),
+            Some(125)
+        );
+        assert_eq!(exit(3).known(), Some(&CommandResult::Exit { code: 3 }));
         let failed = Outcome {
             failed: true,
             ..ended(exit(0))
