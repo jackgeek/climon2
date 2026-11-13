@@ -392,6 +392,11 @@ fn below(lesser: Named, greater: Named) -> Option<String> {
     })
 }
 
+/// The refusal of the first of `rules` broken, in their order.
+fn first_broken<const N: usize>(rules: [Option<String>; N]) -> Option<String> {
+    rules.into_iter().flatten().next()
+}
+
 impl Groups {
     /// The first rule these limits break: a setting outside its range, or
     /// else settings that disagree.
@@ -519,7 +524,7 @@ impl Groups {
         let chunk = named!(transfer.chunk_bytes);
         let delivery = named!(transfer.drain_payload_bytes);
         let record = named!(payload.metadata_record_bytes);
-        [
+        first_broken([
             at_most(client, total),
             at_most(history, total),
             at_most(queued, total),
@@ -552,10 +557,7 @@ impl Groups {
                 named!(ui.background_quantum_ms),
             ),
             at_most(named!(retry.initial_ms), named!(retry.cap_ms)),
-        ]
-        .into_iter()
-        .flatten()
-        .next()
+        ])
     }
 }
 
@@ -587,25 +589,23 @@ impl Limits {
     pub fn hold(&self, mandatory: MandatoryAllocation) -> Result<(), ConfigError> {
         let memory = &self.0.memory;
         let TerminalSize { cols, rows } = mandatory.size;
-        let page = format!("the recent page of a {cols}x{rows} session");
-        let both = format!("the current model and recent page of a {cols}x{rows} session");
-        let page = Named {
-            name: &page,
-            value: mandatory.recent_page,
-        };
-        let both = Named {
-            name: &both,
+        let session = format!("a {cols}x{rows} session");
+        let model_and_page = format!("the current model and recent page of {session}");
+        let recent_page = format!("the recent page of {session}");
+        let model_and_page = Named {
+            name: &model_and_page,
             value: mandatory.current_model + mandatory.recent_page,
         };
-        [
-            at_most(both, named!(memory.total_bytes)),
-            at_most(both, named!(memory.client_bytes)),
-            at_most(page, named!(memory.history_bytes_total)),
-            at_most(page, named!(memory.history_bytes_per_session)),
-        ]
-        .into_iter()
-        .flatten()
-        .next()
+        let recent_page = Named {
+            name: &recent_page,
+            value: mandatory.recent_page,
+        };
+        first_broken([
+            at_most(model_and_page, named!(memory.total_bytes)),
+            at_most(model_and_page, named!(memory.client_bytes)),
+            at_most(recent_page, named!(memory.history_bytes_total)),
+            at_most(recent_page, named!(memory.history_bytes_per_session)),
+        ])
         .map_or(Ok(()), |detail| Err(ConfigError::Invalid(detail)))
     }
 }
