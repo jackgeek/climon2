@@ -37,7 +37,8 @@ flowchart TB
         monitor -.->|"hello probes for discovery; planned"| daemon
         monitor -.->|"loads session-version library; one client thread per live session; planned"| library
         client -.->|"loads same-release library; versioned C interface planned"| library
-        library -.->|"daemon-client communication; planned"| daemon
+        library -->|"daemon wire revision 1: passive monitor connections"| daemon
+        library -.->|"daemon wire revision 1: control and display; planned"| daemon
         monitor -.->|"consumes forwarded sessions over TCP/IP; future"| source_monitor
         browser -.->|"consumes forwarded terminal traffic over WebSocket; future"| monitor
     end
@@ -66,6 +67,8 @@ flowchart TB
         tests -->|"uses directly or as a session command"| tui_fixture
         tests -->|"runs as the Library-layer host"| library_host
         library_host -->|"loads through the C ABI"| library
+        library_host -->|"hello probes for a session's state"| daemon
+        library -->|"daemon wire revision 1 to the host's fake daemon peer"| library_host
         tests -->|"loads in release-check tests"| library_stand_in
         tests -->|"execs registered terminal roots through; Linux only"| owned_exec
         owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
@@ -96,17 +99,20 @@ Commands that explicitly close inherited descriptors cannot retain this
 additional evidence. macOS keeps its kernel process/image ancestry tracking
 and does not use this adapter.
 
-**Current (#75, #85):** every release builds and ships the client library in
+**Current (#75, #85, #93):** every release builds and ships the client library in
 its version folder: `libclimon2_client.dylib` (universal arm64/x86_64) on macOS
 and `libclimon2_client.so` on x86-64 GNU/Linux, both from one Rust cdylib
 artifact of `climon2-client`. Each exports only the frozen
 `climon2_client_get_interface` bootstrap and implements the bootstrap,
 description and local instance lifecycle of
-[native revision 1](protocol/monitor-client/core-v1.md); `submit` reports
-unsupported operation until Open (#93), so no instance connects to a session
-daemon yet. The library host fixture drives those instances through the
-function table, with the test-hooks library's fault injection, as the Library
-layer's instrumented host. The Linux library links the GCC
+[native revision 1](protocol/monitor-client/core-v1.md), and its instances
+open passive monitor connections to session daemons over
+[daemon wire revision 1](protocol/daemon-client/core-v1.md); control and
+display arrive with #94. The library host fixture drives those instances
+through the function table, with the test-hooks library's fault injection,
+as the Library layer's instrumented host. It also serves a clearly labelled
+fake daemon peer that the library under test connects to, and probes real
+session daemons' hello state. The Linux library links the GCC
 unwinder statically, because no unwinding leaves it, so it needs only glibc's
 libraries and has no soname, RPATH or RUNPATH, as the
 [Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for

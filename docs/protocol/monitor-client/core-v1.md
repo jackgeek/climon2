@@ -2,23 +2,27 @@
 
 **Status: developer-confirmed specification for [#71](https://github.com/jackgeek/climon2/issues/71).
 Implemented for the bootstrap and the immutable description
-([#75](https://github.com/jackgeek/climon2/issues/75)) and for the instance
-lifecycle calls ([#85](https://github.com/jackgeek/climon2/issues/85)).** The
-shipped [client library](../../../GLOSSARY.md#sessions)
+([#75](https://github.com/jackgeek/climon2/issues/75)), the instance
+lifecycle calls ([#85](https://github.com/jackgeek/climon2/issues/85)) and
+passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)).**
+The shipped [client library](../../../GLOSSARY.md#sessions)
 (`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux)
 returns revision 1's description and rejects other revisions as specified
 below. Its requirements are provisional bounded values
 until [#121](https://github.com/jackgeek/climon2/issues/121) records qualified
-ones. Its [function-table](../TERMS.md#function-table) calls create, run,
-destroy, drain, release_delivery, shutdown, release_communication,
-release_control, notification and snapshot follow the rules below; `submit`
-reports `CM1_UNSUPPORTED_OPERATION` until Open
-([#93](https://github.com/jackgeek/climon2/issues/93)). No instance can open a
-[daemon](../../../GLOSSARY.md#sessions) connection yet, so
-[Leave](../daemon-client/request-leave.md) is never required and the only
-records are the library's own diagnostics. Everything else on this page
-(requests, responses, daemon events, [Kill](../daemon-client/request-kill.md)
-and Leave) is not implemented. The [C ABI](../TERMS.md#c-abi)
+ones. All eleven [function-table](../TERMS.md#function-table) calls follow
+the rules below. `submit` accepts monitor-mode `CM1_OPEN` and `CM1_LEAVE`;
+interactive Open ([#94](https://github.com/jackgeek/climon2/issues/94)) and
+every other request report `CM1_UNSUPPORTED_OPERATION`. An instance opens a
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) to
+its [session daemon](../../../GLOSSARY.md#sessions) over
+[daemon wire revision 1](../daemon-client/core-v1.md), delivers Response,
+Initial metadata, Title and diagnostic records, and attempts
+[Leave](../daemon-client/request-leave.md) once on shutdown.
+[Implemented behavior](#implemented-behavior) records the choices this page
+leaves open. Interactive roles, [Kill](../daemon-client/request-kill.md) and
+the status, notification, progress, control, display and final records are
+not implemented. The [C ABI](../TERMS.md#c-abi)
 [header](client-v1.h) is authoritative for declarations, numeric tags and field
 order. This page owns their semantics. The [examples](examples.c) compile but
 do not link to a shipped library. [Declaration checks](check.py) are not runtime
@@ -456,6 +460,80 @@ Both loaded handles remain through exit, even after all three instances are
 destroyed/joined. A revision-compatible `0.2.0` library reporting the wrong release
 for A is rejected before create, not substituted or unloaded. This is a valid
 public-interface timeline, not a runtime test or a release prerequisite for plugins.
+
+## Implemented behavior
+
+The [Library-layer tests](../../../crates/climon2-e2e/README.md#library-layer-passive-monitor-connections-testspassivers-93)
+are the evidence for this section
+([#93](https://github.com/jackgeek/climon2/issues/93)).
+
+- **Description.** `capabilities` lists exactly the families the library
+  relays: `daemon-wire-v1`, `monitor-v1` and `title-v1`. `focus-v1` joins with
+  [#94](https://github.com/jackgeek/climon2/issues/94), `status-v1` with
+  [#95](https://github.com/jackgeek/climon2/issues/95), and `notification-v1`
+  and `progress-v1` with [#98](https://github.com/jackgeek/climon2/issues/98).
+  A required family outside the description is `CM1_UNSUPPORTED_OPERATION`
+  with `unsupported_capability`; an optional one is not requested.
+- **Admission.** `submit` checks the tag (`CM1_OPEN` to `CM1_FOCUS`), reserved
+  zero and a nonzero ID before the operation's arguments. A token list is null
+  and zero or a pointer and a positive count; tokens are nonempty UTF-8, each
+  named once across both lists. A request's footprint, `sizeof(cm1_request)`
+  plus `sizeof(cm1_bytes)` and the bytes of each token, must fit
+  `request_bytes` before any token is read. A request counts against
+  `request_records` and `request_bytes` until it executes and against
+  `operations` until its Response is queued. Each outstanding request
+  reserves one record and `metadata_record_bytes` of `event_records` and
+  `event_bytes` for its outcome; without room, `submit` is `CM1_FULL`
+  (`queue_full`).
+- **Records.** A record is charged `sizeof(cm1_record)` plus the bytes it owns:
+  copied text and token arrays. The library's own error text is static and
+  costs nothing. While the event queue is full, the library stops reading the
+  connection, so daemon records wait. A delivery holds the oldest records, at
+  most `drain_records`, stopping before `drain_payload_bytes` but holding at
+  least one; `drain` is `CM1_FULL` while `deliveries` deliveries are
+  outstanding. Every received [frame](../TERMS.md#frame), type byte included,
+  must fit `metadata_record_bytes`, and every title `title_bytes`; either
+  breach fails the connection with library `resource_limit`.
+- **Open.** The session metadata, read up to `client_bytes`, must name the
+  startup's session (`invalid_configuration`) and release
+  (`release_mismatch`); an unreadable file is library `io_error`. Hello, within
+  `start_ms` and its 2-second limit, must name the same session, protocol 1
+  (`unsupported_revision`) and release, and advertise revision 1 validly
+  (`unsupported_revision`) with `monitor-v1` and every required family
+  (`unsupported_capability`) and server frames within `wire_frame_bytes`
+  (`unsupported_limit`). These refusals have library origin; an unreachable
+  socket is transport `io_error`, and a reply that is not a hello transport
+  `invalid_record`. A refused Open is never sent: it is `CM1_REJECTED` with the
+  refusal and the stream ends. The Open sent names the required families and
+  the optional ones both sides support; the daemon's selection must contain
+  every required family and nothing unrequested (`invalid_record`).
+- **Failures.** Transport origin covers the socket, framing and the wire's
+  rules: `io_error`, `truncated_frame`, the wire's framing codes,
+  `invalid_record` and `invalid_request_id`. Daemon origin covers the daemon's
+  own errors, copied. Library origin covers `timeout`, `cancelled`,
+  `invalid_state` (a second Open, or Leave without a role or while another
+  Leave is unanswered), `stale_generation`, `resource_limit` and the Open
+  refusals above. A failure ends the connection, queues one diagnostic when it
+  fits and fails terminal evidence with its error.
+- **Deadlines and loss.** `start_ms` bounds an Open until its Initial metadata,
+  and `leave_ms` each Leave; on expiry that request is `CM1_INDETERMINATE`
+  `timeout` and the connection fails. No other Response is fabricated: a
+  request lost with the connection stays unanswered for the caller's pending
+  ledger. Requests still queued when the stream ends are `CM1_REJECTED`
+  `cancelled`.
+- **Leave.** A Leave waits for the Initial metadata. The daemon's answer ends
+  the stream, except a rejection, which keeps the registration. Shutdown
+  rejects queued requests, waits for an Open under way, then attempts its own
+  Leave once.
+- **Terminal evidence.** Retry is none after shutdown, for an answered Leave
+  that was not confirmed and for a known final result; permanent for the
+  library's `unsupported_revision`, `unsupported_capability`,
+  `invalid_configuration`, `release_mismatch` and `unsupported_limit`
+  refusals and the daemon's `unsupported_revision` and
+  `unsupported_capability`; passive otherwise. Leave is not required when no
+  Leave was attempted, since closing the connection ends a passive
+  registration, and indeterminate when one was lost or late.
+- **Signals.** Sending never raises `SIGPIPE` in the embedding process.
 
 ## Required runtime evidence
 

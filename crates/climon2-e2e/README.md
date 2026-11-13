@@ -93,6 +93,23 @@ the hooked library's `CLIMON2_LIBRARY_FAULT` and return early in archive
 mode, whose release library has no hooks; every other case runs against the
 archive's library.
 
+`tests/passive.rs`, `tests/passive_faults.rs` and `tests/passive_admission.rs`
+(#93) drive passive monitor connections through the host's `script`
+scenario, step by step from the threads the contract names: create, submit,
+run, drain, observe, release, snapshot, shutdown and finish, each instance on
+its own owner thread. Requests live in caller memory the host scrambles and
+unmaps as soon as `submit` returns. `passive.rs` registers with real session
+daemons started through the packaged CLI (`climon2 exec` of the generic
+fixture, held at points by its `await-file` action) and reads their hello
+`state` to show that a passive connection never acquires control. The Fault
+cases use the host's clearly labelled fake daemon peer, an adversarial
+fixture that serves scripted hello and daemon wire revision 1 traffic
+(malformed, slow, bytewise, coalesced, oversized or truncated frames, lost or
+late answers, a peer that stops reading) and records every frame the library
+sent, so a replay or an early Open shows. Ordering uses trigger files and
+observable completion, never sleeps; every peer wait is bounded and an
+expired wait is recorded.
+
 ## Session continuity scenarios
 
 Detach and reattach, takeover and hand-back, the placeholder, kill, listing
@@ -132,10 +149,10 @@ session continuity (plan section 6.1), `tests/continuity.rs`.
 
 | Scenario | Named test |
 |---|---|
-| LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; bounded requirements; no unimplemented capability | `installed_library_describes_revision_one_with_its_version_identity` |
+| LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; bounded requirements; exactly the relayed families (`daemon-wire-v1`, `monitor-v1`, `title-v1`) | `installed_library_describes_revision_one_with_its_version_identity` |
 | LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths (`LD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`), the absolute path maps the requested file (the system loader's lookup, which no library change can alter); the library answers from its own image with its own folder's release, not `current`'s, and a misplaced copy reports its compiled-in release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
 | LIB-02 Library: unsupported revisions rejected with a null description; null output storage | `installed_library_rejects_other_revisions_without_a_description` |
-| DOC-01: all eleven table entries reject null handles and outputs by the frozen call rules; `submit` stays unsupported | `installed_library_table_rejects_null_arguments_and_cannot_submit_yet` |
+| DOC-01: all eleven table entries reject null handles and outputs by the frozen call rules, `submit`'s null request included | `installed_library_table_rejects_null_arguments` |
 
 ### Library layer: client instances (`tests/instance.rs`, #85)
 
@@ -150,11 +167,35 @@ session continuity (plan section 6.1), `tests/continuity.rs`.
 | LIB-04 Library and Fault, Linux `eventfd`: borrowed descriptor, counted once, safe to poll while the stream ends and the handle is in use | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` |
 | LIB-04 Fault: allocator pairing, a delivery charged until released | `installed_library_charges_a_delivery_until_it_is_released` |
 | LIB-04 Fault: the failure diagnostic only within `event_bytes`, at and one under the bound | `installed_library_queues_the_failure_diagnostic_only_within_event_bytes` |
-| LIB-05 Fault: injected panic at the bootstrap, `create` and `submit` | `installed_library_contains_a_panic_at_the_bootstrap_create_or_submit` |
-| LIB-05 and LIB-04 Fault: injected panic at `notification`, `snapshot`, `drain`, `shutdown` and `run` stops the instance | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` |
+| LIB-05 Fault: injected panic at the bootstrap and `create` | `installed_library_contains_a_panic_at_the_bootstrap_or_create` |
+| LIB-05 and LIB-04 Fault: injected panic at `submit`, `notification`, `snapshot`, `drain`, `shutdown` and `run` stops the instance | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` |
 | LIB-04 and LIB-05 Fault: injected panic at `release_delivery`, `release_communication`, `release_control` and `destroy` keeps the object | `installed_library_contains_a_panic_in_a_release_and_keeps_the_object` |
 | LIB-05 Library and Fault: worker completion apart from terminal evidence | `installed_library_reports_worker_completion_apart_from_terminal_evidence` |
 | LIB-06 Library: stalled worker cleanup incomplete, never complete or destroyed | `installed_library_reports_stalled_worker_cleanup_as_incomplete_and_never_destroys` |
+
+### Library layer: passive monitor connections (`tests/passive*.rs`, #93)
+
+| Scenario | Named test |
+|---|---|
+| CTL-01 Library (controlled elsewhere: hello `state` unchanged throughout), CTL-03 Library (Response, atomic Initial metadata, gap-free titles by value, empty and unset distinct), COM-01 Library (optional families intersect), COM-03 Library (copied before return, charged until executed), LIB-04 Library (kept deliveries unchanged until released) and EXT-01 Library (shutdown with live deliveries: one confirmed Leave, closure, outcome, cleanup and handle release reported apart) | `installed_library_registers_passively_while_controlled_elsewhere_and_relays_titles` (`passive.rs`) |
+| CTL-01 and CTL-03 Library, detached session: never acquired, nothing attached | `installed_library_registration_never_acquires_a_detached_session` (`passive.rs`) |
+| COM-03 and EXT-01 Library: explicit Leave answered `left`, second Open `invalid_state`, stale generation `stale_generation`, submit closed afterwards, no further Leave | `installed_library_explicit_leave_departs_once_and_is_answered` (`passive.rs`) |
+| COM-01 Library: daemon frames one byte over `wire_frame_bytes` rejected before any role, for good | `installed_library_rejects_a_daemon_whose_frames_exceed_wire_frame_bytes` (`passive.rs`) |
+| LIB-05 Library and Fault: an instance stalled by its fake daemon never stops another registering with a real daemon; `submit`, `drain`, `snapshot` and `release_delivery` return at once | `installed_library_instance_stalled_by_its_daemon_never_stops_another` (`passive.rs`) |
+| COM-01 Library and Fault: missing support (frozen tokens only, no `monitor-v1`, malformed limits, an unadvertised required family), another session, release or protocol in hello or metadata, an unserved or unreadable socket or metadata, a reply that is not a hello, or none within `start_ms`: rejected before any Open is sent, with retry permanent or passive | `installed_library_rejects_an_open_the_session_cannot_honour_before_any_role` (`passive_faults.rs`) |
+| COM-01 Fault: optional families intersect three ways; a selection the request does not allow fails | `installed_library_selects_only_families_both_sides_support` (`passive_faults.rs`) |
+| COM-02 Library and Fault: invalid JSON, wrong direction, unknown type, zero, oversized and truncated frames, uncorrelated or mismatched responses, out-of-order or unselected records, a title or record one byte over its limit, and a daemon Fatal each fail the connection with their origin and code; nothing after the failing frame is delivered | `installed_library_fails_the_connection_on_traffic_revision_one_forbids` (`passive_faults.rs`) |
+| COM-03 Fault: deadlines answer `timeout` (indeterminate); lost answers fabricate nothing and leave unanswered IDs to the caller's ledger; failed and indeterminate Leaves; refused and failed Opens with their retry; best-effort diagnostics; nothing replayed; nothing outstanding once run returns | `installed_library_reports_lost_and_late_answers_truthfully_without_replay` (`passive_faults.rs`) |
+| COM-01 and COM-03 Fault: a known final result in a rejection, charged its copies, with retry none | `installed_library_reports_a_known_final_result_and_never_retries` (`passive_faults.rs`) |
+| EXT-01 and EXT-02 Fault: shutdown's Leave lost, late or rejected; a rejected explicit Leave keeps the registration; shutdown during an Open; Leave before any Open or while another is unanswered | `installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures` (`passive_faults.rs`) |
+| LIB-05 Fault: the library never raises `SIGPIPE` in an embedder that left it at its default | `installed_library_never_raises_sigpipe_in_its_embedder` (`passive_faults.rs`) |
+| COM-02 Library: titles at `title_bytes` and records at `metadata_record_bytes` accepted whole; a signal command result mapped | `installed_library_accepts_records_exactly_at_their_limits` (`passive_faults.rs`) |
+| COM-02 Library (unknown tags, nonzero reserved fields, inactive storage ignored) and COM-03 Library (invalid and closed rejections synchronous, no ID consumed, no buffer retained, `cancelled` for work shutdown never ran) | `installed_library_admits_only_valid_requests_and_rejections_cost_nothing` (`passive_admission.rs`) |
+| COM-03 Library: `request_records`, `request_bytes`, `operations`, `event_records` and `event_bytes` at the limit and one past; full rejections consume no ID | `installed_library_bounds_requests_by_every_queue_limit` (`passive_admission.rs`) |
+| LIB-04 Library: one delivery allowed, `queue_full` while it is outstanding, its records unchanged and charged until released | `installed_library_holds_each_delivery_until_released` (`passive_admission.rs`) |
+| LIB-04 Library: deliveries stop before `drain_payload_bytes`, always holding a record | `installed_library_batches_records_within_drain_payload_bytes` (`passive_admission.rs`) |
+| COM-02 and LIB-04 Library: frames split bytewise or coalesced; daemon records wait while the event queue is full, never dropped or overrunning it | `installed_library_holds_daemon_records_while_the_event_queue_is_full` (`passive_admission.rs`) |
+| LIB-04 Library: each record charged its header and the bytes it owns | `installed_library_charges_each_record_its_header_and_the_bytes_it_owns` (`passive_admission.rs`) |
 
 ### Session continuity (plan section 6.1)
 
