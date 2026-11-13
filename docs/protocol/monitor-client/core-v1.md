@@ -3,8 +3,9 @@
 **Status: developer-confirmed specification for [#71](https://github.com/jackgeek/climon2/issues/71).
 Implemented for the bootstrap and the immutable description
 ([#75](https://github.com/jackgeek/climon2/issues/75)), the instance
-lifecycle calls ([#85](https://github.com/jackgeek/climon2/issues/85)) and
-passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)).**
+lifecycle calls ([#85](https://github.com/jackgeek/climon2/issues/85)),
+passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93))
+and control and display ([#94](https://github.com/jackgeek/climon2/issues/94)).**
 The shipped [client library](../../../GLOSSARY.md#sessions)
 (`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux)
 returns revision 1's description and rejects other revisions as specified
@@ -15,17 +16,18 @@ the rules below, with one gap: snapshot reports no shared-release allocation
 and undercounts instance allocation, because it does not yet count each
 instance's diagnostics dispatcher
 ([#180](https://github.com/jackgeek/climon2/issues/180)). `submit` accepts
-monitor-mode `CM1_OPEN` and `CM1_LEAVE`; interactive Open
-([#94](https://github.com/jackgeek/climon2/issues/94)) and every other request
+`CM1_OPEN` in both modes, `CM1_LEAVE`, `CM1_ACQUIRE`, `CM1_INPUT`,
+`CM1_RESIZE`, `CM1_READY` and `CM1_FOCUS`; Set viewing, Acknowledge and Kill
 report `CM1_UNSUPPORTED_OPERATION`. An instance opens a
-[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) to
-its [session daemon](../../../GLOSSARY.md#sessions) over
-[daemon wire revision 1](../daemon-client/core-v1.md), delivers Response,
-Initial metadata, Title and diagnostic records, and attempts
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) or an
+interactive attachment to its [session daemon](../../../GLOSSARY.md#sessions)
+over [daemon wire revision 1](../daemon-client/core-v1.md), delivers
+Response, Initial metadata, Title, Control granted and revoked, Restoration
+begin and complete, Display, Geometry and diagnostic records, and attempts
 [Leave](../daemon-client/request-leave.md) once on shutdown.
 [Implemented behavior](#implemented-behavior) records the choices this page
-leaves open. Interactive roles, [Kill](../daemon-client/request-kill.md) and
-the status, notification, progress, control, display and final records are
+leaves open. [Kill](../daemon-client/request-kill.md), viewing,
+acknowledgement and the status, notification, progress and final records are
 not implemented. The [C ABI](../TERMS.md#c-abi)
 [header](client-v1.h) is authoritative for declarations, numeric tags and field
 order. This page owns their semantics. The [examples](examples.c) compile but
@@ -472,15 +474,18 @@ public-interface timeline, not a runtime test or a release prerequisite for plug
 
 ## Implemented behavior
 
-The [Library-layer tests](../../../crates/climon2-e2e/README.md#library-layer-passive-monitor-connections-testspassivers-93)
-are the evidence for this section
-([#93](https://github.com/jackgeek/climon2/issues/93)).
+The Library-layer tests for
+[passive connections](../../../crates/climon2-e2e/README.md#library-layer-passive-monitor-connections-testspassivers-93)
+([#93](https://github.com/jackgeek/climon2/issues/93)) and for
+[control and display](../../../crates/climon2-e2e/README.md#library-layer-control-and-display-testscontrolrs-94)
+([#94](https://github.com/jackgeek/climon2/issues/94)) are the evidence for
+this section.
 
 - **Description.** `capabilities` lists exactly the families the library
-  relays: `daemon-wire-v1`, `monitor-v1` and `title-v1`. `focus-v1` joins with
-  [#94](https://github.com/jackgeek/climon2/issues/94), `status-v1` with
-  [#95](https://github.com/jackgeek/climon2/issues/95), and `notification-v1`
-  and `progress-v1` with [#98](https://github.com/jackgeek/climon2/issues/98).
+  relays: `daemon-wire-v1`, `monitor-v1`, `title-v1` and `focus-v1`.
+  `status-v1` joins with [#95](https://github.com/jackgeek/climon2/issues/95),
+  and `notification-v1` and `progress-v1` with
+  [#98](https://github.com/jackgeek/climon2/issues/98).
   A required family outside the description is `CM1_UNSUPPORTED_OPERATION`
   with `unsupported_capability`; an optional one is not requested.
 - **Admission.** `submit` checks the tag (`CM1_OPEN` to `CM1_FOCUS`), reserved
@@ -490,7 +495,9 @@ are the evidence for this section
   plus `sizeof(cm1_bytes)` and the bytes of each token, must fit
   `request_bytes` before any token is read. A request counts against
   `request_records` and `request_bytes` until it executes and against
-  `operations` until its Response is queued. Each outstanding request
+  `operations` until its Response is queued. Input carries nonempty bytes,
+  at most `chunk_bytes` (`invalid_argument`), and is charged
+  `sizeof(cm1_request)` plus its bytes. Each outstanding request
   reserves one record of `event_records`, and one record's charge plus
   `metadata_record_bytes` of `event_bytes`, for its outcome; without room, `submit` is `CM1_FULL`
   (`queue_full`).
@@ -502,16 +509,17 @@ are the evidence for this section
   connection, so daemon records wait. A delivery holds the oldest records, at
   most `drain_records`, stopping before `drain_payload_bytes`; a record never
   exceeds it alone, because create refuses `drain_payload_bytes` below
-  `metadata_record_bytes`. `drain` is `CM1_FULL` while `deliveries` deliveries are
+  `metadata_record_bytes` or `chunk_bytes`. A Display owns its bytes. `drain` is `CM1_FULL` while `deliveries` deliveries are
   outstanding. Every received [frame](../TERMS.md#frame), type byte included,
-  must fit `metadata_record_bytes`, and every title `title_bytes`; either
-  breach fails the connection with library `resource_limit`.
+  must fit `metadata_record_bytes`, except a Display, whose bytes must fit
+  `chunk_bytes`, and every title `title_bytes`; any breach fails the
+  connection with library `resource_limit`.
 - **Open.** The session metadata, read up to `client_bytes`, must name the
   startup's session (`invalid_configuration`) and release
   (`release_mismatch`); an unreadable file is library `io_error`. Hello, within
   `start_ms` and its 2-second limit, must name the same session, protocol 1
   (`unsupported_revision`) and release, and advertise revision 1 validly
-  (`unsupported_revision`) with `monitor-v1` and every required family
+  (`unsupported_revision`) with `monitor-v1` for monitor mode and every required family
   (`unsupported_capability`) and server frames within `wire_frame_bytes`
   (`unsupported_limit`). These refusals have library origin; an unreachable
   socket is transport `io_error`, and a reply that is not a hello transport
@@ -519,16 +527,34 @@ are the evidence for this section
   refusal and the stream ends. The Open sent names the required families and
   the optional ones both sides support; the daemon's selection must contain
   every required family and nothing unrequested (`invalid_record`).
+- **Commands.** Acquire, Input, Resize, Ready and Focus wait, like Leave,
+  for the Initial metadata. Another generation is `stale_generation`, no
+  role or a Leave under way `invalid_state`, Focus without `focus-v1`
+  selected `unsupported_capability`, and a frame over the daemon's request
+  ceiling `unsupported_limit`: each rejected without being sent. The daemon
+  judges the period and restoration. A success must carry its own result,
+  and Input's every byte; a command's rejection carries no known final
+  result (`invalid_record` otherwise).
+- **Presentation.** Control granted, revoked, Restoration begin and
+  complete, Display and Geometry follow the Initial metadata and name the
+  authority the role holds: a grant only when none is held; a revocation,
+  Display or complete only the held period and restoration; a beginning,
+  which makes its restoration current, or a Geometry only the held period.
+  Anything else, and an empty Display
+  ([owner decision on #81](https://github.com/jackgeek/climon2/issues/81)),
+  fails the connection with transport `invalid_record`. A departure or
+  revocation follows the release Display the daemon sends under the held
+  authority.
 - **Failures.** Transport origin covers the socket, framing and the wire's
   rules: `io_error`, `truncated_frame`, the wire's framing codes,
   `invalid_record` and `invalid_request_id`. Daemon origin covers the daemon's
   own errors, copied. Library origin covers `timeout`, `cancelled`,
-  `invalid_state` (a second Open, or Leave without a role or while another
-  Leave is unanswered), `stale_generation`, `resource_limit` and the Open
+  `invalid_state` (a second Open, or a Leave or command without a role or
+  while a Leave is unanswered), `stale_generation`, `resource_limit` and the Open
   refusals above. A failure ends the connection, queues one diagnostic when it
   fits and fails terminal evidence with its error.
 - **Deadlines and loss.** `start_ms` bounds an Open until its Initial metadata,
-  and `leave_ms` each Leave; on expiry that request is `CM1_INDETERMINATE`
+  `leave_ms` each Leave, and `operation_ms` each command; on expiry that request is `CM1_INDETERMINATE`
   `timeout` and the connection fails. No other Response is fabricated: a
   request lost with the connection stays unanswered for the caller's pending
   ledger. Requests still queued when the stream ends are `CM1_REJECTED`

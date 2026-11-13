@@ -95,10 +95,10 @@ until process exit, and the same pointer on every call:
 
 - `release`: the version folder name, compiled in (`CARGO_PKG_VERSION`). A copy
   placed in another version's folder still reports its own release.
-- `capabilities`: `daemon-wire-v1`, `monitor-v1` and `title-v1`, exactly the
-  families the library relays (#93, `src/library/families.rs`). `focus-v1`
-  joins with #94, `status-v1` with #95, and `notification-v1` and
-  `progress-v1` with #98.
+- `capabilities`: `daemon-wire-v1`, `monitor-v1`, `title-v1` and `focus-v1`,
+  exactly the families the library relays (#93 and #94,
+  `src/library/families.rs`). `status-v1` joins with #95, and
+  `notification-v1` and `progress-v1` with #98.
 - `requirements`: provisional bounded values until the measurement job (#121)
   records qualified ones. Each equals its default `monitor.limits` reservation
   where one exists, plus 1 MiB of instance-local allocation, so a
@@ -113,8 +113,8 @@ until process exit, and the same pointer on every call:
   | `instance_descriptors` | 8 | nonzero, within `resources.descriptors_per_client` |
   | `load_descriptors` | 4 | `resources.descriptors_per_load` |
 
-- `functions`: all eleven entries; the instance lifecycle below (#85) and
-  passive monitor connections (#93). Failed calls report library
+- `functions`: all eleven entries; the instance lifecycle below (#85),
+  passive monitor connections (#93), and control and display (#94). Failed calls report library
   origin, a stable error code and a static message (so error text outlives
   every borrower), zero their nonnull output structs (`run` keeps its report),
   and `notification` writes -1. A null handle or output pointer, the one
@@ -216,9 +216,9 @@ connection runs on its owner thread, inside `run`.
 `submit` validates and copies a request once (`src/library/request.rs`),
 without daemon I/O or waiting, reading only the active member: a known tag
 (`CM1_OPEN` to `CM1_FOCUS`, else `CM1_INVALID_ARGUMENT`), reserved zero, a
-nonzero ID (`CM1_INVALID_REQUEST_ID`), then the operation. Monitor-mode Open
-and Leave are accepted; interactive Open and every other operation are
-`CM1_UNSUPPORTED_OPERATION` (`unsupported_operation`). A monitor Open has
+nonzero ID (`CM1_INVALID_REQUEST_ID`), then the operation. Open, Leave and
+the control requests below (#94) are accepted; Set viewing, Acknowledge and
+Kill are `CM1_UNSUPPORTED_OPERATION` (`unsupported_operation`). A monitor Open has
 zero geometry and reserved fields; each token list is null and zero, or a
 pointer and a count; tokens are nonempty UTF-8, each named once across both
 lists. A required family the library does not relay is
@@ -238,7 +238,7 @@ reads the session metadata (at most `client_bytes`), which must name the
 startup's session and this release; connects to its socket, checking the
 peer's UID; and exchanges the frozen hello within `start_ms` and its 2 s
 limit. The reply must name the same session, protocol 1 and this release,
-and advertise revision 1 validly with `monitor-v1`, every required family and
+and advertise revision 1 validly with `monitor-v1` (monitor mode only), every required family and
 server frames within `wire_frame_bytes`. Only then is the revision-1 Open
 sent, with the required families and the optional ones the daemon
 advertises. An Open refused before it is sent is answered `CM1_REJECTED`
@@ -287,6 +287,42 @@ rejects queued work, waits for an Open under way, then sends one Leave of
 its own; a lost, late, rejected or failed one is reported, never replayed.
 An Open whose hello completes after shutdown is never sent: it is
 `CM1_REJECTED` `cancelled`.
+
+### Control and display (#94)
+
+An interactive Open names a positive geometry and reserved zero; the daemon
+attaches and grants at once, after the Initial metadata. Acquire names a
+nonzero generation; Input, Resize, Ready and Focus a nonzero generation,
+period and restoration ID, parsed once into core's wire types
+(`src/library/request.rs`). Input carries nonempty exact bytes, at most
+`chunk_bytes` (`invalid_argument`), charged `sizeof(cm1_request)` plus its
+bytes against `request_bytes` (`queue_full`); Resize a positive geometry;
+Focus 0 or 1 with its reserved bytes zero. Like a Leave, each runs after the
+Initial metadata: another generation is `stale_generation`, no role or a
+Leave under way `invalid_state`, and Focus without `focus-v1` selected
+`unsupported_capability`, all locally and never sent; a frame over the
+daemon's request ceiling is `unsupported_limit`, never sent. The period and
+restoration are the daemon's to judge (`stale_period`, `stale_restoration`,
+`not_ready`, `not_controller`, copied with daemon origin). Each command is
+bounded by `operation_ms` (`timeout`, indeterminate, and the connection
+fails); its success must carry its own result (`invalid_record` otherwise),
+and Input's every byte.
+
+Control granted (attach, take control, hand-back or successor), Control
+revoked (takeover or session ending), Restoration begin, Display,
+Restoration complete and Geometry are delivered as they arrive, each
+naming the authority the role holds (`src/library/stream.rs`): a grant only
+when none is held, a revocation, Display or complete only of the held
+period and restoration, a beginning (which makes its restoration current)
+or a Geometry only of the held period. Anything else, a record before the
+Initial metadata, and an empty Display (owner decision on #81) fail the
+connection with transport `invalid_record`. A Display's bytes are its
+record's own, exact (`00 ff 41`, NUL, invalid UTF-8), and must fit
+`chunk_bytes` (`resource_limit`); create also refuses `drain_payload_bytes`
+below `chunk_bytes`, so a Display never exceeds a delivery alone. A
+departure or revocation reaches the caller after the release Display the
+daemon sends under the held authority; an attachment's confirmed Leave
+reports the attachment detached.
 
 Terminal evidence is stopped, without an error, after a confirmed departure
 or a shutdown before any role; otherwise failed with the first failure's
@@ -339,7 +375,7 @@ private target directory and checks.
 | LIB-03, LIB-04 and LIB-05 Library: create, run, shutdown, drain to terminal evidence, release, destroy and join; run and destroy on the wrong thread, a repeated run, destroy and handle release while busy; terminal evidence apart from the cleanup report | `installed_library_instance_runs_create_run_shutdown_drain_release_destroy_join` (`climon2-e2e/tests/instance.rs`) |
 | LIB-03 Library: a failed create returns no handles and leaves no descriptor: null arguments, a mismatched release, the generation, native paths | `installed_library_create_rejects_invalid_identity_and_paths_without_handles` (`instance.rs`) |
 | LIB-03 Library: client keys, log path and filter | `installed_library_create_rejects_invalid_settings_and_diagnostics_without_handles` (`instance.rs`) |
-| LIB-03 Library: limits it cannot honour, each at its bound, including `drain_payload_bytes` below `metadata_record_bytes`; no descriptor left for the notification and waker descriptors or for the log file, one more is enough | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` (`instance.rs`) |
+| LIB-03 Library: limits it cannot honour, each at its bound, including `drain_payload_bytes` below `metadata_record_bytes` or `chunk_bytes`; no descriptor left for the notification and waker descriptors or for the log file, one more is enough | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` (`instance.rs`) |
 | LIB-03 Library and Fault: caller startup memory scrambled and unmapped after create; lossless native paths; two instances' homes, settings, logs and allocations stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` (`instance.rs`) |
 | LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` (`instance.rs`) |
 | LIB-04 Library and Fault, Linux `eventfd`: the descriptor stays borrowed and counted once; in a scheduled race, polling sees the stream end while the handle is used before shutdown and after the end, and every call succeeds | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` (`instance.rs`) |

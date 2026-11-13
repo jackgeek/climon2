@@ -8,8 +8,9 @@ not implementation or executed acceptance evidence.** The
 implemented, and headless creation is implemented. Packaged
 [client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
 description ([#75](https://github.com/jackgeek/climon2/issues/75)), local
-instance lifecycle ([#85](https://github.com/jackgeek/climon2/issues/85)) and
-passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
+instance lifecycle ([#85](https://github.com/jackgeek/climon2/issues/85)),
+passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93))
+and control and display ([#94](https://github.com/jackgeek/climon2/issues/94)),
 but no monitor loads them yet. Headless creation's HDL-01 Contract cases and
 packaged-CLI cases are mapped in the daemon and packaged-test READMEs; the
 case needing a running monitor waits for it. Resolving this specification does

@@ -99,16 +99,16 @@ Commands that explicitly close inherited descriptors cannot retain this
 additional evidence. macOS keeps its kernel process/image ancestry tracking
 and does not use this adapter.
 
-**Current (#75, #85, #93):** every release builds and ships the client library in
+**Current (#75, #85, #93, #94):** every release builds and ships the client library in
 its version folder: `libclimon2_client.dylib` (universal arm64/x86_64) on macOS
 and `libclimon2_client.so` on x86-64 GNU/Linux, both from one Rust cdylib
 artifact of `climon2-client`. Each exports only the frozen
 `climon2_client_get_interface` bootstrap and implements the bootstrap,
 description and local instance lifecycle of
 [native revision 1](protocol/monitor-client/core-v1.md), and its instances
-open passive monitor connections to session daemons over
-[daemon wire revision 1](protocol/daemon-client/core-v1.md); control and
-display arrive with #94. The library host fixture drives those instances
+open passive monitor connections or interactive attachments to session
+daemons over [daemon wire revision 1](protocol/daemon-client/core-v1.md) and
+relay control and display (#94). The library host fixture drives those instances
 through the function table, with the test-hooks library's fault injection,
 as the Library layer's instrumented host. It also serves a clearly labelled
 fake daemon peer that the library under test connects to, and probes real

@@ -1,6 +1,10 @@
 # Geometry
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification, implemented by the
+[client library](../../../GLOSSARY.md#sessions)
+([#94](https://github.com/jackgeek/climon2/issues/94)) as its
+[implemented behavior](core-v1.md#implemented-behavior) details; the caller is
+not implemented.**
 The [client](../../../GLOSSARY.md#sessions) reports effective daemon
 [geometry](../TERMS.md#geometry) to the [monitor](../../../GLOSSARY.md#sessions).
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

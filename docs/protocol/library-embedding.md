@@ -11,7 +11,9 @@ contained and no process-global state changed
 ([#85](https://github.com/jackgeek/climon2/issues/85)). An instance opens a
 passive monitor connection to its session's daemon on its owner thread,
 never raising `SIGPIPE` in the process
-([#93](https://github.com/jackgeek/climon2/issues/93)). Loading by the
+([#93](https://github.com/jackgeek/climon2/issues/93)), or an interactive
+attachment, and relays control and display
+([#94](https://github.com/jackgeek/climon2/issues/94)). Loading by the
 [monitor](../../GLOSSARY.md#sessions) and the
 [client executable](../../GLOSSARY.md#sessions) is not implemented. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
