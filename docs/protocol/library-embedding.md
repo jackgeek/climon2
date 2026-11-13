@@ -1,7 +1,8 @@
 # Client library embedding and lifetime
 
 **Status:** agreed design. Only the library side of the bootstrap is
-implemented: every installed version ships its client library file, exporting
+implemented: every installed version ships its
+[client library](../../GLOSSARY.md#sessions) file, exporting
 only `climon2_client_get_interface`
 ([#75](https://github.com/jackgeek/climon2/issues/75)). Loading by the
 [monitor](../../GLOSSARY.md#sessions) and the
