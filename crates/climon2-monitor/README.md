@@ -27,6 +27,13 @@ no client libraries yet.
    `client.escape_prefix`, and the `monitor` section (`show_key_hints`, `bell`
    and `monitor.limits` with the ranges and rules the README lists). Nothing
    reads the file again, so editing it changes nothing until the next start.
+   Its limits must then hold one session's mandatory allocation at the
+   largest geometry a session can have, 500x200 (`Geometry::for_host` of the
+   largest host), as `climon2-vt`'s `Model::mandatory` charges a blank model
+   keeping `history.max_rows` (#167): `memory.total_bytes`, then
+   `client_bytes`, the current model and the history chunk holding its recent
+   page together, and `history_bytes_per_session` that chunk
+   (`Limits::hold`).
 
 Every failure prints one escaped line, with the general-log suffix once that log
 exists, and exits 125 before raw mode, the alternate screen or any OSC output.
@@ -89,6 +96,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | INP-01 (Monitor): configured prefix hint and exit; null take-control key accepted; once read, Ctrl+C and the default prefix+x are not exits | `installed_monitor_hints_and_exits_with_the_configured_prefix` (e2e) |
 | INP-01 (Monitor): null escape prefix and invalid keys refused before terminal changes | `installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys` (e2e) |
 | CFG-01 (Monitor): unreadable and malformed JSONC, null, wrong type, duplicate, overflow, out-of-range and inconsistent settings each refused with one diagnostic and 125 before terminal changes | `installed_monitor_refuses_every_invalid_configuration_before_the_terminal_changes` (e2e) |
+| CFG-01 (Monitor): limits one byte short of one 500x200 session's current model and recent page (total, then client budget) or of its recent page (per-session history budget) each refused with one diagnostic naming the budget and 125 before terminal changes; at those limits the monitor opens and prefix+x exits 0 (#167) | `installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model` (e2e) |
 | CFG-01 (Monitor): `show_key_hints` false hides the empty state's hint, prefix+x still exits; unknown and unrelated settings ignored | `installed_monitor_without_key_hints_shows_none_and_still_exits` (e2e) |
 | CFG-01 (Monitor): no live reload: after an edit, a repaint keeps the started settings and the edited prefix does not act | `editing_the_configuration_while_the_monitor_runs_changes_nothing` (e2e) |
 | CFG-01 (Monitor): every effective setting reported in the general log | `installed_monitor_logs_its_effective_configuration` (e2e) |

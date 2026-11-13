@@ -1,13 +1,16 @@
 //! Everything that can refuse the monitor, checked in order before the host
 //! terminal changes: terminals, the climon2 home and executable home, then the
-//! one configuration snapshot.
+//! one configuration snapshot, whose limits must hold one session's terminal
+//! model.
 use crate::Error;
 use climon2_core::{
     VersionName,
-    config::{ConfigSource, MonitorConfig},
+    config::{ConfigError, ConfigSource, MandatoryAllocation, MonitorConfig},
     layout::{ExecutableLayout, HomeLayout, VersionBinary},
+    protocol::TerminalSize,
 };
 use climon2_platform::{logging::LogFile, runtime, terminal};
+use climon2_vt::{Geometry, Model};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -61,12 +64,40 @@ fn installed_version() -> io::Result<VersionName> {
 }
 
 /// The one configuration snapshot: the client bindings, whose escape prefix
-/// the monitor needs to reach its actions, and the `monitor` section. Nothing
-/// reads the file again.
+/// the monitor needs to reach its actions, and the `monitor` section, whose
+/// limits must hold one session's terminal model. Nothing reads the file
+/// again.
 fn configuration(home: &Path) -> io::Result<MonitorConfig> {
     let layout =
         HomeLayout::resolve(Some(home.as_os_str()), Path::new("/")).map_err(io::Error::other)?;
     ConfigSource::read(&layout)
         .and_then(|source| source.monitor())
+        .and_then(admissible)
         .map_err(io::Error::other)
+}
+
+/// The snapshot, if its limits hold the mandatory allocation of one session
+/// at the largest geometry a session can have.
+fn admissible(config: MonitorConfig) -> Result<MonitorConfig, ConfigError> {
+    let limits = config.settings().limits;
+    limits
+        .hold(largest_session(limits.history_rows()))
+        .map(|()| config)
+}
+
+/// What `climon2-vt` charges a blank model keeping `history_rows` rows at the
+/// largest geometry, the one the largest host clamps to: the model alone,
+/// and the first history chunk, which holds the recent page.
+fn largest_session(history_rows: u32) -> MandatoryAllocation {
+    let at = Geometry::for_host(u16::MAX, u16::MAX).expect("a nonzero size");
+    let current_model = Model::mandatory(at, 0);
+    let with_page = Model::mandatory(at, history_rows as usize);
+    MandatoryAllocation {
+        size: TerminalSize {
+            cols: at.cols(),
+            rows: at.rows(),
+        },
+        current_model: current_model as u64,
+        recent_page: (with_page - current_model) as u64,
+    }
 }
