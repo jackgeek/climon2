@@ -267,6 +267,11 @@ fn wide_characters_are_accepted_at_the_bound_and_rejected_one_byte_past_it() {
     assert_eq!(accepted, ["page", "abcd", "\u{4e00}\u{4e8c}"]);
 }
 
+/// Rows `row<n>` for each `n` in `range`.
+fn rows(range: std::ops::Range<usize>) -> Vec<String> {
+    range.map(|row| format!("row{row}")).collect()
+}
+
 /// LIM-03 Contract: plain text grows only history storage, which the engine
 /// adds a chunk of rows at a time, admitted before output that could fill the
 /// current chunk. At the bound the next chunk is admitted and every row kept;
@@ -276,9 +281,6 @@ fn wide_characters_are_accepted_at_the_bound_and_rejected_one_byte_past_it() {
 #[test]
 fn history_grows_at_the_bound_and_discards_its_oldest_row_one_byte_past_it() {
     let at = geometry(8, 2);
-    let rows = |range: std::ops::Range<usize>| -> Vec<String> {
-        range.map(|row| format!("row{row}")).collect()
-    };
     let early = rows(0..900).join("\r\n");
     let late = format!("\r\n{}", rows(900..1003).join("\r\n"));
     let mut roomy = Model::new(at, limits(ROOMY, 2000)).unwrap();
@@ -791,6 +793,25 @@ fn history_never_grows_past_its_configured_rows() {
 
     assert_eq!(model.footprint(), footprint);
     assert_eq!(model.history().len(), 1000);
+}
+
+/// LIM-03 Contract: a model shows at most `history_rows` rows of history, the
+/// newest. At the limit every row scrolled into history is shown; one row
+/// past it the oldest is no longer shown, though the engine's first chunk
+/// still holds it.
+#[test]
+fn history_shows_its_rows_at_the_limit_and_not_the_oldest_one_past_it() {
+    let at = geometry(8, 2);
+    for (scrolled, shown) in [(HISTORY, 0..HISTORY), (HISTORY + 1, 1..HISTORY + 1)] {
+        let mut model = Model::new(at, limits(ROOMY, HISTORY)).unwrap();
+
+        model
+            .feed(rows(0..scrolled + 2).join("\r\n").as_bytes())
+            .unwrap();
+
+        assert_eq!(model.history(), rows(shown), "{scrolled} rows scrolled");
+        assert_eq!(model.screen(), rows(scrolled..scrolled + 2));
+    }
 }
 
 /// LIM-03 Contract: the alternate screen has no history of its own, and the

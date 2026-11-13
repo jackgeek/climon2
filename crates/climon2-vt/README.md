@@ -109,6 +109,7 @@ Acceptance-matrix IDs are cited in each test's doc comment.
 | LIM-03 Contract: plain text grows nothing beyond held cells | `plain_text_fills_held_cells_without_growth` |
 | LIM-03 Contract: history chunk at the bound, oldest row discarded one past it | `history_grows_at_the_bound_and_discards_its_oldest_row_one_byte_past_it` |
 | LIM-03 Contract: history grows only before output that could fill it, including a long repeat, never past its configured rows, and is not shown over the alternate screen | `history_grows_only_before_output_that_could_fill_it`, `a_long_repeat_admits_the_history_chunk_it_could_fill`, `history_never_grows_past_its_configured_rows`, `the_alternate_screen_shows_no_history` |
+| LIM-03 Contract: history shows at most `history_rows` rows, all of them at the limit and not the oldest one past it | `history_shows_its_rows_at_the_limit_and_not_the_oldest_one_past_it` |
 | LIM-03 Contract: the largest limits never overflow the accounting | `the_largest_limits_never_overflow_the_accounting` |
 | LIM-03 Contract: wide characters at the bound and one past it | `wide_characters_are_accepted_at_the_bound_and_rejected_one_byte_past_it` |
 | LIM-03 Contract: combining marks at the bound and one past it | `combining_marks_are_accepted_at_the_bound_and_rejected_one_byte_past_it` |
