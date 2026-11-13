@@ -70,10 +70,11 @@ impl Capabilities {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Lifecycle {
-    /// Awaiting the initial attach.
+    /// An ordinary session awaiting its initial attach.
     Starting,
     Attached,
-    /// After an accepted explicit detach left no attachment.
+    /// No attachment while the session keeps running: after an accepted
+    /// explicit detach left none, or whenever a headless session has none.
     Detached,
     Terminating,
 }

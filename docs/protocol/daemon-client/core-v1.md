@@ -231,15 +231,22 @@ interactive work; Leave and repeated standalone Kill remain possible.
 This intentionally amends #58's final-attachment assumptions; it does not
 guarantee survival of a native monitor crash.
 
-Future `c2 exec --headless <command> [args...]` starts a
+`c2 exec --headless <command> [args...]` starts a
 [headless session](../../../GLOSSARY.md#sessions) without an interactive client
 and returns success only after daemon-confirmed creation. Zero-client survival
 lasts for that session's lifetime, even after later attachments disappear,
-until command completion or explicit Kill. CLI spelling/lifetime are
-[agreed, unimplemented](../../monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill);
-creation encoding is not assigned by this amendment. Preserve existing
-`c2 kill <session>` and test its future headless support. Ordinary leave
-policy and succession remain unchanged; not every session becomes persistent.
+until command completion or explicit Kill. That CLI spelling and lifetime are
+[implemented](../../monitor-lifecycle.md#headless-creation-and-existing-cli-kill)
+on the current private protocol: creation uses a private same-release daemon
+startup argument, not a wire message, and the frozen [hello reply](hello-reply.md)
+reports a headless session without attachments as `detached`. Existing
+`c2 kill <session>` ends headless sessions. Under this revision,
+succession stays as above for every session. The headless
+[lifetime policy](../../../GLOSSARY.md#sessions) changes only what happens with
+no attachment: from creation on, and after succession leaves no participant,
+the session keeps running. The leave policy of
+[ordinary sessions](../../../GLOSSARY.md#sessions) is unchanged, and not every
+session becomes persistent.
 
 The [lifecycle amendment](../../monitor-lifecycle.md) also agrees concurrent
 shutdown and automatic exponential passive recovery. It does not change any
@@ -483,8 +490,10 @@ change; the rest remains future.
 Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent
-cleanup/fail-stop, passive recovery and existing CLI kill of future headless
-sessions. These are future tests, not conformance/performance claims.
+cleanup/fail-stop and passive recovery. These are future tests, not
+conformance/performance claims. Headless creation and existing CLI kill of
+headless sessions already have executed evidence on the current protocol
+(HDL-01 in the [acceptance matrix](../../monitor-acceptance.md)).
 The [acceptance matrix](../../monitor-acceptance.md) is agreed in #62;
 native declarations are agreed in #71. Numerical budgets are
 agreed in [operational limits](../../monitor-operational-limits.md), not implemented.
