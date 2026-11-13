@@ -31,7 +31,9 @@ Input, Resize, Ready, Acquire between attachments, Focus, Response, Fatal
 error, Initial metadata (the title; status and progress reported
 unavailable), Title changed, Control granted and revoked, Restoration begin
 and complete, Display and Geometry, with the private protocol's takeover,
-hand-back and leave policy. Until it serves them, it rejects the other
+[hand-back](../../../GLOSSARY.md#attachment-and-control) and
+[leave policy](../../../GLOSSARY.md#attachment-and-control). Until it serves them, it
+rejects the other
 requests without effects, as each request's page describes. Standalone
 Kill, Acquire by a passive monitor connection, Set viewing, Acknowledge, the
 status, notification, progress and final-result messages, promotion of

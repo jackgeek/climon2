@@ -45,14 +45,18 @@ Related: [Acknowledge](request-acknowledge.md), [Ready](request-ready.md).
 
 On an interactive attachment the
 [session daemon](../../../GLOSSARY.md#sessions) serves Acquire. A
-non-controlling attachment takes control at once. The previous controller,
-of either protocol, first receives the release of its presentation, then a
+non-controlling attachment takes control at once. The previous
+[controller](../../../GLOSSARY.md#attachment-and-control), of either protocol, first
+receives the [release](../../../GLOSSARY.md#restoration-and-presentation) of its
+[presentation](../../../GLOSSARY.md#restoration-and-presentation), then a
 [revocation](../../../GLOSSARY.md#attachment-and-control): a revision-1 one
 gets [Control revoked](event-control-revoked.md) with reason `takeover`.
 The requester receives [Control granted](event-control-granted.md) with
 reason `acquire` and the [Restoration begin](event-restoration-begin.md) of
-its first restoration, then the success with `changed:true` and that period
-and restoration ID. The restoration's [Display](event-display.md) chunks and
+its first restoration, then the success with `changed:true` and that
+[control period](../../../GLOSSARY.md#attachment-and-control) and
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts). The restoration's
+[Display](event-display.md) chunks and
 [Restoration complete](event-restoration-complete.md) follow the success, as
 the connection drains. The controller's own Acquire is an explicit no-op:
 `changed:false` with its current period and restoration ID, and nothing

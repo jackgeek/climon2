@@ -48,7 +48,7 @@ under daemon policy. See [succession](core-v1.md#membership-and-succession).
 Monitor-mode display/restoration after acquisition or promotion uses effective
 session geometry regardless of outer host or requested size under the
 [canonical terminal contract](../terminal-integration.md#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1).
-Ordinary interactive direct/derived/native-history behavior is unchanged.
+Ordinary interactive [direct](../../../GLOSSARY.md#restoration-and-presentation)/[derived](../../../GLOSSARY.md#restoration-and-presentation)/native-history behavior is unchanged.
 
 Success [Response](response.md) result is
 `{"kind":"opened","connection_id":<Guid>,"selected_capabilities":<string array>}`.
@@ -94,8 +94,11 @@ each dimension must be at most 65,535, or the Open is rejected with
 `invalid_geometry` and ends its stream. The granted geometry is the session
 geometry under the same daemon policy as an ordinary attach, which the
 [daemon README](../../../crates/climon2-daemon/README.md#ownership-and-lifecycle)
-describes: a larger host gets Derived presentation. The attachment takes
-control from any current controller, private-protocol attachments included,
+describes: a larger host gets
+[Derived presentation](../../../GLOSSARY.md#restoration-and-presentation). The attachment
+takes control from any current
+[controller](../../../GLOSSARY.md#attachment-and-control), private-protocol attachments
+included,
 and the hello `state` counts it like any attachment. During committed
 termination an interactive Open is rejected with `session_terminating` and
 ends its stream. Rejections carry no `known_final` yet: a known command

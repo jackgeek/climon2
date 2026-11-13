@@ -51,10 +51,14 @@ Required boundaries are preserved or explicitly fail the affected connection.
 
 The [session daemon](../../../GLOSSARY.md#sessions) sends Restoration begin
 right after each [Control granted](event-control-granted.md), and on its
-own when a controller's host changes before
+own when a [controller](../../../GLOSSARY.md#attachment-and-control)'s host changes before
 [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts): that
-replacement restoration keeps the period and gets a new restoration ID, and
+replacement restoration keeps the
+[control period](../../../GLOSSARY.md#attachment-and-control) and gets a new
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts), and
 the superseded restoration gets no completion. The geometry is the session
 geometry. The restoration bytes are those of an ordinary attach, serialized
-for the attachment's host with Direct or Derived presentation, and the
+for the attachment's host with
+[Direct](../../../GLOSSARY.md#restoration-and-presentation) or
+[Derived presentation](../../../GLOSSARY.md#restoration-and-presentation), and the
 daemon takes their snapshot once any synchronized update ends.

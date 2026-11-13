@@ -47,8 +47,12 @@ an interactive [attachment](../../../GLOSSARY.md#attachment-and-control)
 whose control ends while the attachment stays: with reason `takeover` when
 another attachment, of either protocol, attaches or takes control, and with
 reason `session_ending` when the session ends while it still controls, just
-before its stream closes. Each time, the release of its presentation reaches
-it first as [Display](event-display.md), and Control revoked carries the
-period and restoration ID that Display used; no Display follows it.
+before its stream closes. Each time, the
+[release](../../../GLOSSARY.md#restoration-and-presentation) of its
+[presentation](../../../GLOSSARY.md#restoration-and-presentation) reaches it first as
+[Display](event-display.md), and Control revoked carries the
+[control period](../../../GLOSSARY.md#attachment-and-control) and
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts) that Display used; no
+Display follows it.
 [Command final](event-command-final.md) is not sent yet: it arrives with
 [#88](https://github.com/jackgeek/climon2/issues/88).

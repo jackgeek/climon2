@@ -34,9 +34,10 @@ Local closure or a lost response does not prove deliberate detach.
 Neither success nor closure proves client cleanup or a joined thread.
 
 Every [controller](../../../GLOSSARY.md#attachment-and-control) departure,
-deliberate or lost, can first hand back to the
+deliberate or lost, can first [hand back](../../../GLOSSARY.md#attachment-and-control) to the
 most recently controlling attachment, otherwise promote the newest accepted
-passive registration, before final-participant leave policy.
+passive registration, before final-participant
+[leave policy](../../../GLOSSARY.md#attachment-and-control).
 Committed termination overrides [succession](core-v1.md#membership-and-succession).
 Switching [monitor](../../../GLOSSARY.md#sessions) selection is not Leave;
 inherited control does not select,
@@ -69,10 +70,13 @@ goes on. A peer may half-close after sending Leave and still read its
 Response.
 
 An interactive attachment's Leave is an accepted detach. A controller first
-receives the release of its presentation as [Display](event-display.md),
-then control is handed back to the most recently controlling remaining
-attachment, of either protocol, with reason `hand_back`. The success reports
-`attachment_detached:true`, and the stream then closes. The leave policy is
+receives the [release](../../../GLOSSARY.md#restoration-and-presentation) of its
+[presentation](../../../GLOSSARY.md#restoration-and-presentation) as
+[Display](event-display.md), then control is
+[handed back](../../../GLOSSARY.md#attachment-and-control) to the most recently
+controlling remaining attachment, of either protocol, with reason
+`hand_back`. The success reports `attachment_detached:true`, and the stream
+then closes. The [leave policy](../../../GLOSSARY.md#attachment-and-control) is
 the private protocol's: a final deliberate Leave keeps the session running,
 detached, while a final unexpected departure, closing without Leave, ends
 it. During committed termination Leave still removes the attachment, after

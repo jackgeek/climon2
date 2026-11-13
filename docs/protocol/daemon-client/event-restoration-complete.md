@@ -47,7 +47,7 @@ policy. Related: [Control revoked](event-control-revoked.md).
 ## Implemented behavior
 
 The [session daemon](../../../GLOSSARY.md#sessions) produces a restoration
-as the attachment drains it, while less than 1 MiB waits in its queue, and
+as the attachment drains it, while less than 1 [MiB](../TERMS.md#mib) waits in its queue, and
 sends Restoration complete after the last of its
 [Display](event-display.md) chunks. Live output that arrived meanwhile
 follows as Display of the same authority. [Ready](request-ready.md) is
