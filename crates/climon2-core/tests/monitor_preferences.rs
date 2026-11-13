@@ -80,10 +80,10 @@ fn hlp01_later_versions_are_read_ignoring_unknown_fields() {
     );
 }
 
-/// Derived scenario (malformed preference file): anything but such an object
-/// is malformed, and says why: broken JSON, another JSON type, a missing,
-/// zero, negative, fractional or quoted version, a missing, null or
-/// non-boolean choice, and a known field given twice.
+/// HLP-01 (Contract; derived scenario: a malformed preference file): anything
+/// but such an object is malformed, and says why: broken JSON, another JSON
+/// type, a missing, zero, negative, fractional or quoted version, a missing,
+/// null or non-boolean choice, and a known field given twice.
 #[test]
 fn hlp01_malformed_files_are_refused_with_their_reason() {
     for (text, reason) in [
