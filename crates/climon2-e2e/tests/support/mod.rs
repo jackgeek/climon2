@@ -396,8 +396,30 @@ pub fn wait_file(path: &Path) -> String {
     fs::read_to_string(path).unwrap()
 }
 
-/// Explicit detach once `terminal`'s client is ready for input: [`DETACH`],
-/// sent once, then status 0 and the reattach hint on stderr.
+/// Types the harmless `command` until `output` appears, waiting for input
+/// readiness before each try. A client discards keys typed before it confirmed
+/// its restoration and nothing on the screen marks that, so only the session's
+/// answer to typed input proves the client takes input; `command` must be
+/// harmless to repeat, and `output` must differ from its echo.
+pub fn type_until(terminal: &mut Terminal, command: &str, output: &str) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        terminal.wait_for_input_ready(TIMEOUT).unwrap();
+        terminal.send(command).unwrap();
+        if terminal
+            .wait_for_text(output, Duration::from_secs(1))
+            .is_ok()
+        {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{output:?} never appeared");
+    }
+}
+
+/// Explicit detach: [`DETACH`] sent exactly once, then status 0 and the
+/// reattach hint on stderr. The client must already have confirmed its
+/// restoration, or it discards the keys: a just-attached client proves it
+/// with [`type_until`] first.
 #[allow(dead_code)]
 pub fn detach(terminal: &mut Terminal, id: &str) {
     terminal.wait_for_input_ready(TIMEOUT).unwrap();

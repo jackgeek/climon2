@@ -4,12 +4,8 @@ mod support;
 
 use climon2_test_term::{Terminal, controlled_bash, copy_executable};
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::Path,
-    time::{Duration, Instant},
-};
-use support::{Package, TIMEOUT, quote};
+use std::{fs, path::Path};
+use support::{Package, TIMEOUT, quote, type_until};
 
 /// #21.6/#38: real installer → PATH launcher → CLI → daemon → client, from
 /// controlled outer bash to controlled inner bash; a second real PTY lists one
@@ -43,24 +39,6 @@ fn installer_built_bash_smoke_lists_one_session_and_preserves_exit_seven() {
     assert!(package.list().is_empty());
     package.assert_clean();
     package.assert_archive_default_levels();
-}
-
-/// Types `command` until `output` appears. A client drops keys typed before it confirmed
-/// its restoration, and nothing on the screen says when it has, so `command` must be
-/// harmless to repeat.
-fn type_until(terminal: &mut Terminal, command: &str, output: &str) {
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        terminal.wait_for_input_ready(TIMEOUT).unwrap();
-        terminal.send(command).unwrap();
-        if terminal
-            .wait_for_text(output, Duration::from_secs(1))
-            .is_ok()
-        {
-            return;
-        }
-        assert!(Instant::now() < deadline, "{output:?} never appeared");
-    }
 }
 
 fn launch(package: &Package, program: &str, args: &[&str]) -> Terminal {

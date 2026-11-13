@@ -17,7 +17,9 @@ use nix::{
 };
 use serde_json::{Value, json};
 use std::{fs, process::Output};
-use support::{Package, TIMEOUT, detach, kill_session, scripted, scripted_to, wait_file};
+use support::{
+    Package, TIMEOUT, detach, kill_session, scripted, scripted_to, type_until, wait_file,
+};
 
 /// A bash loop that waits for `$HOME/<name>`, giving up after two minutes.
 fn until_file(name: &str) -> String {
@@ -33,14 +35,16 @@ fn size_then_hold() -> String {
     )
 }
 
-/// Waits for `go`, announces that the session is still running and runs
-/// until `finish` exists. A session that ended before `go` hung up its
-/// terminal, which killed this script before it could write `survived`.
+/// Waits for `go`, announces that the session is still running, then answers
+/// each line it reads with `READ-<line>` until two minutes have passed. A
+/// session that ended before `go` hung up its terminal, which killed this
+/// script before it could write `survived`.
 fn alive_after_go() -> String {
     format!(
-        "{}\necho HEADLESS-ALIVE\n: > \"$HOME/survived\"\n{}\nexit 3",
-        until_file("go"),
-        until_file("finish")
+        "{}\necho HEADLESS-ALIVE\n: > \"$HOME/survived\"\n\
+         while [ \"$SECONDS\" -lt 120 ]; do IFS= read -r -t 1 line && echo \"READ-$line\"; done\n\
+         exit 3",
+        until_file("go")
     )
 }
 
@@ -269,6 +273,7 @@ fn installed_headless_session_survives_zero_clients_a_killed_client_and_a_detach
 
     let mut client = attach(&package, &id);
     client.wait_for_text("HEADLESS-ALIVE", TIMEOUT).unwrap();
+    type_until(&mut client, "ping\n", "READ-ping");
     detach(&mut client, &id);
     drop(client);
     assert_eq!(listed_state(&package, &id), detached());
