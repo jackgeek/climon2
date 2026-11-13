@@ -38,9 +38,9 @@ impl Input {
     }
 }
 
-/// Display `0x49`: terminal bytes for the controlling client under its
-/// control period and restoration. An empty payload is an invalid operation
-/// for the client to judge, not a malformed record.
+/// Display `0x49`: terminal bytes for the controller under its control
+/// period and restoration. An empty payload is an invalid operation for the
+/// client to judge, not a malformed record.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Display {
     pub period: Counter,
