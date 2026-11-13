@@ -29,10 +29,10 @@ validated configuration and `--lifetime ordinary|headless`; readiness fd and
 untouched command arguments are appended inside the platform spawn callback. The
 real five-second readiness deadline cleans metadata/socket on failure. After
 Ready, an armed guard sends TERM to the daemon, waits up to six seconds, then
-KILLs it if metadata/client handoff fails. Headless exec instead writes the
-session ID and a newline to stdout, then disarms the guard and exits 0, leaving
-the session running; if stdout cannot be written, the guard still ends the
-session and exec fails with 125. The exact frozen client invocation is derived
+KILLs it if metadata/client handoff fails. Headless exec instead disarms the
+guard, leaving the session running, writes the session ID and a newline to
+stdout and exits 0; when stdout cannot be written, it only logs that and still
+exits 0. The exact frozen client invocation is derived
 from the published metadata; client home/filter configuration travels only
 through its environment, and the validated client settings through the
 `CLIMON2_CLIENT_STARTUP` envelope.

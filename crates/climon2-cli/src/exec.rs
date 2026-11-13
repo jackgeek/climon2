@@ -233,20 +233,21 @@ impl Startup<'_> {
     ) -> Result<u32, Error> {
         match self.lifetime {
             Lifetime::Ordinary => self.handoff(filter, settings),
-            Lifetime::Headless => self.announce(daemon),
+            Lifetime::Headless => Ok(self.announce(daemon)),
         }
     }
 
-    /// Prints the session ID once the daemon confirmed creation; the session
-    /// then outlives this CLI. A script that cannot read the ID could not
-    /// target the session, so a failed write still stops it.
-    fn announce(&self, daemon: Started<'_>) -> Result<u32, Error> {
-        let mut stdout = io::stdout().lock();
-        writeln!(stdout, "{}", self.id)?;
-        stdout.flush()?;
-        tracing::debug!(session_id = %self.id, "headless session started");
+    /// The daemon confirmed creation, so the session outlives this CLI and
+    /// exec succeeds even when its ID cannot be written to stdout; `list`
+    /// still shows the session.
+    fn announce(&self, daemon: Started<'_>) -> u32 {
         daemon.disarm();
-        Ok(0)
+        let mut stdout = io::stdout().lock();
+        if let Err(error) = writeln!(stdout, "{}", self.id).and_then(|()| stdout.flush()) {
+            tracing::warn!(%error, "cannot print the session ID");
+        }
+        tracing::debug!(session_id = %self.id, "headless session started");
+        0
     }
 
     fn handoff(

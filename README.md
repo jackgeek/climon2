@@ -54,12 +54,12 @@ the session is running: it then prints the full lowercase session ID and a
 newline on stdout and exits 0. Creation failures keep `exec`'s statuses and
 diagnostics: 127 when the command is not found, 126 when it cannot be executed,
 and 125 for climon2 failures such as invalid configuration. If the ID cannot be
-written to stdout, the session is ended and the status is 125. The command's
-later exit status belongs to the session, not to this CLI. The session starts at
-the size of the terminal on stdin, or 80x24 without one; after that, the
-controlling client sets its size as for any session. `--` still separates
-climon2's options from the command: `c2 exec -- --headless` runs a command
-named `--headless`.
+written to stdout, the session keeps running and the status is still 0;
+`c2 list` shows it. The command's later exit status belongs to the session, not
+to this CLI. The session starts at the size of the terminal on stdin, or 80x24
+without one; after that, the controlling client sets its size as for any
+session. `--` still separates climon2's options from the command:
+`c2 exec -- --headless` runs a command named `--headless`.
 
 A headless session survives with zero clients: from the start, after a
 deliberate detach and after a client is lost unexpectedly. It ends only when its

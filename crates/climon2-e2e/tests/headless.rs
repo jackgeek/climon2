@@ -212,12 +212,13 @@ fn installed_headless_creation_failures_keep_exec_statuses_and_diagnostics() {
     }
 }
 
-/// HDL-01 (Monitor layer), failed creation: a script that cannot read the
-/// session ID could not target the session, so when stdout cannot be written,
-/// headless exec ends the session it started and fails with 125, leaving
-/// nothing behind.
+/// HDL-01 (Monitor layer), creation when the session ID cannot be printed
+/// (owner decision of 2026-11-13 on #78): success means the session was
+/// created, so with stdout unwritable headless exec still exits 0 with
+/// nothing on stderr, and the session keeps running, listed `detached`, until
+/// its command completes.
 #[test]
-fn installed_headless_exec_that_cannot_print_the_guid_ends_the_session_and_fails() {
+fn installed_headless_exec_that_cannot_print_the_guid_leaves_the_session_running() {
     let package = Package::new();
     let (reader, writer) = std::io::pipe().unwrap();
     drop(reader);
@@ -227,11 +228,16 @@ fn installed_headless_exec_that_cannot_print_the_guid_ends_the_session_and_fails
         &headless_args(&until_file("finish")),
         writer.into(),
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(125), "{stderr}");
-    assert!(stderr.starts_with("climon2: error: "), "{stderr}");
-    assert!(stderr.contains("Broken pipe"), "{stderr}");
-    assert!(stderr.contains(" (logs: "), "{stderr}");
+    assert_eq!(
+        (output.status.code(), output.stderr.as_slice()),
+        (Some(0), &b""[..]),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let id = package.metadata().session_id.to_string();
+    assert_eq!(listed_state(&package, &id), detached());
+
+    touch(&package, "finish");
     package.assert_clean();
     assert!(package.list().is_empty());
 }
