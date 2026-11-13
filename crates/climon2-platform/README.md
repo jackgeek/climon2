@@ -100,30 +100,45 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
 
 ## Client libraries
 
-- `library::Loader::new(executable_home)` loads the client libraries of one
-  absolute, canonical climon2 executable home (a relative home panics: the
-  dynamic loader would resolve it against the working directory).
-  `load(&VersionName)` opens `<home>/<version>/<library file>` with
+- `library::Loader::new(ExecutableHome)` loads the client libraries of one
+  climon2 executable home. `climon2_core::layout::ExecutableHome` is absolute
+  and canonical by construction and owns each library's path,
+  `<home>/<version>/<library file>`. `load(&VersionName)` opens that path with
   `dlopen(RTLD_NOW | RTLD_LOCAL)`, never `current`, another version or a
   search path, and never closes a handle, including one it then refuses. The
   first successful load of a version is shared: later loads return the same
-  `&'static Library`. A refusal is not remembered, so a later load retries.
+  `&'static Library`; two first loads racing on different threads may both
+  open and validate it.
+- A refusal is not remembered, so a later load tries again. A library refused
+  before the dynamic loader opened it (missing library or dependency,
+  incompatible architecture) can load once the installation is repaired, and
+  a contained bootstrap failure can pass. Once a file is open, the process
+  keeps its image, so a later load repeats any refusal of its symbol or
+  description.
 - A refusal is a `LoadError` naming the requested file, with one `Failure`
   per explicit cause. After a failed `dlopen` the loader's own checks decide,
-  never `dlerror()` text, which is only quoted: a file it cannot open is a
-  `MissingLibrary`; a file that is not an x86-64 ELF library on Linux, or has
-  no slice dyld would load on macOS (`macho_best_slice_in_fd`), is an
-  `IncompatibleArchitecture`; otherwise a `MissingDependency`. Then, with the
-  handle kept: no `climon2_client_get_interface` is a `MissingSymbol`; on
-  macOS an image `dladdr` names other than the requested file (found through
-  `DYLD_LIBRARY_PATH`) is a `SubstitutedImage`; a refused revision 1 is an
-  `UnsupportedRevision`; a release text other than the version is a
-  `WrongRelease`; and any other answer without a description, another
-  revision or a nonzero reserved field, a release text that is null or longer
-  than 255 bytes (no version folder name is longer), missing requirements
-  (no instance allocation, owner stack or instance descriptor, workers
-  without stacks, a nonzero reserved field) or an incomplete function table
-  is a `MalformedDescription`.
+  never `dlerror()` text, which is only quoted: a file it cannot open,
+  missing or unreadable, is a `MissingLibrary`; a file whose header is not an
+  x86-64 ELF header on Linux (`library::is_x86_64_elf`, which xtask's release
+  checks share), or that has no slice dyld would load on macOS
+  (`macho_best_slice_in_fd`), is an `IncompatibleArchitecture`; otherwise a
+  `MissingDependency`. Then, with the handle kept: on macOS, an image other
+  than the requested file, found through `DYLD_LIBRARY_PATH`, is a
+  `SubstitutedImage`, checked before anything else: `dladdr` names the image
+  of the bootstrap, and without one the requested file must be among dyld's
+  images. No `climon2_client_get_interface` is a `MissingSymbol`; a refused
+  revision 1 is an `UnsupportedRevision`; a contained bootstrap failure
+  (`CM1_INTERNAL_ERROR`) is a recoverable `BootstrapFailure`; a release text
+  other than the version is a `WrongRelease`; and any other answer without a
+  description, another revision or a nonzero reserved field, a release text
+  that is null or longer than 255 bytes (no version folder name is longer), a
+  missing requirement or an incomplete function table is a
+  `MalformedDescription`.
+- Requirements must be present: each one an instance needs is nonzero (its
+  local allocation, owner stack and instance descriptors, and a worker stack
+  whenever it needs workers), and the reserved field is zero. The loader sets
+  no upper bound: admission (#120) refuses requirements incompatible with the
+  admitted limits.
 - `Library` exists only validated: `requirements()`, `functions()` (a
   `Functions` table whose eleven entries cannot be absent) and `bootstrap()`
   for observers of the C ABI itself. The monitor (#106) and the client
@@ -165,8 +180,9 @@ It exercises the public identity API without replacing procfs or mocking I/O.
 
 `tests/library.rs` (Fault layer, #84) loads the
 [client library stand-in](../../GLOSSARY.md#testing), compiled by each test
-into a private executable home, exact or with one defect, through `Loader`.
-Its calls abort, so a test that survives a refusal proves nothing called them.
+through `climon2_fixtures::stand_in` into a private executable home, exact or
+with one defect, through `Loader`. Its calls abort, so a test that survives a
+refusal proves nothing called them.
 
 | Scenario | Test |
 |---|---|
@@ -174,10 +190,12 @@ Its calls abort, so a test that survives a refusal proves nothing called them.
 | LIB-01 same-release instances share one load: two loads share one library; its requirements and table are its own | `two_loads_of_one_version_share_one_library` |
 | LIB-02 missing symbol, handle kept | `library_without_the_bootstrap_is_refused_and_stays_loaded` |
 | LIB-02 unsupported revision; a bootstrap answer without a description is malformed | `bootstrap_without_a_revision_one_description_is_refused` |
+| LIB-02 contained bootstrap failure: refused, and a later load succeeds once it passes | `contained_bootstrap_failure_is_refused_and_recoverable` |
 | LIB-02 wrong release at the release text's bounds (255 bytes wrong, 256 bytes or none malformed) | `library_describing_another_release_is_refused` |
-| LIB-02 malformed description: revision, reserved, each missing requirement, incomplete table; no workers need no stack | `malformed_description_is_refused_before_any_instance` |
+| LIB-02 malformed description: revision, reserved, each missing requirement (a worker, even one, without a stack), incomplete table | `malformed_description_is_refused_before_any_instance` |
+| LIB-02 requirements present at their limits: each nonzero minimum accepted at 1; no workers need no worker stack | `requirements_are_accepted_at_their_minimums` |
 | LIB-02 missing dependency and incompatible architecture, decided by the loader's own checks; nothing loaded | `library_the_dynamic_loader_cannot_load_is_classified_by_the_loaders_checks` |
-| LIB-01 absolute lookup: a relative executable home is refused | `loader_refuses_a_relative_executable_home` |
+| LIB-01 macOS: a `DYLD_LIBRARY_PATH` decoy without the bootstrap is a substituted image, not a missing symbol | `library_substituted_through_dyld_library_path_is_refused_even_without_a_bootstrap` |
 
 `tests/terminal.rs`: `issue20_real_pty_raw_mode_restores_on_drop_and_panic_without_screen_sequences`,
 `issue20_real_pty_size_and_zero_fallback`,

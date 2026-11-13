@@ -9,6 +9,7 @@
 #[allow(dead_code)]
 mod support;
 
+use climon2_core::layout::ExecutableHome;
 use climon2_test_term::{bin_path, copy_executable, output_within, process_command};
 use serde_json::{Value, json};
 use std::{
@@ -25,14 +26,16 @@ const UNSUPPORTED_OPERATION: u64 = 3;
 const ORIGIN_LIBRARY: u64 = 1;
 const MIB: u64 = 1024 * 1024;
 
-/// The installed library of this package's version, by absolute path.
-fn installed_library(package: &Package) -> PathBuf {
-    package
-        .executable_home()
-        .join(env!("CARGO_PKG_VERSION"))
-        .join(LIBRARY)
-        .canonicalize()
-        .unwrap()
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The package's executable home, canonical as the monitor resolves it.
+fn home(package: &Package) -> ExecutableHome {
+    ExecutableHome::new(&package.executable_home().canonicalize().unwrap()).unwrap()
+}
+
+/// `version`'s library in `home`, by absolute path.
+fn library(home: &ExecutableHome, version: &str) -> PathBuf {
+    home.client_library(&version.parse().unwrap())
 }
 
 /// The version folder name, which is the library's release identity.
@@ -46,13 +49,13 @@ fn version_folder(library: &Path) -> &str {
         .unwrap()
 }
 
-/// The host loading `library`'s version from its executable home, with a
-/// cleared environment; instrumented builds keep their profile.
-fn host(library: &Path, directory: &Path) -> Command {
+/// The host loading `version`'s library from `home`, with a cleared
+/// environment; instrumented builds keep their profile.
+fn host(home: &ExecutableHome, version: &str, directory: &Path) -> Command {
     let mut command = process_command(bin_path("climon2-library-host"));
     command
-        .arg(library.parent().unwrap().parent().unwrap())
-        .arg(version_folder(library))
+        .arg(home.path())
+        .arg(version)
         .current_dir(directory)
         .env_clear();
     if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
@@ -76,14 +79,15 @@ fn observe(mut host: Command) -> Value {
 /// absolute path with eager local resolution, which returns revision 1's
 /// immutable description. Its release text is exactly the version folder name,
 /// it advertises no capability this build does not implement, its
-/// requirements are present and bounded, and a second bootstrap returns the
-/// same description. A second load of the version shares the first, and the
+/// requirements are present and within the default reservations, and a
+/// second bootstrap returns the same description. A second load of the version shares the first, and the
 /// process has loaded that one client library file.
 #[test]
 fn installed_library_describes_revision_one_with_its_version_identity() {
     let package = Package::new();
-    let library = installed_library(&package);
-    let report = observe(host(&library, package.isolation.home()));
+    let home = home(&package);
+    let library = library(&home, VERSION);
+    let report = observe(host(&home, VERSION, package.isolation.home()));
     assert_eq!(report["status"], SUCCESS, "{report:#}");
     assert_eq!(report["output"], "set");
     assert_eq!(report["image"], library.to_str().unwrap());
@@ -99,16 +103,17 @@ fn installed_library_describes_revision_one_with_its_version_identity() {
         description["capabilities"],
         json!({ "null": true, "count": 0, "tokens": [] })
     );
-    assert_bounded(&description["requirements"]);
+    assert_within_default_reservations(&description["requirements"]);
     package.assert_clean();
 }
 
-/// Present and bounded: every requirement fits the default `monitor.limits`
-/// reservations (docs/monitor-operational-limits.md), so a default-configured
-/// monitor admits the release without raising a reservation. Resources every
+/// Present, and within the default reservations: every requirement fits the
+/// default `monitor.limits` reservations
+/// (docs/monitor-operational-limits.md), so a default-configured monitor
+/// admits the release without raising a reservation. Resources every
 /// instance needs (owner stack, local allocation, notification descriptor)
 /// are nonzero; workers need stacks.
-fn assert_bounded(requirements: &Value) {
+fn assert_within_default_reservations(requirements: &Value) {
     let field = |name: &str| requirements[name].as_u64().unwrap();
     assert!(field("release_bytes") <= 64 * MIB, "{requirements}");
     assert!(
@@ -139,8 +144,7 @@ fn assert_bounded(requirements: &Value) {
 #[test]
 fn installed_library_rejects_other_revisions_without_a_description() {
     let package = Package::new();
-    let library = installed_library(&package);
-    let report = observe(host(&library, package.isolation.home()));
+    let report = observe(host(&home(&package), VERSION, package.isolation.home()));
     for revision in [0u64, 2, u32::MAX.into()] {
         assert!(
             report["other_revisions"]
@@ -167,8 +171,7 @@ fn installed_library_rejects_other_revisions_without_a_description() {
 #[test]
 fn installed_library_table_reports_every_instance_call_unsupported() {
     let package = Package::new();
-    let library = installed_library(&package);
-    let report = observe(host(&library, package.isolation.home()));
+    let report = observe(host(&home(&package), VERSION, package.isolation.home()));
     let functions = &report["description"]["functions"];
     let entries = functions["entries"].as_object().unwrap();
     let names = [
@@ -223,18 +226,18 @@ fn installed_library_table_reports_every_instance_call_unsupported() {
 #[test]
 fn installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths() {
     let package = Package::private();
-    let library = installed_library(&package);
-    let home = package.executable_home();
-    let misplaced = home.join("0.0.1").join(LIBRARY);
-    let private = home.parent().unwrap();
+    let home = home(&package);
+    let library = library(&home, VERSION);
+    let misplaced = self::library(&home, "0.0.1");
+    let private = home.path().parent().unwrap();
     let directory = private.join("working directory");
     let search = private.join("search path");
     for decoy in [&misplaced, &directory.join(LIBRARY), &search.join(LIBRARY)] {
         fs::create_dir_all(decoy.parent().unwrap()).unwrap();
         copy_executable(&library, decoy);
     }
-    fs::write(home.join("current"), "0.0.1\n").unwrap();
-    let mut ambient = host(&library, &directory);
+    fs::write(home.path().join("current"), "0.0.1\n").unwrap();
+    let mut ambient = host(&home, VERSION, &directory);
     ambient
         .env("DYLD_FALLBACK_LIBRARY_PATH", &search)
         .env("LD_LIBRARY_PATH", &search);
@@ -258,21 +261,21 @@ fn installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_sea
 #[test]
 fn installed_library_of_another_release_or_none_is_refused_without_substitution() {
     let package = Package::private();
-    let library = installed_library(&package);
-    let home = library.parent().unwrap().parent().unwrap();
-    let misplaced = home.join("0.0.1").join(LIBRARY);
+    let home = home(&package);
+    let library = library(&home, VERSION);
+    let misplaced = self::library(&home, "0.0.1");
     fs::create_dir(misplaced.parent().unwrap()).unwrap();
     copy_executable(&library, &misplaced);
-    fs::create_dir(home.join("0.0.2")).unwrap();
-    fs::write(home.join("current"), "0.0.1\n").unwrap();
-    let report = observe(host(&misplaced, package.isolation.home()));
+    let missing = self::library(&home, "0.0.2");
+    fs::create_dir(missing.parent().unwrap()).unwrap();
+    fs::write(home.path().join("current"), "0.0.1\n").unwrap();
+    let report = observe(host(&home, "0.0.1", package.isolation.home()));
     assert_eq!(report["error"]["failure"], "WrongRelease", "{report:#}");
     let message = report["error"]["message"].as_str().unwrap();
     let described = format!("release \"{}\", not 0.0.1", version_folder(&library));
     assert!(message.contains(&described), "{message}");
     assert_eq!(report["images"], json!([misplaced]));
-    let missing = home.join("0.0.2").join(LIBRARY);
-    let report = observe(host(&missing, package.isolation.home()));
+    let report = observe(host(&home, "0.0.2", package.isolation.home()));
     assert_eq!(report["error"]["failure"], "MissingLibrary", "{report:#}");
     let message = report["error"]["message"].as_str().unwrap();
     assert!(message.contains(missing.to_str().unwrap()), "{message}");
@@ -299,7 +302,8 @@ fn scratch() -> tempfile::TempDir {
 #[test]
 fn installed_library_loads_under_the_users_loader_environment() {
     let package = Package::new();
-    let library = installed_library(&package);
+    let home = home(&package);
+    let library = library(&home, VERSION);
     let scratch = scratch();
     let directory = scratch.path().canonicalize().unwrap();
     let source = directory.join("audit.c");
@@ -324,7 +328,7 @@ fn installed_library_loads_under_the_users_loader_environment() {
         ("LD_LIBRARY_PATH", directory.to_str().unwrap()),
         ("GLIBC_TUNABLES", "glibc.malloc.tcache_count=7"),
     ];
-    let mut host = host(&library, &directory);
+    let mut host = host(&home, VERSION, &directory);
     host.envs(variables);
     let report = observe(host);
     assert_eq!(report["status"], SUCCESS, "{report:#}");
@@ -345,12 +349,13 @@ fn installed_library_loads_under_the_users_loader_environment() {
 #[test]
 fn installed_library_substituted_through_dyld_library_path_is_refused() {
     let package = Package::new();
-    let library = installed_library(&package);
+    let home = home(&package);
+    let library = library(&home, VERSION);
     let scratch = scratch();
     let search = scratch.path().canonicalize().unwrap();
     let decoy = search.join(LIBRARY);
     copy_executable(&library, &decoy);
-    let mut substituted = host(&library, &search);
+    let mut substituted = host(&home, VERSION, &search);
     substituted.env("DYLD_LIBRARY_PATH", &search);
     let report = observe(substituted);
     assert_eq!(report["error"]["failure"], "SubstitutedImage", "{report:#}");

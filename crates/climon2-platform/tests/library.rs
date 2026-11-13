@@ -1,93 +1,29 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 //! Fault layer for the shared client-library loader (#84). Each test owns a
-//! private climon2 executable home whose version folders hold the test-only
-//! client library stand-in (`crates/climon2-fixtures/stand-in/client-library.c`),
-//! compiled here exact or with one defect, and loads it through [`Loader`] the
-//! way the monitor and the client executable will. The stand-in's calls abort,
-//! so a test process that survives a refusal proves that nothing called them.
+//! private climon2 executable home whose version folders hold the
+//! [client library stand-in](../../../GLOSSARY.md#testing), compiled by
+//! `climon2_fixtures::stand_in` exact or with one defect, and loads it through
+//! [`Loader`] the way the monitor and the client executable will. The
+//! stand-in's calls abort, so a test process that survives a refusal proves
+//! that nothing called them.
 
-use climon2_core::{VersionName, layout::client_library_name};
+use climon2_core::{VersionName, layout::ExecutableHome};
+use climon2_fixtures::stand_in::{self, DEPENDENCY};
 use climon2_platform::library::{Failure, Library, LoadError, Loader};
 use std::{
-    env::consts::{DLL_PREFIX, DLL_SUFFIX},
     ffi::{CStr, CString, OsStr, c_void},
-    fs::{self, File},
+    fs,
     mem::MaybeUninit,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    ptr, thread,
-    time::{Duration, Instant},
+    ptr,
 };
-
-/// How long one compiler run may take before it is killed and reaped.
-const COMPILE_TIMEOUT: Duration = Duration::from_secs(120);
-
-#[cfg(target_os = "linux")]
-const SHARED: &[&str] = &["-shared", "-fPIC"];
-#[cfg(target_os = "macos")]
-const SHARED: &[&str] = &["-dynamiclib"];
-/// The library the dependent stand-in needs, which no test installs.
-const DEPENDENCY: &str = "climon2_stand_in_dependency";
-/// Linker options that record a needed library even though nothing of it is
-/// used (Ubuntu's toolchain links `--as-needed` by default).
-#[cfg(target_os = "linux")]
-const KEEP_NEEDED: &[&str] = &["-Wl,--no-as-needed"];
-#[cfg(target_os = "macos")]
-const KEEP_NEEDED: &[&str] = &[];
-
-fn workspace() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
 
 fn scratch() -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix("loader-")
         .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
         .unwrap()
-}
-
-/// Runs `command`, waiting at most `COMPILE_TIMEOUT`; its diagnostics go to
-/// `log`, which a failure reports.
-fn run(command: &mut Command, log: &Path) {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(File::create(log).unwrap())
-        .stderr(File::create(log).unwrap())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + COMPILE_TIMEOUT;
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("{command:?} did not finish within {COMPILE_TIMEOUT:?}");
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-    let diagnostics = fs::read_to_string(log).unwrap();
-    assert!(status.success(), "{command:?}: {status}\n{diagnostics}");
-}
-
-/// Compiles the stand-in describing `release`, with `options`, to `output`.
-fn compile(output: &Path, release: &str, options: &[&str]) {
-    let root = workspace();
-    fs::create_dir_all(output.parent().unwrap()).unwrap();
-    run(
-        Command::new("cc")
-            .args(SHARED)
-            .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-I"])
-            .arg(root.join("docs/protocol/monitor-client"))
-            .arg(format!("-DRELEASE=\"{release}\""))
-            .args(options)
-            .arg("-o")
-            .arg(output)
-            .arg(root.join("crates/climon2-fixtures/stand-in/client-library.c")),
-        &output.with_extension("log"),
-    );
 }
 
 fn version(text: &str) -> VersionName {
@@ -132,70 +68,55 @@ impl Home {
 
     /// The canonical home, as the monitor resolves it: dyld names a loaded
     /// image by the path it opened.
-    fn path(&self) -> PathBuf {
-        self.directory.path().canonicalize().unwrap()
+    fn home(&self) -> ExecutableHome {
+        ExecutableHome::new(&self.directory.path().canonicalize().unwrap()).unwrap()
     }
 
     fn library(&self, version: &str) -> PathBuf {
-        self.path().join(version).join(client_library_name())
+        self.home().client_library(&self::version(version))
+    }
+
+    /// `version`'s library path, with its version folder created.
+    fn folder(&self, version: &str) -> PathBuf {
+        let library = self.library(version);
+        fs::create_dir_all(library.parent().unwrap()).unwrap();
+        library
     }
 
     /// Installs the stand-in describing `release` as `version`'s library.
     fn stand_in(&self, version: &str, release: &str, options: &[&str]) -> PathBuf {
-        let library = self.library(version);
-        compile(&library, release, options);
+        let library = self.folder(version);
+        stand_in::compile(&library, release, options).unwrap();
         library
     }
 
-    /// Installs a stand-in that needs a library found nowhere: it is built
-    /// against one that is then deleted. On macOS that library would sit
-    /// beside the stand-in; on Linux any search would fail.
+    /// Installs a stand-in that needs a library found nowhere.
     fn stand_in_needing_a_missing_library(&self, version: &str) -> PathBuf {
-        let directory = scratch();
-        let name = format!("{DLL_PREFIX}{DEPENDENCY}{DLL_SUFFIX}");
-        let dependency = directory.path().join(&name);
-        let mut command = Command::new("cc");
-        command.args(SHARED);
-        #[cfg(target_os = "macos")]
-        command.arg(format!("-Wl,-install_name,@loader_path/{name}"));
-        run(
-            command
-                .arg("-o")
-                .arg(&dependency)
-                .args(["-x", "c", "/dev/null"]),
-            &directory.path().join("dependency.log"),
-        );
-        let search = format!("-L{}", directory.path().display());
-        let link = format!("-l{DEPENDENCY}");
-        self.stand_in(version, version, &[KEEP_NEEDED, &[&search, &link]].concat())
+        let library = self.folder(version);
+        let scratch = scratch();
+        stand_in::compile_needing_a_missing_library(&library, version, scratch.path()).unwrap();
+        library
     }
 
     /// Installs a stand-in built for another architecture than this
     /// process's: an x86-64 one whose ELF header names AArch64 on Linux, or
     /// a thin library of the other Mac architecture.
     fn stand_in_for_another_architecture(&self, version: &str) -> PathBuf {
-        #[cfg(target_os = "linux")]
-        {
-            const AARCH64: u16 = 183;
+        if cfg!(target_os = "linux") {
             let library = self.stand_in(version, version, &[]);
-            let mut bytes = fs::read(&library).unwrap();
-            bytes[18..20].copy_from_slice(&AARCH64.to_le_bytes());
-            fs::write(&library, bytes).unwrap();
-            library
+            stand_in::name_aarch64(&library).unwrap();
+            return library;
         }
-        #[cfg(target_os = "macos")]
-        {
-            let other = if cfg!(target_arch = "aarch64") {
-                "x86_64"
-            } else {
-                "arm64"
-            };
-            self.stand_in(version, version, &["-arch", other])
-        }
+        let other = if cfg!(target_arch = "aarch64") {
+            "x86_64"
+        } else {
+            "arm64"
+        };
+        self.stand_in(version, version, &["-arch", other])
     }
 
     fn load(&self, version: &str) -> Result<&'static Library, LoadError> {
-        Loader::new(self.path()).load(&self::version(version))
+        Loader::new(self.home()).load(&self::version(version))
     }
 
     /// The loader's refusal of `version`, which names that version's library.
@@ -208,17 +129,16 @@ impl Home {
     }
 }
 
-/// LIB-02 Library and Fault (missing library; no substituted release): a
-/// version folder without its library, and a version without a folder, are
-/// refused as missing libraries naming the requested file. The valid library
-/// of the version `current` names is never used instead: it is not even
-/// loaded.
+/// LIB-02 Fault (missing library; no substituted release): a version folder
+/// without its library, and a version without a folder, are refused as
+/// missing libraries naming the requested file. The valid library of the
+/// version `current` names is never used instead: it is not even loaded.
 #[test]
 fn missing_library_is_refused_without_substituting_another_release() {
     let home = Home::new();
     let current = home.stand_in("0.1.0", "0.1.0", &[]);
-    fs::write(home.path().join("current"), "0.1.0\n").unwrap();
-    fs::create_dir(home.path().join("0.2.0")).unwrap();
+    fs::write(home.home().path().join("current"), "0.1.0\n").unwrap();
+    home.folder("0.2.0");
     for missing in ["0.2.0", "0.3.0"] {
         let error = home.refusal(missing);
         assert_eq!(error.failure(), Failure::MissingLibrary, "{error}");
@@ -231,17 +151,17 @@ fn missing_library_is_refused_without_substituting_another_release() {
     assert!(!loaded(&current));
 }
 
-/// LIB-01 Library and Fault (same-release instances share one load), with the
-/// exact stand-in: two loads of one version through one loader return the
-/// same library, and another version's library is a separate load. Each
-/// library reports the requirements its description declares and the
-/// complete function table of its own image, and stays loaded.
+/// LIB-01 Fault (same-release instances share one load), with the exact
+/// stand-in: two loads of one version through one loader return the same
+/// library, and another version's library is a separate load. Each library
+/// reports the requirements its description declares and the complete
+/// function table of its own image, and stays loaded.
 #[test]
 fn two_loads_of_one_version_share_one_library() {
     let home = Home::new();
     let first_path = home.stand_in("0.1.0", "0.1.0", &[]);
     let other_path = home.stand_in("0.2.0", "0.2.0", &[]);
-    let loader = Loader::new(home.path());
+    let loader = Loader::new(home.home());
     let first = loader.load(&version("0.1.0")).unwrap();
     let again = loader.load(&version("0.1.0")).unwrap();
     let other = loader.load(&version("0.2.0")).unwrap();
@@ -292,9 +212,10 @@ fn library_without_the_bootstrap_is_refused_and_stays_loaded() {
 
 /// LIB-02 Fault (unsupported revision; malformed description): a library
 /// whose bootstrap refuses revision 1 is refused as unsupported. One that
-/// answers revision 1 with success but no description, or with another
-/// status such as `CM1_INTERNAL_ERROR`, breaks the bootstrap contract and is
-/// refused as a malformed description. Each opened handle stays loaded.
+/// answers revision 1 with success but no description, or with a status the
+/// bootstrap contract does not allow when output storage is given
+/// (`CM1_INVALID_ARGUMENT`), breaks that contract and is refused as a
+/// malformed description. Each opened handle stays loaded.
 #[test]
 fn bootstrap_without_a_revision_one_description_is_refused() {
     let home = Home::new();
@@ -313,9 +234,9 @@ fn bootstrap_without_a_revision_one_description_is_refused() {
         ),
         (
             "0.3.0",
-            "-DBOOTSTRAP_STATUS=11",
+            "-DBOOTSTRAP_STATUS=2",
             Failure::MalformedDescription,
-            "status 11 and no description",
+            "status 2 and no description",
         ),
     ] {
         let library = home.stand_in(version, version, &[option]);
@@ -324,6 +245,25 @@ fn bootstrap_without_a_revision_one_description_is_refused() {
         assert!(error.to_string().contains(diagnosis), "{option}: {error}");
         assert!(loaded(&library), "{option}");
     }
+}
+
+/// LIB-02 Fault (contained bootstrap failure): a bootstrap that answers
+/// revision 1 with `CM1_INTERNAL_ERROR`, a contained failure the bootstrap
+/// contract allows, is refused as a bootstrap failure, not a malformed
+/// description. It is recoverable: the loader does not remember the refusal,
+/// so when the failure has passed, the next load of the version succeeds.
+#[test]
+fn contained_bootstrap_failure_is_refused_and_recoverable() {
+    let home = Home::new();
+    home.stand_in("0.1.0", "0.1.0", &["-DFAIL_FIRST_BOOTSTRAP"]);
+    let loader = Loader::new(home.home());
+    let Err(error) = loader.load(&version("0.1.0")) else {
+        panic!("the first bootstrap succeeded");
+    };
+    assert_eq!(error.failure(), Failure::BootstrapFailure, "{error}");
+    assert!(error.to_string().contains("CM1_INTERNAL_ERROR"), "{error}");
+    let library = loader.load(&version("0.1.0")).unwrap();
+    assert_eq!(library.requirements().workers, 2);
 }
 
 /// LIB-02 Fault (wrong release; malformed description), at the release
@@ -372,36 +312,82 @@ fn library_describing_another_release_is_refused() {
 
 /// LIB-02 Fault (malformed description): a revision-1 description that breaks
 /// the native contract is refused as malformed before any instance exists:
-/// another revision or a nonzero reserved field; missing requirements (no
-/// instance allocation, owner stack or instance descriptor, workers without
-/// stacks) or a nonzero reserved requirement; an incomplete function table.
-/// Each opened handle stays loaded. Workers are optional: a release that
-/// needs none needs no worker stack, and loads.
+/// another revision or a nonzero reserved field; a missing requirement (no
+/// instance allocation, owner stack or instance descriptor, or a worker,
+/// even one, without a stack) or a nonzero reserved requirement; an
+/// incomplete function table. Each opened handle stays loaded.
 #[test]
 fn malformed_description_is_refused_before_any_instance() {
     let home = Home::new();
-    for (version, option, diagnosis) in [
-        ("0.1.0", "-DREVISION=2", "revision 2"),
-        ("0.2.0", "-DRESERVED=1", "reserved field 1"),
-        ("0.3.0", "-DINSTANCE_BYTES=0", "requirements"),
-        ("0.4.0", "-DOWNER_STACK_BYTES=0", "requirements"),
-        ("0.5.0", "-DINSTANCE_DESCRIPTORS=0", "requirements"),
-        ("0.6.0", "-DWORKER_STACK_BYTES=0", "requirements"),
-        ("0.7.0", "-DREQUIREMENTS_RESERVED=1", "requirements"),
-        ("0.8.0", "-DINCOMPLETE_TABLE", "function table"),
+    for (version, options, diagnosis) in [
+        ("0.1.0", &["-DREVISION=2"][..], "revision 2"),
+        ("0.2.0", &["-DRESERVED=1"], "reserved field 1"),
+        ("0.3.0", &["-DINSTANCE_BYTES=0"], "requirements"),
+        ("0.4.0", &["-DOWNER_STACK_BYTES=0"], "requirements"),
+        ("0.5.0", &["-DINSTANCE_DESCRIPTORS=0"], "requirements"),
+        ("0.6.0", &["-DWORKER_STACK_BYTES=0"], "requirements"),
+        (
+            "0.7.0",
+            &["-DWORKERS=1", "-DWORKER_STACK_BYTES=0"],
+            "requirements",
+        ),
+        ("0.8.0", &["-DREQUIREMENTS_RESERVED=1"], "requirements"),
+        ("0.9.0", &["-DINCOMPLETE_TABLE"], "function table"),
     ] {
-        let library = home.stand_in(version, version, &[option]);
+        let library = home.stand_in(version, version, options);
         let error = home.refusal(version);
         assert_eq!(
             error.failure(),
             Failure::MalformedDescription,
-            "{option}: {error}"
+            "{options:?}: {error}"
         );
-        assert!(error.to_string().contains(diagnosis), "{option}: {error}");
-        assert!(loaded(&library), "{option}");
+        assert!(
+            error.to_string().contains(diagnosis),
+            "{options:?}: {error}"
+        );
+        assert!(loaded(&library), "{options:?}");
     }
-    home.stand_in("0.9.0", "0.9.0", &["-DWORKERS=0", "-DWORKER_STACK_BYTES=0"]);
-    home.load("0.9.0").unwrap();
+}
+
+/// LIB-02 Fault (present requirements, at their limits): the loader requires
+/// only that each requirement is present, never an upper bound, which
+/// admission owns. Every nonzero minimum is accepted at 1: one byte of
+/// instance allocation and of owner stack, one instance descriptor, and one
+/// worker with a one-byte stack. A release that needs no workers needs no
+/// worker stack. The library reports exactly the requirements declared.
+#[test]
+fn requirements_are_accepted_at_their_minimums() {
+    let home = Home::new();
+    home.stand_in(
+        "0.1.0",
+        "0.1.0",
+        &[
+            "-DINSTANCE_BYTES=1",
+            "-DOWNER_STACK_BYTES=1",
+            "-DINSTANCE_DESCRIPTORS=1",
+            "-DWORKERS=1",
+            "-DWORKER_STACK_BYTES=1",
+        ],
+    );
+    let requirements = *home.load("0.1.0").unwrap().requirements();
+    assert_eq!(
+        [
+            requirements.instance_bytes,
+            requirements.owner_stack_bytes,
+            requirements.worker_stack_bytes,
+        ],
+        [1, 1, 1]
+    );
+    assert_eq!(
+        [requirements.workers, requirements.instance_descriptors],
+        [1, 1]
+    );
+    home.stand_in("0.2.0", "0.2.0", &["-DWORKERS=0", "-DWORKER_STACK_BYTES=0"]);
+    let requirements = *home.load("0.2.0").unwrap().requirements();
+    assert_eq!(
+        [requirements.workers, requirements.worker_stack_bytes as u32],
+        [0, 0]
+    );
 }
 
 /// LIB-02 Fault (missing dependency; incompatible architecture), classified
@@ -420,8 +406,7 @@ fn library_the_dynamic_loader_cannot_load_is_classified_by_the_loaders_checks() 
     assert!(error.to_string().contains(DEPENDENCY), "{error}");
     assert!(!loaded(&dependent));
     let foreign = home.stand_in_for_another_architecture("0.2.0");
-    let text = home.library("0.3.0");
-    fs::create_dir_all(text.parent().unwrap()).unwrap();
+    let text = home.folder("0.3.0");
     fs::write(&text, "not a client library\n").unwrap();
     for (version, library) in [("0.2.0", &foreign), ("0.3.0", &text)] {
         let error = home.refusal(version);
@@ -434,11 +419,50 @@ fn library_the_dynamic_loader_cannot_load_is_classified_by_the_loaders_checks() 
     }
 }
 
-/// LIB-01 Fault (absolute exact-release lookup): the loader opens libraries
-/// by absolute path only, so a relative executable home, which the dynamic
-/// loader would resolve against the working directory, is refused at once.
+/// Names the requested executable home in the child of
+/// `library_substituted_through_dyld_library_path_is_refused_even_without_a_bootstrap`.
+#[cfg(target_os = "macos")]
+const DECOY_CHILD: &str = "CLIMON2_LOADER_DECOY_HOME";
+
+/// LIB-01 Fault, macOS (exact lookup prevails over `DYLD_LIBRARY_PATH`; owner
+/// decisions on #84): in a process whose `DYLD_LIBRARY_PATH` names a
+/// directory holding a stand-in of the same file name that lacks
+/// `climon2_client_get_interface`, dyld loads that decoy for the requested
+/// path. The loader checks substitution before blaming a missing symbol on the
+/// requested file: it refuses a substituted image, naming the decoy.
+#[cfg(target_os = "macos")]
 #[test]
-#[should_panic(expected = "must be absolute")]
-fn loader_refuses_a_relative_executable_home() {
-    Loader::new("executable home");
+fn library_substituted_through_dyld_library_path_is_refused_even_without_a_bootstrap() {
+    if let Some(home) = std::env::var_os(DECOY_CHILD) {
+        let home = ExecutableHome::new(Path::new(&home)).unwrap();
+        let Err(error) = Loader::new(home).load(&version("0.1.0")) else {
+            panic!("the decoy loaded");
+        };
+        assert_eq!(error.failure(), Failure::SubstitutedImage, "{error}");
+        let decoys = PathBuf::from(std::env::var_os("DYLD_LIBRARY_PATH").unwrap());
+        let decoy = decoys.join(climon2_core::layout::client_library_name());
+        assert!(
+            error.to_string().contains(decoy.to_str().unwrap()),
+            "{error}"
+        );
+        return;
+    }
+    let home = Home::new();
+    home.stand_in("0.1.0", "0.1.0", &[]);
+    let decoys = scratch();
+    let decoys = decoys.path().canonicalize().unwrap();
+    let decoy = decoys.join(climon2_core::layout::client_library_name());
+    stand_in::compile(&decoy, "0.1.0", &["-DNO_BOOTSTRAP"]).unwrap();
+    climon2_fixtures::run(
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "library_substituted_through_dyld_library_path_is_refused_even_without_a_bootstrap",
+                "--nocapture",
+            ])
+            .env(DECOY_CHILD, home.home().path())
+            .env("DYLD_LIBRARY_PATH", &decoys),
+        &decoys.join("child.log"),
+    )
+    .unwrap();
 }

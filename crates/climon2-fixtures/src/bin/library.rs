@@ -12,7 +12,7 @@
 
 use climon2_core::{
     VersionName,
-    layout::client_library_name,
+    layout::{ExecutableHome, client_library_name},
     native::{self, Bootstrap, Bytes, Call, Description, Interface, Tokens},
 };
 use climon2_platform::library::Loader;
@@ -44,11 +44,11 @@ fn main() {
     println!("{report}");
 }
 
-fn arguments() -> Option<(PathBuf, VersionName)> {
+fn arguments() -> Option<(ExecutableHome, VersionName)> {
     let mut arguments = std::env::args_os().skip(1);
-    let home = PathBuf::from(arguments.next()?);
+    let home = ExecutableHome::new(&PathBuf::from(arguments.next()?)).ok()?;
     let version = arguments.next()?.to_str()?.parse().ok()?;
-    (home.is_absolute() && arguments.next().is_none()).then_some((home, version))
+    arguments.next().is_none().then_some((home, version))
 }
 
 fn lossy(text: OsString) -> String {
@@ -60,7 +60,7 @@ struct Library {
 }
 
 /// What the loader answered for `version`, twice.
-fn load(home: PathBuf, version: &VersionName) -> Value {
+fn load(home: ExecutableHome, version: &VersionName) -> Value {
     let loader = Loader::new(home);
     match loader.load(version) {
         Ok(library) => {

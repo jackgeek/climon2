@@ -10,7 +10,12 @@
 //! One load is shared by every user of a version. Nothing is ever unloaded:
 //! every handle the dynamic loader opens, including one later refused, stays
 //! loaded until the process exits. A refusal is not remembered, so a later
-//! load tries again and a repaired installation can succeed.
+//! load tries again: a library refused before the dynamic loader opened it (a
+//! missing library or dependency, or an incompatible architecture) can load
+//! once the installation is repaired, and a contained bootstrap failure can
+//! pass. Once the file is open, though, the process keeps that image, so a
+//! later load opens it again and repeats any refusal of its symbol or
+//! description, whatever has happened to the file since.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 compile_error!("client library loading requires macOS or Linux");
 
@@ -23,7 +28,7 @@ mod platform;
 
 use climon2_core::{
     VersionName,
-    layout::client_library_name,
+    layout::ExecutableHome,
     native::{
         self, Bootstrap, Call, Communication, Control, Created, Delivery, Description, Drained,
         Instance, Interface, Metrics, Request, Requirements, RunReport, Startup,
@@ -34,6 +39,7 @@ use std::{
     ffi::{CStr, CString, c_void},
     fmt,
     fs::File,
+    ops::Range,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     ptr,
@@ -59,6 +65,10 @@ pub enum Failure {
     MissingSymbol,
     /// The library's bootstrap refuses revision 1.
     UnsupportedRevision,
+    /// The library's bootstrap reported a contained failure
+    /// (`CM1_INTERNAL_ERROR`). It is recoverable: a later load calls the
+    /// bootstrap again.
+    BootstrapFailure,
     /// The library describes another release than the version requested.
     WrongRelease,
     /// The revision-1 description breaks the native contract.
@@ -146,26 +156,15 @@ impl Library {
 /// Loads the client libraries of one climon2 executable home, once per
 /// version.
 pub struct Loader {
-    home: PathBuf,
+    home: ExecutableHome,
     libraries: Mutex<BTreeMap<VersionName, &'static Library>>,
 }
 
 impl Loader {
-    /// The loader of `executable_home`'s libraries, which must be absolute
-    /// and canonical, like [`climon2_core::layout::ExecutableLayout::root`]:
-    /// dyld names a loaded image by the path it opened.
-    ///
-    /// # Panics
-    ///
-    /// When `executable_home` is relative: the dynamic loader would resolve
-    /// it against the working directory.
-    pub fn new(executable_home: impl Into<PathBuf>) -> Self {
-        let home = executable_home.into();
-        assert!(
-            home.is_absolute(),
-            "the climon2 executable home must be absolute: {}",
-            home.display()
-        );
+    /// The loader of `home`'s libraries. The home is absolute, so the dynamic
+    /// loader never resolves a library against the working directory, and
+    /// canonical, so dyld names a loaded image by the path requested.
+    pub fn new(home: ExecutableHome) -> Self {
         Self {
             home,
             libraries: Mutex::default(),
@@ -178,7 +177,7 @@ impl Loader {
         if let Some(library) = self.shared(version) {
             return Ok(library);
         }
-        let path = self.home.join(version.as_str()).join(client_library_name());
+        let path = self.home.client_library(version);
         let library = open(&path, version).map_err(|(failure, detail)| LoadError {
             library: path,
             failure,
@@ -226,16 +225,16 @@ fn bootstrap(path: &Path) -> Result<Bootstrap, Refusal> {
     }
     // SAFETY: a live handle and a NUL-terminated symbol name.
     let symbol = unsafe { libc::dlsym(handle, native::BOOTSTRAP.as_ptr()) };
+    if let Some(loaded) = platform::loaded_instead(symbol, &name) {
+        return Err((
+            Failure::SubstitutedImage,
+            format!("the dynamic loader loaded {loaded} instead, found through a search path"),
+        ));
+    }
     if symbol.is_null() {
         return Err((
             Failure::MissingSymbol,
             format!("it does not export {}", native::BOOTSTRAP.to_string_lossy()),
-        ));
-    }
-    if let Some(loaded) = platform::substitute(symbol, &name) {
-        return Err((
-            Failure::SubstitutedImage,
-            format!("the dynamic loader loaded {loaded} instead, found through a search path"),
         ));
     }
     // SAFETY: the frozen bootstrap symbol has the `Bootstrap` signature.
@@ -306,6 +305,10 @@ fn describe(bootstrap: Bootstrap) -> Result<&'static Description, Refusal> {
             Failure::UnsupportedRevision,
             "it does not support revision 1 of the native client interface".into(),
         )),
+        (native::INTERNAL_ERROR, _) => Err((
+            Failure::BootstrapFailure,
+            "its bootstrap reported a contained failure (CM1_INTERNAL_ERROR)".into(),
+        )),
         (status, description) => Err((
             Failure::MalformedDescription,
             format!(
@@ -360,7 +363,9 @@ fn identity(text: native::Bytes, release: &VersionName) -> Result<(), Refusal> {
 }
 
 /// The requirements, if present: every instance needs local allocation, an
-/// owner stack and an instance descriptor, and every worker a stack.
+/// owner stack and an instance descriptor, and every worker a stack, so each
+/// of those is nonzero. Upper bounds are admission's: requirements
+/// incompatible with the admitted limits are refused there (#120).
 fn requirements(requirements: Requirements) -> Result<Requirements, Refusal> {
     let Requirements {
         instance_bytes,
@@ -387,6 +392,19 @@ fn requirements(requirements: Requirements) -> Result<Requirements, Refusal> {
         ));
     }
     Ok(requirements)
+}
+
+/// The identification of a 64-bit, little-endian ELF object of the current
+/// ELF version.
+const ELF64_LSB: &[u8] = b"\x7fELF\x02\x01\x01";
+/// Where an ELF64 header names its machine, and how it names x86-64.
+const MACHINE: Range<usize> = 18..20;
+const X86_64: [u8; 2] = 62_u16.to_le_bytes();
+
+/// Whether `header`, a file's first bytes, is an x86-64 ELF64 header: the
+/// architecture of every climon2 Linux artifact.
+pub fn is_x86_64_elf(header: &[u8]) -> bool {
+    header.starts_with(ELF64_LSB) && header.get(MACHINE) == Some(&X86_64[..])
 }
 
 /// The table, if every entry is present.

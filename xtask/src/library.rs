@@ -2,7 +2,7 @@
 //! on Linux the dynamic section, and that the shared loader accepts it as
 //! exactly its version's library.
 
-use climon2_core::{VersionName, layout::client_library_name, native};
+use climon2_core::{VersionName, layout::ExecutableHome, native};
 use climon2_platform::library::Loader;
 use std::{io, path::Path};
 
@@ -10,12 +10,13 @@ use std::{io, path::Path};
 /// frozen bootstrap, on Linux depends on nothing a loader could share across
 /// releases, and passes the checks of the shared loader the monitor uses: it
 /// describes `version` with a complete, valid revision-1 description.
-pub(crate) fn verify(home: &Path, version: &str) -> io::Result<()> {
-    let library = home.join(version).join(client_library_name());
+pub(crate) fn verify(home: &ExecutableHome, version: &VersionName) -> io::Result<()> {
+    let library = home.client_library(version);
     verify_exports(&library)?;
     platform::verify_dynamic_section(&library)?;
-    let version: VersionName = version.parse().map_err(io::Error::other)?;
-    Loader::new(home).load(&version).map_err(io::Error::other)?;
+    Loader::new(home.clone())
+        .load(version)
+        .map_err(io::Error::other)?;
     Ok(())
 }
 
@@ -139,11 +140,20 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::quality::{TOOL_TIMEOUT, output_within};
-    use climon2_core::layout::client_library_name;
-    use std::{fs, path::PathBuf, process::Command};
+    use climon2_fixtures::stand_in;
+    use std::{fs, path::PathBuf};
 
     const VERSION: &str = env!("CARGO_PKG_VERSION");
+    /// Both Mac architectures' slices, as a release library has; Linux
+    /// releases are x86-64 only.
+    #[cfg(target_os = "macos")]
+    const UNIVERSAL: &[&str] = &["-arch", "arm64", "-arch", "x86_64"];
+    #[cfg(target_os = "linux")]
+    const UNIVERSAL: &[&str] = &[];
+
+    fn version() -> VersionName {
+        VERSION.parse().unwrap()
+    }
 
     fn scratch() -> tempfile::TempDir {
         let target = crate::workspace_root().join("target");
@@ -154,93 +164,31 @@ mod tests {
             .unwrap()
     }
 
-    /// The library of this version in the executable home `home`.
-    fn library(home: &Path) -> PathBuf {
-        home.join(VERSION).join(client_library_name())
+    /// The executable home `<directory>/<name>`.
+    fn home(directory: &Path, name: &str) -> ExecutableHome {
+        ExecutableHome::new(&directory.join(name)).unwrap()
     }
 
-    /// Compiles the test-only C stand-in for the library into this version's
-    /// folder of the executable home `<directory>/<name>`, which it returns:
-    /// a universal, ad-hoc signed dylib unless `archs` names other slices.
-    /// `options` add defects.
-    #[cfg(target_os = "macos")]
-    fn stand_in(
-        directory: &Path,
-        name: &str,
-        release: &str,
-        archs: &[&str],
-        options: &[&str],
-    ) -> PathBuf {
-        let root = crate::workspace_root();
-        let home = directory.join(name);
-        let output = library(&home);
-        fs::create_dir_all(output.parent().unwrap()).unwrap();
-        let mut clang = Command::new("clang");
-        clang
-            .args(["-dynamiclib", "-std=c11", "-Wall", "-Wextra", "-Werror"])
-            .arg("-I")
-            .arg(root.join("docs/protocol/monitor-client"))
-            .arg(format!("-DRELEASE=\"{release}\""))
-            .args(options);
-        for arch in archs {
-            clang.args(["-arch", arch]);
-        }
-        output_within(
-            clang
-                .arg("-o")
-                .arg(&output)
-                .arg(root.join("crates/climon2-fixtures/stand-in/client-library.c")),
-            TOOL_TIMEOUT,
-        )
-        .unwrap();
-        output_within(
-            Command::new("codesign")
-                .args(["--force", "-s", "-"])
-                .arg(&output),
-            TOOL_TIMEOUT,
-        )
-        .unwrap();
+    /// The library of this version in `home`.
+    fn library(home: &ExecutableHome) -> PathBuf {
+        home.client_library(&version())
+    }
+
+    /// The executable home `<directory>/<name>`, holding as this version's
+    /// library the test-only stand-in describing `release`. `options` add
+    /// defects or select architectures.
+    fn holding(directory: &Path, name: &str, release: &str, options: &[&str]) -> ExecutableHome {
+        let home = home(directory, name);
+        let library = library(&home);
+        fs::create_dir_all(library.parent().unwrap()).unwrap();
+        stand_in::compile(&library, release, options).unwrap();
         home
     }
 
-    /// Compiles the test-only C stand-in for the library into this version's
-    /// folder of the executable home `<directory>/<name>`, which it returns:
-    /// an x86-64 shared object that, like rustc's cdylib, exports only
-    /// `climon2_client_*` symbols. `options` add defects.
-    #[cfg(target_os = "linux")]
-    fn stand_in(directory: &Path, name: &str, release: &str, options: &[&str]) -> PathBuf {
-        let root = crate::workspace_root();
-        let home = directory.join(name);
-        let output = library(&home);
-        fs::create_dir_all(output.parent().unwrap()).unwrap();
-        let exports = directory.join(format!("{name}.exports"));
-        fs::write(&exports, "{ global: climon2_client_*; local: *; };\n").unwrap();
-        output_within(
-            Command::new("cc")
-                .args([
-                    "-shared", "-fPIC", "-std=c11", "-Wall", "-Wextra", "-Werror",
-                ])
-                .arg("-I")
-                .arg(root.join("docs/protocol/monitor-client"))
-                .arg(format!("-DRELEASE=\"{release}\""))
-                .arg(format!("-Wl,--version-script={}", exports.display()))
-                .args(options)
-                .arg("-o")
-                .arg(&output)
-                .arg(root.join("crates/climon2-fixtures/stand-in/client-library.c")),
-            TOOL_TIMEOUT,
-        )
-        .unwrap();
-        home
-    }
-
-    /// An executable home holding the exact library of this version, with no
-    /// defect.
-    fn exact(directory: &Path, name: &str, options: &[&str]) -> PathBuf {
-        #[cfg(target_os = "macos")]
-        return stand_in(directory, name, VERSION, &["arm64", "x86_64"], options);
-        #[cfg(target_os = "linux")]
-        return stand_in(directory, name, VERSION, options);
+    /// An executable home holding the exact library of this version, with
+    /// both Mac slices on macOS, plus `options`.
+    fn exact(directory: &Path, name: &str, options: &[&str]) -> ExecutableHome {
+        holding(directory, name, VERSION, &[UNIVERSAL, options].concat())
     }
 
     /// The architecture check `dist` applies to every packaged artifact.
@@ -260,7 +208,7 @@ mod tests {
         let home = exact(scratch.path(), "exact", &[]);
         verify_architecture(&library(&home)).unwrap();
         crate::dist::unhooked(&library(&home)).unwrap();
-        verify(&home, VERSION).unwrap();
+        verify(&home, &version()).unwrap();
     }
 
     /// #75 (evidence policy: test hooks never ship): release checks reject a
@@ -279,7 +227,7 @@ mod tests {
     fn release_checks_reject_extra_exports() {
         let scratch = scratch();
         let home = exact(scratch.path(), "extra", &["-DEXTRA_EXPORT"]);
-        let error = verify(&home, VERSION).unwrap_err();
+        let error = verify(&home, &version()).unwrap_err();
         assert!(
             error.to_string().contains("climon2_client_extra_export"),
             "{error}"
@@ -292,11 +240,8 @@ mod tests {
     #[test]
     fn release_checks_reject_a_wrong_version() {
         let scratch = scratch();
-        #[cfg(target_os = "macos")]
-        let home = stand_in(scratch.path(), "other", "9.9.9", &["arm64", "x86_64"], &[]);
-        #[cfg(target_os = "linux")]
-        let home = stand_in(scratch.path(), "other", "9.9.9", &[]);
-        let error = verify(&home, VERSION).unwrap_err();
+        let home = holding(scratch.path(), "other", "9.9.9", UNIVERSAL);
+        let error = verify(&home, &version()).unwrap_err();
         assert!(error.to_string().contains("9.9.9"), "{error}");
     }
 
@@ -307,7 +252,7 @@ mod tests {
     fn release_checks_reject_a_description_the_loader_refuses() {
         let scratch = scratch();
         let home = exact(scratch.path(), "incomplete", &["-DINCOMPLETE_TABLE"]);
-        let error = verify(&home, VERSION).unwrap_err();
+        let error = verify(&home, &version()).unwrap_err();
         assert!(
             error.to_string().contains("function table is incomplete"),
             "{error}"
@@ -319,7 +264,7 @@ mod tests {
     #[test]
     fn release_checks_reject_a_wrong_architecture() {
         let scratch = scratch();
-        let home = stand_in(scratch.path(), "thin", VERSION, &["x86_64"], &[]);
+        let home = holding(scratch.path(), "thin", VERSION, &["-arch", "x86_64"]);
         let error = crate::dist::verify_macos_binary(&library(&home)).unwrap_err();
         assert!(
             error.to_string().contains("is not exactly arm64 + x86_64"),
@@ -332,12 +277,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn release_checks_reject_a_wrong_architecture() {
-        const AARCH64: u16 = 183;
         let scratch = scratch();
         let library = library(&exact(scratch.path(), "aarch64", &[]));
-        let mut bytes = fs::read(&library).unwrap();
-        bytes[18..20].copy_from_slice(&AARCH64.to_le_bytes());
-        fs::write(&library, bytes).unwrap();
+        stand_in::name_aarch64(&library).unwrap();
         let error = crate::dist::verify_linux_binary(&library).unwrap_err();
         assert!(
             error.to_string().contains("is not an x86_64 Linux ELF"),
@@ -370,7 +312,7 @@ mod tests {
             ),
         ] {
             let home = exact(scratch.path(), name, options);
-            let error = verify(&home, VERSION).unwrap_err().to_string();
+            let error = verify(&home, &version()).unwrap_err().to_string();
             assert!(error.contains(&format!("has a {tag}")), "{name}: {error}");
         }
     }
@@ -387,7 +329,7 @@ mod tests {
             "gcc",
             &["-Wl,--no-as-needed", "-lgcc_s", "-Wl,--as-needed"],
         );
-        let error = verify(&home, VERSION).unwrap_err();
+        let error = verify(&home, &version()).unwrap_err();
         assert!(
             error
                 .to_string()
