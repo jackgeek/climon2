@@ -7,8 +7,11 @@ serves ordinary attach and [kill](../../../GLOSSARY.md#attachment-and-control).
 [#67](https://github.com/jackgeek/climon2/issues/67), freezes a separate portable
 core contract; it is implemented for
 [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
-and is added beside the private protocol, which it is to replace before
-release.
+and ordinary interactive
+[attachments](../../../GLOSSARY.md#attachment-and-control), and is added
+beside the private protocol, which it is to replace before release. Both
+protocols share one session control: an attachment of either can take
+control from the other, and control is handed back across them.
 These are not interchangeable formats.
 See the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md).
@@ -30,8 +33,9 @@ connection are `unknown_message_type`, and revision-1 types on a private
 connection are private failures. The daemon reads no further than the frame
 it is decoding, so the choice never depends on how bytes were split across
 reads. A peer starts revision 1 with Open or standalone Kill; any other
-request sent first also selects revision 1 and is rejected as
-`invalid_state`, and the stream goes on.
+request sent first also selects revision 1 and is rejected, and the stream
+goes on: [Focus](request-focus.md) with `unsupported_capability`, since no
+Open selected `focus-v1`, and every other request with `invalid_state`.
 
 The revision-1 advertisement in the [hello reply](hello-reply.md#revision-1-advertisement)
 never changes the frozen tokens and `state` that admission and `climon2 list`
