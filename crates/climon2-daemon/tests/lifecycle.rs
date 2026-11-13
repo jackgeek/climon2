@@ -731,13 +731,7 @@ fn a_connection_beyond_the_cap_is_closed_unanswered() {
 #[test]
 fn initial_fallback_and_resize_use_the_real_pty() {
     let mut session = Session::start("zero-size");
-    let report = session.directory.path().join("initial-size");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while !report.exists() {
-        assert!(Instant::now() < deadline);
-        thread::sleep(Duration::from_millis(2));
-    }
-    assert_eq!(fs::read_to_string(report).unwrap(), "80x24");
+    zero_size_started(&session);
     let mut controlling = session.attach();
     session.wait_marker(&mut controlling);
     send(
@@ -1112,6 +1106,13 @@ fn wait_contents(path: &Path, done: impl Fn(&[u8]) -> bool) -> Vec<u8> {
         );
         thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// Waits for the `zero-size` fixture, which starts at the 80x24 fallback,
+/// to report its initial size, so a later grant resizes its terminal.
+fn zero_size_started(session: &Session) {
+    let report = session.directory.path().join("initial-size");
+    wait_contents(&report, |size| size == b"80x24");
 }
 
 fn wait_line(session: &Session, line: &str) {
@@ -2539,7 +2540,9 @@ fn record_lines() -> ! {
 /// prints `N` identical rows and `clear` erases the scrollback. Title commands
 /// set the window title: `title TEXT`, `title-empty`, `title-bytes N` (N
 /// UTF-8 bytes, `é` repeated) and `titles A B` (`t-A` through `t-B` in one
-/// write); `reset` is `ESC c`, and `exit` ends the fixture with status 0.
+/// write); `text TEXT` prints TEXT as a line, `colors N` prints `N` rows
+/// whose every cell changes colour, `reset` is `ESC c`, and `exit` ends the
+/// fixture with status 0.
 fn follow_script() -> ! {
     print!("fixture-ready\r\n");
     io::stdout().flush().unwrap();
@@ -2577,6 +2580,15 @@ fn follow_script() -> ! {
                     }
                 }
                 ["title", ..] => write!(out, "\x1b]2;{}\x07", &command["title ".len()..]).unwrap(),
+                ["text", ..] => write!(out, "{}\r\n", &command["text ".len()..]).unwrap(),
+                ["colors", rows] => {
+                    for _ in 0..rows.parse().unwrap() {
+                        for cell in 0..90 {
+                            write!(out, "\x1b[{}mc", 31 + cell % 7).unwrap();
+                        }
+                        write!(out, "\x1b[0m\r\n").unwrap();
+                    }
+                }
                 _ => panic!("unknown script command {command:?}"),
             }
             out.flush().unwrap();
@@ -2617,6 +2629,36 @@ fn record_input(file: &str, query: Option<&str>) -> ! {
         }
         pasted.extend_from_slice(&buffer[..count]);
         fs::write(file, &pasted).unwrap();
+    }
+    std::process::exit(0);
+}
+
+/// A raw application recording every byte it reads in `focused` until
+/// `END`. Input ending in `ON` or `OFF` turns focus reporting (mode 1004) on
+/// or off, acknowledged by printing `focus-on` or `focus-off`.
+fn record_focus() -> ! {
+    let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
+    assert_eq!(unsafe { libc::tcgetattr(0, termios.as_mut_ptr()) }, 0);
+    let mut termios = unsafe { termios.assume_init() };
+    unsafe {
+        libc::cfmakeraw(&mut termios);
+    }
+    assert_eq!(unsafe { libc::tcsetattr(0, libc::TCSANOW, &termios) }, 0);
+    print!("fixture-ready");
+    io::stdout().flush().unwrap();
+    let mut received = Vec::new();
+    let mut buffer = [0; 4096];
+    while !received.ends_with(b"END") {
+        let count = io::stdin().read(&mut buffer).unwrap();
+        assert_ne!(count, 0);
+        received.extend_from_slice(&buffer[..count]);
+        fs::write("focused", &received).unwrap();
+        if received.ends_with(b"ON") {
+            print!("\x1b[?1004hfocus-on");
+        } else if received.ends_with(b"OFF") {
+            print!("\x1b[?1004lfocus-off");
+        }
+        io::stdout().flush().unwrap();
     }
     std::process::exit(0);
 }
@@ -2743,6 +2785,9 @@ fn fixture_child() {
     }
     if mode == "reply-record" {
         record_input("recorded", Some("\x1b[c"));
+    }
+    if mode == "focus-record" {
+        record_focus();
     }
     if mode.starts_with("retain-") || mode == "script" {
         follow_script();
