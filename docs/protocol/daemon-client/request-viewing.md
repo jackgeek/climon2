@@ -1,6 +1,6 @@
 # Set viewing — `0x35`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed, not implemented; rejected until served**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) reports per-[attachment](../../../GLOSSARY.md#attachment-and-control)
 [viewing](../../../GLOSSARY.md#status-and-attention) to the
 [session daemon](../../../GLOSSARY.md#sessions), as current
@@ -47,3 +47,12 @@ Stale IDs, missing attachment/control/readiness, termination and operational
 failures use [explicit errors](core-v1.md#errors-and-bounded-delivery).
 No optional fields/defaults/unknown members; malformed records/IDs are fatal.
 Frame bounds remain #69. Related: [Ready](request-ready.md).
+
+## Implemented behavior
+
+No revision-1 connection is an attachment yet, so until
+[#91](https://github.com/jackgeek/climon2/issues/91) serves Set viewing the
+[session daemon](../../../GLOSSARY.md#sessions) rejects it as impermissible
+with `invalid_state`, whether it is a connection's first request or arrives on
+a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control).
+No viewing is reported; the stream goes on and a registration stays.

@@ -24,7 +24,7 @@ the monitor never forwards parser replies or session bytes directly to its host.
   one engine step can push into history; the engine keeps twice that as
   counting headroom beyond `max_history_rows`.
 - `Vt::new(geometry, VtConfig { max_history_rows, default_title })`.
-- `Vt::feed(bytes, now) -> Fed { live, replies, dropped }`: the front filter
+- `Vt::feed(bytes, now) -> Fed { live, replies, dropped, titles }`: the front filter
   holds partial tokens across reads (4096-byte body cap; oversized tokens are
   dropped and only counted), feeds complete tokens to the engine in steps of
   at most 64 bytes, and applies the live output policy: write `replies` to
@@ -34,7 +34,14 @@ the monitor never forwards parser replies or session bytes directly to its host.
   removed because the engine implements only 1049). A token is classified
   by the sequence vte dispatches, whatever C0 controls precede its
   introducer, and the controls vte executes in a stripped or rewritten token
-  still reach the host, in order.
+  still reach the host, in order. `titles` lists each change of the
+  application's own title in order, one per change even within one read, by
+  value: `None` is unset (the default title shows, including after `ESC c`),
+  and an unchanged title is not listed again. The body cap ignores a title
+  sequence longer than 4,096 bytes, so with its `2;` the longest OSC 0/2
+  title is 4,094 bytes.
+- `Vt::application_title()`: the application's current title, `None` while
+  unset; the session daemon reports it as inert core metadata.
 - `Vt::sync_pending(now)` / `Vt::tick(now)`: the first-begin synchronized
   update latch (150 ms). Take no snapshot and derive nothing while pending;
   when `tick` returns true, commit `Presentation::end_sync()` for hosts that
@@ -113,7 +120,9 @@ place.
 
 ## Scenario-to-test mapping
 
-Acceptance-matrix IDs are cited in each test's doc comment.
+Acceptance-matrix IDs are cited in each test's doc comment. Crate tests
+supplement, and never replace, the session daemon's Contract layer and the
+monitor's evidence.
 
 | Scenario | Test (`tests/bound.rs` unless another file is named) |
 |---|---|
@@ -141,6 +150,7 @@ Acceptance-matrix IDs are cited in each test's doc comment.
 | LIM-03 Fault: adversarial streams of text, marks, repeats, tints, scrolls, screen switches and control strings with tricky bytes slipped in, any read sizes | `adversarial_streams_never_take_a_model_past_its_limit` |
 | LIM-03 Contract: the engine sees exactly what the live output policy forwards: text under a stripped hyperlink costs nothing, and a rewritten screen-mode list keeps the alternate screen the engine implements | `the_engine_sees_only_what_a_host_would_receive` |
 | LIM-03 Fault: the reserve covers brief holdings with no history: 4096 held controls released at once (as one token), the largest held bodies, resets, tinted templates | `a_cancelled_sequence_releasing_held_controls_stays_within_the_limit`, `the_reserve_covers_what_is_held_briefly`, `tests/tokenizer.rs`: `controls_held_by_an_abandoned_sequence_are_one_text_token` |
+| CTL-03 (crate case): application title changes are reported by value, in order and one per change; unset, empty and a value stay distinct; an oversized title is ignored | `tests/live.rs`: `application_title_changes_are_reported_in_order_by_value` |
 | TRM-02 Contract: the daemon stays the sole query responder; queries, clipboard, titles, links, strings and screen modes after a control before the introducer are still filtered, and the kind of every token is what vte dispatches (#152) | `tests/live.rs`: `a_control_after_esc_reaches_the_host_without_the_filtered_sequence`, `titles_and_links_after_a_control_are_still_reencoded_or_plain`, `modes_set_after_a_control_are_tracked_for_the_host`, `c0_controls_survive_a_replaced_sequence_before_its_replacement`; `tests/tokenizer.rs`: `vte_dispatches_each_token_as_its_kind` |
 
 ## Limitations
@@ -152,3 +162,7 @@ normal current cursor (E1). Combining marks per cell are unbounded in
 Alacritty 0.26.0; only `Model` bounds them, by allocation. A model's bound is
 tracked allocation capacity, not resident memory, and its charges are upper
 bounds, so it can reject output before memory is strictly exhausted.
+
+Titles are decoded by Alacritty 0.26.0: it trims surrounding whitespace,
+drops a title parameter that is not valid UTF-8, and keeps at most the first
+16 OSC parameters, so a title with more than 14 semicolons loses its tail.

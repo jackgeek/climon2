@@ -26,7 +26,8 @@ fn assert_forwarded(bytes: &[u8]) {
         Fed {
             live: bytes.to_vec(),
             replies: Vec::new(),
-            dropped: 0
+            dropped: 0,
+            titles: Vec::new(),
         },
         "{:?}",
         String::from_utf8_lossy(bytes)
@@ -107,7 +108,8 @@ fn a_control_after_esc_reaches_the_host_without_the_filtered_sequence() {
             Fed {
                 live: live.to_vec(),
                 replies: replies.to_vec(),
-                dropped: 0
+                dropped: 0,
+                titles: Vec::new(),
             },
             "{:?}",
             String::from_utf8_lossy(bytes)
@@ -284,7 +286,8 @@ fn oversized_tokens_are_dropped_and_counted() {
         Fed {
             live: b"ok".to_vec(),
             replies: Vec::new(),
-            dropped: 1
+            dropped: 1,
+            titles: Vec::new(),
         }
     );
 }
@@ -324,6 +327,35 @@ fn title_stack_and_reset_return_to_earlier_and_default_titles() {
         feed(&mut vt, b"\x1b[23t").live,
         b"\x1b]2;climon2 exec bash\x1b\\"
     );
+}
+
+/// CTL-03 (crate case): each change of the application's own title is
+/// reported by value and in order, one per change even within one read:
+/// unset (`None`, while the default title shows), empty, or a value. An
+/// unchanged title is not reported again, and an oversized title sequence is
+/// ignored, never truncated.
+#[test]
+fn application_title_changes_are_reported_in_order_by_value() {
+    let title = |text: &str| Some(text.to_owned());
+    let mut vt = vt();
+    assert_eq!(vt.application_title(), None);
+    let fed = feed(&mut vt, b"\x1b]2;one\x07\x1b]0;two\x07\x1b]2;two\x1b\\x");
+    assert_eq!(fed.titles, [title("one"), title("two")]);
+    assert_eq!(vt.application_title(), Some("two"));
+    assert_eq!(feed(&mut vt, b"\x1b]2;\x07").titles, [title("")]);
+    assert_eq!(vt.application_title(), Some(""));
+    feed(&mut vt, b"\x1b]2;three\x07");
+    assert_eq!(
+        feed(&mut vt, b"\x1b[22t\x1b]2;four\x07\x1b[23t").titles,
+        [title("four"), title("three")]
+    );
+    assert_eq!(feed(&mut vt, b"\x1bc").titles, [None]);
+    assert_eq!(vt.application_title(), None);
+    let mut oversized = b"\x1b]2;".to_vec();
+    oversized.resize(5000, b'a');
+    oversized.push(0x07);
+    assert!(feed(&mut vt, &oversized).titles.is_empty());
+    assert_eq!(vt.application_title(), None);
 }
 
 #[test]
