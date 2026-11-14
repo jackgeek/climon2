@@ -255,6 +255,16 @@ _Avoid_: Relayed session, foreign session
 A session whose session daemon runs on the same machine as the monitor presenting it.
 _Avoid_: Native session, own session
 
+## Web monitor
+
+**Web monitor**:
+A planned monitor without a terminal interface of its own, run by `c2 web`, that presents sessions to the user's browsers.
+_Avoid_: Web server, web daemon, web client
+
+**Web view**:
+The browser side of a web monitor, where the user sees and drives sessions.
+_Avoid_: Web client, frontend, web UI
+
 ## Protocol and plugin concepts
 
 **Session ID**:
