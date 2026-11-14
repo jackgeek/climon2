@@ -642,6 +642,7 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
 
 /// One mutator run for every target, so the full-workspace baseline runs once.
 fn mutate(root: &Path, workers: &str, run_plan: RunPlan) -> io::Result<()> {
+    clear_mutation_history(root)?;
     let mut mutation = mutation_command(root);
     mutation.args([
         "--use-existing-coverage",
@@ -653,6 +654,15 @@ fn mutate(root: &Path, workers: &str, run_plan: RunPlan) -> io::Result<()> {
         mutation.args(["--lines", &joined(lines)]);
     }
     run(mutation.args(run_plan.targets.into_iter().map(|target| target.path)))
+}
+
+/// Removes the mutator's per-file history, so no outcome of an earlier run is carried forward and
+/// the result depends only on this run.
+fn clear_mutation_history(root: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(root.join(".metrics/mutate")) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
 }
 
 fn joined(lines: &BTreeSet<usize>) -> String {
@@ -1212,10 +1222,17 @@ case "$*" in
             case ",$lines," in *",$site,"*) printf '  %s:%s + -> -  [defn/f]\n' "$last" "$site" ;; esac
         done
         ;;
-    *'-m mutator'*) shift 2; printf 'mutation %s\n' "$*" >> "$events" ;;
+    *'-m mutator'*)
+        if [ -e .metrics/mutate ]; then echo stale-history >> "$events"; fi
+        shift 2
+        printf 'mutation %s\n' "$*" >> "$events"
+        ;;
 esac
 "#,
         );
+        // An earlier run's outcomes, which the mutator would carry forward into this one.
+        fs::create_dir_all(root.join(".metrics/mutate")).unwrap();
+        fs::write(root.join(".metrics/mutate/history.edn"), "{}\n").unwrap();
         let output = root.join("output");
         let file = fs::File::create(&output).unwrap();
         let mut path = vec![root.join("bin")];
@@ -1417,6 +1434,32 @@ esac
             "{}",
             mutations[0]
         );
+    }
+
+    /// #185 follow-up: gate results depend only on the current run, so every mutation run starts
+    /// without the history an earlier run in the same worktree left behind.
+    #[cfg(unix)]
+    #[test]
+    fn every_mutation_run_starts_without_an_earlier_runs_history() {
+        for scope in ["ticket", "full", "host", "native"] {
+            let run = run_gate(Gate {
+                scope,
+                changed: true,
+                ..Gate::default()
+            });
+            assert!(run.success, "{scope}: {}", run.output);
+            assert!(
+                run.started("mutation").is_some(),
+                "{scope}: {:?}",
+                run.events
+            );
+            assert_eq!(
+                run.started("stale-history"),
+                None,
+                "{scope}: {:?}",
+                run.events
+            );
+        }
     }
 
     /// #21 isolation amendment: a reported kill cannot stand in for the selected binary.
