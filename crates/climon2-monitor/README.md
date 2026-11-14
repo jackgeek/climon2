@@ -11,9 +11,9 @@ executables of one release is not frozen. The library boundary is
 
 This is the #74 walking skeleton of spec #73, with its key introduction and
 help (#105), session discovery, passive clients and the basic selector
-(#106), and selection, control and painting of the selected session (#108).
-Nothing is selected automatically yet (#107), and typed input reaches no
-session yet (#109).
+(#106), selection, control and painting of the selected session (#108), and
+the input router that sends typed keys to it (#109). Nothing is selected
+automatically yet (#107).
 
 ## Startup, before the host terminal changes
 
@@ -76,20 +76,61 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   completes the actions after the prefix and gives the key introduction its
   lines and the empty state's hint its key. Prefix+s opens the selector
   (below).
-- Host input is read as raw bytes and classified byte by byte (`keys.rs`):
-  typed prefix+x exits, typed prefix+? opens the key introduction, and every
-  other typed byte outside a prefix, Ctrl+C included, goes to it while it is
-  open, otherwise to the open selector, and is otherwise discarded: routing
-  it to the selected session is the input router's (#109). A doubled prefix
-  is one literal prefix, which goes there too, so with `Ctrl+M` as the prefix
-  Enter Enter continues. A prefix and the byte after it that completes no
-  action reach nothing. The key introduction acts only on Enter (close) and
-  Space (reverse the saved choice). A bracketed paste is data, however the
-  host splits its reads: it never exits or reaches the key introduction, it
-  discards a pending prefix, and it leaves none pending. Mouse and focus
-  reports are not classified yet: they never exit and the key introduction
-  ignores their bytes, but they end a pending prefix. The input router
-  classifies them (#109) and routes them to applications (#111).
+- Host input is read as raw bytes and classified by the pure input router
+  (`router.rs`), never as lossy key events, and never depending on how the
+  host splits its reads, with no timer anywhere (owner decision on #109): a
+  sequence waits for its next byte whatever read brings it, and so does a
+  lone Escape, which begins every sequence: the byte after it decides (`[`
+  or `O` begins a key sequence; `]`, `P`, `_` or `^` a host reply's string;
+  anything else makes it Escape then that key, as Alt and that key are). So
+  in the selector and the key introduction Escape takes effect when the
+  next key arrives. A lone Escape that ends a read bound for the selected
+  session is released to it at once instead (`Router::release`), since
+  applications time Escape themselves; if a sequence follows, only its rest
+  is sent, still encoded for the application's modes. Known limits of that
+  release: a reply, report or paste marker split right after its Escape
+  leaves that Escape with the application, and a keypad key split so cannot
+  become a numeric-mode key. Bracketed paste
+  (data until its end marker, which discards a pending prefix and leaves
+  none), SGR mouse reports, focus reports and host replies bypass shortcuts
+  and reach no application. The monitor's rule for host replies (confirmed
+  by the owner on #109): OSC, DCS, APC and PM strings; CSI sequences with a
+  `?`, `>` or `=` marker, an intermediate byte, or a `c`, `n`, `t` or `y`
+  final; and any control sequence longer than 64 bytes. CSI `R` stays a key
+  (modified F3 sends it, and the monitor never asks the host for its cursor
+  position); pastes, mouse and focus reach
+  applications with #111. Prefix+s, x, j and ? (lowercase) are the global
+  actions from every screen, the selector and the too-small host; prefix+j
+  is recognised and never forwarded, and its jump arrives with #114. A
+  doubled prefix is one literal prefix, a prefix and any other key (`d`,
+  `h`, `r`, `J`, the take-control key, a whole cursor key) are both sent
+  literally, and a lone prefix waits indefinitely. With `Ctrl+[` as the
+  prefix a bare Escape is the prefix, so it waits and never cancels, and the
+  legacy Alt+s, Alt+x, Alt+j and Alt+? encodings are the actions.
+- Only the selected session, controlling with its restoration applied,
+  Ready accepted and painted, with no modal open and room on the host,
+  receives application input; otherwise input is discarded, never kept for
+  later. Ctrl+C is ordinary input. Each read's keys for the session are
+  submitted together, before anything after them acts. Nothing read after
+  prefix+x is routed; keys read before it in the same read reach the session
+  before shutdown (below). Unmodified cursor keys (`A`-`D`, `H`, `F`, as CSI or SS3) are
+  sent as the application's cursor mode (DECCKM) expects, and application
+  keypad keys (SS3) as its keypad mode (DECKPAM) expects; the host keypad is
+  put in application mode while the selected, uncovered session asks for it,
+  so its keypad keys are distinct. The supervisor submits input in chunks of
+  at most `transfer.chunk_bytes`, in order, and stops at the first refusal;
+  the top row then shows `Input not sent (N bytes; earlier input was
+  accepted): <why>`, N counting the refused chunk and every byte after it.
+- Every other key goes to the key introduction while it is open, otherwise
+  to the open selector, and a prefix with a key that completes no action
+  reaches neither. When a key closes the last modal in the middle of a read,
+  a frame is painted before the rest of that read is routed (owner decision
+  on #109), so a key typed straight after Escape reaches the uncovered
+  session; input still reaches only a painted, visible session, and nothing
+  is kept beyond the read. A doubled prefix is one literal prefix there too, so with
+  `Ctrl+M` as the prefix Enter Enter continues. The key introduction acts
+  only on Enter (close), a bare Escape (close; never the prefix's) and Space
+  (reverse the saved choice).
 - Space saves the reversed choice (`preference.rs`). First it tries to remove
   the temporary files that saves interrupted before their rename left in the
   climon2 home: each `monitor-preferences.json.<pid>.tmp` whose pid no process
@@ -176,17 +217,21 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   to the widest status shown, a space and its label, clipped by display cell
   without splitting a wide character; the highlighted row is reversed and
   kept in view. It opens on the first row; prefix+s while open does nothing.
-  Typed Up and Down (`ESC [ A`/`B` or `ESC O A`/`B`, decoded by one rule
-  table) move the highlight without wrapping, and an Escape that ends a host
-  read closes it. Known gap (owner decision on #106): an Escape followed by
-  other bytes in the same read does not close it; the input router closes
-  this gap (#109, INP-02). Opening it never resizes an application or
+  Up and Down (`ESC [ A`/`B` or `ESC O A`/`B`) move the highlight without
+  wrapping, and a bare Escape closes it when the next key arrives (the
+  router has no timer); a cursor key split across reads anywhere never
+  closes it, and the key after the Escape is routed once it has closed
+  (#109, INP-02). Opening it never resizes an application or
   acquires anything. Enter (a typed CR) on a connected row not known to be
   final selects that session, closes the selector and acquires it (below);
   on any other row it does nothing yet. While rows exist, nothing is
   selected and the selector is closed, the body reads `No session selected.`
   above the key hint.
-- **Exit** first asks the supervisor to shut every instance down and keeps
+- **Exit** first waits until every input chunk an open client accepted is
+  answered, at most `deadlines.operation_ms` (owner decision on #109), so
+  keys typed with prefix+x reach their session and a stuck session holds
+  exit no longer than one operation may take. It then asks the supervisor
+  to shut every instance down and keeps
   draining until each has ended, its handles are released and its owner is
   joined, for at most `deadlines.shutdown_ms` (and one tick), then releases
   the host. An instance unconfirmed by then is logged (`client shutdown
@@ -238,7 +283,7 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   output drains (#88), so no Display is held or guessed. A finished session
   is sent no Resize. Applied, Ready accepted and painted are distinct; input
   may use the period's authority only with all three and a current model
-  (`Terminal::input`, for #109's router). Painted is decided before each
+  (`Terminal::input`, which the input router checks). Painted is decided before each
   frame: true only for the selected session's terminal while nothing covers
   its canvas and the host has room, so selecting another session, opening
   the selector or key introduction, or a too-small host closes input until a
@@ -373,24 +418,28 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | HLP-02 (Monitor, over the empty monitor): the key introduction owns typed keys, prefixed keys, reports and pastes, none acts; Enter closes, prefix+? reopens, prefix+x exits | `the_key_introduction_is_modal_and_prefix_x_still_exits_from_it` (e2e) |
 | HLP-02 (Monitor, over the empty monitor): with Ctrl+[ as the prefix, Escape cannot close the key introduction and prefix+x still exits | `with_escape_as_the_prefix_escape_cannot_close_the_key_introduction_and_prefix_x_still_exits` (e2e) |
 | HLP-02 (Monitor, over the empty monitor): a doubled prefix reaches the key introduction as one literal prefix, so with Ctrl+M as the prefix Enter Enter continues; the prefix and a key it does not complete reach nothing; prefix+x still exits | `with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction` (e2e) |
-| INP-01 (pure input-router supplement): prefix+x across reads; no other key exits; only the configured prefix | `prefix_then_x_exits_across_read_boundaries`, `every_other_key_is_not_an_exit`, `only_the_configured_prefix_begins_the_action` (`src/keys.rs`) |
-| HLP-01 (pure input-router supplement): prefix+? across reads, only after the configured prefix | `prefix_then_question_mark_opens_the_key_introduction_across_read_boundaries` (`src/keys.rs`) |
-| HLP-02 (pure input-router supplement): typed keys outside a prefix and a doubled prefix's one literal prefix (Ctrl+M Enter Enter is one Enter) reach the key introduction; other prefixed and pasted ones never | `only_typed_keys_and_a_doubled_prefix_reach_the_key_introduction` (`src/keys.rs`) |
-| INP-02/INP-03 (pure input-router supplement): pasted prefix+x is data; a paste leaves no pending prefix; markers split into single bytes; Ctrl+[ as prefix; only a complete start marker begins a paste | `a_pasted_prefix_and_x_never_exit`, `a_paste_leaves_no_pending_prefix`, `paste_markers_split_into_single_bytes_are_recognised`, `an_escape_prefix_still_recognises_pastes`, `only_a_complete_start_marker_begins_a_paste` (`src/keys.rs`) |
+| INP-01, INP-02, TRM-02 (Monitor), COM-04 (Monitor, typed), EXT-03 (Monitor, Ctrl+C): typed bytes reach the selected session exactly, binary, invalid UTF-8 and Ctrl+C included; one literal prefix for a doubled one, both bytes for d, h, r, J and the take-control key, nothing for prefix+j, replies and reports; identical when split into ten reads; cursor and keypad keys follow the application's modes and the host keypad follows it | `typed_bytes_reach_the_selected_session_exactly_however_reads_split` (e2e) |
+| INP-01 (Monitor, live and too-small screens), spec #73 Routing: prefix+? and prefix+s from a live session, their keys never reach it; on a too-small host input is discarded, never buffered, prefix+s still opens the selector and prefix+x still exits | `global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffered` (e2e) |
+| INP-02, HLP-02 (Monitor, Escape; owner decisions on #105, #106 and #109): a cursor key split right after its Escape or after its introducer never closes the selector or key introduction; a lone Escape closes it when the next key arrives, which reaches the session; Escape then a key in one read closes the selector or key introduction and the key reaches the session, painted first | `split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both` (e2e), `only_closing_the_last_modal_reveals_the_canvas` (`src/lib.rs`) |
+| Spec #73 exit (owner decision on #109): keys read with prefix+x reach the session before shutdown; a stuck session holds exit at most the operation deadline (plus the shutdown deadline) | `typed_bytes_reach_the_selected_session_exactly_however_reads_split`, `a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline` (e2e); `stopping_waits_for_accepted_input_at_most_the_operation_deadline` (`src/supervisor/tests`) |
+| COM-03 (Monitor, queue full), COM-04 (Monitor, chunks): a refused chunk is shown with the bytes not sent, earlier input accepted; only accepted input arrives | `a_full_input_queue_is_shown_and_only_accepted_input_arrives` (e2e) |
+| INP-01 (pure input-router supplement): the global actions with default and custom prefixes; a doubled prefix; unknown suffixes; a lone prefix waits | `the_prefix_and_lowercase_s_x_j_or_question_mark_are_the_global_actions`, `a_doubled_prefix_is_one_literal_prefix`, `an_unknown_suffix_is_the_prefix_and_that_key`, `a_lone_prefix_waits_indefinitely` (`src/router.rs`) |
+| INP-02 (pure input-router supplement): every split routes identically, and sends an application the same bytes even with a released Escape; a split cursor key is never an Escape; Escape and a key; a lone Escape waits for the next byte, and one bound for an application is released at once, once, never as or after a prefix; Ctrl+[ as the prefix; broken and overlong (64 and 65 bytes) sequences; cursor and keypad encodings | `every_split_of_the_reads_routes_identically`, `a_split_cursor_key_is_never_an_escape`, `escape_and_a_key_in_one_read_are_escape_then_that_key`, `a_lone_escape_waits_for_the_next_byte`, `a_lone_escape_for_an_application_is_released_at_once`, `an_application_receives_the_same_bytes_for_every_split`, `with_escape_as_the_prefix_bare_escape_waits_and_alt_keys_are_actions`, `a_broken_sequence_is_its_bytes`, `an_overlong_sequence_is_discarded`, `cursor_keys_follow_the_application_cursor_mode`, `keypad_keys_follow_the_application_keypad_mode` (`src/router.rs`); `the_host_keypad_mode_is_written_when_it_changes` (`src/screen.rs`) |
+| TRM-02, INP-03, INP-05 (pure input-router supplement): replies, mouse and focus reports and pastes are never keys and never complete a pending prefix; a paste discards one | `replies_reports_and_pastes_are_never_keys`, `a_paste_discards_a_pending_prefix_and_leaves_none` (`src/router.rs`) |
+| COM-04, EXT-03 (pure input-router supplement): typed bytes reach an application exactly | `typed_bytes_reach_the_application_exactly` (`src/router.rs`) |
+| COM-03, COM-04 (pure supplement): chunks of at most `chunk_bytes`; the first refusal carries every unsent byte and consumes no request ID; a refusal is shown | `input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte` (`src/supervisor/tests`), `refused_input_shows_what_was_not_sent` (`src/terminal.rs`) |
 | #74 risk proof: plain and hooked sibling binaries without nested builds | `cargo_builds_the_plain_or_hooked_monitor_binary_for_its_tests` (`tests/build.rs`, plain and hooked runs); fixtures `workspace_binaries_contain_test_hooks`; xtask `release_check_builds_unhooked_binaries_in_a_private_target` |
 | #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`; Linux `linux_packaging_rejects_a_non_x86_64_or_hooked_monitor`; macOS `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
 
-Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), application input such
-as Ctrl+C (#109), mouse and focus report classification (#109) and their
-routing to applications (#111), HLP-02 over the selector (#113), selector
+Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), paste, mouse and focus
+routing to applications and target-change invalidation (#111, INP-03 to
+INP-05), global actions from the placeholder (#110) and history (#116)
+screens, HLP-02 over the selector (#113), selector
 search and footer (#113), Enter on a row that is not connected, is final or
 is this monitor (read-only selection and its placeholders), the revoked
 placeholder and take-control key (#110), the label marquee and synchronized
 updates (#112), underline styles other than single, status order and
 initial selection (#107), resource admission and fairness, including newest-first starts
 across discovery batches, and `discovery.stall_ms` (#120), passive retry
-(#116), an Escape that does not end its host read closing the selector
-(#109, INP-02), the fail-stop after an unconfirmed shutdown (#118), Escape closing the key introduction when Escape is not
-the prefix (#109, whose input router tells a bare Escape from an escape
-sequence), and the universal archive's runtime on both architectures, which
+(#116), the fail-stop after an unconfirmed shutdown (#118), and the universal archive's runtime on both architectures, which
 only CI's `dist` and `archive` jobs build and execute.

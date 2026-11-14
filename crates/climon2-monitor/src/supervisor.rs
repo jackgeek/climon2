@@ -123,7 +123,9 @@ impl Supervisor {
         let _ = self.commands.send(Command::Request(id, request));
     }
 
-    /// Shuts every client down, waiting at most `deadlines.shutdown_ms` (and
+    /// Waits for accepted input to be answered (at most
+    /// `deadlines.operation_ms`), then shuts every client down, waiting at
+    /// most `deadlines.shutdown_ms` (and
     /// one tick) for their terminal evidence, released handles and joined
     /// owners. Instances unconfirmed by then are logged and left, never
     /// destroyed, to process exit; the fail-stop arrives with #118.
@@ -276,7 +278,32 @@ impl State {
             self.schedule();
             self.poll();
         }
+        self.settle_input();
         self.shut_down();
+    }
+
+    /// Before shutting down, waits until every input chunk an open client
+    /// accepted is answered, at most `deadlines.operation_ms` (owner decision
+    /// on #109): typed keys read with prefix+x still reach their session, and
+    /// a stuck one holds exit no longer than one operation may take.
+    fn settle_input(&mut self) {
+        let bound = Duration::from_millis(self.context.limits.operation_ms.into());
+        let deadline = Instant::now() + bound;
+        while self.input_pending() && Instant::now() < deadline {
+            self.internals();
+            self.poll();
+        }
+    }
+
+    /// Whether an open client has accepted input not yet answered.
+    fn input_pending(&self) -> bool {
+        self.instances.values().any(|instance| {
+            matches!(instance.phase, Phase::Open(_))
+                && instance
+                    .pending
+                    .values()
+                    .any(|request| matches!(request, Request::Input(..)))
+        })
     }
 
     /// Takes every pending command; false once shutdown is asked for.
@@ -311,10 +338,20 @@ impl State {
         self.waiting.insert(key, metadata);
     }
 
-    /// Submits `request` through an open client and remembers it until its
-    /// answer; anything else is answered at once with why not.
+    /// Submits `request` through an open client, input in chunks of at most
+    /// `chunk_bytes`, in order. The first refusal is answered at once with
+    /// why, carrying every byte not submitted, and nothing after it is
+    /// submitted.
     fn submit(&mut self, id: &SessionId, request: Request) {
-        if let Err(why) = self.submit_one(id, request) {
+        let chunk = self.context.limits.chunk_bytes as usize;
+        let mut unsent: Option<(Request, String)> = None;
+        for request in split(request, chunk) {
+            match unsent.as_mut() {
+                Some((refused, _)) => absorb(refused, request),
+                None => unsent = self.submit_one(id, request).err(),
+            }
+        }
+        if let Some((request, why)) = unsent {
             self.tell(
                 id,
                 ClientEvent::Presentation(Presentation::Answered(request, Err(why))),
@@ -325,7 +362,7 @@ impl State {
     /// Submits one request and enters it in the pending ledger once the
     /// library accepts it. A request refused, here or by the library,
     /// consumes no request ID.
-    fn submit_one(&mut self, id: &SessionId, request: Request) -> Result<(), String> {
+    fn submit_one(&mut self, id: &SessionId, request: Request) -> Result<(), (Request, String)> {
         let capacity = self.ledger;
         let open = self
             .instances
@@ -335,13 +372,16 @@ impl State {
                 _ => None,
             });
         let Some((live, instance)) = open else {
-            return Err("the session's client is not connected".to_owned());
+            return Err((request, "the session's client is not connected".to_owned()));
         };
         if instance.pending.len() >= capacity {
-            return Err("too many requests are awaiting their answers".to_owned());
+            let why = "too many requests are awaiting their answers".to_owned();
+            return Err((request, why));
         }
         let request_id = instance.next;
-        live.client.submit(request_id, request)?;
+        if let Err(why) = live.client.submit(request_id, &request) {
+            return Err((request, why));
+        }
         instance.next += 1;
         instance.pending.insert(request_id, request);
         Ok(())
@@ -665,3 +705,22 @@ fn wait(table: &mut [libc::pollfd]) {
 
 #[cfg(test)]
 mod tests;
+
+/// The requests `request` is submitted as: input in chunks of at most
+/// `chunk` bytes (the library refuses larger ones), anything else whole.
+fn split(request: Request, chunk: usize) -> Vec<Request> {
+    match request {
+        Request::Input(authority, bytes) => bytes
+            .chunks(chunk)
+            .map(|bytes| Request::Input(authority, bytes.to_vec()))
+            .collect(),
+        request => vec![request],
+    }
+}
+
+/// Adds a later chunk's bytes to the refused input they follow.
+fn absorb(refused: &mut Request, request: Request) {
+    if let (Request::Input(_, unsent), Request::Input(_, more)) = (refused, request) {
+        unsent.extend(more);
+    }
+}

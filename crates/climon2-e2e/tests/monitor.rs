@@ -36,17 +36,26 @@ const NO_TERMINAL: &str = "climon2: error: climon2 monitor needs a terminal\r\n"
 /// alone, followed by a typed x.
 const PASTES: &[u8] = b"\x1b[200~\x1dx\x1b[201~\x1d\x1b[200~x\x1b[201~x\x1b[200~\x1d\x1b[201~x";
 const TOP_ROW: &str = "No session selected";
+/// Escape for the selector, then a focus report that nothing takes: a lone
+/// Escape waits for the byte after it (owner decision on #109), so the
+/// report makes it take effect at once.
+const ESCAPE: &str = "\x1b\x1b[I";
 const EMPTY: &str = "No sessions to show.";
 
 /// The [`support::outer`] shell, first titling its host and marking where
 /// `command`'s output begins.
 fn outer(package: &Package, command: &str) -> Terminal {
+    outer_sized(package, command, COLS)
+}
+
+/// [`outer`] on a host `cols` wide.
+fn outer_sized(package: &Package, command: &str, cols: u16) -> Terminal {
     support::outer(
         package,
         Path::new("/bin/bash"),
         &format!("printf '\\033]2;{TITLE}\\007'; printf 'BEFORE-MONITOR\\n'; {command}"),
         ROWS,
-        COLS,
+        cols,
     )
 }
 
@@ -1752,7 +1761,7 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
         terminal.screen()
     );
 
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
@@ -1766,7 +1775,7 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
     );
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, "║Unavailable Live");
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains("Discovery incomplete"))
@@ -2096,7 +2105,7 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
         }
         assert_eq!(terminal.screen(), open);
     }
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     shows(&mut terminal, &body);
     for session in package.list() {
         assert_eq!(session["state"]["lifecycle"], "detached", "{session}");
@@ -2306,7 +2315,7 @@ fn enter_selects_and_acquires_a_session_and_paints_it_live() {
     // The selector covers the canvas, but control has not changed: the top
     // row still says Controlling (owner decision, 2026-11-14).
     top_row_is(&mut terminal, &top);
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     selector_closed(&terminal);
     assert_eq!(terminal.row(0), top);
     assert_eq!(
@@ -2638,11 +2647,370 @@ fn a_finished_session_keeps_its_last_screen_and_cannot_be_acquired() {
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, "║Disconnected Done");
     terminal.send("\r").unwrap();
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     selector_closed(&terminal);
     assert_eq!(terminal.row(0), ended);
     assert_eq!(terminal.row(1).trim_end(), "FINAL OUTPUT");
     terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Bash that titles its session `title`, puts its terminal in raw mode
+/// without echo, and appends every byte it receives to `$HOME/got`, saying
+/// `RAW` once it does; when `$HOME/modes` appears it turns on application
+/// cursor keys (DECCKM) and the application keypad (DECKPAM). It holds until
+/// `$HOME/finish` exists.
+fn recorder(title: &str) -> String {
+    format!(
+        "printf '\\033]2;{title}\\007'; stty raw -echo; cat </dev/tty >\"$HOME/got\" & printf RAW; \
+         until [ -e \"$HOME/finish\" ] || [ \"$SECONDS\" -ge 120 ]; do \
+         if [ -e \"$HOME/modes\" ] && [ -z \"$m\" ]; then printf '\\033[?1h\\033='; m=1; fi; \
+         sleep 0.05; done; kill $!"
+    )
+}
+
+/// Waits until the [`recorder`] session has received exactly `expected`.
+fn received(package: &Package, expected: &[u8]) {
+    let path = package.isolation.home().join("got");
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let got = fs::read(&path).unwrap_or_default();
+        if got == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the session received {:?}, not {:?}",
+            got.escape_ascii().to_string(),
+            expected.escape_ascii().to_string()
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Selects the [`recorder`] session `title` (`downs` rows below the first)
+/// and waits until it controls it with its terminal raw.
+fn record(terminal: &mut Terminal, title: &str, downs: usize, cols: u16) {
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    select(terminal, title, downs);
+    top_row_is(
+        terminal,
+        &session_top_row(
+            usize::from(cols),
+            title,
+            &[STATUS, CONTROLLING, SESSIONS_HINT],
+        ),
+    );
+    whole_frame_shows(terminal, "RAW", |screen| {
+        screen
+            .lines()
+            .nth(1)
+            .is_some_and(|row| row.starts_with("RAW"))
+    });
+}
+
+/// Typed keys, host replies and reports, as the host sends them: NUL, a
+/// non-UTF-8 byte, `A`, Ctrl+C and invalid UTF-8; a doubled prefix; the
+/// prefix with d, h, r, uppercase J and the take-control key; prefix+j;
+/// Up as CSI and Down as SS3; keypad 0 in application form; Alt+x; a device
+/// attributes reply, an OSC colour reply, a focus report, an SGR mouse
+/// press and release; then `end`.
+const TYPED: &[u8] = b"\x00\xff\x41\x03\xc3\x28\x1d\x1d\x1dd\x1dh\x1dr\x1dJ\x1d\x14\x1dj\
+\x1b[A\x1bOB\x1bOp\x1bx\x1b[?62;22c\x1b]11;rgb:0/0/0\x07\x1b[I\x1b[<0;5;5M\x1b[<0;5;5mend";
+
+/// What an application in normal cursor and keypad modes receives for
+/// [`TYPED`], written by hand: every key exactly, one literal prefix for
+/// the doubled one, both bytes of each unknown suffix, nothing for prefix+j,
+/// the replies and the reports, the cursor keys as CSI and keypad 0 as `0`.
+const RECEIVED: &[u8] =
+    b"\x00\xff\x41\x03\xc3\x28\x1d\x1dd\x1dh\x1dr\x1dJ\x1d\x14\x1b[A\x1b[B0\x1bxend";
+
+/// [`TYPED`] cut inside a doubled prefix, after a lone prefix, right after a
+/// cursor key's Escape (released to the session at once), inside a keypad
+/// key, a reply, its OSC string and a mouse report.
+const FRAGMENTS: [&[u8]; 10] = [
+    b"\x00\xff\x41\x03\xc3",
+    b"\x28\x1d",
+    b"\x1d\x1d",
+    b"d\x1dh\x1dr\x1dJ\x1d\x14\x1d",
+    b"j\x1b",
+    b"[A\x1bOB\x1bO",
+    b"p\x1bx\x1b[?62;",
+    b"22c\x1b]11;rgb",
+    b":0/0/0\x07\x1b[I\x1b[<0;5",
+    b";5M\x1b[<0;5;5mend",
+];
+
+/// INP-01, INP-02 and TRM-02 (Monitor), COM-04 (Monitor, typed cases) and
+/// EXT-03 (Monitor, Ctrl+C): bytes typed at the host reach the selected,
+/// controlling session's application exactly: binary and invalid UTF-8
+/// bytes and Ctrl+C as they are, a doubled prefix as one literal prefix,
+/// the prefix with d, h, r, J or the take-control key as both bytes, and
+/// prefix+j, host replies, focus and mouse reports never. The same bytes
+/// cut into ten reads, each read alone, arrive identically. Once the
+/// application turns on application cursor keys and keypad, the host keypad
+/// follows it, and cursor keys typed in either form arrive as SS3, keypad
+/// keys as sent and modified cursor keys unchanged. A lone Escape reaches
+/// the session at once, before the rest of its key arrives, and that rest
+/// still follows the application's cursor mode. Keys read with prefix+x
+/// before it reach the session before the monitor shuts down (owner
+/// decision on #109), and none after it.
+#[test]
+fn typed_bytes_reach_the_selected_session_exactly_however_reads_split() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &recorder("Keys"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    record(&mut terminal, "Keys", 0, COLS);
+    terminal.send(TYPED).unwrap();
+    received(&package, RECEIVED);
+    assert_eq!(FRAGMENTS.concat(), TYPED);
+    let monitor = monitor_process(&package).0;
+    for fragment in FRAGMENTS {
+        read_alone(&mut terminal, monitor, fragment);
+    }
+    let twice = [RECEIVED, RECEIVED].concat();
+    received(&package, &twice);
+    assert!(!terminal.modes().application_keypad);
+    fs::write(package.isolation.home().join("modes"), b"").unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !terminal.modes().application_keypad {
+        assert!(Instant::now() < deadline, "the host keypad never followed");
+        thread::sleep(Duration::from_millis(10));
+    }
+    terminal
+        .send(b"\x1b[A\x1bOB\x1b[D\x1bOp\x1bOM\x1b[1;5A")
+        .unwrap();
+    let moded = [&twice[..], b"\x1bOA\x1bOB\x1bOD\x1bOp\x1bOM\x1b[1;5A"].concat();
+    received(&package, &moded);
+    read_alone(&mut terminal, monitor, b"\x1b");
+    received(&package, &[&moded[..], b"\x1b"].concat());
+    read_alone(&mut terminal, monitor, b"[C");
+    let moded = [&moded[..], b"\x1bOC"].concat();
+    received(&package, &moded);
+    read_alone(&mut terminal, monitor, b"z\x1dxlate");
+    assert_released(&package, &mut terminal, 0);
+    received(&package, &[&moded[..], b"z"].concat());
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// INP-01 (Monitor: live and too-small screens) and spec #73 Routing: from a
+/// live session, prefix+? opens the key introduction and prefix+s the
+/// selector, and keys typed while either is open reach neither the session
+/// nor anything later. On a host too small for any session, typed input is
+/// discarded, never kept for later, while prefix+s still opens the selector,
+/// shown once the host has room again, and prefix+x still exits.
+#[test]
+fn global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffered() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &recorder("Keys"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    record(&mut terminal, "Keys", 0, COLS);
+    terminal.send("\x1d?").unwrap();
+    shows_row(&mut terminal, "Exit the monitor");
+    terminal.send("a\r").unwrap();
+    whole_frame_shows(&terminal, "no key introduction", |screen| {
+        !screen.contains("Exit the monitor")
+    });
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{STATUS} Keys"));
+    terminal.send("b").unwrap();
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("c").unwrap();
+    received(&package, b"c");
+    terminal.resize(3, COLS).unwrap();
+    top_row_is(&mut terminal, &format!("{:<120}", "Terminal too small"));
+    let monitor = monitor_process(&package).0;
+    read_alone(&mut terminal, monitor, b"lost\x1ds");
+    terminal.resize(ROWS, COLS).unwrap();
+    shows_row(&mut terminal, &format!("║{STATUS} Keys"));
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("d").unwrap();
+    received(&package, b"cd");
+    terminal.resize(3, COLS).unwrap();
+    top_row_is(&mut terminal, &format!("{:<120}", "Terminal too small"));
+    terminal.send("\x1dx").unwrap();
+    terminal.wait_for_bytes(b"OUTER-DONE=0", TIMEOUT).unwrap();
+    // The three-row host scrolled the status away; growing it brings it back.
+    terminal.resize(ROWS, COLS).unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// INP-02 (Monitor) and HLP-02 (Monitor, Escape), by owner decisions on
+/// #106, #105 and #109: Escape handling does not depend on read
+/// fragmentation and uses no timer. Down split right after its Escape and
+/// Up split after its introducer, each read alone, move the selector's
+/// highlight and never close it. A lone Escape leaves the selector open
+/// until the next key arrives, then closes it, and that key acts as itself:
+/// prefix+? opens the key introduction. The key introduction behaves alike
+/// with split Up and Down, and Escape and prefix+s in one read close it
+/// (the prefix, Ctrl+], does not consume Escape) and then open the
+/// selector. Escape and a key in one read close the selector or the key
+/// introduction and the key reaches the session (owner decision on #109:
+/// the uncovered session is painted before the rest of the read is
+/// routed), as does a key read after a lone Escape. No other dialog key
+/// reaches the session, and prefix+x exits from the selector (INP-01).
+#[test]
+fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &titled_hold("Other"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    shows_row_after_selector(&mut terminal, "Other");
+    headless(&package, &recorder("Keys"), "finish");
+    shows_row_after_selector(&mut terminal, "Keys");
+    terminal.send("\x1ds").unwrap();
+    let keys = format!("║{STATUS} Keys");
+    shows_row(&mut terminal, &keys);
+    let downs = terminal
+        .screen()
+        .lines()
+        .position(|line| line.contains(&keys))
+        .unwrap()
+        - 3;
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    record(&mut terminal, "Keys", downs, COLS);
+    let monitor = monitor_process(&package).0;
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{STATUS} Other"));
+    assert_eq!(highlighted_rows(&terminal), [3]);
+    for (reads, row) in [([&b"\x1b"[..], b"[B"], 4), ([b"\x1b[", b"A"], 3)] {
+        for read in reads {
+            read_alone(&mut terminal, monitor, read);
+        }
+        highlight_at(&terminal, row);
+    }
+    read_alone(&mut terminal, monitor, b"\x1b");
+    whole_frame_shows(&terminal, "the selector", |screen| screen.contains('║'));
+    read_alone(&mut terminal, monitor, b"\x1d?");
+    whole_frame_shows(&terminal, "the key introduction alone", |screen| {
+        !screen.contains('║') && screen.contains("Exit the monitor")
+    });
+    for read in [&b"\x1b"[..], b"[A", b"\x1b[", b"B", b"\x1b\x1ds"] {
+        read_alone(&mut terminal, monitor, read);
+    }
+    whole_frame_shows(&terminal, "the selector alone", |screen| {
+        screen.contains('║') && !screen.contains("Exit the monitor")
+    });
+    read_alone(&mut terminal, monitor, b"\x1bq");
+    received(&package, b"q");
+    selector_closed(&terminal);
+    terminal.send("\x1d?").unwrap();
+    shows_row(&mut terminal, "Exit the monitor");
+    read_alone(&mut terminal, monitor, b"\x1bz");
+    received(&package, b"qz");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{STATUS} Other"));
+    read_alone(&mut terminal, monitor, b"\x1b");
+    read_alone(&mut terminal, monitor, b"y");
+    received(&package, b"qzy");
+    selector_closed(&terminal);
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{STATUS} Other"));
+    terminal.send("\x1dx").unwrap();
+    // Its many frames outgrow the oracle's recent bytes, so only the
+    // title itself is checked.
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Waits until the selector highlights host row `row` alone.
+fn highlight_at(terminal: &Terminal, row: usize) {
+    whole_frame_shows(terminal, "the highlight", |_| {
+        highlighted_rows(terminal) == [row]
+    });
+}
+
+/// Opens the selector until `label`'s row is connected, then closes it.
+fn shows_row_after_selector(terminal: &mut Terminal, label: &str) {
+    terminal.send("\x1ds").unwrap();
+    shows_row(terminal, &format!("║{STATUS} {label}"));
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(terminal);
+}
+
+/// COM-03 (Monitor, queue-full case) and COM-04 (Monitor, chunking): with
+/// two-byte chunks and two outstanding operations, while the session's
+/// daemon is stopped seven typed bytes are submitted as ab and cd, and the
+/// third chunk does not fit: the top row says that its three bytes and
+/// those after them (efg) were not sent and that earlier input was
+/// accepted. Once the daemon resumes, the session has received exactly
+/// abcd, nothing is replayed, and later typing reaches it.
+#[test]
+fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
+    const WIDE: u16 = 250;
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        serde_json::json!({"transfer": {"chunk_bytes": 2}, "queues": {"operations": 2}}),
+    );
+    headless(&package, &recorder("Keys"), "finish");
+    let daemon = package.metadata().daemon_pid;
+    let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
+    record(&mut terminal, "Keys", 0, WIDE);
+    let monitor = monitor_process(&package).0;
+    stop(daemon as i32);
+    read_alone(&mut terminal, monitor, b"abcdefg");
+    shows_row(
+        &mut terminal,
+        "Input not sent (3 bytes; earlier input was accepted): queue_full: the request does not fit",
+    );
+    kill(Pid::from_raw(daemon as i32), Signal::SIGCONT).unwrap();
+    received(&package, b"abcd");
+    terminal.send("h").unwrap();
+    received(&package, b"abcdh");
+    terminal.send("\x1dx").unwrap();
+    // Its wide frames can outgrow the oracle's recent bytes, so only the
+    // title itself is checked.
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Spec #73 exit (owner decision on #109): input accepted before prefix+x
+/// holds shutdown only until it is answered or `deadlines.operation_ms`
+/// passes. With the session's daemon stopped, a key read with prefix+x is
+/// never answered, and the monitor still exits with status 0 within the
+/// one-second operation deadline plus the two-second shutdown deadline
+/// (and a few seconds' margin for the host's release).
+#[test]
+fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        serde_json::json!({"deadlines": {"operation_ms": 1000, "shutdown_ms": 2000}}),
+    );
+    headless(&package, &recorder("Keys"), "finish");
+    let daemon = package.metadata().daemon_pid as i32;
+    let mut terminal = outer(&package, "c2 monitor");
+    record(&mut terminal, "Keys", 0, COLS);
+    let monitor = monitor_process(&package).0;
+    stop(daemon);
+    let started = Instant::now();
+    read_alone(&mut terminal, monitor, b"k\x1dx");
+    terminal.wait_for_bytes(DONE, TIMEOUT).unwrap();
+    let took = started.elapsed();
+    kill(Pid::from_raw(daemon), Signal::SIGCONT).unwrap();
+    assert!(took < Duration::from_secs(6), "{took:?}");
     assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
     package.assert_clean();

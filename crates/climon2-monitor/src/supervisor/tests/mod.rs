@@ -49,7 +49,8 @@ enum Seen {
 }
 
 /// A request the fake accepted: tag, request ID and its arguments' words
-/// (generation; or generation, period, restoration; plus columns and rows).
+/// (generation; or generation, period, restoration; plus columns and rows,
+/// or each input byte).
 type Submitted = (u32, u64, Vec<u64>);
 
 #[derive(Default)]
@@ -322,6 +323,7 @@ extern "C" fn submit(communication: *mut Communication, request: *const Request)
         match request.tag {
             native::ACQUIRE => vec![request.args.generation],
             native::READY => authority_words(request.args.authority),
+            native::INPUT => input_words(request.args.input),
             _ => {
                 let resize = request.args.resize;
                 let mut words = authority_words(resize.authority);
@@ -333,6 +335,10 @@ extern "C" fn submit(communication: *mut Communication, request: *const Request)
             }
         }
     };
+    // Input holding an F does not fit.
+    if request.tag == native::INPUT && words[3..].contains(&u64::from(b'F')) {
+        return failure(native::FULL, b"full", b"no room");
+    }
     changed(&mut world(), |world| {
         world
             .submitted
@@ -349,6 +355,19 @@ extern "C" fn submit(communication: *mut Communication, request: *const Request)
         answer(request.request_id, refused),
     ]));
     success()
+}
+
+/// The input's authority, then each of its bytes.
+///
+/// # Safety
+/// The input's bytes are valid for this call.
+unsafe fn input_words(input: native::Input) -> Vec<u64> {
+    let mut words = authority_words(input.authority);
+    // SAFETY: as the caller promises.
+    let bytes =
+        unsafe { std::slice::from_raw_parts(input.bytes.data, input.bytes.length as usize) };
+    words.extend(bytes.iter().map(|&byte| u64::from(byte)));
+    words
 }
 
 fn authority_words(authority: native::Authority) -> Vec<u64> {
@@ -851,7 +870,7 @@ fn requests_are_submitted_in_order_and_answered_as_themselves() {
         Asked::Resize(held, size),
     ];
     for request in requests {
-        supervisor.request(id.clone(), request);
+        supervisor.request(id.clone(), request.clone());
         let answer = if matches!(request, Asked::Ready(_)) {
             Err("stale".to_owned())
         } else {
@@ -949,4 +968,109 @@ fn the_pending_ledger_is_bounded_by_the_requests_the_library_may_hold() {
     supervisor.stop();
     let acquire = |request_id| (native::ACQUIRE, request_id, vec![GENERATION]);
     assert_eq!(submitted(&id), [acquire(OPEN_ID + 1), acquire(OPEN_ID + 2)]);
+}
+
+/// COM-03 queue-full and COM-04 typed cases (#109): input is submitted under
+/// its authority in chunks of at most `chunk_bytes`, at the limit and one
+/// past, in order, and each accepted chunk is answered as itself. The first
+/// chunk the library refuses is answered at once with why, carrying it and
+/// every later byte; nothing after it is submitted, and it consumes no
+/// request ID.
+#[test]
+fn input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte() {
+    let id = session(9, 1);
+    let mut limits = climon2_core::config::Limits::default().library();
+    limits.chunk_bytes = 3;
+    let (_home, mut supervisor) = limited(1, 20_000, fake_library(), limits);
+    supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+    assert_eq!(
+        next(&supervisor),
+        (id.clone(), ClientEvent::Opened { status: false })
+    );
+    let held = Authority {
+        generation: 1,
+        period: 5,
+        restoration: 6,
+    };
+    let input = |bytes: &[u8]| Asked::Input(held, bytes.to_vec());
+    let answered = |bytes: &[u8], answer| {
+        (
+            id.clone(),
+            presented(Presentation::Answered(input(bytes), answer)),
+        )
+    };
+    supervisor.request(id.clone(), input(b"abc"));
+    supervisor.request(id.clone(), input(b"\0\xffAz"));
+    for chunk in [&b"abc"[..], b"\0\xffA", b"z"] {
+        assert_eq!(next(&supervisor), answered(chunk, Ok(())));
+    }
+    supervisor.request(id.clone(), input(b"xyzFghij"));
+    let mut reports = [next(&supervisor), next(&supervisor)];
+    reports.sort_by_key(|(_, event)| format!("{event:?}"));
+    let mut expected = [
+        answered(b"xyz", Ok(())),
+        answered(b"Fghij", Err("full: no room".to_owned())),
+    ];
+    expected.sort_by_key(|(_, event)| format!("{event:?}"));
+    assert_eq!(reports, expected);
+    supervisor.request(id.clone(), input(b"k"));
+    assert_eq!(next(&supervisor), answered(b"k", Ok(())));
+    supervisor.stop();
+    let words = |bytes: &[u8]| {
+        let mut words = vec![1, 5, 6];
+        words.extend(bytes.iter().map(|&byte| u64::from(byte)));
+        words
+    };
+    assert_eq!(
+        submitted(&id)
+            .into_iter()
+            .filter(|(tag, ..)| *tag == native::INPUT)
+            .collect::<Vec<_>>(),
+        [
+            (native::INPUT, 2, words(b"abc")),
+            (native::INPUT, 3, words(b"\0\xffA")),
+            (native::INPUT, 4, words(b"z")),
+            (native::INPUT, 5, words(b"xyz")),
+            (native::INPUT, 6, words(b"k")),
+        ]
+    );
+}
+
+/// Spec #73 exit (#109, owner decision): stopping first waits until every
+/// accepted input chunk is answered, at most `deadlines.operation_ms`, so a
+/// stuck session's unanswered input holds shutdown for the bound and no
+/// longer; answered input holds it not at all.
+#[test]
+fn stopping_waits_for_accepted_input_at_most_the_operation_deadline() {
+    let held = Authority {
+        generation: 1,
+        period: 9,
+        restoration: 9,
+    };
+    for (index, silent, operation_ms) in [(1, true, 400), (2, false, 30_000)] {
+        let id = session(10, index);
+        script(
+            &id,
+            Script {
+                silent,
+                ..Script::default()
+            },
+        );
+        let mut limits = climon2_core::config::Limits::default().library();
+        limits.operation_ms = operation_ms;
+        let (_home, mut supervisor) = limited(1, 1_000, fake_library(), limits);
+        supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+        assert_eq!(
+            next(&supervisor),
+            (id.clone(), ClientEvent::Opened { status: false })
+        );
+        supervisor.request(id.clone(), Asked::Input(held, b"z".to_vec()));
+        let started = Instant::now();
+        supervisor.stop();
+        let took = started.elapsed();
+        if silent {
+            assert!(took >= Duration::from_millis(400), "{took:?}");
+        }
+        assert!(took < Duration::from_secs(15), "{took:?}");
+    }
 }

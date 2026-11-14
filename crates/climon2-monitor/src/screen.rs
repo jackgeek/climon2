@@ -126,8 +126,10 @@ impl Screen {
     fn paint(&mut self, frame: Frame) -> io::Result<()> {
         #[cfg(feature = "test-hooks")]
         crate::hooks::fail("draw")?;
+        let mut bytes = keypad_mode(self.painted.keypad, frame.keypad).to_vec();
+        bytes.extend(paint(&frame));
         let mut output = io::stdout().lock();
-        output.write_all(&paint(&frame))?;
+        output.write_all(&bytes)?;
         output.flush()?;
         self.painted = frame;
         Ok(())
@@ -171,7 +173,20 @@ impl Screen {
         Frame {
             buffer,
             cursor: cursor.filter(|_| !scene.covered()),
+            keypad: self.keypad(scene),
         }
+    }
+
+    /// Whether the host keypad should be in application mode: while the
+    /// selected session's canvas is shown uncovered and its application
+    /// asked for it. Modal UI gets the host's own numeric keypad.
+    fn keypad(&self, scene: &Scene<'_>) -> bool {
+        let view = scene
+            .session
+            .as_ref()
+            .and_then(|session| session.view.as_ref());
+        let shown = !scene.covered() && self.desire().is_some();
+        shown && view.is_some_and(|view| view.modes().application_keypad)
     }
 
     /// The body with nothing selected, centred: the empty state until a row
@@ -198,6 +213,15 @@ impl Screen {
         Paragraph::new(lines)
             .centered()
             .render(below.centered_vertically(height), buffer);
+    }
+}
+
+/// DECKPAM or DECKPNM when the host keypad's mode changes, otherwise nothing.
+fn keypad_mode(painted: bool, next: bool) -> &'static [u8] {
+    match (painted, next) {
+        (false, true) => b"\x1b=",
+        (true, false) => b"\x1b>",
+        _ => b"",
     }
 }
 
@@ -341,6 +365,16 @@ mod tests {
     use super::*;
     use crate::terminal::Control;
     use climon2_vt::{Geometry, Limits, Model};
+
+    /// INP-02 (pure supplement): the host keypad's mode is written only when
+    /// it changes.
+    #[test]
+    fn the_host_keypad_mode_is_written_when_it_changes() {
+        assert_eq!(keypad_mode(false, true), b"\x1b=");
+        assert_eq!(keypad_mode(true, false), b"\x1b>");
+        assert_eq!(keypad_mode(true, true), b"");
+        assert_eq!(keypad_mode(false, false), b"");
+    }
 
     fn desire(cols: u16, rows: u16) -> Option<(u16, u16)> {
         let prefix = ControlKey::from_byte(0x1d).unwrap();

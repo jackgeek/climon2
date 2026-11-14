@@ -14,6 +14,7 @@ mod keys;
 mod paint;
 mod preference;
 mod registry;
+mod router;
 mod screen;
 mod selector;
 mod startup;
@@ -26,14 +27,15 @@ use climon2_vt::Limits;
 use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
 use introduction::KeyIntroduction;
-use keys::{Action, Key, Keys};
+use keys::Action;
 use registry::{ClientEvent, Registry};
+use router::{Key, Routed, Router};
 use screen::{Scene, Screen, Session};
 use selector::Selector;
 use startup::Startup;
 use std::{
     collections::BTreeMap,
-    fmt, io,
+    fmt, io, mem,
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
@@ -141,7 +143,7 @@ fn own_session() -> Option<SessionId> {
 /// and the keys that act on them.
 struct Monitor {
     screen: Screen,
-    keys: Keys,
+    router: Router,
     introduction: KeyIntroduction,
     registry: Registry,
     selector: Selector,
@@ -173,7 +175,7 @@ impl Monitor {
         let model = limits.model();
         let mut monitor = Self {
             screen: Screen::new(size, prefix, hints),
-            keys: Keys::new(prefix),
+            router: Router::new(prefix),
             introduction,
             registry: Registry::new(own_session()),
             selector: Selector::default(),
@@ -225,7 +227,7 @@ impl Monitor {
                 self.resize();
                 self.show(true).map(|()| None)
             }
-            Event::Input(bytes) => Ok(self.input(bytes)),
+            Event::Input(bytes) => self.input(bytes),
             Event::Idle => Ok(None),
         }
     }
@@ -256,8 +258,7 @@ impl Monitor {
     /// Only the selected terminal can be shown, and only while nothing
     /// covers its canvas and the host has room for it.
     fn mark_shown(&mut self) {
-        let covered = self.selector.is_open() || self.introduction.is_open();
-        let visible = self.screen.desire().is_some() && !covered;
+        let visible = self.screen.desire().is_some() && !self.covered();
         for (id, terminal) in &mut self.terminals {
             terminal.painted(visible && self.selected.as_ref() == Some(id));
         }
@@ -367,55 +368,141 @@ impl Monitor {
         }
     }
 
-    /// Acts on each byte in turn until one ends the monitor.
-    fn input(&mut self, bytes: &[u8]) -> Option<Ending> {
-        let ending = bytes.iter().find_map(|&byte| self.act(byte));
-        if ending.is_none() && !self.introduction.is_open() && self.selector.is_open() {
-            self.selector.read_ended(&self.registry.rows());
+    /// Routes one host read; a lone Escape that ends it then goes at once
+    /// to a session taking input, while a modal waits for the next byte.
+    fn input(&mut self, bytes: &[u8]) -> io::Result<Option<Ending>> {
+        let routed = self.router.read(bytes);
+        let ending = self.route(routed)?;
+        if ending.is_none() && self.accepting().is_some() {
+            let released = self.router.release();
+            self.route(released.into_iter().collect())?;
         }
-        ending
+        Ok(ending)
     }
 
-    /// Acts on the key `byte` completes: prefix+x ends the monitor, and
-    /// other actions and typed keys go to [`Monitor::action`] and
-    /// [`Monitor::typed`].
-    fn act(&mut self, byte: u8) -> Option<Ending> {
-        match self.keys.key(byte)? {
-            Key::Action(Action::Exit) => Some(Ending::Exit),
-            Key::Action(action) => {
-                self.action(action);
-                None
+    /// Acts on each routed input in turn until one ends the monitor, each
+    /// against the state the ones before it left. Application bytes are
+    /// gathered and submitted together, before anything else acts, so
+    /// nothing typed after an action can reach the target before it, and
+    /// nothing after prefix+x reaches any.
+    fn route(&mut self, routed: Vec<Routed>) -> io::Result<Option<Ending>> {
+        let mut typed = Vec::new();
+        let mut ending = None;
+        for routed in routed {
+            ending = self.routed(routed, &mut typed)?;
+            if ending.is_some() {
+                break;
             }
-            Key::Typed(byte) => {
-                self.typed(byte);
-                None
-            }
+        }
+        self.submit(&mut typed);
+        Ok(ending)
+    }
+
+    fn routed(&mut self, routed: Routed, typed: &mut Vec<u8>) -> io::Result<Option<Ending>> {
+        if let Some(modes) = self
+            .accepting()
+            .filter(|_| !matches!(routed, Routed::Action(_)))
+        {
+            routed.encode(&modes, typed);
+            return Ok(None);
+        }
+        self.submit(typed);
+        match routed {
+            Routed::Action(action) => Ok(self.action(action)),
+            Routed::Key(key) => self.modal(&key).map(|()| None),
+            Routed::Unknown(..) | Routed::Rest(_) => Ok(None),
         }
     }
 
-    /// Prefix+? opens the key introduction, and prefix+s the selector
-    /// unless the modal key introduction is open.
-    fn action(&mut self, action: Action) {
+    /// The selected session's terminal modes while it accepts application
+    /// input: no modal is open, the host has room for it, and its control
+    /// period's restoration is applied, ready and painted.
+    fn accepting(&self) -> Option<climon2_vt::view::Modes> {
+        let (_, terminal) = self.target()?;
+        terminal.view().map(|view| view.modes())
+    }
+
+    /// The selected session and its terminal, while nothing covers it, the
+    /// host has room for it and it may take input. `Terminal::input` alone
+    /// learns of a modal or a small host only at the next frame; within one
+    /// read, a key after prefix+s must already reach the selector.
+    fn target(&self) -> Option<(&SessionId, &Terminal)> {
+        let open = !self.introduction.is_open() && !self.selector.is_open();
+        let id = self.selected.as_ref().filter(|_| open)?;
+        let terminal = self.terminals.get(id)?;
+        terminal
+            .input()
+            .and(self.screen.desire())
+            .map(|_| (id, terminal))
+    }
+
+    /// Submits the application bytes gathered so far to the target they
+    /// were encoded for, under its current authority.
+    fn submit(&mut self, typed: &mut Vec<u8>) {
+        if typed.is_empty() {
+            return;
+        }
+        let bytes = mem::take(typed);
+        let target = self
+            .target()
+            .and_then(|(id, terminal)| Some((id.clone(), terminal.input()?)));
+        if let Some((id, authority)) = target {
+            self.request(&id, Some(Request::Input(authority, bytes)));
+        }
+    }
+
+    /// Prefix+x ends the monitor. Prefix+? opens the key introduction, and
+    /// prefix+s the selector unless the modal key introduction is open;
+    /// prefix+j's jump arrives with #114.
+    fn action(&mut self, action: Action) -> Option<Ending> {
         match action {
+            Action::Exit => return Some(Ending::Exit),
             Action::KeyIntroduction => self.introduction.open(),
             Action::SessionList if !self.introduction.is_open() => {
                 self.selector.open(&self.registry.rows());
             }
             _ => {}
         }
+        None
     }
 
-    /// A typed key goes to the key introduction while it is open, otherwise
-    /// to the open selector, otherwise nowhere.
-    fn typed(&mut self, byte: u8) {
+    /// A key no application takes goes to [`Monitor::modal_key`]. When it
+    /// closes the last modal, the uncovered session is painted at once, so
+    /// the rest of the same read meets the screen now in force and a key
+    /// typed straight after Escape reaches the session (owner decision on
+    /// #109). Nothing is kept beyond the read.
+    fn modal(&mut self, key: &Key) -> io::Result<()> {
+        let covered = self.covered();
+        self.modal_key(key);
+        if revealed(covered, self.covered()) {
+            return self.show(false);
+        }
+        Ok(())
+    }
+
+    /// Whether the selector or the key introduction covers the canvas.
+    fn covered(&self) -> bool {
+        self.selector.is_open() || self.introduction.is_open()
+    }
+
+    /// A key no application takes goes to the key introduction while it is
+    /// open, otherwise to the open selector, otherwise nowhere: it is
+    /// discarded, never kept for later.
+    fn modal_key(&mut self, key: &Key) {
         if self.introduction.is_open() {
-            self.introduction.key(byte);
+            self.introduction.key(key);
         } else if self.selector.is_open()
-            && let Some(id) = self.selector.key(byte, &self.registry.rows())
+            && let Some(id) = self.selector.key(key, &self.registry.rows())
         {
             self.enter(id);
         }
     }
+}
+
+/// Whether a key uncovered the canvas: a modal was open before it and none
+/// is after it.
+fn revealed(covered_before: bool, covered_after: bool) -> bool {
+    covered_before && !covered_after
 }
 
 /// What a row event means for the session's terminal: the view freezes at
@@ -487,5 +574,21 @@ fn incomplete(progress: &Progress) -> Option<String> {
             tracing::warn!(%error, "discovery pass incomplete");
             Some(format!("cannot list sessions: {error}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::revealed;
+
+    /// Owner decision on #109 (pure supplement): only a key that closes the
+    /// last modal uncovers the canvas and paints before the rest of the read;
+    /// one that opens a modal, or leaves the canvas as it was, does not.
+    #[test]
+    fn only_closing_the_last_modal_reveals_the_canvas() {
+        assert!(revealed(true, false));
+        assert!(!revealed(true, true));
+        assert!(!revealed(false, true));
+        assert!(!revealed(false, false));
     }
 }
