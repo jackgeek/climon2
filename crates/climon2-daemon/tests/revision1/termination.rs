@@ -557,15 +557,15 @@ fn while_stopped<T>(session: &Session, during: impl FnOnce() -> T) -> T {
 /// hello and an interactive Open at 91x37 are sent in one go, so the daemon
 /// grants the Open in the same pass in which it reaps the command and reads
 /// the end of its output, ending the drain. Returns the Open's stream, its
-/// hello reply read.
-fn opened_as_the_drain_ends(session: &Session) -> UnixStream {
+/// hello reply read, and an instant before the daemon resumed.
+fn opened_as_the_drain_ends(session: &Session) -> (UnixStream, Instant) {
     let mut first = ready_attachment(session, &[]);
     crate::issue(session, "colors 5000");
     crate::issue(session, "text tail-line");
     first.until_displayed(b"tail-line", 1);
     first.leave();
     let command = fixture_pid(session);
-    let mut stream = while_stopped(session, || {
+    let (mut stream, resumed) = while_stopped(session, || {
         crate::issue(session, "exit 3");
         exited_unreaped(command);
         let mut stream = UnixStream::connect(&session.socket).unwrap();
@@ -577,13 +577,13 @@ fn opened_as_the_drain_ends(session: &Session) -> UnixStream {
             &mut stream,
             &open(1, &[], &[], Mode::Interactive(geometry(91, 37))),
         );
-        stream
+        (stream, Instant::now())
     });
     assert!(matches!(
         crate::receive(&mut stream),
         PrivateMessage::Hello(_)
     ));
-    stream
+    (stream, resumed)
 }
 
 /// COM-06 (Contract: Command final means no more output follows) and
@@ -599,7 +599,7 @@ fn opened_as_the_drain_ends(session: &Session) -> UnixStream {
 fn a_restoration_in_progress_when_the_drain_ends_completes_before_command_final() {
     let mut session = Session::start("script");
     let (mut watching, _) = monitor(&session, &[]);
-    let stream = opened_as_the_drain_ends(&session);
+    let (stream, _) = opened_as_the_drain_ends(&session);
     let mut attached = Attached::opened(stream, geometry(91, 37));
     assert_eq!(crate::count(&attached.display, b"tail-line"), 1);
     let result = exited(3);
@@ -639,5 +639,27 @@ fn a_held_synchronized_update_reaches_a_derived_controller_before_command_final(
     assert!(resumed.elapsed() >= Duration::from_millis(150));
     assert_eq!(crate::count(&attached.display, b"held-frame"), 1);
     attached.session_ended();
+    session.finish();
+}
+
+/// COM-06 (Contract: Command final is still sent within the existing
+/// bounds): a restoration whose reader stalls holds Command final only until
+/// that reader is lost. The restoration of a large screen and history
+/// begins in the pass that ends the drain ([`opened_as_the_drain_ends`]),
+/// and its reader never reads. The restoration is larger than the
+/// restoration window and the socket's buffer together, so it cannot
+/// complete, and after five seconds without progress the daemon loses the
+/// attachment. Only then does the passive monitor connection get Command
+/// final with exit 3, followed by the end of its stream when the session
+/// ends.
+#[test]
+fn a_stalled_restoration_holds_command_final_only_until_its_reader_is_lost() {
+    let mut session = Session::start("script");
+    let (mut watching, _) = monitor(&session, &[]);
+    let (stalled, resumed) = opened_as_the_drain_ends(&session);
+    assert_eq!(message(&mut watching), command_final(&exited(3)));
+    assert!(resumed.elapsed() >= Duration::from_secs(5));
+    assert_closed(&mut watching);
+    drop(stalled);
     session.finish();
 }
