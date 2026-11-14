@@ -13,7 +13,7 @@ mod support;
 
 use serde_json::{Value, json};
 use std::path::Path;
-use support::{Package, passive::*};
+use support::{Package, library::INSTANCE_DESCRIPTORS, passive::*};
 
 /// What one record of a case must be.
 enum Expect {
@@ -93,7 +93,7 @@ fn submitted(peer: Value, startup: Value, requests: &[Value]) -> Vec<Value> {
 /// Every case in one script, each on its own instance and each ended by
 /// waiting for run, a snapshot and `finish`; then each one's records,
 /// terminal evidence and fake daemon. Once run has returned, nothing is
-/// outstanding: no request and no operation.
+/// outstanding: no request, no operation and no connection descriptor.
 fn assert_cases(package: &Package, root: &Path, cases: &[Case]) -> Value {
     let mut steps = Vec::new();
     let mut starts = Vec::new();
@@ -115,8 +115,12 @@ fn assert_cases(package: &Package, root: &Path, cases: &[Case]) -> Value {
         let name = case.name;
         let last = start + case.steps.len() + ending.len() - 1;
         let snapshot = &step(&report, last - 1)["output"];
-        for gauge in ["request_records", "operations"] {
-            assert_eq!(snapshot[gauge], 0, "{name}: {gauge}: {snapshot:#}");
+        for (gauge, value) in [
+            ("request_records", 0),
+            ("operations", 0),
+            ("descriptors", INSTANCE_DESCRIPTORS),
+        ] {
+            assert_eq!(snapshot[gauge], value, "{name}: {gauge}: {snapshot:#}");
         }
         let (records, terminal) = finished(step(&report, last));
         assert_records(name, &records, &case.records);
@@ -356,8 +360,11 @@ fn killed(answer: Vec<Value>) -> Value {
 /// daemon lacking the revision is permanent. A lost answer, a Kill
 /// outliving `kill_ms`, a mismatched or uncorrelated answer and a daemon
 /// Fatal are each indeterminate, with passive retry, and the Kill is never
-/// sent again. A Kill requiring a family the daemon does not advertise is
-/// rejected before it is sent, for good. A second Kill while one is
+/// sent again. A Kill requiring a family the daemon does not advertise, or
+/// whose frame exceeds the daemon's request ceiling, is rejected before it
+/// is sent, for good; one whose hello is lost or never comes within
+/// `kill_ms` is rejected with passive retry, and one whose hello completes
+/// after shutdown is `cancelled`, never sent. A second Kill while one is
 /// pending is rejected `invalid_state` at once; a Kill shutdown overtook
 /// before it executed is rejected `cancelled` and nothing connects; a Kill
 /// under way when shutdown comes is still answered definitively.
@@ -395,6 +402,18 @@ fn installed_library_reports_each_kill_outcome_truthfully_and_never_replays_it()
         kinds: &["hello", "kill"],
     };
     let trigger = root.join("answer-kill");
+    let helloed = root.join("hello-kill");
+    let refused = |name, peer: Value, startup: Value, error, retry| Case {
+        name,
+        steps: submitted(peer, startup, &alone),
+        records: vec![
+            Expect::Answer(1, REJECTED, Some(error), Answered::Nothing),
+            Expect::Diagnostic(error),
+        ],
+        terminal: (CLIENT_FAILED, retry, LEAVE_NOT_REQUIRED),
+        error: Some(error),
+        kinds: &["hello"],
+    };
     let cases = [
         Case {
             name: "confirmed",
@@ -560,6 +579,53 @@ fn installed_library_reports_each_kill_outcome_truthfully_and_never_replays_it()
             ],
             terminal: (CLIENT_FAILED, RETRY_PERMANENT, LEAVE_NOT_REQUIRED),
             error: Some(library("unsupported_capability")),
+            kinds: &["hello"],
+        },
+        refused(
+            "unfit",
+            json!({ "hello": { "json": { "daemon_wire_v1": {
+                "max_request_frame_bytes": 8,
+                "max_server_frame_bytes": 1_048_576,
+            } } } }),
+            json!({}),
+            library("unsupported_limit"),
+            RETRY_PERMANENT,
+        ),
+        refused(
+            "unhelloed",
+            json!({ "hello": "close" }),
+            json!({}),
+            transport("io_error"),
+            RETRY_PASSIVE,
+        ),
+        refused(
+            "silent",
+            json!({ "hello": "hold" }),
+            json!({ "limits": { "kill_ms": 300 } }),
+            library("timeout"),
+            RETRY_PASSIVE,
+        ),
+        Case {
+            name: "shutdown-hello",
+            steps: vec![
+                json!({
+                    "do": "create",
+                    "peer": { "hello": { "after": helloed.to_str().unwrap() } },
+                }),
+                json!({ "do": "submit", "request": kill(1, &[]) }),
+                json!({ "do": "run" }),
+                json!({ "do": "await_peer", "frames": 1 }),
+                json!({ "do": "shutdown" }),
+                json!({ "do": "touch", "path": helloed.to_str().unwrap() }),
+            ],
+            records: vec![Expect::Answer(
+                1,
+                REJECTED,
+                Some(library("cancelled")),
+                Answered::Nothing,
+            )],
+            terminal: (CLIENT_STOPPED, RETRY_NONE, LEAVE_NOT_REQUIRED),
+            error: None,
             kinds: &["hello"],
         },
         Case {

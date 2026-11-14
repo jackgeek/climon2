@@ -97,6 +97,16 @@ impl<'a> Errand<'a> {
         self.deadline
     }
 
+    /// Waits for the Kill's outcome alone, bounded by `kill_ms`.
+    pub(super) fn outcome(mut self) -> Settled {
+        loop {
+            if let Some(settled) = self.service() {
+                return settled;
+            }
+            link::wait(None, &[&self.link], Some(self.deadline));
+        }
+    }
+
     /// Writes what waits, reads what arrived, then checks `kill_ms`: the
     /// Kill's outcome once it has one.
     pub(super) fn service(&mut self) -> Option<Settled> {
@@ -163,11 +173,16 @@ fn termination(carried: Carried) -> Result<Answer, Fault> {
         Carried::KnownFinal(result) => Ok(Answer::KnownFinal(Command::from(&result))),
         Carried::Termination(partial) => Ok(Answer::Termination {
             command: partial.command_result.as_ref().map(Command::from),
-            cleanup: match partial.cleanup {
-                PartialCleanup::Incomplete => native::CLEANUP_INCOMPLETE,
-                PartialCleanup::Unknown => native::CLEANUP_UNKNOWN,
-            },
+            cleanup: cleanup(partial.cleanup),
         }),
         Carried::Success(_) => Err(MISMATCHED),
+    }
+}
+
+/// `CM1_CLEANUP_INCOMPLETE` or `CM1_CLEANUP_UNKNOWN`.
+fn cleanup(cleanup: PartialCleanup) -> u32 {
+    match cleanup {
+        PartialCleanup::Incomplete => native::CLEANUP_INCOMPLETE,
+        PartialCleanup::Unknown => native::CLEANUP_UNKNOWN,
     }
 }

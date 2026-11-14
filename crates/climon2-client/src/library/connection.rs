@@ -8,7 +8,7 @@
 //! connection.
 
 use super::{
-    failure::{CANCELLED, Failed, Fault, Retry, require},
+    failure::{CANCELLED, Failed, Fault, require},
     families::Role,
     handshake::{self, Expected, Peer},
     instance::{Descriptor, Next, Shared, Taken},
@@ -43,9 +43,10 @@ const OVERSIZED: Fault = Fault::library(
 /// unwinds.
 pub(super) fn run(shared: &Shared) -> Departure {
     let mut driver = Driver::new(shared);
-    while !driver.ended || driver.errand.is_some() {
+    while !driver.ended {
         driver.turn();
     }
+    driver.await_kill();
     driver.departure
 }
 
@@ -95,11 +96,7 @@ impl<'a> Driver<'a> {
         }
     }
 
-    /// Once the stream has ended, only a Kill under way is served.
     fn turn(&mut self) {
-        if self.ended {
-            return self.wait();
-        }
         match self.taken.next(self.shutdown, self.leave_ready()) {
             Next::Stop => self.ended = true,
             Next::Shutdown => self.shut_down(),
@@ -163,18 +160,29 @@ impl<'a> Driver<'a> {
             Ok(_) if self.shared.shutting_down() => self.reject(id, CANCELLED),
             Ok(connected) => {
                 let counted = self.shared.connected();
-                match Errand::send(id, required, connected, deadline, counted) {
-                    Ok(errand) => self.errand = Some(errand),
-                    Err(fault) => self.settle(Settled {
-                        response: Response::rejected(id, fault),
-                        retry: Retry::Permanent,
-                    }),
-                }
+                let sent = Errand::send(id, required, connected, deadline, counted);
+                self.sent(id, sent.map_err(Failed::permanent));
             }
-            Err(failed) => self.settle(Settled {
-                response: Response::rejected(id, failed.fault),
-                retry: failed.retry,
+            Err(failed) => self.sent(id, Err(failed)),
+        }
+    }
+
+    /// A Kill under way, or one refused before it was sent.
+    fn sent(&mut self, id: u64, sent: Result<Errand<'a>, Failed>) {
+        match sent {
+            Ok(errand) => self.errand = Some(errand),
+            Err(Failed { fault, retry }) => self.settle(Settled {
+                response: Response::rejected(id, fault),
+                retry,
             }),
+        }
+    }
+
+    /// Once the stream has ended, waits for the outcome of a Kill still
+    /// under way, bounded by its `kill_ms`.
+    fn await_kill(&mut self) {
+        if let Some(errand) = self.errand.take() {
+            self.settle(errand.outcome());
         }
     }
 
@@ -271,26 +279,21 @@ impl<'a> Driver<'a> {
         }
     }
 
-    /// Waits for the waker, the open role's socket and a Kill's; once the
-    /// stream has ended, for the Kill's alone.
+    /// Waits for the waker, the open role's socket and a Kill's.
     fn wait(&mut self) {
         self.unpark();
         let reading = self.parked.is_none();
-        let live = !self.ended;
         let link = self
             .connection
             .as_ref()
             .map(|connection| &connection.link)
-            .filter(|link| live && (reading || link.writing()));
+            .filter(|link| reading || link.writing());
         let links: Vec<&Link> = link
             .into_iter()
             .chain(self.errand.as_ref().map(Errand::link))
             .collect();
-        let waker = live.then(|| self.shared.waker());
-        link::wait(waker, &links, self.deadline());
-        if live {
-            self.service();
-        }
+        link::wait(Some(self.shared.waker()), &links, self.deadline());
+        self.service();
         self.errand();
     }
 
@@ -315,11 +318,9 @@ impl<'a> Driver<'a> {
             .or(self.start.filter(|_| !self.stream.synchronized()))
     }
 
-    /// The earliest deadline to wake for: a Kill's, and the stream's while
-    /// it lives.
+    /// The earliest deadline to wake for: the stream's or a Kill's.
     fn deadline(&self) -> Option<Instant> {
-        let stream = self.stream_deadline().filter(|_| !self.ended);
-        stream
+        self.stream_deadline()
             .into_iter()
             .chain(self.errand.as_ref().map(Errand::deadline))
             .min()
