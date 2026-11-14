@@ -4,11 +4,11 @@
 //! the library had not copied would fault, and a rejected one it retained
 //! would too.
 //!
-//! A request is JSON: `tag` (a number, `"open"` or `"leave"`), `request_id`,
+//! A request is JSON: `tag` (a number, `"open"`, `"leave"` or `"kill"`), `request_id`,
 //! optional `reserved`, `fill` (a byte written over the whole request
 //! first, so inactive storage holds it), and the active member: `open`
 //! (`mode`, `reserved`, `geometry` `[cols, rows]`, token lists `required`
-//! and `optional`) or `generation`. A token list is an array of buffers (see
+//! and `optional`), `generation` or, for Kill (#96), `required`. A token list is an array of buffers (see
 //! `startup`), `{"null": count}` or `{"dangling": count}`.
 
 use super::startup::Arena;
@@ -25,6 +25,7 @@ fn tag(spec: &Value) -> u32 {
     match spec.as_str() {
         Some("open") => native::OPEN,
         Some("leave") => native::LEAVE,
+        Some("kill") => native::KILL,
         _ => number(spec, 0),
     }
 }
@@ -90,6 +91,7 @@ pub fn build(arena: &mut Arena, spec: &Value) -> *const native::Request {
     match request.tag {
         native::OPEN => request.args.open = open(arena, &spec["open"]),
         native::LEAVE => request.args.generation = number(&spec["generation"], 0),
+        native::KILL => request.args.required = tokens(arena, &spec["required"]),
         _ => {}
     }
     arena.value(request)

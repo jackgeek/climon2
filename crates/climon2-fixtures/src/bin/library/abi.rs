@@ -253,6 +253,14 @@ fn response(response: &native::Response) -> Value {
             json!({ "attachment_detached": unsafe { response.result.attachment_detached } })
         }
         native::KNOWN_FINAL => command(unsafe { &response.result.known_final }),
+        native::TERMINATION => {
+            let termination = unsafe { response.result.termination };
+            json!({
+                "command_result": optional_command(&termination.command_result),
+                "cleanup": termination.cleanup,
+                "reserved": termination.reserved,
+            })
+        }
         _ => Value::Null,
     };
     value
@@ -269,10 +277,25 @@ fn metadata(metadata: &native::Metadata) -> Value {
             "available": metadata.progress.available,
             "reserved": metadata.progress.reserved,
         },
-        "command_result": {
-            "present": metadata.command_result.present,
-            "reserved": metadata.command_result.reserved,
-            "value": command(&metadata.command_result.value),
+        "command_result": optional_command(&metadata.command_result),
+    })
+}
+
+fn optional_command(optional: &native::OptionalCommand) -> Value {
+    json!({
+        "present": optional.present,
+        "reserved": optional.reserved,
+        "value": command(&optional.value),
+    })
+}
+
+/// A Command final's result and its status availability (#96).
+fn finished(record: &native::Final) -> Value {
+    json!({
+        "command_result": command(&record.command_result),
+        "status": {
+            "available": record.status.available,
+            "reserved": record.status.reserved,
         },
     })
 }
@@ -295,6 +318,7 @@ pub fn record(record: &Record) -> Value {
         native::RESPONSE => value["response"] = response(unsafe { &record.data.response }),
         native::INITIAL_METADATA => value["metadata"] = metadata(unsafe { &record.data.metadata }),
         native::TITLE => value["title"] = title(unsafe { &record.data.title }),
+        native::FINAL => value["final"] = finished(unsafe { &record.data.r#final }),
         _ => {}
     }
     value

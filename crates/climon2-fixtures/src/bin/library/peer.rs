@@ -13,12 +13,12 @@
 //!   reply, less the members `without` names, or `{"frame": action}`, sent
 //!   once the file `after` names exists, if it names one), or `"close"` or
 //!   `"hold"`;
-//! - `open` and `leave`: the actions after the library's Open, and after
-//!   each Leave; `leaves`, a list of action lists, overrides `leave` for the
+//! - `open`, `leave` and `kill`: the actions after the library's Open,
+//!   after each Leave and after its Kill (#96); `leaves`, a list of action lists, overrides `leave` for the
 //!   first Leaves in turn.
 //!
 //! An action is `{"send": {"type": n, "json": value}}` (a JSON body in which
-//! the string `"$open"` or `"$leave"` is that request's ID) or
+//! the string `"$open"`, `"$leave"` or `"$kill"` is that request's ID) or
 //! `{"send": {"type": n, "hex": body}}`, `{"raw": hex}` (bytes as they are),
 //! `{"together": [action, ...]}` (several actions' bytes in one write),
 //! `{"bytewise": action}` (an action's bytes one at a time),
@@ -269,6 +269,7 @@ impl Serving {
             let kind = match frame.code() {
                 0x30 => "open",
                 0x37 => "leave",
+                0x38 => "kill",
                 _ => "other",
             };
             let body: Value = serde_json::from_slice(frame.body())
