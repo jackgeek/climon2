@@ -221,7 +221,8 @@ impl Phase {
 
 struct Instance {
     phase: Phase,
-    /// Submitted requests awaiting their answers, by request ID.
+    /// Accepted requests awaiting their answers, by request ID: at most
+    /// [`State::ledger`].
     pending: BTreeMap<u64, Request>,
     /// The next request ID; Open is 1.
     next: u64,
@@ -238,6 +239,9 @@ struct State {
     waiting: BTreeMap<(Reverse<Timestamp>, SessionId), SessionMetadata>,
     releases: BTreeMap<VersionName, Release>,
     instances: BTreeMap<SessionId, Instance>,
+    /// The most requests one instance's pending ledger holds: every request
+    /// its library may have accepted, queued or under way.
+    ledger: usize,
 }
 
 /// What scheduling does for one waiting session.
@@ -250,7 +254,10 @@ enum Step {
 impl State {
     fn new(context: Context, report: Sender<(SessionId, ClientEvent)>) -> Self {
         let (internal, internals) = mpsc::channel();
+        let limits = context.limits;
+        let accepted = limits.request_records as usize + limits.operations as usize;
         Self {
+            ledger: accepted,
             context: Arc::new(context),
             report,
             internal,
@@ -275,13 +282,13 @@ impl State {
     /// Takes every pending command; false once shutdown is asked for.
     fn commands(&mut self, commands: &Receiver<Command>) -> bool {
         loop {
-            let more = match commands.try_recv() {
-                Ok(command) => self.command(command),
-                Err(TryRecvError::Disconnected) => false,
-                Err(TryRecvError::Empty) => return true,
-            };
-            if !more {
-                return false;
+            match commands.try_recv() {
+                Ok(command) => {
+                    if !self.command(command) {
+                        return false;
+                    }
+                }
+                Err(error) => return error == TryRecvError::Empty,
             }
         }
     }
@@ -307,6 +314,19 @@ impl State {
     /// Submits `request` through an open client and remembers it until its
     /// answer; anything else is answered at once with why not.
     fn submit(&mut self, id: &SessionId, request: Request) {
+        if let Err(why) = self.submit_one(id, request) {
+            self.tell(
+                id,
+                ClientEvent::Presentation(Presentation::Answered(request, Err(why))),
+            );
+        }
+    }
+
+    /// Submits one request and enters it in the pending ledger once the
+    /// library accepts it. A request refused, here or by the library,
+    /// consumes no request ID.
+    fn submit_one(&mut self, id: &SessionId, request: Request) -> Result<(), String> {
+        let capacity = self.ledger;
         let open = self
             .instances
             .get_mut(id)
@@ -314,21 +334,17 @@ impl State {
                 Phase::Open(live) => Some((live, instance)),
                 _ => None,
             });
-        let submitted = open.map_or_else(
-            || Err("the session's client is not connected".to_owned()),
-            |(live, instance)| {
-                let request_id = instance.next;
-                instance.next += 1;
-                instance.pending.insert(request_id, request);
-                live.client.submit(request_id, request)
-            },
-        );
-        if let Err(why) = submitted {
-            self.tell(
-                id,
-                ClientEvent::Presentation(Presentation::Answered(request, Err(why))),
-            );
+        let Some((live, instance)) = open else {
+            return Err("the session's client is not connected".to_owned());
+        };
+        if instance.pending.len() >= capacity {
+            return Err("too many requests are awaiting their answers".to_owned());
         }
+        let request_id = instance.next;
+        live.client.submit(request_id, request)?;
+        instance.next += 1;
+        instance.pending.insert(request_id, request);
+        Ok(())
     }
 
     /// A request's answer goes to the session's terminal as its request.
