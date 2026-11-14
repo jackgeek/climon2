@@ -124,13 +124,14 @@ fn attached_peer(then: Value) -> Value {
 
 /// One instance's steps: create against `peer` with `startup`, Open
 /// interactively, run, and drain through the attach's Restoration complete
-/// (three steps after create; step 4 is the first of `then`).
+/// (labelled `attached-<name>`), then `then`.
 fn attached(name: &str, peer: Value, startup: Value, then: &[Value]) -> Vec<Value> {
     let mut steps = vec![
         json!({ "do": "create", "peer": peer, "startup": startup }),
         json!({ "do": "submit", "request": interactive(1, 80, 24) }),
         json!({ "do": "run" }),
-        json!({ "do": "drain", "until": { "tag": RESTORATION_COMPLETE } }),
+        json!({ "do": "drain", "until": { "tag": RESTORATION_COMPLETE },
+                "as": format!("attached-{name}") }),
     ];
     steps.extend(then.iter().cloned());
     steps
@@ -219,38 +220,41 @@ fn installed_library_rejects_malformed_control_requests_locally() {
     steps.extend(
         malformed
             .iter()
-            .map(|request| json!({ "do": "submit", "request": request })),
+            .map(|request| json!({ "do": "submit", "request": request, "as": "malformed" })),
     );
     steps.extend([
         json!({ "do": "submit", "request": { "tag": 6, "request_id": 1,
-                "authority": [1, 2, 2] } }),
+                "authority": [1, 2, 2] }, "as": "viewing" }),
         json!({ "do": "submit", "request": {
             "tag": "input", "request_id": 1, "authority": [1, 2, 2],
-            "bytes": { "hex": "4142434445" } } }),
+            "bytes": { "hex": "4142434445" } }, "as": "over" }),
         json!({ "do": "submit", "request": {
             "tag": "input", "request_id": 1, "authority": [1, 2, 2],
-            "bytes": { "hex": "41424344" } } }),
-        json!({ "do": "snapshot" }),
+            "bytes": { "hex": "41424344" } }, "as": "at" }),
+        json!({ "do": "snapshot", "as": "queued" }),
         json!({ "do": "shutdown" }),
         json!({ "do": "run" }),
-        json!({ "do": "finish" }),
+        json!({ "do": "finish", "as": "finished" }),
     ]);
     let report = script(&package, &root(&package), json!(steps));
-    for index in 1..=malformed.len() {
+    let refused: Vec<usize> = (0..steps.len())
+        .filter(|index| steps[*index]["as"] == "malformed")
+        .collect();
+    assert_eq!(refused.len(), malformed.len());
+    for index in refused {
         assert_failure(step(&report, index), INVALID_ARGUMENT, "invalid_argument");
     }
-    let viewing = malformed.len() + 1;
     assert_failure(
-        step(&report, viewing),
+        labelled(&report, &steps, "viewing"),
         UNSUPPORTED_OPERATION,
         "unsupported_operation",
     );
-    assert_failure(step(&report, viewing + 1), FULL, "queue_full");
-    assert_success(step(&report, viewing + 2));
-    let queued = &step(&report, viewing + 3)["output"];
+    assert_failure(labelled(&report, &steps, "over"), FULL, "queue_full");
+    assert_success(labelled(&report, &steps, "at"));
+    let queued = &labelled(&report, &steps, "queued")["output"];
     assert_eq!(queued["request_records"], 1, "{queued:#}");
     assert_eq!(queued["request_bytes"], REQUEST + 4, "{queued:#}");
-    let (records, terminal) = finished(step(&report, viewing + 6));
+    let (records, terminal) = finished(labelled(&report, &steps, "finished"));
     assert_eq!(records.len(), 1, "{records:#?}");
     assert_rejected(&records[0], 1, 1, ORIGIN_LIBRARY, "cancelled");
     assert_terminal(
@@ -301,10 +305,10 @@ fn installed_library_cancels_queued_control_requests_on_shutdown() {
         json!({ "do": "await_peer", "frames": 2 }),
         json!({ "do": "shutdown" }),
         json!({ "do": "touch", "path": go.to_str().unwrap() }),
-        json!({ "do": "finish" }),
+        json!({ "do": "finish", "as": "finished" }),
     ]);
     let report = script(&package, &root, json!(steps));
-    let (records, terminal) = finished(step(&report, 11));
+    let (records, terminal) = finished(labelled(&report, &steps, "finished"));
     for (index, id) in (2..=6).enumerate() {
         assert_rejected(&records[index], 1, id, ORIGIN_LIBRARY, "cancelled");
     }
@@ -372,14 +376,14 @@ fn installed_library_rejects_stale_and_unsupported_control_requests_locally() {
     let large = "41".repeat(300);
     let then = [
         json!({ "do": "submit", "request": input(2, 1, CURRENT, &large) }),
-        json!({ "do": "drain", "until": { "response": 2 } }),
+        json!({ "do": "drain", "instance": "unfit", "until": { "response": 2 },
+                "as": "unfit-answered" }),
         json!({ "do": "shutdown" }),
     ];
     plan.add("unfit", attached("unfit", unfit, json!({}), &then));
+    let steps = plan.steps.clone();
     let (report, finishes) = plan.run(&package);
-    let unfit_drained = step(&report, finishes[1].1 - 2)["records"]
-        .as_array()
-        .unwrap();
+    let unfit_drained = drained(&report, &steps, "unfit-answered");
     assert_rejected(&unfit_drained[0], 1, 2, ORIGIN_LIBRARY, "unsupported_limit");
     let (_, terminal) = finished(step(&report, finishes[1].1));
     assert_detached(terminal, 1);
@@ -545,7 +549,7 @@ fn installed_library_maps_control_answers_and_refuses_mismatched_results() {
         let name = format!("{kind}-ok");
         let then = [
             json!({ "do": "submit", "request": request }),
-            json!({ "do": "drain", "until": { "response": 2 } }),
+            json!({ "do": "drain", "until": { "response": 2 }, "as": format!("{name}-answered") }),
             json!({ "do": "shutdown" }),
         ];
         plan.add(&name, attached(&name, peer, json!({}), &then));
@@ -555,7 +559,7 @@ fn installed_library_maps_control_answers_and_refuses_mismatched_results() {
         let name = format!("{kind}-rejected");
         let then = [
             json!({ "do": "submit", "request": second }),
-            json!({ "do": "drain", "until": { "response": 3 } }),
+            json!({ "do": "drain", "until": { "response": 3 }, "as": format!("{name}-answered") }),
             json!({ "do": "shutdown" }),
         ];
         plan.add(&name, attached(&name, rejected, json!({}), &then));
@@ -589,23 +593,18 @@ fn installed_library_maps_control_answers_and_refuses_mismatched_results() {
         let then = [json!({ "do": "submit", "request": request })];
         plan.add(name, attached(name, peer, json!({}), &then));
     }
+    let steps = plan.steps.clone();
     let (report, finishes) = plan.run(&package);
     let mut finishes = finishes.into_iter();
     for (kind, _, tag, result) in &results {
         let (_, finish) = finishes.next().unwrap();
-        let drained = step(&report, finish - 2)["records"]
-            .as_array()
-            .unwrap()
-            .clone();
-        assert_eq!(assert_ok(answer(&drained, 2), 1, 2, *tag), result, "{kind}");
+        let ok = drained(&report, &steps, &format!("{kind}-ok-answered"));
+        assert_eq!(assert_ok(answer(&ok, 2), 1, 2, *tag), result, "{kind}");
         let (_, terminal) = finished(step(&report, finish));
         assert_detached(terminal, 1);
         let (_, finish) = finishes.next().unwrap();
-        let drained = step(&report, finish - 2)["records"]
-            .as_array()
-            .unwrap()
-            .clone();
-        assert_rejected(answer(&drained, 3), 1, 3, ORIGIN_DAEMON, "not_ready");
+        let refused = drained(&report, &steps, &format!("{kind}-rejected-answered"));
+        assert_rejected(answer(&refused, 3), 1, 3, ORIGIN_DAEMON, "not_ready");
         let (_, terminal) = finished(step(&report, finish));
         assert_detached(terminal, 1);
     }
@@ -927,6 +926,7 @@ fn installed_library_resolves_a_promotion_racing_leave_and_fresh_attempts_stand_
             &[json!({ "do": "shutdown" })],
         ),
     );
+    let steps = plan.steps.clone();
     let (report, finishes) = plan.run(&package);
     let (records, terminal) = finished(step(&report, finishes[0].1));
     assert_restored(&records, 1, SUCCESSOR, [80, 24]);
@@ -938,10 +938,8 @@ fn installed_library_resolves_a_promotion_racing_leave_and_fresh_attempts_stand_
         ["hello", "open", "leave"]
     );
     let (rest, terminal) = finished(step(&report, finishes[1].1));
-    let drained = step(&report, finishes[0].1 + 4)["records"]
-        .as_array()
-        .unwrap();
-    let all: Vec<Value> = drained.iter().chain(&rest).cloned().collect();
+    let attached_old = drained(&report, &steps, "attached-old");
+    let all: Vec<Value> = attached_old.iter().chain(&rest).cloned().collect();
     let completed = all
         .iter()
         .position(|record| record["tag"] == RESTORATION_COMPLETE)
@@ -961,11 +959,7 @@ fn installed_library_resolves_a_promotion_racing_leave_and_fresh_attempts_stand_
         (CLIENT_FAILED, RETRY_NONE, LEAVE_NOT_REQUIRED),
         Some((ORIGIN_TRANSPORT, "io_error")),
     );
-    let attach_step = finishes[1].1 + 4;
-    let first: Vec<Value> = step(&report, attach_step)["records"]
-        .as_array()
-        .unwrap()
-        .clone();
+    let first = drained(&report, &steps, "attached-fresh");
     assert_eq!(
         tags(&first),
         [

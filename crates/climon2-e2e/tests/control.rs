@@ -70,45 +70,39 @@ fn installed_library_attaches_and_relays_binary_input_and_display_unchanged() {
     let mut session = Session::start(&package, &root);
     let mut startup = session.startup(&package, 3);
     startup["limits"] = json!({ "chunk_bytes": 16 });
-    let steps = json!([
-        { "do": "create", "startup": startup },
-        { "do": "submit", "request": interactive(1, 100, 30) },
-        { "do": "run" },
-        { "do": "drain", "until": { "tag": RESTORATION_COMPLETE } },
-        { "do": "submit", "request": ready(2, 3, CURRENT) },
-        { "do": "drain", "until": { "response": 2 } },
-        { "do": "submit", "request": input(3, 3, CURRENT, BINARY) },
-        { "do": "drain", "until": { "display": BINARY } },
-        { "do": "submit", "request": input(4, 3, CURRENT, "454e44") },
-        { "do": "drain", "until": { "display": "454e44" } },
-        { "do": "shutdown" },
-        { "do": "finish" },
-    ]);
-    let report = script(&package, &root, steps);
-    for index in [1, 4, 6, 8, 10] {
-        assert_success(step(&report, index));
-    }
-    let attached = step(&report, 3)["records"].as_array().unwrap();
-    let authority = assert_attached(attached, 1, 3, [100, 30]);
-    let readied = step(&report, 5)["records"].as_array().unwrap();
+    let steps = vec![
+        json!({ "do": "create", "startup": startup }),
+        json!({ "do": "submit", "request": interactive(1, 100, 30) }),
+        json!({ "do": "run" }),
+        json!({ "do": "drain", "until": { "tag": RESTORATION_COMPLETE }, "as": "attached" }),
+        json!({ "do": "submit", "request": ready(2, 3, CURRENT) }),
+        json!({ "do": "drain", "until": { "response": 2 }, "as": "readied" }),
+        json!({ "do": "submit", "request": input(3, 3, CURRENT, BINARY) }),
+        json!({ "do": "drain", "until": { "display": BINARY }, "as": "binary" }),
+        json!({ "do": "submit", "request": input(4, 3, CURRENT, "454e44") }),
+        json!({ "do": "drain", "until": { "display": "454e44" }, "as": "end" }),
+        json!({ "do": "shutdown" }),
+        json!({ "do": "finish", "as": "finished" }),
+    ];
+    let report = script(&package, &root, json!(steps));
+    assert_submitted(&report, &steps);
+    let authority = assert_attached(&drained(&report, &steps, "attached"), 1, 3, [100, 30]);
+    let readied = drained(&report, &steps, "readied");
     assert_authority(
-        assert_ok(answer(readied, 2), 3, 2, READY_RESULT),
+        assert_ok(answer(&readied, 2), 3, 2, READY_RESULT),
         1,
         authority,
     );
-    let echoed: Vec<Value> = [7, 9]
-        .into_iter()
-        .flat_map(|index| step(&report, index)["records"].as_array().unwrap().clone())
-        .collect();
+    let echoed = records(&report, &steps, &["binary", "end"]);
     assert_eq!(display(&echoed, 3, authority), format!("{BINARY}454e44"));
     for (id, length) in [(3, 9), (4, 3)] {
         let accepted = assert_ok(answer(&echoed, id), 3, id, INPUT_ACCEPTED);
         assert_eq!(accepted["accepted_bytes"], length, "{accepted:#}");
     }
-    let (records_of_finish, terminal) = finished(step(&report, 11));
+    let (records_of_finish, terminal) = finished(labelled(&report, &steps, "finished"));
     assert_released(&records_of_finish, 3, authority);
     assert_detached(terminal, 3);
-    let mut every = records(&report, &[3, 5, 7, 9]);
+    let mut every = records(&report, &steps, &["attached", "readied", "binary", "end"]);
     every.extend(records_of_finish);
     let chunks = tagged(&every, DISPLAY);
     assert!(chunks.len() > 2, "{every:#?}");
@@ -122,12 +116,21 @@ fn installed_library_attaches_and_relays_binary_input_and_display_unchanged() {
     package.assert_clean();
 }
 
-/// The records of `steps` of `report`, in order.
-fn records(report: &Value, steps: &[usize]) -> Vec<Value> {
-    steps
+/// The records the steps labelled `labels` drained, in order.
+fn records(report: &Value, steps: &[Value], labels: &[&str]) -> Vec<Value> {
+    labels
         .iter()
-        .flat_map(|index| step(report, *index)["records"].as_array().unwrap().clone())
+        .flat_map(|label| drained(report, steps, label))
         .collect()
+}
+
+/// Every `submit` among `steps` was accepted.
+fn assert_submitted(report: &Value, steps: &[Value]) {
+    for (index, submitted) in steps.iter().enumerate() {
+        if submitted["do"] == "submit" {
+            assert_success(step(report, index));
+        }
+    }
 }
 
 /// A rejected Response to `id` with the daemon's `code`.
@@ -171,13 +174,13 @@ fn installed_library_stale_authority_never_re_enables_input() {
         json!([
             { "do": "submit", "request": resize(2, 4, CURRENT, 90, 25) },
             { "do": "drain", "until": { "all": [
-                { "response": 2 }, { "tag": RESTORATION_COMPLETE }] } },
+                { "response": 2 }, { "tag": RESTORATION_COMPLETE }] }, "as": "resized" },
             { "do": "submit", "request": input(3, 4, STALE, "42") },
             { "do": "submit", "request": ready(4, 4, STALE) },
             { "do": "submit", "request": input(5, 4, CURRENT, "43") },
             { "do": "submit", "request": input(6, 9, CURRENT, "44") },
             { "do": "submit", "request": ready(7, 4, CURRENT) },
-            { "do": "drain", "until": { "response": 7 } },
+            { "do": "drain", "until": { "response": 7 }, "as": "readied" },
         ])
         .as_array()
         .unwrap()
@@ -186,33 +189,29 @@ fn installed_library_stale_authority_never_re_enables_input() {
     steps.extend(attach("b", &session, &package, 5));
     steps.extend(
         json!([
-            { "do": "drain", "until": { "tag": REVOKED } },
+            { "do": "drain", "until": { "tag": REVOKED }, "as": "taken" },
             { "do": "submit", "request": input(8, 4, CURRENT, "45") },
             { "do": "submit", "request": acquire(9, 4) },
             { "do": "drain", "until": { "all": [
-                { "response": 9 }, { "tag": RESTORATION_COMPLETE }] } },
+                { "response": 9 }, { "tag": RESTORATION_COMPLETE }] }, "as": "regained" },
             { "do": "submit", "request": input(10, 4, STALE, "46") },
             { "do": "submit", "request": input(11, 4, CURRENT, "47") },
             { "do": "submit", "request": ready(12, 4, CURRENT) },
             { "do": "submit", "request": input(13, 4, CURRENT, "454e44") },
-            { "do": "drain", "until": { "display": "454e44" } },
+            { "do": "drain", "until": { "display": "454e44" }, "as": "last" },
             { "do": "shutdown" },
-            { "do": "finish" },
+            { "do": "finish", "as": "finished-a" },
             { "do": "shutdown", "instance": "b" },
-            { "do": "finish", "instance": "b" },
+            { "do": "finish", "instance": "b", "as": "finished-b" },
         ])
         .as_array()
         .unwrap()
         .clone(),
     );
     let report = script(&package, &root, json!(steps));
-    let first = assert_attached(
-        step(&report, 3)["records"].as_array().unwrap(),
-        1,
-        4,
-        [100, 30],
-    );
-    let resized = records(&report, &[5]);
+    assert_submitted(&report, &steps);
+    let first = assert_attached(&drained(&report, &steps, "attached-a"), 1, 4, [100, 30]);
+    let resized = drained(&report, &steps, "resized");
     assert_eq!(
         assert_ok(answer(&resized, 2), 4, 2, RESIZE_ACCEPTED),
         &Value::Null
@@ -223,7 +222,7 @@ fn installed_library_stale_authority_never_re_enables_input() {
     assert_eq!(second[0], first[0], "the same period");
     assert_ne!(second[1], first[1], "a new restoration");
     assert_eq!(begun[0]["presentation"]["geometry"], json!([90, 25]));
-    let readied = records(&report, &[11]);
+    let readied = drained(&report, &steps, "readied");
     assert_refused(&readied, 4, 3, ORIGIN_DAEMON, "stale_restoration");
     assert_refused(&readied, 4, 4, ORIGIN_DAEMON, "stale_restoration");
     assert_refused(&readied, 4, 5, ORIGIN_DAEMON, "not_ready");
@@ -233,27 +232,27 @@ fn installed_library_stale_authority_never_re_enables_input() {
         1,
         second,
     );
-    let taken = records(&report, &[16]);
+    let taken = drained(&report, &steps, "taken");
     assert_eq!(taken.len(), 2, "{taken:#?}");
     assert_released(&taken[..1], 4, second);
     let revoked = presented(&taken[1], REVOKED, 4);
     assert_eq!(ids(revoked), second, "{revoked:#}");
     assert_eq!(revoked["reason"], TAKEOVER, "{revoked:#}");
-    let regained = records(&report, &[19]);
+    let regained = drained(&report, &steps, "regained");
     assert_refused(&regained, 4, 8, ORIGIN_DAEMON, "not_controller");
     let third = assert_restored(&regained, 4, TAKE_CONTROL, [90, 25]);
     assert!(third[0] > second[0], "a new period");
     assert_authority(assert_ok(answer(&regained, 9), 4, 9, ACQUIRED), 1, third);
-    let last = records(&report, &[24]);
+    let last = drained(&report, &steps, "last");
     assert_refused(&last, 4, 10, ORIGIN_DAEMON, "stale_period");
     assert_refused(&last, 4, 11, ORIGIN_DAEMON, "not_ready");
     assert_authority(assert_ok(answer(&last, 12), 4, 12, READY_RESULT), 1, third);
     assert!(tagged(&readied, DISPLAY).is_empty(), "nothing echoed");
-    assert_eq!(display(&records(&report, &[24]), 4, third), "454e44");
-    let (rest, terminal) = finished(step(&report, 26));
+    assert_eq!(display(&last, 4, third), "454e44");
+    let (rest, terminal) = finished(labelled(&report, &steps, "finished-a"));
     assert_released(&rest, 4, third);
     assert_detached(terminal, 4);
-    let (_, terminal) = finished(step(&report, 28));
+    let (_, terminal) = finished(labelled(&report, &steps, "finished-b"));
     assert_eq!(terminal["leave"], LEAVE_CONFIRMED, "{terminal:#}");
     assert_all_released(&report["ledger"]);
     session.end();
@@ -282,7 +281,8 @@ fn installed_library_focus_has_no_duplicates_and_resynchronizes_on_new_readiness
             { "do": "submit", "request": ready(3, 5, CURRENT) },
             { "do": "submit", "request": focus(4, 5, CURRENT, 1) },
             { "do": "submit", "request": focus(5, 5, CURRENT, 1) },
-            { "do": "drain", "until": { "all": [{ "response": 5 }, { "display": "1b5b49" }] } },
+            { "do": "drain", "until": { "all": [{ "response": 5 }, { "display": "1b5b49" }] },
+              "as": "focused" },
         ])
         .as_array()
         .unwrap()
@@ -291,34 +291,30 @@ fn installed_library_focus_has_no_duplicates_and_resynchronizes_on_new_readiness
     steps.extend(attach("b", &session, &package, 6));
     steps.extend(
         json!([
-            { "do": "drain", "until": { "tag": REVOKED } },
+            { "do": "drain", "until": { "tag": REVOKED }, "as": "taken" },
             { "do": "submit", "request": acquire(6, 5) },
             { "do": "drain", "until": { "all": [
-                { "response": 6 }, { "tag": RESTORATION_COMPLETE }] } },
+                { "response": 6 }, { "tag": RESTORATION_COMPLETE }] }, "as": "regained" },
             { "do": "submit", "request": focus(7, 5, STALE, 1) },
             { "do": "submit", "request": focus(8, 5, CURRENT, 1) },
             { "do": "submit", "request": ready(9, 5, CURRENT) },
             { "do": "submit", "request": focus(10, 5, CURRENT, 1) },
             { "do": "submit", "request": focus(11, 5, CURRENT, 0) },
             { "do": "submit", "request": input(12, 5, CURRENT, "454e44") },
-            { "do": "drain", "until": { "display": "1b5b491b5b4f454e44" } },
+            { "do": "drain", "until": { "display": "1b5b491b5b4f454e44" }, "as": "late" },
             { "do": "shutdown" },
-            { "do": "finish" },
+            { "do": "finish", "as": "finished-a" },
             { "do": "shutdown", "instance": "b" },
-            { "do": "finish", "instance": "b" },
+            { "do": "finish", "instance": "b", "as": "finished-b" },
         ])
         .as_array()
         .unwrap()
         .clone(),
     );
     let report = script(&package, &root, json!(steps));
-    let first = assert_attached(
-        step(&report, 3)["records"].as_array().unwrap(),
-        1,
-        5,
-        [100, 30],
-    );
-    let focused = records(&report, &[8]);
+    assert_submitted(&report, &steps);
+    let first = assert_attached(&drained(&report, &steps, "attached-a"), 1, 5, [100, 30]);
+    let focused = drained(&report, &steps, "focused");
     assert_refused(&focused, 5, 2, ORIGIN_DAEMON, "not_ready");
     let flag = |changed: u64, value: u64, bytes: u64| json!({ "changed": changed, "value": value, "reserved": [0, 0], "accepted_bytes": bytes });
     assert_eq!(
@@ -330,9 +326,9 @@ fn installed_library_focus_has_no_duplicates_and_resynchronizes_on_new_readiness
         &flag(0, 1, 0)
     );
     assert_eq!(display(&focused, 5, first), "1b5b49", "one focus-in only");
-    let regained = records(&report, &[15]);
+    let regained = drained(&report, &steps, "regained");
     let second = assert_restored(&regained, 5, TAKE_CONTROL, [100, 30]);
-    let late = records(&report, &[22]);
+    let late = drained(&report, &steps, "late");
     assert_refused(&late, 5, 7, ORIGIN_DAEMON, "stale_period");
     assert_refused(&late, 5, 8, ORIGIN_DAEMON, "not_ready");
     assert_eq!(
@@ -344,10 +340,10 @@ fn installed_library_focus_has_no_duplicates_and_resynchronizes_on_new_readiness
         &flag(1, 0, 3)
     );
     assert_eq!(display(&late, 5, second), "1b5b491b5b4f454e44");
-    let (rest, terminal) = finished(step(&report, 24));
+    let (rest, terminal) = finished(labelled(&report, &steps, "finished-a"));
     assert_released(&rest, 5, second);
     assert_detached(terminal, 5);
-    let (_, terminal) = finished(step(&report, 26));
+    let (_, terminal) = finished(labelled(&report, &steps, "finished-b"));
     assert_eq!(terminal["leave"], LEAVE_CONFIRMED, "{terminal:#}");
     assert_all_released(&report["ledger"]);
     session.end();
@@ -395,38 +391,51 @@ fn installed_library_acquisition_switches_and_takeover_keep_the_last_accepted() 
         on(
             "a",
             json!({ "do": "drain", "until": { "all": [
-            { "response": 2 }, { "tag": RESTORATION_COMPLETE }] } }),
+            { "response": 2 }, { "tag": RESTORATION_COMPLETE }] }, "as": "a1" }),
         ),
         on("a", json!({ "do": "submit", "request": acquire(3, 1) })),
-        on("a", json!({ "do": "drain", "until": { "response": 3 } })),
+        on(
+            "a",
+            json!({ "do": "drain", "until": { "response": 3 }, "as": "again" }),
+        ),
         on("b", json!({ "do": "submit", "request": acquire(2, 2) })),
         on(
             "b",
             json!({ "do": "drain", "until": { "all": [
-            { "response": 2 }, { "tag": RESTORATION_COMPLETE }] } }),
+            { "response": 2 }, { "tag": RESTORATION_COMPLETE }] }, "as": "b1" }),
         ),
-        on("a", json!({ "do": "drain", "until": { "tag": REVOKED } })),
+        on(
+            "a",
+            json!({ "do": "drain", "until": { "tag": REVOKED }, "as": "a1-revoked" }),
+        ),
         on("a", json!({ "do": "submit", "request": acquire(4, 1) })),
         on(
             "a",
             json!({ "do": "drain", "until": { "all": [
-            { "response": 4 }, { "tag": RESTORATION_COMPLETE }] } }),
+            { "response": 4 }, { "tag": RESTORATION_COMPLETE }] }, "as": "a2" }),
         ),
-        on("b", json!({ "do": "drain", "until": { "tag": REVOKED } })),
+        on(
+            "b",
+            json!({ "do": "drain", "until": { "tag": REVOKED }, "as": "b1-revoked" }),
+        ),
     ]);
     steps.extend(attach("c", &session, &package, 3));
     steps.extend([
-        on("a", json!({ "do": "drain", "until": { "tag": REVOKED } })),
+        on(
+            "a",
+            json!({ "do": "drain", "until": { "tag": REVOKED }, "as": "a2-revoked" }),
+        ),
         on("a", json!({ "do": "shutdown" })),
-        on("a", json!({ "do": "finish" })),
+        on("a", json!({ "do": "finish", "as": "finished-a" })),
         on("b", json!({ "do": "shutdown" })),
-        on("b", json!({ "do": "finish" })),
+        on("b", json!({ "do": "finish", "as": "finished-b" })),
         on("c", json!({ "do": "shutdown" })),
-        on("c", json!({ "do": "finish" })),
+        on("c", json!({ "do": "finish", "as": "finished-c" })),
     ]);
     let report = script(&package, &root, json!(steps));
-    let granted = |index: usize, generation: u64, id: u64| {
-        let found = records(&report, &[index]);
+    assert_submitted(&report, &steps);
+    let granted = |label: &str, generation: u64, id: u64| {
+        let found = drained(&report, &steps, label);
         let at = found
             .iter()
             .position(|record| record["tag"] == GRANTED)
@@ -441,33 +450,32 @@ fn installed_library_acquisition_switches_and_takeover_keep_the_last_accepted() 
         assert_authority(result, 1, authority);
         authority
     };
-    let a1 = granted(9, 1, 2);
-    let again = records(&report, &[11]);
+    let a1 = granted("a1", 1, 2);
+    let again = drained(&report, &steps, "again");
     assert_eq!(again.len(), 1, "no new restoration: {again:#?}");
     assert_authority(assert_ok(&again[0], 1, 3, ACQUIRED), 0, a1);
-    let b1 = granted(13, 2, 2);
+    let b1 = granted("b1", 2, 2);
     assert!(b1[0] > a1[0], "a new period");
-    let revoked = |index: usize, generation: u64, authority: [u64; 2]| {
-        let found = records(&report, &[index]);
+    let revoked = |label: &str, generation: u64, authority: [u64; 2]| {
+        let found = drained(&report, &steps, label);
         assert_eq!(found.len(), 2, "{found:#?}");
         assert_released(&found[..1], generation, authority);
         let revoked = presented(&found[1], REVOKED, generation);
         assert_eq!(ids(revoked), authority, "{revoked:#}");
         assert_eq!(revoked["reason"], TAKEOVER, "{revoked:#}");
     };
-    revoked(14, 1, a1);
-    let a2 = granted(16, 1, 4);
+    revoked("a1-revoked", 1, a1);
+    let a2 = granted("a2", 1, 4);
     assert!(a2[0] > b1[0], "a new period");
-    revoked(17, 2, b1);
-    let attached = step(&report, 21)["records"].as_array().unwrap();
-    assert_attached(attached, 1, 3, [100, 30]);
-    revoked(22, 1, a2);
-    for (index, generation) in [(24, 1), (26, 2)] {
-        let (rest, terminal) = finished(step(&report, index));
+    revoked("b1-revoked", 2, b1);
+    assert_attached(&drained(&report, &steps, "attached-c"), 1, 3, [100, 30]);
+    revoked("a2-revoked", 1, a2);
+    for (label, generation) in [("finished-a", 1), ("finished-b", 2)] {
+        let (rest, terminal) = finished(labelled(&report, &steps, label));
         assert!(rest.is_empty(), "{rest:#?}");
         assert_detached(terminal, generation);
     }
-    let (_, terminal) = finished(step(&report, 28));
+    let (_, terminal) = finished(labelled(&report, &steps, "finished-c"));
     assert_detached(terminal, 3);
     assert_all_released(&report["ledger"]);
     session.end();
@@ -494,45 +502,53 @@ fn installed_library_promotes_the_newest_registration_with_a_canonical_restorati
     steps.extend(attach("i", &session, &package, 3));
     steps.extend([
         on("i", json!({ "do": "shutdown" })),
-        on("i", json!({ "do": "finish" })),
+        on("i", json!({ "do": "finish", "as": "finished-i" })),
         on(
             "p2",
-            json!({ "do": "drain", "until": { "tag": RESTORATION_COMPLETE } }),
+            json!({ "do": "drain", "until": { "tag": RESTORATION_COMPLETE }, "as": "promoted-p2" }),
         ),
         on(
             "p2",
             json!({ "do": "submit", "request": ready(2, 2, CURRENT) }),
         ),
-        on("p2", json!({ "do": "drain", "until": { "response": 2 } })),
-        on("p1", json!({ "do": "drain" })),
+        on(
+            "p2",
+            json!({ "do": "drain", "until": { "response": 2 }, "as": "readied" }),
+        ),
+        on("p1", json!({ "do": "drain", "as": "quiet" })),
         on("p2", json!({ "do": "shutdown" })),
-        on("p2", json!({ "do": "finish" })),
+        on("p2", json!({ "do": "finish", "as": "finished-p2" })),
         on(
             "p1",
-            json!({ "do": "drain", "until": { "tag": RESTORATION_COMPLETE } }),
+            json!({ "do": "drain", "until": { "tag": RESTORATION_COMPLETE }, "as": "promoted-p1" }),
         ),
         on("p1", json!({ "do": "shutdown" })),
-        on("p1", json!({ "do": "finish" })),
+        on("p1", json!({ "do": "finish", "as": "finished-p1" })),
     ]);
     let report = script(&package, &root, json!(steps));
-    let attached = step(&report, 11)["records"].as_array().unwrap();
-    let held = assert_attached(attached, 1, 3, [100, 30]);
-    let (rest, terminal) = finished(step(&report, 13));
+    assert_submitted(&report, &steps);
+    let held = assert_attached(&drained(&report, &steps, "attached-i"), 1, 3, [100, 30]);
+    let (rest, terminal) = finished(labelled(&report, &steps, "finished-i"));
     assert_released(&rest, 3, held);
     assert_detached(terminal, 3);
-    let promoted = records(&report, &[14]);
+    let promoted = drained(&report, &steps, "promoted-p2");
     let p2 = assert_restored(&promoted, 2, SUCCESSOR, [100, 30]);
     assert!(p2[0] > held[0], "a new period");
-    let readied = records(&report, &[16]);
+    let readied = drained(&report, &steps, "readied");
     assert_authority(assert_ok(answer(&readied, 2), 2, 2, READY_RESULT), 1, p2);
-    let quiet = &step(&report, 17)["drains"][0]["drained"];
+    let quiet = &labelled(&report, &steps, "quiet")["drains"][0]["drained"];
     assert_eq!(quiet["kind"], EMPTY, "p1 is not promoted: {quiet:#}");
-    let (rest, terminal) = finished(step(&report, 19));
+    let (rest, terminal) = finished(labelled(&report, &steps, "finished-p2"));
     assert_released(&rest, 2, p2);
     assert_detached(terminal, 2);
-    let p1 = assert_restored(&records(&report, &[20]), 1, SUCCESSOR, [100, 30]);
+    let p1 = assert_restored(
+        &drained(&report, &steps, "promoted-p1"),
+        1,
+        SUCCESSOR,
+        [100, 30],
+    );
     assert!(p1[0] > p2[0], "a new period");
-    let (rest, terminal) = finished(step(&report, 22));
+    let (rest, terminal) = finished(labelled(&report, &steps, "finished-p1"));
     assert_released(&rest, 1, p1);
     assert_detached(terminal, 1);
     assert_all_released(&report["ledger"]);
