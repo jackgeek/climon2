@@ -579,9 +579,9 @@ this section.
   error, retry none, Leave not required
   ([owner decision on #94](https://github.com/jackgeek/climon2/issues/94)).
   A close inside a frame is still `truncated_frame`, and a close that meets
-  an unanswered Leave still leaves that Leave indeterminate; a close after
-  only an Initial metadata that knew the result fails with `io_error`, retry
-  none. A second Command final, one
+  an unanswered Leave still leaves that Leave indeterminate. A close after
+  an Initial metadata that already knew the result stops cleanly the same
+  way. A second Command final, one
   after an Initial metadata that knew the result, one before the Initial
   metadata and one with a status are `invalid_record`. A finished
   session's view freezes at the Command final: later Displays are only its

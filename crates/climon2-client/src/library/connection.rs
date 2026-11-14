@@ -347,11 +347,12 @@ impl<'a> Driver<'a> {
             })
     }
 
-    /// The daemon closing the connection between frames after a Command
-    /// final, with no Leave under way, stops the stream cleanly (owner
-    /// decision on #94); any other loss breaks it.
+    /// The daemon closing the connection between frames once the
+    /// command's final result is known, from the Initial metadata or a
+    /// Command final, with no Leave under way, stops the stream cleanly
+    /// (owner decision on #94); any other loss breaks it.
     fn lost_link(&mut self, fault: Fault) {
-        let clean = fault == link::CLOSED && self.stream.ended_by_final() && !self.stream.leaving();
+        let clean = fault == link::CLOSED && self.stream.known() && !self.stream.leaving();
         if clean {
             self.ended = true;
         } else {

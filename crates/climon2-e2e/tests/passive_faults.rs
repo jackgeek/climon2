@@ -724,8 +724,10 @@ fn assert_scenarios(package: &Package, root: &Path, scenarios: &[Scenario]) {
 /// connection lost with an Open or a Leave unanswered gives no fabricated
 /// Response, only failed terminal evidence, which makes the caller's still
 /// unanswered IDs indeterminate (a lost Leave leaves the departure
-/// unconfirmed); once the caller's Leave is sent, or the Initial metadata
-/// reports the command's final result, a failure calls for no retry; a
+/// unconfirmed); once the caller's Leave is sent, a failure calls for no
+/// retry, and once the Initial metadata reports the command's final
+/// result, the daemon's close stops the stream cleanly, with no error and
+/// no retry (owner decision on #94); a
 /// daemon's failed or indeterminate Leave is answered as such and ends the
 /// registration, and a failed one never counts as detaching, whatever
 /// result it knew; a failure's diagnostic is best effort, left out when the
@@ -826,13 +828,9 @@ fn installed_library_reports_lost_and_late_answers_truthfully_without_replay() {
                 &alone,
             ),
             drained: None,
-            records: vec![
-                Expect::Opened(1),
-                Expect::Metadata,
-                Expect::Diagnostic(lost),
-            ],
-            terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_NOT_REQUIRED),
-            error: Some(lost),
+            records: vec![Expect::Opened(1), Expect::Metadata],
+            terminal: (CLIENT_STOPPED, RETRY_NONE, LEAVE_NOT_REQUIRED),
+            error: None,
             kinds: &["hello", "open"],
         },
         Scenario {
