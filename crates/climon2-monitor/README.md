@@ -97,12 +97,11 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   same climon2 home, once its process has ended. A failed save removes what it
   wrote and shows `cannot save monitor-preferences.json: <error>` under the
   box, which keeps the saved choice. Nothing else writes the file.
-- A failed wait for or read of host input, other than a wait a signal
-  interrupts, and the end of host input (a hung-up host terminal) end the
-  monitor through the exit path below with status 125: `cannot wait for host
-  input: …`, `cannot read host input: …` or `the host terminal closed`. EIO is
-  the closed host terminal too: Linux fails reads with it while it is still
-  hanging a terminal up.
+- A failed wait for host input, other than one a signal interrupts, and the
+  end of host input (a hung-up host terminal) end the monitor through the exit
+  path below with status 125: `cannot wait for host input: …` or
+  `the host terminal closed`. A read failing with EIO is the end of host input
+  too: Linux fails reads with it while it is still hanging a terminal up.
 
 ## Exit
 
@@ -147,7 +146,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | Spec #73 entry: a missing monitor names the version | `missing_installed_monitor_fails_naming_its_version` (e2e) |
 | Spec #73 startup: the executable home is resolved as the CLI does | `a_monitor_outside_a_version_folder_refuses_to_start` (e2e); core `issue74_monitor_resolves_the_same_layout_as_the_cli` |
 | EXT-03 (Monitor, empty monitor): SIGINT, SIGTERM and SIGHUP exit 130, 143 and 129 with baseline and exact termios | `signals_release_the_host_with_signal_style_status` (e2e) |
-| EXT-03 (Monitor, empty monitor): hung-up host input, read as its end or as EIO, releases the host before its one diagnostic, logged, 125 | `a_hung_up_host_input_releases_the_host_before_its_diagnostic`, `host_input_failing_with_eio_releases_the_host_before_its_diagnostic` (e2e) |
+| EXT-03 (Monitor, empty monitor): hung-up host input, read as its end or as EIO, releases the host before its one diagnostic, logged, 125 | `a_hung_up_host_input_releases_the_host_before_its_diagnostic`, `host_input_failing_with_eio_releases_the_host_before_its_diagnostic` (e2e); unit `only_eio_ends_host_input` |
 | EXT-03 (Fault, empty monitor): a render failure, or a failed wait for host input, releases the host before its one diagnostic, 125 | `debug_hook_render_failure_restores_the_host_before_its_diagnostic`, `debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic` (e2e) |
 | Spec #73 host terminal; TRM-04 (Monitor, empty monitor): SIGWINCH repaints without leftovers, erasing or showing the cursor | `resizing_the_host_redraws_the_monitor_at_the_new_size` (e2e) |
 | Spec #73 exit: content-free general log | `installed_monitor_logs_content_free_records_to_its_general_log` (e2e) |

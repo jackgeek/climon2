@@ -811,6 +811,19 @@ fn debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic() {
     package.assert_clean();
 }
 
+/// The monitor released the host before its one closed-terminal diagnostic,
+/// logged it and exited 125, leaving nothing behind.
+fn assert_closed_host_terminal(package: &Package, terminal: &mut Terminal) {
+    assert_diagnosed_after_release(terminal, "climon2: error: the host terminal closed (logs: ");
+    assert_released(package, terminal, 125);
+    let log = monitor_log(package);
+    assert!(
+        log.contains("monitor failed error=the host terminal closed"),
+        "{log}"
+    );
+    package.assert_clean();
+}
+
 /// EXT-03 (Monitor layer, empty monitor): when its host input hangs up, the
 /// monitor ends at once instead of spinning: it releases the host it still
 /// writes to, then reports the closed terminal, also in its general log, with
@@ -829,17 +842,7 @@ fn a_hung_up_host_input_releases_the_host_before_its_diagnostic() {
     );
     terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
     input.hang_up();
-    assert_diagnosed_after_release(
-        &mut terminal,
-        "climon2: error: the host terminal closed (logs: ",
-    );
-    assert_released(&package, &mut terminal, 125);
-    let log = monitor_log(&package);
-    assert!(
-        log.contains("monitor failed error=the host terminal closed"),
-        "{log}"
-    );
-    package.assert_clean();
+    assert_closed_host_terminal(&package, &mut terminal);
 }
 
 /// EXT-03 (Monitor layer, empty monitor): host input that fails with EIO is
@@ -864,17 +867,7 @@ fn host_input_failing_with_eio_releases_the_host_before_its_diagnostic() {
     );
     terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
     terminal.send(b"\n").unwrap();
-    assert_diagnosed_after_release(
-        &mut terminal,
-        "climon2: error: the host terminal closed (logs: ",
-    );
-    assert_released(&package, &mut terminal, 125);
-    let log = monitor_log(&package);
-    assert!(
-        log.contains("monitor failed error=the host terminal closed"),
-        "{log}"
-    );
-    package.assert_clean();
+    assert_closed_host_terminal(&package, &mut terminal);
 }
 
 /// Spec #73 Exit (diagnostics): the monitor writes content-free records to its

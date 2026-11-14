@@ -128,12 +128,12 @@ impl Host {
     }
 
     fn read(&mut self) -> io::Result<&[u8]> {
-        let count = self
-            .input
-            .read(&mut self.buffer)
-            .map_err(|error| failed(error, "cannot read host input"))?;
+        let count = self.input.read(&mut self.buffer).or_else(end_on_eio)?;
         match &self.buffer[..count] {
-            [] => Err(closed()),
+            [] => Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the host terminal closed",
+            )),
             bytes => Ok(bytes),
         }
     }
@@ -144,21 +144,20 @@ fn interrupted(error: io::Error) -> io::Result<bool> {
     if error.kind() == io::ErrorKind::Interrupted {
         return Ok(false);
     }
-    Err(failed(error, "cannot wait for host input"))
+    Err(io::Error::new(
+        error.kind(),
+        format!("cannot wait for host input: {error}"),
+    ))
 }
 
 /// A host terminal that hangs up ends its input, but Linux fails reads with
-/// EIO while it is still hanging the terminal up, so EIO is the closed host
-/// terminal too. Any other failure names what failed.
-fn failed(error: io::Error, doing: &str) -> io::Error {
-    if error.raw_os_error() == Some(libc::EIO) {
-        return closed();
+/// EIO while it is still hanging the terminal up, so a read failing with EIO
+/// is the end of host input too. Any other failure stays as it is.
+fn end_on_eio(error: io::Error) -> io::Result<usize> {
+    match error.raw_os_error() {
+        Some(libc::EIO) => Ok(0),
+        _ => Err(error),
     }
-    io::Error::new(error.kind(), format!("{doing}: {error}"))
-}
-
-fn closed() -> io::Error {
-    io::Error::new(io::ErrorKind::UnexpectedEof, "the host terminal closed")
 }
 
 /// The monitor owns the host output: nothing else writes to stdout.
@@ -166,4 +165,20 @@ fn write_host(bytes: &[u8]) -> io::Result<()> {
     let mut output = io::stdout().lock();
     output.write_all(bytes)?;
     output.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{end_on_eio, io};
+
+    /// EXT-03 (Monitor layer): a host input read failing with EIO, as Linux
+    /// fails it while hanging a terminal up, ends host input; any other
+    /// failure keeps its error.
+    #[test]
+    fn only_eio_ends_host_input() {
+        let ended = end_on_eio(io::Error::from_raw_os_error(libc::EIO));
+        assert_eq!(ended.unwrap(), 0);
+        let failed = end_on_eio(io::Error::from_raw_os_error(libc::EBADF));
+        assert_eq!(failed.unwrap_err().raw_os_error(), Some(libc::EBADF));
+    }
 }
