@@ -206,6 +206,28 @@ Checking size afterward, truncating accepted characters or relying on fewer
 processes is not sufficient. No engine patch, replacement or daemon behavior
 change is delivered here.
 
+#76 adds `climon2-vt`'s monitor `Model` on the unchanged engine. It charges
+each token's worst-case growth, from vte's own parse of the token, before
+the engine sees it. It admits history storage in the engine's chunks,
+stages restorations beside the current model and never reflows in place
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)).
+Before it rejects live output or a restoration, its oldest history yields a
+chunk at a time, never the chunk holding the newest page, and
+`Model::shorten_history()` lets the monitor shorten history the same way.
+Its tests show no stream passing a model's limit, including adversarial
+ones; the owner accepted that evidence, with the measured reserve, as the
+risk proof. The owner also decided that a monitor-mode geometry change is
+always followed by a restoration at that geometry (a wire amendment that
+[#89](https://github.com/jackgeek/climon2/issues/89) makes), and how
+per-model cost is to meet PERF-01
+([#166](https://github.com/jackgeek/climon2/issues/166)). #83's read-only
+history view labels truncation: rows beyond the row ceiling or released under
+pressure, and, as the owner decided, a full history that output could have
+overrun once growth was capped or refused, because the engine does not report
+the rows it discards there
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#read-only-views-for-painting)).
+The monitor's own budgets and pressure policies above remain unimplemented.
+
 ## Queues and transfers
 
 | Field | Default per client |

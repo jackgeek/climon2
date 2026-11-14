@@ -16,6 +16,7 @@ tempfile = "3"
 [dev-dependencies]
 climon2-fixtures = { path = "../crates/climon2-fixtures" }
 serde.workspace = true
+syn = { version = "2", default-features = false, features = ["full", "parsing", "visit"] }
 
 [lints]
 workspace = true

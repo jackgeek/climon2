@@ -142,8 +142,9 @@ body and the basic [selector](../GLOSSARY.md#attachment-and-control).
 the monitor's terminal integration is agreed, unimplemented.
 The [agreed terminal contract](protocol/terminal-integration.md), not implemented,
 selects exact ordered terminal bytes/control/restoration through existing
-in-process record queues and monitor-owned `climon2-vt` models, with planned
-read-only Rust views for Ratatui. Session bytes never go directly to the host;
+in-process record queues and monitor-owned `climon2-vt` models, with read-only
+Rust views for Ratatui, which `climon2-vt` provides (#83) but the monitor does
+not use yet. Session bytes never go directly to the host;
 daemon query authority stays unique. Monitor-mode daemon presentation uses
 effective session geometry, not host/requested dimensions, including background
 [promotion](../GLOSSARY.md#attachment-and-control); session daemons already
@@ -178,8 +179,10 @@ bound admission, queues, client threads/workers/descriptors and retained shared
 release resources. Resource-blocked rows remain visible; history pressure
 preserves a recent page. Unsafe growth/cleanup is explicit failure, not client
 eviction or unloading. Allocation-aware terminal qualification reopens the
-narrow unbounded-engine assumption; it chooses no new executable/library or
-consumption arrow, and does not sandbox trusted native code.
+narrow unbounded-engine assumption; `climon2-vt`'s allocation-bounded `Model`
+(#76) provides it for the monitor's planned per-session models, which the
+monitor does not use yet. It chooses no new executable/library or consumption
+arrow, and does not sandbox trusted native code.
 
 The client executable will also load its same-release library for ordinary
 operations.

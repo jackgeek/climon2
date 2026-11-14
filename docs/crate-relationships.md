@@ -121,10 +121,11 @@ activity/[attention](../GLOSSARY.md#status-and-attention) machines, terminal-sig
 notification/progress relay do not require a plugin crate; plugin
 implementation is deferred. The agreed detection modes and fallback policy
 do not assign another workspace crate or change the current dependency edges.
-The [agreed terminal contract](protocol/terminal-integration.md) specifies planned
-read-only Rust cell/mode/cursor/history views for this monitor reuse. Current
-`climon2-vt` exposes no public cells; today the monitor uses it only for the
-documented normal-shell baseline.
+The [agreed terminal contract](protocol/terminal-integration.md) has the monitor
+paint read-only Rust cell, cursor, mode and history views of these models, which
+`climon2-vt` provides (#83) without exposing engine types; the monitor does not
+paint from them yet, and today uses the crate only for the documented
+normal-shell baseline.
 Exact-release libraries carry terminal bytes, not a native cross-release cell
 schema; the monitor parses at effective daemon geometry and paints locally.
 Canonical monitor presentation and optional core Focus introduce no new crate.
@@ -152,8 +153,10 @@ The agreed [operational limits](monitor-operational-limits.md), unimplemented,
 require allocation-aware terminal/parser updates and bounded discovery/queues/
 thread resources. Monitor reuse of `climon2-vt` must qualify its combining and
 auxiliary allocations; the narrow unchanged-engine/infallible-interface
-assumptions are reopened, not silently treated as bounded. No replacement
-engine, additional workspace crate or dependency edge is selected.
+assumptions are reopened, not silently treated as bounded. `climon2-vt`'s
+allocation-bounded `Model` (#76, ADR 0007) qualifies them on the unchanged
+engine; the monitor does not use it yet. No replacement engine, additional
+workspace crate or dependency edge is selected.
 
 Current edges come from workspace `Cargo.toml` files. This is a consumption
 index, not a replacement for the architecture decisions or their permitted

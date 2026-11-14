@@ -9,7 +9,7 @@ use alacritty_terminal::{
     term::{Config, Osc52, TermMode, cell::Cell},
     vte::ansi::{CursorStyle, Processor, Timeout},
 };
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{cell::RefCell, mem, rc::Rc, time::Duration};
 
 #[derive(Clone, Default)]
 struct Listener(Rc<RefCell<Vec<Event>>>);
@@ -51,18 +51,125 @@ impl Dimensions for Size {
     }
 }
 
-fn config(history: usize) -> Config {
+fn config(history: usize, unset: CursorStyle) -> Config {
     Config {
         scrolling_history: history,
         kitty_keyboard: false,
         osc52: Osc52::Disabled,
+        default_cursor_style: unset,
         ..Config::default()
     }
 }
 
-pub(crate) struct Engine {
-    term: Term<Listener>,
+/// The unchanged engine fed by its parser, as the daemon's virtual terminal
+/// and a monitor model both run it.
+pub(crate) struct Core<L> {
+    term: Term<L>,
     processor: Processor<Unbuffered>,
+    /// The cursor style the engine reports while the application has set
+    /// none.
+    unset: CursorStyle,
+}
+
+impl<L: EventListener> Core<L> {
+    pub(crate) fn new(geometry: Geometry, history: usize, listener: L, unset: CursorStyle) -> Self {
+        Self {
+            term: Term::new(config(history, unset), &Size(geometry), listener),
+            processor: Processor::new(),
+            unset,
+        }
+    }
+
+    pub(crate) fn advance(&mut self, bytes: &[u8]) {
+        self.processor.advance(&mut self.term, bytes);
+    }
+
+    /// Change the normal screen's history capacity, dropping its oldest rows
+    /// beyond it.
+    pub(crate) fn set_history(&mut self, rows: usize) {
+        self.term.set_options(config(rows, self.unset));
+    }
+
+    pub(crate) fn alternate(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    pub(crate) fn mode(&self) -> TermMode {
+        *self.term.mode()
+    }
+
+    pub(crate) fn cursor_style(&self) -> CursorStyle {
+        self.term.cursor_style()
+    }
+
+    /// History rows the normal screen holds, when it is the active screen.
+    pub(crate) fn normal_history(&self) -> Option<usize> {
+        (!self.alternate()).then(|| self.term.grid().history_size())
+    }
+
+    pub(crate) fn active(&self) -> &Grid<Cell> {
+        self.term.grid()
+    }
+
+    /// Drop the active screen's storage rows beyond the history it shows,
+    /// and their cell data, which the engine keeps after history shrinks.
+    pub(crate) fn truncate(&mut self) {
+        self.term.grid_mut().truncate();
+    }
+
+    /// Lower the normal screen's history limit to `rows`, releasing at once
+    /// the rows it drops and their cell data, then read the normal screen;
+    /// true with what was read when rows were dropped.
+    pub(crate) fn lower_history<R>(
+        &mut self,
+        rows: usize,
+        read: impl FnOnce(&Grid<Cell>) -> R,
+    ) -> (R, bool) {
+        self.on_normal(|core| {
+            let held = core.term.grid().history_size();
+            core.set_history(rows);
+            // Truncating when no row was dropped would let the engine's next
+            // growth add a whole chunk of storage beyond the lower limit.
+            let dropped = held.min(rows) < held;
+            if dropped {
+                core.truncate();
+            }
+            (read(core.active()), dropped)
+        })
+    }
+
+    /// Run `f` with the normal screen active. While the alternate screen is
+    /// active, its grid is moved aside and a two-cell placeholder, which the
+    /// swap back resets instead, takes its place, so no screen is copied;
+    /// the swap back sets the normal saved cursor to its current cursor (E1).
+    pub(crate) fn on_normal<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        if !self.alternate() {
+            return f(self);
+        }
+        let placeholder = placeholder(self.term.grid());
+        let alternate = mem::replace(self.term.grid_mut(), placeholder);
+        self.term.swap_alt();
+        let result = f(self);
+        self.term.swap_alt();
+        *self.term.grid_mut() = alternate;
+        result
+    }
+}
+
+/// A two-cell stand-in for the alternate grid while it is moved aside, as
+/// empty of history as the alternate screen always is.
+fn placeholder(alternate: &Grid<Cell>) -> Grid<Cell> {
+    Grid::new(1, 2, alternate.history_size())
+}
+
+/// A grid's cursor as a 1-based (row, column).
+fn position(grid: &Grid<Cell>) -> (usize, usize) {
+    let point = grid.cursor.point;
+    (point.line.0 as usize + 1, point.column.0 + 1)
+}
+
+pub(crate) struct Engine {
+    core: Core<Listener>,
     events: Rc<RefCell<Vec<Event>>>,
     signals: Signals,
     normal_cursor: (usize, usize),
@@ -81,8 +188,7 @@ impl Engine {
         let listener = Listener::default();
         let events = listener.0.clone();
         Self {
-            term: Term::new(config(history), &Size(geometry), listener),
-            processor: Processor::new(),
+            core: Core::new(geometry, history, listener, CursorStyle::default()),
             events,
             signals: Signals::default(),
             normal_cursor: (1, 1),
@@ -91,7 +197,7 @@ impl Engine {
 
     /// Feed one step and collect the replies it produced.
     pub(crate) fn advance(&mut self, bytes: &[u8], replies: &mut Vec<u8>) {
-        self.processor.advance(&mut self.term, bytes);
+        self.core.advance(bytes);
         self.remember_cursor();
         let events = std::mem::take(&mut *self.events.borrow_mut());
         events
@@ -101,8 +207,7 @@ impl Engine {
 
     fn remember_cursor(&mut self) {
         if !self.alternate() {
-            let point = self.term.grid().cursor.point;
-            self.normal_cursor = (point.line.0 as usize + 1, point.column.0 + 1);
+            self.normal_cursor = position(self.active());
         }
     }
 
@@ -141,51 +246,47 @@ impl Engine {
     }
 
     pub(crate) fn mode(&self) -> TermMode {
-        *self.term.mode()
+        self.core.mode()
     }
 
     /// Change the normal screen's history capacity, dropping its oldest rows
     /// beyond it. The title event `set_options` always emits is discarded.
     pub(crate) fn set_history(&mut self, rows: usize) {
-        self.term.set_options(config(rows));
+        self.core.set_history(rows);
         self.events.borrow_mut().clear();
     }
 
     pub(crate) fn resize(&mut self, geometry: Geometry) {
-        self.term.resize(Size(geometry));
+        self.core.term.resize(Size(geometry));
         self.remember_cursor();
     }
 
     pub(crate) fn alternate(&self) -> bool {
-        self.mode().contains(TermMode::ALT_SCREEN)
+        self.core.alternate()
     }
 
     /// History rows the normal screen holds, when it is the active screen.
     pub(crate) fn normal_history(&self) -> Option<usize> {
-        (!self.alternate()).then(|| self.term.grid().history_size())
+        self.core.normal_history()
     }
 
     pub(crate) fn cursor_style(&self) -> CursorStyle {
-        self.term.cursor_style()
+        self.core.cursor_style()
     }
 
     pub(crate) fn active(&self) -> &Grid<Cell> {
-        self.term.grid()
+        self.core.active()
     }
 
-    /// Read the normal screen's grid. While the alternate screen is active
-    /// this swaps screens and back, then restores the alternate grid exactly;
-    /// the swap sets the normal saved cursor to its current cursor (E1).
+    /// Read the normal screen's grid, remembering its cursor. While the
+    /// alternate screen is active this swaps screens and back, leaving the
+    /// alternate grid exactly as it was; the swap sets the normal saved
+    /// cursor to its current cursor (E1).
     pub(crate) fn normal<R>(&mut self, read: impl FnOnce(&Grid<Cell>) -> R) -> R {
-        if !self.alternate() {
-            return read(self.term.grid());
-        }
-        let alternate = self.term.grid().clone();
-        self.term.swap_alt();
-        self.remember_cursor();
-        let result = read(self.term.grid());
-        self.term.swap_alt();
-        *self.term.grid_mut() = alternate;
+        let (cursor, result) = self
+            .core
+            .on_normal(|core| (position(core.active()), read(core.active())));
+        self.normal_cursor = cursor;
         result
     }
 }
