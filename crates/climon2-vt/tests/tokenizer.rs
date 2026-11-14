@@ -118,6 +118,21 @@ fn can_and_sub_abort_escape_sequences() {
     );
 }
 
+/// LIM-03: the controls an abandoned sequence held are released as one text
+/// token, so a monitor model holds one buffer for thousands of them.
+#[test]
+fn controls_held_by_an_abandoned_sequence_are_one_text_token() {
+    assert_eq!(
+        tokens(&[b"\x1b[3\n\r1\x18\x1b(\x07\x08\x1b7"]),
+        [
+            text(b"\n\r"),
+            text(b"\x18"),
+            text(b"\x07\x08"),
+            token(Kind::Escape, b"\x1b7"),
+        ]
+    );
+}
+
 #[test]
 fn can_and_sub_end_control_strings_and_then_execute() {
     assert_eq!(
