@@ -53,6 +53,7 @@ flowchart TB
         tui_fixture["climon2-tui-fixture"]
         library_host["climon2-library-host"]
         library_stand_in[["Client library stand-in<br/>test-only C dylib / .so; faulty library"]]
+        second_library[["Second-release fixture library<br/>test-only cdylib of release 0.0.97"]]
         owned_exec["climon2-test-owned<br/>test ownership exec adapter"]
         terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
@@ -70,6 +71,9 @@ flowchart TB
         library_host -->|"hello probes for a session's state"| daemon
         library -->|"daemon wire revision 1 to the host's fake daemon peer"| library_host
         tests -->|"loads through the shared loader in release-check and Fault-layer tests"| library_stand_in
+        tests -->|"installs in a sibling version folder; checks as release 0.0.97's"| second_library
+        library_host -->|"loads beside the release under test through the shared loader"| second_library
+        second_library -->|"daemon wire revision 1: passive monitor connections"| daemon
         tests -->|"execs registered terminal roots through"| owned_exec
         owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
@@ -188,6 +192,18 @@ one defect: xtask's release-check tests
 load it through the same release checks as the real library, and
 `climon2-platform`'s loader tests load it, as the faulty library, through the
 loader. It is never shipped.
+
+**Current (#97):** the [second-release fixture](../GLOSSARY.md#testing)'s
+library is the `cdylib` of the test-only `climon2-second-release` crate:
+`climon2-client`'s library source built as release 0.0.97, without test
+hooks. Cargo leaves it in `deps/`. The mixed-release Library-layer tests
+package it with this build's executables as a 0.0.97 release and install it
+with the real installer in a sibling version folder; that folder's daemon,
+the installed daemon started by that folder's CLI, serves 0.0.97 sessions.
+One library host loads both releases through the shared loader, and each
+release's instances open passive monitor connections to their own release's
+daemons. xtask's tests run the release checks on it as 0.0.97's library. It
+is never shipped.
 
 **Current (#74):** every version folder ships the `climon2-monitor` executable,
 on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 mon`, or their `climon2`

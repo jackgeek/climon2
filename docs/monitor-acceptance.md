@@ -11,7 +11,10 @@ description ([#75](https://github.com/jackgeek/climon2/issues/75)) and their
 local instance lifecycle
 ([#85](https://github.com/jackgeek/climon2/issues/85)) and open passive
 monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
-but no monitor loads them yet. Headless
+but no monitor loads them yet. The Library layer's
+[second-release fixture](../GLOSSARY.md#testing)
+([#97](https://github.com/jackgeek/climon2/issues/97)) runs both releases'
+libraries in one process for LIB-01 and LIB-03. Headless
 creation is implemented; its HDL-01 Contract cases and its Monitor-layer cases
 through the packaged CLI are mapped in the daemon and packaged-test READMEs,
 while the case that needs a running monitor waits for it. Resolving this
@@ -329,8 +332,9 @@ The following are reusable starting points, not monitor acceptance evidence:
 | [Native documentation checks](protocol/monitor-client/check.py), lines 14-94 | C declaration/example compilation for both target layouts, reference reachability and relative links. No linked production library or runtime call evidence. |
 
 Genuinely missing release evidence includes the actual monitor and packaged
-public-library test path; independently packaged mixed-release/private-dependency
-fixtures; ABI lifetime/descriptor/allocator and fault/stall instrumentation;
+public-library test path; independently packaged private-dependency fixtures
+(the mixed-release fixture exists at the Library layer, #97, and releases
+have no private dependencies); ABI lifetime/descriptor/allocator and fault/stall instrumentation;
 monitor-integrated continuous-output/overlay/readiness/recovery/routing scenarios;
 deterministic clock/scheduling and numerical exhaustion cases; and reproducible
 monitor resource/startup/display qualification. Reuse existing fixture capabilities
