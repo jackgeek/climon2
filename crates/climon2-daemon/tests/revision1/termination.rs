@@ -480,13 +480,12 @@ fn command_final_follows_the_commands_last_output() {
     let mut attached = ready_attachment(&session, &[]);
     let (mut watching, _) = monitor(&session, &["title-v1"]);
     let command = fixture_pid(&session);
-    let daemon = i32::try_from(session.pid).unwrap();
-    assert_eq!(unsafe { libc::kill(daemon, libc::SIGSTOP) }, 0);
-    crate::issue(&session, "title done");
-    crate::issue(&session, "text last line");
-    crate::issue(&session, "exit 3");
-    exited_unreaped(command);
-    assert_eq!(unsafe { libc::kill(daemon, libc::SIGCONT) }, 0);
+    while_stopped(&session, || {
+        crate::issue(&session, "title done");
+        crate::issue(&session, "text last line");
+        crate::issue(&session, "exit 3");
+        exited_unreaped(command);
+    });
     let result = exited(3);
     assert_eq!(title_changed(&mut watching), Some("done".into()));
     assert_final_then_closed(&mut watching, &result);
@@ -512,19 +511,19 @@ fn a_kill_during_the_drain_lets_the_commands_last_output_through() {
     let mut attached = ready_attachment(&session, &[]);
     let (mut watching, _) = monitor(&session, &["title-v1"]);
     let command = fixture_pid(&session);
-    let daemon = i32::try_from(session.pid).unwrap();
-    assert_eq!(unsafe { libc::kill(daemon, libc::SIGSTOP) }, 0);
-    crate::issue(&session, "title done");
-    crate::issue(&session, "text last line");
-    crate::issue(&session, "exit 3");
-    exited_unreaped(command);
-    let mut killing = UnixStream::connect(&session.socket).unwrap();
-    killing
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .unwrap();
-    crate::send(&mut killing, ClientMessage::Hello { protocol: 1 });
-    request(&mut killing, &kill(1, 1, &[]));
-    assert_eq!(unsafe { libc::kill(daemon, libc::SIGCONT) }, 0);
+    let mut killing = while_stopped(&session, || {
+        crate::issue(&session, "title done");
+        crate::issue(&session, "text last line");
+        crate::issue(&session, "exit 3");
+        exited_unreaped(command);
+        let mut killing = UnixStream::connect(&session.socket).unwrap();
+        killing
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        crate::send(&mut killing, ClientMessage::Hello { protocol: 1 });
+        request(&mut killing, &kill(1, 1, &[]));
+        killing
+    });
     let result = exited(3);
     assert_eq!(title_changed(&mut watching), Some("done".into()));
     assert_final_then_closed(&mut watching, &result);
@@ -539,6 +538,19 @@ fn a_kill_during_the_drain_lets_the_commands_last_output_through() {
     assert_eq!(message(&mut killing), terminated(1, &result));
     assert_closed(&mut killing);
     session.finish();
+}
+
+/// An instant earlier than that of any daemon pass that reads the
+/// command's output from now on. A pass reads with the instant it started,
+/// so a pass already under way could read later output with an earlier
+/// one. The daemon accepts a connection made after the returned instant,
+/// and sends its hello reply no sooner than the end of that pass's output
+/// step, so every pass that reads after the reply arrived started after
+/// the accept.
+fn passes_after(session: &Session) -> Instant {
+    let before = Instant::now();
+    drop(session.connect());
+    before
 }
 
 /// Stops the daemon process, runs `during` and lets it go on.
@@ -619,8 +631,10 @@ fn a_restoration_in_progress_when_the_drain_ends_completes_before_command_final(
 /// synchronized update it never ends, prints `held-frame` and exits 3, so
 /// the daemon reads all three, then the end of the output, as it resumes.
 /// The controller receives `held-frame` as Display before its Command
-/// final, no sooner than the latch's 150 ms after the daemon resumed, and
-/// only then its release and Control revoked.
+/// final, and only then its release and Control revoked. The final comes
+/// no sooner than the latch's 150 ms after [`passes_after`]'s instant,
+/// before which the daemon could not have read the update's begin, and
+/// within ten seconds.
 #[test]
 fn a_held_synchronized_update_reaches_a_derived_controller_before_command_final() {
     let mut session = Session::start("script");
@@ -628,15 +642,17 @@ fn a_held_synchronized_update_reaches_a_derived_controller_before_command_final(
     attached.confirm_ready();
     attached.until_displayed(b"fixture-ready", 1);
     let command = fixture_pid(&session);
+    let before = passes_after(&session);
     while_stopped(&session, || {
         crate::issue(&session, "sync");
         crate::issue(&session, "text held-frame");
         crate::issue(&session, "exit 3");
         exited_unreaped(command);
     });
-    let resumed = Instant::now();
     assert_eq!(attached.next_after_display(), command_final(&exited(3)));
-    assert!(resumed.elapsed() >= Duration::from_millis(150));
+    let held = before.elapsed();
+    assert!(held >= Duration::from_millis(150), "{held:?}");
+    assert!(held < Duration::from_secs(10), "{held:?}");
     assert_eq!(crate::count(&attached.display, b"held-frame"), 1);
     attached.session_ended();
     session.finish();
