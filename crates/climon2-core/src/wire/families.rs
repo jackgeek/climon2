@@ -140,4 +140,15 @@ impl Requested {
     pub fn optional(&self) -> &Families {
         &self.optional
     }
+
+    /// The same request with only the optional families `keep` accepts, in
+    /// their order: a subset of a valid request is valid.
+    pub fn retain_optional(&self, mut keep: impl FnMut(&str) -> bool) -> Self {
+        let mut optional = self.optional.clone();
+        optional.0.retain(|token| keep(token));
+        Self {
+            required: self.required.clone(),
+            optional,
+        }
+    }
 }

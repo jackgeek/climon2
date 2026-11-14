@@ -6,6 +6,7 @@ use super::{
     failure::{Failure, INVALID_ARGUMENT, RELEASE_MISMATCH, UNSUPPORTED_LIMIT, require},
 };
 use climon2_core::{
+    SessionId,
     diagnostics::Filter,
     keys::{ClientSettings, ControlKey},
     native::{self, Bytes},
@@ -13,8 +14,10 @@ use climon2_core::{
 use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf, slice};
 
 /// The validated startup, parsed and copied: nothing here borrows a caller
-/// buffer. The session ID is not read until Open (#93).
+/// buffer.
 pub(super) struct Startup {
+    /// The session metadata and hello must name this session.
+    pub(super) session: SessionId,
     pub(super) generation: u64,
     pub(super) paths: Paths,
     pub(super) settings: ClientSettings,
@@ -48,6 +51,7 @@ impl Startup {
         let (generation, paths, settings) = unsafe { identity(startup) }?;
         let diagnostics = unsafe { diagnostics(startup.diagnostics) }?;
         Ok(Self {
+            session: SessionId::from_bytes(startup.session_id.bytes),
             generation,
             paths,
             settings,
@@ -76,7 +80,7 @@ fn invalid(message: &'static str) -> Failure {
 /// # Safety
 ///
 /// A nonnull `data` covers `length` readable bytes.
-unsafe fn buffer<'a>(bytes: Bytes) -> Option<&'a [u8]> {
+pub(super) unsafe fn buffer<'a>(bytes: Bytes) -> Option<&'a [u8]> {
     isize::try_from(bytes.length)
         .ok()
         .filter(|length| *length > 0 && !bytes.data.is_null())
@@ -237,7 +241,8 @@ fn limits(limits: native::Limits) -> Result<native::Limits, Failure> {
 
 /// Every limit is an effective value, never zero-as-default (only
 /// `max_workers` may be zero), and leaves room for this release's own
-/// requirements: its instance allocation and its workers.
+/// requirements: its instance allocation and its workers. A delivery holds
+/// a whole record of `metadata_record_bytes`, so none is ever oversized.
 fn honoured(limits: &native::Limits) -> bool {
     let values = [
         limits.client_bytes,
@@ -267,6 +272,7 @@ fn honoured(limits: &native::Limits) -> bool {
         limits.start_ms.into(),
     ];
     !values.contains(&0)
+        && limits.drain_payload_bytes >= limits.metadata_record_bytes.into()
         && limits.client_bytes >= REQUIREMENTS.instance_bytes
         && limits.max_workers >= REQUIREMENTS.workers
 }

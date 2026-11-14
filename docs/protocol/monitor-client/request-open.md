@@ -1,6 +1,12 @@
 # Open connection
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification. The
+[client library](../../../GLOSSARY.md#sessions) implements monitor-mode Open
+([#93](https://github.com/jackgeek/climon2/issues/93)), as its
+[implemented behavior](core-v1.md#implemented-behavior) details; interactive
+Open reports `CM1_UNSUPPORTED_OPERATION` until
+[#94](https://github.com/jackgeek/climon2/issues/94). The caller is not
+implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) asks its
 [client](../../../GLOSSARY.md#sessions) to establish a role with the
 [session daemon](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),

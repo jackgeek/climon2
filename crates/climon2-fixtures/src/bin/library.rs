@@ -10,10 +10,13 @@
 //! `climon2-library-host <library>` describes the library.
 //! `climon2-library-host <library> <scenario> <json>` drives instances through
 //! one scenario (`lifecycle`, `create`, `fault`, `workers`, `independence`,
-//! `ambient` or `race`) with the instrumentation every Library-layer test
-//! shares: caller startup memory the library can neither keep nor free
-//! (`startup`), an ownership ledger and a timeline of every call and its
-//! thread (`abi`), and descriptor and process-state probes (`probe`).
+//! `ambient`, `race` or `script`) with the instrumentation every
+//! Library-layer test shares: caller startup and request memory the library
+//! can neither keep nor free (`startup`, `requests`), an ownership ledger and
+//! a timeline of every call and its thread (`abi`), descriptor and
+//! process-state probes (`probe`), and a fake daemon peer (`peer`), the
+//! adversarial fixture `script` scenarios can connect to instead of a real
+//! session daemon.
 
 #[path = "library/abi.rs"]
 mod abi;
@@ -21,10 +24,16 @@ mod abi;
 mod faults;
 #[path = "library/isolation.rs"]
 mod isolation;
+#[path = "library/peer.rs"]
+mod peer;
 #[path = "library/probe.rs"]
 mod probe;
+#[path = "library/requests.rs"]
+mod requests;
 #[path = "library/scenarios.rs"]
 mod scenarios;
+#[path = "library/script.rs"]
+mod script;
 #[path = "library/startup.rs"]
 mod startup;
 
@@ -93,6 +102,7 @@ fn drive(library: &Library, name: &str, input: Value) -> Value {
         "independence" => isolation::independence(&setup),
         "ambient" => isolation::ambient(&setup),
         "race" => isolation::race(&setup),
+        "script" => script::script(&setup),
         _ => panic!("unknown scenario {name}"),
     };
     if let Some(object) = report.as_object_mut() {

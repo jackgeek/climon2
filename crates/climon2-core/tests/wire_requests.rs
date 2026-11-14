@@ -356,3 +356,21 @@ fn requests_are_identified_by_type_and_direction() {
         );
     }
 }
+
+/// Daemon wire revision 1 Open: optional families kept from a valid request
+/// stay a valid request, in their order, and the required ones are kept
+/// whole.
+#[test]
+fn open_capabilities_keep_a_valid_subset_of_their_optional_families() {
+    let requested = Requested::new(
+        families(&["monitor-v1"]),
+        families(&["title-v1", "status-v1", "focus-v1"]),
+    )
+    .unwrap();
+    let kept = requested.retain_optional(|token| token != "status-v1");
+    assert_eq!(kept.required(), &families(&["monitor-v1"]));
+    assert_eq!(kept.optional(), &families(&["title-v1", "focus-v1"]));
+    let none = kept.retain_optional(|_| false);
+    assert_eq!(none.required(), &families(&["monitor-v1"]));
+    assert_eq!(none.optional(), &families(&[]));
+}

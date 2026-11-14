@@ -28,18 +28,19 @@ interactive [attachments](../../../GLOSSARY.md#attachment-and-control)
 [hello advertisement](hello-reply.md#revision-1-advertisement), framing and
 validation with their connection-fatal codes, Open in both modes, Leave,
 Input, Resize, Ready, Acquire between attachments, Focus, Response, Fatal
-error, Initial metadata (the title; status and progress reported
-unavailable), Title changed, Control granted and revoked, Restoration begin
-and complete, Display and Geometry, with the private protocol's takeover,
+error, Initial metadata (the title; status and progress reported unavailable),
+Title changed, Control granted and revoked, Restoration begin and complete,
+Display and Geometry, with the private protocol's takeover,
 [hand-back](../../../GLOSSARY.md#attachment-and-control) and
-[leave policy](../../../GLOSSARY.md#attachment-and-control). Until it serves them, it
-rejects the other
-requests without effects, as each request's page describes. Standalone
-Kill, Acquire by a passive monitor connection, Set viewing, Acknowledge, the
-status, notification, progress and final-result messages, promotion of
-passive registrations, canonical monitor-mode presentation and bounded
-delivery remain unimplemented, and no
-[client](../../../GLOSSARY.md#sessions) speaks this revision yet. The
+[leave policy](../../../GLOSSARY.md#attachment-and-control). Until it serves
+them, it rejects the other requests without effects, as each request's page
+describes. Standalone Kill, Acquire by a passive monitor connection, Set
+viewing, Acknowledge, status, notification, progress and final-result messages,
+promotion of passive registrations, canonical monitor-mode presentation and
+bounded delivery remain unimplemented. The
+[client library](../../../GLOSSARY.md#sessions) speaks this revision for
+passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93));
+no other [client](../../../GLOSSARY.md#sessions) does yet. The
 [daemon's contract tests](../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
 are the evidence for the implemented parts.
 

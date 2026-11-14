@@ -2,8 +2,8 @@
 
 **Status: agreed revision-1 specification. The
 [client library](../../../GLOSSARY.md#sessions) implements create
-([#85](https://github.com/jackgeek/climon2/issues/85)), except that it does not
-read the session ID before Open
+([#85](https://github.com/jackgeek/climon2/issues/85)), copying the session ID
+that Open checks the metadata and hello against
 ([#93](https://github.com/jackgeek/climon2/issues/93)); its caller is not
 implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) creates a
