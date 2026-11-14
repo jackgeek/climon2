@@ -482,6 +482,21 @@ impl Control {
         }
     }
 
+    /// Records the controller's latest reported viewing for its period;
+    /// true when it changed.
+    pub fn set_viewing(&mut self, conn: ConnectionId, viewing: bool) -> bool {
+        attached(&mut self.stage)
+            .is_some_and(|attachments| attachments.controller.set_viewing(conn, viewing))
+    }
+
+    /// Whether the current controller's latest reported viewing is true.
+    pub fn viewing(&self) -> bool {
+        match &self.stage {
+            Stage::Open(Open::Attached(attachments)) => attachments.controller.viewing(),
+            _ => false,
+        }
+    }
+
     /// Records a pending host size; [`Control::apply_pending`] applies it.
     pub fn resize(&mut self, conn: ConnectionId, size: TerminalSize) {
         if let (Some(host), Some(attachments)) = (size.resize(), attached(&mut self.stage)) {

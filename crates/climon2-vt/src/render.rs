@@ -137,6 +137,21 @@ fn print(cell: &Cell, pen: Pen, out: &mut Vec<u8>) -> Pen {
     next
 }
 
+/// The screen's characters, every cell of each line and lines separated by
+/// a line feed: each cell's character, then its zero-width characters. No
+/// rendition, cursor or history is part of it.
+pub(crate) fn characters(grid: &Grid<Cell>) -> String {
+    let lines = (0..grid.screen_lines()).map(|line| {
+        cells(grid, line as i32)
+            .iter()
+            .flat_map(|cell| {
+                std::iter::once(cell.c).chain(cell.zerowidth().unwrap_or_default().iter().copied())
+            })
+            .collect::<String>()
+    });
+    lines.collect::<Vec<_>>().join("\n")
+}
+
 pub(crate) fn goto(out: &mut Vec<u8>, row: usize, column: usize) {
     out.extend(format!("\x1b[{row};{column}H").into_bytes());
 }

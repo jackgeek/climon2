@@ -4,6 +4,7 @@
 //! tests; expectations are written out by hand from the wire reference.
 mod interactive;
 mod passive;
+mod status;
 mod termination;
 
 use super::Session;
@@ -13,10 +14,11 @@ use climon2_core::{
     wire::{
         self, Available, CommandFinal, CommandResult, ControlRecord, Counter, Families, FatalError,
         Frame, FrameLimit, Kill, Leave, Mode, Open, Outcome, Requested, Response, ServerMessage,
-        Success,
+        Status, StatusChanged, StatusState, Success, Utc,
     },
 };
 use std::{
+    fs,
     io::Write,
     num::NonZeroU32,
     os::unix::net::UnixStream,
@@ -173,10 +175,74 @@ fn signalled(number: u32) -> CommandResult {
     CommandResult::Signal { number, name: None }
 }
 
-/// The Command final of `result`. Its status is null: no connection can
-/// select `status-v1` yet.
+/// The Command final of `result` for a connection that did not select
+/// `status-v1`: its status is null.
 fn command_final(result: &CommandResult) -> ServerMessage {
     ServerMessage::CommandFinal(CommandFinal::new(result.clone(), None).unwrap())
+}
+
+/// The Command final of `result` for a connection that selected
+/// `status-v1`: it carries the final status, changed at `ms` on the
+/// controllable clock.
+fn command_final_at(result: &CommandResult, ms: u64) -> ServerMessage {
+    let final_status = status(result.final_state(), ms, None);
+    ServerMessage::CommandFinal(CommandFinal::new(result.clone(), Some(final_status)).unwrap())
+}
+
+/// The controllable clock's starting reading, in milliseconds since the
+/// Unix epoch: 2027-01-15T08:00:00.000Z, and monotonic time 0 for tests.
+const T0: u64 = 1_800_000_000_000;
+
+/// The controllable clock file of a session that [`clocked`] started.
+fn clock_file(session: &Session) -> std::path::PathBuf {
+    fs::canonicalize(session.directory.path())
+        .unwrap()
+        .join("clock")
+}
+
+/// Starts a session whose status detector reads the `test-hooks`
+/// controllable clock, set to [`T0`]. Time stands still until the test
+/// [`advance`]s it, so no sample is taken and no deadline passes unless a
+/// test says so; every other daemon deadline stays real.
+fn clocked(mode: &str) -> Session {
+    clocked_with(mode, |_| {})
+}
+
+fn clocked_with(mode: &str, configure: impl FnOnce(&mut std::process::Command)) -> Session {
+    Session::configured(mode, |command, home| {
+        fs::write(home.join("clock"), T0.to_string()).unwrap();
+        command.env("CLIMON2_DAEMON_CLOCK", home.join("clock"));
+        configure(command);
+    })
+}
+
+/// Sets the controllable clock `ms` milliseconds after [`T0`] and waits,
+/// bounded, until a daemon turn that read it has ended: the daemon then
+/// acknowledges the value, and that turn's records are queued before the
+/// answer to any later request.
+fn advance(session: &Session, ms: u64) {
+    let value = (T0 + ms).to_string();
+    let path = clock_file(session);
+    let staged = path.with_extension("tmp");
+    fs::write(&staged, &value).unwrap();
+    fs::rename(&staged, &path).unwrap();
+    let acknowledged = path.with_extension("ack");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while fs::read_to_string(&acknowledged).unwrap_or_default() != value {
+        assert!(Instant::now() < deadline, "the clock never reached {ms}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// The status `state`, changed `ms` after [`T0`], with `episode`.
+fn status(state: StatusState, ms: u64, episode: Option<u64>) -> Status {
+    let changed_at = Utc::from_unix_millis(T0 + ms).unwrap();
+    Status::new(state, changed_at, episode.map(counter)).unwrap()
+}
+
+/// The Status changed record of `status`.
+fn status_changed(status: Status) -> ServerMessage {
+    ServerMessage::StatusChanged(StatusChanged::new(status).unwrap())
 }
 
 /// The next record is the Command final of `result`, and the stream then

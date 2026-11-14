@@ -1,6 +1,6 @@
 # Set viewing — `0x35`
 
-**Status: agreed, not implemented; rejected until served**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** ([#91](https://github.com/jackgeek/climon2/issues/91)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) reports per-[attachment](../../../GLOSSARY.md#attachment-and-control)
 [viewing](../../../GLOSSARY.md#status-and-attention) to the
 [session daemon](../../../GLOSSARY.md#sessions), as current
@@ -20,7 +20,9 @@ One [JSON](../TERMS.md#json) [frame](../TERMS.md#frame), all fields required:
 
 ## Acceptance, order and failures
 
-Core support is required. Validate current period/
+Core support is required, and the session daemon also requires selected
+`status-v1` (owner decision on [#86](https://github.com/jackgeek/climon2/issues/86); see
+[implemented behavior](#implemented-behavior)). Validate current period/
 [restoration](../../../GLOSSARY.md#restoration-and-presentation).
 True additionally requires [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts);
 false may clear viewing during restoration.
@@ -50,10 +52,15 @@ Frame bounds remain #69. Related: [Ready](request-ready.md).
 
 ## Implemented behavior
 
-Until [#91](https://github.com/jackgeek/climon2/issues/91) serves Set viewing, the
-[session daemon](../../../GLOSSARY.md#sessions) rejects it as impermissible
-with `invalid_state`, before the connection has a role, on a
-[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) and
-on an interactive [attachment](../../../GLOSSARY.md#attachment-and-control)
-alike.
-No viewing is reported; the stream goes on and any role stays.
+The [session daemon](../../../GLOSSARY.md#sessions) serves Set viewing with
+the [implemented authority checks](core-v1.md#implemented-authority-checks).
+By owner decision on [#86](https://github.com/jackgeek/climon2/issues/86)
+(2026-11-13), the connection's Open must have selected `status-v1`, checked
+first: otherwise `unsupported_capability`, before any Open too. Viewing true
+needs readiness; viewing false needs only control, so it is accepted during
+restoration. `changed` says whether the latest reported viewing of the
+current [control period](../../../GLOSSARY.md#attachment-and-control)
+changed. Every new period, by grant, takeover or hand-back, starts not
+viewing, so revocation clears it. Viewing never acknowledges or clears
+[attention](../../../GLOSSARY.md#status-and-attention) and sends no
+[Status changed](event-status-changed.md).

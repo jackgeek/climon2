@@ -1,6 +1,6 @@
 # Acknowledge attention — `0x36`
 
-**Status: agreed, not implemented; rejected until served**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** ([#91](https://github.com/jackgeek/climon2/issues/91)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) asks the
 [session daemon](../../../GLOSSARY.md#sessions) to acknowledge current pending
 [attention](../../../GLOSSARY.md#status-and-attention).
@@ -51,11 +51,12 @@ Bounds remain #69. Related: [Set viewing](request-viewing.md),
 
 ## Implemented behavior
 
-Until [#91](https://github.com/jackgeek/climon2/issues/91) serves Acknowledge, the
-[session daemon](../../../GLOSSARY.md#sessions) rejects it as impermissible
-with `invalid_state`, before the connection has a role, on a
-[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) and
-on an interactive [attachment](../../../GLOSSARY.md#attachment-and-control)
-alike.
-No attention is acknowledged; the stream goes on and any role stays.
-This interim rejection comes before the `status-v1` check above.
+The [session daemon](../../../GLOSSARY.md#sessions) serves Acknowledge with
+the [implemented authority checks](core-v1.md#implemented-authority-checks):
+`status-v1` first (`unsupported_capability`, before any Open too), then
+role, attachment, committed termination, controller, period, restoration
+and readiness, and last the latest reported viewing of the current control
+period (`not_viewing`). Pending attention becomes `acknowledged` with the
+same episode, and its [Status changed](event-status-changed.md) precedes
+`changed:true`. Nothing pending, attention already acknowledged or a final
+status is `changed:false`, with no record.

@@ -1,7 +1,7 @@
 //! Daemon wire revision 1 on the session loop, beside the private protocol:
 //! passive monitor connections, ordinary interactive attachments and
 //! standalone Kills, their requests, their control and terminal records and
-//! their core metadata.
+//! their core metadata: the title and the effective status.
 use super::Session;
 use crate::{
     connection::{Connection, frame_limit},
@@ -13,12 +13,13 @@ use crate::{
 use climon2_core::{
     protocol::TerminalSize,
     wire::{
-        ActualGeometry, Advertisement, AuthorityIds, AuthorityResult, Available, Cleanup,
-        CommandFinal, CommandResult, ControlGranted, ControlRecord, ControlRevoked, Counter,
-        Display, Error, Failure, Families, Family, Focus, FocusBytes, Frame, FrameLimits, Geometry,
-        GrantReason, Guid, InitialMetadata, Input, Kill, KnownResult, Mode, Open, OperationalCode,
-        Outcome, PartialCleanup, PartialTermination, Ready, Rejection, Request, Resize, Response,
-        RestorationBegin, RestorationComplete, RevocationReason, Success, TitleChanged,
+        Acknowledge, ActualGeometry, Advertisement, AuthorityIds, AuthorityResult, Available,
+        Cleanup, CommandFinal, CommandResult, ControlGranted, ControlRecord, ControlRevoked,
+        Counter, Display, Error, Failure, Families, Family, Focus, FocusBytes, Frame, FrameLimits,
+        Geometry, GrantReason, Guid, InitialMetadata, Input, Kill, KnownResult, Mode, Open,
+        OperationalCode, Outcome, PartialCleanup, PartialTermination, Ready, Rejection, Request,
+        Resize, Response, RestorationBegin, RestorationComplete, RevocationReason, SetViewing,
+        Status, StatusChanged, Success, TitleChanged,
     },
 };
 use std::{collections::BTreeSet, io, num::NonZeroU32};
@@ -29,12 +30,13 @@ const NOT_OPENED: &str = "this connection opened nothing";
 const UNSUPPORTED_REVISION: &str = "this daemon supports revision 1 only";
 const UNSUPPORTED_CAPABILITY: &str = "a required capability is not supported";
 const FOCUS_NOT_SELECTED: &str = "focus-v1 was not selected";
+const STATUS_NOT_SELECTED: &str = "status-v1 was not selected";
+const NOT_VIEWING: &str = "the latest reported viewing is not true";
 const UNSUPPORTED_GEOMETRY: &str = "the geometry exceeds the supported terminal size";
 const EMPTY_INPUT: &str = "Input carries no bytes";
 const TERMINATING: &str = "the session is terminating";
 const CLEANUP_INCOMPLETE: &str = "the session's termination or cleanup did not complete";
-/// Acquire by a passive monitor connection (#89), and Set viewing and
-/// Acknowledge (#91) are not served yet.
+/// Acquire by a passive monitor connection (#89) is not served yet.
 const NOT_YET_SERVED: &str = "this daemon does not serve this request yet";
 
 /// What hello advertises: only the families this daemon implements.
@@ -44,7 +46,12 @@ pub(super) fn advertisement() -> Advertisement {
         max_server_frame_bytes: frame_limit(),
     };
     Advertisement::new(
-        [Family::MonitorV1, Family::TitleV1, Family::FocusV1],
+        [
+            Family::MonitorV1,
+            Family::TitleV1,
+            Family::StatusV1,
+            Family::FocusV1,
+        ],
         limits,
     )
 }
@@ -144,19 +151,17 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             Request::Input(input) => self.wire_input(id, input),
             Request::Resize(resize) => self.resize(id, resize),
             Request::Focus(focus) => self.focus(id, focus),
-            other => self.unserved(id, other.request_id()),
+            other => self.status_request(id, other),
         }
     }
 
-    /// Set viewing and Acknowledge are rejected without effects until #91
-    /// serves `status-v1`; the stream goes on and any role stays.
-    fn unserved(&mut self, id: u64, request_id: Counter) {
-        self.reject(
-            id,
-            request_id,
-            OperationalCode::InvalidState,
-            NOT_YET_SERVED,
-        );
+    fn status_request(&mut self, id: u64, request: Request) {
+        match request {
+            Request::SetViewing(viewing) => self.set_viewing(id, viewing),
+            Request::Acknowledge(acknowledge) => self.acknowledge(id, acknowledge),
+            // Every other request was dispatched earlier in the chain.
+            _ => {}
+        }
     }
 
     /// A later Open never repurposes an existing role.
@@ -261,17 +266,16 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let Some(opened) = self.opened.get(&id) else {
             return;
         };
-        let title = if opened.selected.contains(&Family::TitleV1) {
-            Available::Available(self.vt.application_title().map(str::to_owned))
-        } else {
-            Available::Unavailable
-        };
+        let title = available(&opened.selected, Family::TitleV1, || {
+            self.vt.application_title().map(str::to_owned)
+        });
+        let status = available(&opened.selected, Family::StatusV1, || self.status.status());
         let success = Success::Opened {
             connection_id: fresh_connection_id(),
             selected_capabilities: tokens(&opened.selected),
         };
         self.respond(id, request_id, Outcome::Ok(success));
-        let metadata = initial_metadata(title, self.command_result.clone());
+        let metadata = initial_metadata(title, status, self.command_result.clone());
         self.send_wire(id, &metadata.to_frame());
     }
 
@@ -355,6 +359,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             return self.reject_with(id, input.request_id, error);
         };
         self.pty_writes.input(id, &input.payload);
+        self.user_input();
         let accepted = Success::InputAccepted { accepted_bytes };
         self.respond(id, input.request_id, Outcome::Ok(accepted));
     }
@@ -438,6 +443,97 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     pub(super) fn focus_enabled(&mut self) {
         if let Some(focused) = self.control.desired_focus() {
             self.pty_writes.daemon(focus_report(focused));
+        }
+    }
+
+    /// Set viewing needs `status-v1`, checked first, then the controller's
+    /// current authority; viewing true also needs readiness, while false
+    /// is accepted during restoration too. It reports a fact and never
+    /// acknowledges attention.
+    fn set_viewing(&mut self, id: u64, request: SetViewing) {
+        if !self.status_selected(id, request.request_id) {
+            return;
+        }
+        let needs = if request.viewing {
+            Needs::Readiness
+        } else {
+            Needs::Control
+        };
+        if self
+            .authorized(id, request.request_id, (request.authority, needs))
+            .is_none()
+        {
+            return;
+        }
+        let changed = self.control.set_viewing(ConnectionId(id), request.viewing);
+        let reported = Success::Viewing {
+            changed,
+            viewing: request.viewing,
+        };
+        self.respond(id, request.request_id, Outcome::Ok(reported));
+    }
+
+    /// Acknowledge needs `status-v1`, checked first, then the ready
+    /// controller's current authority and its latest viewing true. It
+    /// acknowledges whatever attention is pending: its Status changed
+    /// precedes a changed success, and nothing pending is no change.
+    fn acknowledge(&mut self, id: u64, request: Acknowledge) {
+        if !self.status_selected(id, request.request_id) {
+            return;
+        }
+        let needs = (request.authority, Needs::Readiness);
+        if self.authorized(id, request.request_id, needs).is_none() {
+            return;
+        }
+        if !self.control.viewing() {
+            let code = OperationalCode::NotViewing;
+            return self.reject(id, request.request_id, code, NOT_VIEWING);
+        }
+        let changed = self.status.acknowledge(&self.moment);
+        let acknowledged = Success::Acknowledgement {
+            changed: changed.is_some(),
+        };
+        self.report_status(changed);
+        self.respond(id, request.request_id, Outcome::Ok(acknowledged));
+    }
+
+    /// Whether the connection's Open selected `status-v1`; otherwise the
+    /// request is rejected with `unsupported_capability`.
+    fn status_selected(&mut self, id: u64, request_id: Counter) -> bool {
+        let selected = self.selects(id, Family::StatusV1);
+        if !selected {
+            let code = OperationalCode::UnsupportedCapability;
+            self.reject(id, request_id, code, STATUS_NOT_SELECTED);
+        }
+        selected
+    }
+
+    /// Accepted user-originated input from the ready controller: activity
+    /// and attention learn of it before its acceptance is answered.
+    pub(super) fn user_input(&mut self) {
+        let changed = self.status.input(&self.moment);
+        self.report_status(changed);
+    }
+
+    /// The turn's timer and sample work, after the command's output was
+    /// read; a sample reads the viewport only when one is due.
+    pub(super) fn observe_status(&mut self) {
+        let vt = &self.vt;
+        let changed = self.status.poll(&self.moment, || super::sample(vt));
+        self.report_status(changed);
+    }
+
+    /// A changed effective status reaches every connection that selected
+    /// `status-v1`, in order and whatever the control state.
+    fn report_status(&mut self, changed: Option<Status>) {
+        let Some(status) = changed else {
+            return;
+        };
+        let frame = StatusChanged::new(status)
+            .expect("the final status goes only with Command final")
+            .to_frame();
+        for id in self.subscribers(Family::StatusV1) {
+            self.send_wire(id, &frame);
         }
     }
 
@@ -624,17 +720,28 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// (a standalone Kill's connection, which opened nothing, gets it in its
     /// answer instead), and later Opens in their Initial metadata.
     /// Publishing it again sends nothing.
+    /// It is also the final status, which ends activity and attention: a
+    /// connection that selected `status-v1` receives it in the Command final.
     pub(super) fn publish(&mut self, result: &CommandResult) {
         if self.command_result.is_some() {
             return;
         }
         self.command_result = Some(result.clone());
-        let frame = CommandFinal::new(result.clone(), None)
-            .expect("no status disagrees with a result")
-            .to_frame();
-        let opened: Vec<u64> = self.opened.keys().copied().collect();
-        for id in opened {
-            self.send_wire(id, &frame);
+        let status = self.status.finish(&self.moment, result);
+        let frame = |status| {
+            CommandFinal::new(result.clone(), status)
+                .expect("the final status agrees with its result")
+                .to_frame()
+        };
+        let (with_status, without) = (frame(Some(status)), frame(None));
+        let opened: Vec<(u64, bool)> = self
+            .opened
+            .iter()
+            .map(|(id, opened)| (*id, opened.selected.contains(&Family::StatusV1)))
+            .collect();
+        for (id, selected) in opened {
+            let frame = if selected { &with_status } else { &without };
+            self.send_wire(id, frame);
         }
     }
 
@@ -841,20 +948,30 @@ fn tokens(selected: &BTreeSet<Family>) -> Families {
     Families::new(tokens.collect()).expect("a set holds each token once")
 }
 
+/// A family's current value when the connection selected it, otherwise
+/// explicitly unavailable.
+fn available<T>(
+    selected: &BTreeSet<Family>,
+    family: Family,
+    value: impl FnOnce() -> T,
+) -> Available<T> {
+    if selected.contains(&family) {
+        Available::Available(value())
+    } else {
+        Available::Unavailable
+    }
+}
+
 /// The title by value when `title-v1` is selected (an available `None` is
-/// unset), with status and progress explicitly unavailable, and the
-/// command's result once known.
+/// unset), the effective status when `status-v1` is, progress explicitly
+/// unavailable, and the command's result once known.
 fn initial_metadata(
     title: Available<Option<String>>,
+    status: Available<Status>,
     command_result: Option<CommandResult>,
 ) -> InitialMetadata {
-    InitialMetadata::new(
-        title,
-        Available::Unavailable,
-        Available::Unavailable,
-        command_result,
-    )
-    .expect("unavailable status agrees with any command result")
+    InitialMetadata::new(title, status, Available::Unavailable, command_result)
+        .expect("the final status agrees with the known result")
 }
 
 /// A fresh logical connection identity, never reused.
