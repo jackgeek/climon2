@@ -2097,12 +2097,17 @@ const SESSIONS_HINT: &str = "Ctrl+] then s: sessions";
 const STATUS: &str = "Unavailable";
 const CONTROLLING: &str = "Controlling";
 
-/// The top row with a session selected, as #108 lays it out: the label from
-/// the left, and the stationary fields at the right edge, two spaces apart.
+/// The top row with a session selected, as #108 lays it out (owner
+/// decision, 2026-11-14): the label from the left, then fixed slots at the
+/// right edge, each after ` | `: the status (`fields[0]`) in 18 cells, the
+/// control (`fields[1]`) in 15 and any key hint (`fields[2]`).
 fn session_top_row(cols: usize, label: &str, fields: &[&str]) -> String {
-    let fields = fields.join("  ");
-    let width = cols - fields.chars().count();
-    format!("{label:<width$}{fields}")
+    let mut slots = format!(" | {:<18} | {:<15}", fields[0], fields[1]);
+    if let Some(hint) = fields.get(2) {
+        slots.push_str(&format!(" | {hint}"));
+    }
+    let width = cols - slots.chars().count();
+    format!("{label:<width$}{slots}")
 }
 
 /// Waits until the host's top row is exactly `expected`.
@@ -2139,13 +2144,31 @@ fn select(terminal: &mut Terminal, label: &str, downs: usize) {
 
 /// Bash that titles its session `title`, then, until `$HOME/finish` exists,
 /// appends each new `stty size` of its terminal to `$HOME/<title>.sizes`.
+/// A `$HOME/<title>.probe` seen before a read is renamed `.probed` after it.
 fn sized(title: &str) -> String {
     format!(
         "printf '\\033]2;{title}\\007'; p=; \
          until [ -e \"$HOME/finish\" ] || [ \"$SECONDS\" -ge 120 ]; do \
+         q=; [ -e \"$HOME/{title}.probe\" ] && q=1; \
          s=$(stty size); if [ \"$s\" != \"$p\" ]; then echo \"$s\" >> \"$HOME/{title}.sizes\"; p=$s; fi; \
+         [ -n \"$q\" ] && mv \"$HOME/{title}.probe\" \"$HOME/{title}.probed\"; \
          sleep 0.05; done"
     )
+}
+
+/// The sizes [`sized`]'s session `title` has had once it has read its size
+/// after this call: every resize applied before the call is among them.
+fn settled_sizes(package: &Package, title: &str) -> Vec<String> {
+    let home = package.isolation.home();
+    let probed = home.join(format!("{title}.probed"));
+    let _ = fs::remove_file(&probed);
+    fs::write(home.join(format!("{title}.probe")), b"").unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !probed.exists() {
+        assert!(Instant::now() < deadline, "{title} never read its size");
+        thread::sleep(Duration::from_millis(20));
+    }
+    sizes(package, title)
 }
 
 /// The sizes [`sized`]'s session `title` has had, oldest first.
@@ -2249,6 +2272,16 @@ fn enter_selects_and_acquires_a_session_and_paints_it_live() {
     headless(&package, &titled_hold("Later"), "finish");
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, &format!("║{STATUS} Later"));
+    // The selector covers the canvas: input could not reach a painted
+    // frame of the session, so it is not Controlling until it is uncovered.
+    top_row_is(
+        &mut terminal,
+        &session_top_row(
+            usize::from(COLS),
+            "Paint",
+            &[STATUS, "Restoring", SESSIONS_HINT],
+        ),
+    );
     terminal.send("\x1b").unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
@@ -2401,12 +2434,24 @@ fn host_resizes_reach_only_the_selected_controller() {
     package.assert_clean();
 }
 
-/// TRM-04 (Monitor, too-small cases): a host with no room for a session
-/// below its top row (one row) shows `Terminal too small` in its top row and
-/// sends no resize; two rows, and two columns (the smallest session width
-/// and the emulator's), are room enough, and each recovery resizes and
-/// paints the selected session again. One column is the pure supplement's. The client and
-/// control survive throughout, and prefix+x still exits while too small.
+/// The host shows only `Terminal too small` in its top row, clipped to
+/// its width, above blank rows, with no cursor.
+fn shows_too_small(terminal: &mut Terminal, rows: u16, cols: u16) {
+    let width = usize::from(cols);
+    let shown: String = "Terminal too small".chars().take(width).collect();
+    let blank = format!("\n{:width$}", "").repeat(usize::from(rows) - 1);
+    shows(terminal, &format!("{shown:<width$}{blank}"));
+    assert!(!terminal.cursor().visible);
+}
+
+/// TRM-04 (Monitor, too-small cases; owner decision 2026-11-14): a host
+/// under four rows or five columns shows `Terminal too small` and sends no
+/// resize, at each limit and one below it: once the too-small frame shows,
+/// the session reads its size, and never had the one a resize would have
+/// given it (2x120, 29x4). Four rows and five columns are room enough, and
+/// each recovery resizes the selected session to the host less its top
+/// row. The client and control survive throughout, and prefix+x still exits
+/// while too small.
 #[test]
 fn a_host_too_small_for_a_session_says_so_sends_no_resize_and_recovers() {
     let package = Package::new();
@@ -2420,38 +2465,35 @@ fn a_host_too_small_for_a_session_says_so_sends_no_resize_and_recovers() {
     sized_to(&package, "Small", &["24 80", "29 120"]);
     let fields = [STATUS, CONTROLLING, SESSIONS_HINT];
     let mut expected = vec!["24 80", "29 120"];
-    for (rows, cols, too_small, size) in [
-        (1, 120, true, ""),
-        (2, 120, false, "1 120"),
-        (30, 2, false, "29 2"),
-        (30, 120, false, "29 120"),
+    for (rows, cols, size) in [
+        (3, 120, None),
+        (4, 120, Some("3 120")),
+        (30, 4, None),
+        (30, 5, Some("29 5")),
+        (30, 120, Some("29 120")),
     ] {
         terminal.resize(rows, cols).unwrap();
-        if too_small {
-            let shown: String = "Terminal too small"
-                .chars()
-                .take(usize::from(cols))
-                .collect();
-            let width = usize::from(cols);
-            let blank = format!("\n{:width$}", "").repeat(usize::from(rows) - 1);
-            shows(&mut terminal, &format!("{shown:<width$}{blank}"));
-            assert!(!terminal.cursor().visible);
-        } else {
-            expected.push(size);
-            sized_to(&package, "Small", &expected);
+        match size {
+            None => {
+                shows_too_small(&mut terminal, rows, cols);
+                assert_eq!(settled_sizes(&package, "Small"), expected);
+            }
+            Some(size) => {
+                expected.push(size);
+                sized_to(&package, "Small", &expected);
+            }
         }
     }
     top_row_is(
         &mut terminal,
         &session_top_row(usize::from(COLS), "Small", &fields),
     );
-    assert_eq!(sizes(&package, "Small"), expected);
     assert_eq!(listed(&package, "Small")["state"]["controlled"], true);
-    terminal.resize(1, 120).unwrap();
-    top_row_is(&mut terminal, &format!("{:<120}", "Terminal too small"));
+    terminal.resize(3, 120).unwrap();
+    shows_too_small(&mut terminal, 3, 120);
     terminal.send("\x1dx").unwrap();
     terminal.wait_for_bytes(b"OUTER-DONE=0", TIMEOUT).unwrap();
-    // The outer shell's lines need more than one row to be read back.
+    // The outer shell's lines need more than three rows to be read back.
     terminal.resize(ROWS, COLS).unwrap();
     support::assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
@@ -2489,17 +2531,17 @@ fn without_key_hints_the_top_row_shows_no_hint() {
 /// Spec #73 Enter ("never exposing cached output") and CTL-05 (revoked):
 /// when another client takes control of the selected session, the monitor
 /// shows it is no longer controlling and no longer paints the session, so
-/// its now-cached screen never shows. Enter takes control back, and only
-/// the new restoration is painted.
+/// its now-cached screen never shows. The session's screen then changes
+/// while the other client controls it; Enter takes control back, and only
+/// the new restoration is painted, never the cache.
 #[test]
 fn a_revoked_session_shows_no_cached_output_until_enter_takes_control_again() {
     let package = Package::new();
     without_introduction(&package);
-    let id = headless(
-        &package,
-        "printf '\\033]2;Taken\\007VISIBLE\\r\\n'",
-        "finish",
-    );
+    let script = "printf '\\033]2;Taken\\007VISIBLE\\r\\n'; \
+         until [ -e \"$HOME/change\" ] || [ \"$SECONDS\" -ge 120 ]; do sleep 0.05; done; \
+         printf '\\033[2J\\033[HCHANGED\\r\\n'";
+    let id = headless(&package, script, "finish");
     let mut terminal = outer(&package, "c2 monitor");
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
@@ -2522,10 +2564,13 @@ fn a_revoked_session_shows_no_cached_output_until_enter_takes_control_again() {
     );
     shows(&mut terminal, &blank);
     assert!(!terminal.cursor().visible);
+    fs::write(package.isolation.home().join("change"), b"").unwrap();
+    attach.wait_for_text("CHANGED", TIMEOUT).unwrap();
 
     select(&mut terminal, "Taken", 0);
     top_row_is(&mut terminal, &controlling);
-    assert_eq!(terminal.row(1).trim_end(), "VISIBLE");
+    assert_eq!(terminal.row(1).trim_end(), "CHANGED");
+    assert_eq!(terminal.row(2).trim_end(), "");
     attach
         .wait_for_text("This session is being viewed elsewhere.", TIMEOUT)
         .unwrap();
