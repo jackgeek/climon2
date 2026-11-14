@@ -36,6 +36,9 @@ pub(super) enum Operation {
     Open(Open),
     /// Leave, naming the connection generation it leaves.
     Leave(u64),
+    /// Kill, with the families its auxiliary connection requires (#96):
+    /// unique, each relayed.
+    Kill(Families),
 }
 
 /// A monitor-mode Open's families, parsed once: unique, required and
@@ -92,6 +95,7 @@ unsafe fn operation(request: &native::Request, capacity: u64) -> Result<(Operati
     match request.tag {
         native::OPEN => unsafe { open(&request.args.open, capacity) },
         native::LEAVE => leave(unsafe { request.args.generation }),
+        native::KILL => unsafe { kill(request.args.required, capacity) },
         _ => Err(Failure::new(
             UNSUPPORTED_OPERATION,
             "this client library does not perform this request yet",
@@ -111,9 +115,28 @@ fn leave(generation: u64) -> Result<(Operation, u64), Failure> {
 unsafe fn open(open: &native::Open, capacity: u64) -> Result<(Operation, u64), Failure> {
     monitor(open)?;
     // SAFETY: guaranteed by the caller.
-    let lists = unsafe { Lists::read(open, capacity) }?;
+    let lists = unsafe { Lists::read(open.required, open.optional, capacity) }?;
     // SAFETY: as above; `read` bounded the lists.
-    unsafe { lists.open() }
+    let requested = unsafe { lists.tokens() }?;
+    Ok((Operation::Open(relayed(&requested)?), lists.bytes))
+}
+
+/// A Kill's required families, checked as an Open's are.
+///
+/// # Safety
+///
+/// As for [`parse`].
+unsafe fn kill(required: Tokens, capacity: u64) -> Result<(Operation, u64), Failure> {
+    let none = Tokens {
+        data: std::ptr::null(),
+        count: 0,
+    };
+    // SAFETY: guaranteed by the caller.
+    let lists = unsafe { Lists::read(required, none, capacity) }?;
+    // SAFETY: as above; `read` bounded the lists.
+    let requested = unsafe { lists.tokens() }?;
+    let required = relayed(&requested)?.requested.required().clone();
+    Ok((Operation::Kill(required), lists.bytes))
 }
 
 /// Monitor mode only: interactive Open arrives with #94.
@@ -150,10 +173,10 @@ impl<'a> Lists<'a> {
     /// # Safety
     ///
     /// As for [`parse`].
-    unsafe fn read(open: &native::Open, capacity: u64) -> Result<Self, Failure> {
+    unsafe fn read(required: Tokens, optional: Tokens, capacity: u64) -> Result<Self, Failure> {
         // SAFETY (both): guaranteed by the caller.
-        let required = unsafe { entries(open.required) }?;
-        let optional = unsafe { entries(open.optional) }?;
+        let required = unsafe { entries(required) }?;
+        let optional = unsafe { entries(optional) }?;
         let bytes = [required, optional]
             .into_iter()
             .flatten()
@@ -167,15 +190,6 @@ impl<'a> Lists<'a> {
                 bytes,
             })
             .ok_or(TOO_LARGE)
-    }
-
-    /// # Safety
-    ///
-    /// As for [`parse`].
-    unsafe fn open(&self) -> Result<(Operation, u64), Failure> {
-        // SAFETY: guaranteed by the caller.
-        let requested = unsafe { self.tokens() }?;
-        Ok((Operation::Open(relayed(&requested)?), self.bytes))
     }
 
     /// Every token nonempty UTF-8, each one once across both lists.

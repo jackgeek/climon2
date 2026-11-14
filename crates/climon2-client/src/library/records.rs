@@ -20,11 +20,13 @@ pub(super) const CHARGE: u64 = 2 * mem::size_of::<native::Record>() as u64;
 const _: () = assert!(mem::size_of::<Event>() <= mem::size_of::<native::Record>());
 const TOKEN: u64 = mem::size_of::<native::Bytes>() as u64;
 
-// SAFETY (all three): every field is an integer, a raw pointer or a union of
+// SAFETY (all four): every field is an integer, a raw pointer or a union of
 // them, for which zero (null) is a valid value.
 const NO_RECORD: native::Record = unsafe { mem::zeroed() };
 const NO_ERROR: native::Error = unsafe { mem::zeroed() };
 const NO_COMMAND: native::OptionalCommand = unsafe { mem::zeroed() };
+/// Unavailable: `status-v1` is never selected yet.
+const NO_STATUS: native::AvailableStatus = unsafe { mem::zeroed() };
 
 /// One record, as the library holds it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -35,6 +37,9 @@ pub(super) enum Event {
     Metadata(Metadata),
     /// A Title changed, by value; never unavailable.
     Title(Title),
+    /// The command's final result, after an Initial metadata that did not
+    /// know it (#96): status stays unavailable.
+    Final(Command),
     /// An explicit error the stream reports, such as a connection failure.
     Diagnostic(Fault),
 }
@@ -111,6 +116,26 @@ pub(super) enum Answer {
     },
     /// An initial role rejection's known command result.
     KnownFinal(Command),
+    /// What a Kill learned of termination: the command result, if known,
+    /// and the daemon's cleanup, `CM1_CLEANUP_*` (#96).
+    Termination {
+        command: Option<Command>,
+        cleanup: u32,
+    },
+}
+
+impl Answer {
+    /// Whether this result makes the command's final result known.
+    pub(super) fn concludes(&self) -> bool {
+        matches!(
+            self,
+            Self::KnownFinal(_)
+                | Self::Termination {
+                    command: Some(_),
+                    ..
+                }
+        )
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -212,6 +237,7 @@ impl Event {
                 metadata.title.bytes() + metadata.command.as_ref().map_or(0, Command::bytes)
             }
             Self::Title(title) => title.bytes(),
+            Self::Final(command) => command.bytes(),
             Self::Diagnostic(fault) => fault.bytes(),
         }
     }
@@ -221,7 +247,11 @@ impl Response {
     fn bytes(&self) -> u64 {
         let answer = match &self.answer {
             Answer::Opened { selected, .. } => TOKEN * selected.families().count() as u64,
-            Answer::KnownFinal(command) => command.bytes(),
+            Answer::KnownFinal(command)
+            | Answer::Termination {
+                command: Some(command),
+                ..
+            } => command.bytes(),
             _ => 0,
         };
         answer + self.outcome.fault().map_or(0, Fault::bytes)
@@ -288,6 +318,13 @@ fn record(
             record.tag = native::TITLE;
             record.data.title = title.native();
         }
+        Event::Final(command) => {
+            record.tag = native::FINAL;
+            record.data.r#final = native::Final {
+                command_result: command.native(),
+                status: NO_STATUS,
+            };
+        }
         Event::Diagnostic(fault) => {
             record.tag = native::DIAGNOSTIC;
             record.data.diagnostic = fault.error();
@@ -304,14 +341,7 @@ impl Metadata {
         // (null) is valid, and zero is "unavailable".
         let mut metadata: native::Metadata = unsafe { mem::zeroed() };
         metadata.title = self.title.native();
-        metadata.command_result =
-            self.command
-                .as_ref()
-                .map_or(NO_COMMAND, |command| native::OptionalCommand {
-                    present: u32::from(true),
-                    reserved: 0,
-                    value: command.native(),
-                });
+        metadata.command_result = optional(self.command.as_ref());
         metadata
     }
 }
@@ -341,9 +371,26 @@ impl Response {
                 response.result_tag = native::KNOWN_FINAL;
                 response.result.known_final = command.native();
             }
+            Answer::Termination { command, cleanup } => {
+                response.result_tag = native::TERMINATION;
+                response.result.termination = native::Termination {
+                    command_result: optional(command.as_ref()),
+                    cleanup: *cleanup,
+                    reserved: 0,
+                };
+            }
         }
         response
     }
+}
+
+/// An optional command result's native view: absent is all zero.
+fn optional(command: Option<&Command>) -> native::OptionalCommand {
+    command.map_or(NO_COMMAND, |command| native::OptionalCommand {
+        present: u32::from(true),
+        reserved: 0,
+        value: command.native(),
+    })
 }
 
 /// A list's native view: null and zero when empty, as every empty native

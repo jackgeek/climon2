@@ -13,8 +13,8 @@ use super::{
 use climon2_core::{
     native,
     wire::{
-        self, Available, ControlRecord, Counter, Families, Family, Frame, FrameLimit, KnownResult,
-        Mode, Requested, ServerMessage, Success,
+        self, Available, CommandFinal, ControlRecord, Counter, Families, Family, Frame, FrameLimit,
+        KnownResult, Mode, PartialTermination, Requested, ServerMessage, Success,
     },
 };
 
@@ -25,11 +25,15 @@ const UNEXPECTED: Fault = Fault::transport(
     "invalid_record",
     "the session daemon sent a record out of order or for an unselected family",
 );
-const MISMATCHED: Fault = Fault::transport(
+pub(super) const MISMATCHED: Fault = Fault::transport(
     "invalid_record",
     "a response's result does not belong to its request",
 );
-const UNCORRELATED: Fault = Fault::transport(
+const REPEATED: Fault = Fault::transport(
+    "invalid_record",
+    "the session daemon reported the command's final result again",
+);
+pub(super) const UNCORRELATED: Fault = Fault::transport(
     "invalid_request_id",
     "a response names no unanswered request",
 );
@@ -129,7 +133,8 @@ impl Effect {
     pub(super) fn concludes(&self) -> bool {
         match self {
             Self::Record(Event::Metadata(metadata)) => metadata.command.is_some(),
-            Self::Opened(response, _) => matches!(response.answer, Answer::KnownFinal(_)),
+            Self::Record(Event::Final(_)) => true,
+            Self::Opened(response, _) => response.answer.concludes(),
             _ => false,
         }
     }
@@ -144,6 +149,9 @@ pub(super) struct Stream {
     title: Option<bool>,
     /// Whether the Initial metadata arrived.
     synchronized: bool,
+    /// Whether the command's final result is known, from the Initial
+    /// metadata or a Command final.
+    known: bool,
 }
 
 impl Stream {
@@ -154,6 +162,7 @@ impl Stream {
             pending: Vec::new(),
             title: None,
             synchronized: false,
+            known: false,
         }
     }
 
@@ -225,6 +234,12 @@ impl Stream {
             .any(|(_, sent)| matches!(sent, Sent::Leave { .. }))
     }
 
+    /// Whether the command's final result is known: the daemon may then
+    /// close the stream cleanly (owner decision on #94).
+    pub(super) fn known(&self) -> bool {
+        self.known
+    }
+
     /// Whether the Initial metadata arrived.
     pub(super) fn synchronized(&self) -> bool {
         self.synchronized
@@ -247,11 +262,13 @@ impl Stream {
         }
     }
 
-    /// Initial metadata, then title changes; nothing else is selected.
+    /// Initial metadata, then title changes and the command's final
+    /// result; nothing else is selected.
     fn report(&mut self, message: ServerMessage) -> Result<Event, Fault> {
         match message {
             ServerMessage::InitialMetadata(metadata) => self.initial(&metadata),
             ServerMessage::TitleChanged(changed) => self.changed(changed.title.as_deref()),
+            ServerMessage::CommandFinal(finished) => self.finished(&finished),
             _ => Err(UNEXPECTED),
         }
     }
@@ -262,7 +279,7 @@ impl Stream {
 
     fn respond(&mut self, response: wire::Response) -> Result<Effect, Fault> {
         let sent = self.answered(response.request_id)?;
-        Verdict::from(response.outcome).and_then(|verdict| self.resolve(sent, verdict))
+        self.resolve(sent, Verdict::from(response.outcome))
     }
 
     fn resolve(&mut self, sent: Sent, verdict: Verdict) -> Result<Effect, Fault> {
@@ -312,7 +329,7 @@ impl Stream {
                 selected_capabilities,
             }) => self.selected(&connection_id, &selected_capabilities, sent),
             Carried::KnownFinal(result) => Ok(Answer::KnownFinal(Command::from(&result))),
-            Carried::Success(_) => Err(MISMATCHED),
+            Carried::Success(_) | Carried::Termination(_) => Err(MISMATCHED),
         }
     }
 
@@ -334,7 +351,17 @@ impl Stream {
         require(self.awaiting_metadata(), UNEXPECTED)?;
         let event = self.metadata(metadata)?;
         self.synchronized = true;
+        self.known = metadata.command_result().is_some();
         Ok(event)
+    }
+
+    /// One Command final, after the Initial metadata, while the result is
+    /// unknown; its status is null, since `status-v1` is never selected.
+    fn finished(&mut self, finished: &CommandFinal) -> Result<Event, Fault> {
+        require(self.synchronized && finished.status().is_none(), UNEXPECTED)?;
+        require(!self.known, REPEATED)?;
+        self.known = true;
+        Ok(Event::Final(Command::from(finished.command_result())))
     }
 
     /// Status and progress are never selected yet, so both must be
@@ -400,35 +427,37 @@ fn left(id: Option<u64>, verdict: Verdict) -> Result<Effect, Fault> {
     Ok(Effect::Left(response, departure))
 }
 
-/// What a response may carry: an operation's result, or a rejection's
-/// known final command result.
+/// What a response may carry: an operation's result, a rejection's known
+/// final command result, or a failed or indeterminate Kill's partial
+/// termination. Whether it belongs to its request is the resolver's to say.
 #[derive(Debug)]
-enum Carried {
+pub(super) enum Carried {
     Success(Success),
     KnownFinal(wire::CommandResult),
+    Termination(PartialTermination),
 }
 
 /// A response's outcome, the result it carries and, for a non-success, the
 /// retry its error calls for.
-struct Verdict {
-    outcome: Outcome,
-    carried: Option<Carried>,
-    retry: Retry,
+pub(super) struct Verdict {
+    pub(super) outcome: Outcome,
+    pub(super) carried: Option<Carried>,
+    pub(super) retry: Retry,
 }
 
 impl Verdict {
-    fn from(outcome: wire::Outcome) -> Result<Self, Fault> {
+    pub(super) fn from(outcome: wire::Outcome) -> Self {
         match outcome {
-            wire::Outcome::Ok(success) => Ok(Self {
+            wire::Outcome::Ok(success) => Self {
                 outcome: Outcome::Ok,
                 carried: Some(Carried::Success(success)),
                 retry: Retry::None,
-            }),
-            wire::Outcome::Rejected(rejection) => Ok(Self::of(
+            },
+            wire::Outcome::Rejected(rejection) => Self::of(
                 Outcome::Rejected,
                 &rejection.error,
                 rejection.known_final.map(Carried::KnownFinal),
-            )),
+            ),
             wire::Outcome::Failed(failure) => Self::failure(Outcome::Failed, &failure),
             wire::Outcome::Indeterminate(failure) => {
                 Self::failure(Outcome::Indeterminate, &failure)
@@ -445,14 +474,13 @@ impl Verdict {
         }
     }
 
-    /// A failed or indeterminate outcome keeps a known result of its own
-    /// operation; a Kill's partial termination belongs to no request here.
-    fn failure(outcome: fn(Fault) -> Outcome, failure: &wire::Failure) -> Result<Self, Fault> {
-        let carried = match failure.known() {
-            None => None,
-            Some(KnownResult::Operation(success)) => Some(Carried::Success(success.clone())),
-            Some(KnownResult::Termination(_)) => return Err(MISMATCHED),
-        };
-        Ok(Self::of(outcome, failure.error(), carried))
+    /// A failed or indeterminate outcome keeps what it knows of its
+    /// operation.
+    fn failure(outcome: fn(Fault) -> Outcome, failure: &wire::Failure) -> Self {
+        let carried = failure.known().map(|known| match known {
+            KnownResult::Operation(success) => Carried::Success(success.clone()),
+            KnownResult::Termination(termination) => Carried::Termination(termination.clone()),
+        });
+        Self::of(outcome, failure.error(), carried)
     }
 }

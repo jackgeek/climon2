@@ -19,6 +19,7 @@ fn rejections() -> Vec<(Value, (u64, &'static str))> {
     let unsupported = (UNSUPPORTED_OPERATION, "unsupported_operation");
     let unrelayed = (UNSUPPORTED_OPERATION, "unsupported_capability");
     let monitor = |open: Value| json!({ "tag": "open", "request_id": 7, "open": open });
+    let killing = |required: Value| json!({ "tag": "kill", "request_id": 7, "required": required });
     let lists = |required: Value, optional: Value| {
         monitor(json!({ "mode": 1, "required": required, "optional": optional }))
     };
@@ -77,8 +78,13 @@ fn rejections() -> Vec<(Value, (u64, &'static str))> {
             json!({ "tag": "leave", "request_id": 7, "generation": 0 }),
             invalid,
         ),
+        (killing(json!({ "null": 1 })), invalid),
+        (killing(json!({ "dangling": 0 })), invalid),
+        (killing(json!([""])), invalid),
+        (killing(json!(["title-v1", "title-v1"])), invalid),
+        (killing(json!(["status-v1"])), unrelayed),
     ];
-    for tag in [2, 3, 4, 5, 6, 7, 9, 10] {
+    for tag in [2, 3, 4, 5, 6, 7, 10] {
         rejected.push((json!({ "tag": tag, "request_id": 7 }), unsupported));
     }
     rejected
@@ -91,7 +97,7 @@ fn filled(mut request: Value) -> Value {
     request
 }
 
-/// The two requests a `cancelled` scenario accepted, each answered
+/// The requests a `cancelled` scenario accepted, each answered
 /// `cancelled` by shutdown before any of them executed, then terminal
 /// evidence of an instance that stopped with no role.
 fn assert_cancelled(finish: &Value, ids: &[u64]) -> Vec<Value> {
@@ -110,8 +116,10 @@ fn assert_cancelled(finish: &Value, ids: &[u64]) -> Vec<Value> {
 /// and closed rejections are synchronous, consume no request ID and retain
 /// no arguments): each invalid request of public ID 7, or a null one, is
 /// rejected with its stable code, and ID 7 is accepted afterwards; an Open
-/// (with a one-byte optional token it does not relay) and a Leave whose
-/// every byte they do not set is 0xa5 are accepted; an ID
+/// (with a one-byte optional token it does not relay), a Leave and a Kill
+/// (#96: its required list checked as an Open's, an unrelayed family
+/// `unsupported_capability`) whose every byte they do not set is 0xa5 are
+/// accepted; an ID
 /// that does not increase is `invalid_request_id`; only the accepted
 /// requests are ever charged; after shutdown `submit` is `closed`; and each
 /// accepted request that never executed is answered `cancelled`.
@@ -129,6 +137,7 @@ fn installed_library_admits_only_valid_requests_and_rejections_cost_nothing() {
     steps.extend([
         json!({ "do": "submit", "request": filled(open(7, &REQUIRED, &["title-v1", "x"])) }),
         json!({ "do": "submit", "request": filled(leave(9, 1)) }),
+        json!({ "do": "submit", "request": filled(kill(10, &["daemon-wire-v1"])) }),
         json!({ "do": "submit", "request": open(9, &REQUIRED, &[]) }),
         json!({ "do": "submit", "request": leave(8, 1) }),
         json!({ "do": "snapshot" }),
@@ -147,23 +156,26 @@ fn installed_library_admits_only_valid_requests_and_rejections_cost_nothing() {
     let accepted = rejected.len() + 1;
     assert_success(step(&report, accepted));
     assert_success(step(&report, accepted + 1));
-    for repeated in [accepted + 2, accepted + 3] {
+    assert_success(step(&report, accepted + 2));
+    for repeated in [accepted + 3, accepted + 4] {
         assert_failure(
             step(&report, repeated),
             INVALID_REQUEST_ID,
             "invalid_request_id",
         );
     }
-    let queued = &step(&report, accepted + 4)["output"];
-    let bytes = charge(&["daemon-wire-v1", "monitor-v1", "title-v1", "x"]) + REQUEST;
-    assert_eq!(queued["request_records"], 2, "{queued:#}");
-    assert_eq!(queued["peak_request_records"], 2, "{queued:#}");
+    let queued = &step(&report, accepted + 5)["output"];
+    let bytes = charge(&["daemon-wire-v1", "monitor-v1", "title-v1", "x"])
+        + REQUEST
+        + charge(&["daemon-wire-v1"]);
+    assert_eq!(queued["request_records"], 3, "{queued:#}");
+    assert_eq!(queued["peak_request_records"], 3, "{queued:#}");
     assert_eq!(queued["request_bytes"], bytes, "{queued:#}");
     assert_eq!(queued["peak_request_bytes"], bytes, "{queued:#}");
-    assert_eq!(queued["operations"], 2, "{queued:#}");
-    assert_success(step(&report, accepted + 5));
-    assert_failure(step(&report, accepted + 6), CLOSED, "closed");
-    assert_cancelled(step(&report, accepted + 8), &[7, 9]);
+    assert_eq!(queued["operations"], 3, "{queued:#}");
+    assert_success(step(&report, accepted + 6));
+    assert_failure(step(&report, accepted + 7), CLOSED, "closed");
+    assert_cancelled(step(&report, accepted + 9), &[7, 9, 10]);
     assert_all_released(&report["ledger"]);
     package.assert_clean();
 }
