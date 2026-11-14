@@ -2664,7 +2664,8 @@ fn record_lines() -> ! {
 /// set the window title: `title TEXT`, `title-empty`, `title-bytes N` (N
 /// UTF-8 bytes, `é` repeated) and `titles A B` (`t-A` through `t-B` in one
 /// write); `text TEXT` prints TEXT as a line, `colors N` prints `N` rows
-/// whose every cell changes colour, `reset` is `ESC c`, and `exit` ends the
+/// whose every cell changes colour, `print TEXT` prints TEXT with each `\e`
+/// replaced by ESC and no line end, `reset` is `ESC c`, and `exit` ends the
 /// fixture with status 0, `exit N` with status `N` and `signal N` by signal
 /// `N`.
 fn follow_script() -> ! {
@@ -2710,6 +2711,10 @@ fn follow_script() -> ! {
                 }
                 ["title", ..] => write!(out, "\x1b]2;{}\x07", &command["title ".len()..]).unwrap(),
                 ["text", ..] => write!(out, "{}\r\n", &command["text ".len()..]).unwrap(),
+                ["print", ..] => {
+                    let text = command["print ".len()..].replace("\\e", "\x1b");
+                    write!(out, "{text}").unwrap();
+                }
                 ["colors", rows] => {
                     for _ in 0..rows.parse().unwrap() {
                         for cell in 0..90 {

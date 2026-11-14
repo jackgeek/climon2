@@ -16,6 +16,7 @@ use crate::{
         Restoration, SessionEnd,
     },
     pty::Pty,
+    status::{self, Clock, Detector, Now, Sample, Screen, SystemRandom},
 };
 use climon2_core::{
     hello::{SessionState, advertise_revision1},
@@ -82,6 +83,12 @@ struct Session<'a, C> {
     initial_deadline: Instant,
     finish_deadline: Option<Instant>,
     socket_freshness: SocketFreshness,
+    /// The status detector's clock, read once at the start of each turn.
+    clock: Box<dyn Clock>,
+    /// This turn's clock reading.
+    moment: Now,
+    /// Activity, attention and the effective status they report.
+    status: Detector<SystemRandom>,
 }
 
 pub(crate) fn serve(
@@ -92,6 +99,9 @@ pub(crate) fn serve(
     cleanup: impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
     let vt = session_vt(options)?;
+    let mut clock = status::daemon_clock();
+    let moment = clock.now();
+    let status = Detector::new(&moment, sample(&vt), status::first_episode(), SystemRandom);
     let result = Session {
         options,
         listener,
@@ -115,6 +125,9 @@ pub(crate) fn serve(
         initial_deadline: Instant::now() + INITIAL_TIMEOUT,
         finish_deadline: None,
         socket_freshness: SocketFreshness::new(&options.socket, Instant::now()),
+        clock,
+        moment,
+        status,
     }
     .run();
     end_pty(pty, result)
@@ -128,6 +141,20 @@ fn session_vt(options: &Options) -> io::Result<Vt> {
         default_title: default_title(&options.command, &options.arguments),
     };
     Ok(Vt::new(geometry, config))
+}
+
+/// What a status sample reads: the active viewport's characters and size,
+/// and the application's title.
+fn sample(vt: &Vt) -> Sample {
+    let geometry = vt.geometry();
+    Sample {
+        screen: Screen {
+            cols: geometry.cols(),
+            rows: geometry.rows(),
+            characters: vt.viewport(),
+        },
+        title: vt.application_title().map(str::to_owned),
+    }
 }
 
 fn end_pty(pty: &mut Pty, result: io::Result<()>) -> io::Result<()> {
@@ -146,11 +173,15 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
+    /// One turn: the status clock is read once at its start, so the turn's
+    /// input comes before its timer and sample work.
     fn tick(&mut self, now: Instant) -> io::Result<bool> {
+        self.moment = self.clock.now();
         self.socket_freshness.refresh(now)?;
         self.incoming()?;
         self.pump(now)?;
         self.outgoing(now)?;
+        self.clock.settled();
         Ok(self.finished(now))
     }
 
@@ -279,6 +310,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             return;
         }
         self.pty_writes.input(id, bytes);
+        self.user_input();
     }
 
     fn protocol_failure(&mut self, id: u64, failure: Failure) -> io::Result<()> {
@@ -377,6 +409,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn output(&mut self, now: Instant) -> io::Result<()> {
         self.read_pty(now)?;
+        self.observe_status();
         self.end_sync(now);
         self.start_restorations(now);
         self.deliver(now);

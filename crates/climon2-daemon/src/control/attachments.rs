@@ -54,6 +54,9 @@ pub(super) struct Controller {
     phase: Phase,
     /// The desired application focus in this control period, once known.
     focus: Option<bool>,
+    /// The latest viewing this control period reported; a new period, of
+    /// a grant, a takeover or a hand-back, starts not viewing.
+    viewing: bool,
 }
 
 impl Controller {
@@ -72,6 +75,7 @@ impl Controller {
             restoration_host: attachment.host,
             phase: Phase::Restoring { complete: false },
             focus: None,
+            viewing: false,
         };
         (controller, grant)
     }
@@ -131,6 +135,19 @@ impl Controller {
 
     pub fn desired_focus(&self) -> Option<bool> {
         self.focus
+    }
+
+    /// Records the latest reported viewing; true when it changed.
+    pub fn set_viewing(&mut self, conn: ConnectionId, viewing: bool) -> bool {
+        let changed = self.conn() == conn && self.viewing != viewing;
+        if changed {
+            self.viewing = viewing;
+        }
+        changed
+    }
+
+    pub fn viewing(&self) -> bool {
+        self.viewing
     }
 
     pub fn host(&self) -> TerminalSize {
