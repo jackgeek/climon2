@@ -275,13 +275,13 @@ impl State {
     /// Takes every pending command; false once shutdown is asked for.
     fn commands(&mut self, commands: &Receiver<Command>) -> bool {
         loop {
-            let more = match commands.try_recv() {
-                Ok(command) => self.command(command),
-                Err(TryRecvError::Disconnected) => false,
-                Err(TryRecvError::Empty) => return true,
-            };
-            if !more {
-                return false;
+            match commands.try_recv() {
+                Ok(command) => {
+                    if !self.command(command) {
+                        return false;
+                    }
+                }
+                Err(error) => return error == TryRecvError::Empty,
             }
         }
     }
@@ -304,9 +304,30 @@ impl State {
         self.waiting.insert(key, metadata);
     }
 
-    /// Submits `request` through an open client and remembers it until its
-    /// answer; anything else is answered at once with why not.
+    /// Submits `request` through an open client, input in chunks of at most
+    /// `chunk_bytes`, in order. The first refusal is answered at once with
+    /// why, carrying every byte not submitted, and nothing after it is
+    /// submitted.
     fn submit(&mut self, id: &SessionId, request: Request) {
+        let chunk = self.context.limits.chunk_bytes as usize;
+        let mut unsent: Option<(Request, String)> = None;
+        for request in split(request, chunk) {
+            match unsent.as_mut() {
+                Some((refused, _)) => absorb(refused, request),
+                None => unsent = self.submit_one(id, request).err(),
+            }
+        }
+        if let Some((request, why)) = unsent {
+            self.tell(
+                id,
+                ClientEvent::Presentation(Presentation::Answered(request, Err(why))),
+            );
+        }
+    }
+
+    /// Submits one request and remembers it until its answer. A refused
+    /// request consumes no request ID.
+    fn submit_one(&mut self, id: &SessionId, request: Request) -> Result<(), (Request, String)> {
         let open = self
             .instances
             .get_mut(id)
@@ -314,20 +335,17 @@ impl State {
                 Phase::Open(live) => Some((live, instance)),
                 _ => None,
             });
-        let submitted = open.map_or_else(
-            || Err("the session's client is not connected".to_owned()),
-            |(live, instance)| {
-                let request_id = instance.next;
+        let Some((live, instance)) = open else {
+            return Err((request, "the session's client is not connected".to_owned()));
+        };
+        let request_id = instance.next;
+        match live.client.submit(request_id, &request) {
+            Ok(()) => {
                 instance.next += 1;
                 instance.pending.insert(request_id, request);
-                live.client.submit(request_id, request)
-            },
-        );
-        if let Err(why) = submitted {
-            self.tell(
-                id,
-                ClientEvent::Presentation(Presentation::Answered(request, Err(why))),
-            );
+                Ok(())
+            }
+            Err(why) => Err((request, why)),
         }
     }
 
@@ -649,3 +667,22 @@ fn wait(table: &mut [libc::pollfd]) {
 
 #[cfg(test)]
 mod tests;
+
+/// The requests `request` is submitted as: input in chunks of at most
+/// `chunk` bytes (the library refuses larger ones), anything else whole.
+fn split(request: Request, chunk: usize) -> Vec<Request> {
+    match request {
+        Request::Input(authority, bytes) => bytes
+            .chunks(chunk)
+            .map(|bytes| Request::Input(authority, bytes.to_vec()))
+            .collect(),
+        request => vec![request],
+    }
+}
+
+/// Adds a later chunk's bytes to the refused input they follow.
+fn absorb(refused: &mut Request, request: Request) {
+    if let (Request::Input(_, unsent), Request::Input(_, more)) = (refused, request) {
+        unsent.extend(more);
+    }
+}

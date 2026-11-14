@@ -18,7 +18,7 @@ pub(crate) struct Authority {
 }
 
 /// A request the monitor submits through the session's client.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Request {
     /// Take control: explicit selection.
     Acquire,
@@ -26,6 +26,9 @@ pub(crate) enum Request {
     Ready(Authority),
     /// The selected controller's desired application area.
     Resize(Authority, TerminalSize),
+    /// Application input for the ready controller, at most `chunk_bytes`
+    /// once submitted. Refused, it carries the bytes that were not sent.
+    Input(Authority, Vec<u8>),
 }
 
 /// What the session's client reported about control and display. The
@@ -46,6 +49,18 @@ pub(crate) enum Presentation {
     Answered(Request, Result<(), String>),
     /// The client's connection ended.
     Ended,
+}
+
+/// How a refusal of `request` is shown: refused input says how much was not
+/// sent, and that the input before it was accepted.
+fn refusal(request: &Request, error: String) -> String {
+    match request {
+        Request::Input(_, unsent) => format!(
+            "Input not sent ({} bytes; earlier input was accepted): {error}",
+            unsent.len()
+        ),
+        _ => error,
+    }
 }
 
 /// The control the monitor holds, as the top row names it.
@@ -234,35 +249,37 @@ impl Terminal {
         if request == Request::Acquire {
             self.acquiring = false;
         }
-        match (answer, self.current(request)) {
-            (Ok(()), _) => self.accepted(request),
-            (Err(error), true) => self.error = Some(error),
-            (Err(_), false) => self.superseded(request),
+        match (answer, self.current(&request)) {
+            (Ok(()), _) => self.accepted(&request),
+            (Err(error), true) => self.error = Some(refusal(&request, error)),
+            (Err(_), false) => self.superseded(&request),
         }
     }
 
     /// Whether `request`'s authority is the one held; Acquire has none.
-    fn current(&self, request: Request) -> bool {
-        match request {
+    fn current(&self, request: &Request) -> bool {
+        match *request {
             Request::Acquire => true,
-            Request::Ready(authority) | Request::Resize(authority, _) => {
+            Request::Ready(authority)
+            | Request::Resize(authority, _)
+            | Request::Input(authority, _) => {
                 self.held.is_some_and(|held| held.authority == authority)
             }
         }
     }
 
-    fn superseded(&mut self, request: Request) {
+    fn superseded(&mut self, request: &Request) {
         if let (Request::Resize(..), Some(held)) = (request, self.held.as_mut()) {
             held.resized = None;
         }
     }
 
     /// Ready accepted for the restoration still applied.
-    fn accepted(&mut self, request: Request) {
+    fn accepted(&mut self, request: &Request) {
         let Some(held) = self.held.as_mut() else {
             return;
         };
-        if let (Request::Ready(authority), Phase::Applied { painted, .. }) = (request, held.phase)
+        if let (&Request::Ready(authority), Phase::Applied { painted, .. }) = (request, held.phase)
             && authority == held.authority
         {
             held.phase = Phase::Applied {
@@ -679,6 +696,35 @@ mod tests {
             Err("late".into()),
         ));
         assert_eq!(terminal.error(), Some("invalid"));
+    }
+
+    /// COM-03 queue-full and COM-04 typed cases (pure supplement): input
+    /// refused under the current authority is shown with how many bytes
+    /// were not sent, and that the input before them was accepted; input
+    /// refused under a superseded authority is not an error.
+    #[test]
+    fn refused_input_shows_what_was_not_sent() {
+        let mut terminal = restored(b"x");
+        terminal.present(Presentation::Answered(
+            Request::Input(authority(2, 2), b"old".to_vec()),
+            Err("stale".into()),
+        ));
+        assert_eq!(terminal.error(), None);
+        terminal.present(Presentation::Answered(
+            Request::Input(authority(2, 3), b"abc".to_vec()),
+            Ok(()),
+        ));
+        assert_eq!(terminal.error(), None);
+        terminal.present(Presentation::Answered(
+            Request::Input(authority(2, 3), b"def".to_vec()),
+            Err("full: the request does not fit".into()),
+        ));
+        assert_eq!(
+            terminal.error(),
+            Some(
+                "Input not sent (3 bytes; earlier input was accepted): full: the request does not fit"
+            )
+        );
     }
 
     /// The top row names each control as #108 shows it.

@@ -106,9 +106,10 @@ impl Client {
     }
 
     /// Submits `request` as `request_id` under the opened generation.
-    pub(super) fn submit(&self, request_id: u64, request: Request) -> Result<(), String> {
+    pub(super) fn submit(&self, request_id: u64, request: &Request) -> Result<(), String> {
         let request = native_request(request_id, request);
-        // SAFETY: a live communication handle and a complete request.
+        // SAFETY: a live communication handle and a complete request whose
+        // input bytes outlive the call, which copies them.
         checked(unsafe { (self.functions.submit)(self.communication, &request) })
     }
 
@@ -164,9 +165,9 @@ fn read(id: &SessionId, record: &native::Record) -> Vec<ClientEvent> {
         .map_or_else(Vec::new, |(_, reader)| reader(id, record))
 }
 
-/// The native request for `request`.
-fn native_request(request_id: u64, request: Request) -> native::Request {
-    let (tag, args) = match request {
+/// The native request for `request`, borrowing its input bytes.
+fn native_request(request_id: u64, request: &Request) -> native::Request {
+    let (tag, args) = match *request {
         Request::Acquire => (
             native::ACQUIRE,
             native::RequestArgs {
@@ -177,6 +178,18 @@ fn native_request(request_id: u64, request: Request) -> native::Request {
             native::READY,
             native::RequestArgs {
                 authority: native_authority(held),
+            },
+        ),
+        Request::Input(held, ref bytes) => (
+            native::INPUT,
+            native::RequestArgs {
+                input: native::Input {
+                    authority: native_authority(held),
+                    bytes: Bytes {
+                        data: bytes.as_ptr(),
+                        length: bytes.len() as u64,
+                    },
+                },
             },
         ),
         Request::Resize(held, size) => (
