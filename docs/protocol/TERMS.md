@@ -304,6 +304,13 @@ soname as one library.
 Stdin, stdout, and stderr are a process's standard input, output, and diagnostic
 streams.
 
+## Synchronized update
+
+A span of terminal output that an application brackets with the
+synchronized-output mode (DEC private mode 2026) so the terminal shows it as
+one coherent frame: output inside the span is held until the application ends
+it.
+
 ## Toast
 
 A brief on-screen notification. The planned monitor's

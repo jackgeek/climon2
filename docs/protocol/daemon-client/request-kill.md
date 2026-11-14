@@ -76,10 +76,15 @@ has a role, such as a registered
 
 A valid standalone Kill gives its connection the Kill role, which is not an
 [attachment](../../../GLOSSARY.md#attachment-and-control), and commits the
-session's termination at once, as the private protocol's kill does: the
-command's terminal is hung up, new interactive work is refused, and after the
+session's termination at once, as the private protocol's kill does: new
+interactive work is refused, the command's terminal is hung up, and after the
 five-second [hang-up grace](../../../GLOSSARY.md#attachment-and-control) the
-daemon kills what remains of the command's terminal session and cleans up. A
+daemon kills what remains of the command's terminal session and cleans up.
+If the command already exited and its remaining output is still being
+drained, the hang-up waits for that drain: the output and then
+[Command final](event-command-final.md#implemented-behavior) reach the
+connections first (owner decision on
+[#88](https://github.com/jackgeek/climon2/issues/88), 2026-11-14). A
 Kill of either protocol sent while termination is committed joins it without
 restarting the grace. Every Kill is answered once the session has ended, at
 once if it already had:

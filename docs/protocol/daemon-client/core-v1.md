@@ -304,7 +304,8 @@ When terminal status and result are both present, completed requires normal
 exit zero and failed requires nonzero exit or signal. No later event
 revives terminal activity/attention. Command final follows the command's
 terminal output: once a connection receives it, no more of the command's
-output follows on that connection (owner decision on
+output follows on that connection, and a termination that comes after the
+command exited waits for its output to drain (owner decisions on
 [#88](https://github.com/jackgeek/climon2/issues/88), 2026-11-14).
 
 ### Implemented authority checks
@@ -476,7 +477,8 @@ for interactive attachments the record order under partial I/O, binary
 Input header failures, stale authority and readiness, arbitrary bytes, paste
 closure, query authority, inert titles, Focus, and takeover, hand-back and
 leave-policy parity. They also cover exit versus signal in Command final,
-Command final after the command's last output,
+Command final after the command's last output, also when a Kill arrives
+before that output drained,
 known results in Initial metadata and first-role rejections, no final
 without evidence (an unconfirmed hang-up, or the end of the command's output
 while it runs), and standalone Kill: its answer after termination and

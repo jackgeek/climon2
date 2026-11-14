@@ -77,12 +77,18 @@ output can follow:
   the drain. It sends Command final in the same step that delivered the
   drained output, after that output's Display and Title changed records, so
   at most about 1 s after the reap.
-- When a [hang-up grace](../../../GLOSSARY.md#attachment-and-control) ends the
-  session, begun by a [Kill](request-kill.md), a final unexpected departure, a
-  failure or the initial-attachment deadline, the daemon stops reading the
-  command's terminal as the grace begins. It sends Command final when it
-  confirms the end of the grace, 5 s later, or when it cannot confirm it but
-  had already reaped the command.
+- A [Kill](request-kill.md), a final unexpected departure, a failure (such
+  as a failed read of the command's terminal) or the initial-attachment
+  deadline that comes after the command exited does not cut that drain
+  short: the daemon finishes the drain, delivers the drained output and
+  sends Command final as above, and only then begins the
+  [hang-up grace](../../../GLOSSARY.md#attachment-and-control) of the
+  session's termination (owner decision on
+  [#88](https://github.com/jackgeek/climon2/issues/88), 2026-11-14).
+- When the hang-up grace begins while the command still runs, the daemon
+  stops reading the command's terminal as the grace begins. It sends
+  Command final when it confirms the end of the grace, 5 s later, or when it
+  cannot confirm it but had already reaped the command.
 
 Every connection that opened then
 receives it once, each
@@ -113,10 +119,12 @@ still in progress when the drain ends sends the rest of its Display, and the
 live output held back behind it, after Command final, as does the update
 of a controller under
 [derived presentation](../../../GLOSSARY.md#restoration-and-presentation)
-held back by an open synchronized update; a grant after Command
-final replays the screen in its restoration. Whether Command final also
-waits for these is an open owner question on
-[#88](https://github.com/jackgeek/climon2/issues/88). Neither the end of the command's terminal output
+held back by an open [synchronized update](../TERMS.md#synchronized-update);
+a grant after Command final replays the screen in its restoration. Holding
+Command final until no restoration is in progress and no synchronized update
+is held is follow-up
+[#203](https://github.com/jackgeek/climon2/issues/203); the replay after a
+later grant stays. Neither the end of the command's terminal output
 while the command still runs nor the end of a stream is a result. When the
 daemon never learns how the command ended, because its hang-up or the kill
 of what remained of the command's terminal session failed before it reaped
