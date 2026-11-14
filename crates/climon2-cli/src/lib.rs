@@ -9,6 +9,7 @@ mod monitor;
 use climon2_core::{
     cli::{CliArgs, CommandArgs},
     layout::HomeLayout,
+    lifetime::Lifetime,
     selector::Selector,
 };
 use climon2_platform::{
@@ -84,9 +85,9 @@ fn home() -> io::Result<PathBuf> {
     runtime::canonical_home(layout.root())
 }
 
-/// Arguments exclude argv[0]. Success is a final status, except successful exec
-/// or attach, which replace this process with the metadata version's client, and
-/// monitor, which replaces it with this version's monitor.
+/// Arguments exclude argv[0]. Success is a final status, except successful
+/// ordinary exec or attach, which replace this process with the metadata
+/// version's client, and monitor, which replaces it with this version's monitor.
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> {
     let arguments =
         CliArgs::parse(arguments).map_err(|error| Error::new(error.exit_code(), error))?;
@@ -101,7 +102,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> 
 
 /// The subcommands that need a home; help and version are answered here.
 enum Work {
-    Exec(CommandArgs),
+    Exec(Lifetime, CommandArgs),
     List { json: bool },
     Handoff(Handoff),
 }
@@ -116,7 +117,7 @@ enum Handoff {
 
 fn work(arguments: CliArgs) -> Result<Work, String> {
     match arguments {
-        CliArgs::Exec(command) => Ok(Work::Exec(command)),
+        CliArgs::Exec { lifetime, command } => Ok(Work::Exec(lifetime, command)),
         CliArgs::List { json } => Ok(Work::List { json }),
         other => handoff(other).map(Work::Handoff),
     }
@@ -154,7 +155,7 @@ fn logged_run(work: Work) -> Result<u32, Error> {
 
 fn command(work: Work, home: &Path, general: &LogFile, filter: Option<&str>) -> Result<u32, Error> {
     match work {
-        Work::Exec(command) => exec::run(home, command, general, filter),
+        Work::Exec(lifetime, command) => exec::run(home, lifetime, command, general, filter),
         Work::List { json } => list::run(home, json).map(|()| 0).map_err(Error::from),
         Work::Handoff(handoff) => handoff.run(home),
     }

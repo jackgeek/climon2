@@ -32,12 +32,12 @@ pub use request::{
     Acknowledge, Acquire, Focus, Kill, Leave, Mode, Open, Ready, Request, Resize, SetViewing,
 };
 pub use response::{
-    Cleanup, Failure, FocusBytes, KnownResult, Outcome, PartialCleanup, PartialTermination,
-    Rejection, Response, Success,
+    AuthorityResult, Cleanup, Failure, FocusBytes, KnownResult, Outcome, PartialCleanup,
+    PartialTermination, Rejection, Response, Success,
 };
 pub use server::{
     ActualGeometry, CommandFinal, ControlGranted, ControlRevoked, FatalError, GrantReason,
     InitialMetadata, Notification, NotificationSource, ProgressChanged, RestorationBegin,
     RestorationComplete, RevocationReason, ServerMessage, StatusChanged, TitleChanged,
 };
-pub use types::{Counter, Geometry, Utc};
+pub use types::{AuthorityIds, Counter, Geometry, Utc};

@@ -1,8 +1,10 @@
 # Response — `0x40`
 
-**Status: agreed; implemented for Open, Leave and every rejection the
+**Status: agreed; implemented for the results of Open, Input, Resize,
+Acquire, Ready, Leave and Focus and for every rejection the
 [session daemon](../../../GLOSSARY.md#sessions) sends**, owned by [#67](https://github.com/jackgeek/climon2/issues/67);
-the other operations' results arrive with their operations.
+the Set viewing, Acknowledge and Kill results arrive with their operations,
+and the daemon sends no `failed` or `indeterminate` outcome yet.
 The [session daemon](../../../GLOSSARY.md#sessions) answers a
 [client](../../../GLOSSARY.md#sessions) request.
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),

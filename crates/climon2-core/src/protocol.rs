@@ -253,7 +253,8 @@ pub enum ClientMessage {
     Input(Vec<u8>),
     Resize(TerminalSize),
     TakeControl,
-    /// Restoration for this control period is written; enable input.
+    /// The restoration with this ID is written; enable input. The session
+    /// daemon's restoration ID keeps this wire field's old name, `period`.
     Ready {
         period: u64,
     },
@@ -273,7 +274,7 @@ pub enum ServerMessage {
     Exit {
         code: u32,
     },
-    /// This client controls; its restoration follows.
+    /// This client controls; the restoration with this ID follows.
     Granted {
         period: u64,
     },
@@ -347,7 +348,7 @@ impl ClientMessage {
         }
     }
 
-    /// Requests carry a size, a control period or an empty object.
+    /// Requests carry a size, a restoration ID or an empty object.
     fn request_frame(&self) -> io::Result<Frame> {
         match self {
             Self::Attach(size) | Self::Resize(size) => control(self.size_type_code(), size),
@@ -415,7 +416,7 @@ impl ServerMessage {
         }
     }
 
-    /// Lifecycle messages carry an exit code, a control period or nothing.
+    /// Lifecycle messages carry an exit code, a restoration ID or nothing.
     fn lifecycle_frame(&self) -> io::Result<Frame> {
         match self {
             Self::Exit { code } | Self::Terminated { code } => {

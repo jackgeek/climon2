@@ -1,27 +1,22 @@
 //! Passive monitor connections (#86): monitor Open, core metadata, Leave and
 //! validation, beside the private protocol that still serves attach and kill.
 use super::{
-    assert_closed, assert_fatal, assert_rejected, counter, families, frame, leave, limit, message,
-    monitor, open, peer, request, send, title_changed,
+    assert_closed, assert_fatal, assert_rejected, counter, encoded, families, frame, leave,
+    message, monitor, open, peer, raw_frame, request, send, title_changed,
 };
 use crate::{ID, Session};
 use climon2_core::{
     hello::Lifecycle,
     protocol::{self, ClientMessage, ServerMessage as PrivateMessage, TerminalSize},
     wire::{
-        self, Acknowledge, Acquire, Available, ControlRecord, FatalError, Focus, Frame, Geometry,
-        Input, Kill, Leave, Mode, Outcome, Ready, Resize, Response, ServerMessage, SetViewing,
-        Success,
+        Acknowledge, Acquire, AuthorityIds, Available, ControlRecord, FatalError, Focus, Frame,
+        Geometry, Input, Kill, Leave, Mode, Outcome, Ready, Resize, Response, ServerMessage,
+        SetViewing, Success,
     },
 };
 use std::{
-    fs,
-    io::Write,
-    net::Shutdown,
-    num::NonZeroU32,
-    os::unix::net::UnixStream,
-    thread,
-    time::{Duration, Instant},
+    fs, io::Write, net::Shutdown, num::NonZeroU32, os::unix::net::UnixStream, thread,
+    time::Duration,
 };
 
 /// The exact Initial metadata of a session that has never set a title, for a
@@ -107,7 +102,7 @@ fn hello_advertises_revision1_beside_the_frozen_tokens_and_state() {
         concat!(
             r#"{{"session_id":"{}","climon2_version":"0.1.0","protocol":1,"#,
             r#""capabilities":["attach","kill","state-v1","client-startup-v1","#,
-            r#""daemon-wire-v1","monitor-v1","title-v1"],"#,
+            r#""daemon-wire-v1","monitor-v1","title-v1","focus-v1"],"#,
             r#""state":{{"lifecycle":"starting","attachments":0,"controlled":false}},"#,
             r#""daemon_wire_v1":{{"max_request_frame_bytes":1048576,"max_server_frame_bytes":1048576}}}}"#
         ),
@@ -134,7 +129,7 @@ fn monitor_open_selects_supported_families_then_reports_initial_metadata() {
     );
     let (first_id, mut selected) = opened(&frame(&mut first), "1");
     selected.sort();
-    assert_eq!(selected, ["monitor-v1", "title-v1"]);
+    assert_eq!(selected, ["focus-v1", "monitor-v1", "title-v1"]);
     assert_eq!(body(&frame(&mut first), 0x41), UNSET_TITLE);
 
     let mut second = peer(&session);
@@ -371,9 +366,14 @@ fn a_passive_registration_never_acquires_control_and_is_not_an_attachment() {
     );
 
     let mut second = crate::attach_at(&session, TerminalSize { cols: 91, rows: 37 });
-    let (period, _) = crate::restoration(&mut second);
-    assert_eq!(period, 2, "only the two attachments were ever granted");
-    crate::send(&mut second, ClientMessage::Ready { period });
+    let (restoration, _) = crate::restoration(&mut second);
+    assert_eq!(restoration, 2, "only the two attachments were ever granted");
+    crate::send(
+        &mut second,
+        ClientMessage::Ready {
+            period: restoration,
+        },
+    );
     let (mut watching_controlled, _) = monitor(&session, &[]);
     assert_eq!(
         crate::advertised_state(&session),
@@ -401,16 +401,7 @@ fn a_monitor_registers_and_leaves_during_committed_termination() {
     let mut session = Session::start("ignore-hup");
     let mut controlling = session.attach();
     session.wait_marker(&mut controlling);
-    let mut killer = session.connect();
-    killer
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .unwrap();
-    crate::send(&mut killer, ClientMessage::Kill);
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while crate::advertised_state(&session).0 != Lifecycle::Terminating {
-        assert!(Instant::now() < deadline, "the kill never committed");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    let mut killer = super::committed_kill(&session);
     let (mut watching, title) = monitor(&session, &["title-v1"]);
     assert_eq!(title, Available::Available(None));
     assert_eq!(
@@ -429,13 +420,6 @@ fn a_monitor_registers_and_leaves_during_committed_termination() {
     session.finish();
 }
 
-/// The bytes of one revision-1 frame with type `code` and `body`.
-fn frame_bytes(code: u8, body: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    wire::write_frame(&mut bytes, &Frame::new(code, body.to_vec()), limit()).unwrap();
-    bytes
-}
-
 /// A monitor Open whose body is padded with JSON whitespace to `bytes`.
 fn padded_open(bytes: usize) -> Vec<u8> {
     let open = open(1, &[], &[], Mode::Monitor).to_frame();
@@ -443,7 +427,7 @@ fn padded_open(bytes: usize) -> Vec<u8> {
     let end = body.pop().unwrap();
     body.resize(bytes - 1, b' ');
     body.push(end);
-    frame_bytes(0x30, &body)
+    raw_frame(0x30, &body)
 }
 
 /// COM-02 (Contract): revision-1 traffic that breaks the framing or strict
@@ -459,20 +443,20 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
     let valid =
         r#""revision":1,"required_capabilities":[],"optional_capabilities":[],"mode":"monitor""#;
     let first_frames: [(Vec<u8>, &str); 8] = [
-        (frame_bytes(0x30, b"{"), "invalid_json"),
+        (raw_frame(0x30, b"{"), "invalid_json"),
         (
-            frame_bytes(0x30, b"{\"request_id\":\"1\xff\"}"),
+            raw_frame(0x30, b"{\"request_id\":\"1\xff\"}"),
             "invalid_json",
         ),
         (
-            frame_bytes(
+            raw_frame(
                 0x30,
                 format!(r#"{{"request_id":"1",{valid},"geometry":null,"extra":1}}"#).as_bytes(),
             ),
             "invalid_record",
         ),
         (
-            frame_bytes(
+            raw_frame(
                 0x30,
                 format!(r#"{{"request_id":"1",{valid},"geometry":null,"geometry":null}}"#)
                     .as_bytes(),
@@ -480,18 +464,18 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
             "invalid_record",
         ),
         (
-            frame_bytes(0x30, format!(r#"{{"request_id":"1",{valid}}}"#).as_bytes()),
+            raw_frame(0x30, format!(r#"{{"request_id":"1",{valid}}}"#).as_bytes()),
             "invalid_record",
         ),
         (
-            frame_bytes(
+            raw_frame(
                 0x30,
                 format!(r#"{{"request_id":"01",{valid},"geometry":null}}"#).as_bytes(),
             ),
             "invalid_request_id",
         ),
-        (frame_bytes(0x40, b"{}"), "wrong_direction"),
-        (frame_bytes(0x4d, b"{}"), "wrong_direction"),
+        (raw_frame(0x40, b"{}"), "wrong_direction"),
+        (raw_frame(0x4d, b"{}"), "wrong_direction"),
     ];
     for (bytes, code) in first_frames {
         let mut stream = peer(&session);
@@ -504,15 +488,15 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
     let after_open: [(Vec<u8>, &str); 8] = [
         (vec![0, 0, 0, 0], "invalid_frame_length"),
         (vec![0, 0x10, 0, 1], "frame_too_large"),
-        (frame_bytes(0x41, b"{}"), "wrong_direction"),
-        (frame_bytes(0x3a, b"{}"), "unknown_message_type"),
+        (raw_frame(0x41, b"{}"), "wrong_direction"),
+        (raw_frame(0x3a, b"{}"), "unknown_message_type"),
         (
-            frame_bytes(0x10, br#"{"cols":80,"rows":24}"#),
+            raw_frame(0x10, br#"{"cols":80,"rows":24}"#),
             "unknown_message_type",
         ),
         (private_hello, "unknown_message_type"),
         (
-            frame_bytes(0x37, br#"{"request_id":"1"}"#),
+            raw_frame(0x37, br#"{"request_id":"1"}"#),
             "invalid_request_id",
         ),
         (vec![0, 0, 0, 19, 0x37, b'{'], "truncated_frame"),
@@ -576,15 +560,11 @@ fn coalesced_and_fragmented_revision1_frames_are_each_answered_in_order() {
     let mut bytes = Vec::new();
     let hello = ClientMessage::Hello { protocol: 1 }.to_frame().unwrap();
     protocol::write_frame(&mut bytes, &hello).unwrap();
-    bytes.extend(frame_bytes(
-        0x30,
-        open(1, &[], &["title-v1"], Mode::Monitor).to_frame().body(),
+    bytes.extend(encoded(
+        &open(1, &[], &["title-v1"], Mode::Monitor).to_frame(),
     ));
-    bytes.extend(frame_bytes(0x37, br#"{"request_id":"2"}"#));
-    bytes.extend(frame_bytes(
-        0x30,
-        open(3, &[], &[], Mode::Monitor).to_frame().body(),
-    ));
+    bytes.extend(raw_frame(0x37, br#"{"request_id":"2"}"#));
+    bytes.extend(encoded(&open(3, &[], &[], Mode::Monitor).to_frame()));
     coalesced.write_all(&bytes).unwrap();
     coalesced.shutdown(Shutdown::Write).unwrap();
     assert_eq!(
@@ -600,37 +580,21 @@ fn coalesced_and_fragmented_revision1_frames_are_each_answered_in_order() {
     assert_closed(&mut coalesced);
 
     let mut fragmented = peer(&session);
-    let opening = frame_bytes(0x30, open(1, &[], &[], Mode::Monitor).to_frame().body());
-    for piece in opening.chunks(3) {
-        fragmented.write_all(piece).unwrap();
-        // A hello answered on a newer connection proves the daemon serviced
-        // this older one, and read the piece, in that or an earlier pass.
-        drop(session.connect());
-    }
+    let opening = encoded(&open(1, &[], &[], Mode::Monitor).to_frame());
+    super::write_in_pieces(&session, &mut fragmented, &opening);
     opened(&frame(&mut fragmented), "1");
     assert_eq!(body(&frame(&mut fragmented), 0x41), NO_TITLE);
     leave(&mut fragmented, 2);
     end_controlled(session, controlling);
 }
 
-/// Interim until #87 and #88: this daemon advertises `daemon-wire-v1` but
-/// serves neither interactive Open nor standalone Kill yet. Each is rejected
-/// without effects (`internal_error`) and ends its stream; the session goes
-/// on with its one controller, neither newly attached nor terminating.
+/// Interim until #88: this daemon advertises `daemon-wire-v1` but does not
+/// serve standalone Kill yet. It is rejected without effects
+/// (`internal_error`) and ends its stream; the session goes on with its one
+/// controller, not terminating.
 #[test]
-fn interactive_open_and_standalone_kill_are_refused_until_they_are_served() {
+fn standalone_kill_is_refused_until_it_is_served() {
     let (session, controlling) = controlled();
-    let geometry = Geometry {
-        cols: NonZeroU32::new(80).unwrap(),
-        rows: NonZeroU32::new(24).unwrap(),
-    };
-    let mut interactive = peer(&session);
-    request(
-        &mut interactive,
-        &open(1, &[], &[], Mode::Interactive(geometry)),
-    );
-    assert_rejected(&mut interactive, 1, "internal_error");
-    assert_closed(&mut interactive);
     let mut killer = peer(&session);
     request(&mut killer, &kill(1, 1, &["daemon-wire-v1"]));
     assert_rejected(&mut killer, 1, "internal_error");
@@ -648,7 +612,11 @@ fn interactive_open_and_standalone_kill_are_refused_until_they_are_served() {
 /// tests send, and its input, size and focus would each show in the `lines`
 /// fixture's record.
 fn needing_an_attachment(id: u64) -> [Frame; 6] {
-    let (request_id, period, restoration_id) = (counter(id), counter(70), counter(90));
+    let request_id = counter(id);
+    let authority = AuthorityIds {
+        period: counter(70),
+        restoration_id: counter(90),
+    };
     let geometry = Geometry {
         cols: NonZeroU32::new(100).unwrap(),
         rows: NonZeroU32::new(30).unwrap(),
@@ -656,41 +624,35 @@ fn needing_an_attachment(id: u64) -> [Frame; 6] {
     [
         Input {
             request_id,
-            period,
-            restoration_id,
+            authority,
             payload: b"leaked\n".to_vec(),
         }
         .to_frame(),
         Resize {
             request_id,
-            period,
-            restoration_id,
+            authority,
             geometry,
         }
         .to_frame(),
         Ready {
             request_id,
-            period,
-            restoration_id,
+            authority,
         }
         .to_frame(),
         SetViewing {
             request_id,
-            period,
-            restoration_id,
+            authority,
             viewing: true,
         }
         .to_frame(),
         Acknowledge {
             request_id,
-            period,
-            restoration_id,
+            authority,
         }
         .to_frame(),
         Focus {
             request_id,
-            period,
-            restoration_id,
+            authority,
             focused: true,
         }
         .to_frame(),
@@ -698,26 +660,47 @@ fn needing_an_attachment(id: u64) -> [Frame; 6] {
 }
 
 /// COM-02 (Contract, out-of-state requests) and COM-03 (Contract, passive
-/// cases): no revision-1 connection is an attachment yet, so Input, Resize,
-/// Ready, Set viewing, Acknowledge and Focus are identifiable but
-/// impermissible: each is rejected with `invalid_state`, never
-/// connection-fatal. It consumes its request ID and has no effects: as the
-/// first frame after hello it gives the connection no role, so a monitor
-/// Open still registers; on a passive monitor connection the registration
-/// stays until Leave reports it. No byte reaches the command, its terminal
-/// keeps the controller's size, and the hello `state` is unchanged.
+/// cases): Input, Resize, Ready, Set viewing, Acknowledge and Focus need an
+/// attachment, so on a connection without one each is identifiable but
+/// impermissible: rejected without effects, never connection-fatal, and
+/// consuming its request ID. Focus needs `focus-v1`, which is checked first:
+/// a connection that did not select it gets `unsupported_capability`.
+/// Otherwise, as the first frame after hello a request finds no role
+/// (`invalid_state`), so a monitor Open still registers; on a passive
+/// monitor connection, which is not an attachment, Input, Resize, Ready and
+/// Focus are `not_attached` and the registration stays until Leave reports
+/// it. Set viewing and Acknowledge stay `invalid_state` until #91 serves
+/// them. No byte reaches the command, its terminal keeps the controller's
+/// size, and the hello `state` is unchanged.
 #[test]
-fn requests_that_need_an_attachment_are_invalid_state_and_the_stream_goes_on() {
+fn requests_that_need_an_attachment_are_refused_and_the_stream_goes_on() {
     let mut session = Session::start("lines");
     let mut controlling = session.attach();
     session.wait_marker(&mut controlling);
-    for (first, registered) in needing_an_attachment(1)
+    let without_role = [
+        "invalid_state",
+        "invalid_state",
+        "invalid_state",
+        "invalid_state",
+        "invalid_state",
+        "unsupported_capability",
+    ];
+    let passive = [
+        "not_attached",
+        "not_attached",
+        "not_attached",
+        "invalid_state",
+        "invalid_state",
+        "unsupported_capability",
+    ];
+    let cases = needing_an_attachment(1)
         .into_iter()
         .zip(needing_an_attachment(2))
-    {
+        .zip(without_role.into_iter().zip(passive));
+    for ((first, registered), (first_code, registered_code)) in cases {
         let mut stream = peer(&session);
         send(&mut stream, &first);
-        assert_rejected(&mut stream, 1, "invalid_state");
+        assert_rejected(&mut stream, 1, first_code);
         request(&mut stream, &open(2, &[], &[], Mode::Monitor));
         opened(&frame(&mut stream), "2");
         assert_eq!(body(&frame(&mut stream), 0x41), NO_TITLE);
@@ -725,9 +708,14 @@ fn requests_that_need_an_attachment_are_invalid_state_and_the_stream_goes_on() {
 
         let (mut stream, _) = monitor(&session, &[]);
         send(&mut stream, &registered);
-        assert_rejected(&mut stream, 2, "invalid_state");
+        assert_rejected(&mut stream, 2, registered_code);
         leave(&mut stream, 3);
     }
+    let (mut focusing, _) = monitor(&session, &["focus-v1"]);
+    let [.., focus] = needing_an_attachment(2);
+    send(&mut focusing, &focus);
+    assert_rejected(&mut focusing, 2, "not_attached");
+    leave(&mut focusing, 3);
     assert_eq!(
         crate::advertised_state(&session),
         (Lifecycle::Attached, 1, true)

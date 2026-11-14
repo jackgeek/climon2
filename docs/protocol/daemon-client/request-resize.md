@@ -1,6 +1,6 @@
 # Resize — `0x32`
 
-**Status: agreed, not implemented; rejected until served**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** ([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) requests geometry from the
 [session daemon](../../../GLOSSARY.md#sessions) as current
 [controller](../../../GLOSSARY.md#attachment-and-control).
@@ -47,11 +47,15 @@ originate resize just because it inherits control.
 
 ## Implemented behavior
 
-No revision-1 connection is an
-[attachment](../../../GLOSSARY.md#attachment-and-control) yet, so until
-[#87](https://github.com/jackgeek/climon2/issues/87) serves Resize the
-[session daemon](../../../GLOSSARY.md#sessions) rejects it as impermissible
-with `invalid_state`, whether it is a connection's first request or arrives on
-a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control).
-The session's geometry does not change; the stream goes on and a registration
-stays.
+The [session daemon](../../../GLOSSARY.md#sessions) accepts Resize that passes
+the [authority checks](core-v1.md#implemented-authority-checks), even before
+readiness. A geometry with a dimension above 65,535 is then
+`invalid_geometry`. Every rejection has no effects, and the stream goes on.
+The success is sent at once, before the size applies: the next daemon loop
+step applies the controller's latest host size once, under the same session
+geometry policy as an ordinary attach. A ready controller then receives
+[Geometry](event-geometry.md) if the session geometry changed. Before
+readiness, a changed host instead replaces the current restoration within
+the same period: a new [Restoration begin](event-restoration-begin.md)
+reports the new restoration ID and geometry, and the superseded restoration
+gets no completion.

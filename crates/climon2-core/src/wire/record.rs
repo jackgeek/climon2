@@ -89,6 +89,38 @@ pub(crate) fn dispatch<M>(
     }
 }
 
+/// Converts between a record whose control period and restoration ID are one
+/// `authority` and `$fields`, its exact wire shape, where the two are the
+/// flat members `period` and `restoration_id`: serde's `flatten` cannot
+/// serve a record that denies unknown members. Each `$member` is one of the
+/// record's other members, the same in both.
+macro_rules! flat_authority {
+    ($record:ty, $fields:ident { $($member:ident),* }) => {
+        impl From<$fields> for $record {
+            fn from(fields: $fields) -> Self {
+                Self {
+                    authority: $crate::wire::AuthorityIds {
+                        period: fields.period,
+                        restoration_id: fields.restoration_id,
+                    },
+                    $($member: fields.$member,)*
+                }
+            }
+        }
+
+        impl From<$record> for $fields {
+            fn from(record: $record) -> Self {
+                Self {
+                    period: record.authority.period,
+                    restoration_id: record.authority.restoration_id,
+                    $($member: record.$member,)*
+                }
+            }
+        }
+    };
+}
+pub(crate) use flat_authority;
+
 /// A nullable member that must still be present: plain `Option` would let
 /// serde default a missing member to `None`.
 pub(crate) fn nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>

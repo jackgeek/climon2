@@ -4,7 +4,7 @@
 This is the maintained contract, not evidence that any release conforms.
 The [#63 terminal contract](../terminal-integration.md) adds optional core
 [Focus](request-focus.md) and canonical monitor-mode presentation below;
-these amendments are also agreed, unimplemented.
+these amendments are also agreed, and Focus is implemented.
 The [private protocol](post-hello.md) is not this revision;
 [session daemons](../../../GLOSSARY.md#sessions) now speak both, and the
 first [frame](../TERMS.md#frame) after [hello](../../../GLOSSARY.md#sessions)
@@ -22,15 +22,23 @@ pages and re-encode it to identical [bytes](../TERMS.md#byte).
 
 The [session daemon](../../../GLOSSARY.md#sessions) implements this revision
 for [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
-([#86](https://github.com/jackgeek/climon2/issues/86)): the
+([#86](https://github.com/jackgeek/climon2/issues/86)) and ordinary
+interactive [attachments](../../../GLOSSARY.md#attachment-and-control)
+([#87](https://github.com/jackgeek/climon2/issues/87)): the
 [hello advertisement](hello-reply.md#revision-1-advertisement), framing and
-validation with their connection-fatal codes, monitor-mode Open, Leave,
-Response, Fatal error, Initial metadata (the title; status and progress
-reported unavailable) and Title changed. Until it serves them, it rejects the
-other requests without effects, as each request's page describes.
-Interactive Open, standalone Kill,
-the control, terminal, status, notification, progress and final-result
-messages, succession and bounded delivery remain unimplemented, and no
+validation with their connection-fatal codes, Open in both modes, Leave,
+Input, Resize, Ready, Acquire between attachments, Focus, Response, Fatal
+error, Initial metadata (the title; status and progress reported
+unavailable), Title changed, Control granted and revoked, Restoration begin
+and complete, Display and Geometry, with the private protocol's takeover,
+[hand-back](../../../GLOSSARY.md#attachment-and-control) and
+[leave policy](../../../GLOSSARY.md#attachment-and-control). Until it serves them, it
+rejects the other
+requests without effects, as each request's page describes. Standalone
+Kill, Acquire by a passive monitor connection, Set viewing, Acknowledge, the
+status, notification, progress and final-result messages, promotion of
+passive registrations, canonical monitor-mode presentation and bounded
+delivery remain unimplemented, and no
 [client](../../../GLOSSARY.md#sessions) speaks this revision yet. The
 [daemon's contract tests](../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
 are the evidence for the implemented parts.
@@ -214,15 +222,22 @@ interactive work; Leave and repeated standalone Kill remain possible.
 This intentionally amends #58's final-attachment assumptions; it does not
 guarantee survival of a native monitor crash.
 
-Future `c2 exec --headless <command> [args...]` starts a
+`c2 exec --headless <command> [args...]` starts a
 [headless session](../../../GLOSSARY.md#sessions) without an interactive client
 and returns success only after daemon-confirmed creation. Zero-client survival
 lasts for that session's lifetime, even after later attachments disappear,
-until command completion or explicit Kill. CLI spelling/lifetime are
-[agreed, unimplemented](../../monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill);
-creation encoding is not assigned by this amendment. Preserve existing
-`c2 kill <session>` and test its future headless support. Ordinary leave
-policy and succession remain unchanged; not every session becomes persistent.
+until command completion or explicit Kill. That CLI spelling and lifetime are
+[implemented](../../monitor-lifecycle.md#headless-creation-and-existing-cli-kill)
+on the current private protocol: creation uses a private same-release daemon
+startup argument, not a wire message, and the frozen [hello reply](hello-reply.md)
+reports a headless session without attachments as `detached`. Existing
+`c2 kill <session>` ends headless sessions. Under this revision,
+succession stays as above for every session. The headless
+[lifetime policy](../../../GLOSSARY.md#sessions) changes only what happens with
+no attachment: from creation on, and after succession leaves no participant,
+the session keeps running. The leave policy of
+[ordinary sessions](../../../GLOSSARY.md#sessions) is unchanged, and not every
+session becomes persistent.
 
 The [lifecycle amendment](../../monitor-lifecycle.md) also agrees concurrent
 shutdown and automatic exponential passive recovery. It does not change any
@@ -282,6 +297,36 @@ final counter. Inconsistent repeated results cannot authorize another toast.
 When terminal status and result are both present, completed requires normal
 exit zero and failed requires nonzero exit or signal. No later event
 revives terminal activity/attention.
+
+### Implemented authority checks
+
+The session daemon checks Input, [Resize](request-resize.md),
+[Ready](request-ready.md) and Focus in this order and rejects the first
+unmet condition without effects; the stream goes on:
+
+1. Focus only: the connection's Open selected `focus-v1`, otherwise
+   `unsupported_capability`.
+2. The connection has a role, otherwise `invalid_state`.
+3. It is an attachment, otherwise `not_attached`: a passive monitor
+   connection is not one.
+4. The session is not in committed termination, otherwise
+   `session_terminating`.
+5. It is the [controller](../../../GLOSSARY.md#attachment-and-control),
+   otherwise `not_controller`.
+6. The request's control period is the current one, otherwise
+   `stale_period`.
+7. Its restoration ID is the current one of that period, otherwise
+   `stale_restoration`: a replacement restoration supersedes the earlier one.
+8. The current restoration is far enough along: Resize needs nothing more,
+   Ready needs a complete restoration, whose Restoration complete was sent,
+   and Input and Focus need readiness. Otherwise `not_ready`.
+
+Each request then checks its own arguments. Periods and restoration IDs are
+session-wide and only increase: every grant starts a new period with its
+first restoration, and a replacement restoration within a period, after the
+controller's host changed before readiness, gets a new restoration ID.
+Private-protocol attachments share the same control, so the numbers one
+connection sees can skip.
 
 ## Viewing, acknowledgement and local notifications
 
@@ -417,13 +462,18 @@ menus/focus/local toast scope/deduplication; exit/signal versus disconnect;
 kill cleanup failures; bounded stalled consumers and independent control.
 The daemon's contract tests already cover the hello advertisement, framing,
 JSON, ID, direction and truncation failures, capability intersection,
-passive registration, Leave, atomic Initial metadata and title changes;
-the rest remains future.
+passive registration, Leave, atomic Initial metadata and title changes, and
+for interactive attachments the record order under partial I/O, binary
+Input header failures, stale authority and readiness, arbitrary bytes, paste
+closure, query authority, inert titles, Focus, and takeover, hand-back and
+leave-policy parity; the rest remains future.
 Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent
-cleanup/fail-stop, passive recovery and existing CLI kill of future headless
-sessions. These are future tests, not conformance/performance claims.
+cleanup/fail-stop and passive recovery. These are future tests, not
+conformance/performance claims. Headless creation and existing CLI kill of
+headless sessions already have executed evidence on the current protocol
+(HDL-01 in the [acceptance matrix](../../monitor-acceptance.md)).
 The [acceptance matrix](../../monitor-acceptance.md) is agreed in #62;
 native declarations are agreed in #71. Numerical budgets are
 agreed in [operational limits](../../monitor-operational-limits.md), not implemented.

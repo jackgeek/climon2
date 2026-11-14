@@ -58,6 +58,16 @@ impl fmt::Display for Counter {
     }
 }
 
+/// The control period and restoration ID that a record names together: the
+/// authority a request claims or a server record carries. On the wire they
+/// stay two members, `period` and `restoration_id`, beside the record's
+/// others, or the same two header counters in a binary record.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct AuthorityIds {
+    pub period: Counter,
+    pub restoration_id: Counter,
+}
+
 /// A terminal size in positive columns and rows; representable is not supported.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(from = "Object<GeometryFields>")]

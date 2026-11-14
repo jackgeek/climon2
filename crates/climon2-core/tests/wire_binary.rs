@@ -5,7 +5,7 @@
 use climon2_core::wire::{
     Display, FatalCode, Frame, Input, Request, ServerMessage, read_frame, write_frame,
 };
-use support::{Fragmented, counter, limit};
+use support::{Fragmented, counter, ids, limit};
 
 mod support;
 
@@ -32,16 +32,14 @@ fn body(header: &[u64], payload: &[u8]) -> Vec<u8> {
 fn input_record(header: [u64; 3], payload: &[u8]) -> Input {
     Input {
         request_id: counter(header[0]),
-        period: counter(header[1]),
-        restoration_id: counter(header[2]),
+        authority: ids(header[1], header[2]),
         payload: payload.to_vec(),
     }
 }
 
 fn display_record(header: [u64; 2], payload: &[u8]) -> Display {
     Display {
-        period: counter(header[0]),
-        restoration_id: counter(header[1]),
+        authority: ids(header[0], header[1]),
         payload: payload.to_vec(),
     }
 }

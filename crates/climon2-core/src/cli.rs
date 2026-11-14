@@ -1,6 +1,6 @@
 //! CLI argument data without terminal, process or environment access.
-use crate::selector::Selector;
-use std::{ffi::OsString, fmt};
+use crate::{lifetime::Lifetime, selector::Selector};
+use std::{ffi::OsString, fmt, iter::Peekable, vec};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandArgs {
@@ -10,8 +10,13 @@ pub struct CommandArgs {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CliArgs {
-    Exec(CommandArgs),
-    List { json: bool },
+    Exec {
+        lifetime: Lifetime,
+        command: CommandArgs,
+    },
+    List {
+        json: bool,
+    },
     Attach(Selector),
     Kill(Selector),
     Monitor,
@@ -28,7 +33,7 @@ impl UsageError {
     }
 }
 
-pub const USAGE: &str = "usage: c2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon";
+pub const USAGE: &str = "usage: c2 exec [--headless] <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon";
 
 impl fmt::Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -76,7 +81,22 @@ fn parse_flag(name: Option<&str>, remaining: &[OsString]) -> Result<CliArgs, Usa
 }
 
 fn parse_exec(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
-    let mut args = arguments.into_iter();
+    let mut args = arguments.into_iter().peekable();
+    let lifetime = lifetime(&mut args);
+    Ok(CliArgs::Exec {
+        lifetime,
+        command: command(args)?,
+    })
+}
+
+/// `--headless` is exec's only option, and only as the first argument.
+fn lifetime(args: &mut Peekable<vec::IntoIter<OsString>>) -> Lifetime {
+    args.next_if_eq("--headless")
+        .map_or(Lifetime::Ordinary, |_| Lifetime::Headless)
+}
+
+/// An optional `--`, then a nonempty command and its untouched arguments.
+fn command(mut args: impl Iterator<Item = OsString>) -> Result<CommandArgs, UsageError> {
     let mut command = args.next().ok_or(UsageError)?;
     if command == "--" {
         command = args.next().ok_or(UsageError)?;
@@ -84,10 +104,10 @@ fn parse_exec(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
     if command.is_empty() {
         return Err(UsageError);
     }
-    Ok(CliArgs::Exec(CommandArgs {
+    Ok(CommandArgs {
         command,
         args: args.collect(),
-    }))
+    })
 }
 
 fn parse_list(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
