@@ -312,6 +312,10 @@ earlier run would, so they open on the empty state.
 | HLP-02 (empty monitor) the key introduction owns typed keys, prefixed keys, reports and pastes, none acts; Enter closes, prefix+? reopens, prefix+x exits | `the_key_introduction_is_modal_and_prefix_x_still_exits_from_it` |
 | HLP-02 (empty monitor) with Ctrl+[ as the prefix Escape cannot close the key introduction, prefix+x still exits | `with_escape_as_the_prefix_escape_cannot_close_the_key_introduction_and_prefix_x_still_exits` |
 | HLP-02 (empty monitor) a doubled prefix reaches the key introduction as one literal prefix: with Ctrl+M as the prefix, Enter Enter continues, the prefix and Space reach nothing, prefix+x still exits | `with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction` |
+| INP-01, INP-02, TRM-02, COM-04 (typed), EXT-03 (Ctrl+C) typed bytes reach the selected session exactly, identically when split into ten reads; prefix rules, replies and reports applied; cursor and keypad keys follow the application's modes | `typed_bytes_reach_the_selected_session_exactly_however_reads_split` |
+| INP-01 (live and too-small screens) global actions work; input that cannot reach the session is discarded, never buffered | `global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffered` |
+| INP-02, HLP-02 (Escape) a split cursor key never closes the selector or key introduction; Escape then a key in one read is both (many frames: only the title itself is checked afterwards) | `split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both` |
+| COM-03 (queue full), COM-04 (chunks) a refusal is shown with the bytes not sent; only accepted input arrives | `a_full_input_queue_is_shown_and_only_accepted_input_arrives` |
 
 Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
 holds a packaged client between `Granted` and `Ready`; daemon
