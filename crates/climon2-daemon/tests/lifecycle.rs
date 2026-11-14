@@ -1894,7 +1894,12 @@ fn natural_exit_kills_jobs_left_in_the_command_session() {
 
 /// #19/#27 (owner decision): leaving hangs up, waits the real grace, then kills every process
 /// still in the command's terminal session, across job-control process groups. A process that
-/// started its own session is not part of it and survives.
+/// started its own session is not part of it and survives. The jobs ignore SIGHUP, so only the
+/// daemon's end-of-grace kill ends them: they are gone by the time the daemon exits. How long
+/// that kill takes after the grace is host load, not policy (each kill round lists every host
+/// process once per recorded job group), so here the daemon's exit is bounded only by
+/// `FINISH_BOUND`; `every_controlling_leave_hangs_up_then_kills_after_real_grace` bounds the
+/// grace itself.
 #[test]
 fn leave_kills_every_job_of_the_command_session_but_not_new_sessions() {
     let mut session = job_control_session();
@@ -1928,10 +1933,9 @@ fn leave_kills_every_job_of_the_command_session_but_not_new_sessions() {
     );
     session.finish();
     assert!(started.elapsed() >= Duration::from_secs(5), "grace skipped");
-    assert!(started.elapsed() < Duration::from_secs(7), "grace exceeded");
     let survivors = [("foreground", foreground), ("background", background)]
         .into_iter()
-        .filter(|(_, pid)| !wait_gone(*pid))
+        .filter(|(_, pid)| process::start_time(*pid).unwrap().is_some())
         .collect::<Vec<_>>();
     let outsider_alive = process::start_time(outsider).unwrap().is_some();
     for (_, pid) in &survivors {

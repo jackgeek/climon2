@@ -831,13 +831,19 @@ fn focus_reaches_the_application_once_per_change_and_resynchronizes_on_new_readi
     let stale = first.authority();
 
     let mut second = Attached::open(&session, geometry(91, 37), &[], geometry(91, 37));
+    // Its restoration already shows the first period's acknowledgements, so
+    // only one more of each proves the application switched reporting.
+    let (offs, ons) = (
+        crate::count(&second.display, b"focus-off"),
+        crate::count(&second.display, b"focus-on"),
+    );
     first.revoked(RevocationReason::Takeover);
     rejected(second.focus(true), "unsupported_capability");
     second.confirm_ready();
     second.typed(b"OFF");
-    second.until_displayed(b"focus-off", 1);
+    second.until_displayed(b"focus-off", offs + 1);
     second.typed(b"ON");
-    second.until_displayed(b"focus-on", 1);
+    second.until_displayed(b"focus-on", ons + 1);
     expect(b"OFFON");
 
     first.acquire(geometry(91, 37));
