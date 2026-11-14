@@ -367,7 +367,7 @@ impl Tokenizer {
 }
 
 /// Length of an unfinished but so far valid UTF-8 sequence ending the text.
-fn incomplete_utf8(text: &[u8]) -> usize {
+pub(crate) fn incomplete_utf8(text: &[u8]) -> usize {
     (text.len().saturating_sub(3)..text.len())
         .find(|&start| is_incomplete(&text[start..]))
         .map_or(0, |start| text.len() - start)

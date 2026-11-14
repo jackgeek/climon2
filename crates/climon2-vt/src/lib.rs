@@ -11,6 +11,7 @@ mod history;
 mod model;
 mod modes;
 mod presentation;
+mod printed;
 mod render;
 mod restore;
 mod sync;
@@ -18,6 +19,7 @@ mod title;
 pub mod token;
 mod vt;
 
+pub use engine::Parser;
 pub use geometry::Geometry;
 pub use model::{Limits, Model, Rejected};
 pub use presentation::{Mode, Presentation};

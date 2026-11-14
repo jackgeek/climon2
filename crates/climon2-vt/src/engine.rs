@@ -7,7 +7,7 @@ use alacritty_terminal::{
     event::{Event, EventListener},
     grid::Dimensions,
     term::{Config, Osc52, TermMode, cell::Cell},
-    vte::ansi::{CursorStyle, Processor, Timeout},
+    vte::ansi::{CursorStyle, Handler, Processor, Timeout},
 };
 use std::{cell::RefCell, mem, rc::Rc, time::Duration};
 
@@ -60,23 +60,49 @@ fn config(history: usize) -> Config {
     }
 }
 
-/// The unchanged engine fed by its parser, as the daemon's virtual terminal
-/// and a monitor model both run it.
+/// vte's parser for the engine. A monitor shares one among all its models
+/// (#166): every token it is fed is complete, so it holds nothing from one
+/// model when the next is fed, except the preceding character vte repeats
+/// for `CSI n b`, which models therefore repeat themselves.
+pub struct Parser(Processor<Unbuffered>);
+
+impl Parser {
+    /// What a parser allocates: vte's synchronized-update buffer, which
+    /// `Processor::new` allocates whole. A monitor counts it once, beside its
+    /// models' footprints.
+    pub const BYTES: usize = 2 * 1024 * 1024;
+
+    pub fn new() -> Self {
+        Self(Processor::new())
+    }
+}
+
+impl Default for Parser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The unchanged engine, as the daemon's virtual terminal and a monitor
+/// model both run it, fed by a parser it is given.
 pub(crate) struct Core<L> {
     term: Term<L>,
-    processor: Processor<Unbuffered>,
 }
 
 impl<L: EventListener> Core<L> {
     pub(crate) fn new(geometry: Geometry, history: usize, listener: L) -> Self {
         Self {
             term: Term::new(config(history), &Size(geometry), listener),
-            processor: Processor::new(),
         }
     }
 
-    pub(crate) fn advance(&mut self, bytes: &[u8]) {
-        self.processor.advance(&mut self.term, bytes);
+    pub(crate) fn advance(&mut self, parser: &mut Parser, bytes: &[u8]) {
+        parser.0.advance(&mut self.term, bytes);
+    }
+
+    /// Print `character` `count` times, as vte does for `CSI n b`.
+    pub(crate) fn repeat(&mut self, character: char, count: usize) {
+        (0..count).for_each(|_| self.term.input(character));
     }
 
     /// Change the normal screen's history capacity, dropping its oldest rows
@@ -155,6 +181,7 @@ fn position(grid: &Grid<Cell>) -> (usize, usize) {
 
 pub(crate) struct Engine {
     core: Core<Listener>,
+    parser: Parser,
     events: Rc<RefCell<Vec<Event>>>,
     signals: Signals,
     normal_cursor: (usize, usize),
@@ -174,6 +201,7 @@ impl Engine {
         let events = listener.0.clone();
         Self {
             core: Core::new(geometry, history, listener),
+            parser: Parser::new(),
             events,
             signals: Signals::default(),
             normal_cursor: (1, 1),
@@ -182,7 +210,7 @@ impl Engine {
 
     /// Feed one step and collect the replies it produced.
     pub(crate) fn advance(&mut self, bytes: &[u8], replies: &mut Vec<u8>) {
-        self.core.advance(bytes);
+        self.core.advance(&mut self.parser, bytes);
         self.remember_cursor();
         let events = std::mem::take(&mut *self.events.borrow_mut());
         events

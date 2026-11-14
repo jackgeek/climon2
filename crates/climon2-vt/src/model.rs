@@ -4,6 +4,7 @@
 use crate::{
     bounded::{Bounded, Room},
     cost,
+    engine::Parser,
     geometry::Geometry,
 };
 
@@ -103,16 +104,17 @@ impl Model {
     /// protected newest page. Output that would still exceed the limit is
     /// rejected before it reaches the engine; the model keeps the page its
     /// accepted output produced and refuses everything after.
-    pub fn feed(&mut self, bytes: &[u8]) -> Result<(), Rejected> {
+    pub fn feed(&mut self, parser: &mut Parser, bytes: &[u8]) -> Result<(), Rejected> {
         match self.staged.as_mut() {
             Some(staged) => {
                 let fed = staged.feed(
+                    parser,
                     bytes,
                     &mut Room::beside(&mut self.current, self.limits.bytes),
                 );
                 self.restored(fed)
             }
-            None => self.live(bytes),
+            None => self.live(parser, bytes),
         }
     }
 
@@ -125,13 +127,13 @@ impl Model {
         fed
     }
 
-    fn live(&mut self, bytes: &[u8]) -> Result<(), Rejected> {
+    fn live(&mut self, parser: &mut Parser, bytes: &[u8]) -> Result<(), Rejected> {
         if let Some(rejected) = self.rejected {
             return Err(rejected);
         }
         let fed = self
             .current
-            .feed(bytes, &mut Room::alone(self.limits.bytes));
+            .feed(parser, bytes, &mut Room::alone(self.limits.bytes));
         self.rejected = fed.err();
         fed
     }

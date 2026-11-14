@@ -4,11 +4,12 @@
 use crate::{
     classify::{Clear, classify},
     cost,
-    engine::Core,
+    engine::{Core, Parser},
     geometry::{Geometry, STEP},
     model::Rejected,
+    printed,
     render::cells,
-    token::{Kind, Token, Tokenizer},
+    token::{Kind, Token, Tokenizer, incomplete_utf8},
 };
 use alacritty_terminal::{
     Grid,
@@ -16,7 +17,10 @@ use alacritty_terminal::{
     grid::Dimensions,
     term::cell::{Cell, Flags},
 };
-use std::iter::once;
+use std::{iter::once, slice};
+
+/// What vte prints for a cut-off UTF-8 sequence, encoded.
+const REPLACEMENT: &[u8] = "\u{fffd}".as_bytes();
 
 const SPACERS: Flags = Flags::WIDE_CHAR_SPACER.union(Flags::LEADING_WIDE_CHAR_SPACER);
 
@@ -26,6 +30,9 @@ pub(crate) struct Bounded {
     geometry: Geometry,
     history: History,
     extras: Extras,
+    /// The character vte printed last for this instance, which `CSI n b`
+    /// repeats: the parser is shared, so its own is another model's.
+    preceding: Option<char>,
 }
 
 /// The normal screen's history: the rows the model shows, and the engine's
@@ -196,6 +203,7 @@ impl Bounded {
             geometry,
             history,
             extras: Extras::default(),
+            preceding: None,
         }
     }
 
@@ -213,10 +221,15 @@ impl Bounded {
     /// the front filter's buffers stay within the reserve. Each token is
     /// admitted before the engine sees it; the first that does not fit is
     /// rejected, and so is the rest.
-    pub(crate) fn feed(&mut self, bytes: &[u8], room: &mut Room) -> Result<(), Rejected> {
+    pub(crate) fn feed(
+        &mut self,
+        parser: &mut Parser,
+        bytes: &[u8],
+        room: &mut Room,
+    ) -> Result<(), Rejected> {
         for slice in bytes.chunks(STEP) {
             for token in self.tokenizer.push(slice) {
-                self.token(token, room)?;
+                self.token(parser, token, room)?;
             }
         }
         Ok(())
@@ -227,14 +240,55 @@ impl Bounded {
     /// stripped token can only be malformed input; only the controls it
     /// executes remain. Growth and history are admitted from the policy's own
     /// parse of the token.
-    fn token(&mut self, token: Token, room: &mut Room) -> Result<(), Rejected> {
+    fn token(
+        &mut self,
+        parser: &mut Parser,
+        token: Token,
+        room: &mut Room,
+    ) -> Result<(), Rejected> {
         let policy = classify(&token);
         let bytes = policy.forwarded(&token);
         self.admit(self.growth(token.kind, bytes, policy.repeats), room)?;
         self.grow(bytes.len() + policy.repeats, room);
-        self.core.advance(bytes);
+        self.apply(parser, token.kind, bytes, policy.repeats);
         self.settle(policy.clear);
         Ok(())
+    }
+
+    /// Feed an admitted token through the shared parser so that it leaves
+    /// nothing there for another model.
+    fn apply(&mut self, parser: &mut Parser, kind: Kind, bytes: &[u8], repeats: usize) {
+        if repeats > 0 {
+            self.repeat(parser, bytes, repeats);
+        } else if kind == Kind::Text {
+            self.print(parser, bytes);
+        } else {
+            self.core.advance(parser, bytes);
+        }
+    }
+
+    /// A repeat runs the controls vte executes in it, then prints this
+    /// instance's own preceding character.
+    fn repeat(&mut self, parser: &mut Parser, bytes: &[u8], repeats: usize) {
+        bytes
+            .iter()
+            .filter(|&&byte| byte < 0x20 && byte != 0x1b)
+            .for_each(|control| self.core.advance(parser, slice::from_ref(control)));
+        if let Some(character) = self.preceding {
+            self.core.repeat(character, repeats);
+        }
+    }
+
+    /// Text, remembering what it printed last. A UTF-8 sequence cut off at
+    /// its end, by the escape that follows, prints its replacement character
+    /// now, as vte prints it when that escape arrives.
+    fn print(&mut self, parser: &mut Parser, text: &[u8]) {
+        let cut = incomplete_utf8(text);
+        self.core.advance(parser, &text[..text.len() - cut]);
+        if cut > 0 {
+            self.core.advance(parser, REPLACEMENT);
+        }
+        self.preceding = printed::last(text).or(self.preceding);
     }
 
     /// Charge `growth` if it fits. When the running charge leaves no room,

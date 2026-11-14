@@ -4,10 +4,10 @@
 //! thread holds, so a model that grew past its limit, or charged less than it
 //! held, fails here whatever the model believes about itself.
 
-use climon2_vt::{Geometry, Limits, Model, Rejected};
+use climon2_vt::{Geometry, Limits, Model, Parser, Rejected};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
-    cell::Cell,
+    cell::{Cell, RefCell},
 };
 
 struct Counting;
@@ -55,7 +55,9 @@ struct Meter {
 }
 
 impl Meter {
+    /// The thread's parser is made first: it is the monitor's, not a model's.
     fn watch() -> Self {
+        PARSER.with(|_| ());
         let start = LIVE.with(Cell::get);
         PEAK.with(|peak| peak.set(start));
         Self {
@@ -74,6 +76,23 @@ impl Meter {
 
     fn peak(&self) -> usize {
         (PEAK.with(Cell::get) - self.start).try_into().unwrap()
+    }
+}
+
+thread_local! {
+    /// The one parser every model in a test thread shares, as a monitor's
+    /// models share one.
+    static PARSER: RefCell<Parser> = RefCell::new(Parser::new());
+}
+
+trait FeedShared {
+    /// [`Model::feed`] through the thread's shared parser.
+    fn feed_shared(&mut self, bytes: &[u8]) -> Result<(), Rejected>;
+}
+
+impl FeedShared for Model {
+    fn feed_shared(&mut self, bytes: &[u8]) -> Result<(), Rejected> {
+        PARSER.with(|parser| self.feed(&mut parser.borrow_mut(), bytes))
     }
 }
 
@@ -120,6 +139,31 @@ fn a_model_is_admitted_at_its_mandatory_bytes_and_rejected_one_below() {
 
 const ROOMY: usize = 64 * 1024 * 1024;
 
+/// LIM-04 Contract: a shared resource counts once. A parser allocates vte's
+/// 2 MiB synchronized-update buffer and nothing else, and models fed through
+/// one shared parser never hold more, all together, than their footprints.
+#[test]
+fn one_parser_serves_every_model_and_counts_once() {
+    let meter = Meter::watch();
+    let parser = Parser::new();
+    assert_eq!(meter.peak(), 2 * 1024 * 1024);
+    assert_eq!(meter.live(), Parser::BYTES);
+    drop(parser);
+
+    let meter = Meter::watch();
+    let mut models: Vec<Model> = (0..3)
+        .map(|_| Model::new(geometry(80, 24), limits(ROOMY, HISTORY)).unwrap())
+        .collect();
+    for (n, model) in models.iter_mut().enumerate() {
+        model
+            .feed_shared(format!("model {n}\r\n").repeat(30).as_bytes())
+            .unwrap();
+    }
+    let footprints: usize = models.iter().map(Model::footprint).sum();
+    assert!(meter.peak() <= footprints, "{} > {footprints}", meter.peak());
+    assert_eq!(models[2].screen()[22], "model 2");
+}
+
 /// LIM-03 Contract: plain text, invalid bytes included, fills cells the
 /// engine already holds, so it is accepted unchanged without charging
 /// anything more.
@@ -130,7 +174,7 @@ fn plain_text_fills_held_cells_without_growth() {
     let footprint = model.footprint();
 
     model
-        .feed(b"\x1b7hel\x1b[1mlo\x1b[0m\x1b8\r\nworld\r\n\xe4\xb8\x80x\xff\x07")
+        .feed_shared(b"\x1b7hel\x1b[1mlo\x1b[0m\x1b8\r\nworld\r\n\xe4\xb8\x80x\xff\x07")
         .unwrap();
 
     assert!(meter.peak() <= footprint);
@@ -160,7 +204,7 @@ fn fitted_with(at: Geometry, history_rows: usize, bytes: &[u8]) -> (Model, usize
     let mut limit = needed(Model::new(at, limits(0, history_rows)));
     loop {
         let mut model = Model::new(at, limits(limit, history_rows)).unwrap();
-        match model.feed(bytes) {
+        match model.feed_shared(bytes) {
             Ok(()) => return (model, limit),
             Err(rejected) => limit = rejected.needed,
         }
@@ -176,13 +220,13 @@ fn fitted_with(at: Geometry, history_rows: usize, bytes: &[u8]) -> (Model, usize
 /// accepted model's screen.
 #[track_caller]
 fn assert_bound(at: Geometry, before: &[u8], update: &[u8]) -> Vec<String> {
-    let bound = needed(fitted(at, before).0.feed(update));
+    let bound = needed(fitted(at, before).0.feed_shared(update));
 
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(bound, NO_HISTORY)).unwrap();
-    model.feed(before).unwrap();
+    model.feed_shared(before).unwrap();
     let (held, charged) = (meter.live(), model.footprint());
-    model.feed(update).unwrap();
+    model.feed_shared(update).unwrap();
     assert!(meter.peak() <= bound, "{} > {bound}", meter.peak());
     let kept = meter.live().saturating_sub(held);
     let charge = model.footprint() - charged;
@@ -190,10 +234,10 @@ fn assert_bound(at: Geometry, before: &[u8], update: &[u8]) -> Vec<String> {
     let accepted = model.screen();
 
     let mut model = Model::new(at, limits(bound - 1, NO_HISTORY)).unwrap();
-    model.feed(before).unwrap();
+    model.feed_shared(before).unwrap();
     let page = model.screen();
     assert_eq!(
-        model.feed(update),
+        model.feed_shared(update),
         Err(Rejected {
             needed: bound,
             limit: bound - 1
@@ -240,12 +284,12 @@ fn cells_under_changing_underline_colours_keep_no_more_than_they_were_charged() 
     for glyph in [&b"x"[..], b"\xff", "\u{4e00}".as_bytes()] {
         let meter = Meter::watch();
         let mut model = Model::new(geometry(10, 3), limits(ROOMY, NO_HISTORY)).unwrap();
-        model.feed(b"\r").unwrap();
+        model.feed_shared(b"\r").unwrap();
         let (held, charged) = (meter.live(), model.footprint());
 
         for colour in 1..=30 {
             let tinted = [format!("\x1b[58;5;{colour}m").as_bytes(), glyph].concat();
-            model.feed(&tinted).unwrap();
+            model.feed_shared(&tinted).unwrap();
         }
 
         let kept = meter.live() - held;
@@ -284,24 +328,24 @@ fn history_grows_at_the_bound_and_discards_its_oldest_row_one_byte_past_it() {
     let early = rows(0..900).join("\r\n");
     let late = format!("\r\n{}", rows(900..1003).join("\r\n"));
     let mut roomy = Model::new(at, limits(ROOMY, 2000)).unwrap();
-    roomy.feed(early.as_bytes()).unwrap();
+    roomy.feed_shared(early.as_bytes()).unwrap();
     let before = roomy.footprint();
-    roomy.feed(late.as_bytes()).unwrap();
+    roomy.feed_shared(late.as_bytes()).unwrap();
     let bound = roomy.footprint();
     assert!(bound > before);
 
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(bound, 2000)).unwrap();
-    model.feed(early.as_bytes()).unwrap();
-    model.feed(late.as_bytes()).unwrap();
+    model.feed_shared(early.as_bytes()).unwrap();
+    model.feed_shared(late.as_bytes()).unwrap();
     assert!(meter.peak() <= bound, "{} > {bound}", meter.peak());
     assert_eq!(model.history(), rows(0..1001));
     assert_eq!(model.screen(), rows(1001..1003));
 
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(bound - 1, 2000)).unwrap();
-    model.feed(early.as_bytes()).unwrap();
-    model.feed(late.as_bytes()).unwrap();
+    model.feed_shared(early.as_bytes()).unwrap();
+    model.feed_shared(late.as_bytes()).unwrap();
     assert!(meter.peak() < bound, "{} >= {bound}", meter.peak());
     assert_eq!(model.footprint(), before);
     assert_eq!(model.history(), rows(1..1001));
@@ -315,15 +359,15 @@ fn history_grows_only_before_output_that_could_fill_it() {
     let at = geometry(8, 2);
     let mut model = Model::new(at, limits(ROOMY, 2000)).unwrap();
     for _ in 0..999 {
-        model.feed(b"x\r\n").unwrap();
+        model.feed_shared(b"x\r\n").unwrap();
     }
     assert_eq!(model.history().len(), 998);
     let footprint = model.footprint();
 
-    model.feed(b"a\n").unwrap();
+    model.feed_shared(b"a\n").unwrap();
     assert_eq!(model.footprint(), footprint);
     assert_eq!(model.history().len(), 999);
-    model.feed(b"\r\n\r\n").unwrap();
+    model.feed_shared(b"\r\n\r\n").unwrap();
     assert!(model.footprint() > footprint);
     assert_eq!(model.history().len(), 1001);
 }
@@ -335,13 +379,13 @@ fn history_grows_only_before_output_that_could_fill_it() {
 fn released_marks_make_room_before_anything_is_rejected() {
     let at = geometry(10, 3);
     let update = format!("a{}", "\u{301}".repeat(31));
-    let bound = needed(fitted(at, b"").0.feed(update.as_bytes()));
+    let bound = needed(fitted(at, b"").0.feed_shared(update.as_bytes()));
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(bound, NO_HISTORY)).unwrap();
 
     for _ in 0..100 {
-        model.feed(b"\x1b[2J\x1b[3J\x1b[H").unwrap();
-        model.feed(update.as_bytes()).unwrap();
+        model.feed_shared(b"\x1b[2J\x1b[3J\x1b[H").unwrap();
+        model.feed_shared(update.as_bytes()).unwrap();
     }
 
     assert!(meter.peak() <= bound, "{} > {bound}", meter.peak());
@@ -408,9 +452,9 @@ fn one_token_admits_every_history_chunk_it_could_fill() {
     let at = geometry(2, 1);
     let early = "x\r\n".repeat(900);
     let mut model = Model::new(at, limits(ROOMY, 10_000)).unwrap();
-    model.feed(early.as_bytes()).unwrap();
+    model.feed_shared(early.as_bytes()).unwrap();
 
-    model.feed(b"y\x1b[2500b").unwrap();
+    model.feed_shared(b"y\x1b[2500b").unwrap();
 
     let history = model.history();
     assert_eq!(history.len(), 900 + 1250);
@@ -421,8 +465,8 @@ fn one_token_admits_every_history_chunk_it_could_fill() {
     let feeds = [b"\x1b[".as_slice(), &[b'\n'; 2500], b"\x18"].concat();
     let fed = |limit| {
         let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
-        model.feed(early.as_bytes()).unwrap();
-        model.feed(&feeds).unwrap();
+        model.feed_shared(early.as_bytes()).unwrap();
+        model.feed_shared(&feeds).unwrap();
         model
     };
     let bound = fed(ROOMY).footprint();
@@ -470,7 +514,7 @@ fn sequences_no_host_receives_never_grow_the_model() {
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(limit, NO_HISTORY)).unwrap();
 
-    model.feed(stream.as_bytes()).unwrap();
+    model.feed_shared(stream.as_bytes()).unwrap();
 
     assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
     assert!(meter.live() <= limit);
@@ -489,18 +533,18 @@ fn restoration_staging_is_accepted_at_the_bound_and_rejected_one_byte_past_it() 
     let at = geometry(10, 3);
     let restoration = format!("restored\r\na{}", "\u{301}".repeat(20));
     let mut probe = Model::new(at, limits(mandatory(at), NO_HISTORY)).unwrap();
-    probe.feed(b"live page").unwrap();
+    probe.feed_shared(b"live page").unwrap();
     let both = needed(probe.stage(at));
     let mut probe = Model::new(at, limits(both, NO_HISTORY)).unwrap();
-    probe.feed(b"live page").unwrap();
+    probe.feed_shared(b"live page").unwrap();
     probe.stage(at).unwrap();
-    let bound = needed(probe.feed(restoration.as_bytes()));
+    let bound = needed(probe.feed_shared(restoration.as_bytes()));
 
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(bound, NO_HISTORY)).unwrap();
-    model.feed(b"live page").unwrap();
+    model.feed_shared(b"live page").unwrap();
     model.stage(at).unwrap();
-    model.feed(restoration.as_bytes()).unwrap();
+    model.feed_shared(restoration.as_bytes()).unwrap();
     assert!(meter.peak() <= bound, "{} > {bound}", meter.peak());
     assert_eq!(model.screen(), ["live page", "", ""]);
     assert!(model.apply());
@@ -515,14 +559,14 @@ fn restoration_staging_is_accepted_at_the_bound_and_rejected_one_byte_past_it() 
     );
 
     let mut model = Model::new(at, limits(bound - 1, NO_HISTORY)).unwrap();
-    model.feed(b"live page").unwrap();
+    model.feed_shared(b"live page").unwrap();
     model.stage(at).unwrap();
     let rejected = Rejected {
         needed: bound,
         limit: bound - 1,
     };
-    assert_eq!(model.feed(restoration.as_bytes()), Err(rejected));
-    assert_eq!(model.feed(b"more"), Err(rejected));
+    assert_eq!(model.feed_shared(restoration.as_bytes()), Err(rejected));
+    assert_eq!(model.feed_shared(b"more"), Err(rejected));
     assert!(!model.apply());
     assert_eq!(model.screen(), ["live page", "", ""]);
 }
@@ -536,14 +580,14 @@ fn resizing_stages_a_replacement_at_the_bound_and_is_rejected_one_byte_past_it()
     let small = geometry(10, 3);
     let large = geometry(200, 60);
     let mut probe = Model::new(small, limits(mandatory(small), NO_HISTORY)).unwrap();
-    probe.feed(b"page").unwrap();
+    probe.feed_shared(b"page").unwrap();
     let bound = needed(probe.stage(large));
 
     let meter = Meter::watch();
     let mut model = Model::new(small, limits(bound, NO_HISTORY)).unwrap();
-    model.feed(b"page").unwrap();
+    model.feed_shared(b"page").unwrap();
     model.stage(large).unwrap();
-    model.feed(b"\x1b[60;190Hcorner").unwrap();
+    model.feed_shared(b"\x1b[60;190Hcorner").unwrap();
     assert!(meter.peak() <= bound, "{} > {bound}", meter.peak());
     assert_eq!(model.geometry(), small);
     assert!(model.apply());
@@ -552,7 +596,7 @@ fn resizing_stages_a_replacement_at_the_bound_and_is_rejected_one_byte_past_it()
 
     let meter = Meter::watch();
     let mut model = Model::new(small, limits(bound - 1, NO_HISTORY)).unwrap();
-    model.feed(b"page").unwrap();
+    model.feed_shared(b"page").unwrap();
     assert_eq!(
         model.stage(large),
         Err(Rejected {
@@ -571,12 +615,12 @@ fn resizing_stages_a_replacement_at_the_bound_and_is_rejected_one_byte_past_it()
 fn discarded_restorations_never_become_current() {
     let at = geometry(10, 3);
     let mut model = Model::new(at, limits(ROOMY, NO_HISTORY)).unwrap();
-    model.feed(b"current").unwrap();
+    model.feed_shared(b"current").unwrap();
     let alone = model.footprint();
     model.stage(at).unwrap();
-    model.feed(b"first").unwrap();
+    model.feed_shared(b"first").unwrap();
     model.stage(at).unwrap();
-    model.feed(b"second").unwrap();
+    model.feed_shared(b"second").unwrap();
     assert!(model.footprint() > alone);
 
     model.discard();
@@ -585,7 +629,7 @@ fn discarded_restorations_never_become_current() {
     assert!(!model.apply());
     assert_eq!(model.screen(), ["current", "", ""]);
     model.stage(at).unwrap();
-    model.feed(b"third").unwrap();
+    model.feed_shared(b"third").unwrap();
     assert!(model.apply());
     assert_eq!(model.screen(), ["third", "", ""]);
 }
@@ -607,17 +651,17 @@ fn alternate_screen_marks_stay_charged_until_that_screen_is_cleared() {
     let at = geometry(10, 3);
     let alternate = format!("\x1b[?1049h\x1b[H{}", marked(at, 20));
     let (mut model, limit) = fitted(at, alternate.as_bytes());
-    model.feed(b"\x1b[?1049l").unwrap();
+    model.feed_shared(b"\x1b[?1049l").unwrap();
     let normal = marked(at, 20);
-    assert!(model.feed(normal.as_bytes()).is_err());
+    assert!(model.feed_shared(normal.as_bytes()).is_err());
     assert_eq!(model.screen(), ["", "", ""]);
     drop(model);
 
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(limit, NO_HISTORY)).unwrap();
     for _ in 0..3 {
-        model.feed(alternate.as_bytes()).unwrap();
-        model.feed(b"\x1b[?1049l").unwrap();
+        model.feed_shared(alternate.as_bytes()).unwrap();
+        model.feed_shared(b"\x1b[?1049l").unwrap();
     }
     assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
     assert_eq!(model.screen(), ["", "", ""]);
@@ -630,17 +674,17 @@ fn a_rejected_model_accepts_output_again_after_a_restoration_is_applied() {
     let at = geometry(10, 3);
     let marks = format!("a{}", "\u{301}".repeat(20));
     let mut model = Model::new(at, limits(mandatory(at) * 2 + 1000, NO_HISTORY)).unwrap();
-    model.feed("kept\u{301}".as_bytes()).unwrap();
-    assert!(model.feed(b"\x1b[65535b").is_err());
+    model.feed_shared("kept\u{301}".as_bytes()).unwrap();
+    assert!(model.feed_shared(b"\x1b[65535b").is_err());
     let kept = model.screen();
     assert_eq!(kept, ["kept\u{301}", "", ""]);
-    assert!(model.feed(b"x").is_err());
+    assert!(model.feed_shared(b"x").is_err());
 
     model.stage(at).unwrap();
-    model.feed(b"restored\r\n").unwrap();
+    model.feed_shared(b"restored\r\n").unwrap();
     assert_eq!(model.screen(), kept);
     assert!(model.apply());
-    model.feed(marks.as_bytes()).unwrap();
+    model.feed_shared(marks.as_bytes()).unwrap();
 
     assert_eq!(
         model.screen(),
@@ -675,12 +719,12 @@ fn a_long_history_stays_within_the_smallest_limit_that_keeps_it() {
     let at = geometry(2, 1);
     let output = "x\r\n".repeat(10_500);
     let mut roomy = Model::new(at, limits(ROOMY, 10_000)).unwrap();
-    roomy.feed(output.as_bytes()).unwrap();
+    roomy.feed_shared(output.as_bytes()).unwrap();
     let limit = roomy.footprint();
 
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
-    model.feed(output.as_bytes()).unwrap();
+    model.feed_shared(output.as_bytes()).unwrap();
 
     assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
     assert_eq!(model.history().len(), 10_000);
@@ -705,7 +749,7 @@ fn a_cancelled_sequence_releasing_held_controls_stays_within_the_limit() {
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(limit, NO_HISTORY)).unwrap();
 
-    model.feed(&burst).unwrap();
+    model.feed_shared(&burst).unwrap();
 
     assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
     assert_eq!(model.footprint(), limit);
@@ -735,7 +779,7 @@ fn the_reserve_covers_what_is_held_briefly() {
         let mut model = Model::new(at, limits(limit, NO_HISTORY)).unwrap();
 
         for read in stream.as_bytes().chunks(read) {
-            model.feed(read).unwrap();
+            model.feed_shared(read).unwrap();
         }
 
         assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
@@ -751,11 +795,11 @@ fn a_full_reset_releases_marks_and_history() {
     let limit = fitted_with(at, HISTORY, heavy.as_bytes()).1;
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(limit, HISTORY)).unwrap();
-    model.feed(heavy.as_bytes()).unwrap();
+    model.feed_shared(heavy.as_bytes()).unwrap();
 
     for _ in 0..3 {
-        model.feed(b"\x1bc").unwrap();
-        model.feed(heavy.as_bytes()).unwrap();
+        model.feed_shared(b"\x1bc").unwrap();
+        model.feed_shared(heavy.as_bytes()).unwrap();
     }
 
     assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
@@ -764,22 +808,25 @@ fn a_full_reset_releases_marks_and_history() {
 
 /// LIM-03 Contract: history storage is added a chunk at a time and kept: a
 /// model printing thousands of lines, with sequences between them that push
-/// nothing, allocates less in total than its footprint.
+/// nothing, allocates no more in total for its history than the history adds
+/// to its footprint. The same output to a model without history is the
+/// oracle for what feeding allocates and frees on the way.
 #[test]
 fn history_storage_is_allocated_a_chunk_at_a_time() {
     let at = geometry(10, 2);
     let output = "\x1b[1mline\x1b[0m\r\n".repeat(2500);
-    let mut model = Model::new(at, limits(ROOMY, 3000)).unwrap();
-    let meter = Meter::watch();
+    let fed = |history_rows| {
+        let mut model = Model::new(at, limits(ROOMY, history_rows)).unwrap();
+        let meter = Meter::watch();
+        model.feed_shared(output.as_bytes()).unwrap();
+        (meter.total(), model)
+    };
+    let (plain, without) = fed(NO_HISTORY);
+    let (total, model) = fed(3000);
 
-    model.feed(output.as_bytes()).unwrap();
-
-    assert!(
-        meter.total() <= model.footprint(),
-        "{} > {}",
-        meter.total(),
-        model.footprint()
-    );
+    let allocated = total - plain;
+    let charged = model.footprint() - without.footprint();
+    assert!(allocated <= charged, "{allocated} > {charged}");
     assert_eq!(model.history().len(), 2499);
 }
 
@@ -795,11 +842,11 @@ fn cleared_history_releases_its_marks() {
     let limit = fitted_with(at, HISTORY, screenful.as_bytes()).1;
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(limit, HISTORY)).unwrap();
-    model.feed(screenful.as_bytes()).unwrap();
+    model.feed_shared(screenful.as_bytes()).unwrap();
 
     for _ in 0..8 {
-        model.feed(b"\x1b[2J\x1b[3J").unwrap();
-        model.feed(screenful.as_bytes()).unwrap();
+        model.feed_shared(b"\x1b[2J\x1b[3J").unwrap();
+        model.feed_shared(screenful.as_bytes()).unwrap();
     }
 
     assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
@@ -814,7 +861,9 @@ fn history_never_grows_past_its_configured_rows() {
     let mut model = Model::new(at, limits(ROOMY, 1000)).unwrap();
     let footprint = model.footprint();
 
-    model.feed("line\r\n".repeat(1500).as_bytes()).unwrap();
+    model
+        .feed_shared("line\r\n".repeat(1500).as_bytes())
+        .unwrap();
 
     assert_eq!(model.footprint(), footprint);
     assert_eq!(model.history().len(), 1000);
@@ -831,7 +880,7 @@ fn history_shows_its_rows_at_the_limit_and_not_the_oldest_one_past_it() {
         let mut model = Model::new(at, limits(ROOMY, HISTORY)).unwrap();
 
         model
-            .feed(rows(0..scrolled + 2).join("\r\n").as_bytes())
+            .feed_shared(rows(0..scrolled + 2).join("\r\n").as_bytes())
             .unwrap();
 
         assert_eq!(model.history(), rows(shown), "{scrolled} rows scrolled");
@@ -868,7 +917,7 @@ fn live_output_discards_the_oldest_history_instead_of_being_rejected() {
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
 
-    model.feed(output.as_bytes()).unwrap();
+    model.feed_shared(output.as_bytes()).unwrap();
 
     assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
     let history = model.history();
@@ -891,8 +940,8 @@ fn history_yields_its_oldest_chunk_to_live_output_one_byte_below_the_bound() {
     let fed = |limit| {
         let meter = Meter::watch();
         let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
-        model.feed(before.as_bytes()).unwrap();
-        model.feed(update.as_bytes()).unwrap();
+        model.feed_shared(before.as_bytes()).unwrap();
+        model.feed_shared(update.as_bytes()).unwrap();
         assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
         model
     };
@@ -921,13 +970,13 @@ fn history_never_yields_its_first_chunk() {
     let fed = |limit| {
         let meter = Meter::watch();
         let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
-        model.feed(before.as_bytes()).unwrap();
-        let fed = model.feed(b"\x1b[65535b");
+        model.feed_shared(before.as_bytes()).unwrap();
+        let fed = model.feed_shared(b"\x1b[65535b");
         assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
         (model, fed)
     };
     let mut roomy = Model::new(at, limits(ROOMY, 10_000)).unwrap();
-    roomy.feed(before.as_bytes()).unwrap();
+    roomy.feed_shared(before.as_bytes()).unwrap();
     let bound = needed(fed(roomy.footprint()).1);
     let page = |marks: usize| {
         let last = format!("a{}", "\u{301}".repeat(marks));
@@ -967,8 +1016,8 @@ fn history_yields_to_the_alternate_screen() {
     let fed = |limit| {
         let meter = Meter::watch();
         let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
-        model.feed(before.as_bytes()).unwrap();
-        model.feed(marks.as_bytes()).unwrap();
+        model.feed_shared(before.as_bytes()).unwrap();
+        model.feed_shared(marks.as_bytes()).unwrap();
         assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
         model
     };
@@ -977,7 +1026,7 @@ fn history_yields_to_the_alternate_screen() {
     for (limit, kept) in [(bound, 0..1500), (bound - 1, 500..1500)] {
         let mut model = fed(limit);
         assert_eq!(model.screen(), alternate);
-        model.feed(b"\x1b[?1049l").unwrap();
+        model.feed_shared(b"\x1b[?1049l").unwrap();
         assert_eq!(model.history(), rows[kept]);
         assert_eq!(model.screen(), rows[1500..]);
     }
@@ -995,7 +1044,7 @@ fn staging_a_restoration_discards_the_current_models_oldest_history_first() {
     let output = rows.join("\r\n");
     let current = |limit| {
         let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
-        model.feed(output.as_bytes()).unwrap();
+        model.feed_shared(output.as_bytes()).unwrap();
         model
     };
     let bound = current(ROOMY).footprint() + needed(Model::new(at, limits(0, 10_000)));
@@ -1027,7 +1076,7 @@ fn staging_never_takes_the_current_models_first_history_chunk() {
     let output = rows.join("\r\n");
     let current = |limit| {
         let mut model = Model::new(small, limits(limit, 10_000)).unwrap();
-        model.feed(output.as_bytes()).unwrap();
+        model.feed_shared(output.as_bytes()).unwrap();
         model
     };
     let mut first = current(ROOMY);
@@ -1046,7 +1095,7 @@ fn staging_never_takes_the_current_models_first_history_chunk() {
         limit: bound - 1,
     };
     assert_eq!(model.stage(large), Err(rejected));
-    assert_eq!(model.feed(b"x"), Err(rejected));
+    assert_eq!(model.feed_shared(b"x"), Err(rejected));
     assert_eq!(model.history(), rows[2100..3100]);
     assert_eq!(model.screen(), rows[3100..]);
 }
@@ -1064,18 +1113,18 @@ fn a_staged_restoration_takes_room_from_the_current_models_history_first() {
     let restored: Vec<String> = (0..3300).map(|n| format!("new{n}")).collect();
     let (output, restoration) = (rows.join("\r\n"), restored.join("\r\n"));
     let mut first = Model::new(at, limits(ROOMY, 10_000)).unwrap();
-    first.feed(output.as_bytes()).unwrap();
+    first.feed_shared(output.as_bytes()).unwrap();
     while first.shorten_history() {}
     let mut alone = Model::new(at, limits(ROOMY, 10_000)).unwrap();
-    alone.feed(restoration.as_bytes()).unwrap();
+    alone.feed_shared(restoration.as_bytes()).unwrap();
     let bound = first.footprint() + alone.footprint();
 
     for (limit, kept) in [(bound, 0..3100), (bound - 1, 100..3100)] {
         let meter = Meter::watch();
         let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
-        model.feed(output.as_bytes()).unwrap();
+        model.feed_shared(output.as_bytes()).unwrap();
         model.stage(at).unwrap();
-        model.feed(restoration.as_bytes()).unwrap();
+        model.feed_shared(restoration.as_bytes()).unwrap();
         assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
         assert!(model.apply());
         assert_eq!(model.history(), restored[kept]);
@@ -1096,7 +1145,7 @@ fn shortening_history_releases_the_oldest_chunk_and_never_the_first() {
     let output = rows.join("\r\n");
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(ROOMY, 10_000)).unwrap();
-    model.feed(output.as_bytes()).unwrap();
+    model.feed_shared(output.as_bytes()).unwrap();
 
     for chunks in (1..10).rev() {
         let footprint = model.footprint();
@@ -1144,8 +1193,8 @@ fn an_unfilled_history_chunk_yields_without_losing_a_row() {
     .concat();
     let updated = |limit| {
         let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
-        model.feed(before.as_bytes()).unwrap();
-        model.feed(cell.as_bytes()).unwrap();
+        model.feed_shared(before.as_bytes()).unwrap();
+        model.feed_shared(cell.as_bytes()).unwrap();
         model
     };
     let bound = updated(ROOMY).footprint();
@@ -1154,8 +1203,8 @@ fn an_unfilled_history_chunk_yields_without_losing_a_row() {
 
     let meter = Meter::watch();
     let mut model = updated(bound - 1);
-    model.feed(cover.as_bytes()).unwrap();
-    model.feed(after.as_bytes()).unwrap();
+    model.feed_shared(cover.as_bytes()).unwrap();
+    model.feed_shared(after.as_bytes()).unwrap();
 
     assert!(meter.peak() < bound, "{} >= {bound}", meter.peak());
     assert_eq!(model.history(), lines[91..2091]);
@@ -1167,9 +1216,11 @@ fn an_unfilled_history_chunk_yields_without_losing_a_row() {
 #[test]
 fn the_alternate_screen_shows_no_history() {
     let mut model = Model::new(geometry(8, 2), limits(ROOMY, HISTORY)).unwrap();
-    model.feed(b"one\r\ntwo\r\nthree\x1b[?1049h").unwrap();
+    model
+        .feed_shared(b"one\r\ntwo\r\nthree\x1b[?1049h")
+        .unwrap();
     assert_eq!(model.history(), Vec::<String>::new());
-    model.feed(b"\x1b[?1049l").unwrap();
+    model.feed_shared(b"\x1b[?1049l").unwrap();
     assert_eq!(model.history(), ["one"]);
 }
 
@@ -1334,7 +1385,7 @@ fn adversarial_streams_never_take_a_model_past_its_limit() {
                 };
                 let (read, next) = rest.split_at(size.min(rest.len()));
                 rest = next;
-                if let Err(rejected) = model.feed(read) {
+                if let Err(rejected) = model.feed_shared(read) {
                     break Some(rejected);
                 }
                 let uncharged = meter
@@ -1349,8 +1400,8 @@ fn adversarial_streams_never_take_a_model_past_its_limit() {
             );
             if let Some(rejected) = rejected {
                 let page = model.screen();
-                assert_eq!(model.feed(rest), Err(rejected));
-                assert_eq!(model.feed(b"x"), Err(rejected));
+                assert_eq!(model.feed_shared(rest), Err(rejected));
+                assert_eq!(model.feed_shared(b"x"), Err(rejected));
                 assert_eq!(model.screen(), page);
             }
         }
@@ -1369,10 +1420,10 @@ fn marks_accumulating_on_every_cell_stay_within_the_limit() {
         .collect();
     let meter = Meter::watch();
     let mut model = Model::new(at, limits(limit, NO_HISTORY)).unwrap();
-    model.feed(marked(at, 0).as_bytes()).unwrap();
+    model.feed_shared(marked(at, 0).as_bytes()).unwrap();
 
     let accepted = (0..200)
-        .take_while(|_| model.feed(round.as_bytes()).is_ok())
+        .take_while(|_| model.feed_shared(round.as_bytes()).is_ok())
         .count();
 
     assert!(accepted > 0 && accepted < 200, "{accepted}");
@@ -1394,9 +1445,11 @@ fn repeated_repeats_stay_within_the_limit() {
     ] {
         let meter = Meter::watch();
         let mut model = Model::new(at, limits(limit, NO_HISTORY)).unwrap();
-        model.feed("a\u{301}".as_bytes()).unwrap();
+        model.feed_shared("a\u{301}".as_bytes()).unwrap();
 
-        let repeated = (0..20).take_while(|_| model.feed(repeat).is_ok()).count();
+        let repeated = (0..20)
+            .take_while(|_| model.feed_shared(repeat).is_ok())
+            .count();
 
         assert_eq!(repeated, 0, "{repeat:?}");
         assert!(meter.peak() <= limit, "{} > {limit}", meter.peak());
@@ -1410,8 +1463,10 @@ fn repeated_repeats_stay_within_the_limit() {
 fn the_largest_limits_never_overflow_the_accounting() {
     let mut model = Model::new(geometry(10, 3), limits(usize::MAX, usize::MAX)).unwrap();
 
-    model.feed("a\u{301}\x1b[65535b\r\n".as_bytes()).unwrap();
-    model.feed("x\r\n".repeat(1100).as_bytes()).unwrap();
+    model
+        .feed_shared("a\u{301}\x1b[65535b\r\n".as_bytes())
+        .unwrap();
+    model.feed_shared("x\r\n".repeat(1100).as_bytes()).unwrap();
 
     assert!(model.footprint() < usize::MAX);
     assert_eq!(model.history().len(), 1099);
@@ -1428,11 +1483,11 @@ fn the_engine_sees_only_what_a_host_would_receive() {
     let footprint = model.footprint();
 
     model
-        .feed(b"\x1b]8;;https://example.com/\x07link\x1b]8;;\x07")
+        .feed_shared(b"\x1b]8;;https://example.com/\x07link\x1b]8;;\x07")
         .unwrap();
     assert_eq!(model.footprint(), footprint);
     assert_eq!(model.screen(), ["link", ""]);
 
-    model.feed(b"\x1b[?47;1049h").unwrap();
+    model.feed_shared(b"\x1b[?47;1049h").unwrap();
     assert_eq!(model.screen(), ["", ""]);
 }
