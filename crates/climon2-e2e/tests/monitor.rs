@@ -2489,3 +2489,98 @@ fn without_key_hints_the_top_row_shows_no_hint() {
     finish_sessions(&package, "finish");
     package.assert_clean();
 }
+
+/// Spec #73 Enter ("never exposing cached output") and CTL-05 (revoked):
+/// when another client takes control of the selected session, the monitor
+/// shows it is no longer controlling and no longer paints the session, so
+/// its now-cached screen never shows. Enter takes control back, and only
+/// the new restoration is painted.
+#[test]
+fn a_revoked_session_shows_no_cached_output_until_enter_takes_control_again() {
+    let package = Package::new();
+    without_introduction(&package);
+    let id = headless(
+        &package,
+        "printf '\\033]2;Taken\\007VISIBLE\\r\\n'",
+        "finish",
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    select(&mut terminal, "Taken", 0);
+    let fields = |control| [STATUS, control, SESSIONS_HINT];
+    let controlling = session_top_row(usize::from(COLS), "Taken", &fields(CONTROLLING));
+    top_row_is(&mut terminal, &controlling);
+    assert_eq!(terminal.row(1).trim_end(), "VISIBLE");
+
+    let mut attach = package.command("c2");
+    attach.args(["attach", &id]);
+    let mut attach = Terminal::spawn(attach, ROWS, COLS).unwrap();
+    attach.wait_for_text("VISIBLE", TIMEOUT).unwrap();
+    let revoked = session_top_row(usize::from(COLS), "Taken", &fields("Not controlling"));
+    top_row_is(&mut terminal, &revoked);
+    for row in 1..usize::from(ROWS) {
+        assert_eq!(terminal.row(row).trim_end(), "", "row {row}");
+    }
+    assert!(!terminal.cursor().visible);
+
+    select(&mut terminal, "Taken", 0);
+    top_row_is(&mut terminal, &controlling);
+    assert_eq!(terminal.row(1).trim_end(), "VISIBLE");
+    attach
+        .wait_for_text("This session is being viewed elsewhere.", TIMEOUT)
+        .unwrap();
+    attach.send("\x1dd").unwrap();
+    assert_eq!(attach.wait_exit(TIMEOUT).unwrap(), 0);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// The #94 rule for #108: a finished session's view freezes at its Command
+/// final. Its last screen stays painted, the top row says it ended and,
+/// once its connection closes, that it is disconnected; Enter on its row,
+/// now known final, neither selects nor acquires anything.
+#[test]
+fn a_finished_session_keeps_its_last_screen_and_cannot_be_acquired() {
+    let package = Package::new();
+    without_introduction(&package);
+    let script = "printf '\\033]2;Done\\007FINAL OUTPUT'; until [ -e \"$HOME/end\" ] || [ \"$SECONDS\" -ge 120 ]; do sleep 0.05; done; exit 3";
+    headless(&package, script, "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    select(&mut terminal, "Done", 0);
+    top_row_is(
+        &mut terminal,
+        &session_top_row(
+            usize::from(COLS),
+            "Done",
+            &[STATUS, CONTROLLING, SESSIONS_HINT],
+        ),
+    );
+    fs::write(package.isolation.home().join("end"), b"").unwrap();
+    let ended = session_top_row(
+        usize::from(COLS),
+        "Done",
+        &["Disconnected", "Ended", SESSIONS_HINT],
+    );
+    top_row_is(&mut terminal, &ended);
+    assert_eq!(terminal.row(1).trim_end(), "FINAL OUTPUT");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "║Disconnected Done");
+    terminal.send("\r").unwrap();
+    terminal.send("\x1b").unwrap();
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
+        .unwrap();
+    assert_eq!(terminal.row(0), ended);
+    assert_eq!(terminal.row(1).trim_end(), "FINAL OUTPUT");
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}

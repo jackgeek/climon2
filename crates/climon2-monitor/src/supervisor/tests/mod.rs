@@ -6,6 +6,8 @@
 //! busy while either remains), and records what an independent observer
 //! needs: each destroy's result and when its owner thread exits.
 use super::{client::OPEN_ID, owner::GENERATION, *};
+use crate::terminal::{Authority, Request as Asked};
+use climon2_core::protocol::TerminalSize;
 use climon2_core::{
     native::{
         Bytes, Call, Communication, Control, Created, Delivery, Drained, Error, Instance, Metrics,
@@ -30,6 +32,8 @@ struct Script {
     run_fails: bool,
     /// Run ignores shutdown until the test lets it go.
     stalls: bool,
+    /// After Open, one delivery of control and display records.
+    presents: bool,
 }
 
 /// What the observer saw of one session's instance.
@@ -39,17 +43,23 @@ enum Seen {
     OwnerExited,
 }
 
+/// A request the fake received: tag, request ID and its arguments' words
+/// (generation; or generation, period, restoration; plus columns and rows).
+type Submitted = (u32, u64, Vec<u64>);
+
 #[derive(Default)]
 struct World {
     scripts: BTreeMap<[u8; 16], Script>,
     seen: Vec<([u8; 16], Seen)>,
     unstalled: BTreeSet<[u8; 16]>,
+    submitted: Vec<Submitted>,
 }
 
 static WORLD: Mutex<World> = Mutex::new(World {
     scripts: BTreeMap::new(),
     seen: Vec::new(),
     unstalled: BTreeSet::new(),
+    submitted: Vec::new(),
 });
 static CHANGED: Condvar = Condvar::new();
 const WAIT: Duration = Duration::from_secs(20);
@@ -260,6 +270,9 @@ extern "C" fn run(instance: *mut Instance, _out: *mut RunReport) -> Call {
         return failure(native::INTERNAL_ERROR, b"internal_error", b"run failed");
     }
     fake.push(Item::Delivery(opened()));
+    if fake.script.presents {
+        fake.push(Item::Delivery(presentation()));
+    }
     let mut world = world();
     while !(fake.state().shutdown && (!fake.script.stalls || world.unstalled.contains(&fake.id))) {
         world = CHANGED.wait(world).unwrap_or_else(PoisonError::into_inner);
@@ -282,11 +295,148 @@ extern "C" fn destroy(instance: *mut Instance) -> Call {
     call
 }
 
-extern "C" fn submit(_communication: *mut Communication, request: *const Request) -> Call {
+extern "C" fn submit(communication: *mut Communication, request: *const Request) -> Call {
     // SAFETY: the supervisor passes a complete request.
     let request = unsafe { &*request };
-    assert_eq!((request.tag, request.request_id), (native::OPEN, OPEN_ID));
+    if request.tag == native::OPEN {
+        assert_eq!(request.request_id, OPEN_ID);
+        return success();
+    }
+    // SAFETY: the tag names the active member.
+    let words = unsafe {
+        match request.tag {
+            native::ACQUIRE => vec![request.args.generation],
+            native::READY => authority_words(request.args.authority),
+            _ => {
+                let resize = request.args.resize;
+                let mut words = authority_words(resize.authority);
+                words.extend([
+                    u64::from(resize.geometry.cols),
+                    u64::from(resize.geometry.rows),
+                ]);
+                words
+            }
+        }
+    };
+    changed(&mut world(), |world| {
+        world
+            .submitted
+            .push((request.tag, request.request_id, words));
+    });
+    // Ready is refused; anything else accepted, after an answer to a
+    // request never made.
+    let fake = fake(communication);
+    let refused = request.tag == native::READY;
+    fake.push(Item::Delivery(vec![
+        answer(99, false),
+        answer(request.request_id, refused),
+    ]));
     success()
+}
+
+fn authority_words(authority: native::Authority) -> Vec<u64> {
+    vec![
+        authority.generation,
+        authority.period,
+        authority.restoration_id,
+    ]
+}
+
+fn record(tag: u32) -> Record {
+    // SAFETY: an all-zero record is a valid plain value.
+    let mut record: Record = unsafe { std::mem::zeroed() };
+    record.tag = tag;
+    record.generation = GENERATION;
+    record
+}
+
+/// A command's answer: accepted, or rejected as stale.
+fn answer(request_id: u64, refused: bool) -> Record {
+    let mut answer = record(native::RESPONSE);
+    // SAFETY: an all-zero response is a valid plain value.
+    let mut response: native::Response = unsafe { std::mem::zeroed() };
+    response.request_id = request_id;
+    response.outcome = if refused {
+        native::REJECTED
+    } else {
+        native::OK
+    };
+    response.error = no_error();
+    if refused {
+        response.error.message = bytes_of(b"stale");
+    }
+    answer.data.response = response;
+    answer
+}
+
+static DISPLAYED: &[u8] = b"\0hi";
+
+/// Initial metadata that knows the command's result, then a grant (in
+/// generation 7), a restoration with its bytes, two Geometry records (one
+/// too wide for any session, one with no columns), a revocation, a Command
+/// final and a record the supervisor does not read.
+fn presentation() -> Vec<Record> {
+    let geometry = |cols, rows| native::Geometry { cols, rows };
+    let mut metadata = record(native::INITIAL_METADATA);
+    // SAFETY: an all-zero metadata record is a valid plain value.
+    let mut initial: native::Metadata = unsafe { std::mem::zeroed() };
+    initial.title.state = native::VALUE;
+    initial.title.value = bytes_of(b"T");
+    initial.command_result.present = 1;
+    metadata.data.metadata = initial;
+    let mut granted = record(native::GRANTED);
+    granted.generation = 7;
+    granted.data.granted = native::Granted {
+        period: 2,
+        restoration_id: 3,
+        geometry: geometry(80, 24),
+        reason: native::TAKE_CONTROL,
+        reserved: 0,
+    };
+    let mut begun = record(native::RESTORATION_BEGIN);
+    begun.data.restoration = native::Restoration {
+        period: 2,
+        restoration_id: 4,
+        geometry: geometry(100, 30),
+    };
+    let barrier = native::Barrier {
+        period: 2,
+        restoration_id: 4,
+    };
+    let mut display = record(native::DISPLAY);
+    display.data.display = native::Display {
+        authority: barrier,
+        bytes: bytes_of(DISPLAYED),
+    };
+    let mut complete = record(native::RESTORATION_COMPLETE);
+    complete.data.barrier = barrier;
+    let reshaped = |cols| {
+        let mut changed = record(native::GEOMETRY);
+        changed.data.geometry = native::GeometryEvent {
+            period: 2,
+            geometry: geometry(cols, 5),
+        };
+        changed
+    };
+    let mut revoked = record(native::REVOKED);
+    revoked.data.revoked = native::Revoked {
+        period: 2,
+        restoration_id: 4,
+        reason: native::SESSION_ENDING,
+        reserved: 0,
+    };
+    vec![
+        metadata,
+        granted,
+        begun,
+        display,
+        complete,
+        reshaped(70_000),
+        reshaped(0),
+        revoked,
+        record(native::FINAL),
+        record(native::STATUS),
+    ]
 }
 
 extern "C" fn drain(communication: *mut Communication, out: *mut Drained) -> Call {
@@ -579,4 +729,116 @@ fn a_refused_release_is_loaded_once_and_its_sessions_are_unavailable() {
     assert_eq!(reported, expected);
     supervisor.stop();
     assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+fn geometry(cols: u16, rows: u16) -> climon2_vt::Geometry {
+    climon2_vt::Geometry::for_host(cols, rows).unwrap()
+}
+
+fn presented(presentation: Presentation) -> ClientEvent {
+    ClientEvent::Presentation(presentation)
+}
+
+/// Client supervisor (#108): control and display records reach the
+/// session's terminal as the library delivered them: each grant and
+/// beginning with its record's generation, period, restoration and
+/// effective geometry (one too wide for any session clamped to 500
+/// columns, one with no columns dropped), Display's exact bytes, a
+/// revocation, and the command's final result from the Initial metadata
+/// and from Command final; unread records add nothing.
+#[test]
+fn control_and_display_records_reach_the_terminal_as_delivered() {
+    let id = session(5, 1);
+    script(
+        &id,
+        Script {
+            presents: true,
+            ..Script::default()
+        },
+    );
+    let (_home, mut supervisor) = supervisor(1, 20_000, fake_library());
+    supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+    let authority = |generation, restoration| Authority {
+        generation,
+        period: 2,
+        restoration,
+    };
+    let expected = [
+        ClientEvent::Opened { status: false },
+        ClientEvent::Title(Some("T".into())),
+        ClientEvent::Final,
+        presented(Presentation::Granted(authority(7, 3), geometry(80, 24))),
+        presented(Presentation::Begin(
+            authority(GENERATION, 4),
+            geometry(100, 30),
+        )),
+        presented(Presentation::Display(DISPLAYED.to_vec())),
+        presented(Presentation::Complete),
+        presented(Presentation::Geometry(geometry(500, 5))),
+        presented(Presentation::Revoked),
+        ClientEvent::Final,
+    ];
+    for event in expected {
+        assert_eq!(next(&supervisor), (id.clone(), event));
+    }
+    supervisor.stop();
+    assert_eq!(
+        supervisor.reports.try_iter().collect::<Vec<_>>(),
+        [(id, ClientEvent::Ended)]
+    );
+}
+
+/// Client supervisor (#108): Acquire, Ready and Resize are submitted with
+/// increasing request IDs after Open's and their native arguments, and each
+/// answer reaches the terminal as its own request, accepted or refused with
+/// why; an answer to no request adds nothing, and a request for a session
+/// without an open client is refused at once.
+#[test]
+fn requests_are_submitted_in_order_and_answered_as_themselves() {
+    let id = session(6, 1);
+    let (_home, mut supervisor) = supervisor(1, 20_000, fake_library());
+    supervisor.request(id.clone(), Asked::Acquire);
+    let refused = presented(Presentation::Answered(
+        Asked::Acquire,
+        Err("the session's client is not connected".into()),
+    ));
+    assert_eq!(next(&supervisor), (id.clone(), refused));
+    supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+    assert_eq!(
+        next(&supervisor),
+        (id.clone(), ClientEvent::Opened { status: false })
+    );
+    let held = Authority {
+        generation: 1,
+        period: 5,
+        restoration: 6,
+    };
+    let size = TerminalSize {
+        cols: 120,
+        rows: 29,
+    };
+    let requests = [
+        Asked::Acquire,
+        Asked::Ready(held),
+        Asked::Resize(held, size),
+    ];
+    for request in requests {
+        supervisor.request(id.clone(), request);
+        let answer = if matches!(request, Asked::Ready(_)) {
+            Err("stale".to_owned())
+        } else {
+            Ok(())
+        };
+        let answered = presented(Presentation::Answered(request, answer));
+        assert_eq!(next(&supervisor), (id.clone(), answered));
+    }
+    supervisor.stop();
+    assert_eq!(
+        world().submitted,
+        [
+            (native::ACQUIRE, 2, vec![GENERATION]),
+            (native::READY, 3, vec![1, 5, 6]),
+            (native::RESIZE, 4, vec![1, 5, 6, 120, 29]),
+        ]
+    );
 }
