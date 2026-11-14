@@ -2834,9 +2834,11 @@ fn global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffer
 /// prefix+? opens the key introduction. The key introduction behaves alike
 /// with split Up and Down, and Escape and prefix+s in one read close it
 /// (the prefix, Ctrl+], does not consume Escape) and then open the
-/// selector. Neither dialog's keys reach the session, which receives only
-/// the key typed once it is shown again, and prefix+x exits from the
-/// selector (INP-01).
+/// selector. Escape and a key in one read close the selector or the key
+/// introduction and the key reaches the session (owner decision on #109:
+/// the uncovered session is painted before the rest of the read is
+/// routed), as does a key read after a lone Escape. No other dialog key
+/// reaches the session, and prefix+x exits from the selector (INP-01).
 #[test]
 fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
     let package = Package::new();
@@ -2889,12 +2891,23 @@ fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
             screen.contains('║') && !screen.contains("Exit the monitor")
         })
         .unwrap();
-    terminal.send(ESCAPE).unwrap();
+    read_alone(&mut terminal, monitor, b"\x1bq");
+    received(&package, b"q");
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
         .unwrap();
-    terminal.send("q").unwrap();
-    received(&package, b"q");
+    terminal.send("\x1d?").unwrap();
+    shows_row(&mut terminal, "Exit the monitor");
+    read_alone(&mut terminal, monitor, b"\x1bz");
+    received(&package, b"qz");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{STATUS} Other"));
+    read_alone(&mut terminal, monitor, b"\x1b");
+    read_alone(&mut terminal, monitor, b"y");
+    received(&package, b"qzy");
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
+        .unwrap();
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, &format!("║{STATUS} Other"));
     terminal.send("\x1dx").unwrap();
@@ -2961,7 +2974,10 @@ fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
     terminal.send("h").unwrap();
     received(&package, b"abcdh");
     terminal.send("\x1dx").unwrap();
-    assert_released(&package, &mut terminal, 0);
+    // Its wide frames can outgrow the oracle's recent bytes, so only the
+    // title itself is checked.
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
     finish_sessions(&package, "finish");
     package.assert_clean();
 }

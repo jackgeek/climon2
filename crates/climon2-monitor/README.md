@@ -123,7 +123,11 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   accepted): <why>`, N counting the refused chunk and every byte after it.
 - Every other key goes to the key introduction while it is open, otherwise
   to the open selector, and a prefix with a key that completes no action
-  reaches neither. A doubled prefix is one literal prefix there too, so with
+  reaches neither. When a key closes the last modal in the middle of a read,
+  a frame is painted before the rest of that read is routed (owner decision
+  on #109), so a key typed straight after Escape reaches the uncovered
+  session; input still reaches only a painted, visible session, and nothing
+  is kept beyond the read. A doubled prefix is one literal prefix there too, so with
   `Ctrl+M` as the prefix Enter Enter continues. The key introduction acts
   only on Enter (close), a bare Escape (close; never the prefix's) and Space
   (reverse the saved choice).
@@ -416,7 +420,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | HLP-02 (Monitor, over the empty monitor): a doubled prefix reaches the key introduction as one literal prefix, so with Ctrl+M as the prefix Enter Enter continues; the prefix and a key it does not complete reach nothing; prefix+x still exits | `with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction` (e2e) |
 | INP-01, INP-02, TRM-02 (Monitor), COM-04 (Monitor, typed), EXT-03 (Monitor, Ctrl+C): typed bytes reach the selected session exactly, binary, invalid UTF-8 and Ctrl+C included; one literal prefix for a doubled one, both bytes for d, h, r, J and the take-control key, nothing for prefix+j, replies and reports; identical when split into ten reads; cursor and keypad keys follow the application's modes and the host keypad follows it | `typed_bytes_reach_the_selected_session_exactly_however_reads_split` (e2e) |
 | INP-01 (Monitor, live and too-small screens), spec #73 Routing: prefix+? and prefix+s from a live session, their keys never reach it; on a too-small host input is discarded, never buffered, prefix+s still opens the selector and prefix+x still exits | `global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffered` (e2e) |
-| INP-02, HLP-02 (Monitor, Escape; owner decisions on #105, #106 and #109): a cursor key split right after its Escape or after its introducer never closes the selector or key introduction; a lone Escape closes it when the next key arrives, which reaches the session; Escape then a key in one read does the same | `split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both` (e2e) |
+| INP-02, HLP-02 (Monitor, Escape; owner decisions on #105, #106 and #109): a cursor key split right after its Escape or after its introducer never closes the selector or key introduction; a lone Escape closes it when the next key arrives, which reaches the session; Escape then a key in one read closes the selector or key introduction and the key reaches the session, painted first | `split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both` (e2e), `only_closing_the_last_modal_reveals_the_canvas` (`src/lib.rs`) |
 | Spec #73 exit (owner decision on #109): keys read with prefix+x reach the session before shutdown; a stuck session holds exit at most the operation deadline (plus the shutdown deadline) | `typed_bytes_reach_the_selected_session_exactly_however_reads_split`, `a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline` (e2e); `stopping_waits_for_accepted_input_at_most_the_operation_deadline` (`src/supervisor/tests`) |
 | COM-03 (Monitor, queue full), COM-04 (Monitor, chunks): a refused chunk is shown with the bytes not sent, earlier input accepted; only accepted input arrives | `a_full_input_queue_is_shown_and_only_accepted_input_arrives` (e2e) |
 | INP-01 (pure input-router supplement): the global actions with default and custom prefixes; a doubled prefix; unknown suffixes; a lone prefix waits | `the_prefix_and_lowercase_s_x_j_or_question_mark_are_the_global_actions`, `a_doubled_prefix_is_one_literal_prefix`, `an_unknown_suffix_is_the_prefix_and_that_key`, `a_lone_prefix_waits_indefinitely` (`src/router.rs`) |
