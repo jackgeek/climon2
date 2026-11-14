@@ -3215,7 +3215,8 @@ fn placeholder_screen(label: &str) -> String {
 /// nothing in the selector or the key introduction, Alpha's title still
 /// updates, and the monitor never takes control back by itself. The
 /// take-control key then acquires Alpha and is consumed; once the monitor
-/// controls Alpha it is ordinary input.
+/// controls Alpha it is ordinary input. When the other client takes control
+/// again, the placeholder returns and prefix+x exits from it.
 #[test]
 fn a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key() {
     let package = Package::new();
@@ -3310,6 +3311,10 @@ fn a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key() {
     terminal.send("\x14").unwrap();
     received_by(&package, "Alpha", &[&before[..], b"\x14"].concat());
     received_by(&package, "Beta", b"b");
+    // The other client takes control back with its own take-control key,
+    // and prefix+x exits from the placeholder.
+    other.send("\x14").unwrap();
+    shows(&mut terminal, &placeholder_screen("Alpha revoked"));
     terminal.send("\x1dx").unwrap();
     // Its many frames can outgrow the oracle's recent bytes, so only the
     // title itself is checked.

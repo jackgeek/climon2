@@ -537,14 +537,19 @@ impl Monitor {
         if self.introduction.is_open() {
             self.introduction.key(key);
         } else if self.selector.is_open() {
-            if let Some(id) = self.selector.key(key, &self.registry.rows()) {
-                self.enter(id);
-            }
+            self.selector_key(key);
         } else if self
             .take_control
             .is_some_and(|byte| *key == Key::Bytes(vec![byte]))
         {
             self.take_control();
+        }
+    }
+
+    /// A key for the open selector; Enter acts on the row it chose.
+    fn selector_key(&mut self, key: &Key) {
+        if let Some(id) = self.selector.key(key, &self.registry.rows()) {
+            self.enter(id);
         }
     }
 }

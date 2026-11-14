@@ -24,7 +24,12 @@ when the next key arrives, which is then routed as itself (Escape followed by
 a key in one read behaves the same). The same holds for the key
 introduction. Bytes bound for the selected session, a lone Escape included,
 go to it at once. Enter selects the highlighted row
-([#108](https://github.com/jackgeek/climon2/issues/108)). Nothing else this
+([#108](https://github.com/jackgeek/climon2/issues/108)): a connected row not
+known to be final is acquired, a Starting row or an Unavailable row without a
+connected client is selected read-only, and on This monitor the selection
+stays while the selector explains why on its bottom border
+([#110](https://github.com/jackgeek/climon2/issues/110)); disconnected and
+final rows wait for [#116](https://github.com/jackgeek/climon2/issues/116). Nothing else this
 document specifies is implemented: no search or separator, status order,
 key-hint footer, Delete, toasts or bell.
 The [throwaway prototype](https://github.com/jackgeek/climon2/pull/72) is a

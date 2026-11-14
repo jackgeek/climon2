@@ -8,6 +8,9 @@ not implementation or executed acceptance evidence.** The
 clients and the basic selector of
 [#106](https://github.com/jackgeek/climon2/issues/106) and the selection,
 control and painting of [#108](https://github.com/jackgeek/climon2/issues/108),
+the input router of [#109](https://github.com/jackgeek/climon2/issues/109) and
+the switching, revocation and take-control key of
+[#110](https://github.com/jackgeek/climon2/issues/110),
 whose Monitor-layer cases are mapped in the monitor README; the daemon wire is partly
 implemented, and headless creation is implemented. Packaged
 [client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
