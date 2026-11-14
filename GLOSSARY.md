@@ -322,3 +322,11 @@ _Avoid_: Sanity test, canary
 **Release gate**:
 A check that must pass before a version can be released.
 _Avoid_: Quality gate, CI check
+
+**Ticket gate**:
+`cargo xtask check`: the local qualification for one change, which mutates only the functions it adds or changes and measures mutation load for one round.
+_Avoid_: Fast gate, quick check
+
+**Full gate**:
+`cargo xtask check --full`: the local qualification run once before a feature branch merges to `main`, which mutates whole changed files and measures mutation load for five rounds.
+_Avoid_: Slow gate, complete check
