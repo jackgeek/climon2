@@ -20,7 +20,10 @@ use climon2_core::{
     protocol::HELLO_TIMEOUT,
     wire::{self, Frame},
 };
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 const INVALID_STATE: Fault = Fault::library(
     "invalid_state",
@@ -32,14 +35,12 @@ const STALE_GENERATION: Fault = Fault::library(
 );
 const OVERSIZED: Fault = Fault::library(
     "resource_limit",
-    "a record from the session daemon exceeds metadata_record_bytes or chunk_bytes",
+    "a record from the session daemon exceeds metadata_record_bytes",
 );
 const UNFOCUSED: Fault = Fault::library(
     "unsupported_capability",
     "focus-v1 is not selected on this connection",
 );
-/// A Display's header: its period and restoration ID.
-const DISPLAY_HEADER: u64 = 16;
 
 /// Runs the connection until its stream ends, and returns the Leave
 /// evidence. Whatever ends it, the requests it took and the socket it held
@@ -69,9 +70,9 @@ struct Driver<'a> {
     connection: Option<Connection<'a>>,
     /// The Open's start deadline, until its Initial metadata arrives.
     start: Option<Instant>,
-    /// A record waiting for room in the event allowance; nothing is read
-    /// meanwhile.
-    parked: Option<Event>,
+    /// Records waiting, in order, for room in the event allowance: one
+    /// daemon record's, split to `chunk_bytes`. Nothing is read meanwhile.
+    parked: VecDeque<Event>,
     shutdown: bool,
     departure: Departure,
     ended: bool,
@@ -85,7 +86,7 @@ impl<'a> Driver<'a> {
             stream: Stream::new(shared.limits().title_bytes),
             connection: None,
             start: None,
-            parked: None,
+            parked: VecDeque::new(),
             shutdown: false,
             departure: Departure::NOT_REQUIRED,
             ended: false,
@@ -262,7 +263,7 @@ impl<'a> Driver<'a> {
 
     fn wait(&mut self) {
         self.unpark();
-        let reading = self.parked.is_none();
+        let reading = self.parked.is_empty();
         let link = self
             .connection
             .as_ref()
@@ -272,9 +273,13 @@ impl<'a> Driver<'a> {
         self.service();
     }
 
+    /// Queues the waiting records, oldest first, while they fit.
     fn unpark(&mut self) {
-        if let Some(event) = self.parked.take() {
-            self.parked = self.shared.offer(event);
+        while let Some(event) = self.parked.pop_front() {
+            if let Some(event) = self.shared.offer(event) {
+                self.parked.push_front(event);
+                break;
+            }
         }
     }
 
@@ -313,7 +318,7 @@ impl<'a> Driver<'a> {
         let connection = self
             .connection
             .as_mut()
-            .filter(|_| !self.ended && self.parked.is_none())?;
+            .filter(|_| !self.ended && self.parked.is_empty())?;
         connection
             .link
             .receive(connection.peer.receive)
@@ -334,17 +339,14 @@ impl<'a> Driver<'a> {
         }
     }
 
-    /// Every record fits `metadata_record_bytes`, type byte included, and
-    /// a Display's bytes `chunk_bytes` (#94); none is truncated into a
-    /// healthy one.
+    /// Every record but a Display fits `metadata_record_bytes`, type byte
+    /// included; none is truncated into a healthy one. A Display is
+    /// bounded by the daemon's server frames, which the hello fitted to
+    /// `wire_frame_bytes`, and delivered in `chunk_bytes` records (#94).
     fn decode(&mut self, frame: &Frame) -> Result<Effect, Fault> {
-        let limits = self.shared.limits();
         let body = frame.body().len() as u64;
-        let fits = if frame.code() == wire::Display::CODE {
-            body <= DISPLAY_HEADER + u64::from(limits.chunk_bytes)
-        } else {
-            body < limits.metadata_record_bytes.into()
-        };
+        let fits = frame.code() == wire::Display::CODE
+            || body < self.shared.limits().metadata_record_bytes.into();
         require(fits, OVERSIZED)?;
         self.stream.receive(frame)
     }
@@ -359,7 +361,9 @@ impl<'a> Driver<'a> {
     }
 
     fn offer(&mut self, event: Event) {
-        self.parked = self.shared.offer(event);
+        let chunk = self.shared.limits().chunk_bytes as usize;
+        self.parked.extend(event.split(chunk));
+        self.unpark();
         self.depart();
     }
 

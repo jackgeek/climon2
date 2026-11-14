@@ -261,6 +261,21 @@ impl Title {
 }
 
 impl Event {
+    /// The record as records of at most `chunk` bytes each (#94): a
+    /// Display's bytes in order, under its authority; any other record
+    /// whole.
+    pub(super) fn split(self, chunk: usize) -> Vec<Self> {
+        match self {
+            Self::Presentation(Presentation::Screen(Screen::Display(ids, bytes))) => bytes
+                .chunks(chunk)
+                .map(|part| {
+                    Self::Presentation(Presentation::Screen(Screen::Display(ids, Box::from(part))))
+                })
+                .collect(),
+            event => vec![event],
+        }
+    }
+
     /// What the record costs the event allowance: the record and every
     /// buffer it owns.
     pub(super) fn charge(&self) -> u64 {

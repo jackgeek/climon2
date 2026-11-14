@@ -35,12 +35,16 @@ fn assert_attached(records: &[Value], id: u64, generation: u64, geometry: [u64; 
     assert_restored(&records[2..], generation, ATTACH, geometry)
 }
 
-/// The release when control ends, by Leave or revocation: one Display under
-/// the held authority that resets the modes the application set, focus
-/// reporting (`ESC [ ? 1004 l`) among them, before the Leave's
-/// confirmation or the Control revoked.
+/// The release when control ends, by Leave or revocation: one Display, or
+/// its `chunk_bytes` records, under the held authority that resets the
+/// modes the application set, focus reporting (`ESC [ ? 1004 l`) among
+/// them, before the Leave's confirmation or the Control revoked.
 fn assert_released(records: &[Value], generation: u64, authority: [u64; 2]) {
-    assert_eq!(records.len(), 1, "{records:#?}");
+    assert!(!records.is_empty());
+    assert!(
+        records.iter().all(|record| record["tag"] == DISPLAY),
+        "{records:#?}"
+    );
     let released = display(records, generation, authority);
     assert!(released.contains("1b5b3f313030346c"), "{released}");
 }
@@ -48,7 +52,9 @@ fn assert_released(records: &[Value], generation: u64, authority: [u64; 2]) {
 /// COM-04 Library (binary bytes survive the C ABI unchanged both ways:
 /// Input of `00 ff 41`, NUL and invalid UTF-8 reaches the raw application,
 /// whose unchanged echo returns as Display bytes with no C-string
-/// truncation), COM-05 Library (an interactive Open is answered, then the
+/// truncation, and with `chunk_bytes` of 16, far below the daemon's frame
+/// size, every Display is at most 16 bytes and the stream stays healthy),
+/// COM-05 Library (an interactive Open is answered, then the
 /// Initial metadata, then the attach grant, its Restoration begin, Display
 /// chunks and Restoration complete, all under one immutable authority and
 /// the startup generation), COM-02 and COM-03 Library acceptance cases for
@@ -62,8 +68,10 @@ fn installed_library_attaches_and_relays_binary_input_and_display_unchanged() {
     let package = Package::new();
     let root = root(&package);
     let mut session = Session::start(&package, &root);
+    let mut startup = session.startup(&package, 3);
+    startup["limits"] = json!({ "chunk_bytes": 16 });
     let steps = json!([
-        { "do": "create", "startup": session.startup(&package, 3) },
+        { "do": "create", "startup": startup },
         { "do": "submit", "request": interactive(1, 100, 30) },
         { "do": "run" },
         { "do": "drain", "until": { "tag": RESTORATION_COMPLETE } },
@@ -97,9 +105,17 @@ fn installed_library_attaches_and_relays_binary_input_and_display_unchanged() {
         let accepted = assert_ok(answer(&echoed, id), 3, id, INPUT_ACCEPTED);
         assert_eq!(accepted["accepted_bytes"], length, "{accepted:#}");
     }
-    let (records, terminal) = finished(step(&report, 11));
-    assert_released(&records, 3, authority);
+    let (records_of_finish, terminal) = finished(step(&report, 11));
+    assert_released(&records_of_finish, 3, authority);
     assert_detached(terminal, 3);
+    let mut every = records(&report, &[3, 5, 7, 9]);
+    every.extend(records_of_finish);
+    let chunks = tagged(&every, DISPLAY);
+    assert!(chunks.len() > 2, "{every:#?}");
+    for chunk in chunks {
+        let bytes = chunk["presentation"]["bytes"].as_str().unwrap().len() / 2;
+        assert!((1..=16).contains(&bytes), "{chunk:#}");
+    }
     assert_all_released(&report["ledger"]);
     session.end();
     assert_eq!(session.terminal.wait_exit(TIMEOUT).unwrap(), 0);

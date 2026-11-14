@@ -633,14 +633,17 @@ type RecordCase = (&'static str, Vec<Value>, Vec<u64>, (u64, &'static str));
 /// under a restoration it does not hold, a Display after its revocation, a
 /// grant before the Initial metadata, a second grant without a revocation,
 /// a Restoration begin or Geometry of another period, and a Restoration
-/// complete or Control revoked of a restoration it does not hold; and with library `resource_limit` on a
-/// Display one byte over `chunk_bytes`, while one of exactly `chunk_bytes`
-/// is delivered.
+/// complete or Control revoked of a restoration it does not hold. A
+/// Display larger than `chunk_bytes`, which the daemon's frame size allows
+/// whatever `chunk_bytes` is, is delivered in order as Displays of at most
+/// `chunk_bytes` under its authority: one byte over makes two records, of
+/// `chunk_bytes` and of one byte, while one of exactly `chunk_bytes` stays
+/// one record; both streams stay healthy until the daemon closes them.
 #[test]
 fn installed_library_refuses_presentation_records_out_of_authority() {
     let package = Package::new();
     let invalid = (ORIGIN_TRANSPORT, "invalid_record");
-    let oversized = (ORIGIN_LIBRARY, "resource_limit");
+    let closed = (ORIGIN_TRANSPORT, "io_error");
     let opening = || {
         vec![
             opened(&ATTACHED),
@@ -729,15 +732,17 @@ fn installed_library_refuses_presentation_records_out_of_authority() {
         ),
         (
             "display-over",
-            with(vec![shown(PERIOD, 2, "4142434445")]),
+            with(vec![shown(PERIOD, 2, "4142434445"), "close".into()]),
             vec![
                 RESPONSE,
                 INITIAL_METADATA,
                 GRANTED,
                 RESTORATION_BEGIN,
+                DISPLAY,
+                DISPLAY,
                 DIAGNOSTIC,
             ],
-            oversized,
+            closed,
         ),
         (
             "foreign-begin",
@@ -786,7 +791,7 @@ fn installed_library_refuses_presentation_records_out_of_authority() {
                 DISPLAY,
                 DIAGNOSTIC,
             ],
-            (ORIGIN_TRANSPORT, "io_error"),
+            closed,
         ),
     ];
     let mut plan = Plan::new();
@@ -815,8 +820,16 @@ fn installed_library_refuses_presentation_records_out_of_authority() {
             Some(*error),
         );
     }
-    let at = finished(step(&report, finishes.last().unwrap().1)).0;
-    assert_eq!(display(&at[4..5], 1, [PERIOD, 2]), "41424344");
+    let chunks = |name: &str| -> Vec<String> {
+        let (_, finish) = finishes.iter().find(|(case, _)| case == name).unwrap();
+        let records = finished(step(&report, *finish)).0;
+        tagged(&records, DISPLAY)
+            .into_iter()
+            .map(|record| display(std::slice::from_ref(record), 1, [PERIOD, 2]))
+            .collect()
+    };
+    assert_eq!(chunks("display-over"), ["41424344", "45"]);
+    assert_eq!(chunks("display-at"), ["41424344"]);
     assert_all_released(&report["ledger"]);
 }
 
