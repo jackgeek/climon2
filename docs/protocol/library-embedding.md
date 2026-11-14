@@ -11,7 +11,9 @@ contained and no process-global state changed
 ([#85](https://github.com/jackgeek/climon2/issues/85)). An instance opens a
 passive monitor connection to its session's daemon on its owner thread,
 never raising `SIGPIPE` in the process
-([#93](https://github.com/jackgeek/climon2/issues/93)). The shared validated
+([#93](https://github.com/jackgeek/climon2/issues/93)), or an interactive
+attachment, and relays control and display
+([#94](https://github.com/jackgeek/climon2/issues/94)). The shared validated
 loader ([#84](https://github.com/jackgeek/climon2/issues/84)) is implemented.
 The [monitor](../../GLOSSARY.md#sessions) uses it
 ([#106](https://github.com/jackgeek/climon2/issues/106)): it loads each

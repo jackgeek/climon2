@@ -275,7 +275,7 @@ fn installed_library_rejects_an_open_the_session_cannot_honour_before_any_role()
 
 /// COM-01 Fault (optional families intersect three ways, and the selection
 /// must be one the request allows): a daemon advertising `status-v1` and
-/// `focus-v1` but not `title-v1` is asked for no optional family at all,
+/// `progress-v1` but not `title-v1` is asked for no optional family at all,
 /// since the library relays neither and the daemon lacks titles; its Initial
 /// metadata reports the title unavailable, never a fabricated empty one.
 /// A daemon that selects a family the Open did not request, or omits a
@@ -284,7 +284,7 @@ fn installed_library_rejects_an_open_the_session_cannot_honour_before_any_role()
 fn installed_library_selects_only_families_both_sides_support() {
     let package = Package::new();
     let root = root(&package);
-    let advertised = ["daemon-wire-v1", "monitor-v1", "status-v1", "focus-v1"];
+    let advertised = ["daemon-wire-v1", "monitor-v1", "status-v1", "progress-v1"];
     let unavailable = send(
         0x41,
         json!({
@@ -301,7 +301,7 @@ fn installed_library_selects_only_families_both_sides_support() {
     });
     let unrequested = json!({ "open": [opened(&["daemon-wire-v1", "monitor-v1", "status-v1"])] });
     let incomplete = json!({ "open": [opened(&["title-v1"])] });
-    let optional = ["title-v1", "status-v1", "focus-v1"];
+    let optional = ["title-v1", "status-v1", "progress-v1"];
     let steps = json!([
         { "do": "create", "instance": "a", "peer": intersected },
         { "do": "submit", "instance": "a", "request": open(1, &REQUIRED, &optional) },

@@ -1,4 +1,7 @@
-use climon2_core::protocol::{PTY_DRAIN_CAP, PTY_DRAIN_IDLE};
+use climon2_core::{
+    protocol::{PTY_DRAIN_CAP, PTY_DRAIN_IDLE},
+    wire::CommandResult,
+};
 use std::{io, time::Instant};
 
 /// One PTY output read, classified.
@@ -75,9 +78,9 @@ impl Drain {
 #[derive(Debug)]
 pub(super) enum Command {
     Running,
-    /// Reaped with `code`; its remaining output is being drained.
+    /// Reaped with `result`; its remaining output is being drained.
     Draining {
-        code: u32,
+        result: CommandResult,
         drain: Drain,
     },
     /// Hung up; the rest of its terminal session is killed at `until`.
@@ -109,10 +112,10 @@ impl Command {
         matches!(self, Self::HangingUp { until } if now >= *until)
     }
 
-    /// The exit status, once the drain finished.
-    pub fn drained(&self, now: Instant) -> Option<u32> {
+    /// The command's result, once the drain finished.
+    pub fn drained(&self, now: Instant) -> Option<CommandResult> {
         match self {
-            Self::Draining { code, drain } if drain.finished(now) => Some(*code),
+            Self::Draining { result, drain } if drain.finished(now) => Some(result.clone()),
             _ => None,
         }
     }
@@ -167,21 +170,22 @@ mod tests {
     }
 
     #[test]
-    fn the_command_reads_until_drained_and_reports_its_code_once_drained() {
+    fn the_command_reads_until_drained_and_reports_its_result_once_drained() {
         let now = Instant::now();
         let mut command = Command::Running;
         assert!(command.reads(now));
         assert_eq!(command.drained(now), None);
         command.observe(&Read::End, now);
+        let result = CommandResult::Exit { code: 7 };
         command = Command::Draining {
-            code: 7,
+            result: result.clone(),
             drain: Drain::new(now),
         };
         assert!(command.reads(now));
         assert_eq!(command.drained(now), None);
         command.observe(&Read::End, now);
         assert!(!command.reads(now));
-        assert_eq!(command.drained(now), Some(7));
+        assert_eq!(command.drained(now), Some(result));
         assert!(!Command::Ended.reads(now));
         assert_eq!(Command::Ended.drained(now), None);
     }

@@ -144,6 +144,10 @@ _Avoid_: Steal, lock, request approval
 The grant that returns control, when the controller leaves, to the most recently controlling client still attached.
 _Avoid_: Failover, fallback
 
+**Promotion**:
+The grant that makes the newest successor an attachment and the controller when the controller leaves and no other attachment remains.
+_Avoid_: Automatic takeover, failover
+
 **Detach**:
 End one client's attachment without ending the session or its command; it is deliberate only once the session daemon accepts the request.
 _Avoid_: Exit the session, kill, stop
@@ -248,6 +252,10 @@ _Avoid_: Raw mode, passthrough
 **Derived presentation**:
 Live output rendered from the virtual terminal's state, used when the controller's host is larger than the session in either dimension, which happens only beyond the maximum session size.
 _Avoid_: Emulated mode, redraw mode
+
+**Canonical presentation**:
+A monitor's restorations and live output, serialized at the session's own size for a fresh terminal of exactly that size, whatever size the monitor's host has.
+_Avoid_: Monitor presentation, normalized output
 
 **Release**:
 The bytes that return a terminal to the normal-shell baseline when an attachment's presentation ends.

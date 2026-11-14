@@ -1,7 +1,8 @@
 # Geometry — `0x4b`
 
-**Status: agreed and implemented for interactive attachments**
-([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** for interactive attachments
+([#87](https://github.com/jackgeek/climon2/issues/87)) and monitor-mode
+connections ([#89](https://github.com/jackgeek/climon2/issues/89)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) reports actual geometry to
 the [client](../../../GLOSSARY.md#sessions).
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
@@ -35,7 +36,12 @@ Inherited/background control does not originate
 Monitor-mode presentation uses these effective dimensions, not outer-host/
 requested dimensions. The monitor positions the session rectangle top-left
 below its permanent top row and blanks unused margins, without local
-[PTY](../TERMS.md#pseudo-terminal-pty) reflow.
+[PTY](../TERMS.md#pseudo-terminal-pty) reflow. Geometry carries no
+restoration, and a monitor model is never reflowed in place: for
+monitor-mode connections a [Restoration begin](event-restoration-begin.md)
+at the reported geometry always follows Geometry, before any
+[Display](event-display.md) at that geometry (developer decision on
+[#76](https://github.com/jackgeek/climon2/issues/76), 2026-11-13).
 The [#63 geometry contract](../terminal-integration.md#host-canvas-geometry-and-coherent-readiness)
 keeps host-relative overlay layout independent of this acknowledgement.
 
@@ -55,4 +61,9 @@ current period when the session geometry differs from the one the
 controller last learned; a host change that leaves the session geometry as
 it was sends none. Geometry follows the Resize success. Before readiness, a
 changed geometry is reported by the replacement
-[Restoration begin](event-restoration-begin.md) instead.
+Restoration begin instead. To a monitor-mode controller, a
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control)
+that its Acquire or a
+[promotion](../../../GLOSSARY.md#attachment-and-control) made an attachment, the replacement
+Restoration begin at the new geometry follows its Geometry at once, before
+any Display, and its readiness ends until it confirms the new restoration.

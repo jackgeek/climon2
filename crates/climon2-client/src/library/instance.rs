@@ -568,7 +568,11 @@ impl Shared {
     /// accepts requests, its ID increases and it fits.
     pub(super) fn submit(&self, request: &native::Request) -> Result<(), Failure> {
         // SAFETY: the caller's buffers cover their lengths during this call.
-        let submitted = unsafe { request::parse(request, self.limits.request_bytes) }?;
+        let capacity = request::Capacity {
+            request_bytes: self.limits.request_bytes,
+            chunk_bytes: self.limits.chunk_bytes.into(),
+        };
+        let submitted = unsafe { request::parse(request, capacity) }?;
         let mut state = self.lock();
         self.admit(&state, &submitted)?;
         self.accept(&mut state, submitted);
@@ -643,7 +647,7 @@ impl Shared {
 
     /// What the connection does next: stop after a failure elsewhere, react
     /// to shutdown once, or take the oldest request when it can execute.
-    fn next(&self, shutdown_seen: bool, leave_ready: bool) -> Next {
+    fn next(&self, shutdown_seen: bool, ready: bool) -> Next {
         let mut state = self.lock();
         self.waker.clear();
         if state.stop.failure.is_some() {
@@ -653,7 +657,7 @@ impl Shared {
             self.cancel(&mut state);
             return Next::Shutdown;
         }
-        take(&mut state, leave_ready).map_or(Next::Wait, Next::Request)
+        take(&mut state, ready).map_or(Next::Wait, Next::Request)
     }
 
     /// Rejects every queued request: none of them will execute.
@@ -789,8 +793,9 @@ impl Shared {
 
     /// How many of the oldest records one delivery takes: as many as both
     /// drain ceilings hold. The first always fits: a record's payload is
-    /// copied from one daemon frame of at most `metadata_record_bytes`,
-    /// which create never lets exceed `drain_payload_bytes`.
+    /// copied from one daemon frame of at most `metadata_record_bytes`, or
+    /// a Display of at most `chunk_bytes`, neither of which create lets
+    /// exceed `drain_payload_bytes`.
     fn batch(&self, events: &VecDeque<Event>) -> usize {
         let mut payload = 0;
         events
@@ -871,12 +876,12 @@ impl Shared {
 }
 
 /// The oldest queued request, if it can execute now: an Open always (it
-/// runs, or is refused), a Leave once `leave_ready`.
-fn take(state: &mut State, leave_ready: bool) -> Option<Submitted> {
+/// runs, or is refused), any other once `ready`.
+fn take(state: &mut State, ready: bool) -> Option<Submitted> {
     let ready = state
         .requests
         .front()
-        .is_some_and(|request| leave_ready || matches!(request.operation, Operation::Open(_)));
+        .is_some_and(|request| ready || matches!(request.operation, Operation::Open(_)));
     ready.then(|| dequeue(state)).flatten()
 }
 
@@ -910,8 +915,8 @@ impl<'a> Taken<'a> {
     }
 
     /// What the connection does next; a request it takes is counted.
-    pub(super) fn next(&mut self, shutdown_seen: bool, leave_ready: bool) -> Next {
-        let next = self.shared.next(shutdown_seen, leave_ready);
+    pub(super) fn next(&mut self, shutdown_seen: bool, ready: bool) -> Next {
+        let next = self.shared.next(shutdown_seen, ready);
         if matches!(next, Next::Request(_)) {
             self.count += 1;
         }

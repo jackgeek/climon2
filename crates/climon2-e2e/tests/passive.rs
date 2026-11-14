@@ -188,7 +188,7 @@ fn assert_passive(report: &Value, generation: u64, state: &Value) {
     assert_eq!(queued["operations"], 1, "{queued:#}");
     let all: Vec<&str> = REQUIRED.iter().chain(&OPTIONAL).copied().collect();
     assert_eq!(queued["request_bytes"], charge(&all), "{queued:#}");
-    let selected = ["daemon-wire-v1", "monitor-v1", "title-v1"];
+    let selected = ["daemon-wire-v1", "focus-v1", "monitor-v1", "title-v1"];
     let first = step(report, 5)["records"].as_array().unwrap();
     assert_opened(first, 5, generation, &selected);
     // Whether the two records share a delivery depends on when the drain
@@ -229,8 +229,8 @@ fn assert_passive(report: &Value, generation: u64, state: &Value) {
 /// Response, atomic Initial metadata with the title by value, then
 /// gap-free Title changed records by value, empty and unset distinct),
 /// COM-01 Library (the optional families intersect: of six requested, only
-/// `title-v1`, which the library relays and the daemon advertises, is
-/// selected; an unknown family is not), COM-03 Library (the Open's
+/// `title-v1` and `focus-v1`, which the library relays and the daemon
+/// advertises, are selected; an unknown family is not), COM-03 Library (the Open's
 /// arguments were copied before `submit` returned and the caller's memory
 /// unmapped; public ID 5 is answered; the request is charged until it
 /// executes), LIB-04 Library (the kept deliveries' records are unchanged

@@ -12,9 +12,11 @@ implemented, and headless creation is implemented. Packaged
 [client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
 description ([#75](https://github.com/jackgeek/climon2/issues/75)), their
 local instance lifecycle
-([#85](https://github.com/jackgeek/climon2/issues/85)) and open passive
-monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
-which the monitor loads (#106). Headless creation's HDL-01 Contract cases and
+([#85](https://github.com/jackgeek/climon2/issues/85)), open passive
+monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93))
+and relay control and display
+([#94](https://github.com/jackgeek/climon2/issues/94)); the monitor loads
+them (#106). Headless creation's HDL-01 Contract cases and
 its Monitor-layer cases through the packaged CLI are mapped in the daemon and
 packaged-test READMEs, and its monitor-row case in the monitor README. Resolving this specification does not pass a
 [release gate](../GLOSSARY.md#testing).

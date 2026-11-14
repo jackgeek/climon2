@@ -4,12 +4,16 @@
 //! the library had not copied would fault, and a rejected one it retained
 //! would too.
 //!
-//! A request is JSON: `tag` (a number, `"open"` or `"leave"`), `request_id`,
-//! optional `reserved`, `fill` (a byte written over the whole request
-//! first, so inactive storage holds it), and the active member: `open`
-//! (`mode`, `reserved`, `geometry` `[cols, rows]`, token lists `required`
-//! and `optional`) or `generation`. A token list is an array of buffers (see
-//! `startup`), `{"null": count}` or `{"dangling": count}`.
+//! A request is JSON: `tag` (a number or a name: `"open"`, `"leave"`,
+//! `"acquire"`, `"input"`, `"resize"`, `"ready"` or `"focus"`),
+//! `request_id`, optional `reserved`, `fill` (a byte written over the whole
+//! request first, so inactive storage holds it), and the active member:
+//! `open` (`mode`, `reserved`, `geometry` `[cols, rows]`, token lists
+//! `required` and `optional`), `generation` (Leave and Acquire), or an
+//! `authority` (`[generation, period, restoration_id]`) with, for Input,
+//! `bytes` (a buffer, see `startup`), for Resize, `geometry`, and for Focus,
+//! `value` and optional `flag_reserved`. A token list is an array of
+//! buffers, `{"null": count}` or `{"dangling": count}`.
 
 use super::startup::Arena;
 use climon2_core::native::{self, Bytes, Tokens};
@@ -25,6 +29,11 @@ fn tag(spec: &Value) -> u32 {
     match spec.as_str() {
         Some("open") => native::OPEN,
         Some("leave") => native::LEAVE,
+        Some("acquire") => native::ACQUIRE,
+        Some("input") => native::INPUT,
+        Some("resize") => native::RESIZE,
+        Some("ready") => native::READY,
+        Some("focus") => native::FOCUS,
         _ => number(spec, 0),
     }
 }
@@ -56,16 +65,29 @@ fn tokens(arena: &mut Arena, spec: &Value) -> Tokens {
     }
 }
 
-fn open(arena: &mut Arena, spec: &Value) -> native::Open {
-    let geometry = spec["geometry"].as_array();
+fn geometry(spec: &Value) -> native::Geometry {
+    let geometry = spec.as_array();
     let side = |index: usize| geometry.map_or(0, |sides| number(&sides[index], 0));
+    native::Geometry {
+        cols: side(0),
+        rows: side(1),
+    }
+}
+
+fn authority(spec: &Value) -> native::Authority {
+    let part = |index: usize| number(&spec[index], 0);
+    native::Authority {
+        generation: part(0),
+        period: part(1),
+        restoration_id: part(2),
+    }
+}
+
+fn open(arena: &mut Arena, spec: &Value) -> native::Open {
     native::Open {
         mode: number(&spec["mode"], u64::from(native::MONITOR)),
         reserved: number(&spec["reserved"], 0),
-        geometry: native::Geometry {
-            cols: side(0),
-            rows: side(1),
-        },
+        geometry: geometry(&spec["geometry"]),
         required: tokens(arena, &spec["required"]),
         optional: tokens(arena, &spec["optional"]),
     }
@@ -89,7 +111,30 @@ pub fn build(arena: &mut Arena, spec: &Value) -> *const native::Request {
     request.request_id = number(&spec["request_id"], 0);
     match request.tag {
         native::OPEN => request.args.open = open(arena, &spec["open"]),
-        native::LEAVE => request.args.generation = number(&spec["generation"], 0),
+        native::LEAVE | native::ACQUIRE => {
+            request.args.generation = number(&spec["generation"], 0);
+        }
+        native::INPUT => {
+            request.args.input = native::Input {
+                authority: authority(&spec["authority"]),
+                bytes: arena.bytes(&spec["bytes"]),
+            };
+        }
+        native::RESIZE => {
+            request.args.resize = native::Resize {
+                authority: authority(&spec["authority"]),
+                geometry: geometry(&spec["geometry"]),
+            };
+        }
+        native::READY => request.args.authority = authority(&spec["authority"]),
+        native::FOCUS => {
+            let reserved = spec["flag_reserved"].as_u64().unwrap_or(0) as u8;
+            request.args.flag = native::Flag {
+                authority: authority(&spec["authority"]),
+                value: number(&spec["value"], 0),
+                reserved: [reserved; 7],
+            };
+        }
         _ => {}
     }
     arena.value(request)

@@ -1,4 +1,6 @@
-use super::{Authority, ConnectionId, Controlling, Effect, Issued, shutdown::Members};
+use super::{
+    Authority, ConnectionId, Controlling, Effect, Grants, Issued, geometry, shutdown::Members,
+};
 use climon2_core::{
     protocol::TerminalSize,
     wire::{GrantReason, OperationalCode},
@@ -10,6 +12,40 @@ use std::mem;
 pub(super) struct Attachment {
     pub conn: ConnectionId,
     pub host: TerminalSize,
+    pub target: Target,
+}
+
+/// What an attachment's output is presented for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Target {
+    /// Its host: an interactive attachment's.
+    Host,
+    /// A fresh terminal of the session geometry, which each of its grants
+    /// keeps: a monitor-mode attachment's canonical presentation.
+    Canonical,
+}
+
+impl Attachment {
+    /// As a grant finds it: a canonical attachment's host is the session
+    /// geometry, so its grant resizes nothing.
+    fn granted_at(self, session: TerminalSize) -> Self {
+        match self.target {
+            Target::Canonical => Self {
+                host: session,
+                ..self
+            },
+            Target::Host => self,
+        }
+    }
+
+    /// The size its restorations are serialized for: its host, or for a
+    /// canonical attachment the session geometry its host gives.
+    fn restoration_size(&self) -> TerminalSize {
+        match self.target {
+            Target::Canonical => geometry(self.host),
+            Target::Host => self.host,
+        }
+    }
 }
 
 /// What a request needs of its connection's control beyond current
@@ -49,8 +85,8 @@ pub(super) enum Phase {
 pub(super) struct Controller {
     attachment: Attachment,
     authority: Authority,
-    /// The host size its current restoration is serialized for.
-    restoration_host: TerminalSize,
+    /// The size its current restoration is serialized for.
+    restored_for: TerminalSize,
     phase: Phase,
     /// The desired application focus in this control period, once known.
     focus: Option<bool>,
@@ -58,18 +94,20 @@ pub(super) struct Controller {
 
 impl Controller {
     /// Grants control at once under a new period and its first restoration.
-    fn granted(attachment: Attachment, reason: GrantReason, issued: &mut Issued) -> (Self, Effect) {
-        let authority = issued.grant();
+    fn granted(attachment: Attachment, reason: GrantReason, grants: &mut Grants) -> (Self, Effect) {
+        let attachment = attachment.granted_at(grants.sizes.session);
+        let authority = grants.issued.grant();
+        let restored_for = attachment.restoration_size();
         let grant = Effect::Grant {
             conn: attachment.conn,
             authority,
-            host: attachment.host,
+            host: restored_for,
             reason,
         };
         let controller = Self {
             attachment,
             authority,
-            restoration_host: attachment.host,
+            restored_for,
             phase: Phase::Restoring { complete: false },
             focus: None,
         };
@@ -142,28 +180,42 @@ impl Controller {
     pub fn settle(&mut self, resized: bool, issued: &mut Issued) -> Vec<Effect> {
         match self.phase {
             Phase::Replacing => self.replace(issued),
-            Phase::Ready if resized => vec![Effect::ResizeHost {
-                conn: self.conn(),
-                host: self.host(),
-            }],
+            Phase::Ready if resized => self.presented(issued),
             _ => Vec::new(),
         }
     }
 
+    /// A ready controller's new host size applied: its presentation follows
+    /// it, and a canonical one at a new session geometry is restored afresh
+    /// at that geometry within the same period.
+    fn presented(&mut self, issued: &mut Issued) -> Vec<Effect> {
+        let mut effects = vec![Effect::ResizeHost {
+            conn: self.conn(),
+            host: self.host(),
+        }];
+        let canonical = self.attachment.target == Target::Canonical;
+        if canonical && self.attachment.restoration_size() != self.restored_for {
+            effects.extend(self.replace(issued));
+        }
+        effects
+    }
+
     fn replace(&mut self, issued: &mut Issued) -> Vec<Effect> {
         self.authority = issued.restore(self.authority.period);
-        self.restoration_host = self.host();
+        self.restored_for = self.attachment.restoration_size();
         self.phase = Phase::Restoring { complete: false };
         vec![Effect::Restore {
             conn: self.conn(),
             authority: self.authority,
-            host: self.host(),
+            host: self.restored_for,
         }]
     }
 
-    /// A restoration no longer matches a host that changed before readiness.
+    /// A restoration no longer matches the size it is serialized for after
+    /// a host change before readiness.
     fn invalidate(&mut self) {
-        if matches!(self.phase, Phase::Restoring { .. }) && self.host() != self.restoration_host {
+        let restoring = matches!(self.phase, Phase::Restoring { .. });
+        if restoring && self.attachment.restoration_size() != self.restored_for {
             self.phase = Phase::Replacing;
         }
     }
@@ -217,9 +269,9 @@ pub(super) struct Attachments {
 }
 
 impl Attachments {
-    /// The first attachment, granted at once.
-    pub fn new(attachment: Attachment, issued: &mut Issued) -> (Self, Effect) {
-        let (controller, grant) = Controller::granted(attachment, GrantReason::Attach, issued);
+    /// The first attachment, granted at once for `reason`.
+    pub fn new(attachment: Attachment, reason: GrantReason, grants: &mut Grants) -> (Self, Effect) {
+        let (controller, grant) = Controller::granted(attachment, reason, grants);
         let attachments = Self {
             controller,
             others: Vec::new(),
@@ -241,23 +293,25 @@ impl Attachments {
         }
     }
 
-    /// A non-controlling attachment takes control at once; `None` for
-    /// anyone else.
-    pub fn take_control(&mut self, conn: ConnectionId, issued: &mut Issued) -> Option<Vec<Effect>> {
-        let index = self.position(conn)?;
+    /// A non-controlling attachment takes control at once; nothing changes
+    /// for anyone else.
+    pub fn take_control(&mut self, conn: ConnectionId, grants: &mut Grants) -> Vec<Effect> {
+        let Some(index) = self.position(conn) else {
+            return Vec::new();
+        };
         let attachment = self.others.remove(index);
-        Some(self.promote(attachment, GrantReason::Acquire, issued))
+        self.grant(attachment, GrantReason::Acquire, grants)
     }
 
     /// Makes `attachment` the controller at once; the previous one stays,
     /// non-controlling.
-    pub fn promote(
+    pub fn grant(
         &mut self,
         attachment: Attachment,
         reason: GrantReason,
-        issued: &mut Issued,
+        grants: &mut Grants,
     ) -> Vec<Effect> {
-        let (controller, grant) = Controller::granted(attachment, reason, issued);
+        let (controller, grant) = Controller::granted(attachment, reason, grants);
         let previous = mem::replace(&mut self.controller, controller);
         self.others.insert(0, previous.attachment);
         let mut effects = previous.revoke();
@@ -284,10 +338,10 @@ impl Attachments {
         mut self,
         conn: ConnectionId,
         departure: Departure,
-        issued: &mut Issued,
+        grants: &mut Grants,
     ) -> (Option<Self>, Vec<Effect>) {
         if self.controller.conn() == conn {
-            return self.hand_back(departure, issued);
+            return self.hand_back(departure, grants);
         }
         let effects = match self.position(conn) {
             Some(index) => {
@@ -300,12 +354,12 @@ impl Attachments {
     }
 
     /// The most recently controlling remaining attachment is granted at once.
-    fn hand_back(self, departure: Departure, issued: &mut Issued) -> (Option<Self>, Vec<Effect>) {
+    fn hand_back(self, departure: Departure, grants: &mut Grants) -> (Option<Self>, Vec<Effect>) {
         let mut effects = self.controller.end_admission();
         effects.extend(departure.of_controller(self.controller.conn()));
         let mut others = self.others.into_iter();
         let remaining = others.next().map(|recent| {
-            let (controller, grant) = Controller::granted(recent, GrantReason::HandBack, issued);
+            let (controller, grant) = Controller::granted(recent, GrantReason::HandBack, grants);
             effects.push(grant);
             Self {
                 controller,

@@ -1,16 +1,17 @@
 //! Passive monitor connections (#86): monitor Open, core metadata, Leave and
 //! validation, beside the private protocol that still serves attach and kill.
 use super::{
-    assert_closed, assert_fatal, assert_rejected, counter, encoded, families, frame, leave,
-    message, monitor, open, peer, raw_frame, request, send, title_changed,
+    assert_closed, assert_fatal, assert_rejected, counter, encoded, frame,
+    interactive::{Attached, geometry},
+    kill, leave, message, monitor, open, peer, raw_frame, request, send, title_changed,
 };
 use crate::{ID, Session};
 use climon2_core::{
     hello::Lifecycle,
     protocol::{self, ClientMessage, ServerMessage as PrivateMessage, TerminalSize},
     wire::{
-        Acknowledge, Acquire, AuthorityIds, Available, ControlRecord, FatalError, Focus, Frame,
-        Geometry, Input, Kill, Leave, Mode, Outcome, Ready, Resize, Response, ServerMessage,
+        Acknowledge, AuthorityIds, Available, ControlRecord, FatalError, Focus, Frame, Geometry,
+        GrantReason, Input, Leave, Mode, Outcome, Ready, Resize, Response, ServerMessage,
         SetViewing, Success,
     },
 };
@@ -159,47 +160,59 @@ fn end_script(mut session: Session) {
     session.finish();
 }
 
+/// The title of the next record other than Display, which must be a Title
+/// changed: an attachment in control also receives the title as Display.
+fn background_title(attached: &mut Attached) -> Option<String> {
+    match attached.next_after_display() {
+        ServerMessage::TitleChanged(changed) => changed.title,
+        other => panic!("expected Title changed, got {other:?}"),
+    }
+}
+
 /// CTL-03 (Contract, title case) and COM-05 (Contract, Initial metadata
 /// case): Initial metadata captures the current title by value, and Title
-/// changed records follow gap-free and in order, whatever the control: with a
-/// controller elsewhere and with none. Unset, empty and a value stay distinct,
-/// an unchanged title is not reported again, and a title is inert text: never
-/// percent-encoded or interpreted as terminal presentation.
+/// changed records follow gap-free and in order, whatever the control: with
+/// a controller elsewhere, and while the monitor controls in the background
+/// once that controller's detach promoted it. Unset, empty and a value stay
+/// distinct, an unchanged title is not reported again, and a title is inert
+/// text: never percent-encoded or interpreted as terminal presentation.
 #[test]
 fn title_changes_follow_initial_metadata_by_value_whatever_the_control() {
     let session = Session::start("script");
     let mut controlling = session.attach();
     session.wait_marker(&mut controlling);
-    let (mut first, title) = monitor(&session, &["title-v1"]);
+    let (stream, title) = monitor(&session, &["title-v1"]);
+    let mut first = Attached::passive(stream);
     assert_eq!(title, Available::Available(None));
     crate::script(&session, "title one");
-    assert_eq!(title_changed(&mut first).as_deref(), Some("one"));
+    assert_eq!(first.title_changed().as_deref(), Some("one"));
     crate::script(&session, "title one");
     crate::script(&session, "title two");
-    assert_eq!(title_changed(&mut first).as_deref(), Some("two"));
+    assert_eq!(first.title_changed().as_deref(), Some("two"));
 
     crate::send(&mut controlling, ClientMessage::Detach);
     assert_eq!(
         crate::until_terminal(&mut controlling).1,
         PrivateMessage::Detached
     );
+    first.granted(GrantReason::Successor, geometry(91, 37));
     crate::script(&session, "title-empty");
-    assert_eq!(title_changed(&mut first).as_deref(), Some(""));
+    assert_eq!(background_title(&mut first).as_deref(), Some(""));
     let (mut second, title) = monitor(&session, &["title-v1"]);
     assert_eq!(title, Available::Available(Some(String::new())));
     crate::script(&session, "reset");
-    assert_eq!(title_changed(&mut first), None);
+    assert_eq!(background_title(&mut first), None);
     assert_eq!(title_changed(&mut second), None);
 
     let inert = "café — \u{9b}[31m%41";
     crate::script(&session, &format!("title {inert}"));
-    assert_eq!(title_changed(&mut first).as_deref(), Some(inert));
+    assert_eq!(background_title(&mut first).as_deref(), Some(inert));
     assert_eq!(
         body(&frame(&mut second), 0x42),
         format!(r#"{{"title":"{inert}"}}"#)
     );
-    leave(&mut first, 2);
     leave(&mut second, 2);
+    first.leave();
     end_script(session);
 }
 
@@ -269,15 +282,6 @@ fn an_oversized_title_is_ignored_never_truncated() {
     assert_eq!(title_changed(&mut monitor).as_deref(), Some("after"));
     leave(&mut monitor, 2);
     end_script(session);
-}
-
-/// A standalone Kill request.
-fn kill(request_id: u64, revision: u32, required: &[&str]) -> Kill {
-    Kill {
-        request_id: counter(request_id),
-        revision,
-        required_capabilities: families(required),
-    }
 }
 
 /// COM-03 (Contract, passive cases): each passive request gets its
@@ -588,24 +592,6 @@ fn coalesced_and_fragmented_revision1_frames_are_each_answered_in_order() {
     end_controlled(session, controlling);
 }
 
-/// Interim until #88: this daemon advertises `daemon-wire-v1` but does not
-/// serve standalone Kill yet. It is rejected without effects
-/// (`internal_error`) and ends its stream; the session goes on with its one
-/// controller, not terminating.
-#[test]
-fn standalone_kill_is_refused_until_it_is_served() {
-    let (session, controlling) = controlled();
-    let mut killer = peer(&session);
-    request(&mut killer, &kill(1, 1, &["daemon-wire-v1"]));
-    assert_rejected(&mut killer, 1, "internal_error");
-    assert_closed(&mut killer);
-    assert_eq!(
-        crate::advertised_state(&session),
-        (Lifecycle::Attached, 1, true)
-    );
-    end_controlled(session, controlling);
-}
-
 /// Each request that needs an attachment, Input `0x31`, Resize `0x32`, Ready
 /// `0x34`, Set viewing `0x35`, Acknowledge `0x36` and Focus `0x39`, as
 /// request `id`. Its period and restoration ID exceed every request ID these
@@ -733,42 +719,6 @@ fn requests_that_need_an_attachment_are_refused_and_the_stream_goes_on() {
         fs::read_to_string(session.directory.path().join("lines")).unwrap(),
         "after 91x37\n"
     );
-}
-
-/// COM-03 (Contract, passive cases), with the interim refusal until #89:
-/// Acquire would convert a passive monitor connection into an attachment, so
-/// on a registration it is rejected without effects (`internal_error`), the
-/// detached session stays detached, and the registration stays until Leave.
-/// Before any Open there is nothing to convert: like an early Leave, Acquire
-/// is `invalid_state` and the stream goes on.
-#[test]
-fn acquire_is_refused_without_effects_until_it_is_served() {
-    let session = Session::start("exit");
-    detached(&session);
-    let mut stream = peer(&session);
-    request(
-        &mut stream,
-        &Acquire {
-            request_id: counter(1),
-        },
-    );
-    assert_rejected(&mut stream, 1, "invalid_state");
-    request(&mut stream, &open(2, &[], &["title-v1"], Mode::Monitor));
-    opened(&frame(&mut stream), "2");
-    assert_eq!(body(&frame(&mut stream), 0x41), UNSET_TITLE);
-    request(
-        &mut stream,
-        &Acquire {
-            request_id: counter(3),
-        },
-    );
-    assert_rejected(&mut stream, 3, "internal_error");
-    assert_eq!(
-        crate::advertised_state(&session),
-        (Lifecycle::Detached, 0, false)
-    );
-    leave(&mut stream, 4);
-    end_through_attachment(session);
 }
 
 /// Opens a monitor once the daemon has read `title`, a title that ends a

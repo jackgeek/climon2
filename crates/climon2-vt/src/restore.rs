@@ -28,9 +28,21 @@ pub struct Chunk {
 #[derive(Debug)]
 pub struct Restoration {
     view: View,
-    direct: bool,
+    layout: Layout,
     host_rows: u16,
     suffix: Option<Snapshot>,
+}
+
+/// How phase B writes the history and how much C1 scrolls off.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Layout {
+    /// Below host content that phase A scrolled off; every row trimmed.
+    Derived,
+    /// Below host content that phase A scrolled off; a soft-wrapped row is
+    /// printed full width.
+    Direct,
+    /// Direct, from the top of a fresh terminal of the session's size.
+    Canonical,
 }
 
 #[derive(Debug)]
@@ -50,8 +62,11 @@ struct View {
     next: usize,
     /// The last line emitted was the truncation notice.
     noticed: bool,
-    /// Some line was emitted after phase A's preservation scroll.
-    lines: bool,
+    /// Host lines emitted after phase A's preservation scroll: one per row,
+    /// and as many as the notice wraps onto.
+    lines: usize,
+    /// The host lines one truncation notice wraps onto.
+    notice_lines: usize,
     /// The last line emitted was a soft-wrapped row without CR LF.
     soft: bool,
 }
@@ -100,16 +115,16 @@ impl View {
         self.soft = history_row(cells, direct, out);
         self.next += 1;
         self.noticed = false;
-        self.lines = true;
+        self.lines += 1;
     }
 
     fn gap(&mut self, next: usize, out: &mut Vec<u8>) {
         if !self.noticed {
             out.extend_from_slice(NOTICE);
+            self.lines += self.notice_lines;
         }
         self.next = next;
         self.noticed = true;
-        self.lines = true;
         self.soft = false;
     }
 }
@@ -128,9 +143,9 @@ pub(crate) fn history_row(cells: &[Cell], direct: bool, out: &mut Vec<u8>) -> bo
 
 /// Move to the host's bottom row and scroll `lines` rows into native
 /// scrollback.
-pub(crate) fn scroll_off(rows: u16, lines: u16, out: &mut Vec<u8>) {
+pub(crate) fn scroll_off(rows: u16, lines: usize, out: &mut Vec<u8>) {
     goto(out, usize::from(rows), 1);
-    out.extend(std::iter::repeat_n(b'\n', usize::from(lines)));
+    out.extend(std::iter::repeat_n(b'\n', lines));
 }
 
 /// Phase A: prologue, preservation of visible host content, and the
@@ -141,13 +156,25 @@ pub(crate) fn lead(presentation: &mut Presentation, notice: bool) -> Vec<u8> {
         out.extend_from_slice(b"\x1b[?1049l");
     }
     out.extend_from_slice(PROLOGUE);
-    scroll_off(presentation.rows, presentation.rows, &mut out);
+    scroll_off(presentation.rows, usize::from(presentation.rows), &mut out);
     if notice {
         out.extend_from_slice(NOTICE);
     }
     presentation.alternate = false;
     presentation.sync_open = false;
     presentation.release_cursor = None;
+    out
+}
+
+/// Phase A of a canonical restoration, for a fresh terminal of the session's
+/// size: the prologue, whose scroll-region reset homes the cursor, and the
+/// truncation notice. Nothing is scrolled off, as there is no host content
+/// to preserve.
+pub(crate) fn canonical_lead(notice: bool) -> Vec<u8> {
+    let mut out = PROLOGUE.to_vec();
+    if notice {
+        out.extend_from_slice(NOTICE);
+    }
     out
 }
 
@@ -159,6 +186,7 @@ impl Restoration {
         presentation: &Presentation,
         suffix: Snapshot,
     ) -> Self {
+        let notice_lines = NOTICE_TEXT.len().div_ceil(usize::from(presentation.cols));
         Self {
             view: View {
                 epoch: ledger.epoch,
@@ -166,12 +194,31 @@ impl Restoration {
                 rows,
                 next: 0,
                 noticed: notice,
-                lines: notice,
+                lines: if notice { notice_lines } else { 0 },
+                notice_lines,
                 soft: false,
             },
-            direct: presentation.mode == Mode::Direct,
+            layout: match presentation.mode {
+                Mode::Direct => Layout::Direct,
+                Mode::Derived => Layout::Derived,
+            },
             host_rows: presentation.rows,
             suffix: Some(suffix),
+        }
+    }
+
+    /// A canonical restoration, whose phase B starts at the top of a fresh
+    /// terminal of exactly the size `presentation` describes.
+    pub(crate) fn canonical(
+        ledger: &Ledger,
+        rows: usize,
+        notice: bool,
+        presentation: &Presentation,
+        suffix: Snapshot,
+    ) -> Self {
+        Self {
+            layout: Layout::Canonical,
+            ..Self::new(ledger, rows, notice, presentation, suffix)
         }
     }
 
@@ -184,9 +231,10 @@ impl Restoration {
         budget: usize,
         out: &mut Vec<u8>,
     ) -> bool {
+        let direct = self.layout != Layout::Derived;
         let mut more = true;
         while more && out.len() < budget {
-            more = self.view.step(grid, ledger, self.direct, out);
+            more = self.view.step(grid, ledger, direct, out);
         }
         !more
     }
@@ -200,7 +248,7 @@ impl Restoration {
         out: &mut Vec<u8>,
     ) -> bool {
         if let Some(suffix) = self.suffix.take_if(|_| ended) {
-            if self.view.lines {
+            if self.view.lines > 0 {
                 self.after_history(out);
             }
             out.extend(suffix.bytes);
@@ -212,10 +260,18 @@ impl Restoration {
 
     /// C1: the cursor is on the host's bottom row, blank unless the last row
     /// was soft-wrapped; scroll every row above it into native scrollback.
+    /// From the top of a fresh terminal, only the lines printed lie above it
+    /// (all of them until they fill the rows above the bottom one), and only
+    /// they are scrolled off: a blank row more would enter the history.
     fn after_history(&self, out: &mut Vec<u8>) {
         if self.view.soft {
             out.extend_from_slice(b"\r\n");
         }
-        scroll_off(self.host_rows, self.host_rows - 1, out);
+        let above = usize::from(self.host_rows - 1);
+        let printed = match self.layout {
+            Layout::Canonical => self.view.lines,
+            Layout::Direct | Layout::Derived => above,
+        };
+        scroll_off(self.host_rows, printed.min(above), out);
     }
 }

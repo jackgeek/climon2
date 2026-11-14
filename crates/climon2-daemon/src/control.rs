@@ -1,19 +1,20 @@
 //! The pure control state machine of one session.
 //!
 //! It owns the lifecycle, the attachments, the controller and its hand-back
-//! recency order, the control period, the restoration and readiness, the
-//! controller's desired application focus, each attachment's latest host
-//! size, the applied session geometry, the end of input admission and the
-//! shutdown sequence, and it authorizes requests against them. It performs
-//! no I/O: each method takes one event and returns the effects the daemon
-//! loop must perform, in order.
+//! recency order, the passive monitor connections that may inherit control,
+//! the control period, the restoration and readiness, the controller's
+//! desired application focus, each attachment's latest host size, the
+//! applied session geometry, the end of input admission and the shutdown
+//! sequence, and it authorizes requests against them. It performs no I/O:
+//! each method takes one event and returns the effects the daemon loop must
+//! perform, in order.
 //!
 //! Call protocol for one loop iteration:
 //!
 //! 1. Feed every event received this iteration to its method, in acceptance
-//!    order, and perform the effects each returns. Every attach, takeover and
-//!    hand-back is granted at once: its [`Effect::Grant`] names the new
-//!    authority. [`Control::resize`] only records a pending size.
+//!    order, and perform the effects each returns. Every attach, takeover,
+//!    hand-back and promotion is granted at once: its [`Effect::Grant`] names
+//!    the new authority. [`Control::resize`] only records a pending size.
 //! 2. Call [`Control::apply_pending`] exactly once, before reading the PTY and
 //!    before any snapshot for a grant. It applies the controller's latest size
 //!    at most once and replaces at most one restoration.
@@ -25,13 +26,14 @@
 mod attachments;
 mod shutdown;
 
-pub use attachments::Needs;
 use attachments::{Attachment, Attachments, Departure, Phase};
+pub use attachments::{Needs, Target};
 use climon2_core::{
     lifetime::Lifetime,
     protocol::TerminalSize,
     wire::{GrantReason, OperationalCode},
 };
+pub use shutdown::{CleanupResult, CommandEnd, PrivateResult, SessionEnd};
 use shutdown::{Members, Shutdown};
 
 /// Identifies one daemon connection: an attachment, a probe or a kill requester.
@@ -100,25 +102,29 @@ pub struct Acquisition {
 }
 
 /// Work the daemon loop performs for the state machine, in the order given.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Effect {
     /// Accept an attachment: send `Attached`.
     Admit { conn: ConnectionId },
     /// Reject an attachment because the session is terminating: send `Error`, close.
     Refuse { conn: ConnectionId },
+    /// A passive monitor connection became an attachment, by its Acquire or
+    /// a promotion: its output is canonical from its grant, which follows.
+    Convert { conn: ConnectionId },
     /// `conn` controls under `authority`, a new period and its first
     /// restoration, for `reason`: report the grant, then, once the pending
-    /// size is applied, snapshot for a host of size `host` and send the
-    /// restoration.
+    /// size is applied, snapshot for a host of size `host` (a canonical
+    /// attachment's is the session geometry) and send the restoration.
     Grant {
         conn: ConnectionId,
         authority: Authority,
         host: TerminalSize,
         reason: GrantReason,
     },
-    /// The controller's host changed before readiness: its current
-    /// restoration ends now, and `authority` replaces it within the same
-    /// period, snapshotted for a host of size `host`.
+    /// The size the controller's restoration is serialized for changed,
+    /// before readiness or, for a canonical controller, at a new session
+    /// geometry: its current restoration ends now, and `authority` replaces
+    /// it within the same period, snapshotted for a host of size `host`.
     Restore {
         conn: ConnectionId,
         authority: Authority,
@@ -150,12 +156,12 @@ pub enum Effect {
     /// Remove metadata and the socket, keeping connections open; then report
     /// [`Control::cleanup_finished`] or [`Control::authoritative_failure`].
     Cleanup,
-    /// Send `Exit{code}`.
+    /// Send an attachment `Exit{code}`.
     DeliverExit { conn: ConnectionId, code: u32 },
-    /// Send `Error` describing the authoritative failure.
+    /// Send an attachment `Error` describing the authoritative failure.
     DeliverError { conn: ConnectionId },
-    /// Send `Terminated{code}` to a kill requester.
-    ConfirmKill { conn: ConnectionId, code: u32 },
+    /// Answer a kill requester with how the session ended.
+    ConfirmKill { conn: ConnectionId, end: SessionEnd },
     /// Flush connections under the shared short deadline, then exit.
     Finish,
 }
@@ -198,6 +204,37 @@ impl Issued {
             period,
             restoration: self.restoration,
         }
+    }
+}
+
+/// Session-wide state outside the stage that grants draw on: the authority
+/// issued last and the applied sizes, whose session geometry every grant of
+/// a canonical attachment keeps.
+struct Grants {
+    issued: Issued,
+    sizes: Sizes,
+}
+
+/// The passive monitor connections that may inherit control, in the order
+/// their Opens were accepted.
+#[derive(Default)]
+struct Registrations(Vec<ConnectionId>);
+
+impl Registrations {
+    fn register(&mut self, conn: ConnectionId) {
+        self.0.push(conn);
+    }
+
+    /// Ends `conn`'s registration; true when it had one.
+    fn remove(&mut self, conn: ConnectionId) -> bool {
+        let registered = self.0.len();
+        self.0.retain(|other| *other != conn);
+        self.0.len() != registered
+    }
+
+    /// Ends the newest registration, the one a promotion picks.
+    fn newest(&mut self) -> Option<ConnectionId> {
+        self.0.pop()
     }
 }
 
@@ -270,21 +307,39 @@ impl Open {
         }
     }
 
-    fn attach(&mut self, attachment: Attachment, issued: &mut Issued) -> Vec<Effect> {
-        let mut effects = vec![Effect::Admit {
+    /// An accepted attach request: admitted, then granted at once.
+    fn attach(&mut self, attachment: Attachment, grants: &mut Grants) -> Vec<Effect> {
+        let admit = Effect::Admit {
             conn: attachment.conn,
-        }];
+        };
+        let grant = self.grant(attachment, GrantReason::Attach, grants);
+        [vec![admit], grant].concat()
+    }
+
+    /// `attachment` takes control at once for `reason`; a previous
+    /// controller stays, non-controlling.
+    fn grant(
+        &mut self,
+        attachment: Attachment,
+        reason: GrantReason,
+        grants: &mut Grants,
+    ) -> Vec<Effect> {
         match self {
-            Self::Attached(attachments) => {
-                effects.extend(attachments.promote(attachment, GrantReason::Attach, issued))
-            }
+            Self::Attached(attachments) => attachments.grant(attachment, reason, grants),
             _ => {
-                let (attachments, grant) = Attachments::new(attachment, issued);
+                let (attachments, grant) = Attachments::new(attachment, reason, grants);
                 *self = Self::Attached(attachments);
-                effects.push(grant);
+                vec![grant]
             }
         }
-        effects
+    }
+
+    /// A non-controlling attachment takes control at once.
+    fn take_control(&mut self, conn: ConnectionId, grants: &mut Grants) -> Vec<Effect> {
+        match self {
+            Self::Attached(attachments) => attachments.take_control(conn, grants),
+            _ => Vec::new(),
+        }
     }
 
     fn into_members(self) -> (Members, Vec<Effect>) {
@@ -302,10 +357,13 @@ fn begin_shutdown(open: Open, killers: Vec<ConnectionId>, failed: bool) -> (Stag
     (Stage::Terminating(shutdown), effects)
 }
 
-fn command_exited(open: Open, code: u32) -> (Stage, Vec<Effect>) {
+fn command_exited(open: Open, command: CommandEnd) -> (Stage, Vec<Effect>) {
     let (members, mut effects) = open.into_members();
     effects.push(Effect::Cleanup);
-    (Stage::Terminating(Shutdown::exited(members, code)), effects)
+    (
+        Stage::Terminating(Shutdown::exited(members, command)),
+        effects,
+    )
 }
 
 fn initial_deadline(open: Open) -> (Stage, Vec<Effect>) {
@@ -315,27 +373,77 @@ fn initial_deadline(open: Open) -> (Stage, Vec<Effect>) {
     }
 }
 
-/// The leave policy, after any hand-back: only the unexpected loss of an
-/// ordinary session's last attachment ends it; a headless session survives
-/// with zero clients.
+/// Acquire: a non-controlling attachment takes control at once, and so
+/// does a passive monitor connection, which becomes an attachment; the
+/// controller's own changes nothing.
+fn acquire(
+    mut open: Open,
+    conn: ConnectionId,
+    grants: &mut Grants,
+    registrations: &mut Registrations,
+) -> (Stage, Vec<Effect>) {
+    let effects = if registrations.remove(conn) {
+        convert(&mut open, conn, GrantReason::Acquire, grants)
+    } else {
+        open.take_control(conn, grants)
+    };
+    (Stage::Open(open), effects)
+}
+
+/// With no attachment left, the newest registration becomes one, with a
+/// successor's grant.
+fn promote(open: &mut Open, grants: &mut Grants, registrations: &mut Registrations) -> Vec<Effect> {
+    let successor = match open {
+        Open::Detached => registrations.newest(),
+        _ => None,
+    };
+    successor
+        .map(|conn| convert(open, conn, GrantReason::Successor, grants))
+        .unwrap_or_default()
+}
+
+/// The passive monitor connection `conn`, no longer registered, becomes a
+/// monitor-mode attachment: canonical, at the session geometry, and in
+/// control at once for `reason`.
+fn convert(
+    open: &mut Open,
+    conn: ConnectionId,
+    reason: GrantReason,
+    grants: &mut Grants,
+) -> Vec<Effect> {
+    let attachment = Attachment {
+        conn,
+        host: grants.sizes.session,
+        target: Target::Canonical,
+    };
+    let grant = open.grant(attachment, reason, grants);
+    [vec![Effect::Convert { conn }], grant].concat()
+}
+
+/// The leave policy, after succession: a hand-back, or else the promotion
+/// of the newest passive monitor connection. Only the unexpected loss of an
+/// ordinary session's last attachment then ends it; a headless session
+/// survives with zero clients.
 fn depart(
     lifetime: Lifetime,
     open: Open,
     conn: ConnectionId,
     departure: Departure,
-    issued: &mut Issued,
+    grants: &mut Grants,
+    registrations: &mut Registrations,
 ) -> (Stage, Vec<Effect>) {
     let Open::Attached(attachments) = open else {
         return (Stage::Open(open), Vec::new());
     };
-    let (remaining, effects) = attachments.depart(conn, departure, issued);
-    match (remaining, departure, lifetime) {
-        (Some(attachments), _, _) => (Stage::Open(Open::Attached(attachments)), effects),
-        (None, Departure::Lost, Lifetime::Ordinary) => {
+    let (remaining, mut effects) = attachments.depart(conn, departure, grants);
+    let mut open = remaining.map_or(Open::Detached, Open::Attached);
+    effects.extend(promote(&mut open, grants, registrations));
+    match (open, departure, lifetime) {
+        (Open::Detached, Departure::Lost, Lifetime::Ordinary) => {
             let (stage, shutdown) = begin_shutdown(Open::Detached, Vec::new(), false);
             (stage, [effects, shutdown].concat())
         }
-        (None, _, _) => (Stage::Open(Open::Detached), effects),
+        (open, _, _) => (Stage::Open(open), effects),
     }
 }
 
@@ -348,8 +456,8 @@ fn attached(stage: &mut Stage) -> Option<&mut Attachments> {
 
 pub struct Control {
     stage: Stage,
-    sizes: Sizes,
-    issued: Issued,
+    grants: Grants,
+    registrations: Registrations,
     lifetime: Lifetime,
 }
 
@@ -357,20 +465,24 @@ impl Control {
     /// A new session whose PTY has the session geometry for `initial`.
     pub fn new(initial: TerminalSize, lifetime: Lifetime) -> Self {
         let host = initial.initial();
+        let sizes = Sizes {
+            host,
+            session: geometry(host),
+        };
         Self {
             stage: Stage::Open(Open::unattached(lifetime)),
-            sizes: Sizes {
-                host,
-                session: geometry(host),
+            grants: Grants {
+                issued: Issued::default(),
+                sizes,
             },
-            issued: Issued::default(),
+            registrations: Registrations::default(),
             lifetime,
         }
     }
 
     /// The applied session geometry: the PTY and virtual terminal size.
     pub fn session_size(&self) -> TerminalSize {
-        self.sizes.session
+        self.grants.sizes.session
     }
 
     pub fn snapshot(&self) -> State {
@@ -418,28 +530,39 @@ impl Control {
         let attachment = Attachment {
             conn,
             host: size.initial(),
+            target: Target::Host,
         };
-        let issued = &mut self.issued;
+        let grants = &mut self.grants;
         match &mut self.stage {
-            Stage::Open(open) => open.attach(attachment, issued),
+            Stage::Open(open) => open.attach(attachment, grants),
             Stage::Terminating(_) => vec![Effect::Refuse { conn }],
         }
     }
 
-    /// Acquire: a non-controlling attachment takes control at once, and the
-    /// controller's own changes nothing. Its outcome, then its effects.
+    /// A passive monitor connection registered: never an attachment, nor
+    /// in control, until its Acquire or a promotion.
+    pub fn register(&mut self, conn: ConnectionId) {
+        self.registrations.register(conn);
+    }
+
+    /// Acquire: a non-controlling attachment takes control at once, and so
+    /// does a passive monitor connection, which becomes an attachment; the
+    /// controller's own changes nothing. Committed termination refuses it.
+    /// Its outcome, then its effects.
     pub fn acquire(
         &mut self,
         conn: ConnectionId,
     ) -> (Result<Acquisition, OperationalCode>, Vec<Effect>) {
-        let issued = &mut self.issued;
-        let taken = attached(&mut self.stage)
-            .and_then(|attachments| attachments.take_control(conn, issued));
+        if let Stage::Terminating(_) = self.stage {
+            return (Err(OperationalCode::SessionTerminating), Vec::new());
+        }
+        let effects =
+            self.open(|open, grants, registrations| acquire(open, conn, grants, registrations));
         let acquisition = self.controlling(conn).map(|controlling| Acquisition {
-            changed: taken.is_some(),
+            changed: !effects.is_empty(),
             authority: controlling.authority,
         });
-        (acquisition, taken.unwrap_or_default())
+        (acquisition, effects)
     }
 
     /// The private protocol's take-control: an Acquire's effects.
@@ -488,12 +611,24 @@ impl Control {
     /// An accepted explicit detach request.
     pub fn detach(&mut self, conn: ConnectionId) -> Vec<Effect> {
         let lifetime = self.lifetime;
-        self.open(|open, issued| depart(lifetime, open, conn, Departure::Detach, issued))
+        self.open(|open, grants, registrations| {
+            depart(
+                lifetime,
+                open,
+                conn,
+                Departure::Detach,
+                grants,
+                registrations,
+            )
+        })
     }
 
-    /// An accepted departure: a detach, which a terminating session accepts
-    /// too, releasing a presentation the attachment still has.
+    /// An accepted departure: a passive monitor connection's registration
+    /// ends, and an attachment's departure is a detach, which a terminating
+    /// session accepts too, releasing a presentation the attachment still
+    /// has.
     pub fn leave(&mut self, conn: ConnectionId) -> Vec<Effect> {
+        self.unregister(conn);
         match &mut self.stage {
             Stage::Terminating(shutdown) => shutdown.leave(conn),
             Stage::Open(_) => self.detach(conn),
@@ -502,22 +637,32 @@ impl Control {
 
     /// The connection closed or failed without an accepted detach.
     pub fn lost(&mut self, conn: ConnectionId) -> Vec<Effect> {
+        self.unregister(conn);
         if let Stage::Terminating(shutdown) = &mut self.stage {
             shutdown.lost(conn);
         }
         let lifetime = self.lifetime;
-        self.open(|open, issued| depart(lifetime, open, conn, Departure::Lost, issued))
+        self.open(|open, grants, registrations| {
+            depart(lifetime, open, conn, Departure::Lost, grants, registrations)
+        })
+    }
+
+    /// A departing connection is removed before any succession. A
+    /// connection lost inside output routing is removed when it is marked,
+    /// before its loss is applied, so no departure in between promotes it.
+    pub fn unregister(&mut self, conn: ConnectionId) {
+        self.registrations.remove(conn);
     }
 
     pub fn kill(&mut self, conn: ConnectionId) -> Vec<Effect> {
         match &mut self.stage {
             Stage::Terminating(shutdown) => shutdown.kill(conn),
-            Stage::Open(_) => self.open(|open, _| begin_shutdown(open, vec![conn], false)),
+            Stage::Open(_) => self.open(|open, _, _| begin_shutdown(open, vec![conn], false)),
         }
     }
 
     pub fn initial_deadline(&mut self) -> Vec<Effect> {
-        self.open(|open, _| initial_deadline(open))
+        self.open(|open, _, _| initial_deadline(open))
     }
 
     /// The restoration deadline of `authority` expired.
@@ -530,11 +675,12 @@ impl Control {
         [vec![Effect::Disconnect { conn }], self.lost(conn)].concat()
     }
 
-    /// The command exited; for a normal exit, report it after the output drain.
-    pub fn command_exited(&mut self, code: u32) -> Vec<Effect> {
+    /// The command ended, as the daemon learned it. After a natural exit,
+    /// report it once the output drained.
+    pub fn command_exited(&mut self, command: CommandEnd) -> Vec<Effect> {
         match &mut self.stage {
-            Stage::Terminating(shutdown) => shutdown.command_exited(code),
-            Stage::Open(_) => self.open(|open, _| command_exited(open, code)),
+            Stage::Terminating(shutdown) => shutdown.command_exited(command),
+            Stage::Open(_) => self.open(|open, _, _| command_exited(open, command)),
         }
     }
 
@@ -549,7 +695,7 @@ impl Control {
     pub fn authoritative_failure(&mut self) -> Vec<Effect> {
         match &mut self.stage {
             Stage::Terminating(shutdown) => shutdown.authoritative_failure(),
-            Stage::Open(_) => self.open(|open, _| begin_shutdown(open, Vec::new(), true)),
+            Stage::Open(_) => self.open(|open, _, _| begin_shutdown(open, Vec::new(), true)),
         }
     }
 
@@ -559,21 +705,25 @@ impl Control {
         let Some(attachments) = attached(&mut self.stage) else {
             return Vec::new();
         };
-        let applied = self.sizes.apply(attachments.controller.host());
+        let applied = self.grants.sizes.apply(attachments.controller.host());
         let resized = applied.is_some();
         let mut effects = applied.unwrap_or_default();
-        effects.extend(attachments.controller.settle(resized, &mut self.issued));
+        effects.extend(
+            attachments
+                .controller
+                .settle(resized, &mut self.grants.issued),
+        );
         effects
     }
 
     /// Runs a transition of an open session; a terminating session ignores it.
     fn open(
         &mut self,
-        transition: impl FnOnce(Open, &mut Issued) -> (Stage, Vec<Effect>),
+        transition: impl FnOnce(Open, &mut Grants, &mut Registrations) -> (Stage, Vec<Effect>),
     ) -> Vec<Effect> {
         let (stage, effects) = match std::mem::replace(&mut self.stage, Stage::Open(Open::Starting))
         {
-            Stage::Open(open) => transition(open, &mut self.issued),
+            Stage::Open(open) => transition(open, &mut self.grants, &mut self.registrations),
             terminating => (terminating, Vec::new()),
         };
         self.stage = stage;
@@ -584,15 +734,19 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::Effect::*;
-    use super::GrantReason::{Acquire, Attach, HandBack};
+    use super::GrantReason::{Acquire, Attach, HandBack, Successor};
     use super::Lifecycle::*;
     use super::*;
+    use climon2_core::wire::CommandResult;
 
     const A: ConnectionId = ConnectionId(1);
     const B: ConnectionId = ConnectionId(2);
     const C: ConnectionId = ConnectionId(3);
     const K: ConnectionId = ConnectionId(10);
     const K2: ConnectionId = ConnectionId(11);
+    /// Passive monitor connections.
+    const M: ConnectionId = ConnectionId(20);
+    const N: ConnectionId = ConnectionId(21);
     const NONE: [Effect; 0] = [];
 
     fn size(cols: u16, rows: u16) -> TerminalSize {
@@ -649,6 +803,28 @@ mod tests {
 
     const RESTORING: Phase = Phase::Restoring { complete: false };
     const RESTORED: Phase = Phase::Restoring { complete: true };
+
+    fn exit(code: u32) -> CommandEnd {
+        CommandEnd::Confirmed(CommandResult::Exit { code })
+    }
+
+    fn signal(number: u32) -> CommandEnd {
+        let number = std::num::NonZeroU32::new(number).unwrap();
+        CommandEnd::Confirmed(CommandResult::Signal { number, name: None })
+    }
+
+    /// A session that ended with `command` and cleaned up, without failing.
+    fn ended(command: CommandEnd) -> SessionEnd {
+        SessionEnd {
+            command,
+            failed: false,
+            cleanup: CleanupResult::Complete,
+        }
+    }
+
+    fn confirmed(conn: ConnectionId, end: SessionEnd) -> Effect {
+        ConfirmKill { conn, end }
+    }
 
     fn granted(effects: Vec<Effect>) -> Authority {
         match effects.last() {
@@ -1156,10 +1332,10 @@ mod tests {
         assert_eq!(control.leave(A), NONE);
         assert_eq!(control.controlling(A), Err(OperationalCode::NotAttached));
         assert_eq!(control.snapshot(), state(Terminating, 0, false));
-        control.command_exited(0);
+        control.command_exited(exit(0));
         assert_eq!(
             control.cleanup_finished(),
-            [ConfirmKill { conn: K, code: 0 }, Finish]
+            [confirmed(K, ended(exit(0))), Finish]
         );
     }
 
@@ -1508,12 +1684,14 @@ mod tests {
         assert_eq!(control.desired_focus(), None);
         assert_eq!(control.snapshot(), state(Terminating, 2, true));
     }
+    /// Every kill gets the command's signal itself; attachments get the
+    /// private protocol's status, 128 plus the signal's number.
     #[test]
     fn shutdown_releases_the_presenting_attachment_and_confirms_every_kill() {
         let mut control = session(&[A, B]);
         control.kill(K);
         control.kill(K2);
-        assert_eq!(control.command_exited(137), [Cleanup]);
+        assert_eq!(control.command_exited(signal(9)), [Cleanup]);
         assert_eq!(control.snapshot(), state(Terminating, 2, true));
         assert_eq!(
             control.cleanup_finished(),
@@ -1521,11 +1699,8 @@ mod tests {
                 Release { conn: B },
                 DeliverExit { conn: B, code: 137 },
                 DeliverExit { conn: A, code: 137 },
-                ConfirmKill { conn: K, code: 137 },
-                ConfirmKill {
-                    conn: K2,
-                    code: 137
-                },
+                confirmed(K, ended(signal(9))),
+                confirmed(K2, ended(signal(9))),
                 Finish
             ]
         );
@@ -1541,14 +1716,14 @@ mod tests {
         assert_eq!(control.lost(K), NONE);
         assert_eq!(control.apply_pending(), NONE);
         assert_eq!(control.snapshot(), state(Terminating, 2, true));
-        control.command_exited(0);
+        control.command_exited(exit(0));
         assert_eq!(
             control.cleanup_finished(),
             [
                 Release { conn: C },
                 DeliverExit { conn: C, code: 0 },
                 DeliverExit { conn: A, code: 0 },
-                ConfirmKill { conn: K2, code: 0 },
+                confirmed(K2, ended(exit(0))),
                 Finish
             ]
         );
@@ -1561,12 +1736,12 @@ mod tests {
         assert_eq!(control.lost(B), NONE);
         assert_eq!(control.apply_pending(), NONE);
         assert_eq!(control.snapshot(), state(Terminating, 1, true));
-        control.command_exited(0);
+        control.command_exited(exit(0));
         assert_eq!(
             control.cleanup_finished(),
             [
                 DeliverExit { conn: A, code: 0 },
-                ConfirmKill { conn: K, code: 0 },
+                confirmed(K, ended(exit(0))),
                 Finish
             ]
         );
@@ -1576,12 +1751,12 @@ mod tests {
     fn a_command_exit_releases_and_delivers_exit_to_every_attachment() {
         let mut control = session(&[A, B]);
         assert_eq!(
-            control.command_exited(3),
+            control.command_exited(exit(3)),
             [DiscardPendingInput { conn: B }, ClosePaste, Cleanup]
         );
         assert_eq!(control.attach(C, host()), [Refuse { conn: C }]);
         assert_eq!(control.snapshot(), state(Terminating, 2, true));
-        assert_eq!(control.command_exited(4), NONE);
+        assert_eq!(control.command_exited(exit(4)), NONE);
         assert_eq!(
             control.cleanup_finished(),
             [
@@ -1598,7 +1773,7 @@ mod tests {
     fn a_command_exit_before_any_attach_finishes_after_cleanup() {
         let mut control = ordinary(host());
         assert_eq!(control.cleanup_finished(), NONE);
-        assert_eq!(control.command_exited(0), [Cleanup]);
+        assert_eq!(control.command_exited(exit(0)), [Cleanup]);
         assert_eq!(control.initial_deadline(), NONE);
         assert_eq!(control.cleanup_finished(), [Finish]);
     }
@@ -1608,20 +1783,20 @@ mod tests {
         let mut control = session(&[A]);
         control.kill(K);
         assert_eq!(control.cleanup_finished(), NONE);
-        assert_eq!(control.command_exited(143), [Cleanup]);
+        assert_eq!(control.command_exited(signal(15)), [Cleanup]);
     }
 
     #[test]
     fn a_kill_during_cleanup_is_confirmed_after_it() {
         let mut control = session(&[A]);
-        control.command_exited(5);
+        control.command_exited(exit(5));
         assert_eq!(control.kill(K), NONE);
         assert_eq!(
             control.cleanup_finished(),
             [
                 Release { conn: A },
                 DeliverExit { conn: A, code: 5 },
-                ConfirmKill { conn: K, code: 5 },
+                confirmed(K, ended(exit(5))),
                 Finish
             ]
         );
@@ -1630,9 +1805,9 @@ mod tests {
     #[test]
     fn a_kill_after_the_session_finished_is_confirmed_immediately() {
         let mut control = session(&[A]);
-        control.command_exited(5);
+        control.command_exited(exit(5));
         control.cleanup_finished();
-        assert_eq!(control.kill(K), [ConfirmKill { conn: K, code: 5 }]);
+        assert_eq!(control.kill(K), [confirmed(K, ended(exit(5)))]);
         assert_eq!(control.attach(C, host()), [Refuse { conn: C }]);
     }
 
@@ -1645,18 +1820,22 @@ mod tests {
         );
         assert_eq!(control.attach(C, host()), [Refuse { conn: C }]);
         assert_eq!(control.kill(K), NONE);
-        assert_eq!(control.command_exited(1), [Cleanup]);
+        assert_eq!(control.command_exited(signal(1)), [Cleanup]);
+        let failed = SessionEnd {
+            failed: true,
+            ..ended(signal(1))
+        };
         assert_eq!(
             control.cleanup_finished(),
             [
                 Release { conn: B },
                 DeliverError { conn: B },
                 DeliverError { conn: A },
-                DeliverError { conn: K },
+                confirmed(K, failed.clone()),
                 Finish
             ]
         );
-        assert_eq!(control.kill(K2), [DeliverError { conn: K2 }]);
+        assert_eq!(control.kill(K2), [confirmed(K2, failed)]);
         assert_eq!(control.authoritative_failure(), NONE);
     }
 
@@ -1665,34 +1844,92 @@ mod tests {
         let mut control = session(&[A]);
         control.kill(K);
         assert_eq!(control.authoritative_failure(), NONE);
-        control.command_exited(0);
+        control.command_exited(exit(0));
+        let failed = SessionEnd {
+            failed: true,
+            ..ended(exit(0))
+        };
         assert_eq!(
             control.cleanup_finished(),
             [
                 Release { conn: A },
                 DeliverError { conn: A },
-                DeliverError { conn: K },
+                confirmed(K, failed),
                 Finish
             ]
         );
     }
 
+    /// A failure while cleaning up leaves the cleanup incomplete, distinct
+    /// from a failure of the session, though the private protocol reports
+    /// both as `Error`.
     #[test]
     fn a_failed_cleanup_never_confirms_a_kill() {
         let mut control = session(&[A]);
         control.kill(K);
-        control.command_exited(0);
+        control.command_exited(exit(0));
+        let uncleaned = SessionEnd {
+            cleanup: CleanupResult::Failed,
+            ..ended(exit(0))
+        };
         assert_eq!(
             control.authoritative_failure(),
             [
                 Release { conn: A },
                 DeliverError { conn: A },
-                DeliverError { conn: K },
+                confirmed(K, uncleaned),
                 Finish
             ]
         );
         assert_eq!(control.cleanup_finished(), NONE);
         assert_eq!(control.snapshot(), state(Terminating, 0, false));
+    }
+
+    /// A command end the daemon could not confirm: the private protocol
+    /// reports climon2's own status, and a kill learns what was known.
+    #[test]
+    fn an_unconfirmed_command_end_reports_climon2s_own_status() {
+        let mut control = session(&[A]);
+        control.kill(K);
+        let unconfirmed = CommandEnd::Unconfirmed(None);
+        assert_eq!(control.command_exited(unconfirmed.clone()), [Cleanup]);
+        assert_eq!(
+            control.cleanup_finished(),
+            [
+                Release { conn: A },
+                DeliverExit { conn: A, code: 125 },
+                confirmed(K, ended(unconfirmed)),
+                Finish
+            ]
+        );
+    }
+
+    /// The private protocol keeps its exit mapping: a normal exit's raw
+    /// status, 128 plus a signal's number, 125 when nothing was confirmed,
+    /// and an error after a failure of the session or of its cleanup.
+    #[test]
+    fn the_private_protocol_keeps_its_exit_mapping() {
+        use PrivateResult::Status;
+        assert_eq!(ended(exit(0)).private_result(), Status(0));
+        assert_eq!(ended(exit(143)).private_result(), Status(143));
+        assert_eq!(ended(signal(15)).private_result(), Status(143));
+        let known = Some(CommandResult::Exit { code: 7 });
+        let unconfirmed = CommandEnd::Unconfirmed(known.clone());
+        assert_eq!(unconfirmed.known(), known.as_ref());
+        assert_eq!(ended(unconfirmed).private_result(), Status(125));
+        let unknown = ended(CommandEnd::Unconfirmed(None));
+        assert_eq!(unknown.private_result(), Status(125));
+        assert_eq!(exit(3).known(), Some(&CommandResult::Exit { code: 3 }));
+        let failed = SessionEnd {
+            failed: true,
+            ..ended(exit(0))
+        };
+        assert_eq!(failed.private_result(), PrivateResult::Error);
+        let uncleaned = SessionEnd {
+            cleanup: CleanupResult::Failed,
+            ..ended(exit(0))
+        };
+        assert_eq!(uncleaned.private_result(), PrivateResult::Error);
     }
 
     #[test]
@@ -1715,10 +1952,10 @@ mod tests {
         let mut control = ordinary(host());
         control.initial_deadline();
         assert_eq!(control.kill(K), NONE);
-        control.command_exited(129);
+        control.command_exited(signal(1));
         assert_eq!(
             control.cleanup_finished(),
-            [ConfirmKill { conn: K, code: 129 }, Finish]
+            [confirmed(K, ended(signal(1))), Finish]
         );
     }
 
@@ -1727,10 +1964,10 @@ mod tests {
         let mut control = session(&[A]);
         control.lost(A);
         assert_eq!(control.kill(K), NONE);
-        control.command_exited(129);
+        control.command_exited(signal(1));
         assert_eq!(
             control.cleanup_finished(),
-            [ConfirmKill { conn: K, code: 129 }, Finish]
+            [confirmed(K, ended(signal(1))), Finish]
         );
     }
 
@@ -1739,5 +1976,170 @@ mod tests {
         let mut control = session(&[A]);
         assert_eq!(control.initial_deadline(), NONE);
         assert_eq!(control.snapshot(), state(Attached, 1, true));
+    }
+
+    /// The effects of a ready controller's deliberate detach, before
+    /// succession.
+    fn detached(conn: ConnectionId) -> [Effect; 4] {
+        [
+            DiscardPendingInput { conn },
+            ClosePaste,
+            Release { conn },
+            AcceptDetach { conn },
+        ]
+    }
+
+    #[test]
+    fn a_registration_acquires_only_by_its_own_acquire_at_the_session_geometry() {
+        let mut control = ordinary(host());
+        let first = granted(control.attach(A, size(100, 30)));
+        control.apply_pending();
+        restore(&mut control, A, first);
+        control.detach(A);
+        control.register(M);
+        assert_eq!(control.snapshot(), state(Detached, 0, false));
+        assert_eq!(control.apply_pending(), NONE);
+        assert_eq!(
+            control.acquire(B),
+            (Err(OperationalCode::NotAttached), Vec::new())
+        );
+
+        let (acquired, effects) = control.acquire(M);
+        assert_eq!(
+            effects,
+            [
+                Convert { conn: M },
+                grant(M, (2, 2), size(100, 30), Acquire)
+            ]
+        );
+        let changed = Acquisition {
+            changed: true,
+            authority: authority(2, 2),
+        };
+        assert_eq!(acquired, Ok(changed));
+        assert_eq!(control.apply_pending(), NONE);
+        assert_eq!(control.snapshot(), state(Attached, 1, true));
+        let kept = Acquisition {
+            changed: false,
+            authority: authority(2, 2),
+        };
+        assert_eq!(control.acquire(M), (Ok(kept), Vec::new()));
+    }
+
+    #[test]
+    fn a_departure_hands_back_first_then_promotes_the_newest_registration() {
+        let mut control = session(&[A, B]);
+        control.register(M);
+        control.register(N);
+        assert_eq!(
+            control.lost(B),
+            [
+                DiscardPendingInput { conn: B },
+                ClosePaste,
+                grant(A, (3, 3), host(), HandBack)
+            ]
+        );
+        restore(&mut control, A, authority(3, 3));
+        let promoted = [Convert { conn: N }, grant(N, (4, 4), host(), Successor)];
+        assert_eq!(control.detach(A), [&detached(A)[..], &promoted].concat());
+        assert_eq!(control.snapshot(), state(Attached, 1, true));
+        assert_eq!(
+            control.lost(N),
+            [Convert { conn: M }, grant(M, (5, 5), host(), Successor)]
+        );
+        assert_eq!(control.lost(M), [BeginShutdown]);
+    }
+
+    #[test]
+    fn leave_and_loss_remove_a_registration_before_any_succession() {
+        let mut control = session(&[A]);
+        control.register(M);
+        control.register(N);
+        assert_eq!(control.leave(N), NONE);
+        assert_eq!(control.lost(M), NONE);
+        assert_eq!(control.detach(A), detached(A));
+        assert_eq!(control.snapshot(), state(Detached, 0, false));
+    }
+
+    #[test]
+    fn committed_termination_refuses_a_registrations_acquire_and_promotes_nobody() {
+        let mut control = session(&[A]);
+        control.register(M);
+        control.kill(K);
+        assert_eq!(
+            control.acquire(M),
+            (Err(OperationalCode::SessionTerminating), Vec::new())
+        );
+        assert_eq!(
+            control.leave(A),
+            [Release { conn: A }, AcceptDetach { conn: A }]
+        );
+        assert_eq!(control.snapshot(), state(Terminating, 0, false));
+    }
+
+    #[test]
+    fn a_canonical_grant_keeps_the_session_geometry_whoever_sized_it_last() {
+        let mut control = session(&[A]);
+        control.register(M);
+        let promoted = granted(control.acquire(M).1);
+        restore(&mut control, M, promoted);
+        control.resize(M, size(120, 40));
+        control.apply_pending();
+        restore(&mut control, M, authority(2, 3));
+        let (_, effects) = control.acquire(A);
+        assert_eq!(effects.last(), Some(&grant(A, (3, 4), host(), Acquire)));
+        assert_eq!(control.apply_pending(), [ResizeSession { size: host() }]);
+        restore(&mut control, A, authority(3, 4));
+        let handed_back = grant(M, (4, 5), host(), HandBack);
+        assert_eq!(
+            control.detach(A),
+            [&detached(A)[..], &[handed_back]].concat()
+        );
+        assert_eq!(control.apply_pending(), NONE);
+    }
+
+    #[test]
+    fn a_canonical_controller_is_restored_afresh_only_at_a_new_session_geometry() {
+        let mut control = ordinary(host());
+        control.register(M);
+        assert_eq!(granted(control.acquire(M).1), authority(1, 1));
+        control.resize(M, size(600, 250));
+        let replaced = Restore {
+            conn: M,
+            authority: authority(1, 2),
+            host: size(500, 200),
+        };
+        let resized = ResizeSession {
+            size: size(500, 200),
+        };
+        assert_eq!(control.apply_pending(), [resized, replaced]);
+        control.resize(M, size(610, 260));
+        assert_eq!(control.apply_pending(), NONE);
+        restore(&mut control, M, authority(1, 2));
+
+        control.resize(M, size(620, 270));
+        let host_only = ResizeHost {
+            conn: M,
+            host: size(620, 270),
+        };
+        assert_eq!(control.apply_pending(), [host_only]);
+        assert!(control.admits_input(M));
+        control.resize(M, size(100, 30));
+        let effects = [
+            ResizeSession {
+                size: size(100, 30),
+            },
+            ResizeHost {
+                conn: M,
+                host: size(100, 30),
+            },
+            Restore {
+                conn: M,
+                authority: authority(1, 3),
+                host: size(100, 30),
+            },
+        ];
+        assert_eq!(control.apply_pending(), effects);
+        assert!(!control.admits_input(M));
     }
 }

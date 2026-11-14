@@ -242,7 +242,8 @@ fn limits(limits: native::Limits) -> Result<native::Limits, Failure> {
 /// Every limit is an effective value, never zero-as-default (only
 /// `max_workers` may be zero), and leaves room for this release's own
 /// requirements: its instance allocation and its workers. A delivery holds
-/// a whole record of `metadata_record_bytes`, so none is ever oversized.
+/// a whole record of `metadata_record_bytes`, or a Display of `chunk_bytes`
+/// (#94), so none is ever oversized.
 fn honoured(limits: &native::Limits) -> bool {
     let values = [
         limits.client_bytes,
@@ -273,6 +274,7 @@ fn honoured(limits: &native::Limits) -> bool {
     ];
     !values.contains(&0)
         && limits.drain_payload_bytes >= limits.metadata_record_bytes.into()
+        && limits.drain_payload_bytes >= limits.chunk_bytes.into()
         && limits.client_bytes >= REQUIREMENTS.instance_bytes
         && limits.max_workers >= REQUIREMENTS.workers
 }

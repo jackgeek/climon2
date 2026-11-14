@@ -559,3 +559,160 @@ fn origin_mode_reestablishes_a_pending_wrap_after_the_modes() {
         "{prefix:?}"
     );
 }
+
+/// A whole canonical restoration, produced with a generous budget.
+fn canonically_restored(vt: &mut climon2_vt::Vt, presentation: &mut Presentation) -> Vec<u8> {
+    let (mut bytes, mut restoration) = vt.canonical(presentation);
+    loop {
+        let chunk = vt.produce(&mut restoration, presentation, 1 << 20);
+        bytes.extend(chunk.bytes);
+        if chunk.done {
+            return bytes;
+        }
+    }
+}
+
+/// TRM-03 and CTL-04 (crate case: canonical monitor-mode serialization): a
+/// canonical restoration is the session at its own geometry for a fresh
+/// terminal of exactly that size, whatever host an earlier stream of the
+/// presentation described and whatever that stream put the host into. Its
+/// bytes are the prologue, each history row from the top of the fresh
+/// screen, a scroll-off of exactly the rows printed, then the Direct screen
+/// suffix: no host content is preserved, and nothing depends on a host's
+/// size. A fresh terminal of the session's size then holds exactly the
+/// retained history, the screen and the cursor, and the presentation is a
+/// fresh Direct one that never entered the alternate screen.
+#[test]
+fn a_canonical_restoration_is_the_session_at_its_geometry_for_a_fresh_terminal() {
+    let expected = [
+        PROLOGUE,
+        &row("a"),
+        "\x1b[4;1H\n",
+        "\x1b[1;1H\x1b[0mb\x1b[0m\x1b[2;1H\x1b[0mc\x1b[0m\x1b[3;1H\x1b[0md\x1b[0m\x1b[4;1H\x1b[0me\x1b[0m",
+        "\x1b[1;1H\x1b[0m\x1b7\x1b[4;2H\x1b[0m",
+        MODES,
+        DIRECT_MODES,
+        "\x1b[4;2H\x1b[0m",
+        "\x1b]2;climon2 exec app\x1b\\",
+    ]
+    .concat();
+    let mut vt = vt(10, 4, 10);
+    feed(&mut vt, b"a\r\nb\r\nc\r\nd\r\ne");
+    let mut entered = Presentation::new(10, 4);
+    vt.commit_live(&mut entered, b"\x1b[?1049h\x1b[?2026h");
+    let presentations = [
+        Presentation::new(10, 4),
+        Presentation::new(30, 9),
+        Presentation::new(600, 250),
+        entered,
+    ];
+    for mut presentation in presentations {
+        let bytes = canonically_restored(&mut vt, &mut presentation);
+        assert_eq!(text(&bytes), expected);
+        assert_eq!(presentation.mode(), climon2_vt::Mode::Direct);
+        assert_eq!(presentation.end_sync(), b"");
+        assert!(!text(&presentation.release()).contains("1049"));
+        let term = host(10, 4, &bytes);
+        assert_eq!(history(&term), ["a"]);
+        assert_eq!(screen(&term), ["b", "c", "d", "e"]);
+        assert_eq!(cursor(&term), (3, 1, false));
+    }
+}
+
+/// TRM-03 and CTL-04 (crate case): a canonical restoration's history is
+/// exactly the retained rows, with the truncation notice where rows left
+/// retention, and never a blank row more or a row less: the notice wrapped
+/// onto three rows at 20 columns before fewer rows than the screen has,
+/// more rows than the screen has, a soft-wrapped row printed without its line
+/// break, and a one-row screen.
+#[test]
+fn a_canonical_restoration_scrolls_off_exactly_the_history_it_printed() {
+    struct Case {
+        cols: u16,
+        rows: u16,
+        max_rows: u32,
+        input: Vec<u8>,
+        history: &'static [&'static str],
+        screen: &'static [&'static str],
+    }
+    let cases = [
+        Case {
+            cols: 20,
+            rows: 8,
+            max_rows: 1,
+            input: lines(1..=10),
+            history: &[
+                "[climon2: older sess",
+                "ion scrollback was d",
+                "iscarded]",
+                "3",
+            ],
+            screen: &["4", "5", "6", "7", "8", "9", "10", ""],
+        },
+        Case {
+            cols: 10,
+            rows: 3,
+            max_rows: 10,
+            input: lines(1..=6),
+            history: &["1", "2", "3", "4"],
+            screen: &["5", "6", ""],
+        },
+        Case {
+            cols: 10,
+            rows: 3,
+            max_rows: 10,
+            input: b"abcdefghijkl\r\nm\r\nn\r\no".to_vec(),
+            history: &["abcdefghij", "kl"],
+            screen: &["m", "n", "o"],
+        },
+        Case {
+            cols: 10,
+            rows: 1,
+            max_rows: 10,
+            input: b"a\r\nb\r\nc".to_vec(),
+            history: &["a", "b"],
+            screen: &["c"],
+        },
+    ];
+    for case in cases {
+        let (cols, rows) = (case.cols, case.rows);
+        let mut vt = vt(cols, rows, case.max_rows);
+        feed(&mut vt, &case.input);
+        let bytes = canonically_restored(&mut vt, &mut Presentation::new(cols, rows));
+        let term = host(cols.into(), rows.into(), &bytes);
+        assert_eq!(history(&term), case.history, "{cols}x{rows}");
+        assert_eq!(screen(&term), case.screen, "{cols}x{rows}");
+    }
+}
+
+/// TRM-03 and CTL-04 (crate case): rows that leave retention while a
+/// canonical restoration is produced become one truncation notice, which
+/// the scroll-off counts as the three rows it wraps onto at 20 columns, so
+/// the history is exactly the rows and the notice emitted, and the screen is
+/// the snapshot's.
+#[test]
+fn a_canonical_restoration_counts_a_gap_notice_among_the_rows_it_scrolls_off() {
+    let mut vt = vt(20, 8, 3);
+    feed(&mut vt, &lines(1..=10));
+    let mut presentation = Presentation::new(20, 8);
+    let (mut bytes, mut restoration) = vt.canonical(&mut presentation);
+    let first = vt.produce(&mut restoration, &mut presentation, 1);
+    assert_eq!(text(&first.bytes), row("1"));
+    bytes.extend(first.bytes);
+    feed(&mut vt, &lines(11..=12));
+    let rest = vt.produce(&mut restoration, &mut presentation, 1 << 20);
+    assert!(rest.done);
+    bytes.extend(rest.bytes);
+    let term = host(20, 8, &bytes);
+    assert_eq!(
+        history(&term),
+        [
+            "1",
+            "[climon2: older sess",
+            "ion scrollback was d",
+            "iscarded]",
+            "3"
+        ]
+    );
+    assert_eq!(screen(&term), ["4", "5", "6", "7", "8", "9", "10", ""]);
+}
