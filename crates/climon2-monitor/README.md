@@ -92,10 +92,13 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   leaves that Escape with the application, and a keypad key split so cannot
   become a numeric-mode key. Bracketed paste
   (data until its end marker, which discards a pending prefix and leaves
-  none), SGR mouse reports, focus reports and host replies (OSC, DCS and
-  APC strings; CSI replies with a private marker, an intermediate byte or a
-  `c`, `n`, `t` or `y` final; a control sequence longer than 64 bytes) bypass
-  shortcuts and reach no application; pastes, mouse and focus reach
+  none), SGR mouse reports, focus reports and host replies bypass shortcuts
+  and reach no application. The monitor's rule for host replies (confirmed
+  by the owner on #109): OSC, DCS, APC and PM strings; CSI sequences with a
+  `?`, `>` or `=` marker, an intermediate byte, or a `c`, `n`, `t` or `y`
+  final; and any control sequence longer than 64 bytes. CSI `R` stays a key
+  (modified F3 sends it, and the monitor never asks the host for its cursor
+  position); pastes, mouse and focus reach
   applications with #111. Prefix+s, x, j and ? (lowercase) are the global
   actions from every screen, the selector and the too-small host; prefix+j
   is recognised and never forwarded, and its jump arrives with #114. A
@@ -109,8 +112,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   receives application input; otherwise input is discarded, never kept for
   later. Ctrl+C is ordinary input. Each read's keys for the session are
   submitted together, before anything after them acts. Nothing read after
-  prefix+x is routed, and the shutdown it starts cancels input the library
-  has not yet sent. Unmodified cursor keys (`A`-`D`, `H`, `F`, as CSI or SS3) are
+  prefix+x is routed; keys read before it in the same read reach the session
+  before shutdown (below). Unmodified cursor keys (`A`-`D`, `H`, `F`, as CSI or SS3) are
   sent as the application's cursor mode (DECCKM) expects, and application
   keypad keys (SS3) as its keypad mode (DECKPAM) expects; the host keypad is
   put in application mode while the selected, uncovered session asks for it,
@@ -220,7 +223,11 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   on any other row it does nothing yet. While rows exist, nothing is
   selected and the selector is closed, the body reads `No session selected.`
   above the key hint.
-- **Exit** first asks the supervisor to shut every instance down and keeps
+- **Exit** first waits until every input chunk an open client accepted is
+  answered, at most `deadlines.operation_ms` (owner decision on #109), so
+  keys typed with prefix+x reach their session and a stuck session holds
+  exit no longer than one operation may take. It then asks the supervisor
+  to shut every instance down and keeps
   draining until each has ended, its handles are released and its owner is
   joined, for at most `deadlines.shutdown_ms` (and one tick), then releases
   the host. An instance unconfirmed by then is logged (`client shutdown
@@ -374,6 +381,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | INP-01, INP-02, TRM-02 (Monitor), COM-04 (Monitor, typed), EXT-03 (Monitor, Ctrl+C): typed bytes reach the selected session exactly, binary, invalid UTF-8 and Ctrl+C included; one literal prefix for a doubled one, both bytes for d, h, r, J and the take-control key, nothing for prefix+j, replies and reports; identical when split into ten reads; cursor and keypad keys follow the application's modes and the host keypad follows it | `typed_bytes_reach_the_selected_session_exactly_however_reads_split` (e2e) |
 | INP-01 (Monitor, live and too-small screens), spec #73 Routing: prefix+? and prefix+s from a live session, their keys never reach it; on a too-small host input is discarded, never buffered, prefix+s still opens the selector and prefix+x still exits | `global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffered` (e2e) |
 | INP-02, HLP-02 (Monitor, Escape; owner decisions on #105, #106 and #109): a cursor key split right after its Escape or after its introducer never closes the selector or key introduction; a lone Escape closes it when the next key arrives, which reaches the session; Escape then a key in one read does the same | `split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both` (e2e) |
+| Spec #73 exit (owner decision on #109): keys read with prefix+x reach the session before shutdown; a stuck session holds exit at most the operation deadline (plus the shutdown deadline) | `typed_bytes_reach_the_selected_session_exactly_however_reads_split`, `a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline` (e2e); `stopping_waits_for_accepted_input_at_most_the_operation_deadline` (`src/supervisor/tests`) |
 | COM-03 (Monitor, queue full), COM-04 (Monitor, chunks): a refused chunk is shown with the bytes not sent, earlier input accepted; only accepted input arrives | `a_full_input_queue_is_shown_and_only_accepted_input_arrives` (e2e) |
 | INP-01 (pure input-router supplement): the global actions with default and custom prefixes; a doubled prefix; unknown suffixes; a lone prefix waits | `the_prefix_and_lowercase_s_x_j_or_question_mark_are_the_global_actions`, `a_doubled_prefix_is_one_literal_prefix`, `an_unknown_suffix_is_the_prefix_and_that_key`, `a_lone_prefix_waits_indefinitely` (`src/router.rs`) |
 | INP-02 (pure input-router supplement): every split routes identically, and sends an application the same bytes even with a released Escape; a split cursor key is never an Escape; Escape and a key; a lone Escape waits for the next byte, and one bound for an application is released at once, once, never as or after a prefix; Ctrl+[ as the prefix; broken and overlong (64 and 65 bytes) sequences; cursor and keypad encodings | `every_split_of_the_reads_routes_identically`, `a_split_cursor_key_is_never_an_escape`, `escape_and_a_key_in_one_read_are_escape_then_that_key`, `a_lone_escape_waits_for_the_next_byte`, `a_lone_escape_for_an_application_is_released_at_once`, `an_application_receives_the_same_bytes_for_every_split`, `with_escape_as_the_prefix_bare_escape_waits_and_alt_keys_are_actions`, `a_broken_sequence_is_its_bytes`, `an_overlong_sequence_is_discarded`, `cursor_keys_follow_the_application_cursor_mode`, `keypad_keys_follow_the_application_keypad_mode` (`src/router.rs`); `the_host_keypad_mode_is_written_when_it_changes` (`src/screen.rs`) |
