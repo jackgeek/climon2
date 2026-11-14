@@ -17,11 +17,13 @@ created first, connected rows show Unavailable without `status-v1` and no
 status otherwise, and not-connected rows show Starting, Unavailable, This
 monitor or Disconnected; a row never seen connected is dropped once its
 session is proven gone. Its keys come from the input router of
-[#109](https://github.com/jackgeek/climon2/issues/109) (INP-02): a cursor key
-split across host reads after its `ESC [` or `ESC O` never closes it, Escape
-followed by a key in one read closes it and then routes that key, and a lone
-Escape is bare once the host has been quiet for 50 ms, so a split right after
-the Escape closes it only when its halves arrive 50 ms or more apart. Enter selects the highlighted row
+[#109](https://github.com/jackgeek/climon2/issues/109) (INP-02), which uses no timer (owner decision on #109): a lone Escape is
+classified by the byte after it, so a cursor key split across host reads,
+even right after its Escape, never closes the selector, and Escape closes it
+when the next key arrives, which is then routed as itself (Escape followed by
+a key in one read behaves the same). The same holds for the key
+introduction. Bytes bound for the selected session, a lone Escape included,
+go to it at once. Enter selects the highlighted row
 ([#108](https://github.com/jackgeek/climon2/issues/108)). Nothing else this
 document specifies is implemented: no search or separator, status order,
 key-hint footer, Delete, toasts or bell.

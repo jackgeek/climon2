@@ -78,12 +78,19 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   (below).
 - Host input is read as raw bytes and classified by the pure input router
   (`router.rs`), never as lossy key events, and never depending on how the
-  host splits its reads: a sequence waits for its next byte whatever read
-  brings it. Only a lone Escape is ambiguous, because every sequence begins
-  with one: it is a bare Escape once the host has been quiet for 50 ms
-  (`ESCAPE_TIME`), and the byte after it decides otherwise (`[` or `O`
-  begins a key sequence; `]`, `P` or `_` a host reply's string; anything
-  else is Escape then that key, as Alt and that key are). Bracketed paste
+  host splits its reads, with no timer anywhere (owner decision on #109): a
+  sequence waits for its next byte whatever read brings it, and so does a
+  lone Escape, which begins every sequence: the byte after it decides (`[`
+  or `O` begins a key sequence; `]`, `P`, `_` or `^` a host reply's string;
+  anything else makes it Escape then that key, as Alt and that key are). So
+  in the selector and the key introduction Escape takes effect when the
+  next key arrives. A lone Escape that ends a read bound for the selected
+  session is released to it at once instead (`Router::release`), since
+  applications time Escape themselves; if a sequence follows, only its rest
+  is sent, still encoded for the application's modes. Known limits of that
+  release: a reply, report or paste marker split right after its Escape
+  leaves that Escape with the application, and a keypad key split so cannot
+  become a numeric-mode key. Bracketed paste
   (data until its end marker, which discards a pending prefix and leaves
   none), SGR mouse reports, focus reports and host replies (OSC, DCS and
   APC strings; CSI replies with a private marker, an intermediate byte or a
@@ -204,9 +211,10 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   without splitting a wide character; the highlighted row is reversed and
   kept in view. It opens on the first row; prefix+s while open does nothing.
   Up and Down (`ESC [ A`/`B` or `ESC O A`/`B`) move the highlight without
-  wrapping, and a bare Escape closes it; a cursor key split across reads
-  after its `ESC [` or `ESC O` never does, and Escape followed by a key in
-  one read closes it before that key is routed (#109, INP-02). Opening it never resizes an application or
+  wrapping, and a bare Escape closes it when the next key arrives (the
+  router has no timer); a cursor key split across reads anywhere never
+  closes it, and the key after the Escape is routed once it has closed
+  (#109, INP-02). Opening it never resizes an application or
   acquires anything. Enter (a typed CR) on a connected row not known to be
   final selects that session, closes the selector and acquires it (below);
   on any other row it does nothing yet. While rows exist, nothing is
@@ -365,10 +373,10 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | HLP-02 (Monitor, over the empty monitor): a doubled prefix reaches the key introduction as one literal prefix, so with Ctrl+M as the prefix Enter Enter continues; the prefix and a key it does not complete reach nothing; prefix+x still exits | `with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction` (e2e) |
 | INP-01, INP-02, TRM-02 (Monitor), COM-04 (Monitor, typed), EXT-03 (Monitor, Ctrl+C): typed bytes reach the selected session exactly, binary, invalid UTF-8 and Ctrl+C included; one literal prefix for a doubled one, both bytes for d, h, r, J and the take-control key, nothing for prefix+j, replies and reports; identical when split into ten reads; cursor and keypad keys follow the application's modes and the host keypad follows it | `typed_bytes_reach_the_selected_session_exactly_however_reads_split` (e2e) |
 | INP-01 (Monitor, live and too-small screens), spec #73 Routing: prefix+? and prefix+s from a live session, their keys never reach it; on a too-small host input is discarded, never buffered, prefix+s still opens the selector and prefix+x still exits | `global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffered` (e2e) |
-| INP-02, HLP-02 (Monitor, Escape; owner decisions on #105 and #106): a cursor key split across reads never closes the selector or key introduction; Escape then a key in one read closes it and sends the key | `split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both` (e2e) |
+| INP-02, HLP-02 (Monitor, Escape; owner decisions on #105, #106 and #109): a cursor key split right after its Escape or after its introducer never closes the selector or key introduction; a lone Escape closes it when the next key arrives, which reaches the session; Escape then a key in one read does the same | `split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both` (e2e) |
 | COM-03 (Monitor, queue full), COM-04 (Monitor, chunks): a refused chunk is shown with the bytes not sent, earlier input accepted; only accepted input arrives | `a_full_input_queue_is_shown_and_only_accepted_input_arrives` (e2e) |
 | INP-01 (pure input-router supplement): the global actions with default and custom prefixes; a doubled prefix; unknown suffixes; a lone prefix waits | `the_prefix_and_lowercase_s_x_j_or_question_mark_are_the_global_actions`, `a_doubled_prefix_is_one_literal_prefix`, `an_unknown_suffix_is_the_prefix_and_that_key`, `a_lone_prefix_waits_indefinitely` (`src/router.rs`) |
-| INP-02 (pure input-router supplement): every split routes identically; a split cursor key is never an Escape; Escape and a key; a lone Escape at the escape time and 1 ms before; Ctrl+[ as the prefix; broken and overlong (64 and 65 bytes) sequences; cursor and keypad encodings | `every_split_of_the_reads_routes_identically`, `a_split_cursor_key_is_never_an_escape`, `escape_and_a_key_in_one_read_are_escape_then_that_key`, `a_lone_escape_is_bare_after_the_escape_time`, `with_escape_as_the_prefix_bare_escape_waits_and_alt_keys_are_actions`, `a_broken_sequence_is_its_bytes`, `an_overlong_sequence_is_discarded`, `cursor_keys_follow_the_application_cursor_mode`, `keypad_keys_follow_the_application_keypad_mode` (`src/router.rs`); `the_host_keypad_mode_is_written_when_it_changes` (`src/screen.rs`) |
+| INP-02 (pure input-router supplement): every split routes identically, and sends an application the same bytes even with a released Escape; a split cursor key is never an Escape; Escape and a key; a lone Escape waits for the next byte, and one bound for an application is released at once, once, never as or after a prefix; Ctrl+[ as the prefix; broken and overlong (64 and 65 bytes) sequences; cursor and keypad encodings | `every_split_of_the_reads_routes_identically`, `a_split_cursor_key_is_never_an_escape`, `escape_and_a_key_in_one_read_are_escape_then_that_key`, `a_lone_escape_waits_for_the_next_byte`, `a_lone_escape_for_an_application_is_released_at_once`, `an_application_receives_the_same_bytes_for_every_split`, `with_escape_as_the_prefix_bare_escape_waits_and_alt_keys_are_actions`, `a_broken_sequence_is_its_bytes`, `an_overlong_sequence_is_discarded`, `cursor_keys_follow_the_application_cursor_mode`, `keypad_keys_follow_the_application_keypad_mode` (`src/router.rs`); `the_host_keypad_mode_is_written_when_it_changes` (`src/screen.rs`) |
 | TRM-02, INP-03, INP-05 (pure input-router supplement): replies, mouse and focus reports and pastes are never keys and never complete a pending prefix; a paste discards one | `replies_reports_and_pastes_are_never_keys`, `a_paste_discards_a_pending_prefix_and_leaves_none` (`src/router.rs`) |
 | COM-04, EXT-03 (pure input-router supplement): typed bytes reach an application exactly | `typed_bytes_reach_the_application_exactly` (`src/router.rs`) |
 | COM-03, COM-04 (pure supplement): chunks of at most `chunk_bytes`; the first refusal carries every unsent byte and consumes no request ID; a refusal is shown | `input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte` (`src/supervisor/tests`), `refused_input_shows_what_was_not_sent` (`src/terminal.rs`) |
