@@ -7,12 +7,14 @@ publish.workspace = true
 
 [dependencies]
 climon2-core = { path = "../crates/climon2-core" }
+climon2-platform = { path = "../crates/climon2-platform" }
 climon2-install = { version = "0.1.0", path = "../crates/climon2-install" }
 libc = "0.2.191"
 serde_json.workspace = true
 tempfile = "3"
 
 [dev-dependencies]
+climon2-fixtures = { path = "../crates/climon2-fixtures" }
 serde.workspace = true
 
 [lints]

@@ -89,6 +89,10 @@ _Avoid_: Dead session, orphan
 The per-session record in climon2 home that describes a session and how to reach its daemon.
 _Avoid_: Session file, PTY file
 
+**Discovery pass**:
+One enumeration of the session metadata in a climon2 home, probing each session and classifying every entry as live, uncertain, stale or invalid.
+_Avoid_: Scan, refresh, poll
+
 **Runtime directory**:
 The private, per-user directory holding the sockets that clients use to reach session daemons, one per climon2 home.
 _Avoid_: Socket dir, run dir, temp dir
@@ -168,6 +172,14 @@ _Avoid_: Space-to-control, hotkey
 The screen a non-controlling client shows instead of session content, saying the session is being viewed elsewhere.
 _Avoid_: Viewer mode, read-only view
 
+**Selector**:
+The monitor's overlaid list of every session row it tracks, opened with the client escape prefix and s, showing each row's status and label without resizing any session.
+_Avoid_: Session picker, menu, switcher, session list window
+
+**Key introduction**:
+The monitor's modal list of its key actions, spelled with the configured client escape prefix, shown at startup until the user declines it for that climon2 home, and on request as help.
+_Avoid_: Splash screen, onboarding, welcome screen
+
 ## Status and attention
 
 **Activity state**:
@@ -193,6 +205,10 @@ _Avoid_: Attachment, control ownership
 **Connection status**:
 A monitor's record of whether its client is connected to a session daemon, distinct from the session's last reported status.
 _Avoid_: Session status, daemon outcome
+
+**Not-connected row labels**:
+The status a monitor shows for a session row without a current daemon status: Starting while its client starts, Awaiting resources while it cannot be admitted, Unavailable when it cannot be reached or reports no status, This monitor for the monitor's own session, and Disconnected once its connection is lost. A row never seen connected is dropped, not shown Disconnected, once its session is proven gone; a row that was connected keeps Disconnected with its history.
+_Avoid_: Error state, dead, offline, unknown status
 
 ## Restoration and presentation
 
@@ -307,6 +323,10 @@ _Avoid_: Test shell, dummy command
 **TUI fixture**:
 A climon2-owned full-screen test program that exercises alternate screen, cursor queries, focus reporting, mouse, bracketed paste, and resize redraws.
 _Avoid_: Fake app, mock TUI
+
+**Client library stand-in**:
+A clearly labelled, test-only client library that is exact or carries one deliberate defect, and is never shipped; carrying a defect, it is a faulty library.
+_Avoid_: Mock library, fake library
 
 **Terminal oracle**:
 The test harness's emulated host, whose visible cells, cursor, modes, bells and status reports stand for what a user observes in their terminal.

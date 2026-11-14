@@ -7,7 +7,7 @@
 //! observations, not verdicts: tests decide what is correct. The library is
 //! never unloaded, as the embedding contract requires.
 //!
-//! `climon2-library-host <library>` describes the library.
+//! `climon2-library-host <library>` describes the library, and
 //! `climon2-library-host <library> <scenario> <json>` drives instances through
 //! one scenario (`lifecycle`, `create`, `fault`, `workers`, `independence`,
 //! `ambient`, `race` or `script`) with the instrumentation every
@@ -16,7 +16,8 @@
 //! a timeline of every call and its thread (`abi`), descriptor and
 //! process-state probes (`probe`), and a fake daemon peer (`peer`), the
 //! adversarial fixture `script` scenarios can connect to instead of a real
-//! session daemon.
+//! session daemon. The `climon2-library-host <executable home> <version>`
+//! form exercises the shared validated loader before describing the library.
 
 #[path = "library/abi.rs"]
 mod abi;
@@ -38,12 +39,19 @@ mod script;
 mod startup;
 
 use abi::{call, filled, state, text};
-use climon2_core::native::{self, Bootstrap, Description, Interface, Tokens};
+use climon2_core::{
+    VersionName,
+    layout::{ExecutableHome, client_library_name},
+    native::{self, Bootstrap, Description, Interface, Tokens},
+};
+use climon2_platform::library::Loader;
 use serde_json::{Map, Value, json};
 use std::{
-    ffi::{CStr, CString, c_void},
+    collections::BTreeMap,
+    ffi::{CStr, CString, OsString, c_void},
     mem::MaybeUninit,
     os::unix::ffi::OsStrExt,
+    path::{Path, PathBuf},
     ptr::{self, NonNull},
 };
 
@@ -51,25 +59,131 @@ const UNTOUCHED_DESCRIPTOR: i32 = 0x5a5a_5a5a;
 const OTHER_REVISIONS: [u32; 3] = [0, 2, u32::MAX];
 
 fn main() {
-    let mut arguments = std::env::args_os().skip(1);
-    let Some(path) = arguments.next() else {
-        eprintln!("usage: climon2-library-host <absolute library path> [<scenario> <json>]");
-        std::process::exit(2);
-    };
-    let scenario = arguments.next().map(|scenario| {
-        let input = arguments.next().expect("a scenario's JSON input");
-        let input = serde_json::from_slice(input.as_bytes()).expect("JSON input");
-        (scenario.to_string_lossy().into_owned(), input)
-    });
-    let report = match (
-        load(&CString::new(path.as_bytes()).expect("path without NUL")),
-        scenario,
-    ) {
-        (Ok(library), Some((name, input))) => drive(&library, &name, input),
-        (Ok(library), None) => observe(library),
-        (Err(error), _) => json!({ "error": error }),
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    let report = if arguments.len() == 2
+        && arguments[1]
+            .to_str()
+            .and_then(|version| version.parse::<VersionName>().ok())
+            .is_some()
+    {
+        let home = PathBuf::from(&arguments[0]);
+        let version = arguments[1].to_str().expect("validated UTF-8 version");
+        load_version(&home, version)
+    } else {
+        let Some(path) = arguments.first() else {
+            eprintln!(
+                "usage: climon2-library-host <absolute library path> [<scenario> <json>]\n       climon2-library-host <absolute executable home> <version>"
+            );
+            std::process::exit(2);
+        };
+        let scenario = arguments.get(1).map(|scenario| {
+            let input = arguments.get(2).expect("a scenario's JSON input");
+            let input = serde_json::from_slice(input.as_bytes()).expect("JSON input");
+            (scenario.to_string_lossy().into_owned(), input)
+        });
+        match (
+            load(&CString::new(path.as_bytes()).expect("path without NUL")),
+            scenario,
+        ) {
+            (Ok(library), Some((name, input))) => drive(&library, &name, input),
+            (Ok(library), None) => observe(library),
+            (Err(error), _) => json!({ "error": error }),
+        }
     };
     println!("{report}");
+}
+
+/// Loads one version through the same validated loader used by embedders.
+fn load_version(home: &Path, version: &str) -> Value {
+    let home = ExecutableHome::new(home).expect("absolute executable home");
+    let version = version.parse::<VersionName>().expect("validated version");
+    let loader = Loader::new(home);
+    match loader.load(&version) {
+        Ok(library) => {
+            let mut report = observe(Library {
+                bootstrap: library.bootstrap(),
+            });
+            report["shared"] = json!(
+                loader
+                    .load(&version)
+                    .is_ok_and(|again| std::ptr::eq(again, library))
+            );
+            report["images"] = json!(client_library_images());
+            report["environment"] = json!(
+                std::env::vars_os()
+                    .map(|(name, value)| (lossy(name), lossy(value)))
+                    .collect::<BTreeMap<_, _>>()
+            );
+            report
+        }
+        Err(error) => json!({
+            "error": {
+                "failure": format!("{:?}", error.failure()),
+                "message": error.to_string(),
+            },
+        }),
+    }
+}
+
+fn lossy(text: OsString) -> String {
+    text.to_string_lossy().into_owned()
+}
+
+fn client_library_images() -> Vec<String> {
+    let name = format!("/{}", client_library_name());
+    loaded_images()
+        .into_iter()
+        .filter(|image| image.ends_with(&name))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn loaded_images() -> Vec<String> {
+    unsafe extern "C" fn collect(
+        info: *mut libc::dl_phdr_info,
+        _: usize,
+        images: *mut c_void,
+    ) -> libc::c_int {
+        // SAFETY: dl_iterate_phdr passes valid information and our Vec.
+        let (name, images) = unsafe { ((*info).dlpi_name, &mut *images.cast::<Vec<String>>()) };
+        if !name.is_null() {
+            // SAFETY: a nonnull object name is NUL-terminated.
+            images.push(
+                unsafe { CStr::from_ptr(name) }
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        0
+    }
+    let mut images = Vec::<String>::new();
+    // SAFETY: the callback only reads the information and appends to `images`.
+    unsafe { libc::dl_iterate_phdr(Some(collect), (&raw mut images).cast()) };
+    images
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    /// `<mach-o/dyld.h>`: how many images dyld has loaded.
+    fn _dyld_image_count() -> u32;
+    /// `<mach-o/dyld.h>`: the path loaded image `index` was loaded from, or
+    /// null once it is gone.
+    fn _dyld_get_image_name(index: u32) -> *const std::ffi::c_char;
+}
+
+#[cfg(target_os = "macos")]
+fn loaded_images() -> Vec<String> {
+    // SAFETY: dyld's image list, read by index.
+    (0..unsafe { _dyld_image_count() })
+        .map(|index| unsafe { _dyld_get_image_name(index) })
+        .filter(|name| !name.is_null())
+        // SAFETY: a nonnull image name is NUL-terminated.
+        .map(|name| {
+            unsafe { CStr::from_ptr(name) }
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
 }
 
 /// Bootstraps revision 1, once more if the first bootstrap failed explicitly

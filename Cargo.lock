@@ -145,6 +145,7 @@ name = "climon2-cli"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-discovery",
  "climon2-platform",
  "climon2-test-term",
  "filetime",
@@ -203,6 +204,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "climon2-discovery"
+version = "0.1.0"
+dependencies = [
+ "climon2-core",
+ "climon2-platform",
+ "climon2-test-term",
+ "libc",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "climon2-e2e"
 version = "0.1.0"
 dependencies = [
@@ -220,6 +233,7 @@ name = "climon2-fixtures"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-platform",
  "climon2-test-term",
  "libc",
  "nix 0.31.3",
@@ -243,11 +257,15 @@ name = "climon2-monitor"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-discovery",
  "climon2-platform",
  "climon2-vt",
  "libc",
  "ratatui",
+ "serde_json",
+ "tempfile",
  "tracing",
+ "unicode-width",
 ]
 
 [[package]]
@@ -255,6 +273,7 @@ name = "climon2-platform"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-fixtures",
  "filetime",
  "libc",
  "signal-hook 0.3.18",
@@ -271,6 +290,7 @@ dependencies = [
  "alacritty_terminal",
  "climon2-cli",
  "climon2-client",
+ "climon2-core",
  "climon2-daemon",
  "climon2-install",
  "climon2-monitor",
@@ -1745,7 +1765,9 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-fixtures",
  "climon2-install",
+ "climon2-platform",
  "libc",
  "serde",
  "serde_json",

@@ -1,25 +1,39 @@
 //! The interactive monitor (spec #73): one terminal that tracks every live
-//! session. This walking skeleton validates its start before touching the
-//! host terminal, then owns the host with one permanent top row above an
-//! explicit empty state until prefix+x or a catchable termination signal.
-//! Nothing is discovered yet.
+//! session. It validates its start before touching the host terminal, then
+//! owns the host with one permanent top row, discovers sessions off its UI
+//! thread, keeps one passive client per live session, and lists them in the
+//! selector on prefix+s, under the key introduction when it is due, until
+//! prefix+x or a catchable termination signal. Nothing is selected yet.
 
+mod discovery;
 #[cfg(feature = "test-hooks")]
 mod hooks;
 mod host;
+mod introduction;
 mod keys;
+mod preference;
+mod registry;
 mod screen;
+mod selector;
 mod startup;
+mod supervisor;
 
-use climon2_core::{config::MonitorConfig, protocol::TerminalSize};
+use climon2_core::{SessionId, protocol::TerminalSize};
+use climon2_discovery::{Batch, Incomplete, Outcome, Progress};
+use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
-use keys::Keys;
-use screen::Screen;
+use introduction::KeyIntroduction;
+use keys::{Action, Key, Keys};
+use registry::Registry;
+use screen::{Scene, Screen};
+use selector::Selector;
 use startup::Startup;
 use std::{
     fmt, io,
     path::{Path, PathBuf},
+    time::{Duration, SystemTime},
 };
+use supervisor::{Context, Load, Refusal, Supervisor};
 
 /// A one-line diagnostic that the thin main prints, after the host is
 /// restored, with the climon2 error code.
@@ -77,61 +91,266 @@ pub fn run() -> Result<u32, Error> {
         .log
         .dispatch(filter.as_deref())
         .map_err(|error| Error::new(error).logged(&log))?;
-    tracing::dispatcher::with_default(&dispatch, || monitor(&startup))
+    let filter = filter.unwrap_or_else(|| DEFAULT_FILTER.to_owned());
+    tracing::dispatcher::with_default(&dispatch, || monitor(startup, &dispatch, filter))
         .map_err(|error| Error::new(error).logged(&log))
 }
 
 /// Records how the monitor ended: the host terminal may be gone, so a failure
 /// is logged as well as returned for main to print.
-fn monitor(startup: &Startup) -> io::Result<u32> {
+/// The library log filter when `CLIMON2_LOG` sets none.
+const DEFAULT_FILTER: &str = "info";
+
+fn monitor(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io::Result<u32> {
     tracing::info!(version = %startup.version, "monitor started");
     tracing::info!(effective = %startup.config, "monitor configuration");
-    let status =
-        owned(&startup.config).inspect_err(|error| tracing::error!(%error, "monitor failed"))?;
+    if let Some(problem) = startup.preference.problem() {
+        tracing::warn!(%problem, "monitor preference unusable");
+    }
+    let status = owned(startup, dispatch, filter)
+        .inspect_err(|error| tracing::error!(%error, "monitor failed"))?;
     tracing::info!(status, "monitor stopped");
     Ok(status)
 }
 
 /// Owns the host until an ending, and releases it before any diagnostic.
-fn owned(config: &MonitorConfig) -> io::Result<u32> {
+fn owned(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io::Result<u32> {
     let (mut host, size) = Host::enter()?;
-    let served = Monitor::start(size, config).and_then(|monitor| monitor.serve(&mut host));
+    let served = Monitor::start(size, startup, dispatch, filter)
+        .and_then(|monitor| monitor.serve(&mut host));
     let released = host.release();
     served.and_then(|ending| released.map(|()| ending.status()))
 }
 
-/// The empty monitor: what it draws and the keys that act on it.
+/// The monitor's own enclosing session, if it runs inside one.
+fn own_session() -> Option<SessionId> {
+    let value = std::env::var_os("CLIMON2_SESSION_ID")?;
+    let parsed = value.to_str().and_then(|text| text.parse().ok());
+    if parsed.is_none() {
+        tracing::warn!("CLIMON2_SESSION_ID is not a session ID; no row is this monitor");
+    }
+    parsed
+}
+
+/// The monitor: what it draws, the rows it tracks, and the keys that act on
+/// them.
 struct Monitor {
     screen: Screen,
     keys: Keys,
+    introduction: KeyIntroduction,
+    registry: Registry,
+    selector: Selector,
+    discovery: Discovery,
+    supervisor: Supervisor,
 }
 
 impl Monitor {
-    fn start(size: TerminalSize, config: &MonitorConfig) -> io::Result<Self> {
+    fn start(
+        size: TerminalSize,
+        startup: Startup,
+        dispatch: &tracing::Dispatch,
+        filter: String,
+    ) -> io::Result<Self> {
+        let config = &startup.config;
         let prefix = config.escape_prefix();
-        Ok(Self {
-            screen: Screen::new(size, prefix, config.settings().show_key_hints)?,
+        let hints = config.settings().show_key_hints;
+        let supervisor = Supervisor::start(context(&startup, filter)?, dispatch.clone())?;
+        let introduction = KeyIntroduction::new(prefix, startup.preference, hints);
+        let discovery = Discovery::start(startup.home, config.settings().limits.discovery())?;
+        let mut monitor = Self {
+            screen: Screen::new(size, prefix, hints)?,
             keys: Keys::new(prefix),
-        })
+            introduction,
+            registry: Registry::new(own_session()),
+            selector: Selector::default(),
+            discovery,
+            supervisor,
+        };
+        monitor.show(true).map(|()| monitor)
     }
 
-    /// Acts on host events until an ending. Consuming the monitor drops its
-    /// screen before the host is released.
+    /// Acts on host events until an ending, then shuts every client down.
+    /// Consuming the monitor drops its screen before the host is released.
     fn serve(mut self, host: &mut Host) -> io::Result<Ending> {
+        let ending = self.events(host);
+        self.supervisor.stop();
+        ending
+    }
+
+    fn events(&mut self, host: &mut Host) -> io::Result<Ending> {
         loop {
-            let event = host.next()?;
-            if let Some(ending) = self.handle(event)? {
+            if let Some(ending) = self.step(host)? {
                 return Ok(ending);
             }
         }
     }
 
+    /// Handles the next host event, then, unless it ends the monitor, what
+    /// discovery and the supervisor reported meanwhile.
+    fn step(&mut self, host: &mut Host) -> io::Result<Option<Ending>> {
+        let event = host.next()?;
+        let ending = self.handle(event)?;
+        if ending.is_none() {
+            self.collect();
+            self.show(false)?;
+        }
+        Ok(ending)
+    }
+
     fn handle(&mut self, event: Event<'_>) -> io::Result<Option<Ending>> {
         match event {
             Event::End(ending) => Ok(Some(ending)),
-            Event::Resize(size) => self.screen.resize(size).map(|()| None),
-            Event::Input(bytes) => Ok(self.keys.exit(bytes).then_some(Ending::Exit)),
+            Event::Resize(size) => {
+                self.screen.resize(size);
+                self.show(true).map(|()| None)
+            }
+            Event::Input(bytes) => Ok(self.input(bytes)),
             Event::Idle => Ok(None),
+        }
+    }
+
+    /// Paints the current scene: always when `force`, otherwise only when it
+    /// changed.
+    fn show(&mut self, force: bool) -> io::Result<()> {
+        let rows = self.registry.rows();
+        let scene = Scene {
+            introduction: &self.introduction,
+            rows: &rows,
+            selector: &self.selector,
+            incomplete: self.registry.incomplete(),
+        };
+        self.screen.show(&scene, force)
+    }
+
+    /// Applies what discovery and the supervisor reported since the last
+    /// event, asking for a client for each session that now needs one.
+    fn collect(&mut self) {
+        let now = SystemTime::now();
+        while let Ok(found) = self.discovery.found.try_recv() {
+            match found {
+                Found::Batch(batch) => self.batch(batch, now),
+                Found::Pass(progress) => self.registry.pass(incomplete(&progress)),
+            }
+        }
+        while let Ok((id, event)) = self.supervisor.reports.try_recv() {
+            self.registry.client(&id, event, now);
+        }
+    }
+
+    fn batch(&mut self, batch: Batch, now: SystemTime) {
+        for invalid in &batch.invalid {
+            tracing::warn!(path = ?invalid.path, reason = ?invalid.reason, "invalid session metadata");
+        }
+        for outcome in batch.sessions {
+            self.discovered(outcome, now);
+        }
+    }
+
+    fn discovered(&mut self, outcome: Outcome, now: SystemTime) {
+        let (metadata, found) = match outcome {
+            Outcome::Live(live) => (live.metadata, registry::Found::Live),
+            Outcome::Uncertain(metadata, uncertainty) => {
+                tracing::info!(session = %metadata.session_id, ?uncertainty, "session uncertain");
+                (metadata, registry::Found::Uncertain)
+            }
+            Outcome::Stale(metadata, _) => (metadata, registry::Found::Stale),
+        };
+        if let Some(metadata) = self.registry.discovered(metadata, found, now) {
+            self.supervisor.start_client(metadata);
+        }
+    }
+
+    /// Acts on each byte in turn until one ends the monitor.
+    fn input(&mut self, bytes: &[u8]) -> Option<Ending> {
+        let ending = bytes.iter().find_map(|&byte| self.act(byte));
+        if ending.is_none() && !self.introduction.is_open() && self.selector.is_open() {
+            self.selector.read_ended(&self.registry.rows());
+        }
+        ending
+    }
+
+    /// Acts on the key `byte` completes: prefix+x ends the monitor, and
+    /// other actions and typed keys go to [`Monitor::action`] and
+    /// [`Monitor::typed`].
+    fn act(&mut self, byte: u8) -> Option<Ending> {
+        match self.keys.key(byte)? {
+            Key::Action(Action::Exit) => Some(Ending::Exit),
+            Key::Action(action) => {
+                self.action(action);
+                None
+            }
+            Key::Typed(byte) => {
+                self.typed(byte);
+                None
+            }
+        }
+    }
+
+    /// Prefix+? opens the key introduction, and prefix+s the selector
+    /// unless the modal key introduction is open.
+    fn action(&mut self, action: Action) {
+        match action {
+            Action::KeyIntroduction => self.introduction.open(),
+            Action::SessionList if !self.introduction.is_open() => {
+                self.selector.open(&self.registry.rows());
+            }
+            _ => {}
+        }
+    }
+
+    /// A typed key goes to the key introduction while it is open, otherwise
+    /// to the open selector, otherwise nowhere.
+    fn typed(&mut self, byte: u8) {
+        if self.introduction.is_open() {
+            self.introduction.key(byte);
+        } else if self.selector.is_open() {
+            self.selector.key(byte, &self.registry.rows());
+        }
+    }
+}
+
+/// What the supervisor's instances share, from the started configuration.
+fn context(startup: &Startup, filter: String) -> io::Result<Context> {
+    let config = &startup.config;
+    let limits = &config.settings().limits;
+    let home = startup.home.root();
+    let runtime = climon2_platform::runtime::RuntimeDirectory::prepare(home)?;
+    let lanes = limits.lanes();
+    Ok(Context {
+        load: loader(startup.executable.clone()),
+        home: startup.home.clone(),
+        runtime: runtime.path().to_owned(),
+        escape: config.escape_prefix(),
+        take_control: config.take_control_key(),
+        limits: limits.library(),
+        filter,
+        lanes,
+        shutdown: Duration::from_millis(lanes.shutdown_ms.into()),
+    })
+}
+
+/// The monitor's one validated loader, shared by every release it loads.
+fn loader(executables: climon2_core::layout::ExecutableHome) -> Load {
+    let loader = climon2_platform::library::Loader::new(executables);
+    Box::new(move |version| {
+        loader
+            .load(version)
+            .map(climon2_platform::library::Library::functions)
+            .map_err(|error| Refusal::Library(error.failure(), error.to_string()))
+    })
+}
+
+/// Why a pass was incomplete, as the monitor shows it; `None` when complete.
+fn incomplete(progress: &Progress) -> Option<String> {
+    match progress {
+        Progress::Complete => None,
+        Progress::Incomplete(Incomplete::Deadline) => {
+            tracing::warn!("discovery pass incomplete at its deadline");
+            Some("the pass deadline passed".into())
+        }
+        Progress::Incomplete(Incomplete::Inaccessible(error)) => {
+            tracing::warn!(%error, "discovery pass incomplete");
+            Some(format!("cannot list sessions: {error}"))
         }
     }
 }

@@ -4,9 +4,10 @@
 Implemented for the bootstrap and the immutable description
 ([#75](https://github.com/jackgeek/climon2/issues/75)), the instance
 lifecycle calls ([#85](https://github.com/jackgeek/climon2/issues/85)) and
-passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)).**
-The shipped [client library](../../../GLOSSARY.md#sessions)
-(`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux)
+passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)).
+The shared loader validates the description before create and is used by test
+tooling only ([#84](https://github.com/jackgeek/climon2/issues/84)).** The shipped
+[client library](../../../GLOSSARY.md#sessions)
 returns revision 1's description and rejects other revisions as specified
 below. Its requirements are provisional bounded values
 until [#121](https://github.com/jackgeek/climon2/issues/121) records qualified
@@ -53,7 +54,9 @@ independently of the negotiated table. `requested_revision=1` returns
 `CM1_SUCCESS` and a nonnull immutable `cm1_description` supporting precisely 1.
 Unsupported revisions return `CM1_UNSUPPORTED_REVISION` and null. Null output
 storage returns `CM1_INVALID_ARGUMENT`; containable bootstrap failure returns
-`CM1_INTERNAL_ERROR`. No other bootstrap results are permitted. Bootstrap opens
+`CM1_INTERNAL_ERROR`, which a loader reports as a recoverable failure, not as
+a malformed description: a later load may succeed. No other bootstrap results
+are permitted. Bootstrap opens
 no [daemon](../../../GLOSSARY.md#sessions) connection and creates no instance.
 Description, table, [capability](../../../GLOSSARY.md#sessions) tokens and release
 text live until process exit; all eleven function pointers are nonnull.
@@ -211,7 +214,11 @@ aggregate accounting, before create. Pre-load qualification/reservation remains
 required by #69;
 bootstrap data is a post-load validation, not permission to load an unqualified
 release first. Requirements incompatible with admitted
-limits reject explicitly. Release resources count once and remain until exit.
+limits reject explicitly: admission owns their upper bounds. Before that, the
+loader checks only that the requirements are present: each one an instance
+needs is nonzero (local allocation, owner stack and instance descriptors, and
+a worker stack whenever workers are required), and `reserved` is zero.
+Release resources count once and remain until exit.
 Each platform's library reports that platform's qualified requirements. On
 Linux the [notification descriptor](../TERMS.md#pollable-notification-descriptor) is one `eventfd`, created close-on-exec and
 nonblocking; it stays readable until the library clears it and counts once in

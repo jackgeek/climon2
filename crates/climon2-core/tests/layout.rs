@@ -83,6 +83,19 @@ fn adr0001_version_matched_client_has_exact_frozen_invocation() {
     );
 }
 
+/// #105 (spec #73 Entry and startup, Introduction preference): the monitor
+/// keeps its preference file at the root of the climon2 home, beside
+/// `config.jsonc`, never inside the configuration.
+#[test]
+fn issue105_the_monitor_preference_file_is_in_the_climon2_home() {
+    let home = std::env::current_dir().unwrap().join("custom home");
+    let layout = HomeLayout::resolve(Some(home.as_os_str()), Path::new("ignored")).unwrap();
+    assert_eq!(
+        layout.monitor_preferences(),
+        home.join("monitor-preferences.json")
+    );
+}
+
 /// #74: the monitor finds its executable home and version folder from its own
 /// canonical path exactly as the CLI does, and the CLI names its own version's
 /// monitor with the same layout code.
@@ -141,4 +154,33 @@ fn issue18_runtime_hash_is_sha256_of_exact_canonical_home_and_socket_is_bounded(
     assert_eq!(runtime.socket_path(&id, length).unwrap(), socket);
     assert!(runtime.socket_path(&id, length - 1).is_err());
     assert!(RuntimeLayout::new(Path::new("relative"), 501, &root).is_err());
+}
+
+/// #84 LIB-01 (absolute exact-release lookup): an executable home is absolute
+/// and canonical by construction, as a loader needs, and names each version's
+/// client library inside that version's folder; the CLI's layout hands out
+/// its own home.
+#[test]
+fn issue84_executable_home_is_absolute_and_names_each_versions_client_library() {
+    let root = std::env::current_dir().unwrap().join("install");
+    let library = if cfg!(target_os = "macos") {
+        "libclimon2_client.dylib"
+    } else if cfg!(windows) {
+        "climon2_client.dll"
+    } else {
+        "libclimon2_client.so"
+    };
+    let home = ExecutableHome::new(&root).unwrap();
+    assert_eq!(home.path(), root);
+    let version = "1.2.3".parse().unwrap();
+    assert_eq!(
+        home.client_library(&version),
+        root.join("1.2.3").join(library)
+    );
+    let layout = ExecutableLayout::from_cli_path(&root.join("2.0.0/climon2-cli")).unwrap();
+    assert_eq!(layout.home(), home);
+    for bad in ["", "relative", "./install"] {
+        assert!(ExecutableHome::new(Path::new(bad)).is_err(), "{bad}");
+    }
+    assert!(ExecutableHome::new(&root.join("..")).is_err());
 }

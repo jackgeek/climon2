@@ -1,79 +1,152 @@
 //! What the monitor draws on its own alternate screen, through Ratatui.
+use crate::{introduction::KeyIntroduction, keys::EXIT, registry::View, selector::Selector};
 use climon2_core::{keys::ControlKey, protocol::TerminalSize};
 use ratatui::{
     backend::{Backend, CrosstermBackend},
-    buffer::Buffer,
+    buffer::{Buffer, Cell},
     layout::{Constraint, Rect},
     style::Stylize,
     text::Line,
     widgets::{Paragraph, Widget},
 };
 use std::io::{self, Stdout};
+use unicode_width::UnicodeWidthStr;
 
 /// The permanent top row's height.
 const TOP_ROW: u16 = 1;
 const NO_SELECTION: &str = "No session selected";
 const EMPTY: &str = "No sessions to show.";
+/// The body once rows exist, while nothing is selected (#107, #108).
+const UNSELECTED: &str = "No session selected.";
+
+/// Everything one frame shows.
+pub(crate) struct Scene<'a> {
+    pub(crate) introduction: &'a KeyIntroduction,
+    pub(crate) rows: &'a [View],
+    pub(crate) selector: &'a Selector,
+    /// Why the latest discovery pass was incomplete, if it was.
+    pub(crate) incomplete: Option<&'a str>,
+}
 
 /// Ratatui's backend writing to the monitor-owned host output. It is never
 /// asked the host's size or cursor, and the cursor stays hidden.
 pub(crate) struct Screen {
     backend: CrosstermBackend<Stdout>,
-    lines: Vec<Line<'static>>,
+    /// The empty state's key hint, unless key hints are off.
+    hint: Option<String>,
+    size: TerminalSize,
+    /// The frame last painted.
+    painted: Buffer,
 }
 
 impl Screen {
-    /// The empty state names `prefix` in its key hint, unless `hints` is off.
+    /// The empty state names `prefix` in its key hint, unless `hints` is off,
+    /// under the key introduction while it is open.
+    /// Hides the cursor; nothing is painted until the first [`Self::show`].
     pub(crate) fn new(size: TerminalSize, prefix: ControlKey, hints: bool) -> io::Result<Self> {
-        let hint = hints.then(|| Line::from(format!("Press {prefix} then x to exit.")));
+        let exit = char::from(EXIT.key);
         let mut screen = Self {
             backend: CrosstermBackend::new(io::stdout()),
-            lines: std::iter::once(Line::from(EMPTY)).chain(hint).collect(),
+            hint: hints.then(|| format!("Press {prefix} then {exit} to exit.")),
+            size,
+            painted: Buffer::default(),
         };
         screen.backend.hide_cursor()?;
-        screen.paint(size)?;
         Ok(screen)
     }
 
-    pub(crate) fn resize(&mut self, size: TerminalSize) -> io::Result<()> {
-        self.paint(size)
+    /// The next frame is drawn at `size`.
+    pub(crate) fn resize(&mut self, size: TerminalSize) {
+        self.size = size;
     }
 
-    /// Paints every cell of the frame at `size`, so whatever the host showed
-    /// is overwritten in place: nothing is erased first, and no blank screen
+    /// Paints `scene`: always when `force`, otherwise only when its frame
+    /// differs from the one painted.
+    pub(crate) fn show(&mut self, scene: &Scene<'_>, force: bool) -> io::Result<()> {
+        let frame = self.frame(scene);
+        if !force && frame == self.painted {
+            return Ok(());
+        }
+        self.paint(frame)
+    }
+
+    /// Paints every cell of `frame`, so whatever the host showed is
+    /// overwritten in place: nothing is erased first, and no blank screen
     /// shows between two frames.
-    fn paint(&mut self, size: TerminalSize) -> io::Result<()> {
+    fn paint(&mut self, frame: Buffer) -> io::Result<()> {
         #[cfg(feature = "test-hooks")]
         crate::hooks::fail("draw")?;
-        let frame = frame(size, &self.lines);
-        let cells = frame.content().iter().enumerate().map(|(index, cell)| {
-            let (x, y) = frame.pos_of(index);
-            (x, y, cell)
-        });
-        self.backend.draw(cells)?;
-        Backend::flush(&mut self.backend)
+        self.backend.draw(painted(&frame))?;
+        Backend::flush(&mut self.backend)?;
+        self.painted = frame;
+        Ok(())
     }
 }
 
-/// The permanent top row, and below it the empty state, centred.
-fn frame(size: TerminalSize, empty: &[Line<'static>]) -> Buffer {
-    let area = Rect::new(0, 0, size.cols, size.rows);
-    let mut frame = Buffer::empty(area);
-    let top = Rect {
-        height: TOP_ROW,
-        ..area
-    };
-    let below = Rect {
-        y: top.bottom(),
-        height: area.height - TOP_ROW,
-        ..area
-    };
-    Paragraph::new(NO_SELECTION)
-        .reversed()
-        .render(top, &mut frame);
-    let height = Constraint::Length(empty.len() as u16);
-    Paragraph::new(empty.to_vec())
-        .centered()
-        .render(below.centered_vertically(height), &mut frame);
+/// Every cell of `frame` with its position, except those a wide character
+/// before them covers: painting one would overwrite that character's second
+/// half.
+fn painted(frame: &Buffer) -> impl Iterator<Item = (u16, u16, &Cell)> {
+    let mut covered = 0;
     frame
+        .content()
+        .iter()
+        .enumerate()
+        .filter_map(move |(index, cell)| {
+            if covered > 0 {
+                covered -= 1;
+                return None;
+            }
+            covered = cell.symbol().width().saturating_sub(1);
+            let (x, y) = frame.pos_of(index);
+            Some((x, y, cell))
+        })
+}
+
+impl Screen {
+    /// The permanent top row, and below it the body, centred, under the
+    /// selector and then the key introduction while they are open. The body
+    /// is the empty state until a row exists, then says nothing is selected;
+    /// an incomplete discovery pass is said under it, so a list is never
+    /// presented as complete. With key hints off, the body names any problem
+    /// with the saved choice where its hint would be: a diagnostic, not a
+    /// hint.
+    fn frame(&self, scene: &Scene<'_>) -> Buffer {
+        let introduction = scene.introduction;
+        let area = Rect::new(0, 0, self.size.cols, self.size.rows);
+        let mut frame = Buffer::empty(area);
+        let top = Rect {
+            height: TOP_ROW,
+            ..area
+        };
+        let below = Rect {
+            y: top.bottom(),
+            height: area.height - TOP_ROW,
+            ..area
+        };
+        Paragraph::new(NO_SELECTION)
+            .reversed()
+            .render(top, &mut frame);
+        let note = self.hint.as_deref().or(introduction.problem());
+        let state = if scene.rows.is_empty() {
+            EMPTY
+        } else {
+            UNSELECTED
+        };
+        let incomplete = scene
+            .incomplete
+            .map(|why| format!("Discovery incomplete: {why}"));
+        let lines: Vec<_> = std::iter::once(state)
+            .chain(note)
+            .chain(incomplete.as_deref())
+            .map(Line::from)
+            .collect();
+        let height = Constraint::Length(lines.len() as u16);
+        Paragraph::new(lines)
+            .centered()
+            .render(below.centered_vertically(height), &mut frame);
+        scene.selector.render(scene.rows, below, &mut frame);
+        introduction.render(below, &mut frame);
+        frame
+    }
 }

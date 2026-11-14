@@ -1,15 +1,66 @@
-//! Host input while no session can take it: only the exit action means
-//! anything (#74). The full input router replaces this when targets exist.
+//! Host input while no session can take it (#74): the prefix actions, and the
+//! typed keys the key introduction takes (#105). The full input router
+//! replaces this when targets exist.
 use climon2_core::keys::ControlKey;
+
+/// What a key completes after the prefix.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Action {
+    Exit,
+    /// Opens the selector.
+    SessionList,
+    KeyIntroduction,
+}
+
+/// A prefix action: the key that completes it after the prefix, and how the
+/// key introduction describes it.
+#[derive(Clone, Copy)]
+pub(crate) struct Binding {
+    pub(crate) key: u8,
+    pub(crate) action: Action,
+    pub(crate) label: &'static str,
+}
+
+/// Prefix+x, which the empty state's key hint also names.
+pub(crate) const EXIT: Binding = Binding {
+    key: b'x',
+    action: Action::Exit,
+    label: "Exit the monitor",
+};
+
+/// Every prefix action, in the order the key introduction lists them
+/// (selector document, "Key introduction and help").
+pub(crate) const BINDINGS: [Binding; 3] = [
+    EXIT,
+    Binding {
+        key: b's',
+        action: Action::SessionList,
+        label: "Open the session list",
+    },
+    Binding {
+        key: b'?',
+        action: Action::KeyIntroduction,
+        label: "Show this dialog",
+    },
+];
 
 /// The bracketed-paste markers the host sends once the monitor enables them.
 const PASTE_START: &[u8; MARKER] = b"\x1b[200~";
 const PASTE_END: &[u8; MARKER] = b"\x1b[201~";
 const MARKER: usize = 6;
 
-/// Finds typed prefix+x in raw host bytes, however the host splits its reads.
-/// Every other byte, pasted or typed, is discarded: there is no target to
-/// receive it yet.
+/// A typed key, as raw host bytes complete it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Key {
+    /// A prefix and the key after it that completes an action.
+    Action(Action),
+    /// A typed byte outside a prefix, or the one literal prefix a doubled
+    /// prefix is. A prefix and the byte after it that completes no action
+    /// reach no target yet, and neither does pasted data.
+    Typed(u8),
+}
+
+/// Finds typed keys in raw host bytes, however the host splits its reads.
 pub(crate) struct Keys {
     prefix: u8,
     input: Input,
@@ -35,37 +86,46 @@ impl Keys {
         }
     }
 
-    /// Whether these bytes complete a typed prefix+x.
-    pub(crate) fn exit(&mut self, bytes: &[u8]) -> bool {
-        bytes.iter().any(|&byte| self.key(byte))
-    }
-
-    fn key(&mut self, byte: u8) -> bool {
+    /// The key `byte` completes, if any.
+    pub(crate) fn key(&mut self, byte: u8) -> Option<Key> {
         match self.input {
             Input::Typed { pending } => self.typed(byte, pending),
             Input::Pasted => self.pasted(byte),
         }
     }
 
-    /// A prefix after a prefix is one literal prefix, not the start of another
-    /// action. A paste drops a pending prefix: nothing could take it.
-    fn typed(&mut self, byte: u8, pending: bool) -> bool {
+    /// A paste drops a pending prefix: nothing could take it.
+    fn typed(&mut self, byte: u8, pending: bool) -> Option<Key> {
         if self.marks(byte, PASTE_START) {
             self.input = Input::Pasted;
-            return false;
+            return None;
         }
-        self.input = Input::Typed {
-            pending: !pending && byte == self.prefix,
-        };
-        pending && byte == b'x'
+        self.input = Input::Typed { pending: false };
+        if pending {
+            return self.prefixed(byte);
+        }
+        if byte == self.prefix {
+            self.input = Input::Typed { pending: true };
+            return None;
+        }
+        Some(Key::Typed(byte))
     }
 
-    /// Pasted bytes never act; the paste ends with no prefix pending.
-    fn pasted(&mut self, byte: u8) -> bool {
+    /// The key `byte` completes after a prefix: a prefix after a prefix is one
+    /// literal prefix, not the start of another action.
+    fn prefixed(&self, byte: u8) -> Option<Key> {
+        if byte == self.prefix {
+            return Some(Key::Typed(byte));
+        }
+        action(byte)
+    }
+
+    /// Pasted bytes are never keys; the paste ends with no prefix pending.
+    fn pasted(&mut self, byte: u8) -> Option<Key> {
         if self.marks(byte, PASTE_END) {
             self.input = Input::Typed { pending: false };
         }
-        false
+        None
     }
 
     /// Whether `byte` completes `marker`.
@@ -76,13 +136,79 @@ impl Keys {
     }
 }
 
+/// The action a typed byte completes after a prefix, if any.
+fn action(byte: u8) -> Option<Key> {
+    BINDINGS
+        .iter()
+        .find(|binding| binding.key == byte)
+        .map(|binding| Key::Action(binding.action))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Keys;
+    use super::{Action, Key, Keys};
     use climon2_core::keys::ControlKey;
+
+    const EXIT: Key = Key::Action(Action::Exit);
+    const KEY_INTRODUCTION: Key = Key::Action(Action::KeyIntroduction);
 
     fn keys(prefix: &str) -> Keys {
         Keys::new(ControlKey::from_name(prefix).unwrap())
+    }
+
+    impl Keys {
+        /// Whether these bytes complete a typed prefix+x.
+        fn exit(&mut self, bytes: &[u8]) -> bool {
+            bytes.iter().any(|&byte| self.key(byte) == Some(EXIT))
+        }
+
+        /// Every key these bytes complete, in order.
+        fn all(&mut self, bytes: &[u8]) -> Vec<Key> {
+            bytes.iter().filter_map(|&byte| self.key(byte)).collect()
+        }
+    }
+
+    /// HLP-01 (pure input-router supplement): prefix+? opens the key
+    /// introduction however the host splits the reads, and only after the
+    /// configured prefix.
+    #[test]
+    fn prefix_then_question_mark_opens_the_key_introduction_across_read_boundaries() {
+        let mut split = keys("Ctrl+B");
+        assert_eq!(split.all(b"\x02"), []);
+        assert_eq!(split.all(b"?"), [KEY_INTRODUCTION]);
+        assert_eq!(
+            keys("Ctrl+B").all(b"?\x1d?"),
+            [Key::Typed(b'?'), Key::Typed(0x1d), Key::Typed(b'?')]
+        );
+    }
+
+    /// HLP-02 (pure input-router supplement): typed keys outside a prefix
+    /// reach the key introduction, and a doubled prefix reaches it as one
+    /// literal prefix: with Ctrl+M as the prefix, Enter Enter is one Enter. A
+    /// prefix with a key it does not complete reaches nothing. Pasted Space,
+    /// Enter, prefix+? and prefix+x are data, never keys.
+    #[test]
+    fn only_typed_keys_and_a_doubled_prefix_reach_the_key_introduction() {
+        assert_eq!(keys("Ctrl+M").all(b"\r \r\r"), [Key::Typed(b'\r')]);
+        let mut keys = keys("Ctrl+]");
+        assert_eq!(
+            keys.all(b" \r\x03\x1d\r\x1d \x1d\x1dq"),
+            [
+                Key::Typed(b' '),
+                Key::Typed(b'\r'),
+                Key::Typed(0x03),
+                Key::Typed(0x1d),
+                Key::Typed(b'q')
+            ]
+        );
+        let pasted = keys.all(b"\x1b[200~ \r\x1d?\x1dx\x1b[201~");
+        assert!(
+            !pasted
+                .iter()
+                .any(|key| matches!(key, Key::Action(_) | Key::Typed(b' ' | b'\r'))),
+            "{pasted:?}"
+        );
+        assert_eq!(keys.all(b"\x1d?"), [KEY_INTRODUCTION]);
     }
 
     /// INP-01 (pure input-router supplement): prefix+x exits, however the
@@ -96,9 +222,9 @@ mod tests {
     }
 
     /// INP-01 (pure input-router supplement): plain x, Ctrl+C, unknown and
-    /// uppercase suffixes and a doubled, literal prefix are discarded.
+    /// uppercase suffixes and a doubled, literal prefix never exit.
     #[test]
-    fn every_other_key_is_discarded() {
+    fn every_other_key_is_not_an_exit() {
         let mut keys = keys("Ctrl+]");
         assert!(!keys.exit(b"x\x03\x1dy\x1dX\x1d\x1dx"));
         assert!(keys.exit(b"\x1dx"));

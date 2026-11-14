@@ -7,15 +7,19 @@ This also records the confirmed input/configuration amendments to
 [#59](https://github.com/jackgeek/climon2/issues/59). This document supplies no
 executable changes or evidence itself.
 
-**Implemented with packaged evidence ([#74](https://github.com/jackgeek/climon2/issues/74)):**
+**Implemented with packaged evidence ([#74](https://github.com/jackgeek/climon2/issues/74), [#105](https://github.com/jackgeek/climon2/issues/105)):**
 only the empty [monitor](../../GLOSSARY.md#sessions), which has no
 [sessions](../../GLOSSARY.md#sessions) to show. It takes its own alternate screen
 with one permanent top row, enables [host](../../GLOSSARY.md#sessions)
 bracketed-paste, mouse and focus reporting, and never changes the host title.
 Only the typed [client escape prefix](../../GLOSSARY.md#attachment-and-control)
-followed by x acts: pasted [bytes](TERMS.md#byte) are data, never complete a
-pending prefix and leave none pending. A host resize repaints the whole screen
-without blanking it or showing the cursor. Every exit writes the
+followed by x (exit) or ? (the modal
+[key introduction](../../GLOSSARY.md#attachment-and-control), also opened at
+startup while key hints are on and its suppression is unsaved) acts, and the
+open dialog takes the other typed keys, a doubled prefix as one literal prefix,
+acting only on Enter and Space: pasted [bytes](TERMS.md#byte) are data, never
+complete a pending prefix and leave none pending. A host resize repaints the
+whole screen without blanking it or showing the cursor. Every exit writes the
 [release](../../GLOSSARY.md#restoration-and-presentation) bytes to the host
 before any diagnostic.
 
@@ -29,7 +33,8 @@ change as the application's focus report while the application has focus
 reporting on, in request order after earlier input, and sends the known
 state once when reporting is newly enabled.
 
-Everything else in this document remains agreed and unimplemented.
+Everything else in this document remains agreed and unimplemented, including
+Escape closing the dialog when Escape is not the prefix.
 
 The later [selector and attention-presentation decision](../monitor-selector.md)
 confirms the captionless double-bordered selector, always-focused search,

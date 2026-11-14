@@ -8,7 +8,7 @@ use crate::{
     keys::{ClientSettings, ControlKey, SettingsError},
     layout::HomeLayout,
 };
-pub use limits::Limits;
+pub use limits::{DiscoveryLimits, Lanes, Limits};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{DeserializeOwned, Error as _},
@@ -192,6 +192,11 @@ impl MonitorConfig {
 
     pub fn escape_prefix(&self) -> ControlKey {
         self.client.escape_prefix
+    }
+
+    /// The take-control key every library instance receives, if enabled.
+    pub fn take_control_key(&self) -> Option<ControlKey> {
+        self.client.take_control_key
     }
 
     pub fn settings(&self) -> &MonitorSettings {
