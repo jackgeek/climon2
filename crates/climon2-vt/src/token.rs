@@ -282,15 +282,20 @@ impl Tokenizer {
         }
     }
 
+    /// The controls the parser executed inside an abandoned sequence, as one
+    /// text token, so releasing thousands of them holds one buffer.
     fn flush_controls(&mut self, out: &mut Vec<Token>) {
-        let controls = self
+        let controls: Vec<u8> = self
             .held
             .iter()
             .copied()
             .filter(|held| (0x00..=0x1F).contains(held) && *held != ESC)
-            .collect::<Vec<_>>();
-        for control in controls {
-            self.execute(control, out);
+            .collect();
+        if !controls.is_empty() {
+            out.push(Token {
+                kind: Kind::Text,
+                bytes: controls,
+            });
         }
     }
 
