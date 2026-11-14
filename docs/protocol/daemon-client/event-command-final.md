@@ -1,8 +1,9 @@
 # Command final — `0x4c`
 
-**Status: agreed and implemented** without terminal status
-([#88](https://github.com/jackgeek/climon2/issues/88)), owned by [#67](https://github.com/jackgeek/climon2/issues/67);
-status arrives with `status-v1` ([#91](https://github.com/jackgeek/climon2/issues/91)).
+**Status: agreed and implemented**
+([#88](https://github.com/jackgeek/climon2/issues/88), with terminal status
+for `status-v1` from [#91](https://github.com/jackgeek/climon2/issues/91)),
+owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) reports an authoritative
 final command result to the [client](../../../GLOSSARY.md#sessions).
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
@@ -95,8 +96,14 @@ receives it once, each
 [passive monitor connection](../../../GLOSSARY.md#attachment-and-control) and
 interactive [attachment](../../../GLOSSARY.md#attachment-and-control) alike;
 a standalone Kill's connection gets the result in its answer instead.
-`status` is null, since no connection can select `status-v1` yet, and no
-Status changed is sent. A normal exit keeps its raw status and a signal its
+A connection that selected `status-v1` receives the final
+[session status](../../../GLOSSARY.md#status-and-attention) in `status`:
+`completed` for exit zero, `failed` otherwise, with a null episode and the
+daemon's time of the result as its change time; others receive a null
+`status`. No [Status changed](event-status-changed.md) carries that final
+transition, and none follows it: the result stops activity and attention
+observation, so the drained last output, a later deadline, Set viewing or
+Acknowledge changes nothing. A normal exit keeps its raw status and a signal its
 number, with a null `name`: exit 143 and signal 15 stay apart. A later Open
 gets the result in its [Initial metadata](event-initial-metadata.md), and no
 Command final follows it; learning the same result again sends nothing.

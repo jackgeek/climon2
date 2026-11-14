@@ -1,6 +1,7 @@
 # Status changed — `0x43`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented for heuristic detection**
+([#91](https://github.com/jackgeek/climon2/issues/91)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) sends effective
 [session status](../../../GLOSSARY.md#status-and-attention) to the
 [client](../../../GLOSSARY.md#sessions).
@@ -44,3 +45,23 @@ invalid, not implicit extensions. Apply
 [validation and bounded failure](core-v1.md#errors-and-bounded-delivery);
 never lossily coalesce required status/episode transitions. Numeric limits #69.
 Related: [Acknowledge](request-acknowledge.md).
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) runs both
+[detector machines](../../session-status.md) in heuristic mode and sends a
+Status changed to every passive monitor connection and interactive
+[attachment](../../../GLOSSARY.md#attachment-and-control) that selected
+`status-v1`, whatever its control, once per effective change, after the
+event that caused it ran to completion: an inactivity expiry that requests
+attention reports `needs_attention`, never an intermediate `idle`. Changes
+between the two working states, activity hidden under attention, and
+coalesced requests send nothing and keep the stored change time. An
+accepted Input's change precedes its [Response](response.md), as does an
+[Acknowledge](request-acknowledge.md)'s. The final transition goes only in
+[Command final](event-command-final.md#implemented-behavior). Episode
+identifiers start at 1; once the last counter value has been issued, a
+request that would need another leaves attention unchanged rather than wrap
+or reuse one. Output-driven detection (OSC 7501, OSC 133) arrives with
+[#92](https://github.com/jackgeek/climon2/issues/92), and notification
+signals with [#98](https://github.com/jackgeek/climon2/issues/98).

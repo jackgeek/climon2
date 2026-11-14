@@ -95,7 +95,7 @@ restoration prefix is also lost. Probes remain serviceable throughout.
 ### Daemon wire revision 1 beside the private protocol
 
 Hello advertises the frozen tokens and `state`, then `daemon-wire-v1`,
-`monitor-v1`, `title-v1` and `focus-v1`, and `daemon_wire_v1` with
+`monitor-v1`, `title-v1`, `status-v1` and `focus-v1`, and `daemon_wire_v1` with
 1,048,576-byte request and server frame limits
 (`core::hello::advertise_revision1`). The first frame after hello selects
 the protocol by its type: a revision-1 type (`0x30`–`0x39` or
@@ -119,8 +119,9 @@ Open selects the requested families this daemon supports (required ones must
 all be; unknown or unsupported optional ones are dropped) under a fresh
 connection GUID. Its success Response is followed by one Initial metadata
 record captured in the same loop step: the title by value when `title-v1` is
-selected (unavailable otherwise), status and progress explicitly unavailable,
-and the command's result once the daemon knows it (null before).
+selected (unavailable otherwise), the stored effective status when
+`status-v1` is selected (unavailable otherwise), progress explicitly
+unavailable, and the command's result once the daemon knows it (null before).
 Every later change of the application title that the VT reports
 (`Fed::titles`, one per change, by value) goes as a Title changed to each
 registration that selected `title-v1`, whatever the control state; titles are
@@ -138,8 +139,8 @@ Resize and Ready are rejected without effects and the stream goes on, with
 any registration kept: `invalid_state` before any Open, `not_attached` on a
 registration or a standalone Kill's connection. Focus is
 `unsupported_capability` unless the connection's Open selected `focus-v1`,
-then `not_attached` on a registration. Set viewing and Acknowledge are
-`invalid_state` on every connection until #91 serves them, and Acquire is
+and Set viewing and Acknowledge unless it selected `status-v1`, then
+`not_attached` on a registration. Acquire is
 `internal_error` on a registration until #89 serves it, and `invalid_state`
 before any Open or on a standalone Kill's connection, which leave nothing to
 convert. Registrations share the
@@ -180,6 +181,35 @@ order (3 bytes accepted), nothing otherwise, and newly enabled reporting
 (`Fed::focus_enabled`) queues the known state once with the daemon's
 terminal replies.
 
+Activity and attention (`src/status.rs`, #91) follow the
+[session status mechanics](../../docs/session-status.md) in heuristic mode.
+A pure detector holds both state machines; every event takes the turn's
+clock reading, and its random source is injected. The loop reads the clock
+once at the start of each turn, so accepted input (revision-1 Input and
+private `Input` from the ready controller) comes before that turn's timer
+and sample work. After reading the PTY the loop polls the detector: a due
+sample copies the active viewport's characters (`Vt::viewport`), its size
+and the application title, never per output byte. The first baseline is
+taken before any command output. Each sampling delay is a fresh draw from
+500 to 1,500 ms, clamped to the hardcoded 10,000 ms agent deadline; changed
+characters at the same size or a changed title start agent work and restart
+that deadline, a resize replaces the baseline (restarting an armed agent
+deadline) without starting work, and content is compared before the
+deadline expires, which ends agent work and requests attention in the same
+event. Each accepted input re-arms a 2,000 ms user window, clears pending or
+acknowledged attention, and suspends sampling; its end is idle with a fresh
+baseline. Focus, the daemon's terminal replies and paste cleanup are not
+input. Every effective change goes as Status changed to the `status-v1`
+connections, before an Input's or Acknowledge's Response; only effective
+changes replace the stored UTC change time. Episodes count from 1, coalesce
+while pending, survive acknowledgement and are never wrapped: once the last
+counter is issued, a further request changes nothing. The published result
+gives the final status, carried by Command final, and stops observation.
+Set viewing records the controller's latest viewing for its control period;
+Acknowledge needs it true. Detection mode is heuristic only: #92 adds the
+explicit and fallback modes, and #98 notification signals, both through
+`Detector::request_attention`.
+
 The daemon keeps the command's result as its wait status gives it
 (`core::wire::CommandResult`): a normal exit's raw status, or a signal's
 number, never folded together; only the private protocol's `Exit` and
@@ -198,8 +228,8 @@ read during the drain counts as idle, so the drain goes on and ends as usual.
 After a hang-up of a running command, which stops PTY reads, the result is
 published when the end of the command is learned at the end of the grace
 (`HANGUP_GRACE`), with any result already reaped. Every passive monitor connection and interactive
-attachment then receives Command final, with a null status while
-`status-v1` is not served; the controller receives the command's last output
+attachment then receives Command final, with the final status when it
+selected `status-v1` and a null one otherwise; the controller receives the command's last output
 before it, then its release and Control revoked (`session_ending`). A
 restoration still in progress when the drain ends, or a derived update held
 by a synchronized update, can still deliver after it (follow-up #203). Later Opens get the result in their Initial metadata
@@ -404,8 +434,9 @@ clients and owned generic terminal fixtures:
 test binary, so it shares the harness and fixtures above: raw-socket peers
 that encode and decode with core's codec and check hand-written expectations
 from the wire reference. The `script` fixture mode sets titles on command
-(`title`, `title-empty`, `title-bytes`, `titles`, `reset`), prints `text` and
-fully coloured rows (`colors`), and ends with `exit`, `exit N` or `signal N`;
+(`title`, `title-empty`, `title-bytes`, `titles`, `reset`), prints `text`,
+raw sequences (`print`, with `\e` for ESC) and fully coloured rows
+(`colors`), and ends with `exit`, `exit N` or `signal N`;
 the `focus-record` mode records its input and turns focus reporting on and
 off on command; the `close-terminal` mode closes its terminal, so the daemon
 reads the end of its output, and runs on until `finish` appears, then exits
@@ -427,6 +458,13 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | COM-06 (Fault, test hooks and fixture): a session ending without final evidence (`end-hangup`) sends no Command final, its standalone Kill fails with no result and the private kill keeps `Terminated` 125; the end of the command's output while it runs publishes nothing; a Kill keeps the result the daemon knew when the final kill (`end-hangup`) or the cleanup (`cleanup`, private `Error`) fails; a session failure (`pty-write`) still lets a Kill succeed | `a_session_ending_without_final_evidence_sends_no_command_final`, `the_end_of_the_commands_output_while_it_runs_is_no_final_result`, `a_failed_kill_keeps_the_result_the_daemon_knew`, `a_failed_cleanup_fails_the_kill_but_keeps_the_confirmed_result`, `a_kill_succeeds_after_a_session_failure_once_termination_is_confirmed` |
 | CTL-01 (Contract): a passive registration never acquires control, of a detached session or one controlled elsewhere, and is not an attachment: hello `state` and so `list` are unchanged; core metadata flows before control | `a_passive_registration_never_acquires_control_and_is_not_an_attachment`, `a_monitor_registers_and_leaves_during_committed_termination` |
 | CTL-03 (Contract, title case): titles reach monitors by value, in order and whatever the control; unset, empty, a value and unavailable stay distinct; an oversized title is ignored, never truncated | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_monitor_without_title_v1_receives_nothing_for_titles`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata`, `an_oversized_title_is_ignored_never_truncated`, `titles_reach_an_attachment_as_inert_text` |
+| STA-01, NOT-01 and STA-07 (Contract, controllable clock): changed output is running at its sample; ten seconds of inactivity report needs_attention with no transient idle and nothing a millisecond earlier; accepted Input clears pending and acknowledged attention before its acceptance; repeated Input re-arms the two-second window, ending idle exactly then; pending requests coalesce with hidden activity and no new time, acknowledgement keeps the episode, a later request starts the next one, and viewing never acknowledges; tied and distinct change times are exact | `inactivity_requests_attention_atomically_and_input_clears_both_attention_paths`, `repeated_input_re_arms_the_two_second_user_window`, `requests_coalesce_while_pending_and_re_arm_after_acknowledgement` |
+| STA-01 (Contract, final states): the final status rides Command final, never Status changed, and a later deadline, Set viewing or Acknowledge changes nothing | `a_final_status_rejects_late_deadlines_viewing_and_acknowledgement`, `interactive_open_selects_supported_families_and_rejects_without_effects` |
+| STA-02 (Contract, controllable clock): restyled characters, cursor-only moves, identical redraws, an identical screen swap and a resize are no activity; a change at the deadline is checked first; a resize during agent work restarts it; the last sample is clamped to the deadline; uninterrupted silence reports nothing | `only_changed_characters_or_title_are_activity_at_controlled_deadlines` |
+| STA-07, DSC-01 and CTL-03 (Contract, status case): Initial metadata reports the stored status and time, idle since initialization, not the connection's time; status reaches monitors without control, the controller and a revoked attachment, and nothing reaches a connection without `status-v1` | `monitor_open_selects_supported_families_then_reports_initial_metadata`, `status_reaches_every_status_v1_connection_whatever_the_control`, `requests_coalesce_while_pending_and_re_arm_after_acknowledgement` |
+| STA-08 (Contract and Fault, raw peer): Set viewing and Acknowledge need `status-v1` first, then a role, attachment, no committed termination (`session_terminating`), control, the current period and restoration; viewing true and Acknowledge need readiness, viewing false does not; Acknowledge needs the latest viewing true, which revocation clears; nothing pending is `changed:false`; viewing, Focus and terminal-query replies never clear attention | `set_viewing_and_acknowledge_check_authority_readiness_and_viewing`, `requests_that_need_an_attachment_are_refused_and_the_stream_goes_on`, `requests_on_an_interactive_attachment_get_their_documented_results`, `committed_termination_rejects_new_interactive_work_and_leave_still_works` |
+| LIM-05 (Contract and Fault, episode case, `CLIMON2_DAEMON_FIRST_EPISODE`): the last episode identifier is issued and acknowledged, and a later request changes nothing rather than wrap | `attention_episodes_never_wrap` |
+| STA-01, STA-02, STA-07 and LIM-05 (pure, injected clock and random source): every transition and dispatch rule of both machines, initial silence and the sampling delay range | the 14 `status::tests` unit tests in `src/status.rs` |
 | CTL-05 (Contract and Fault, stale authority from a raw peer): Input, Resize and Ready under an earlier period or a superseded restoration are `stale_period` or `stale_restoration`; Ready needs the complete current restoration; late authority never re-enables input | `stale_and_superseded_authority_is_rejected_and_never_re_enables_input`, `ready_needs_the_complete_current_restoration` |
 | INP-03 (Contract): bracketed-paste bytes reach the application exactly; an open application paste is closed when admission ends; a focus report never lands inside a paste that earlier Input requests carry | `bracketed_paste_is_exact_and_an_open_paste_is_closed_when_admission_ends`, `focus_reports_follow_the_input_accepted_before_them` |
 | TRM-02 (Contract): the daemon alone answers session queries; titles stay inert text and title-looking output stays text | `session_queries_are_answered_by_the_daemon_alone`, `titles_reach_an_attachment_as_inert_text` |
@@ -452,6 +490,13 @@ five-second startup timeout and absence of spawned command/files.
 session failure: the controller receives its release bytes, then `Error`.
 `CLIMON2_DAEMON_FAULT=pty-write-partial` makes every PTY write take at most one
 byte after a 5 ms pause, forcing the partial writes the ordering tests need.
+`CLIMON2_DAEMON_CLOCK=PATH` replaces the status detector's clock (only
+that clock; every other daemon deadline stays real): PATH holds
+milliseconds, read as both the monotonic reading and the UTC time since the
+Unix epoch, at the start of every turn, and once a turn that read a new
+value ends, the daemon writes the value to `PATH.ack`, so a test knows that
+turn's records are queued. `CLIMON2_DAEMON_FIRST_EPISODE=N` starts attention
+episodes at counter N, to reach exhaustion.
 `CLIMON2_DAEMON_FAULT=end-hangup` makes the end of every hang-up fail, as one
 the daemon cannot confirm: no Command final unless the command was reaped
 before, and a failed standalone Kill. `CLIMON2_DAEMON_FAULT=cleanup` makes the

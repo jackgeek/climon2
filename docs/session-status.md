@@ -1,11 +1,17 @@
 # Session status, attention, and activity
 
-**Status: agreed specification, not implemented.** The developer confirmed this
-revision on 2026-11-06. It supersedes the earlier two-state activity heuristic,
+**Status: agreed specification, partly implemented.** The developer confirmed this
+revision on 2026-11-06. The session daemon implements the heuristic detection
+mode, both state machines, effective status, change times and episodes, and
+viewing and acknowledgement
+([#91](https://github.com/jackgeek/climon2/issues/91)), with the evidence in
+the [daemon's contract tests](../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios);
+explicit and fallback detection, shell boundaries and notification signals
+remain unimplemented. It supersedes the earlier two-state activity heuristic,
 title-plugin requirement, creation-time monitor ordering, and
 [attention](../GLOSSARY.md#status-and-attention) rules in
 [startup/discovery](https://github.com/jackgeek/climon2/issues/59).
-No executable implementation or automated acceptance evidence is claimed here.
+Beyond that, no executable implementation or automated acceptance evidence is claimed here.
 The approved [wire revision 1](protocol/daemon-client/core-v1.md), recorded for
 [#67](https://github.com/jackgeek/climon2/issues/67), subsequently amends
 [viewing](../GLOSSARY.md#status-and-attention),

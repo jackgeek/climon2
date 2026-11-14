@@ -1,9 +1,9 @@
 # Response — `0x40`
 
 **Status: agreed; implemented for the results of Open, Input, Resize,
-Acquire, Ready, Leave, Kill and Focus and for every rejection the
-[session daemon](../../../GLOSSARY.md#sessions) sends**, owned by [#67](https://github.com/jackgeek/climon2/issues/67);
-the Set viewing and Acknowledge results arrive with their operations.
+Acquire, Ready, Set viewing, Acknowledge, Leave, Kill and Focus and for
+every rejection the
+[session daemon](../../../GLOSSARY.md#sessions) sends**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The daemon's only `failed` outcome is a [Kill](request-kill.md#implemented-behavior)
 whose termination or cleanup did not complete, and it sends no
 `indeterminate` outcome. A rejected first role carries `known_final` once the
