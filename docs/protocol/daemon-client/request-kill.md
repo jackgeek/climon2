@@ -68,7 +68,8 @@ The [session daemon](../../../GLOSSARY.md#sessions) validates a first-role
 Kill like Open: `unsupported_revision` unless revision 1, and
 `unsupported_capability` for an unknown or unadvertised required family. Each
 rejection has no effects, carries the command's result as `known_final` once
-the daemon knows it, and ends the stream. A Kill on a connection that already
+it is final (see [Command final](event-command-final.md#implemented-behavior)),
+and ends the stream. A Kill on a connection that already
 has a role, such as a registered
 [passive monitor connection](../../../GLOSSARY.md#attachment-and-control), is
 `invalid_state` and keeps that role.

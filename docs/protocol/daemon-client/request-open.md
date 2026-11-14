@@ -101,7 +101,7 @@ takes control from any current
 included,
 and the hello `state` counts it like any attachment. During committed
 termination an interactive Open is rejected with `session_terminating` and
-ends its stream. Once the daemon knows how the command ended (see
+ends its stream. Once the command's result is final (see
 [Command final](event-command-final.md#implemented-behavior)), every
 rejection of a first-role Open carries that result as `known_final`; a
 later Open on a connection that already has a role is `invalid_state`

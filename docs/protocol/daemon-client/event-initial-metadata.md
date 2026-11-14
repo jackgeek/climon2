@@ -65,7 +65,7 @@ precedes the [Control granted](event-control-granted.md) of its
 [attachment](../../../GLOSSARY.md#attachment-and-control), in the same step. With `title-v1` selected, `title` is
 available with the application's title by value: null while unset, `""` when
 set empty. Without it, `title` is unavailable. `status` and `progress` are
-always unavailable for now. `command_result` is null until the daemon knows
-how the command ended, then that result, which the connections open at that
+always unavailable for now. `command_result` is null until the command's
+result is final (after its output drained), then that result, which the connections open at that
 moment received as [Command final](event-command-final.md#implemented-behavior);
 a connection that receives the result here receives no Command final.

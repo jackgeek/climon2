@@ -54,5 +54,6 @@ before its stream closes. Each time, the
 [control period](../../../GLOSSARY.md#attachment-and-control) and
 [restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts) that Display used; no
 Display follows it. The [Command final](event-command-final.md#implemented-behavior)
-of a command whose result the daemon knows reaches the attachment before its
+of a command whose result is final reaches the attachment after the Display
+of the command's last output and before the release and its
 `session_ending` revocation.
