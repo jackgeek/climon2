@@ -995,7 +995,8 @@ fn native_fields(limits: &climon2_core::native::Limits) -> [u64; 27] {
 /// contract, "Startup, limits and resources"), its own discovery the
 /// `scheduling.probes` and `discovery` bounds, and its start lanes
 /// `scheduling.loads` and `scheduling.starts`, bounded at exit by
-/// `deadlines.shutdown_ms`. Expected values are the
+/// `deadlines.shutdown_ms`, and each session's terminal model
+/// `memory.client_bytes` and `history.max_rows` (#108). Expected values are the
 /// documented defaults with one setting of each kind changed.
 #[test]
 fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
@@ -1015,6 +1016,7 @@ fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
         ("discovery.batch_bytes", json!(65_536)),
         ("discovery.metadata_file_bytes", json!(4096)),
         ("discovery.metadata_depth", json!(9)),
+        ("history.max_rows", json!(250)),
     ])
     .to_string();
     let config = monitor(&text).unwrap();
@@ -1041,6 +1043,8 @@ fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
     );
     let lanes = limits.lanes();
     assert_eq!((lanes.loads, lanes.starts, lanes.shutdown_ms), (4, 6, 7000));
+    let model = limits.model();
+    assert_eq!((model.bytes, model.history_rows), (33_554_432, 250));
     assert_eq!(
         config.take_control_key(),
         Some(ControlKey::from_name("Ctrl+T").unwrap())
