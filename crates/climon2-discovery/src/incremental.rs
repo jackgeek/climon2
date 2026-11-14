@@ -85,7 +85,7 @@ impl Continuation {
             sessions: home.sessions(),
             scan,
             deadline: Instant::now() + scan.pass_time,
-            started: AtomicBool::new(false),
+            progressed: AtomicBool::new(false),
         };
         let start = self.after.take();
         let mut ranges = vec![Range {
@@ -114,6 +114,11 @@ struct Range {
 }
 
 impl Range {
+    /// Whether `name` is a metadata file in this range.
+    fn admits(&self, name: &OsStr) -> bool {
+        metadata::is_metadata(Path::new(name)) && self.holds(name)
+    }
+
     fn holds(&self, name: &OsStr) -> bool {
         self.after.as_deref().is_none_or(|after| name > after)
             && self
@@ -127,9 +132,11 @@ struct Walk<'a> {
     home: &'a HomeLayout,
     sessions: std::path::PathBuf,
     scan: &'a Scan,
+    /// The pass deadline, from the pass's start.
     deadline: Instant,
-    /// Whether this pass has started a probe.
-    started: AtomicBool,
+    /// Whether this pass has reached an entry or started a probe: until it
+    /// has, the deadline stops nothing, so every pass makes progress.
+    progressed: AtomicBool,
 }
 
 impl Walk<'_> {
@@ -137,28 +144,40 @@ impl Walk<'_> {
     /// until it is exhausted (`None`) or the pass stops early.
     fn range(&self, range: &mut Range, report: &mut impl FnMut(Batch)) -> Option<Incomplete> {
         loop {
-            if self.late() {
-                return Some(Incomplete::Deadline);
-            }
-            let names = match self.names(range) {
-                Ok(names) if names.is_empty() => return None,
-                Ok(names) => names,
-                Err(error) => return Some(Incomplete::Inaccessible(error)),
-            };
-            let (batch, reached, finished) = self.batch(names);
-            if let Some(reached) = reached {
-                range.after = Some(reached);
-                report(batch);
-            }
-            if !finished {
-                return Some(Incomplete::Deadline);
+            if let Err(stopped) = self.step(range, report) {
+                return stopped;
             }
         }
     }
 
-    /// Whether the deadline stops new probes: never before the first.
+    /// Reports `range`'s next batch. Fails with `None` once the range is
+    /// exhausted, or with why the pass stops early.
+    fn step(
+        &self,
+        range: &mut Range,
+        report: &mut impl FnMut(Batch),
+    ) -> Result<(), Option<Incomplete>> {
+        if self.late() {
+            return Err(Some(Incomplete::Deadline));
+        }
+        let names = self
+            .names(range)
+            .map_err(|error| Some(Incomplete::Inaccessible(error)))?;
+        if names.is_empty() {
+            return Err(None);
+        }
+        let (batch, reached, finished) = self.batch(names);
+        if let Some(reached) = reached {
+            self.progressed.store(true, Ordering::Relaxed);
+            range.after = Some(reached);
+            report(batch);
+        }
+        finished.then_some(()).ok_or(Some(Incomplete::Deadline))
+    }
+
+    /// Whether the deadline stops the pass: never before it progressed.
     fn late(&self) -> bool {
-        self.started.load(Ordering::Relaxed) && Instant::now() >= self.deadline
+        self.progressed.load(Ordering::Relaxed) && Instant::now() >= self.deadline
     }
 
     /// The first `batch_records` metadata names in `range`, ascending, kept in
@@ -166,17 +185,10 @@ impl Walk<'_> {
     fn names(&self, range: &Range) -> io::Result<Vec<OsString>> {
         let limit = self.scan.batch_records.get();
         let mut kept = BinaryHeap::with_capacity(limit + 1);
-        let entries = match fs::read_dir(&self.sessions) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            entries => entries?,
-        };
-        for entry in entries {
+        for entry in listing(&self.sessions)? {
             let name = entry?.file_name();
-            if metadata::is_metadata(Path::new(&name)) && range.holds(&name) {
-                kept.push(name);
-                if kept.len() > limit {
-                    kept.pop();
-                }
+            if range.admits(&name) {
+                keep(&mut kept, name, limit);
             }
         }
         Ok(kept.into_sorted_vec())
@@ -250,7 +262,7 @@ impl Walk<'_> {
                         let Some(metadata) = sessions.get(index) else {
                             return;
                         };
-                        self.started.store(true, Ordering::Relaxed);
+                        self.progressed.store(true, Ordering::Relaxed);
                         let found =
                             outcome::probe_one(self.home, metadata.clone(), StaleMetadata::Retain);
                         *slots[index].lock().unwrap_or_else(PoisonError::into_inner) = Some(found);
@@ -262,5 +274,22 @@ impl Walk<'_> {
             .into_iter()
             .map_while(|slot| slot.into_inner().unwrap_or_else(PoisonError::into_inner))
             .collect()
+    }
+}
+
+/// The sessions directory's entries; none when it does not exist.
+fn listing(sessions: &Path) -> io::Result<impl Iterator<Item = io::Result<fs::DirEntry>>> {
+    let entries = match fs::read_dir(sessions) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        entries => Some(entries?),
+    };
+    Ok(entries.into_iter().flatten())
+}
+
+/// Adds `name` to `kept`, then drops the greatest name past `limit`.
+fn keep(kept: &mut BinaryHeap<OsString>, name: OsString, limit: usize) {
+    kept.push(name);
+    if kept.len() > limit {
+        kept.pop();
     }
 }

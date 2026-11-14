@@ -992,3 +992,39 @@ fn an_unlistable_sessions_directory_makes_the_pass_incomplete() {
     assert_eq!(error.raw_os_error(), Some(libc::ENOTDIR), "{error}");
     assert_eq!(fs::read(&sessions).unwrap(), b"not a directory");
 }
+
+/// DSC-04 Contract case (bounded passes) with DSC-03 fair continuation: the pass deadline
+/// runs from the pass's start even when nothing is probed. A pass over invalid metadata alone
+/// stops at its deadline after its first batch, which it always reaches, reporting incomplete
+/// progress; the next pass continues after it. Nothing is deleted.
+#[test]
+fn a_pass_deadline_bounds_a_pass_that_finds_only_invalid_metadata() {
+    let (_directory, home) = home();
+    let sessions = home.root().join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let files = ["a.pty", "b.pty", "c.pty"].map(|name| {
+        let file = sessions.join(name);
+        fs::write(&file, b"{}").unwrap();
+        file
+    });
+    let expired = Scan {
+        batch_records: records(1),
+        pass_time: Duration::ZERO,
+        ..BROAD
+    };
+    let mut continuation = Continuation::default();
+    for expected in [&files[0], &files[1]] {
+        let mut reported = Vec::new();
+        let progress = continuation.pass(&home, &expired, |batch| reported.push(batch));
+        assert!(
+            matches!(progress, Progress::Incomplete(Incomplete::Deadline)),
+            "{progress:?}"
+        );
+        let [batch] = reported.as_slice() else {
+            panic!("{reported:?}");
+        };
+        let invalid: Vec<_> = batch.invalid.iter().map(|invalid| &invalid.path).collect();
+        assert_eq!((batch.sessions.len(), invalid), (0, vec![expected]));
+    }
+    assert!(files.iter().all(|file| file.exists()));
+}
