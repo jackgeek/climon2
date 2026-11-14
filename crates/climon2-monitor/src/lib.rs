@@ -233,9 +233,11 @@ impl Monitor {
     }
 
     /// Paints the current scene: always when `force`, otherwise only when it
-    /// changed. A selected terminal's applied restoration is then painted,
-    /// unless the host is too small to show it.
+    /// changed. Each terminal first learns whether this frame shows its
+    /// applied restoration, so its control and input readiness describe the
+    /// frame being painted.
     fn show(&mut self, force: bool) -> io::Result<()> {
+        self.mark_shown();
         let rows = self.registry.rows();
         let row = self
             .selected
@@ -250,17 +252,17 @@ impl Monitor {
             incomplete: self.registry.incomplete(),
             session,
         };
-        self.screen.show(&scene, force)?;
-        if self.screen.desire().is_some()
-            && let Some(terminal) = self.selected_terminal()
-        {
-            terminal.painted();
-        }
-        Ok(())
+        self.screen.show(&scene, force)
     }
 
-    fn selected_terminal(&mut self) -> Option<&mut Terminal> {
-        self.terminals.get_mut(self.selected.as_ref()?)
+    /// Only the selected terminal can be shown, and only while nothing
+    /// covers its canvas and the host has room for it.
+    fn mark_shown(&mut self) {
+        let covered = self.selector.is_open() || self.introduction.is_open();
+        let visible = self.screen.desire().is_some() && !covered;
+        for (id, terminal) in &mut self.terminals {
+            terminal.painted(visible && self.selected.as_ref() == Some(id));
+        }
     }
 
     /// `id`'s terminal, created the first time it is needed.
@@ -292,7 +294,8 @@ impl Monitor {
     }
 
     /// Enter on a connected row not known to be final selects it, closes
-    /// the selector and acquires it; any other row changes nothing yet.
+    /// the selector and acquires it; Enter on any other row is ignored until
+    /// #110 and #116, which own those cases.
     fn enter(&mut self, id: SessionId) {
         if !self.registry.acquirable(&id) {
             return;
@@ -420,7 +423,9 @@ impl Monitor {
     }
 
     /// The selected session and its terminal, while nothing covers it, the
-    /// host has room for it and it may take input.
+    /// host has room for it and it may take input. `Terminal::input` alone
+    /// learns of a modal or a small host only at the next frame; within one
+    /// read, a key after prefix+s must already reach the selector.
     fn target(&self) -> Option<(&SessionId, &Terminal)> {
         let open = !self.introduction.is_open() && !self.selector.is_open();
         let id = self.selected.as_ref().filter(|_| open)?;

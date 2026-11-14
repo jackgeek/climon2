@@ -34,8 +34,11 @@ struct Script {
     stalls: bool,
     /// After Open, one delivery of control and display records.
     presents: bool,
-    /// Input is accepted and never answered, as by a stuck session.
-    ignores_input: bool,
+    /// The first this many requests after Open are refused at submit,
+    /// synchronously, as full.
+    refused_submits: u32,
+    /// Requests after Open are accepted and never answered.
+    silent: bool,
 }
 
 /// What the observer saw of one session's instance.
@@ -55,7 +58,7 @@ struct World {
     scripts: BTreeMap<[u8; 16], Script>,
     seen: Vec<([u8; 16], Seen)>,
     unstalled: BTreeSet<[u8; 16]>,
-    submitted: Vec<Submitted>,
+    submitted: Vec<([u8; 16], Submitted)>,
 }
 
 static WORLD: Mutex<World> = Mutex::new(World {
@@ -128,6 +131,8 @@ struct State {
     /// Run returned or terminal evidence was drained: the stream is over.
     over: bool,
     outstanding: usize,
+    /// Requests after Open refused at submit so far.
+    refused: u32,
     communication: bool,
     control: bool,
 }
@@ -305,6 +310,14 @@ extern "C" fn submit(communication: *mut Communication, request: *const Request)
         assert_eq!(request.request_id, OPEN_ID);
         return success();
     }
+    let fake = fake(communication);
+    {
+        let mut state = fake.state();
+        if state.refused < fake.script.refused_submits {
+            state.refused += 1;
+            return failure(native::FULL, b"full", b"the request queue is full");
+        }
+    }
     // SAFETY: the tag names the active member.
     let words = unsafe {
         match request.tag {
@@ -329,10 +342,9 @@ extern "C" fn submit(communication: *mut Communication, request: *const Request)
     changed(&mut world(), |world| {
         world
             .submitted
-            .push((request.tag, request.request_id, words));
+            .push((fake.id, (request.tag, request.request_id, words)));
     });
-    let fake = fake(communication);
-    if request.tag == native::INPUT && fake.script.ignores_input {
+    if fake.script.silent {
         return success();
     }
     // Ready is refused; anything else accepted, after an answer to a
@@ -593,7 +605,7 @@ fn supervisor(starts: u32, shutdown_ms: u64, load: Load) -> (tempfile::TempDir, 
     limited(starts, shutdown_ms, load, limits)
 }
 
-/// [`supervisor`] with these library limits.
+/// [`supervisor`] with the instance limits `limits`.
 fn limited(
     starts: u32,
     shutdown_ms: u64,
@@ -868,18 +880,94 @@ fn requests_are_submitted_in_order_and_answered_as_themselves() {
         assert_eq!(next(&supervisor), (id.clone(), answered));
     }
     supervisor.stop();
-    let submitted = world().submitted.clone();
     assert_eq!(
-        submitted
-            .into_iter()
-            .filter(|(tag, ..)| *tag != native::INPUT)
-            .collect::<Vec<_>>(),
+        submitted(&id),
         [
             (native::ACQUIRE, 2, vec![GENERATION]),
             (native::READY, 3, vec![1, 5, 6]),
             (native::RESIZE, 4, vec![1, 5, 6, 120, 29]),
         ]
     );
+}
+
+/// What the fake accepted from `id`'s instance, in order.
+fn submitted(id: &SessionId) -> Vec<Submitted> {
+    let id = guid(id);
+    let world = world();
+    let accepted = world.submitted.iter().filter(|(seen, _)| *seen == id);
+    accepted.map(|(_, submitted)| submitted.clone()).collect()
+}
+
+/// An open client for `id` under `script`, whose pending ledger holds at
+/// most two requests: one queued record and one operation.
+fn opened_with(id: &SessionId, script_of: Script) -> (tempfile::TempDir, Supervisor) {
+    script(id, script_of);
+    let mut limits = climon2_core::config::Limits::default().library();
+    limits.request_records = 1;
+    limits.operations = 1;
+    let (home, supervisor) = limited(1, 20_000, fake_library(), limits);
+    supervisor.start_client(metadata(id, "2026-11-13T10:00:00.000Z"));
+    assert_eq!(
+        next(&supervisor),
+        (id.clone(), ClientEvent::Opened { status: false })
+    );
+    (home, supervisor)
+}
+
+/// Client supervisor (#108; core-v1 "Submit", operational limits "Queues and
+/// transfers"): a request the library refuses at submit is answered at once
+/// with why, leaves nothing in the pending ledger and consumes no request
+/// ID. More refusals than the ledger holds still leave room, and the next
+/// accepted request takes the next unused ID.
+#[test]
+fn a_request_refused_at_submit_is_not_pending_and_consumes_no_id() {
+    let id = session(7, 1);
+    let script = Script {
+        refused_submits: 3,
+        ..Script::default()
+    };
+    let (_home, mut supervisor) = opened_with(&id, script);
+    let full = presented(Presentation::Answered(
+        Asked::Acquire,
+        Err("full: the request queue is full".into()),
+    ));
+    for _ in 0..3 {
+        supervisor.request(id.clone(), Asked::Acquire);
+        assert_eq!(next(&supervisor), (id.clone(), full.clone()));
+    }
+    supervisor.request(id.clone(), Asked::Acquire);
+    let accepted = presented(Presentation::Answered(Asked::Acquire, Ok(())));
+    assert_eq!(next(&supervisor), (id.clone(), accepted));
+    supervisor.stop();
+    assert_eq!(
+        submitted(&id),
+        [(native::ACQUIRE, OPEN_ID + 1, vec![GENERATION])]
+    );
+}
+
+/// Client supervisor (#108; core-v1 "bounded pending ledger"): the ledger
+/// holds at most the requests the instance may have accepted (its queued
+/// request records plus its operations); one more is refused at once, never
+/// submitted, and consumes no request ID.
+#[test]
+fn the_pending_ledger_is_bounded_by_the_requests_the_library_may_hold() {
+    let id = session(8, 1);
+    let script = Script {
+        silent: true,
+        ..Script::default()
+    };
+    let (_home, mut supervisor) = opened_with(&id, script);
+    for _ in 0..3 {
+        supervisor.request(id.clone(), Asked::Acquire);
+    }
+    let refused = presented(Presentation::Answered(
+        Asked::Acquire,
+        Err("too many requests are awaiting their answers".into()),
+    ));
+    assert_eq!(next(&supervisor), (id.clone(), refused));
+    supervisor.stop();
+    let acquire = |request_id| (native::ACQUIRE, request_id, vec![GENERATION]);
+    assert_eq!(submitted(&id), [acquire(OPEN_ID + 1), acquire(OPEN_ID + 2)]);
 }
 
 /// COM-03 queue-full and COM-04 typed cases (#109): input is submitted under
@@ -890,7 +978,7 @@ fn requests_are_submitted_in_order_and_answered_as_themselves() {
 /// request ID.
 #[test]
 fn input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte() {
-    let id = session(7, 1);
+    let id = session(9, 1);
     let mut limits = climon2_core::config::Limits::default().library();
     limits.chunk_bytes = 3;
     let (_home, mut supervisor) = limited(1, 20_000, fake_library(), limits);
@@ -933,11 +1021,10 @@ fn input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte() {
         words.extend(bytes.iter().map(|&byte| u64::from(byte)));
         words
     };
-    let submitted = world().submitted.clone();
     assert_eq!(
-        submitted
+        submitted(&id)
             .into_iter()
-            .filter(|(tag, _, words)| *tag == native::INPUT && words[..3] == [1, 5, 6])
+            .filter(|(tag, ..)| *tag == native::INPUT)
             .collect::<Vec<_>>(),
         [
             (native::INPUT, 2, words(b"abc")),
@@ -960,12 +1047,12 @@ fn stopping_waits_for_accepted_input_at_most_the_operation_deadline() {
         period: 9,
         restoration: 9,
     };
-    for (index, ignores_input, operation_ms) in [(1, true, 400), (2, false, 30_000)] {
-        let id = session(8, index);
+    for (index, silent, operation_ms) in [(1, true, 400), (2, false, 30_000)] {
+        let id = session(10, index);
         script(
             &id,
             Script {
-                ignores_input,
+                silent,
                 ..Script::default()
             },
         );
@@ -981,7 +1068,7 @@ fn stopping_waits_for_accepted_input_at_most_the_operation_deadline() {
         let started = Instant::now();
         supervisor.stop();
         let took = started.elapsed();
-        if ignores_input {
+        if silent {
             assert!(took >= Duration::from_millis(400), "{took:?}");
         }
         assert!(took < Duration::from_secs(15), "{took:?}");

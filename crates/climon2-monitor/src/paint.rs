@@ -4,7 +4,7 @@
 //! rewritten as palette entries; then the cursor, or none. Nothing is erased
 //! first and the host is never queried.
 use ratatui::{
-    buffer::{Buffer, Cell},
+    buffer::{Buffer, Cell, CellWidth},
     style::{Color, Modifier},
 };
 use std::fmt::Write;
@@ -32,7 +32,10 @@ pub(crate) struct Frame {
 
 /// The cursor is hidden while cells are written, every cell's rendition is
 /// set in full where it changes, and the frame ends with SGR 0 and, if it
-/// shows one, the cursor placed, styled and shown.
+/// shows one, the cursor placed, styled and shown. A cell's width is the
+/// one it was given (a session cell's is the engine's), else its measured
+/// one; wherever the host's own measure of its symbol may differ, the next
+/// cell is placed with CUP.
 pub(crate) fn paint(frame: &Frame) -> Vec<u8> {
     let mut out = String::from("\x1b[?25l");
     let mut next = None;
@@ -47,7 +50,8 @@ pub(crate) fn paint(frame: &Frame) -> Vec<u8> {
             style = Some(sgr);
         }
         out.push_str(cell.symbol());
-        next = Some((x + width(cell), y));
+        let width = cell.cell_width();
+        next = (cell.symbol().width() == usize::from(width)).then_some((x + width, y));
     }
     out.push_str("\x1b[0m");
     if let Some(cursor) = frame.cursor {
@@ -60,11 +64,6 @@ pub(crate) fn paint(frame: &Frame) -> Vec<u8> {
         );
     }
     out.into_bytes()
-}
-
-/// The columns `cell` covers: a wide character two, anything else one.
-fn width(cell: &Cell) -> u16 {
-    cell.symbol().width().max(1) as u16
 }
 
 /// Every cell of `buffer` with its position, except those a wide character
@@ -81,7 +80,7 @@ fn cells(buffer: &Buffer) -> impl Iterator<Item = (u16, u16, &Cell)> {
                 covered -= 1;
                 return None;
             }
-            covered = width(cell) - 1;
+            covered = cell.cell_width().saturating_sub(1);
             let (x, y) = buffer.pos_of(index);
             Some((x, y, cell))
         })
@@ -118,20 +117,20 @@ pub(crate) const ANSI: [Color; 16] = [
     Color::White,
 ];
 
-/// The whole rendition of `cell`, from SGR 0.
+/// The whole rendition of `cell`, from SGR 0. SGR 0 also resets the
+/// underline colour, so SGR 58 is written only where it shows: on an
+/// underlined cell with a colour of its own.
 fn sgr(cell: &Cell) -> String {
     let modifiers = MODIFIERS
         .iter()
         .filter(|(modifier, _)| cell.modifier.contains(*modifier))
         .map(|(_, code)| (*code).to_owned());
-    let colours = [
-        colour(cell.fg, 30),
-        colour(cell.bg, 40),
-        underline(cell.underline_color),
-    ];
+    let colours = [colour(cell.fg, 30), colour(cell.bg, 40)];
+    let underlined = cell.modifier.contains(Modifier::UNDERLINED);
     let codes: Vec<_> = std::iter::once("0".to_owned())
         .chain(modifiers)
         .chain(colours)
+        .chain(underline(cell.underline_color).filter(|_| underlined))
         .collect();
     format!("\x1b[{}m", codes.join(";"))
 }
@@ -148,12 +147,15 @@ fn colour(colour: Color, base: u8) -> String {
     }
 }
 
-/// SGR 58's underline colour; it has no 16-colour form of its own.
-fn underline(colour: Color) -> String {
+/// SGR 58's underline colour, in the colon form of ITU T.416: a host that
+/// does not know SGR 58 then skips the one parameter whole, instead of
+/// reading its 5 or 2 as blink or dim. It has no 16-colour form of its own,
+/// and the default colour needs none.
+fn underline(colour: Color) -> Option<String> {
     match (ansi(colour), colour) {
-        (Some(index), _) | (None, Color::Indexed(index)) => format!("58;5;{index}"),
-        (None, Color::Rgb(red, green, blue)) => format!("58;2;{red};{green};{blue}"),
-        (None, _) => "59".to_owned(),
+        (Some(index), _) | (None, Color::Indexed(index)) => Some(format!("58:5:{index}")),
+        (None, Color::Rgb(red, green, blue)) => Some(format!("58:2::{red}:{green}:{blue}")),
+        (None, _) => None,
     }
 }
 
@@ -166,7 +168,8 @@ fn ansi(colour: Color) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::{layout::Rect, style::Style};
+    use ratatui::{buffer::CellDiffOption, layout::Rect, style::Style};
+    use std::num::NonZeroU16;
 
     fn text(bytes: Vec<u8>) -> String {
         String::from_utf8(bytes).unwrap()
@@ -174,7 +177,10 @@ mod tests {
 
     /// TRM-01 (pure supplement): each of the 16 ANSI colours keeps its own
     /// SGR in the foreground and background; palette, direct and default
-    /// colours, the underline colour and every rendition are exact.
+    /// colours and every rendition are exact. SGR 0 resets the underline
+    /// colour, so SGR 58 is written only on an underlined cell with a colour
+    /// of its own, in its colon form; non-single underline styles are
+    /// painted single until #112.
     #[test]
     fn colours_and_renditions_are_painted_with_their_own_sgr() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 16, 2));
@@ -190,8 +196,11 @@ mod tests {
                     .add_modifier(Modifier::all()),
             )
             .set_symbol("a");
-        buffer[(1, 1)].set_style(Style::new().underline_color(Color::Rgb(4, 5, 6)));
+        let underlined = Style::new().add_modifier(Modifier::UNDERLINED);
+        buffer[(1, 1)].set_style(underlined.underline_color(Color::Rgb(4, 5, 6)));
         buffer[(2, 1)].set_style(Style::new().underline_color(Color::LightRed));
+        buffer[(3, 1)].set_style(underlined.underline_color(Color::LightRed));
+        buffer[(4, 1)].set_style(underlined);
         let painted = text(paint(&Frame {
             buffer,
             cursor: None,
@@ -199,13 +208,13 @@ mod tests {
         }));
         let expected = [
             "\x1b[?25l\x1b[1;1H",
-            "\x1b[0;30;40;59m \x1b[0;31;41;59m \x1b[0;32;42;59m \x1b[0;33;43;59m ",
-            "\x1b[0;34;44;59m \x1b[0;35;45;59m \x1b[0;36;46;59m \x1b[0;37;47;59m ",
-            "\x1b[0;90;100;59m \x1b[0;91;101;59m \x1b[0;92;102;59m \x1b[0;93;103;59m ",
-            "\x1b[0;94;104;59m \x1b[0;95;105;59m \x1b[0;96;106;59m \x1b[0;97;107;59m ",
-            "\x1b[2;1H\x1b[0;1;2;3;4;7;8;9;38;5;200;48;2;1;2;3;58;5;9ma",
-            "\x1b[0;39;49;58;2;4;5;6m \x1b[0;39;49;58;5;9m ",
-            "\x1b[0;39;49;59m             \x1b[0m",
+            "\x1b[0;30;40m \x1b[0;31;41m \x1b[0;32;42m \x1b[0;33;43m ",
+            "\x1b[0;34;44m \x1b[0;35;45m \x1b[0;36;46m \x1b[0;37;47m ",
+            "\x1b[0;90;100m \x1b[0;91;101m \x1b[0;92;102m \x1b[0;93;103m ",
+            "\x1b[0;94;104m \x1b[0;95;105m \x1b[0;96;106m \x1b[0;97;107m ",
+            "\x1b[2;1H\x1b[0;1;2;3;4;7;8;9;38;5;200;48;2;1;2;3;58:5:9ma",
+            "\x1b[0;4;39;49;58:2::4:5:6m \x1b[0;39;49m \x1b[0;4;39;49;58:5:9m ",
+            "\x1b[0;4;39;49m \x1b[0;39;49m           \x1b[0m",
         ]
         .concat();
         assert_eq!(painted, expected);
@@ -230,7 +239,35 @@ mod tests {
         }));
         assert_eq!(
             painted,
-            "\x1b[?25l\x1b[1;1H\x1b[0;39;49;59m界e\u{301} \x1b[0m\x1b[1;4H\x1b[6 q\x1b[?25h"
+            "\x1b[?25l\x1b[1;1H\x1b[0;39;49m界e\u{301} \x1b[0m\x1b[1;4H\x1b[6 q\x1b[?25h"
+        );
+    }
+
+    /// TRM-01 (pure supplement; review of 8582801): a cell's given width,
+    /// the engine's for a session cell, decides what it covers, never its
+    /// symbol re-measured. An emoji with VS16 that the engine made narrow
+    /// covers nothing, and a character it made wide covers its second
+    /// column whatever its symbol measures; after either, the next cell is
+    /// placed with CUP, since the host may measure the symbol otherwise.
+    #[test]
+    fn each_cell_covers_the_width_it_was_given() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 6, 1));
+        let forced = |width| CellDiffOption::ForcedWidth(NonZeroU16::new(width).unwrap());
+        buffer[(0, 0)]
+            .set_symbol("\u{2764}\u{fe0f}")
+            .set_diff_option(forced(1));
+        buffer[(1, 0)].set_symbol("x");
+        buffer[(2, 0)].set_symbol("w").set_diff_option(forced(2));
+        buffer[(3, 0)].set_symbol("!");
+        buffer[(4, 0)].set_symbol("界").set_diff_option(forced(2));
+        let painted = text(paint(&Frame {
+            buffer,
+            cursor: None,
+            keypad: false,
+        }));
+        assert_eq!(
+            painted,
+            "\x1b[?25l\x1b[1;1H\x1b[0;39;49m\u{2764}\u{fe0f}\x1b[1;2Hxw\x1b[1;5H界\x1b[0m"
         );
     }
 
@@ -244,7 +281,7 @@ mod tests {
                 cursor: None,
                 keypad: false,
             })),
-            "\x1b[?25l\x1b[1;1H\x1b[0;39;49;59m  \x1b[2;1H  \x1b[0m"
+            "\x1b[?25l\x1b[1;1H\x1b[0;39;49m  \x1b[2;1H  \x1b[0m"
         );
     }
 }

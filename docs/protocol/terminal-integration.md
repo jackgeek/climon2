@@ -53,7 +53,9 @@ any byte at it.
 
 **Implemented with packaged evidence ([#108](https://github.com/jackgeek/climon2/issues/108)):** selection
 and painting. Enter in the selector on a connected row not known to be final
-selects it and takes [control](../../GLOSSARY.md#attachment-and-control); nothing
+selects it and takes [control](../../GLOSSARY.md#attachment-and-control) (Enter
+on any other row is ignored until [#110](https://github.com/jackgeek/climon2/issues/110)
+and [#116](https://github.com/jackgeek/climon2/issues/116)); nothing
 is selected at startup, and no arrival moves the selection. Each
 [session](../../GLOSSARY.md#sessions) has one allocation-bounded model, kept for
 the monitor's run: each [restoration](../../GLOSSARY.md#restoration-and-presentation)
@@ -62,14 +64,19 @@ is staged and replaces the model whole once complete, and only then is
 [control period](../../GLOSSARY.md#attachment-and-control) is never shown, a
 Display at a [geometry](TERMS.md#geometry) the model lacks marks it stale
 until the next restoration, and a finished session's view freezes at its
-Command final. The selected session is painted directly below the top row at
-its effective geometry, with blank margins, its cells, colours (ANSI colours as
-their own SGR) and cursor, never in the top row; the top row shows its label,
-status (Unavailable until status reaches the monitor), control, any error and,
-with key hints on, a hint. Host resizes go only to the selected controller, as
-the host width by its height less one, after every grant too; a host under two
-rows or columns shows `Terminal too small` and sends no resize. Input
-readiness (applied, Ready accepted and a painted frame) is tracked for the input
+Command final only if a restoration was applied in the control period held
+then (never an earlier period's cache or a blank model); no Resize goes to a
+finished session. The selected session is painted directly below the top row at
+its effective geometry, with blank margins, its cells (at the engine's widths),
+colours (ANSI colours as their own SGR; an underline colour only on underlined
+cells, in SGR 58's colon form) and cursor, never in the top row; the top row
+shows its label and any error from the left, then fixed-width slots separated
+by `|` for its status (Unavailable until status reaches the monitor), control
+and, with key hints on, a hint. Host resizes go only to the selected
+controller, as the host width by its height less one, after every grant too; a
+host under four rows or five columns shows `Terminal too small` and sends no
+resize. Input readiness (applied, Ready accepted and a frame that shows the
+restoration now: selected, uncovered and with room) is tracked for the input
 router ([#109](https://github.com/jackgeek/climon2/issues/109)), which forwards
 nothing yet.
 

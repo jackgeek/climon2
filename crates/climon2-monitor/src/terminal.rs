@@ -128,8 +128,10 @@ pub(crate) struct Terminal {
     model: Option<Model>,
     held: Option<Held>,
     acquiring: bool,
-    /// The command ended: the model changes no more.
-    frozen: bool,
+    /// Once the command ended (the model changes no more): whether its
+    /// frozen view shows, which it does only if the control period held then
+    /// had applied a restoration.
+    finished: Option<bool>,
     /// The latest failure to show, until the next applied restoration.
     error: Option<String>,
 }
@@ -141,7 +143,7 @@ impl Terminal {
             model: None,
             held: None,
             acquiring: false,
-            frozen: false,
+            finished: None,
             error: None,
         }
     }
@@ -188,7 +190,7 @@ impl Terminal {
     /// Stages the restoration in a separate model; a newer beginning
     /// supersedes a staged one, which never becomes current.
     fn begin(&mut self, authority: Authority, geometry: Geometry) {
-        let Some(held) = self.held.as_mut().filter(|_| !self.frozen) else {
+        let Some(held) = self.held.as_mut().filter(|_| self.finished.is_none()) else {
             return;
         };
         held.authority = authority;
@@ -207,7 +209,7 @@ impl Terminal {
     }
 
     fn display(&mut self, bytes: &[u8]) {
-        let Some(held) = self.held.as_mut().filter(|_| !self.frozen) else {
+        let Some(held) = self.held.as_mut().filter(|_| self.finished.is_none()) else {
             return;
         };
         let Some(model) = self.model.as_mut() else {
@@ -223,7 +225,7 @@ impl Terminal {
     }
 
     fn complete(&mut self) -> Option<Request> {
-        let held = self.held.as_mut().filter(|_| !self.frozen)?;
+        let held = self.held.as_mut().filter(|_| self.finished.is_none())?;
         let model = self.model.as_mut()?;
         (held.phase == Phase::Restoring && model.apply()).then(|| {
             held.phase = Phase::Applied {
@@ -290,10 +292,12 @@ impl Terminal {
     }
 
     /// Revocation, the end of the connection or the command's final result:
-    /// control, if held, is over, and a staged restoration is abandoned.
+    /// control, if held, is over, and a staged restoration is abandoned. The
+    /// first final result freezes the live model's view, if there is one.
     fn ended(&mut self, presentation: &Presentation) {
         if *presentation == Presentation::Final {
-            self.frozen = true;
+            let live = self.held.is_some_and(|held| held.live);
+            self.finished.get_or_insert(live);
         } else {
             self.held = None;
             self.acquiring = false;
@@ -312,14 +316,16 @@ impl Terminal {
         }
     }
 
-    /// The frame just painted showed the applied restoration.
-    pub(crate) fn painted(&mut self) {
+    /// Whether the frame now painted on the host shows this terminal's
+    /// applied restoration: selected, uncovered and with room. Any other
+    /// frame closes input until one shows it again.
+    pub(crate) fn painted(&mut self, shown: bool) {
         if let Some(held) = self.held.as_mut()
             && let Phase::Applied { ready, .. } = held.phase
         {
             held.phase = Phase::Applied {
                 ready,
-                painted: true,
+                painted: shown,
             };
         }
     }
@@ -328,7 +334,7 @@ impl Terminal {
     /// controller and the host has room: once per period and desire, so a
     /// grant (a new period) always gets one.
     pub(crate) fn resize(&mut self, desire: TerminalSize) -> Option<Request> {
-        let held = self.held.as_mut()?;
+        let held = self.held.as_mut().filter(|_| self.finished.is_none())?;
         (held.resized != Some(desire)).then(|| {
             held.resized = Some(desire);
             Request::Resize(held.authority, desire)
@@ -338,7 +344,7 @@ impl Terminal {
     /// The authority input may use: control held, its restoration applied,
     /// Ready accepted and painted, and the model current.
     pub(crate) fn input(&self) -> Option<Authority> {
-        let held = self.held.filter(|_| !self.frozen)?;
+        let held = self.held.filter(|_| self.finished.is_none())?;
         let ready = Phase::Applied {
             ready: true,
             painted: true,
@@ -347,7 +353,7 @@ impl Terminal {
     }
 
     pub(crate) fn control(&self) -> Control {
-        if self.frozen {
+        if self.finished.is_some() {
             return Control::Ended;
         }
         match self.held {
@@ -365,14 +371,12 @@ impl Terminal {
 
     /// What to paint: the live model while control is held and a restoration
     /// was applied in this period (the last coherent frame while a newer one
-    /// is staged), or the view frozen at the command's end. A cache from an
-    /// earlier period is never shown.
+    /// is staged), or the view frozen at the command's end if it was live
+    /// then. A cache from an earlier period is never shown.
     pub(crate) fn view(&self) -> Option<View<'_>> {
         let live = self.held.is_some_and(|held| held.live);
-        self.model
-            .as_ref()
-            .filter(|_| live || self.frozen)
-            .map(Model::view)
+        let shown = self.finished.unwrap_or(live);
+        self.model.as_ref().filter(|_| shown).map(Model::view)
     }
 }
 
@@ -447,7 +451,7 @@ mod tests {
         assert_eq!(terminal.control(), Control::Restoring);
         terminal.present(Presentation::Begin(held, geometry(10, 3)));
         terminal.present(Presentation::Display(b"hi".to_vec()));
-        terminal.painted();
+        terminal.painted(true);
         assert_eq!(terminal.input(), None);
         assert_eq!(
             terminal.present(Presentation::Complete),
@@ -457,12 +461,12 @@ mod tests {
         let ready = Presentation::Answered(Request::Ready(held), Ok(()));
         terminal.present(ready.clone());
         assert_eq!(terminal.input(), None, "applied and ready, not painted");
-        terminal.painted();
+        terminal.painted(true);
         assert_eq!(terminal.input(), Some(held));
         assert_eq!(terminal.control(), Control::Controlling);
 
         let mut painted_first = restored(b"hi");
-        painted_first.painted();
+        painted_first.painted(true);
         assert_eq!(
             painted_first.input(),
             None,
@@ -479,7 +483,7 @@ mod tests {
     fn only_ready_accepted_for_the_applied_restoration_opens_input() {
         let held = authority(2, 3);
         let mut refused = restored(b"x");
-        refused.painted();
+        refused.painted(true);
         refused.present(Presentation::Answered(
             Request::Ready(held),
             Err("stale".into()),
@@ -487,7 +491,7 @@ mod tests {
         assert_eq!(refused.input(), None);
         assert_eq!(refused.error(), Some("stale"));
         let mut other = restored(b"x");
-        other.painted();
+        other.painted(true);
         other.present(Presentation::Answered(
             Request::Ready(authority(2, 4)),
             Ok(()),
@@ -510,7 +514,7 @@ mod tests {
         let mut terminal = restored(b"old\r\nrows");
         let ready = authority(2, 3);
         terminal.present(Presentation::Answered(Request::Ready(ready), Ok(())));
-        terminal.painted();
+        terminal.painted(true);
         let newer = authority(2, 4);
         terminal.present(Presentation::Begin(newer, geometry(10, 3)));
         assert_eq!(terminal.input(), None);
@@ -537,7 +541,7 @@ mod tests {
         let held = authority(2, 3);
         let mut terminal = restored(b"kept");
         terminal.present(Presentation::Answered(Request::Ready(held), Ok(())));
-        terminal.painted();
+        terminal.painted(true);
         terminal.present(Presentation::Geometry(geometry(10, 3)));
         terminal.present(Presentation::Display(b"!".to_vec()));
         assert_eq!(screen(&terminal).unwrap(), ["kept!", "", ""]);
@@ -597,7 +601,7 @@ mod tests {
         let held = authority(2, 3);
         let mut terminal = restored(b"done");
         terminal.present(Presentation::Answered(Request::Ready(held), Ok(())));
-        terminal.painted();
+        terminal.painted(true);
         terminal.present(Presentation::Final);
         assert_eq!(terminal.input(), None);
         assert_eq!(terminal.control(), Control::Ended);
@@ -605,6 +609,7 @@ mod tests {
         terminal.present(Presentation::Begin(authority(2, 4), geometry(10, 3)));
         assert_eq!(terminal.present(Presentation::Complete), None);
         terminal.present(Presentation::Revoked);
+        terminal.present(Presentation::Final);
         assert_eq!(screen(&terminal).unwrap(), ["done", "", ""]);
         assert_eq!(terminal.control(), Control::Ended);
 
@@ -614,6 +619,68 @@ mod tests {
         staged.present(Presentation::Final);
         assert_eq!(staged.present(Presentation::Complete), None);
         assert_eq!(screen(&staged).unwrap(), ["seen", "", ""]);
+    }
+
+    /// The owner's final-view rule (2026-11-14) with terminal-integration.md
+    /// ("a model from an earlier control period is never shown"): a Command
+    /// final after revocation, or while the period's first restoration is
+    /// still staged, freezes no view: neither the earlier period's cache nor
+    /// a blank model made up for the staging is shown.
+    #[test]
+    fn a_command_final_without_a_live_model_shows_no_view() {
+        let mut revoked = restored(b"cached");
+        revoked.present(Presentation::Revoked);
+        revoked.present(Presentation::Final);
+        assert!(revoked.view().is_none());
+        assert_eq!(revoked.control(), Control::Ended);
+
+        let mut first = Terminal::new(LIMITS);
+        let held = authority(2, 3);
+        first.acquire();
+        first.present(Presentation::Granted(held, geometry(10, 3)));
+        first.present(Presentation::Begin(held, geometry(10, 3)));
+        first.present(Presentation::Display(b"partial".to_vec()));
+        first.present(Presentation::Final);
+        assert_eq!(first.present(Presentation::Complete), None);
+        assert!(first.view().is_none());
+
+        let mut again = restored(b"cached");
+        again.present(Presentation::Revoked);
+        again.acquire();
+        let next = authority(4, 5);
+        again.present(Presentation::Granted(next, geometry(10, 3)));
+        again.present(Presentation::Begin(next, geometry(10, 3)));
+        again.present(Presentation::Display(b"partial".to_vec()));
+        again.present(Presentation::Final);
+        again.present(Presentation::Revoked);
+        assert!(again.view().is_none());
+    }
+
+    /// Review of 8582801 (painted is not sticky): input needs the frame on
+    /// the host to show the applied restoration now. A frame that does not
+    /// (covered, too small, or another session selected) closes input and
+    /// the Controlling label until a frame shows it again.
+    #[test]
+    fn a_frame_that_stops_showing_the_restoration_closes_input() {
+        let held = authority(2, 3);
+        let mut terminal = restored(b"x");
+        terminal.present(Presentation::Answered(Request::Ready(held), Ok(())));
+        terminal.painted(true);
+        assert_eq!(terminal.input(), Some(held));
+        terminal.painted(false);
+        assert_eq!(terminal.input(), None);
+        assert_eq!(terminal.control(), Control::Restoring);
+        terminal.painted(true);
+        assert_eq!(terminal.input(), Some(held));
+        assert_eq!(terminal.control(), Control::Controlling);
+    }
+
+    /// CTL-05 (pure supplement): a finished session is sent no Resize.
+    #[test]
+    fn a_finished_session_is_sent_no_resize() {
+        let mut terminal = restored(b"x");
+        terminal.present(Presentation::Final);
+        assert_eq!(terminal.resize(TerminalSize { cols: 80, rows: 23 }), None);
     }
 
     /// CTL-05 (pure supplement): Resize goes once per grant and desire,

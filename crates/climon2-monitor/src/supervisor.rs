@@ -223,7 +223,8 @@ impl Phase {
 
 struct Instance {
     phase: Phase,
-    /// Submitted requests awaiting their answers, by request ID.
+    /// Accepted requests awaiting their answers, by request ID: at most
+    /// [`State::ledger`].
     pending: BTreeMap<u64, Request>,
     /// The next request ID; Open is 1.
     next: u64,
@@ -240,6 +241,9 @@ struct State {
     waiting: BTreeMap<(Reverse<Timestamp>, SessionId), SessionMetadata>,
     releases: BTreeMap<VersionName, Release>,
     instances: BTreeMap<SessionId, Instance>,
+    /// The most requests one instance's pending ledger holds: every request
+    /// its library may have accepted, queued or under way.
+    ledger: usize,
 }
 
 /// What scheduling does for one waiting session.
@@ -252,7 +256,10 @@ enum Step {
 impl State {
     fn new(context: Context, report: Sender<(SessionId, ClientEvent)>) -> Self {
         let (internal, internals) = mpsc::channel();
+        let limits = context.limits;
+        let accepted = limits.request_records as usize + limits.operations as usize;
         Self {
+            ledger: accepted,
             context: Arc::new(context),
             report,
             internal,
@@ -352,9 +359,11 @@ impl State {
         }
     }
 
-    /// Submits one request and remembers it until its answer. A refused
-    /// request consumes no request ID.
+    /// Submits one request and enters it in the pending ledger once the
+    /// library accepts it. A request refused, here or by the library,
+    /// consumes no request ID.
     fn submit_one(&mut self, id: &SessionId, request: Request) -> Result<(), (Request, String)> {
+        let capacity = self.ledger;
         let open = self
             .instances
             .get_mut(id)
@@ -365,15 +374,17 @@ impl State {
         let Some((live, instance)) = open else {
             return Err((request, "the session's client is not connected".to_owned()));
         };
-        let request_id = instance.next;
-        match live.client.submit(request_id, &request) {
-            Ok(()) => {
-                instance.next += 1;
-                instance.pending.insert(request_id, request);
-                Ok(())
-            }
-            Err(why) => Err((request, why)),
+        if instance.pending.len() >= capacity {
+            let why = "too many requests are awaiting their answers".to_owned();
+            return Err((request, why));
         }
+        let request_id = instance.next;
+        if let Err(why) = live.client.submit(request_id, &request) {
+            return Err((request, why));
+        }
+        instance.next += 1;
+        instance.pending.insert(request_id, request);
+        Ok(())
     }
 
     /// A request's answer goes to the session's terminal as its request.
