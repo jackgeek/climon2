@@ -9,7 +9,7 @@
 mod support;
 
 use serde_json::{Value, json};
-use support::{Package, control::*, passive::*};
+use support::{Package, control::*, library::CHARGE, passive::*};
 
 /// What the fake daemon advertises: the real one's families, focus too.
 const ADVERTISED: [&str; 8] = [
@@ -1098,5 +1098,117 @@ fn installed_library_relays_one_command_final_after_the_initial_metadata() {
     );
     let (second, _) = finished(step(&report, finishes[1].1));
     assert_final(&second[2], 1, command_result(EXIT, 0));
+    assert_all_released(&report["ledger"]);
+}
+
+/// COM-03 Library and Fault (backpressure is the caller's, never a false
+/// timeout): while a Display waits for room in `event_bytes`, the library
+/// reads nothing, so an answer behind it cannot arrive; the Ready
+/// waiting for it is not timed out at `operation_ms` (1 s). Instead,
+/// once the waiting Display has had no room for `delivery_stall_ms`
+/// (2 s), the connection fails with library `delivery_stalled`: the
+/// Ready stays unanswered for the caller's pending ledger, never
+/// fabricated, and what was queued before is still delivered, then the
+/// diagnostic, whose static text costs only its record.
+#[test]
+fn installed_library_fails_a_stalled_delivery_without_timing_out_its_commands() {
+    let package = Package::new();
+    let chunk = 2048;
+    let metadata = 1024;
+    let reserve = CHARGE + metadata;
+    let one_display = CHARGE + chunk;
+    let big = "41".repeat(chunk as usize);
+    let peer = attached_peer(json!({
+        "ready": [
+            shown(PERIOD, 2, &big),
+            shown(PERIOD, 2, &big),
+            answered(
+                "ready",
+                "ok",
+                json!({ "kind": "ready", "changed": true, "period": "2", "restoration_id": "2" }),
+                Value::Null,
+            ),
+        ],
+    }));
+    let limits = json!({
+        "chunk_bytes": chunk,
+        "metadata_record_bytes": metadata,
+        "event_bytes": reserve + one_display + CHARGE,
+        "operation_ms": 1000,
+        "delivery_stall_ms": 2000,
+    });
+    let then = [
+        json!({ "do": "submit", "request": ready(2, 1, CURRENT) }),
+        json!({ "do": "wait_run" }),
+    ];
+    let mut plan = Plan::new();
+    plan.add(
+        "stalled",
+        attached("stalled", peer, json!({ "limits": limits }), &then),
+    );
+    let (report, finishes) = plan.run(&package);
+    let (records, terminal) = finished(step(&report, finishes[0].1));
+    assert_eq!(tags(&records), [DISPLAY, DIAGNOSTIC], "{records:#?}");
+    assert_eq!(display(&records, 1, [PERIOD, 2]), big);
+    assert_diagnostic(&records[1], 1, ORIGIN_LIBRARY, "delivery_stalled");
+    assert_terminal(
+        terminal,
+        1,
+        (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED),
+        Some((ORIGIN_LIBRARY, "delivery_stalled")),
+    );
+    assert_eq!(
+        kinds(&report["peers"]["stalled"]),
+        ["hello", "open", "ready"]
+    );
+    assert_all_released(&report["ledger"]);
+}
+
+/// COM-03 Library and Fault (a wait for event room ends with it): a
+/// Display split into two `chunk_bytes` records, of which only the first
+/// fits `event_records`, waits until the caller releases what it drained;
+/// once queued, nothing waits, so no stall deadline remains, and a Ready
+/// the daemon never answers then reports `timeout` at `operation_ms`
+/// (300 ms), well before `delivery_stall_ms` (1 s) from the wait.
+#[test]
+fn installed_library_times_commands_out_again_once_waiting_records_are_queued() {
+    let package = Package::new();
+    let mut records = attach_records(&ATTACHED);
+    records.push(shown(PERIOD, 2, "4243"));
+    let mut peer = attached_peer(json!({ "ready": ["hold"] }));
+    peer["open"] = json!(records);
+    let limits = json!({
+        "chunk_bytes": 1,
+        "event_records": 7,
+        "operation_ms": 300,
+        "delivery_stall_ms": 1000,
+    });
+    let steps = vec![
+        json!({ "do": "create", "peer": peer, "startup": { "limits": limits } }),
+        json!({ "do": "submit", "request": interactive(1, 80, 24) }),
+        json!({ "do": "run" }),
+        json!({ "do": "await_snapshot", "gauge": "event_records", "value": 7 }),
+        json!({ "do": "drain", "until": { "display": "42" } }),
+        json!({ "do": "drain", "until": { "display": "43" }, "as": "queued" }),
+        json!({ "do": "submit", "request": ready(2, 1, CURRENT) }),
+        json!({ "do": "wait_run" }),
+        json!({ "do": "finish", "as": "finished" }),
+    ];
+    let report = script(&package, &root(&package), json!(steps));
+    assert_eq!(
+        tags(&drained(&report, &steps, "queued")),
+        [DISPLAY],
+        "the waiting chunk"
+    );
+    let (rest, terminal) = finished(labelled(&report, &steps, "finished"));
+    assert_eq!(tags(&rest), [RESPONSE, DIAGNOSTIC], "{rest:#?}");
+    assert_response(&rest[0], 1, 2, INDETERMINATE);
+    assert_diagnostic(&rest[1], 1, ORIGIN_LIBRARY, "timeout");
+    assert_terminal(
+        terminal,
+        1,
+        (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED),
+        Some((ORIGIN_LIBRARY, "timeout")),
+    );
     assert_all_released(&report["ledger"]);
 }

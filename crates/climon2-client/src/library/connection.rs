@@ -37,6 +37,10 @@ const OVERSIZED: Fault = Fault::library(
     "resource_limit",
     "a record from the session daemon exceeds metadata_record_bytes",
 );
+const STALLED: Fault = Fault::library(
+    "delivery_stalled",
+    "no record waiting for event room was queued within delivery_stall_ms",
+);
 const UNFOCUSED: Fault = Fault::library(
     "unsupported_capability",
     "focus-v1 is not selected on this connection",
@@ -73,6 +77,9 @@ struct Driver<'a> {
     /// Records waiting, in order, for room in the event allowance: one
     /// daemon record's, split to `chunk_bytes`. Nothing is read meanwhile.
     parked: VecDeque<Event>,
+    /// While records wait: when the connection fails unless one of them
+    /// is queued first.
+    stall: Option<Instant>,
     shutdown: bool,
     departure: Departure,
     ended: bool,
@@ -87,6 +94,7 @@ impl<'a> Driver<'a> {
             connection: None,
             start: None,
             parked: VecDeque::new(),
+            stall: None,
             shutdown: false,
             departure: Departure::NOT_REQUIRED,
             ended: false,
@@ -273,21 +281,32 @@ impl<'a> Driver<'a> {
         self.service();
     }
 
-    /// Queues the waiting records, oldest first, while they fit.
+    /// Queues the waiting records, oldest first, while they fit. Each one
+    /// queued is progress: `delivery_stall_ms` then bounds the wait for
+    /// the next one afresh.
     fn unpark(&mut self) {
         while let Some(event) = self.parked.pop_front() {
-            if let Some(event) = self.shared.offer(event) {
-                self.parked.push_front(event);
-                break;
-            }
+            let Some(event) = self.shared.offer(event) else {
+                self.stall = None;
+                continue;
+            };
+            self.parked.push_front(event);
+            break;
+        }
+        if !self.parked.is_empty() {
+            let stall_ms = Duration::from_millis(self.shared.limits().delivery_stall_ms.into());
+            self.stall.get_or_insert_with(|| Instant::now() + stall_ms);
         }
     }
 
-    /// The earliest deadline that applies: an unanswered request's, or the
-    /// Open's until its Initial metadata.
+    /// The deadline that applies: while records wait for room, nothing
+    /// is read, so only the stall's; otherwise the earliest of an
+    /// unanswered request's and the Open's until its Initial metadata.
     fn deadline(&self) -> Option<Instant> {
-        let start = self.start.filter(|_| !self.stream.synchronized());
-        self.stream.deadline().into_iter().chain(start).min()
+        self.stall.or_else(|| {
+            let start = self.start.filter(|_| !self.stream.synchronized());
+            self.stream.deadline().into_iter().chain(start).min()
+        })
     }
 
     fn service(&mut self) {
@@ -395,9 +414,19 @@ impl<'a> Driver<'a> {
         }
     }
 
+    /// Records that waited too long fail the connection with
+    /// `delivery_stalled`, the requests they hold back unanswered;
+    /// otherwise the request a deadline bounded reports `timeout`.
+    fn timed_out(&mut self) {
+        match self.stall {
+            Some(_) => self.broken(STALLED),
+            None => self.late(),
+        }
+    }
+
     /// The request a deadline bounded reports `timeout`, as indeterminate:
     /// it was sent. The connection then fails.
-    fn timed_out(&mut self) {
+    fn late(&mut self) {
         let leaving = self.stream.leaving();
         if let Some(id) = self.stream.expire() {
             self.taken.answer(Response::uncertain(id, TIMEOUT));
