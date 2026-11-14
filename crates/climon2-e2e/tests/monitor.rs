@@ -1413,14 +1413,6 @@ fn library_logs(package: &Package, id: &str) -> Vec<PathBuf> {
     logs
 }
 
-/// How often the monitor's general log records starting a client for `id`.
-fn client_starts(package: &Package, id: &str) -> usize {
-    monitor_log(package)
-        .lines()
-        .filter(|line| line.contains("client starting") && line.contains(id))
-        .count()
-}
-
 /// Waits until a row of the host screen contains `text`.
 fn shows_row(terminal: &mut Terminal, text: &str) {
     terminal
@@ -1460,7 +1452,6 @@ fn sessions_appear_as_they_are_created_each_with_one_passive_client() {
     let untitled = headless(&package, ": untitled", "finish");
     shows_row(&mut terminal, "║Unavailable /bin/bash -c : untitled");
     for id in [&titled, &untitled] {
-        assert_eq!(client_starts(&package, id), 1, "{id}");
         let logs = library_logs(&package, id);
         assert_eq!(logs.len(), 1, "{logs:?}");
     }
@@ -1499,10 +1490,42 @@ fn sessions_appear_as_they_are_created_each_with_one_passive_client() {
 /// How a fake daemon answers each connection.
 #[derive(Clone, Copy)]
 enum Answer {
-    /// The frozen hello as `id`, then hang up.
+    /// The hello as `id`, advertising `daemon-wire-v1` and `monitor-v1`;
+    /// then, if the peer goes on to send anything (a client's Open, never a
+    /// probe), record it and hang up.
     Hello(&'static str),
     /// Read the hello and never answer, until the prober hangs up.
     Silent,
+}
+
+/// What a fake daemon heard, in the order its threads recorded it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Heard {
+    /// A connection was accepted.
+    Connected,
+    /// After the hello, the peer sent more: a client, not a probe.
+    Client,
+    /// The daemon is about to hang up on that client.
+    HangingUp,
+    /// The peer hung up a silent connection.
+    Closed,
+}
+
+/// Every fake daemon's record of one test: when, which session, what.
+type Ear = std::sync::Arc<std::sync::Mutex<Vec<(Instant, &'static str, Heard)>>>;
+
+fn hear(ear: &Ear, id: &'static str, heard: Heard) {
+    ear.lock().unwrap().push((Instant::now(), id, heard));
+}
+
+/// What `ear` recorded of kind `heard`, in order.
+fn heard(ear: &Ear, heard: Heard) -> Vec<(Instant, &'static str)> {
+    ear.lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, _, kind)| *kind == heard)
+        .map(|(at, id, _)| (*at, *id))
+        .collect()
 }
 
 /// A fake daemon on its own socket, answering every connection until
@@ -1532,7 +1555,13 @@ fn fake_metadata(package: &Package, id: &str, created: &str, socket: &Path) -> P
 }
 
 impl FakeDaemon {
-    fn start(package: &Package, id: &str, created: &str, answer: Answer) -> Self {
+    fn start(
+        package: &Package,
+        id: &'static str,
+        created: &str,
+        answer: Answer,
+        ear: &Ear,
+    ) -> Self {
         let socket = package
             .isolation
             .home()
@@ -1542,14 +1571,17 @@ impl FakeDaemon {
         listener.set_nonblocking(true).unwrap();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopped = stop.clone();
+        let ear = ear.clone();
         let thread = thread::spawn(move || {
             while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
                 let Ok((mut connection, _)) = listener.accept() else {
                     thread::sleep(Duration::from_millis(5));
                     continue;
                 };
+                hear(&ear, id, Heard::Connected);
                 connection.set_nonblocking(false).unwrap();
-                thread::spawn(move || answer_once(&mut connection, answer));
+                let ear = ear.clone();
+                thread::spawn(move || answer_once(&mut connection, id, answer, &ear));
             }
         });
         Self {
@@ -1561,20 +1593,46 @@ impl FakeDaemon {
     }
 }
 
-fn answer_once(connection: &mut std::os::unix::net::UnixStream, answer: Answer) {
+fn answer_once(
+    connection: &mut std::os::unix::net::UnixStream,
+    id: &'static str,
+    answer: Answer,
+    ear: &Ear,
+) {
+    use climon2_core::{
+        hello::{Lifecycle, SessionState, advertise_revision1},
+        protocol::{HelloReply, read_frame, write_frame},
+        wire::{Advertisement, Family, FrameLimit, FrameLimits},
+    };
     use std::io::Read;
-    let _ = climon2_core::protocol::read_frame(connection);
+    let _ = connection.set_read_timeout(Some(TIMEOUT));
+    let _ = read_frame(connection);
     match answer {
-        Answer::Hello(id) => {
-            let body = format!(
-                "{{\"session_id\":\"{id}\",\"climon2_version\":\"{VERSION}\",\"protocol\":1}}"
+        Answer::Hello(answered) => {
+            let reply = HelloReply {
+                session_id: answered.parse().unwrap(),
+                climon2_version: VERSION.parse().unwrap(),
+                protocol: 1,
+            };
+            let limit = FrameLimit::new(1_048_576).unwrap();
+            let revision1 = Advertisement::new(
+                [Family::DaemonWireV1, Family::MonitorV1],
+                FrameLimits {
+                    max_request_frame_bytes: limit,
+                    max_server_frame_bytes: limit,
+                },
             );
-            let reply = climon2_core::protocol::Frame::new(1, body.into_bytes()).unwrap();
-            let _ = climon2_core::protocol::write_frame(connection, &reply);
+            let state = SessionState::new(Lifecycle::Detached, 0, false).unwrap();
+            let hello = advertise_revision1(&reply, state, &revision1).unwrap();
+            let _ = write_frame(connection, &hello);
+            if connection.read(&mut [0; 1]).is_ok_and(|read| read > 0) {
+                hear(ear, id, Heard::Client);
+                hear(ear, id, Heard::HangingUp);
+            }
         }
         Answer::Silent => {
-            let _ = connection.set_read_timeout(Some(TIMEOUT));
             let _ = connection.read_to_end(&mut Vec::new());
+            hear(ear, id, Heard::Closed);
         }
     }
 }
@@ -1628,17 +1686,20 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
     let mut padded = fs::read(&oversized).unwrap();
     padded.resize(4097, b' ');
     fs::write(&oversized, &padded).unwrap();
+    let ear = Ear::default();
     let mismatched = FakeDaemon::start(
         &package,
         "0d5c0000-0000-4000-8000-0000000000f2",
         "2026-01-01T00:00:00.000Z",
         Answer::Hello("0d5c0000-0000-4000-8000-0000000000ff"),
+        &ear,
     );
     let silent = FakeDaemon::start(
         &package,
         "0d5c0000-0000-4000-8000-0000000000f3",
         "2025-01-01T00:00:00.000Z",
         Answer::Silent,
+        &ear,
     );
     let mut terminal = outer(&package, "c2 monitor");
     terminal
@@ -1682,13 +1743,8 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, "║Unavailable Live");
     fs::rename(&parked, &live_metadata).unwrap();
-    assert_eq!(client_starts(&package, &live), 1);
     assert_eq!(library_logs(&package, &live).len(), 1);
-    for fake in ["0000000000f2", "0000000000f3"] {
-        assert!(!monitor_log(&package).contains(&format!(
-            "client starting session=0d5c0000-0000-4000-8000-{fake}"
-        )));
-    }
+    assert_eq!(heard(&ear, Heard::Client), []);
     for file in [
         &malformed,
         &oversized,
@@ -1709,6 +1765,8 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
 /// DSC-01 (Monitor, start-order case): with `scheduling.starts` at 1, clients
 /// start one at a time, newest created first, with ascending full session ID
 /// breaking ties; each start waits for the one before it to open or fail.
+/// The fake daemons are the oracle: each records a client (a peer that sends
+/// Open after the hello, which a probe never does) before hanging up on it.
 #[test]
 fn clients_start_one_at_a_time_newest_first_with_ascending_id_ties() {
     let package = Package::new();
@@ -1732,9 +1790,10 @@ fn clients_start_one_at_a_time_newest_first_with_ascending_id_ties() {
             "2026-01-01T00:00:02.000Z",
         ),
     ];
+    let ear = Ear::default();
     let fakes: Vec<_> = ids
         .iter()
-        .map(|&(id, created)| FakeDaemon::start(&package, id, created, Answer::Hello(id)))
+        .map(|&(id, created)| FakeDaemon::start(&package, id, created, Answer::Hello(id), &ear))
         .collect();
     let mut terminal = outer(&package, "c2 monitor");
     terminal
@@ -1744,39 +1803,80 @@ fn clients_start_one_at_a_time_newest_first_with_ascending_id_ties() {
     for (id, _) in ids {
         shows_row(&mut terminal, &format!("║Unavailable fake {id}"));
     }
-    let log = monitor_log(&package);
-    let events: Vec<_> = log
-        .lines()
-        .filter_map(|line| {
-            let kind = ["client starting", "client ended", "client open refused"]
-                .into_iter()
-                .find(|kind| line.contains(kind))?;
-            let id = ids.iter().find(|(id, _)| line.contains(id))?.0;
-            Some((kind, id))
-        })
-        .collect();
-    let starts: Vec<_> = events
+    let order = [ids[2].0, ids[3].0, ids[0].0, ids[1].0];
+    let events: Vec<_> = ear
+        .lock()
+        .unwrap()
         .iter()
-        .filter(|(kind, _)| *kind == "client starting")
-        .map(|(_, id)| *id)
+        .filter(|(_, _, heard)| matches!(heard, Heard::Client | Heard::HangingUp))
+        .map(|(_, id, heard)| (*id, *heard))
         .collect();
-    assert_eq!(starts, [ids[2].0, ids[3].0, ids[0].0, ids[1].0], "{log}");
-    for pair in starts.windows(2) {
-        let start = |id| {
-            events
-                .iter()
-                .position(|event| *event == ("client starting", id))
-                .unwrap()
-        };
-        let settled = events
-            .iter()
-            .position(|(kind, id)| *id == pair[0] && *kind != "client starting")
-            .unwrap_or(usize::MAX);
-        assert!(settled < start(pair[1]), "{log}");
-    }
+    let expected: Vec<_> = order
+        .iter()
+        .flat_map(|id| [(*id, Heard::Client), (*id, Heard::HangingUp)])
+        .collect();
+    assert_eq!(events, expected);
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
     drop(fakes);
+    package.assert_clean();
+}
+
+/// DSC-03 (Monitor, cadence cases): discovery starts at once, and each later
+/// pass starts a second after the previous one finished, never overlapping
+/// it, even when the selector is opened during a pass. A silent daemon holds
+/// each pass's probe for the frozen two-second hello deadline, so its
+/// probes are at least three seconds apart; a zero cadence, or one measured
+/// from the pass's start, would put them two seconds apart. The bound
+/// allows half a second of observer lag.
+#[test]
+fn discovery_passes_start_a_second_after_the_previous_one_ends_without_overlap() {
+    let package = Package::new();
+    without_introduction(&package);
+    let ear = Ear::default();
+    let silent = FakeDaemon::start(
+        &package,
+        "0d5c0000-0000-4000-8000-0000000000c1",
+        "2026-01-01T00:00:00.000Z",
+        Answer::Silent,
+        &ear,
+    );
+    let started = Instant::now();
+    let mut terminal = outer(&package, "c2 monitor");
+    let probes = |count: usize| {
+        let deadline = Instant::now() + TIMEOUT;
+        while heard(&ear, Heard::Connected).len() < count {
+            assert!(Instant::now() < deadline, "{:?}", ear.lock().unwrap());
+            thread::sleep(Duration::from_millis(10));
+        }
+    };
+    probes(1);
+    // The first pass is still probing: open the selector during it.
+    assert_eq!(heard(&ear, Heard::Closed), []);
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "║Unavailable fake");
+    probes(3);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    drop(silent);
+    let ear = ear.lock().unwrap().clone();
+    assert!(ear[0].0 - started < TIMEOUT);
+    // The third probe may still be open when the monitor exits.
+    let kinds: Vec<_> = ear.iter().map(|(_, _, heard)| *heard).take(5).collect();
+    assert_eq!(
+        kinds,
+        [Heard::Connected, Heard::Closed].repeat(3)[..5],
+        "passes overlapped: {ear:?}"
+    );
+    let connected: Vec<_> = ear
+        .iter()
+        .filter(|(_, _, heard)| *heard == Heard::Connected)
+        .map(|(at, _, _)| *at)
+        .collect();
+    for pair in connected.windows(2) {
+        let apart = pair[1] - pair[0];
+        assert!(apart >= Duration::from_millis(2500), "{apart:?}: {ear:?}");
+    }
     package.assert_clean();
 }
 
@@ -1847,7 +1947,6 @@ fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
 
     let own = listed(&package, "c2 monitor");
     let own = own["session_id"].as_str().unwrap();
-    assert_eq!(client_starts(&package, own), 0);
     assert!(library_logs(&package, own).is_empty());
     assert_eq!(listed(&package, "Nested")["depth"], 2);
     assert_eq!(
@@ -1897,7 +1996,9 @@ fn highlighted_rows(terminal: &Terminal) -> Vec<usize> {
 /// SEL-01 (Monitor, basic cases): prefix+s overlays the captionless double
 /// border with status and title columns and the first row highlighted,
 /// reversed; Up and Down move the highlight without wrapping, prefix+s while
-/// open changes nothing, and Escape closes it, back to the body. Opening it
+/// open changes nothing, and Escape closes it, back to the body. Every step
+/// is followed by a key with a known effect, so a step that wrapped or
+/// reopened the selector ends on another row. Opening it
 /// never resizes or acquires a session: the sessions keep their size and
 /// stay detached.
 #[test]
@@ -1909,8 +2010,9 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
             "stty size > \"$HOME/{name}.size\"; trap 'touch \"$HOME/{name}.winch\"' WINCH; printf '\\033]2;{name}\\007'"
         )
     };
-    headless(&package, &sized("A1"), "finish");
-    headless(&package, &sized("B2"), "finish");
+    for name in ["A1", "B2", "C3"] {
+        headless(&package, &sized(name), "finish");
+    }
     let mut terminal = outer(&package, "c2 monitor");
     let body = empty_monitor(
         ROWS,
@@ -1921,15 +2023,26 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
     terminal.send("\x1ds").unwrap();
-    let open = with_selector(&body, &[("Unavailable", "B2"), ("Unavailable", "A1")]);
+    let open = with_selector(
+        &body,
+        &[
+            ("Unavailable", "C3"),
+            ("Unavailable", "B2"),
+            ("Unavailable", "A1"),
+        ],
+    );
     shows(&mut terminal, &open);
     assert_eq!(highlighted_rows(&terminal), [3]);
+    // Each step's keys end on a row that differs from where the step
+    // started, and that no wrapping, dropped or reopening step could reach:
+    // Up at the top then Down; Down at the bottom then Up; prefix+s while
+    // open, which must not reopen on the first row, then Down.
     for (keys, expected) in [
-        (&b"\x1b[A"[..], 3),
-        (b"\x1b[B", 4),
-        (b"\x1b[B", 4),
-        (b"\x1ds", 4),
-        (b"\x1b[A", 3),
+        (&b"\x1b[A\x1b[B"[..], 4),
+        (b"\x1b[B", 5),
+        (b"\x1b[B\x1b[A", 4),
+        (b"\x1ds\x1b[B", 5),
+        (b"\x1b[A\x1b[A", 3),
     ] {
         terminal.send(keys).unwrap();
         let deadline = Instant::now() + TIMEOUT;
@@ -1952,7 +2065,7 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
     assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
     let home = package.isolation.home();
-    for name in ["A1", "B2"] {
+    for name in ["A1", "B2", "C3"] {
         assert_eq!(
             fs::read_to_string(home.join(format!("{name}.size")))
                 .unwrap()
