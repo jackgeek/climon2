@@ -55,8 +55,9 @@ storage returns `CM1_INVALID_ARGUMENT`; containable bootstrap failure returns
 not as a malformed description: a later load may succeed. A
 `CM1_INTERNAL_ERROR` that leaves the output storage as the caller set it, or
 sets it, breaks this contract and is a malformed description, which is not
-recoverable (owner decision on
-[#84](https://github.com/jackgeek/climon2/issues/84)). No other bootstrap
+recoverable: a caller must not rely on a retry (owner decision on
+[#84](https://github.com/jackgeek/climon2/issues/84)). A loader need not
+remember a refusal, so a retry repeats the load and its checks. No other bootstrap
 results are permitted. Bootstrap opens
 no [daemon](../../../GLOSSARY.md#sessions) connection and creates no instance.
 Description, table, [capability](../../../GLOSSARY.md#sessions) tokens and release

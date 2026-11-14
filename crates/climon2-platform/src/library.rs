@@ -15,7 +15,9 @@
 //! once the installation is repaired, and a contained bootstrap failure can
 //! pass. Once the file is open, though, the process keeps that image, so a
 //! later load opens it again and repeats any refusal of its symbol or
-//! description, whatever has happened to the file since.
+//! description, whatever has happened to the file since. Such a refusal is
+//! "not recoverable" only in that a caller must not rely on a retry; the
+//! loader does not remember it.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 compile_error!("client library loading requires macOS or Linux");
 
