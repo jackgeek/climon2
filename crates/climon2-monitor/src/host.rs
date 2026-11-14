@@ -128,12 +128,12 @@ impl Host {
     }
 
     fn read(&mut self) -> io::Result<&[u8]> {
-        let count = self.input.read(&mut self.buffer)?;
+        let count = self
+            .input
+            .read(&mut self.buffer)
+            .map_err(|error| failed(error, "cannot read host input"))?;
         match &self.buffer[..count] {
-            [] => Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "the host terminal closed",
-            )),
+            [] => Err(closed()),
             bytes => Ok(bytes),
         }
     }
@@ -144,10 +144,21 @@ fn interrupted(error: io::Error) -> io::Result<bool> {
     if error.kind() == io::ErrorKind::Interrupted {
         return Ok(false);
     }
-    Err(io::Error::new(
-        error.kind(),
-        format!("cannot wait for host input: {error}"),
-    ))
+    Err(failed(error, "cannot wait for host input"))
+}
+
+/// A host terminal that hangs up ends its input, but Linux fails reads with
+/// EIO while it is still hanging the terminal up, so EIO is the closed host
+/// terminal too. Any other failure names what failed.
+fn failed(error: io::Error, doing: &str) -> io::Error {
+    if error.raw_os_error() == Some(libc::EIO) {
+        return closed();
+    }
+    io::Error::new(error.kind(), format!("{doing}: {error}"))
+}
+
+fn closed() -> io::Error {
+    io::Error::new(io::ErrorKind::UnexpectedEof, "the host terminal closed")
 }
 
 /// The monitor owns the host output: nothing else writes to stdout.
