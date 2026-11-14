@@ -1,6 +1,9 @@
 # Event delivery
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification. The
+[client library](../../../GLOSSARY.md#sessions) implements drain and delivery
+release ([#85](https://github.com/jackgeek/climon2/issues/85)); the only records
+it delivers yet are its own [diagnostics](event-diagnostic.md).**
 The [client](../../../GLOSSARY.md#sessions) delivers an
 [event](../TERMS.md#event) to the [monitor](../../../GLOSSARY.md#sessions).
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

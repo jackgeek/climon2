@@ -251,6 +251,9 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
 - `monitor.show_key_hints` (default true) hides the [monitor](#monitor)'s
   implicit key hints when false, never a binding or application text. Today
   the empty state's hint is the only one; the planned hints below follow it.
+  False also keeps the key introduction from opening at startup; the escape
+  prefix followed by `?` still opens it, and your **Don't show again** choice
+  is kept apart and never changes this setting.
 - `monitor.bell` (default true) is validated; the toasts whose bell it
   silences are planned.
 - `monitor.limits` holds the [operational limits](docs/monitor-operational-limits.md),
@@ -302,10 +305,10 @@ auto-creation or live reload.
 The [agreed terminal integration](docs/protocol/terminal-integration.md) provides
 interactive terminal input/rendering, internal normal-screen history, one top
 status row, and explicit control/restoration gates. Of these, the
-[monitor](#monitor) implements only its top row, empty state and exits so far,
-and already treats pasted shortcuts as data. It reads the configuration above
-once, before changing terminal state. Null takeover is allowed because selector
-confirmation can acquire control. Lowercase prefix+s
+[monitor](#monitor) implements only its top row, empty state, exits and key
+introduction so far, and already treats pasted shortcuts as data. It reads the
+configuration above once, before changing terminal state. Null takeover is
+allowed because selector confirmation can acquire control. Lowercase prefix+s
 opens the selector, prefix+x exits, and **prefix+j** jumps to the most recent
 currently connected session needing attention, not necessarily a toast's session.
 Prefix+? opens the [key introduction/help dialog](docs/monitor-selector.md#key-introduction-and-help).
@@ -314,13 +317,9 @@ Uppercase J is unknown literal input; bracketed pasted shortcuts remain data.
 Needs-attention toasts will hint the actual configured prefix plus lowercase j
 and describe a dynamic most-recent jump, unless `monitor.show_key_hints` is false.
 
-The planned modal introduction opens automatically on startup when key hints
-are enabled and **Don't show again** has not been saved. It initially introduces
-the configured prefix followed by x (exit), s (session list), and ? (help).
-The checkbox stores a reversible preference separately from configuration,
-per climon2 home across restarts/releases; save failures are explicit.
-Prefix+? always opens the dialog, even with hints disabled or startup display
-suppressed. Enter closes it; Escape follows configured-prefix handling.
+Help opened over the selector will keep the selector's search and highlight
+and return to them when it closes, without acquiring or acknowledging
+anything.
 
 With toasts, `monitor.bell` false will suppress the explicit host bell, not
 toasts or OSC 7501 reports; host settings govern actual audibility.
@@ -412,6 +411,47 @@ described for clients above, restores its settings (termios) exactly and never
 changes its title; only then does it print any error, with status 125. It logs
 to the general log in the climon2 home, including its effective
 configuration as JSON, never your input.
+
+Until you turn it off, the monitor starts with its key introduction over the
+empty state, listing its keys with your escape prefix:
+
+```text
+┌ Keys ────────────────────────────────┐
+│ Ctrl+] then x  Exit the monitor      │
+│ Ctrl+] then s  Open the session list │
+│ Ctrl+] then ?  Show this dialog      │
+│                                      │
+│ [ ] Don't show again (Space)         │
+│                                      │
+│ Continue (Enter)                     │
+└──────────────────────────────────────┘
+```
+
+Enter continues to the empty state. Space checks **Don't show again**, or
+clears it again, and saves your choice at once: while it is checked, later
+starts with the same climon2 home open on the empty state. The introduction
+also stays closed while `monitor.show_key_hints` is false. Whatever either
+says, the escape prefix followed by `?` opens the same dialog as help,
+showing your saved choice; doing so while it is open changes nothing. The
+dialog takes every other key and any paste, and none of them does anything
+else; the escape prefix followed by `x` still exits. The escape prefix pressed
+twice reaches the dialog as that key, so with `Ctrl+M` (Enter) as the prefix,
+Enter Enter continues. There is no session list for `s` to open yet, and
+Escape does not close the dialog: with `Ctrl+[` as the prefix it never can,
+because Escape is the prefix.
+
+The choice lives in `<climon2 home>/monitor-preferences.json`, apart from
+`config.jsonc`: `{"version":1,"suppress_key_introduction":true}`. Every
+release reads it, whatever its version, ignoring fields it does not know. The
+monitor writes it only when you change the box, as a new file readable only by
+you (`monitor-preferences.json.<pid>.tmp`) renamed over the old one; before
+that, it removes any such file that a monitor no longer running left behind,
+interrupted before its rename. If the file cannot be read or is malformed, the
+introduction opens with the reason under its unchecked box (with key hints
+off, the empty state shows the reason instead), and the file is left as it is
+until you change the box. If a save fails, the dialog says why under the box,
+which keeps showing the saved choice; with key hints off, the empty state says
+so too. The general log records these problems and each saved choice.
 
 ## Terminal compatibility
 
