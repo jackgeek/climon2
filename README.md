@@ -387,7 +387,9 @@ for consumption relationships between climon2 crates, including test tooling.
 cargo test --workspace --locked
 cargo xtask setup-quality
 cargo xtask check
-cargo xtask check --mutate-all
+cargo xtask check --print-mutation-plan
+cargo xtask check --full
+cargo xtask check --full --mutate-all
 cargo xtask dist
 cargo xtask install
 cargo xtask install --dir "$HOME/tools/climon2"
@@ -419,13 +421,40 @@ follows available CPUs, capped at 16.
 
 `xtask check` runs formatting, strict clippy, unit/integration/installer-built
 packaged tests, ShellCheck, append-only metadata fixtures, instrumentation and
-worker-isolation proofs, coverage-backed CRAP <= 5 and zero-survivor mutation.
+worker-isolation proofs, coverage-backed CRAP <= 5 on every shipped function and
+zero-survivor mutation. It has two tiers:
+
+- The **ticket gate**, `cargo xtask check`, runs one mutation-load round and
+  mutates only the functions the diff adds or changes. A function, `const` or
+  `static` is changed when it is new, or when no base item with the same path
+  (for example `<Pty as Drop>::drop` or `outer::inner`) has the same tokens.
+  Whitespace, comments and doc comments do not count, so moved or
+  doc-only-edited functions are not mutated. Nested items are compared on their
+  own, including those in const and static initializers; an item keeps every
+  line its own code is on. An edited impl or trait header (generics, bounds,
+  where clause, self type, trait path or attributes) or an enclosing module's
+  attributes change every item inside. Renamed files compare against their
+  old path; added, copied and untracked files are mutated whole. Test-only
+  code is skipped. One mutator run takes every file with a selected mutation
+  site, so the full-workspace baseline runs once. Its `--lines` applies to
+  every file, so it is the union of the lines that hold each file's selected
+  sites, found with the mutator's test-free `--scan`. A file may therefore
+  also mutate a site at a line number another file selected: a safe superset,
+  never less.
+  `cargo xtask check --print-mutation-plan` prints this selection and exits.
+- The **full gate**, `cargo xtask check --full`, runs five load rounds and
+  mutates whole changed files. Run it once before a feature branch merges to
+  `main`, with `CLIMON2_MUTATION_BASE=origin/main`.
+
+`--mutate-all` mutates every shipped file whole in either tier.
+`cargo xtask mutate` keeps whole-file selection and does not measure load.
 The unchanged workspace must pass in a real mutation overlay before mutation;
 worker infrastructure failures cannot count as killed mutants.
-`cargo xtask check` also measures mutation load before mutating, even when no
-changed shipped source needs mutation; `cargo xtask mutate` does not. It warms
+Both tiers measure mutation load before mutating, even when no changed shipped
+source needs mutation. The measurement warms
 `target/mutation-tests` and times one unloaded full-workspace run there, then
-runs five rounds of 8 full-workspace suites at once, each in a private copy of
+runs its rounds (one for the ticket gate, five for the full gate) of 8
+full-workspace suites at once, each in a private copy of
 the warm build (copy-on-write where supported). As in mutation, each suite has
 its own session. A suite fails the measurement if any test fails or if it
 outlives the mutator's timeout (10 times the unloaded run, at least 2 s),
@@ -445,8 +474,10 @@ baseline always runs the full workspace. Workers receive private copies of
 its warm build artifacts (copy-on-write where supported), rather than
 rebuilding dependencies from scratch for every changed file.
 `CLIMON2_MUTATION_BASE` selects the changed-source comparison (default `HEAD`).
+Both tiers compare against the merge base of that revision and `HEAD`, so a base
+such as `origin/main` that has moved on does not bring in its own changes.
 For committed work, set it to the target branch or merge base, for example
-`CLIMON2_MUTATION_BASE=origin/main cargo xtask check`.
+`CLIMON2_MUTATION_BASE=origin/main cargo xtask check --full`.
 Native implementations must live in registered source files; shared files
 must not hide macOS-only bodies that Linux cannot qualify.
 
@@ -464,7 +495,7 @@ requirements as `dist`. The default executable home is `~/.local/share/climon2`;
 `--dir <directory>` selects another destination. The installer preserves other
 versions and prints a PATH hint when needed; shell startup files are unchanged.
 
-A release requires a local `cargo xtask check --mutate-all` pass for the exact
+A release requires a local `cargo xtask check --full --mutate-all` pass for the exact
 release commit; this is the maintainer's responsibility, not a duplicated CI
 job. A `v<workspace version>` tag runs full macOS-only mutation and the native
 runtime/archive gates. The same final

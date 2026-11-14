@@ -1238,8 +1238,11 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "climon2-install",
+ "proc-macro2",
+ "quote",
  "serde",
  "serde_json",
+ "syn 2.0.119",
  "tempfile",
 ]
 
