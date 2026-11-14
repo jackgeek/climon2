@@ -2,7 +2,7 @@
 //! help"): the configured prefix followed by each prefix action's key, the
 //! **Don't show again** checkbox showing the saved choice, and the Continue
 //! action that Enter takes. It opens at startup or on prefix+?.
-use crate::{keys::BINDINGS, preference::Preference};
+use crate::{keys::BINDINGS, preference::Preference, router::Key};
 use climon2_core::keys::ControlKey;
 use ratatui::{
     buffer::Buffer,
@@ -10,9 +10,6 @@ use ratatui::{
     text::Line,
     widgets::{Block, Clear, Padding, Paragraph, Widget},
 };
-
-const ENTER: u8 = b'\r';
-const SPACE: u8 = b' ';
 
 /// The key introduction, open or closed, and the choice it shows.
 pub(crate) struct KeyIntroduction {
@@ -45,14 +42,13 @@ impl KeyIntroduction {
     }
 
     /// A typed key, which the key introduction owns while it is open: Enter
-    /// continues, and Space reverses the saved choice.
-    pub(crate) fn key(&mut self, byte: u8) {
-        if !self.open {
-            return;
-        }
-        match byte {
-            ENTER => self.open = false,
-            SPACE => self.preference.reverse(),
+    /// continues, a bare Escape (never the prefix's) closes, and Space
+    /// reverses the saved choice.
+    pub(crate) fn key(&mut self, key: &Key) {
+        match key {
+            Key::Escape => self.open = false,
+            Key::Bytes(bytes) if bytes == b"\r" => self.open = false,
+            Key::Bytes(bytes) if bytes == b" " => self.preference.reverse(),
             _ => {}
         }
     }

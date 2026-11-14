@@ -14,6 +14,7 @@ mod keys;
 mod paint;
 mod preference;
 mod registry;
+mod router;
 mod screen;
 mod selector;
 mod startup;
@@ -26,16 +27,17 @@ use climon2_vt::Limits;
 use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
 use introduction::KeyIntroduction;
-use keys::{Action, Key, Keys};
+use keys::Action;
 use registry::{ClientEvent, Registry};
+use router::{Key, Routed, Router};
 use screen::{Scene, Screen, Session};
 use selector::Selector;
 use startup::Startup;
 use std::{
     collections::BTreeMap,
-    fmt, io,
+    fmt, io, mem,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 use supervisor::{Context, Load, Refusal, Supervisor};
 use terminal::{Presentation, Request, Terminal};
@@ -141,7 +143,9 @@ fn own_session() -> Option<SessionId> {
 /// and the keys that act on them.
 struct Monitor {
     screen: Screen,
-    keys: Keys,
+    router: Router,
+    /// When the host last sent input, for the router's escape time.
+    heard: Instant,
     introduction: KeyIntroduction,
     registry: Registry,
     selector: Selector,
@@ -173,7 +177,8 @@ impl Monitor {
         let model = limits.model();
         let mut monitor = Self {
             screen: Screen::new(size, prefix, hints),
-            keys: Keys::new(prefix),
+            router: Router::new(prefix),
+            heard: Instant::now(),
             introduction,
             registry: Registry::new(own_session()),
             selector: Selector::default(),
@@ -226,7 +231,7 @@ impl Monitor {
                 self.show(true).map(|()| None)
             }
             Event::Input(bytes) => Ok(self.input(bytes)),
-            Event::Idle => Ok(None),
+            Event::Idle => Ok(self.idle()),
         }
     }
 
@@ -364,51 +369,111 @@ impl Monitor {
         }
     }
 
-    /// Acts on each byte in turn until one ends the monitor.
+    /// Routes one host read.
     fn input(&mut self, bytes: &[u8]) -> Option<Ending> {
-        let ending = bytes.iter().find_map(|&byte| self.act(byte));
-        if ending.is_none() && !self.introduction.is_open() && self.selector.is_open() {
-            self.selector.read_ended(&self.registry.rows());
-        }
+        self.heard = Instant::now();
+        let routed = self.router.read(bytes);
+        self.route(routed)
+    }
+
+    /// Routes what the host's silence since its last read means: a lone
+    /// Escape becomes bare after the escape time.
+    fn idle(&mut self) -> Option<Ending> {
+        let routed = self.router.idle(self.heard.elapsed());
+        self.route(routed)
+    }
+
+    /// Acts on each routed input in turn until one ends the monitor, each
+    /// against the state the ones before it left. Application bytes are
+    /// gathered and submitted together, before anything else acts, so
+    /// nothing typed after an action can reach the target before it, and
+    /// nothing after prefix+x reaches any.
+    fn route(&mut self, routed: Vec<Routed>) -> Option<Ending> {
+        let mut typed = Vec::new();
+        let ending = routed
+            .into_iter()
+            .find_map(|routed| self.routed(routed, &mut typed));
+        self.submit(&mut typed);
         ending
     }
 
-    /// Acts on the key `byte` completes: prefix+x ends the monitor, and
-    /// other actions and typed keys go to [`Monitor::action`] and
-    /// [`Monitor::typed`].
-    fn act(&mut self, byte: u8) -> Option<Ending> {
-        match self.keys.key(byte)? {
-            Key::Action(Action::Exit) => Some(Ending::Exit),
-            Key::Action(action) => {
-                self.action(action);
+    fn routed(&mut self, routed: Routed, typed: &mut Vec<u8>) -> Option<Ending> {
+        if let Some(modes) = self
+            .accepting()
+            .filter(|_| !matches!(routed, Routed::Action(_)))
+        {
+            routed.encode(&modes, typed);
+            return None;
+        }
+        self.submit(typed);
+        match routed {
+            Routed::Action(action) => self.action(action),
+            Routed::Key(key) => {
+                self.modal(&key);
                 None
             }
-            Key::Typed(byte) => {
-                self.typed(byte);
-                None
-            }
+            Routed::Unknown(..) => None,
         }
     }
 
-    /// Prefix+? opens the key introduction, and prefix+s the selector
-    /// unless the modal key introduction is open.
-    fn action(&mut self, action: Action) {
+    /// The selected session's terminal modes while it accepts application
+    /// input: no modal is open, the host has room for it, and its control
+    /// period's restoration is applied, ready and painted.
+    fn accepting(&self) -> Option<climon2_vt::view::Modes> {
+        let (_, terminal) = self.target()?;
+        terminal.view().map(|view| view.modes())
+    }
+
+    /// The selected session and its terminal, while nothing covers it, the
+    /// host has room for it and it may take input.
+    fn target(&self) -> Option<(&SessionId, &Terminal)> {
+        let open = !self.introduction.is_open() && !self.selector.is_open();
+        let id = self.selected.as_ref().filter(|_| open)?;
+        let terminal = self.terminals.get(id)?;
+        terminal
+            .input()
+            .and(self.screen.desire())
+            .map(|_| (id, terminal))
+    }
+
+    /// Submits the application bytes gathered so far to the target they
+    /// were encoded for, under its current authority.
+    fn submit(&mut self, typed: &mut Vec<u8>) {
+        if typed.is_empty() {
+            return;
+        }
+        let bytes = mem::take(typed);
+        let target = self
+            .target()
+            .and_then(|(id, terminal)| Some((id.clone(), terminal.input()?)));
+        if let Some((id, authority)) = target {
+            self.request(&id, Some(Request::Input(authority, bytes)));
+        }
+    }
+
+    /// Prefix+x ends the monitor. Prefix+? opens the key introduction, and
+    /// prefix+s the selector unless the modal key introduction is open;
+    /// prefix+j's jump arrives with #114.
+    fn action(&mut self, action: Action) -> Option<Ending> {
         match action {
+            Action::Exit => return Some(Ending::Exit),
             Action::KeyIntroduction => self.introduction.open(),
             Action::SessionList if !self.introduction.is_open() => {
                 self.selector.open(&self.registry.rows());
             }
             _ => {}
         }
+        None
     }
 
-    /// A typed key goes to the key introduction while it is open, otherwise
-    /// to the open selector, otherwise nowhere.
-    fn typed(&mut self, byte: u8) {
+    /// A key no application takes goes to the key introduction while it is
+    /// open, otherwise to the open selector, otherwise nowhere: it is
+    /// discarded, never kept for later.
+    fn modal(&mut self, key: &Key) {
         if self.introduction.is_open() {
-            self.introduction.key(byte);
+            self.introduction.key(key);
         } else if self.selector.is_open()
-            && let Some(id) = self.selector.key(byte, &self.registry.rows())
+            && let Some(id) = self.selector.key(key, &self.registry.rows())
         {
             self.enter(id);
         }
