@@ -120,7 +120,9 @@ fn detach(script: &[&String]) -> Result<(), Box<dyn std::error::Error>> {
         .read(true)
         .write(true)
         .open("/dev/null")?;
-    // The child holds `started` until it execs or exits, both after it leads its session.
+    // The child holds `started` until it execs or exits, which ends the poll below with EOF.
+    // That proves only that the child got past setsid or gave up: if setsid fails, the child
+    // reports the error and exits 127 while still in this session, and `detach` returns Ok.
     // Polling the child's session instead loses a child that exits between two polls: macOS
     // getsid reports an exited child as missing.
     let (ready, started) = pipe()?;
