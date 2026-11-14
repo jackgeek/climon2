@@ -26,28 +26,27 @@ for [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
 ([#86](https://github.com/jackgeek/climon2/issues/86)), ordinary
 interactive [attachments](../../../GLOSSARY.md#attachment-and-control)
 ([#87](https://github.com/jackgeek/climon2/issues/87)), standalone
-[Kill](../../../GLOSSARY.md#attachment-and-control)
-([#88](https://github.com/jackgeek/climon2/issues/88)) and monitors that
-acquire and inherit control
+[Kill](../../../GLOSSARY.md#attachment-and-control) and
+[Command final](event-command-final.md) ([#88](https://github.com/jackgeek/climon2/issues/88)),
+and monitors that acquire and inherit control
 ([#89](https://github.com/jackgeek/climon2/issues/89)): the
 [hello advertisement](hello-reply.md#revision-1-advertisement), framing and
 validation with their connection-fatal codes, Open in both modes, Leave,
-Input, Resize, Ready, Acquire, Focus, Kill, Response,
-Fatal error, Initial metadata (the title and a known command result; status
-and progress reported unavailable), Title changed, Control granted and
-revoked, Restoration begin and complete, Display, Geometry and
-[Command final](event-command-final.md#implemented-behavior) without status,
-with the private protocol's takeover,
-[hand-back](../../../GLOSSARY.md#attachment-and-control) and
-[leave policy](../../../GLOSSARY.md#attachment-and-control), the
-[promotion](../../../GLOSSARY.md#attachment-and-control) of passive registrations
-and the [canonical presentation](../../../GLOSSARY.md#restoration-and-presentation)
-of monitor-mode connections. Until it serves them, it
-rejects the other
-requests without effects, as each request's page describes. Set viewing,
-Acknowledge, the status, notification and progress messages and bounded
-delivery remain unimplemented, and no
-[client](../../../GLOSSARY.md#sessions) speaks this revision yet. The
+Input, Resize, Ready, Acquire, Focus, Kill, Response, Fatal error, Initial
+metadata (title and known command result; status and progress reported
+unavailable), Title changed, Control granted and revoked, Restoration begin
+and complete, Display, Geometry, and Command final without status. This keeps
+the private protocol's takeover, [hand-back](../../../GLOSSARY.md#attachment-and-control)
+and [leave policy](../../../GLOSSARY.md#attachment-and-control), the
+[promotion](../../../GLOSSARY.md#attachment-and-control) of passive registrations,
+and the [canonical presentation](../terminal-integration.md#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1)
+of monitor-mode connections. Until it serves them, it rejects Set viewing,
+Acknowledge, status, notification and progress requests without effects, as
+each request's page describes; bounded delivery remains unimplemented. The
+[client library](../../../GLOSSARY.md#sessions) speaks this revision for
+passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93))
+and for control and display ([#94](https://github.com/jackgeek/climon2/issues/94));
+no other [client](../../../GLOSSARY.md#sessions) does yet. The
 [daemon's contract tests](../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
 are the evidence for the implemented parts.
 
@@ -321,7 +320,7 @@ unmet condition without effects; the stream goes on:
    `unsupported_capability`.
 2. The connection has a role, otherwise `invalid_state`.
 3. It is an attachment, otherwise `not_attached`: neither a passive monitor
-   connection nor a standalone Kill's connection is one.
+   connection nor a standalone Kill connection is one.
 4. The session is not in committed termination, otherwise
    `session_terminating`.
 5. It is the [controller](../../../GLOSSARY.md#attachment-and-control),

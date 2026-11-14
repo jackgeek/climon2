@@ -1,6 +1,10 @@
 # Input
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification, implemented by the
+[client library](../../../GLOSSARY.md#sessions)
+([#94](https://github.com/jackgeek/climon2/issues/94)) as its
+[implemented behavior](core-v1.md#implemented-behavior) details; the caller is
+not implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) sends real user application
 [bytes](../TERMS.md#byte) through the [client](../../../GLOSSARY.md#sessions).
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

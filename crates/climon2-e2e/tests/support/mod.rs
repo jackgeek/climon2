@@ -1,3 +1,13 @@
+/// Only the control and display suites use it (#94).
+#[allow(dead_code)]
+pub mod control;
+/// Only the Library-layer suites use it.
+#[allow(dead_code)]
+pub mod library;
+/// Only the passive-connection suites use it (#93).
+#[allow(dead_code)]
+pub mod passive;
+
 use climon2_install::{Payload, install};
 use climon2_test_term::{Isolation, Modes, Terminal, bin_path, process_command};
 use portable_pty::CommandBuilder;

@@ -7,8 +7,15 @@ monitor reports its effective values
 not yet check that the mandatory current model and recent page fit
 ([#167](https://github.com/jackgeek/climon2/issues/167)). Operating-system
 limits are left to admission
-([#120](https://github.com/jackgeek/climon2/issues/120)), and nothing enforces
-the limits yet.** This resolves
+([#120](https://github.com/jackgeek/climon2/issues/120)). The client library
+rejects native instance limits it cannot honour, bounds worker cleanup by
+`cleanup_ms` and keeps its failure diagnostic within `event_bytes`
+([#85](https://github.com/jackgeek/climon2/issues/85)). For passive monitor
+connections it also enforces its request and event queues, outstanding
+operations and their outcome reserves, deliveries, drain ceilings,
+`wire_frame_bytes`, `metadata_record_bytes`, `title_bytes`, `start_ms` and
+`leave_ms` ([#93](https://github.com/jackgeek/climon2/issues/93)); nothing
+else enforces the limits yet.** This resolves
 [Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69).
 It supplies requirements and evidence, not executable code or a benchmark suite.
 

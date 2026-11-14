@@ -79,6 +79,44 @@ tests load the exact archive's library, so the CI archive jobs exercise both
 macOS architectures' slices and the Linux library. The exported symbol set is
 a release check (`xtask`), not a Library-layer test.
 
+`tests/instance.rs` (#85) drives client instances through the same host's
+scenarios (`climon2-library-host <library> <scenario> <json>`), from the
+threads the contract names: an owner thread creates, runs and destroys each
+instance while the test's main thread shuts it down, drains and releases. The
+host is the Library layer's instrumented host: caller startup memory is one
+mapping it scrambles and unmaps as soon as `create` returns, an ownership
+ledger shows how every handle and delivery was released, a timeline records
+each call's thread, and probes compare the process's environment, working
+directory, signals and standard streams and the notification descriptor.
+Expected values come from the native header and contract. Fault cases select
+the hooked library's `CLIMON2_LIBRARY_FAULT` and return early in archive
+mode, whose release library has no hooks; every other case runs against the
+archive's library.
+
+`tests/passive.rs`, `tests/passive_faults.rs` and `tests/passive_admission.rs`
+(#93) drive passive monitor connections through the host's `script`
+scenario, step by step from the threads the contract names: create, submit,
+run, drain, observe, release, snapshot, shutdown and finish, each instance on
+its own owner thread. Requests live in caller memory the host scrambles and
+unmaps as soon as `submit` returns. `passive.rs` registers with real session
+daemons started through the packaged CLI (`climon2 exec` of the generic
+fixture, held at points by its `await-file` action) and reads their hello
+`state` to show that a passive connection never acquires control. The Fault
+cases use the host's clearly labelled fake daemon peer, an adversarial
+fixture that serves scripted hello and daemon wire revision 1 traffic
+(malformed, slow, bytewise, coalesced, oversized or truncated frames, lost or
+late answers, a peer that closes mid-conversation) and records every frame
+the library sent, so a replay or an early Open shows. Ordering uses trigger
+files and observable completion, never sleeps; every peer wait is bounded and
+an expired wait is recorded.
+
+`tests/control.rs` and `tests/control_faults.rs` (#94) drive control and
+display the same way: interactive Open, Acquire, Input, Resize, Ready and
+Focus under the authority the host last drained, against real sessions
+whose application (the fixture's `raw` and `echo-until` actions) writes
+back every input byte unchanged, and against the fake peer for holds,
+losses, mismatches and records out of authority.
+
 ## Session continuity scenarios
 
 Detach and reattach, takeover and hand-back, the placeholder, kill, listing
@@ -119,10 +157,87 @@ sessions in `tests/headless.rs`.
 
 | Scenario | Named test |
 |---|---|
-| LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; bounded requirements; no unimplemented capability | `installed_library_describes_revision_one_with_its_version_identity` |
+| LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; bounded requirements; exactly the relayed families (`daemon-wire-v1`, `monitor-v1`, `title-v1`) | `installed_library_describes_revision_one_with_its_version_identity` |
 | LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths (`LD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`), the absolute path maps the requested file (the system loader's lookup, which no library change can alter); the library answers from its own image with its own folder's release, not `current`'s, and a misplaced copy reports its compiled-in release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
 | LIB-02 Library: unsupported revisions rejected with a null description; null output storage | `installed_library_rejects_other_revisions_without_a_description` |
-| DOC-01: all eleven table entries report unsupported operation by the frozen call rules | `installed_library_table_reports_every_instance_call_unsupported` |
+| DOC-01: all eleven table entries reject null handles and outputs by the frozen call rules, `submit`'s null request included | `installed_library_table_rejects_null_arguments` |
+
+### Library layer: client instances (`tests/instance.rs`, #85)
+
+| Scenario | Named test |
+|---|---|
+| LIB-03, LIB-04 and LIB-05 Library: create, run, shutdown, drain to terminal evidence, release, destroy and join; wrong-thread run and destroy, repeated run, busy destroy and release; terminal evidence apart from the cleanup report; every object released through the library | `installed_library_instance_runs_create_run_shutdown_drain_release_destroy_join` |
+| LIB-03 Library: failed creates return no handles and leave no descriptor: null arguments, mismatched release, generation, native paths (non-UTF-8 kept, `PATH_MAX` bound) | `installed_library_create_rejects_invalid_identity_and_paths_without_handles` |
+| LIB-03 Library: client keys, log path and `CLIMON2_LOG` filter | `installed_library_create_rejects_invalid_settings_and_diagnostics_without_handles` |
+| LIB-03 Library: limits it cannot honour, each at its bound (`drain_payload_bytes` must hold a `metadata_record_bytes` record and a `chunk_bytes` Display), never raised or lowered; no descriptor left for the notification and waker descriptors or for the log file (`CM1_RESOURCE_LIMIT`, no log file), one more is enough | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` |
+| LIB-03 Library and Fault: copies survive unmapped caller memory; lossless native paths; two instances' homes, settings, logs and allocations stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` |
+| LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` |
+| LIB-04 Library and Fault, Linux `eventfd`: borrowed descriptor, counted once; a scheduled race in which polling sees the stream end while the handle is used before shutdown and after the end, every call succeeding with the same descriptor | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` |
+| LIB-04 Fault: allocator pairing, a delivery charged until released | `installed_library_charges_a_delivery_until_it_is_released` |
+| LIB-04 Fault: the failure diagnostic only within `event_bytes`, at and one under the bound | `installed_library_queues_the_failure_diagnostic_only_within_event_bytes` |
+| LIB-05 Fault: injected panic at the bootstrap and `create` | `installed_library_contains_a_panic_at_the_bootstrap_or_create` |
+| LIB-05 and LIB-04 Fault: injected panic at `submit`, `notification`, `snapshot`, `drain`, `shutdown` and `run` stops the instance, with no retry from `shutdown` on; a delivery held past terminal evidence alone keeps communication and destroy busy | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` |
+| LIB-04 and LIB-05 Fault: injected panic at `release_delivery`, `release_communication`, `release_control` and `destroy` keeps the object | `installed_library_contains_a_panic_in_a_release_and_keeps_the_object` |
+| LIB-05 Fault (`worker` hook): worker completion apart from terminal evidence | `installed_library_reports_worker_completion_apart_from_terminal_evidence` |
+| LIB-06 Fault (`stall-cleanup` hook): stalled worker cleanup incomplete, never complete or destroyed | `installed_library_reports_stalled_worker_cleanup_as_incomplete_and_never_destroys` |
+
+LIB-06 Library is not covered yet: without the fault hook this release starts
+no worker that could stall. Open
+([#93](https://github.com/jackgeek/climon2/issues/93)) brings the first.
+
+### Library layer: passive monitor connections (`tests/passive*.rs`, #93)
+
+| Scenario | Named test |
+|---|---|
+| CTL-01 Library (controlled elsewhere: hello `state` unchanged throughout), CTL-03 Library (Response, atomic Initial metadata, gap-free titles by value, empty and unset distinct), COM-01 Library (optional families intersect), COM-03 Library (copied before return, charged until executed), LIB-04 Library (kept deliveries unchanged until released) and EXT-01 Library (shutdown with live deliveries: one confirmed Leave, closure, outcome, cleanup and handle release reported apart) | `installed_library_registers_passively_while_controlled_elsewhere_and_relays_titles` (`passive.rs`) |
+| CTL-01 and CTL-03 Library, detached session: never acquired, nothing attached | `installed_library_registration_never_acquires_a_detached_session` (`passive.rs`) |
+| COM-03 and EXT-01 Library: explicit Leave answered `left`, second Open `invalid_state`, stale generation `stale_generation`, submit closed afterwards, no further Leave | `installed_library_explicit_leave_departs_once_and_is_answered` (`passive.rs`) |
+| EXT-02 Library: shutdown's Leave to a stopped real daemon is never answered: `timeout` after `leave_ms`, Leave indeterminate, failed, no retry | `installed_library_reports_a_lost_leave_to_a_stopped_daemon_as_unconfirmed` (`passive.rs`) |
+| COM-01 Library: daemon frames one byte over `wire_frame_bytes` rejected before any role, for good | `installed_library_rejects_a_daemon_whose_frames_exceed_wire_frame_bytes` (`passive.rs`) |
+| COM-01 and COM-02 Library: an Open naming no family registers passively and selects none, an empty selection being null and zero | `installed_library_opens_naming_no_family_and_selects_none` (`passive.rs`) |
+| LIB-05 Library and Fault: an instance stalled by its fake daemon never stops another registering with a real daemon; `submit`, `drain`, `snapshot` and `release_delivery` return at once | `installed_library_instance_stalled_by_its_daemon_never_stops_another` (`passive.rs`) |
+| COM-01 Fault: missing support (frozen tokens only, no `monitor-v1`, malformed limits, an unadvertised required family), another session, release or protocol in hello or metadata, an unserved or unreadable socket or metadata, a reply that is not a hello, or none within `start_ms`: rejected before any Open is sent, with retry permanent or passive | `installed_library_rejects_an_open_the_session_cannot_honour_before_any_role` (`passive_faults.rs`) |
+| COM-01 Fault: optional families intersect three ways; a selection the request does not allow fails | `installed_library_selects_only_families_both_sides_support` (`passive_faults.rs`) |
+| COM-02 Fault: invalid JSON, wrong direction, unknown type, zero, oversized and truncated frames, uncorrelated or mismatched responses, out-of-order or unselected records, a title or record one byte over its limit, and a daemon Fatal each fail the connection with their origin and code; nothing after the failing frame is delivered, and nothing stays counted once run returns | `installed_library_fails_the_connection_on_traffic_revision_one_forbids` (`passive_faults.rs`) |
+| COM-03 Fault: deadlines answer `timeout` (indeterminate); lost answers fabricate nothing and leave unanswered IDs to the caller's ledger; failed and indeterminate Leaves; refused and failed Opens with their retry; no retry once the caller's Leave is sent; a close after an Initial metadata that knew the final result a clean stop (stopped, no error, retry none); best-effort diagnostics; nothing replayed; nothing outstanding once run returns | `installed_library_reports_lost_and_late_answers_truthfully_without_replay` (`passive_faults.rs`) |
+| COM-01 and COM-03 Fault: a known final result in a rejection, charged its copies, with retry none | `installed_library_reports_a_known_final_result_and_never_retries` (`passive_faults.rs`) |
+| EXT-01 and EXT-02 Fault: shutdown's Leave lost, late or rejected; a rejected explicit Leave keeps the registration; shutdown during an Open, or during hello (the Open `cancelled`, never sent); Leave before any Open or while another is unanswered | `installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures` (`passive_faults.rs`) |
+| LIB-04 and LIB-05 Fault: a panic inside a running connection leaves no descriptor or operation counted | `installed_library_panic_in_a_connection_leaves_nothing_counted` (`passive_faults.rs`) |
+| LIB-05 Fault: the library never raises `SIGPIPE` in an embedder that left it at its default | `installed_library_never_raises_sigpipe_in_its_embedder` (`passive_faults.rs`) |
+| COM-02 Fault: titles at `title_bytes` and records at `metadata_record_bytes` accepted whole; a signal command result mapped | `installed_library_accepts_records_exactly_at_their_limits` (`passive_faults.rs`) |
+| COM-02 Library (unknown tags, nonzero reserved fields, inactive storage ignored) and COM-03 Library (invalid and closed rejections synchronous, no ID consumed, no buffer retained, `cancelled` for work shutdown never ran) | `installed_library_admits_only_valid_requests_and_rejections_cost_nothing` (`passive_admission.rs`) |
+| COM-03 Library: `request_records`, `request_bytes`, `operations`, `event_records` and `event_bytes` at the limit and one past; full rejections consume no ID | `installed_library_bounds_requests_by_every_queue_limit` (`passive_admission.rs`) |
+| LIB-04 Library: one delivery allowed, `queue_full` while it is outstanding, its records unchanged and charged until released | `installed_library_holds_each_delivery_until_released` (`passive_admission.rs`) |
+| LIB-04 Fault: deliveries stop before `drain_payload_bytes`, which always holds a whole record | `installed_library_batches_records_within_drain_payload_bytes` (`passive_admission.rs`) |
+| COM-02 and LIB-04 Fault: frames split bytewise or coalesced; daemon records wait while the event queue is full, never dropped or overrunning it | `installed_library_holds_daemon_records_while_the_event_queue_is_full` (`passive_admission.rs`) |
+| LIB-04 Fault: each record charged its header twice (the `cm1_record` and the library's copy) and the bytes it owns once | `installed_library_charges_each_record_its_header_and_the_bytes_it_owns` (`passive_admission.rs`) |
+
+### Library layer: control and display (`tests/control*.rs`, #94)
+
+`control.rs` runs real session daemons through the packaged CLI;
+`control_faults.rs` the host's fake daemon peer. A script names the
+authority the host drained last (`$period`, `$restoration`) or the one
+before it.
+
+| Scenario | Named test |
+|---|---|
+| COM-04 Library (Input `00 ff 41`, NUL and invalid UTF-8 reach the raw application, whose echo returns as exact Display bytes), COM-05 Library (Response, Initial metadata, attach grant, Restoration begin, Display, complete under one authority), COM-02/COM-03 Library acceptance of interactive Open, Ready and Input, EXT-01 Library (attached shutdown: release Display, Leave confirmed, attachment detached); with `chunk_bytes` 16, every Display at most 16 bytes and the stream healthy | `installed_library_attaches_and_relays_binary_input_and_display_unchanged` (`control.rs`) |
+| CTL-05 Library: superseded restoration (`stale_restoration`), revoked (`not_controller`) and stale period (`stale_period`), new restorations and periods `not_ready` until Ready, no rejected byte reaching the application; Resize accepted, Acquire by an attachment, `stale_generation` never sent | `installed_library_stale_authority_never_re_enables_input` (`control.rs`) |
+| FOC-01 Library: no duplicate focus, `not_ready` before readiness, stale period rejected, the new period resynchronized after Ready | `installed_library_focus_has_no_duplicates_and_resynchronizes_on_new_readiness` (`control.rs`) |
+| CTL-02 Library: Acquire, no-change re-acquisition, switching between monitors (takeover under the exact held authority), the last acquisition winning, background control kept until another client's takeover | `installed_library_acquisition_switches_and_takeover_keep_the_last_accepted` (`control.rs`) |
+| COM-05 and COM-06 Library: a command that exits while an attached instance controls: `CM1_FINAL` (exit 0, status unavailable), then the release Display and Control revoked `session_ending`, then the close: a clean stop, no error, retry none, Leave not required | `installed_library_relays_the_command_final_before_the_release_and_session_ending` (`control.rs`) |
+| CTL-04 and EXT-01 Library (Leave racing a promotion, real daemon): the promoted registration's one Leave delivers the successor grant, its restoration and the release, then Leave confirmed with the attachment detached; the session stays detached | `installed_library_leave_racing_a_promotion_leaves_as_the_attachment` (`control.rs`) |
+| CTL-04 and COM-05 Library: the newest registration promoted with a background successor grant and canonical restoration, Ready without selection, the next promoted after it; fresh periods per grant | `installed_library_promotes_the_newest_registration_with_a_canonical_restoration` (`control.rs`) |
+| COM-02/COM-03 Library control cases, local rejection: malformed control requests `invalid_argument` (generation zero inside an authority, Input over `chunk_bytes` included), Input at `chunk_bytes`, at and one past `request_bytes` | `installed_library_rejects_malformed_control_requests_locally` (`control_faults.rs`) |
+| COM-02/COM-03 Library control cases, `cancelled`: every control request queued behind an Open is cancelled by shutdown, never sent | `installed_library_cancels_queued_control_requests_on_shutdown` (`control_faults.rs`) |
+| COM-02/COM-03 Library control cases, stale generation and state: `stale_generation`, `unsupported_capability` without `focus-v1`, `invalid_state` while leaving, `unsupported_limit` over the request frame ceiling, none sent; interactive Open without `monitor-v1` | `installed_library_rejects_stale_and_unsupported_control_requests_locally` (`control_faults.rs`) |
+| COM-02/COM-03 Library control cases, `timeout` and lost responses for every command and interactive Open, never replayed | `installed_library_times_out_or_loses_control_requests_without_replay` (`control_faults.rs`) |
+| COM-02 Library control cases, answers: each success's own result, daemon rejections, mismatched, partial and known-final answers `invalid_record` | `installed_library_maps_control_answers_and_refuses_mismatched_results` (`control_faults.rs`) |
+| COM-03 and CTL-05 Library and Fault: empty, unheld and late Display, early or second grant, foreign, repeated or older begin or Geometry, unheld complete or revocation `invalid_record`; a Display at `chunk_bytes` one record, one past it two (`chunk_bytes` and one byte), both streams healthy | `installed_library_refuses_presentation_records_out_of_authority` (`control_faults.rs`) |
+| CTL-04 Library and Fault (Leave racing a promotion), COM-05 Library and Fault (Command final first, Geometry, `session_ending` revocation, then the close as a clean stop with retry none, a fresh instance seeing only its own records) | `installed_library_resolves_a_promotion_racing_leave_and_fresh_attempts_stand_alone` (`control_faults.rs`) |
+| COM-03 Library and Fault, Command final (minimal, #94): `CM1_FINAL` exit or signal with its name, status unavailable, the close a clean stop with retry none (inside a frame still `truncated_frame`; meeting a Leave, indeterminate); second, after a known result (agreeing or contradicting), early or with a status `invalid_record` | `installed_library_relays_one_command_final_after_the_initial_metadata` (`control_faults.rs`) |
+| COM-03 Library and Fault, backpressure: a Display waiting for `event_bytes` room stops `operation_ms`; `delivery_stall_ms` fails the connection `delivery_stalled`, retry passive, the held-back Ready unanswered | `installed_library_fails_a_stalled_delivery_without_timing_out_its_commands` (`control_faults.rs`) |
+| COM-03 Library and Fault: once waiting records are queued no stall deadline remains, and a Ready times out at `operation_ms` | `installed_library_times_commands_out_again_once_waiting_records_are_queued` (`control_faults.rs`) |
 
 ### Session continuity (plan section 6.1)
 

@@ -1,6 +1,14 @@
 # Client outcome and cleanup evidence
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification. The
+[client library](../../../GLOSSARY.md#sessions) implements terminal evidence
+and the run report for instances that never open a connection
+([#85](https://github.com/jackgeek/climon2/issues/85)), whose
+[Leave](request-detach.md) is not required, and for
+[passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
+([#93](https://github.com/jackgeek/climon2/issues/93)), with the retry and
+Leave evidence its [implemented behavior](core-v1.md#implemented-behavior)
+details.**
 The [client](../../../GLOSSARY.md#sessions) reports instance termination to the
 [monitor](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),
 [glossary](../../../GLOSSARY.md) and [terms](../TERMS.md).

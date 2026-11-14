@@ -1,6 +1,12 @@
 # Request shutdown
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification. The
+[client library](../../../GLOSSARY.md#sessions) implements shutdown intent
+([#85](https://github.com/jackgeek/climon2/issues/85)); with a
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) open
+it attempts one [Leave](request-detach.md)
+([#93](https://github.com/jackgeek/climon2/issues/93)). The caller is not
+implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) requests shutdown through its
 [client](../../../GLOSSARY.md#sessions)'s independent control handle.
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

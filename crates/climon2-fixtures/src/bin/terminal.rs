@@ -59,7 +59,9 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
                 print!("{value}");
                 io::stdout().flush()?;
             }
+            "await-file" => await_file(value)?,
             "await-input" if raw.is_some() => await_input(value)?,
+            "echo-until" if raw.is_some() => echo_until(value)?,
             "await-input" => return Err("await-input needs raw mode".into()),
             "exit" => return Ok(value.parse()?),
             "write-pid" => fs::write(value, std::process::id().to_string())?,
@@ -99,6 +101,36 @@ fn report(path: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>>
 /// next output until the host has read everything before it.
 fn await_input(expected: &str) -> io::Result<()> {
     climon2_fixtures::read_until(|input| Ok(String::from_utf8_lossy(input).contains(expected)))?;
+    Ok(())
+}
+
+/// Writes every raw input byte straight back, unchanged, until the input
+/// so far contains `expected`: exact bytes both ways (NUL, `ff`, invalid
+/// UTF-8 and focus reports alike).
+fn echo_until(expected: &str) -> io::Result<()> {
+    let mut echoed = 0;
+    climon2_fixtures::read_until(|input| {
+        let mut stdout = io::stdout().lock();
+        stdout.write_all(&input[echoed..])?;
+        stdout.flush()?;
+        echoed = input.len();
+        Ok(input
+            .windows(expected.len())
+            .any(|window| window == expected.as_bytes()))
+    })?;
+    Ok(())
+}
+
+/// Waits until `path` exists, so a test (or a library host) can order this
+/// fixture's next output after something it observed, without a sleep.
+fn await_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + BOUND;
+    while !std::path::Path::new(path).exists() {
+        if Instant::now() >= deadline {
+            return Err(format!("{path} never appeared").into());
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
     Ok(())
 }
 

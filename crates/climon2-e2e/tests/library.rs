@@ -8,31 +8,19 @@
 #[allow(dead_code)]
 mod support;
 
-use climon2_test_term::{bin_path, copy_executable, output_within, process_command};
+use climon2_test_term::copy_executable;
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
+use std::{fs, path::Path};
+use support::{
+    LIBRARY, Package,
+    library::{host, installed_library, observe},
 };
-use support::{LIBRARY, Package, TIMEOUT};
 
 const SUCCESS: u64 = 0;
 const UNSUPPORTED_REVISION: u64 = 1;
 const INVALID_ARGUMENT: u64 = 2;
-const UNSUPPORTED_OPERATION: u64 = 3;
 const ORIGIN_LIBRARY: u64 = 1;
 const MIB: u64 = 1024 * 1024;
-
-/// The installed library of this package's version, by absolute path.
-fn installed_library(package: &Package) -> PathBuf {
-    package
-        .executable_home()
-        .join(env!("CARGO_PKG_VERSION"))
-        .join(LIBRARY)
-        .canonicalize()
-        .unwrap()
-}
 
 /// The version folder name, which is the library's release identity.
 fn version_folder(library: &Path) -> &str {
@@ -45,32 +33,12 @@ fn version_folder(library: &Path) -> &str {
         .unwrap()
 }
 
-/// The host with a cleared environment; instrumented builds keep their profile.
-fn host(library: &Path, directory: &Path) -> Command {
-    let mut command = process_command(bin_path("climon2-library-host"));
-    command.arg(library).current_dir(directory).env_clear();
-    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-        command.env("LLVM_PROFILE_FILE", profile);
-    }
-    command
-}
-
-fn observe(mut host: Command) -> Value {
-    let output = output_within(&mut host, TIMEOUT);
-    assert!(output.status.success(), "{output:?}");
-    assert!(
-        output.stderr.is_empty(),
-        "library or loader wrote: {output:?}"
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
-}
-
 /// LIB-01 Library case (absolute exact-release load): the installed library,
 /// loaded by absolute path with eager local resolution, returns revision 1's
 /// immutable description. Its release text is exactly the version folder name,
-/// it advertises no capability this build does not implement, its
-/// requirements are present and bounded, and a second bootstrap returns the
-/// same description.
+/// it advertises exactly the families it relays (#93: core, passive monitor
+/// entry and titles; #94: focus), its requirements are present and bounded, and a second
+/// bootstrap returns the same description.
 #[test]
 fn installed_library_describes_revision_one_with_its_version_identity() {
     let package = Package::new();
@@ -87,7 +55,11 @@ fn installed_library_describes_revision_one_with_its_version_identity() {
     assert_eq!(description["release"], version_folder(&library));
     assert_eq!(
         description["capabilities"],
-        json!({ "null": true, "count": 0, "tokens": [] })
+        json!({
+            "null": false,
+            "count": 4,
+            "tokens": ["daemon-wire-v1", "monitor-v1", "title-v1", "focus-v1"],
+        })
     );
     assert_bounded(&description["requirements"]);
     package.assert_clean();
@@ -149,13 +121,13 @@ fn installed_library_rejects_other_revisions_without_a_description() {
 }
 
 /// DOC-01 named case (implemented table versus the frozen call rules): all
-/// eleven function-table entries exist. Until #85 and #93 implement them, each
-/// fails with `CM1_UNSUPPORTED_OPERATION`, library origin, zero reserved
-/// fields and a nonempty stable error code and message; failed calls clear
-/// their output structs, notification writes -1, and null outputs are not
-/// written.
+/// eleven function-table entries exist. A null handle or output pointer, the
+/// one invalid address the library can detect, fails with
+/// `CM1_INVALID_ARGUMENT`, library origin, zero reserved fields and a
+/// nonempty stable error code and message; failed calls clear their output
+/// structs and notification writes -1.
 #[test]
-fn installed_library_table_reports_every_instance_call_unsupported() {
+fn installed_library_table_rejects_null_arguments() {
     let package = Package::new();
     let library = installed_library(&package);
     let report = observe(host(&library, package.isolation.home()));
@@ -177,11 +149,11 @@ fn installed_library_table_reports_every_instance_call_unsupported() {
     assert_eq!(entries.len(), names.len(), "{functions:#}");
     for name in names {
         let entry = &entries[name];
-        assert_eq!(entry["code"], UNSUPPORTED_OPERATION, "{name}: {entry}");
+        assert_eq!(entry["code"], INVALID_ARGUMENT, "{name}: {entry}");
         assert_eq!(entry["reserved"], 0, "{name}: {entry}");
         assert_eq!(entry["origin"], ORIGIN_LIBRARY, "{name}: {entry}");
         assert_eq!(entry["error_reserved"], 0, "{name}: {entry}");
-        assert_eq!(entry["error_code"], "unsupported_operation", "{name}");
+        assert_eq!(entry["error_code"], "invalid_argument", "{name}");
         assert!(!entry["message"].as_str().unwrap().is_empty(), "{name}");
     }
     for name in ["create", "run", "drain", "snapshot"] {
@@ -191,11 +163,11 @@ fn installed_library_table_reports_every_instance_call_unsupported() {
     assert_eq!(
         functions["null_outputs"],
         json!({
-            "create": UNSUPPORTED_OPERATION,
-            "run": UNSUPPORTED_OPERATION,
-            "drain": UNSUPPORTED_OPERATION,
-            "notification": UNSUPPORTED_OPERATION,
-            "snapshot": UNSUPPORTED_OPERATION,
+            "create": INVALID_ARGUMENT,
+            "run": INVALID_ARGUMENT,
+            "drain": INVALID_ARGUMENT,
+            "notification": INVALID_ARGUMENT,
+            "snapshot": INVALID_ARGUMENT,
         })
     );
     package.assert_clean();
