@@ -10,21 +10,22 @@
 //! `climon2-library-host <library>` describes the library.
 //! `climon2-library-host <library> <scenario> <json>` drives instances through
 //! one scenario (`lifecycle`, `create`, `fault`, `workers`, `independence`,
-//! `ambient`, `race` or, on Linux, `allocation`) with the instrumentation
+//! `ambient`, `race`, `bystander`, `successive` or, on x86-64 GNU/Linux, `allocation`) with the instrumentation
 //! every Library-layer test shares: caller startup memory the library can
 //! neither keep nor free
 //! (`startup`), an ownership ledger and a timeline of every call and its
 //! thread (`abi`), descriptor and process-state probes (`probe`) and, on
-//! Linux, the host's own count of the heap library calls hold (`heap`).
+//! x86-64 GNU/Linux, the host's own count of the heap the library holds
+//! (`heap`).
 
 #[path = "library/abi.rs"]
 mod abi;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
 #[path = "library/accounting.rs"]
 mod accounting;
 #[path = "library/faults.rs"]
 mod faults;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
 #[path = "library/heap.rs"]
 mod heap;
 #[path = "library/isolation.rs"]
@@ -101,7 +102,9 @@ fn drive(library: &Library, name: &str, input: Value) -> Value {
         "independence" => isolation::independence(&setup),
         "ambient" => isolation::ambient(&setup),
         "race" => isolation::race(&setup),
-        #[cfg(target_os = "linux")]
+        "bystander" => isolation::bystander(&setup),
+        "successive" => isolation::successive(&setup),
+        #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
         "allocation" => accounting::allocation(&setup),
         _ => panic!("unknown scenario {name}"),
     };

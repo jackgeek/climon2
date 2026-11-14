@@ -1,21 +1,24 @@
-//! The host's own count of the heap the client library's calls hold (#180),
-//! Linux only: an oracle independent of the library's accounting.
+//! The host's own count of the heap the client library holds (#180), on
+//! x86-64 GNU/Linux only: an oracle independent of the library's accounting.
 //!
 //! The host executable defines glibc's `malloc`, `calloc`, `realloc`, `free`
 //! and `posix_memalign`, exported dynamically (`build.rs`), so the dynamic
 //! loader binds the loaded library, and glibc itself, to them; each forwards
-//! to glibc's own allocator. While measuring, a block allocated by a thread
-//! inside a library call is recorded with the bytes requested until it is
-//! freed, by any thread. A resized block stays recorded, or unrecorded, as it
-//! was: it stays charged to whoever first allocated it.
+//! to glibc's own allocator. Each allocating entry is a naked function that
+//! passes on its return address, so the count knows which code asked. While
+//! measuring, a block the library image's own code allocated is recorded
+//! with the bytes requested until it is freed, by anyone. glibc's and the
+//! loader's internal blocks, such as thread-local destructor lists, are not
+//! the library's and are never recorded. A resized block stays recorded, or
+//! unrecorded, as it was.
 
 use serde_json::{Value, json};
 use std::{
-    cell::Cell,
     ffi::{c_int, c_void},
+    ops::Range,
     sync::{
         Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -27,7 +30,7 @@ unsafe extern "C" {
     fn __libc_memalign(alignment: usize, size: usize) -> *mut c_void;
 }
 
-/// More live blocks than one instance's calls hold.
+/// More live blocks than one instance holds.
 const CAPACITY: usize = 16_384;
 
 /// The recorded live blocks: their addresses and requested sizes.
@@ -41,7 +44,10 @@ struct Blocks {
 
 impl Blocks {
     fn insert(&mut self, address: usize, size: usize) {
-        assert!(self.count < CAPACITY, "the host's block table is full");
+        if self.count == CAPACITY {
+            // Never panic here: a panic allocates.
+            std::process::abort();
+        }
         self.addresses[self.count] = address;
         self.sizes[self.count] = size;
         self.count += 1;
@@ -64,6 +70,9 @@ impl Blocks {
 }
 
 static MEASURING: AtomicBool = AtomicBool::new(false);
+/// The library image's mapped addresses.
+static IMAGE_START: AtomicUsize = AtomicUsize::new(0);
+static IMAGE_END: AtomicUsize = AtomicUsize::new(0);
 static BLOCKS: Mutex<Blocks> = Mutex::new(Blocks {
     addresses: [0; CAPACITY],
     sizes: [0; CAPACITY],
@@ -72,25 +81,65 @@ static BLOCKS: Mutex<Blocks> = Mutex::new(Blocks {
     peak: 0,
 });
 
-thread_local! {
-    /// Whether this thread is inside a library call.
-    static CALLING: Cell<bool> = const { Cell::new(false) };
-}
-
 fn blocks() -> MutexGuard<'static, Blocks> {
     BLOCKS.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Makes one library call: what it allocates is the library's.
-pub fn calling<T>(call: impl FnOnce() -> T) -> T {
-    let outer = CALLING.replace(true);
-    let result = call();
-    CALLING.set(outer);
-    result
+/// What [`image`] looks for and finds.
+struct Search {
+    address: usize,
+    found: Range<usize>,
 }
 
-/// Starts measuring from nothing: blocks allocated earlier are never counted.
-pub fn measure() {
+/// One loaded image: its loadable segments' span, kept when it contains the
+/// searched address.
+unsafe extern "C" fn visit(
+    info: *mut libc::dl_phdr_info,
+    _: libc::size_t,
+    data: *mut c_void,
+) -> c_int {
+    // SAFETY: the loader passes a valid entry; `data` is the search.
+    let (info, search) = unsafe { (&*info, &mut *data.cast::<Search>()) };
+    // SAFETY: the entry's headers cover `dlpi_phnum` entries.
+    let headers = unsafe { std::slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum.into()) };
+    let base = info.dlpi_addr as usize;
+    let segments = headers
+        .iter()
+        .filter(|header| header.p_type == libc::PT_LOAD)
+        .map(|header| {
+            let start = base + header.p_vaddr as usize;
+            start..start + header.p_memsz as usize
+        });
+    let start = segments.clone().map(|segment| segment.start).min();
+    let end = segments.map(|segment| segment.end).max();
+    match (start, end) {
+        (Some(start), Some(end)) if (start..end).contains(&search.address) => {
+            search.found = start..end;
+            1
+        }
+        _ => 0,
+    }
+}
+
+/// The addresses of the loaded image that contains `address`.
+fn image(address: usize) -> Range<usize> {
+    let mut search = Search {
+        address,
+        found: 0..0,
+    };
+    // SAFETY: the callback only reads the loader's entries and writes the
+    // search, which outlives the call.
+    unsafe { libc::dl_iterate_phdr(Some(visit), (&raw mut search).cast()) };
+    assert!(!search.found.is_empty(), "the library image is loaded");
+    search.found
+}
+
+/// Starts measuring, from nothing, the image that contains `library`:
+/// blocks allocated earlier are never counted.
+pub fn measure(library: *const c_void) {
+    let image = image(library as usize);
+    IMAGE_START.store(image.start, Ordering::SeqCst);
+    IMAGE_END.store(image.end, Ordering::SeqCst);
     let mut blocks = blocks();
     blocks.count = 0;
     blocks.live = 0;
@@ -98,15 +147,21 @@ pub fn measure() {
     MEASURING.store(true, Ordering::SeqCst);
 }
 
-/// The bytes library calls hold now, and the most they held at once.
+/// The bytes the library holds now, and the most it held at once.
 pub fn observe() -> Value {
     let blocks = blocks();
     json!({ "live": blocks.live, "peak": blocks.peak, "blocks": blocks.count })
 }
 
-/// Records a new block when a measured library call allocated it.
-fn allocated(block: *mut c_void, size: usize) {
-    if MEASURING.load(Ordering::SeqCst) && !block.is_null() && CALLING.get() {
+/// Whether code at `caller` is the library's, while measuring.
+fn library(caller: usize) -> bool {
+    MEASURING.load(Ordering::SeqCst)
+        && (IMAGE_START.load(Ordering::SeqCst)..IMAGE_END.load(Ordering::SeqCst)).contains(&caller)
+}
+
+/// Records a new block when the library's code allocated it.
+fn allocated(block: *mut c_void, size: usize, caller: usize) {
+    if !block.is_null() && library(caller) {
         blocks().insert(block as usize, size);
     }
 }
@@ -122,33 +177,49 @@ fn forget(block: *mut c_void) -> Option<usize> {
 /// # Safety
 ///
 /// glibc's `malloc` contract.
+#[unsafe(naked)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn malloc(size: usize) -> *mut c_void {
+    // The return address, at the stack top on entry, becomes the next
+    // argument; the jump keeps the caller's frame, so the callee returns to it.
+    std::arch::naked_asm!("mov rsi, [rsp]", "jmp {}", sym malloc_from)
+}
+
+extern "C" fn malloc_from(size: usize, caller: usize) -> *mut c_void {
     // SAFETY: forwarded unchanged.
     let block = unsafe { __libc_malloc(size) };
-    allocated(block, size);
+    allocated(block, size, caller);
     block
 }
 
 /// # Safety
 ///
 /// glibc's `calloc` contract.
+#[unsafe(naked)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn calloc(count: usize, size: usize) -> *mut c_void {
+    std::arch::naked_asm!("mov rdx, [rsp]", "jmp {}", sym calloc_from)
+}
+
+extern "C" fn calloc_from(count: usize, size: usize, caller: usize) -> *mut c_void {
     // SAFETY: forwarded unchanged; a product that overflows fails there.
     let block = unsafe { __libc_calloc(count, size) };
-    allocated(block, count.wrapping_mul(size));
+    allocated(block, count.wrapping_mul(size), caller);
     block
 }
 
 /// # Safety
 ///
 /// glibc's `realloc` contract.
+#[unsafe(naked)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn realloc(block: *mut c_void, size: usize) -> *mut c_void {
+    std::arch::naked_asm!("mov rdx, [rsp]", "jmp {}", sym realloc_from)
+}
+
+extern "C" fn realloc_from(block: *mut c_void, size: usize, caller: usize) -> *mut c_void {
     if block.is_null() {
-        // SAFETY: realloc of null is malloc.
-        return unsafe { malloc(size) };
+        return malloc_from(size, caller);
     }
     // Forgotten first, so no other thread can record the address freed here.
     let recorded = forget(block);
@@ -179,11 +250,21 @@ pub unsafe extern "C" fn free(block: *mut c_void) {
 /// # Safety
 ///
 /// glibc's `posix_memalign` contract.
+#[unsafe(naked)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn posix_memalign(
     out: *mut *mut c_void,
     alignment: usize,
     size: usize,
+) -> c_int {
+    std::arch::naked_asm!("mov rcx, [rsp]", "jmp {}", sym posix_memalign_from)
+}
+
+extern "C" fn posix_memalign_from(
+    out: *mut *mut c_void,
+    alignment: usize,
+    size: usize,
+    caller: usize,
 ) -> c_int {
     if !alignment.is_power_of_two() || !alignment.is_multiple_of(size_of::<*mut c_void>()) {
         return libc::EINVAL;
@@ -193,7 +274,7 @@ pub unsafe extern "C" fn posix_memalign(
     if block.is_null() {
         return libc::ENOMEM;
     }
-    allocated(block, size);
+    allocated(block, size, caller);
     // SAFETY: the caller supplies writable storage for one pointer.
     unsafe { out.write(block) };
     0

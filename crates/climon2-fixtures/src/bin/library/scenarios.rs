@@ -237,6 +237,25 @@ pub fn lifecycle(setup: &Setup) -> Value {
     Value::Object(report)
 }
 
+/// Ends an instance one call at a time: shutdown, then run on `owner` until
+/// it returns, then drains to terminal evidence.
+pub fn end(api: Api, owner: &Owner, handles: Handles) -> Value {
+    let shutdown = api.shutdown(handles);
+    let run = owner.call(move || api.run(handles));
+    let descriptor = api.notification(handles).1;
+    let drains = drain_to_terminal(api, handles, descriptor);
+    json!({ "shutdown": shutdown, "run": run, "drains": drains })
+}
+
+/// Releases both handles, then destroys the instance on `owner`.
+pub fn release(api: Api, owner: &Owner, handles: Handles) -> Value {
+    json!({
+        "release_communication": api.release_communication(handles),
+        "release_control": api.release_control(handles),
+        "destroy": owner.call(move || api.destroy(handles)),
+    })
+}
+
 /// Shuts an instance down and cleans it up completely, from `owner`.
 pub fn clean_up(api: Api, owner: &Owner, handles: Handles) -> Value {
     let ran = owner.start(move || api.run(handles));

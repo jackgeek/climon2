@@ -1,50 +1,46 @@
-//! The allocation scenario (#180), Linux only: an instance's snapshot beside
-//! the host's own count of the heap its calls hold (`heap`).
+//! The allocation scenario (#180), x86-64 GNU/Linux only: an instance's
+//! snapshot beside the host's own count of the heap the library holds
+//! (`heap`).
 
 use super::{
     abi::{Api, Handles},
     heap,
-    scenarios::{Owner, Setup, create, drain_to_terminal},
+    scenarios::{Owner, Setup, create, end, release},
 };
 use serde_json::{Value, json};
 
 /// `allocation`: a `warm_up` instance's lifecycle first, on the same threads,
 /// creates what the process and its threads keep for any instance (lazily
 /// created dependency state and per-thread storage). Then, measuring from
-/// nothing, the `measured` instance's lifecycle.
+/// nothing, the `measured` instance's lifecycle. With the hooked library's
+/// `worker` fault, each run starts a worker of the library's own.
 pub fn allocation(setup: &Setup) -> Value {
     let owner = Owner::spawn("owner");
     let warm_up = lifecycle(setup, &owner, &setup.input["warm_up"]);
-    heap::measure();
+    let create = setup.api.table().create.expect("the table has create");
+    heap::measure(create as *const std::ffi::c_void);
     let measured = lifecycle(setup, &owner, &setup.input["measured"]);
     json!({ "warm_up": warm_up, "measured": measured, "joined": owner.join() })
 }
 
 /// One instance, one call at a time, so its snapshot and the host's count
-/// see the same order of allocations: created, then shut down and run on the
-/// owner thread until it returns, drained to terminal evidence, released and
+/// see the same order of allocations: created, ended (shut down, run on the
+/// owner thread until it returns, drained to terminal evidence), released and
 /// destroyed. The snapshot and the host's count are taken side by side after
-/// create and after the drains.
+/// create and once ended, when run has joined any worker.
 fn lifecycle(setup: &Setup, owner: &Owner, startup: &Value) -> Value {
     let api = setup.api;
     let (create, handles) = create(setup, owner, startup);
     let handles = handles.expect("the instance is created");
     let created = checkpoint(api, handles);
-    let shutdown = api.shutdown(handles);
-    let run = owner.call(move || api.run(handles));
-    let descriptor = api.notification(handles).1;
-    let drains = drain_to_terminal(api, handles, descriptor);
+    let end = end(api, owner, handles);
     let ended = checkpoint(api, handles);
     json!({
         "create": create,
         "created": created,
-        "shutdown": shutdown,
-        "run": run,
-        "drains": drains,
+        "end": end,
         "ended": ended,
-        "release_communication": api.release_communication(handles),
-        "release_control": api.release_control(handles),
-        "destroy": owner.call(move || api.destroy(handles)),
+        "release": release(api, owner, handles),
     })
 }
 
