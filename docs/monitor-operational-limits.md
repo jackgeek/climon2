@@ -170,7 +170,12 @@ rows if fewer exist. Preserve current normal/alternate-screen state separately.
 Never completely erase that page merely to admit another session.
 No history is fabricated for a passive client that never received display data.
 
-The protected page/current model become admission obligations. Shortening history
+The protected page/current model become admission obligations. In
+`climon2-vt` the page's obligation arises at the normal screen's first
+scroll, when the model admits its first history chunk, rather than when the
+model is created: a model that never scrolled holds no history storage, and
+the first scroll is rejected, keeping the page, if its chunk cannot fit
+([#166](https://github.com/jackgeek/climon2/issues/166)). Shortening history
 does not remove a row, release
 [control](../GLOSSARY.md#attachment-and-control), or turn partial restoration into
 [readiness](../GLOSSARY.md#protocol-and-plugin-concepts).
@@ -215,8 +220,18 @@ ones; the owner accepted that evidence, with the measured reserve, as the
 risk proof. The owner also decided that a monitor-mode geometry change is
 always followed by a restoration at that geometry (a wire amendment that
 [#89](https://github.com/jackgeek/climon2/issues/89) makes), and how
-per-model cost is to meet PERF-01
-([#166](https://github.com/jackgeek/climon2/issues/166)). The monitor's own
+per-model cost is to meet PERF-01.
+[#166](https://github.com/jackgeek/climon2/issues/166) implements that in
+`climon2-vt`: one `Parser` per monitor, whose 2 MiB buffer the monitor
+counts once, and the first history chunk admitted only at the first scroll.
+At the default 512 MiB this holds 4,206, 870 and 110 models at 80x24, 200x60
+and 500x200 before they scroll, and 249, 96 and 31 once they hold their
+first chunk
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine));
+whether to raise `memory.total_bytes` or agree a PERF-01 disposition for the
+geometries that fall short is the owner's open decision. The monitor does not
+yet use the shared parser
+([#108](https://github.com/jackgeek/climon2/issues/108)), and its own
 budgets and pressure policies above remain unimplemented.
 
 ## Queues and transfers

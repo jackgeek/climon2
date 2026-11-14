@@ -4,7 +4,7 @@
 
 ## Engine: unchanged Alacritty 0.26.0
 
-`climon2-vt` is the only crate that depends on `alacritty_terminal = "=0.26.0"` (default features off), the published crates.io release locked by checksum `bda177466b9524d59f1b12f0dd30b68696788e9992a7e959021c4a0ed96fcf59` (upstream commit `94e7c8874e526b1e67b349d9ba30ddf81669119e`, parser vte 0.15.0). It is unpatched and not a git dependency: an immutable, reproducible registry release, and the same engine the test harness already uses. The adapter uses only public API: grid and cursor access, `swap_alt`, `set_options`, and `Processor` with a climon2 `Timeout` and `EventListener`.
+`climon2-vt` is the only crate that depends on `alacritty_terminal = "=0.26.0"` (default features off), the published crates.io release locked by checksum `bda177466b9524d59f1b12f0dd30b68696788e9992a7e959021c4a0ed96fcf59` (upstream commit `94e7c8874e526b1e67b349d9ba30ddf81669119e`, parser vte 0.15.0). It is unpatched and not a git dependency: an immutable, reproducible registry release, and the same engine the test harness already uses. The adapter uses only public API: grid and cursor access, `swap_alt`, `set_options`, `Processor` with a climon2 `Timeout` and `EventListener`, and, for a monitor model's own `CSI n b`, the engine's `Handler::input`.
 
 Evidence limits: earlier qualification ran against revision `bbb2cbf9470a6707b1205fbddbdb25109b14e2fd` (0.26.1-dev) and does not carry over. In 0.26.0 the combining marks of one cell are stored without a bound. Only the seams this choice touches are validated (front filter, sync timing, the alternate-screen swap, history accounting, serialization and derived rendering), including one cell carrying many zero-width marks. Alacritty 0.26.0 implements only `CSI ? 1049 h/l` for the alternate screen; modes 47 and 1047 are unknown to it.
 
@@ -32,7 +32,8 @@ reserve as #76's risk proof (2026-11-13), once history yielded before
 rejection and one token could admit several history chunks. The engine facts
 that shaped the design, all for 0.26.0 and vte 0.15.0:
 
-- every `Processor` allocates vte's 2 MiB synchronized-update buffer;
+- every `Processor` allocates vte's 2 MiB synchronized-update buffer, and
+  remembers the character it printed last, which `CSI n b` repeats;
 - one cell's combining marks live in a shared `CellExtra` with an unbounded
   character vector, and `CSI 65535 b` repeats the preceding character, a mark
   included, 65535 times from nine bytes;
@@ -56,7 +57,19 @@ The model keeps to its limit this way:
   before a model's engine, whether or not controls sit before their
   introducer; tests feed both forms to a model with no history at its
   mandatory limit.
-- **Fixed charge.** The engine's allocation for its geometry, vte's buffer and a
+- **One parser per monitor (#166).** Every model keeps its own engine, but
+  one `Parser` (vte's `Processor`) serves all of a monitor's models, so its
+  2 MiB buffer (`Parser::BYTES`) is counted once by the monitor, not per
+  model. The parser holds nothing from one model when another is fed: each
+  model feeds it only complete tokens, a UTF-8 sequence cut off at the end
+  of a text token by the escape that follows prints its replacement
+  character within that token, and a model expands `CSI n b` itself: the
+  controls vte executes in the sequence go through the parser, then the
+  model prints its own preceding character `n` times through the engine's
+  `Handler::input`, as vte would. A model tracks that character from vte's
+  rules for printing text (every character but the C0 and C1 controls, one
+  replacement character per invalid sequence except a lone byte up to 0x9f).
+- **Fixed charge.** The engine's allocation for its geometry and a
   32 KiB reserve for what the front filter and the engine hold briefly: a
   partial token and the tokens one slice completes (at most about 15 KiB
   measured, for a 4096-byte control string held across one-byte reads; an
@@ -79,8 +92,29 @@ The model keeps to its limit this way:
   decides again; the inactive screen's charge stands while the engine cannot
   change it.
 - **History.** The engine's history limit is whole 1000-row chunks, so its
-  storage never outgrows the limit; the first chunk, which holds the protected
-  newest page, is mandatory. Ahead of any token that could fill the current
+  storage never outgrows the limit. The first chunk, which holds the
+  protected newest page, is admitted lazily (#166): only before the first
+  token that could push a normal-screen row into history, and that token is
+  rejected, keeping the page, if the chunk does not fit once history beside a
+  staged restoration has yielded. The protected page is therefore an
+  obligation at the first scroll, not at creation: a model that never
+  scrolled holds no history storage and is charged none. Because admission
+  must still precede the allocation, the model judges each token before the
+  engine sees it, from the cursor, the scroll region and the token's vte
+  parse. The engine keeps the region private, so the model mirrors it from
+  DECSTBM (as the engine applies it: ignored unless top is above bottom,
+  clamped to the screen) and `ESC c`. Only a region that starts at the top
+  row pushes rows into history. A token could scroll if its line feeds
+  (including index, next line and those executed inside a sequence) and
+  repeated characters could leave that region's bottom row, or it is
+  `CSI S` in such a region, `CSI M` on the top row, or `CSI 2 J`, which
+  scrolls the normal screen's rows into history whatever the region. While
+  the chunk waits, text is fed in pieces that cannot reach the bottom row
+  (each character or invalid sequence moves the cursor down at most one row),
+  then a character at a time on it, where only a line feed or a character in
+  the last column could scroll. The judgement is an upper bound: the chunk
+  may be admitted a token early (a character in the last column that does
+  not wrap, an erased screen that was already blank), never late. Ahead of any token that could fill the current
   limit, every chunk it could fill is admitted, before it is allocated, while
   the next one fits (a token pushes at most a row per byte and per
   repetition, or a screenful, so one long repeat or released run of line
@@ -142,6 +176,16 @@ allocations with a global allocator. It shows the following:
   oldest chunk one byte below it, never the first chunk (worked cases: 6,000
   marked rows at 200x60 within 64 MiB; staging at 500x200 after 3,100 rows);
 - one token admits every history chunk it could fill;
+- a model keeping history is admitted with the same bytes as one keeping
+  none and holds no history storage until its first scroll; the first chunk
+  is admitted on that scroll (23 line feeds from the top of a 24-row screen
+  admit nothing, the 24th admits it), at the bound and rejected one byte
+  below it with the page kept, following the scroll region and every
+  scrolling sequence listed above (#166);
+- a parser allocates exactly its 2 MiB buffer, models sharing one hold no
+  more than their footprints, and `tests/parser.rs` shows each model
+  receiving only its own tokens and repeating only its own preceding
+  character, at the repeat count's boundaries (#166);
 - deterministic adversarial streams never pass the limit. They slip the
   tokenizer tests' tricky bytes among text, marks, repeats, tints, scrolls,
   screen switches and control strings, read in pieces of any size;
@@ -155,23 +199,33 @@ uses the running charge and never measures. Which history yields under
 pressure across sessions is monitor policy (#119), through
 `Model::shorten_history()`.
 
-**Per-model cost (measured on #76).** A model's mandatory charge is
-vte's 2 MiB buffer, the reserve, both screens and, when it keeps any history,
-the first 1000-row chunk:
+**Per-model cost.** Measured on #76, a model's mandatory charge was vte's
+2 MiB buffer, the reserve, both screens and, when it kept any history, the
+first 1000-row chunk; the default `memory.total_bytes` (512 MiB) held 126,
+70 and 28 models with history at 80x24, 200x60 and 500x200, or 241, 198 and
+77 without, while PERF-01 asks for 100 sessions at each geometry. The owner
+decided (2026-11-13) to share one vte parser per monitor and admit the first
+history chunk only when the normal screen first scrolls, then re-measure
+([#166](https://github.com/jackgeek/climon2/issues/166)). Re-measured on
+#166 (`Model::footprint()`, whose charges the allocator tests above bound),
+one parser of 2 MiB per monitor plus, per model:
 
-| Geometry | No history | With history | Staged beside the current model | 10,000 history rows |
+| Geometry | Before its first scroll | After it (first chunk) | Staged blank beside it | 10,000 history rows |
 |---|---:|---:|---:|---:|
-| 80x24 | 2.12 MiB | 4.05 MiB | 8.09 MiB | 21.35 MiB |
-| 200x60 | 2.59 MiB | 7.26 MiB | 14.52 MiB | 49.28 MiB |
-| 500x200 | 6.63 MiB | 18.18 MiB | 36.36 MiB | 122.00 MiB |
+| 80x24 | 0.12 MiB | 2.05 MiB | 2.17 MiB | 19.35 MiB |
+| 200x60 | 0.59 MiB | 5.26 MiB | 5.85 MiB | 47.28 MiB |
+| 500x200 | 4.63 MiB | 16.18 MiB | 20.81 MiB | 120.00 MiB |
 
-The default `memory.total_bytes` (512 MiB) therefore holds 126, 70 and 28
-models with history, or 241, 198 and 77 without, while PERF-01 asks for 100
-sessions at each geometry. The owner decided (2026-11-13) to share one vte
-parser per monitor and admit the first history chunk only when the normal
-screen first scrolls, then re-measure and, if 500x200 still falls short, raise
-`memory.total_bytes` or agree a PERF-01 disposition
-([#166](https://github.com/jackgeek/climon2/issues/166)).
+A model keeping no history costs what the first column says however much it
+scrolls. With the parser counted once, the default 512 MiB therefore holds
+4,206, 870 and 110 models that have not scrolled (or keep no history), and
+249, 96 and 31 models that hold their first history chunk. PERF-01's 100
+sessions fit at every geometry before any scroll and at 80x24 after it;
+once their screens have scrolled, 200x60 falls short by 4 models and 500x200
+by 69. 100 such models need about 528 MiB at 200x60 and 1,620 MiB at 500x200
+(100 models plus the parser), before staging or any history beyond the first
+chunk. **Open (owner, #166):** raise `memory.total_bytes`, or agree a PERF-01
+disposition for those geometries, as recorded on #76.
 
 ## Live output policy and query authority
 

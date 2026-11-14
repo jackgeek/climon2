@@ -169,8 +169,8 @@ release resources. Resource-blocked rows remain visible; history pressure
 preserves a recent page. Unsafe growth/cleanup is explicit failure, not client
 eviction or unloading. Allocation-aware terminal qualification reopens the
 narrow unbounded-engine assumption; `climon2-vt`'s allocation-bounded `Model`
-(#76) provides it for the monitor's planned per-session models, which the
-monitor does not use yet. It chooses no new executable/library or consumption
+(#76), fed through one `Parser` shared per monitor (#166), provides it for the
+monitor's planned per-session models, which the monitor does not use yet. It chooses no new executable/library or consumption
 arrow, and does not sandbox trusted native code.
 
 The client executable will also load its same-release library for ordinary
