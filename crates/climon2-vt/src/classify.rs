@@ -204,14 +204,11 @@ fn csi(dispatch: &Dispatch) -> Policy {
     }
 }
 
-/// The parameter vte reads for a missing or zero one.
-fn param_or(dispatch: &Dispatch, index: usize, default: u16) -> u16 {
-    dispatch
-        .params
-        .get(index)
-        .copied()
-        .filter(|&param| param != 0)
-        .unwrap_or(default)
+/// Parameter `index`, unless it is missing or zero, which vte reads as its
+/// default.
+fn given(dispatch: &Dispatch, index: usize) -> Option<usize> {
+    let param = dispatch.params.get(index).copied();
+    param.filter(|&param| param != 0).map(usize::from)
 }
 
 fn csi_scrolling(dispatch: &Dispatch) -> Scrolling {
@@ -219,7 +216,7 @@ fn csi_scrolling(dispatch: &Dispatch) -> Scrolling {
         _ if !dispatch.is(dispatch.action, b"") => Scrolling::Nothing,
         b'S' => Scrolling::Up,
         b'M' => Scrolling::DeleteLines,
-        b'J' if param_or(dispatch, 0, 0) == 2 => Scrolling::ClearScreen,
+        b'J' if given(dispatch, 0) == Some(2) => Scrolling::ClearScreen,
         b'r' => region(dispatch),
         _ => Scrolling::Nothing,
     }
@@ -228,10 +225,9 @@ fn csi_scrolling(dispatch: &Dispatch) -> Scrolling {
 /// DECSTBM's rows as vte reads them: a missing or zero top is the first
 /// row, and a missing or zero bottom is none.
 fn region(dispatch: &Dispatch) -> Scrolling {
-    let bottom = param_or(dispatch, 1, 0);
     Scrolling::Region {
-        top: usize::from(param_or(dispatch, 0, 1)),
-        bottom: (bottom != 0).then_some(usize::from(bottom)),
+        top: given(dispatch, 0).unwrap_or(1),
+        bottom: given(dispatch, 1),
     }
 }
 

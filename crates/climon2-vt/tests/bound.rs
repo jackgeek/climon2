@@ -1565,6 +1565,9 @@ fn a_model_keeping_history_needs_no_chunk_before_it_scrolls() {
 fn the_first_history_chunk_is_admitted_on_the_first_scroll() {
     assert_first_scroll(top_then(23), "\n", &["top"]);
     assert_first_scroll("", &top_then(24), &["top"]);
+    let mut one_row = Model::new(geometry(80, 24), limits(ROOMY, 1)).unwrap();
+    one_row.feed_shared(top_then(24).as_bytes()).unwrap();
+    assert_eq!(one_row.history(), ["top"]);
     for _ in 0..23 {
         assert_first_scroll("top", &"\n".repeat(22), &[]);
     }
@@ -1601,7 +1604,15 @@ fn the_first_chunk_follows_the_scroll_region() {
     for region in ["\x1b[1;10r", "\x1b[1;10r\x1b[5;5r", "\x1b[1;10r\x1b[6;5r"] {
         assert_first_scroll(format!("{region}top{}", feeds(9)), "\n", &["top"]);
     }
-    for region in ["\x1b[r", "\x1b[0;0r", "\x1b[1;30r", "\x1b[2;10r\x1bc"] {
+    for region in [
+        "\x1b[r",
+        "\x1b[0;0r",
+        "\x1b[1;30r",
+        "\x1b[2;10r\x1bc",
+        "\x1b[1;10r\x1b[r",
+        "\x1b[1;10r\x1b[1;0r",
+        "\x1b[2;10r\x1b[0r",
+    ] {
         assert_first_scroll(format!("{region}top{}", feeds(23)), "\n", &["top"]);
     }
 }

@@ -58,9 +58,10 @@ fn each_model_repeats_its_own_preceding_character() {
             (1, b"q"),
             (0, b"\x1b[2b"),
             (1, b"\x1b[1b"),
+            (0, b"\x1b[1b"),
         ],
     );
-    assert_eq!(models[0].screen(), ["aaa", ""]);
+    assert_eq!(models[0].screen(), ["aaaa", ""]);
     assert_eq!(models[1].screen(), ["qq", ""]);
 }
 
@@ -96,6 +97,7 @@ fn repeat_counts_at_their_lower_boundaries() {
         (b"a\x9f\x1b[1b", ["aa", ""]),
         (b"a\xa0\x1b[1b", ["a\u{fffd}\u{fffd}", ""]),
         (b"a\xe2\x82\x1b[1b", ["a\u{fffd}\u{fffd}", ""]),
+        (b"a\xe2\x1b[1bz", ["a\u{fffd}\u{fffd}z", ""]),
     ] {
         assert_eq!(screen(bytes), expected, "{bytes:?}");
     }
