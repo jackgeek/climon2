@@ -82,7 +82,8 @@ output can follow:
   [restoration](../../../GLOSSARY.md#restoration-and-presentation) is in
   progress for any connection: the restoration's remaining Display, its
   [Restoration complete](event-restoration-complete.md) and the live output
-  held back behind it come first. A grant that waits for its restoration to
+  held back behind it come first. A
+  [grant](../../../GLOSSARY.md#attachment-and-control) that waits for its restoration to
   begin holds it as well. Each wait ends within its existing bounds: the
   restoration completes, or a reader that takes nothing for 5 s is lost
   ([#203](https://github.com/jackgeek/climon2/issues/203)).
