@@ -490,7 +490,10 @@ fn command_final_follows_the_commands_last_output() {
     let result = exited(3);
     assert_eq!(title_changed(&mut watching), Some("done".into()));
     assert_final_then_closed(&mut watching, &result);
-    attached.ended(&result);
-    assert_eq!(crate::count(&attached.display, b"last line"), 1);
+    assert_eq!(attached.next_after_display(), command_final(&result));
+    let before_final = attached.display.clone();
+    attached.session_ended();
+    assert_eq!(crate::count(&before_final, b"last line"), 1);
     session.finish();
 }
+
