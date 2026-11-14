@@ -79,9 +79,11 @@ impl Drain {
 pub(super) enum Command {
     Running,
     /// Reaped with `result`; its remaining output is being drained.
+    /// `hang_up` is set by a termination that waits for the drain.
     Draining {
         result: CommandResult,
         drain: Drain,
+        hang_up: bool,
     },
     /// Hung up; the rest of its terminal session is killed at `until`.
     HangingUp {
@@ -92,6 +94,14 @@ pub(super) enum Command {
 }
 
 impl Command {
+    pub fn draining(result: CommandResult, now: Instant) -> Self {
+        Self::Draining {
+            result,
+            drain: Drain::new(now),
+            hang_up: false,
+        }
+    }
+
     /// Whether the PTY may still have output to read.
     pub fn reads(&self, now: Instant) -> bool {
         match self {
@@ -107,6 +117,20 @@ impl Command {
         }
     }
 
+    /// Defers a hang-up to the end of the drain; whether the command drains.
+    pub fn hang_up_when_drained(&mut self) -> bool {
+        let Self::Draining { hang_up, .. } = self else {
+            return false;
+        };
+        *hang_up = true;
+        true
+    }
+
+    /// Whether a termination awaits the end of the drain.
+    pub fn hangs_up_when_drained(&self) -> bool {
+        matches!(self, Self::Draining { hang_up: true, .. })
+    }
+
     /// Whether the hang-up grace has elapsed.
     pub fn hung_up(&self, now: Instant) -> bool {
         matches!(self, Self::HangingUp { until } if now >= *until)
@@ -115,7 +139,7 @@ impl Command {
     /// The command's result, once the drain finished.
     pub fn drained(&self, now: Instant) -> Option<CommandResult> {
         match self {
-            Self::Draining { result, drain } if drain.finished(now) => Some(result.clone()),
+            Self::Draining { result, drain, .. } if drain.finished(now) => Some(result.clone()),
             _ => None,
         }
     }
@@ -177,10 +201,8 @@ mod tests {
         assert_eq!(command.drained(now), None);
         command.observe(&Read::End, now);
         let result = CommandResult::Exit { code: 7 };
-        command = Command::Draining {
-            result: result.clone(),
-            drain: Drain::new(now),
-        };
+        command = Command::draining(result.clone(), now);
+        assert!(!command.hangs_up_when_drained());
         assert!(command.reads(now));
         assert_eq!(command.drained(now), None);
         command.observe(&Read::End, now);
@@ -188,6 +210,22 @@ mod tests {
         assert_eq!(command.drained(now), Some(result));
         assert!(!Command::Ended.reads(now));
         assert_eq!(Command::Ended.drained(now), None);
+    }
+
+    #[test]
+    fn a_hang_up_waits_for_a_drain_and_only_for_one() {
+        let now = Instant::now();
+        let result = CommandResult::Exit { code: 7 };
+        let mut command = Command::draining(result.clone(), now);
+        assert!(command.hang_up_when_drained());
+        assert!(command.hangs_up_when_drained());
+        assert!(command.reads(now));
+        command.observe(&Read::End, now);
+        assert_eq!(command.drained(now), Some(result));
+        for mut other in [Command::Running, Command::Ended] {
+            assert!(!other.hang_up_when_drained());
+            assert!(!other.hangs_up_when_drained());
+        }
     }
 
     #[test]
