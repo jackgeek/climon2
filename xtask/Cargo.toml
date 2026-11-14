@@ -10,7 +10,10 @@ climon2-core = { path = "../crates/climon2-core" }
 climon2-platform = { path = "../crates/climon2-platform" }
 climon2-install = { version = "0.1.0", path = "../crates/climon2-install" }
 libc = "0.2.191"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
 serde_json.workspace = true
+syn = { version = "2", features = ["full", "visit", "visit-mut"] }
 tempfile = "3"
 
 [dev-dependencies]
