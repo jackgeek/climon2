@@ -1970,15 +1970,18 @@ fn listed(package: &Package, text: &str) -> Value {
         .unwrap_or_else(|| panic!("no session runs {text:?}"))
 }
 
-/// Own-session scenario (confirmed 2026-11-08), DSC-06 (Monitor), HDL-01
-/// (Monitor rows) and CTL-01 (Monitor): a monitor running inside a session
-/// shows that session as This monitor and starts no client for it, while a
-/// nested headless session and a session controlled elsewhere appear with
-/// their titles, wide text included, in the home they share; labels keep the
-/// selector's border whole however wide or long (TRM-06 label cases, SEL-01
-/// cell-safe clipping). Passive clients leave the controller in control.
+/// Own-session scenario (confirmed 2026-11-08; owner decision on #110,
+/// 2026-11-14: hidden), DSC-06 (Monitor), HDL-01 (Monitor rows) and CTL-01
+/// (Monitor): a monitor running inside a session never lists that session
+/// and starts no client for it, while a nested headless session and a
+/// session controlled elsewhere appear with their titles, wide text
+/// included, in the home they share; labels keep the selector's border
+/// whole however wide or long (TRM-06 label cases, SEL-01 cell-safe
+/// clipping). A session created once the monitor runs appears in a later
+/// pass, so every earlier pass, which found the monitor's own session too,
+/// has been shown. Passive clients leave the controller in control.
 #[test]
-fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
+fn the_own_session_is_hidden_while_nested_and_controlled_sessions_appear() {
     let package = Package::new();
     without_introduction(&package);
     let mut elsewhere = package.command("c2");
@@ -2005,13 +2008,27 @@ fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║This monitor /bin/bash -c c2 monitor ");
     // The host's screen text follows each wide character with its covered cell.
-    shows_row(&mut terminal, "║Unavailable  Nested 日 本 ");
-    shows_row(&mut terminal, "║Unavailable  Elsewhere");
+    shows_row(&mut terminal, "║Unavailable Nested 日 本 ");
+    shows_row(&mut terminal, "║Unavailable Elsewhere");
     shows_row(
         &mut terminal,
-        "║Unavailable  /bin/bash -c c2 exec --headless",
+        "║Unavailable /bin/bash -c c2 exec --headless",
+    );
+    headless(&package, &titled_hold("Later"), "finish");
+    shows_row(&mut terminal, "║Unavailable Later");
+    // Every pass so far is shown: four rows, and none is the monitor's own.
+    let rows: Vec<_> = terminal
+        .screen()
+        .lines()
+        .filter(|row| row.starts_with(" ║") && !row.trim_matches([' ', '║']).is_empty())
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(rows.len(), 4, "{rows:?}");
+    assert!(
+        !terminal.screen().contains("c2 monitor"),
+        "{}",
+        terminal.screen()
     );
     // Wide labels, and the long one clipped to the list, keep the border whole.
     for row in terminal.screen().lines().filter(|row| row.contains('║')) {
@@ -3056,15 +3073,18 @@ const NOT_CONTROLLING: &str = "Not controlling";
 /// `title`, puts its terminal in raw mode without echo, appends every byte
 /// it receives to `$HOME/<title>.got` and says `RAW`. Until `$HOME/finish`
 /// exists it appends each new `stty size` to `$HOME/<title>.sizes` (with
-/// [`sized`]'s probe), retitles itself whenever `$HOME/<title>.title`
-/// holds a new title, and says ` SAID` once `$HOME/<title>.say` exists.
+/// [`sized`]'s probe) and writes it on its second row as `SIZE <rows>
+/// <cols>`, leaving the cursor where it was; it retitles itself whenever
+/// `$HOME/<title>.title` holds a new title, and says ` SAID` once
+/// `$HOME/<title>.say` exists.
 fn watched(title: &str) -> String {
     format!(
         "printf '\\033]2;{title}\\007'; stty raw -echo; cat </dev/tty >\"$HOME/{title}.got\" & printf RAW; \
          p=; t=; o=; \
          until [ -e \"$HOME/finish\" ] || [ \"$SECONDS\" -ge 120 ]; do \
          q=; [ -e \"$HOME/{title}.probe\" ] && q=1; \
-         s=$(stty size); if [ \"$s\" != \"$p\" ]; then echo \"$s\" >> \"$HOME/{title}.sizes\"; p=$s; fi; \
+         s=$(stty size); if [ \"$s\" != \"$p\" ]; then echo \"$s\" >> \"$HOME/{title}.sizes\"; p=$s; \
+         printf '\\x1b7\\033[2;1HSIZE %s\\033[K\\x1b8' \"$s\"; fi; \
          n=$(cat \"$HOME/{title}.title\" 2>/dev/null); \
          if [ \"$n\" != \"$t\" ]; then printf '\\033]2;%s\\007' \"$n\"; t=$n; fi; \
          if [ -e \"$HOME/{title}.say\" ] && [ -z \"$o\" ]; then printf ' SAID'; o=1; fi; \
@@ -3106,35 +3126,29 @@ fn received_by(package: &Package, title: &str, expected: &[u8]) {
     }
 }
 
-/// Types `key` until the [`watched`] session `title`, which has received
-/// `before`, receives it: for a session whose input may still be closed by
-/// a restoration the screen cannot show (one that follows a resize while
-/// the control shown is unchanged). It must then have received `before`
-/// and that key alone, once or more.
-fn type_until_received(
-    terminal: &mut Terminal,
-    package: &Package,
-    title: &str,
-    before: &[u8],
-    key: u8,
-) {
-    let path = package.isolation.home().join(format!("{title}.got"));
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        terminal.send([key]).unwrap();
-        let retry = Instant::now() + Duration::from_secs(1);
-        while Instant::now() < retry {
-            let got = fs::read(&path).unwrap_or_default();
-            if got.len() > before.len() {
-                let (earlier, typed) = got.split_at(before.len());
-                assert_eq!(earlier, before);
-                assert!(typed.iter().all(|byte| *byte == key), "{got:?}");
-                return;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        assert!(Instant::now() < deadline, "{title} never received {key}");
-    }
+/// Waits until a whole frame shows the [`watched`] session `label`
+/// controlled with input open at `size`: its top row says Controlling and
+/// its canvas shows the `SIZE` line the session wrote once resized to
+/// `size`. That line follows the restoration the resize brought, which the
+/// canvas shows only once applied, and Controlling means its Ready was
+/// accepted, so the frame shows the restoration and keys typed now reach
+/// the session.
+fn ready_at(terminal: &mut Terminal, label: &str, size: &str) {
+    ready_on(terminal, COLS, label, size);
+}
+
+/// [`ready_at`] on a host `cols` wide.
+fn ready_on(terminal: &mut Terminal, cols: u16, label: &str, size: &str) {
+    let top = session_top_row(
+        usize::from(cols),
+        label,
+        &[STATUS, CONTROLLING, SESSIONS_HINT],
+    );
+    let line = format!("SIZE {size}");
+    whole_frame_shows(terminal, &line, |screen| {
+        let mut rows = screen.lines();
+        rows.next() == Some(top.as_str()) && rows.nth(1).is_some_and(|row| row.starts_with(&line))
+    });
 }
 
 /// Waits until a whole frame's second row starts with `text`: the
@@ -3215,8 +3229,8 @@ fn placeholder_screen(label: &str) -> String {
 /// nothing in the selector or the key introduction, Alpha's title still
 /// updates, and the monitor never takes control back by itself. The
 /// take-control key then acquires Alpha and is consumed; once the monitor
-/// controls Alpha it is ordinary input. When the other client takes control
-/// again, the placeholder returns and prefix+x exits from it.
+/// controls Alpha it is ordinary input. Beta, background throughout, then
+/// receives only what is typed once it is selected again.
 #[test]
 fn a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key() {
     let package = Package::new();
@@ -3300,21 +3314,21 @@ fn a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key() {
     );
 
     terminal.send("\x14").unwrap();
-    top_row_is(&mut terminal, &controlling("Alpha revoked"));
-    first_row_starts(&terminal, "RAW");
     other.wait_for_text(VIEWED_ELSEWHERE, TIMEOUT).unwrap();
-    // The resize after the grant brings a restoration that closes input
-    // until it is ready; the take-control key itself was consumed.
-    type_until_received(&mut terminal, &package, "Alpha", b"ac", b'd');
-    let path = package.isolation.home().join("Alpha.got");
-    let before = fs::read(&path).unwrap();
-    terminal.send("\x14").unwrap();
-    received_by(&package, "Alpha", &[&before[..], b"\x14"].concat());
-    received_by(&package, "Beta", b"b");
-    // The other client takes control back with its own take-control key,
-    // and prefix+x exits from the placeholder.
-    other.send("\x14").unwrap();
-    shows(&mut terminal, &placeholder_screen("Alpha revoked"));
+    // The attached client sized Alpha 30 by 120; the grant's resize brings
+    // it back, and its restoration.
+    ready_at(&mut terminal, "Alpha revoked", "29 120");
+    terminal.send("\x14d").unwrap();
+    received_by(&package, "Alpha", b"ac\x14d");
+    // Beta, in the background all along, received nothing more: once
+    // selected, what it receives next follows anything sent before.
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{STATUS} Beta"));
+    terminal.send("\r").unwrap();
+    top_row_is(&mut terminal, &controlling("Beta"));
+    first_row_starts(&terminal, "RAW");
+    terminal.send("e").unwrap();
+    received_by(&package, "Beta", b"be");
     terminal.send("\x1dx").unwrap();
     // Its many frames can outgrow the oracle's recent bytes, so only the
     // title itself is checked.
@@ -3436,9 +3450,10 @@ fn enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires
             &[STATUS, CONTROLLING, SESSIONS_HINT],
         ),
     );
-    first_row_starts(&terminal, "RAW");
-    // The take-control key reached no session: Slow receives only s.
-    type_until_received(&mut terminal, &package, "Slow", b"", b's');
+    ready_at(&mut terminal, "Slow", "29 120");
+    // The take-control key and keys typed before reached no session.
+    terminal.send("s").unwrap();
+    received_by(&package, "Slow", b"s");
 
     kill(Pid::from_raw(paused), Signal::SIGCONT).unwrap();
     terminal.send("\x1ds").unwrap();
@@ -3510,50 +3525,12 @@ fn promotion_keeps_a_background_model_without_selection_resize_or_input() {
     first_row_starts(&terminal, "RAW SAID");
     sized_to(&package, "Promoted", &["24 80", "30 120", "29 120"]);
     // The resize brings a restoration, which closes input until it is ready.
-    type_until_received(&mut terminal, &package, "Promoted", b"", b'p');
+    ready_at(&mut terminal, "Promoted", "29 120");
+    terminal.send("p").unwrap();
+    received_by(&package, "Promoted", b"p");
     received_by(&package, "Other", b"o");
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
-    finish_sessions(&package, "finish");
-    package.assert_clean();
-}
-
-/// Own-session scenario (confirmed 2026-11-08; #110): in a monitor running
-/// inside a session, Enter on its This monitor row leaves the selection as
-/// it was and the selector, still open, explains why on its bottom border.
-#[test]
-fn enter_on_this_monitor_keeps_the_selection_and_explains_why() {
-    let package = Package::new();
-    without_introduction(&package);
-    headless(&package, &watched("Other"), "finish");
-    let mut terminal = outer(&package, "c2 exec /bin/bash -c 'c2 monitor'");
-    terminal
-        .wait_for_text("No session selected.", TIMEOUT)
-        .unwrap();
-    terminal.send("\x1ds").unwrap();
-    // Rows list newest first: this monitor's session, then Other.
-    shows_row(&mut terminal, "║Unavailable  Other");
-    terminal.send("\x1b[B\r").unwrap();
-    let selected = session_top_row(
-        usize::from(COLS),
-        "Other",
-        &[STATUS, CONTROLLING, SESSIONS_HINT],
-    );
-    top_row_is(&mut terminal, &selected);
-    terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║This monitor /bin/bash -c c2 monitor");
-    terminal.send("\r").unwrap();
-    shows_row(
-        &mut terminal,
-        " ╚This monitor runs in this session, so it cannot be selected.═",
-    );
-    assert_eq!(terminal.row(0), selected);
-    terminal.send(ESCAPE).unwrap();
-    selector_closed(&terminal);
-    assert_eq!(terminal.row(0), selected);
-    first_row_starts(&terminal, "RAW");
-    terminal.send("\x1dx").unwrap();
-    support::assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
     package.assert_clean();
 }
@@ -3620,10 +3597,163 @@ fn a_failed_acquisition_keeps_the_selection_and_redirects_no_input() {
     first_row_starts(&terminal, "RAW");
     terminal.send("z").unwrap();
     received_by(&package, "Alpha", b"az");
-    received_by(&package, "Taken", b"");
+    // What Taken receives from its controller follows anything sent before.
+    other.send("t").unwrap();
+    received_by(&package, "Taken", b"t");
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
     detach(other);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// INP-01 (Monitor: takeover on a too-small host; owner decision on #110,
+/// 2026-11-14): the take-control key acquires a revoked selection even on
+/// a host under four rows or five columns, where the placeholder cannot
+/// show. Nothing is resized while the host is too small; once it has room
+/// again the session is resized, painted, and takes input. When the other
+/// client takes control back, prefix+x exits from the placeholder (INP-01,
+/// the placeholder screen).
+#[test]
+fn the_take_control_key_acquires_on_a_too_small_host() {
+    let package = Package::new();
+    without_introduction(&package);
+    let alpha = headless(&package, &watched("Alpha"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    select(&mut terminal, "Alpha", 0);
+    ready_at(&mut terminal, "Alpha", "29 120");
+    let mut other = attach(&package, &alpha);
+    shows(&mut terminal, &placeholder_screen("Alpha"));
+    terminal.resize(3, 4).unwrap();
+    shows_too_small(&mut terminal, 3, 4);
+    terminal.send("\x14").unwrap();
+    other.wait_for_text(VIEWED_ELSEWHERE, TIMEOUT).unwrap();
+    assert_eq!(
+        settled_sizes(&package, "Alpha"),
+        ["24 80", "29 120", "30 120"]
+    );
+    terminal.resize(ROWS, COLS).unwrap();
+    ready_at(&mut terminal, "Alpha", "29 120");
+    terminal.send("z").unwrap();
+    received_by(&package, "Alpha", b"z");
+    // The other client takes control back with its own take-control key,
+    // and prefix+x exits from the placeholder.
+    other.send("\x14").unwrap();
+    shows(&mut terminal, &placeholder_screen("Alpha"));
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    detach(other);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// A headless [`watched`] session `title` whose daemon has the
+/// `CLIMON2_DAEMON_HOLD` test hook at `hold`: its full session ID.
+fn held_headless(package: &Package, title: &str, hold: &Path) -> String {
+    let script = watched(title);
+    let mut command = package.command("c2");
+    command.args(["exec", "--headless", "/bin/bash", "-c", &script]);
+    command.env("CLIMON2_DAEMON_HOLD", hold);
+    // As small as `headless` creates its sessions.
+    let mut created = Terminal::spawn(command, 24, 80).unwrap();
+    assert_eq!(created.wait_exit(TIMEOUT).unwrap(), 0);
+    created.screen().trim().to_owned()
+}
+
+/// Holds every frame the session daemon would read, through its
+/// `CLIMON2_DAEMON_HOLD` hook at `hold`, once it has said it holds them.
+fn hold(hold: &Path) {
+    fs::write(hold, b"").unwrap();
+    let held = hold.with_extension("held");
+    let deadline = Instant::now() + TIMEOUT;
+    while !held.exists() {
+        assert!(Instant::now() < deadline, "the daemon never held its input");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// CTL-05 (Monitor: restoring): while a restoration is in progress (the
+/// hand-back's restoration applied, its Ready not yet accepted, because
+/// the daemon holds every frame it would read), the top row says
+/// Restoring, typed keys reach no session and are never kept for later,
+/// and a host resize reaches no session; the background controller gets
+/// nothing either. The monitor's stop makes the order deterministic: the
+/// hand-back's records wait in its socket, flushed in the daemon pass that
+/// answers the departing client, before the hold begins. Once the daemon
+/// reads again, the restoration becomes ready, the session is sized to the
+/// host as it is then, and keys reach it.
+#[test]
+fn keys_and_resizes_during_a_restoration_reach_no_session() {
+    let package = Package::new();
+    without_introduction(&package);
+    // Ready is held for as long as the test holds the daemon.
+    limits_config(
+        &package,
+        serde_json::json!({"deadlines": {"operation_ms": 120_000}}),
+    );
+    let gate = package.isolation.home().join("hold");
+    headless(&package, &watched("Alpha"), "finish");
+    let restoring = held_headless(&package, "Held", &gate);
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    // Rows list newest first: Held, then Alpha.
+    select(&mut terminal, "Alpha", 1);
+    ready_at(&mut terminal, "Alpha", "29 120");
+    terminal.send("a").unwrap();
+    received_by(&package, "Alpha", b"a");
+    select(&mut terminal, "Held", 0);
+    ready_at(&mut terminal, "Held", "29 120");
+    let other = attach(&package, &restoring);
+    shows(&mut terminal, &placeholder_screen("Held"));
+
+    let monitor = monitor_process(&package).0;
+    stop(monitor);
+    detach(other);
+    hold(&gate);
+    kill(Pid::from_raw(monitor), Signal::SIGCONT).unwrap();
+    let held = session_top_row(
+        usize::from(COLS),
+        "Held",
+        &[STATUS, "Restoring", SESSIONS_HINT],
+    );
+    whole_frame_shows(&terminal, "Restoring", |screen| {
+        let mut rows = screen.lines();
+        rows.next() == Some(held.as_str())
+            && rows
+                .nth(1)
+                .is_some_and(|row| row.starts_with("SIZE 30 120"))
+    });
+    terminal.send("k").unwrap();
+    terminal.resize(40, 100).unwrap();
+    let wide = session_top_row(100, "Held", &[STATUS, "Restoring", SESSIONS_HINT]);
+    top_row_is(&mut terminal, &wide);
+    assert_eq!(
+        settled_sizes(&package, "Held"),
+        ["24 80", "29 120", "30 120"]
+    );
+    assert_eq!(settled_sizes(&package, "Alpha"), ["24 80", "29 120"]);
+
+    fs::remove_file(&gate).unwrap();
+    ready_on(&mut terminal, 100, "Held", "39 100");
+    terminal.send("z").unwrap();
+    received_by(&package, "Held", b"z");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{STATUS} Alpha"));
+    terminal.send("\x1b[B\r").unwrap();
+    // Alpha, background throughout, is sized only now that it is selected.
+    sized_to(&package, "Alpha", &["24 80", "29 120", "39 100"]);
+    ready_on(&mut terminal, 100, "Alpha", "39 100");
+    terminal.send("y").unwrap();
+    received_by(&package, "Alpha", b"ay");
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
     finish_sessions(&package, "finish");
     package.assert_clean();
 }

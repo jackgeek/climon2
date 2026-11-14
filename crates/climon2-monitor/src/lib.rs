@@ -247,8 +247,11 @@ impl Monitor {
             .selected
             .as_ref()
             .and_then(|id| rows.iter().find(|row| &row.id == id));
+        let kind = self.selected.as_ref().and_then(|id| self.registry.kind(id));
         let terminal = self.selected.as_ref().and_then(|id| self.terminals.get(id));
-        let session = row.map(|row| selected(row, terminal));
+        let session = row
+            .zip(kind)
+            .map(|(row, kind)| selected(row, kind, terminal));
         let scene = Scene {
             introduction: &self.introduction,
             rows: &rows,
@@ -299,12 +302,11 @@ impl Monitor {
     /// Enter acts on the row's condition when pressed (spec #73, "Enter"):
     /// a connected row not known to be final is selected and acquired; a
     /// Starting or Unavailable row with no connected client is selected
-    /// read-only; on this monitor's own row the selection stays and the
-    /// selector says why. Disconnected and final rows are ignored until
-    /// #116, which owns their retained history.
+    /// without acquiring. Disconnected and final rows are ignored until
+    /// #116, which owns their retained history. This monitor's own session
+    /// has no row (owner decision on #110).
     fn enter(&mut self, id: SessionId) {
         match self.registry.kind(&id) {
-            Some(Kind::Own) => self.selector.explain(),
             Some(Kind::Connected) => {
                 self.choose(id.clone());
                 self.acquire(&id);
@@ -345,9 +347,7 @@ impl Monitor {
 
     /// The control the monitor holds over `id`.
     fn control(&self, id: &SessionId) -> Control {
-        self.terminals
-            .get(id)
-            .map_or(Control::NotControlling, Terminal::control)
+        control(self.terminals.get(id))
     }
 
     /// Applies a client's control and display report to its terminal,
@@ -573,12 +573,16 @@ fn ending(event: &ClientEvent) -> Option<Presentation> {
 /// The selected row as the top row shows it: its label, its status (or
 /// Unavailable until status reaches the monitor, #95 and #107), its control,
 /// any error, and what its canvas shows.
-fn selected<'a>(row: &'a registry::View, terminal: Option<&'a Terminal>) -> Session<'a> {
+fn selected<'a>(
+    row: &'a registry::View,
+    kind: Kind,
+    terminal: Option<&'a Terminal>,
+) -> Session<'a> {
     let status = Some(row.status).filter(|status| !status.is_empty());
-    let control = terminal.map_or(Control::NotControlling, Terminal::control);
+    let control = control(terminal);
     let canvas = terminal
         .and_then(Terminal::view)
-        .map_or_else(|| unseen(row, control), Canvas::View);
+        .map_or_else(|| without_view(kind, row.status, control), Canvas::View);
     Session {
         label: &row.label,
         status: status.unwrap_or("Unavailable"),
@@ -588,17 +592,23 @@ fn selected<'a>(row: &'a registry::View, terminal: Option<&'a Terminal>) -> Sess
     }
 }
 
-/// The canvas of a selected row whose terminal has no view: the
+/// The control the monitor holds through `terminal`: a session it never
+/// made a terminal for is not controlled.
+fn control(terminal: Option<&Terminal>) -> Control {
+    terminal.map_or(Control::NotControlling, Terminal::control)
+}
+
+/// The canvas of a selected row of `kind` whose terminal has no view: the
 /// placeholder while the monitor does not control a connected session,
-/// never its cache; no terminal content and the condition of a row
-/// selected read-only; otherwise nothing yet.
-fn unseen(row: &registry::View, control: Control) -> Canvas<'_> {
-    if placeholder(row.kind, control) {
+/// never its cache; no terminal content and the row's `status` for a row
+/// selected without a connected client; otherwise nothing yet.
+fn without_view(kind: Kind, status: &str, control: Control) -> Canvas<'_> {
+    if placeholder(kind, control) {
         Canvas::Placeholder
-    } else if row.kind == Kind::Unconnected {
-        Canvas::Empty(row.status)
+    } else if kind == Kind::Unconnected {
+        Canvas::NoContent(status)
     } else {
-        Canvas::Blank
+        Canvas::Nothing
     }
 }
 
@@ -657,8 +667,7 @@ fn incomplete(progress: &Progress) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Canvas, Control, Kind, placeholder, registry, revealed, unseen};
-    use std::time::SystemTime;
+    use super::{Canvas, Control, Kind, control, placeholder, revealed, without_view};
 
     const CONTROLS: [Control; 5] = [
         Control::Acquiring,
@@ -670,15 +679,12 @@ mod tests {
 
     /// CTL-02 and INP-01 takeover (pure supplement, #110): only a connected
     /// row the monitor neither controls, nor is acquiring, nor saw end shows
-    /// the placeholder and takes the take-control key; no other kind does.
+    /// the placeholder and takes the take-control key; no other kind does,
+    /// and a session the monitor never made a terminal for is not
+    /// controlled.
     #[test]
     fn only_an_uncontrolled_connected_row_shows_the_placeholder() {
-        for kind in [
-            Kind::Own,
-            Kind::Connected,
-            Kind::Unconnected,
-            Kind::Retained,
-        ] {
+        for kind in [Kind::Connected, Kind::Unconnected, Kind::Retained] {
             let shown: Vec<_> = CONTROLS
                 .into_iter()
                 .map(|control| placeholder(kind, control))
@@ -686,42 +692,38 @@ mod tests {
             let expected = [false, false, false, kind == Kind::Connected, false];
             assert_eq!(shown, expected, "{kind:?}");
         }
+        assert_eq!(control(None), Control::NotControlling);
     }
 
     /// Spec #73 Enter and placeholders (pure supplement, #110): with no view
     /// to paint, a connected row the monitor does not control shows the
-    /// placeholder, a row selected read-only its condition with no terminal
-    /// content, and any other nothing yet.
+    /// placeholder, a row selected without a connected client says it has
+    /// no terminal content and its status, and any other shows nothing yet.
     #[test]
     fn a_selected_row_without_a_view_shows_the_placeholder_its_condition_or_nothing() {
-        let row = |kind, status| registry::View {
-            id: "00000000-0000-4000-8000-000000000001".parse().unwrap(),
-            status,
-            label: "label".into(),
-            since: SystemTime::UNIX_EPOCH,
-            kind,
-        };
         let shape = |canvas: Canvas<'_>| match canvas {
             Canvas::View(_) => "view".to_owned(),
             Canvas::Placeholder => "placeholder".to_owned(),
-            Canvas::Empty(condition) => format!("empty {condition}"),
-            Canvas::Blank => "blank".to_owned(),
+            Canvas::NoContent(condition) => format!("no content, {condition}"),
+            Canvas::Nothing => "nothing".to_owned(),
         };
-        let connected = row(Kind::Connected, "Unavailable");
+        let shown = |kind, status, control| shape(without_view(kind, status, control));
         assert_eq!(
-            shape(unseen(&connected, Control::NotControlling)),
+            shown(Kind::Connected, "Unavailable", Control::NotControlling),
             "placeholder"
         );
-        assert_eq!(shape(unseen(&connected, Control::Acquiring)), "blank");
-        let starting = row(Kind::Unconnected, "Starting");
         assert_eq!(
-            shape(unseen(&starting, Control::NotControlling)),
-            "empty Starting"
+            shown(Kind::Connected, "Unavailable", Control::Acquiring),
+            "nothing"
         );
-        for kind in [Kind::Own, Kind::Retained] {
-            let other = row(kind, "Disconnected");
-            assert_eq!(shape(unseen(&other, Control::NotControlling)), "blank");
-        }
+        assert_eq!(
+            shown(Kind::Unconnected, "Starting", Control::NotControlling),
+            "no content, Starting"
+        );
+        assert_eq!(
+            shown(Kind::Retained, "Disconnected", Control::NotControlling),
+            "nothing"
+        );
     }
 
     /// Owner decision on #109 (pure supplement): only a key that closes the

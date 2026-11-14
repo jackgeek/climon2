@@ -27,18 +27,11 @@ pub(crate) enum Move {
     Choose,
 }
 
-/// Why Enter cannot select this monitor's own session (spec #73, "Own
-/// session").
-const OWN_SESSION: &str = "This monitor runs in this session, so it cannot be selected.";
-
 #[derive(Default)]
 pub(crate) struct Selector {
     open: bool,
     /// The highlighted row's identity, kept while rows reorder.
     highlight: Option<SessionId>,
-    /// Enter chose this monitor's own session: its explanation shows on the
-    /// bottom border until the next key.
-    explained: bool,
 }
 
 impl Selector {
@@ -49,14 +42,7 @@ impl Selector {
             return;
         }
         self.open = true;
-        self.explained = false;
         self.highlight = rows.first().map(|row| row.id.clone());
-    }
-
-    /// Enter chose this monitor's own session: the selector stays open and
-    /// says why nothing was selected.
-    pub(crate) fn explain(&mut self) {
-        self.explained = true;
     }
 
     pub(crate) fn is_open(&self) -> bool {
@@ -70,7 +56,6 @@ impl Selector {
     /// Acts on one key; Enter returns the highlighted row's identity for the
     /// caller to select.
     pub(crate) fn key(&mut self, key: &Key, rows: &[View]) -> Option<SessionId> {
-        self.explained = false;
         match decode(key)? {
             Move::Choose => self.highlighted(rows).map(|index| rows[index].id.clone()),
             found => {
@@ -121,15 +106,6 @@ impl Selector {
             let text = format!("{:status$} {}", row.status, row.label);
             let area = Rect::new(inner.x, inner.y + line, inner.width, 1);
             line_at(buffer, area, &text, Some(index) == highlighted);
-        }
-        if self.explained {
-            let width = usize::from(inner.width);
-            buffer.set_string(
-                inner.x,
-                inner.bottom(),
-                clip(OWN_SESSION, width),
-                Style::new(),
-            );
         }
     }
 
@@ -194,7 +170,6 @@ mod tests {
                 status,
                 label: (*label).to_owned(),
                 since: SystemTime::UNIX_EPOCH,
-                kind: crate::registry::Kind::Connected,
             })
             .collect()
     }
@@ -247,7 +222,7 @@ mod tests {
     /// labels clipped by display cell, and the first row highlighted.
     #[test]
     fn the_selector_draws_a_captionless_double_border_with_two_columns() {
-        let rows = rows(&[("Starting", "Alpha"), ("This monitor", "日本語ラベル")]);
+        let rows = rows(&[("Starting", "Alpha"), ("Disconnected", "日本語ラベル")]);
         let mut selector = Selector::default();
         selector.open(&rows);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 24, 6));
@@ -258,7 +233,7 @@ mod tests {
                 "                        ",
                 " ╔════════════════════╗ ",
                 " ║Starting     Alpha  ║ ",
-                " ║This monitor 日本語 ║ ",
+                " ║Disconnected 日本語 ║ ",
                 " ╚════════════════════╝ ",
                 "                        ",
             ]
@@ -341,31 +316,5 @@ mod tests {
         let mut empty = Selector::default();
         empty.open(&[]);
         assert_eq!(empty.key(&enter(), &[]), None);
-    }
-
-    /// Own-session scenario (#110, pure supplement): once Enter chose this
-    /// monitor's own row, the selector stays open and its bottom border
-    /// says why, clipped to the list, until the next key or a reopening.
-    #[test]
-    fn the_own_session_explanation_shows_until_the_next_key() {
-        let rows = rows(&[("This monitor", "bash")]);
-        let mut selector = Selector::default();
-        let bottom = |selector: &Selector| {
-            let mut buffer = Buffer::empty(Rect::new(0, 0, 30, 4));
-            selector.render(&rows, buffer.area, &mut buffer);
-            lines(&buffer)[2].clone()
-        };
-        let border = " ╚══════════════════════════╝ ";
-        let explained = " ╚This monitor runs in this ╝ ";
-        selector.open(&rows);
-        selector.explain();
-        assert_eq!(bottom(&selector), explained);
-        assert!(selector.is_open());
-        typed(&mut selector, &[DOWN], &rows);
-        assert_eq!(bottom(&selector), border);
-        selector.explain();
-        selector.close();
-        selector.open(&rows);
-        assert_eq!(bottom(&selector), border);
     }
 }

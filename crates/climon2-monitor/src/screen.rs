@@ -62,11 +62,12 @@ pub(crate) enum Canvas<'a> {
     /// Connected and not controlled by this monitor: viewed elsewhere,
     /// never its cached output.
     Placeholder,
-    /// Selected read-only with no terminal content, and its condition.
-    Empty(&'a str),
+    /// Selected without a connected client: no terminal content, and its
+    /// condition.
+    NoContent(&'a str),
     /// Nothing to show yet: acquiring, before the first restoration, or a
     /// retained session (#116).
-    Blank,
+    Nothing,
 }
 
 impl Canvas<'_> {
@@ -258,8 +259,8 @@ impl Screen {
                     .collect();
                 centred(&lines, buffer, below);
             }
-            Canvas::Empty(condition) => centred(&[NO_CONTENT, condition], buffer, below),
-            Canvas::Blank => {}
+            Canvas::NoContent(condition) => centred(&[NO_CONTENT, condition], buffer, below),
+            Canvas::Nothing => {}
         }
         None
     }
@@ -464,7 +465,7 @@ mod tests {
             status: "Unavailable",
             control,
             error,
-            canvas: Canvas::Blank,
+            canvas: Canvas::Nothing,
         };
         session_row(&mut buffer, area, &session, hint.then_some(HINT));
         assert!(
@@ -561,7 +562,7 @@ mod tests {
     /// CTL-02 and INP-01 (pure supplement, #110): the non-controller
     /// placeholder says the session is viewed elsewhere, centred, with the
     /// take-control key's hint only while one is bound and key hints are
-    /// on; a row selected read-only says it has no terminal content and its
+    /// on; a row selected without a connected client says it has no terminal content and its
     /// condition; a blank canvas shows nothing.
     #[test]
     fn the_placeholder_and_the_no_content_state_say_why_nothing_is_painted() {
@@ -585,7 +586,7 @@ mod tests {
         assert_eq!(shown(None, true, &Canvas::Placeholder), alone);
         assert_eq!(shown(Some(0x14), false, &Canvas::Placeholder), alone);
         assert_eq!(
-            shown(Some(0x14), true, &Canvas::Empty("Starting")),
+            shown(Some(0x14), true, &Canvas::NoContent("Starting")),
             [
                 "",
                 "",
@@ -595,7 +596,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            shown(Some(0x14), true, &Canvas::Blank),
+            shown(Some(0x14), true, &Canvas::Nothing),
             ["", "", "", "", ""]
         );
     }
