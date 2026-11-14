@@ -180,17 +180,26 @@ signal handlers or standard streams.
   stream has ended. `destroy` (owner thread) is `CM1_BUSY` until `run` returned
   with complete cleanup and both handles are released; a failed release or
   destroy leaves its object valid.
-- `snapshot` reports tracked allocation (the instance's structures, its copied
-  paths and each outstanding delivery), queued and delivered records and their
-  bytes (`sizeof(cm1_record)` each), deliveries, workers and descriptors (the
-  notification descriptors, plus one for a log file), with peaks, and the
-  drained and released counters. No shared-release allocation is tracked;
-  request, operation, input and display measurements stay zero. Allocation
-  undercounts: each instance's diagnostics dispatcher (its subscriber and
-  filter) is not counted yet
-  ([#180](https://github.com/jackgeek/climon2/issues/180)). Records and
-  deliveries are accounted in one place: a record from its queueing until
-  its delivery's release.
+- `snapshot` reports the instance's allocation, queued and delivered records
+  and their bytes (`sizeof(cm1_record)` each), deliveries, workers and
+  descriptors (the notification descriptors, plus one for a log file), with
+  peaks, and the drained and released counters. No shared-release allocation
+  is tracked; request, operation, input and display measurements stay zero.
+  Records and deliveries are accounted in one place: a record from its
+  queueing until its delivery's release.
+- Allocation is measured at the allocator
+  ([#180](https://github.com/jackgeek/climon2/issues/180),
+  `src/library/allocation.rs`). The library image's global allocator prefixes
+  every block with the ledger it is charged to: an instance's `create` opens
+  its ledger first, and each call's work on the instance runs charged to it,
+  so its structures, copied paths, deliveries, diagnostics dispatcher
+  (subscriber, registry and filter) and any dependency's internal allocations
+  are counted, prefix included, until freed on any thread. A resized block
+  stays charged to its ledger, and the ledger counts its own block. State a
+  dependency keeps for the whole process or one thread (for example tracing's
+  dispatcher registry or a per-thread formatting buffer) is charged to the
+  instance whose call created it. The `climon2-client` executable links the
+  same allocator; outside any instance nothing is charged.
 - A panic in an instance call stops that instance: the call fails with
   `CM1_INTERNAL_ERROR`, one library `CM1_DIAGNOSTIC` record (`internal_error`)
   is queued when it fits `event_bytes`, and terminal evidence is failed with
@@ -243,10 +252,11 @@ private target directory and checks.
 | LIB-03 Library: a failed create returns no handles and leaves no descriptor: null arguments, a mismatched release, the generation, native paths | `installed_library_create_rejects_invalid_identity_and_paths_without_handles` (`instance.rs`) |
 | LIB-03 Library: client keys, log path and filter | `installed_library_create_rejects_invalid_settings_and_diagnostics_without_handles` (`instance.rs`) |
 | LIB-03 Library: limits it cannot honour, each at its bound; no descriptor left for the notification descriptor or for the log file, one more is enough | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` (`instance.rs`) |
-| LIB-03 Library and Fault: caller startup memory scrambled and unmapped after create; lossless native paths; two instances' homes, settings, logs and allocations stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` (`instance.rs`) |
+| LIB-03 Library and Fault: caller startup memory scrambled and unmapped after create; lossless native paths; two instances' homes, settings and logs stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` (`instance.rs`) |
 | LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` (`instance.rs`) |
 | LIB-04 Library and Fault, Linux `eventfd`: the descriptor stays borrowed and counted once; in a scheduled race, polling sees the stream end while the handle is used before shutdown and after the end, and every call succeeds | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` (`instance.rs`) |
 | LIB-04 Fault (allocator pairing): a delivery stays charged until released through the library | `installed_library_charges_a_delivery_until_it_is_released` (`instance.rs`) |
+| LIM-02 and LIB-03 Library, Linux: `snapshot`'s current and peak allocation equal the host's own count of the heap the instance's calls hold, with logging on (its dispatcher included) and off | `installed_library_snapshot_counts_every_allocation_its_instance_holds` (`instance.rs`) |
 | LIB-04 Fault: the failure diagnostic is queued only within `event_bytes` | `installed_library_queues_the_failure_diagnostic_only_within_event_bytes` (`instance.rs`) |
 | LIB-05 Fault: a panic at the bootstrap, `create` or `submit` fails only that call | `installed_library_contains_a_panic_at_the_bootstrap_create_or_submit` (`instance.rs`) |
 | LIB-05 and LIB-04 Fault: a panic in a running instance stops it, with a diagnostic delivery and failed terminal evidence (no retry from `shutdown` on); a delivery held past terminal evidence alone keeps communication and destroy busy | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` (`instance.rs`) |
