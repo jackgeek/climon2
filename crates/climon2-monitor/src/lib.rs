@@ -19,7 +19,7 @@ mod startup;
 mod supervisor;
 
 use climon2_core::{SessionId, protocol::TerminalSize};
-use climon2_discovery::{Incomplete, Outcome, Progress, Uncertainty};
+use climon2_discovery::{Batch, Incomplete, Outcome, Progress};
 use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
 use introduction::KeyIntroduction;
@@ -141,7 +141,7 @@ struct Monitor {
     registry: Registry,
     selector: Selector,
     discovery: Discovery,
-    supervisor: Option<Supervisor>,
+    supervisor: Supervisor,
 }
 
 impl Monitor {
@@ -154,60 +154,47 @@ impl Monitor {
         let config = &startup.config;
         let prefix = config.escape_prefix();
         let hints = config.settings().show_key_hints;
-        let limits = &config.settings().limits;
+        let supervisor = Supervisor::start(context(&startup, filter)?, dispatch.clone())?;
         let introduction = KeyIntroduction::new(prefix, startup.preference, hints);
-        let runtime = climon2_platform::runtime::RuntimeDirectory::prepare(startup.home.root())?
-            .path()
-            .to_owned();
-        let lanes = limits.lanes();
-        let context = Context {
-            load: loader(startup.executable),
-            home: startup.home.clone(),
-            runtime,
-            escape: prefix,
-            take_control: config.take_control_key(),
-            limits: limits.library(),
-            filter,
-            lanes,
-            shutdown: Duration::from_millis(lanes.shutdown_ms.into()),
-        };
-        let supervisor = Supervisor::start(context, dispatch.clone())?;
-        let discovery = Discovery::start(startup.home, limits.discovery())?;
-        let registry = Registry::new(own_session());
-        let selector = Selector::default();
-        let screen = Screen::new(size, prefix, hints)?;
+        let discovery = Discovery::start(startup.home, config.settings().limits.discovery())?;
         let mut monitor = Self {
-            screen,
+            screen: Screen::new(size, prefix, hints)?,
             keys: Keys::new(prefix),
             introduction,
-            registry,
-            selector,
+            registry: Registry::new(own_session()),
+            selector: Selector::default(),
             discovery,
-            supervisor: Some(supervisor),
+            supervisor,
         };
-        monitor.show(true)?;
-        Ok(monitor)
+        monitor.show(true).map(|()| monitor)
     }
 
     /// Acts on host events until an ending, then shuts every client down.
     /// Consuming the monitor drops its screen before the host is released.
     fn serve(mut self, host: &mut Host) -> io::Result<Ending> {
         let ending = self.events(host);
-        if let Some(mut supervisor) = self.supervisor.take() {
-            supervisor.stop();
-        }
+        self.supervisor.stop();
         ending
     }
 
     fn events(&mut self, host: &mut Host) -> io::Result<Ending> {
         loop {
-            let event = host.next()?;
-            if let Some(ending) = self.handle(event)? {
+            if let Some(ending) = self.step(host)? {
                 return Ok(ending);
             }
+        }
+    }
+
+    /// Handles the next host event, then, unless it ends the monitor, what
+    /// discovery and the supervisor reported meanwhile.
+    fn step(&mut self, host: &mut Host) -> io::Result<Option<Ending>> {
+        let event = host.next()?;
+        let ending = self.handle(event)?;
+        if ending.is_none() {
             self.collect();
             self.show(false)?;
         }
+        Ok(ending)
     }
 
     fn handle(&mut self, event: Event<'_>) -> io::Result<Option<Ending>> {
@@ -241,21 +228,21 @@ impl Monitor {
         let now = SystemTime::now();
         while let Ok(found) = self.discovery.found.try_recv() {
             match found {
-                Found::Batch(batch) => {
-                    for invalid in &batch.invalid {
-                        tracing::warn!(path = ?invalid.path, reason = ?invalid.reason, "invalid session metadata");
-                    }
-                    for outcome in batch.sessions {
-                        self.discovered(outcome, now);
-                    }
-                }
+                Found::Batch(batch) => self.batch(batch, now),
                 Found::Pass(progress) => self.registry.pass(incomplete(&progress)),
             }
         }
-        if let Some(supervisor) = &self.supervisor {
-            while let Ok((id, event)) = supervisor.reports.try_recv() {
-                self.registry.client(&id, event, now);
-            }
+        while let Ok((id, event)) = self.supervisor.reports.try_recv() {
+            self.registry.client(&id, event, now);
+        }
+    }
+
+    fn batch(&mut self, batch: Batch, now: SystemTime) {
+        for invalid in &batch.invalid {
+            tracing::warn!(path = ?invalid.path, reason = ?invalid.reason, "invalid session metadata");
+        }
+        for outcome in batch.sessions {
+            self.discovered(outcome, now);
         }
     }
 
@@ -263,16 +250,13 @@ impl Monitor {
         let (metadata, found) = match outcome {
             Outcome::Live(live) => (live.metadata, registry::Found::Live),
             Outcome::Uncertain(metadata, uncertainty) => {
-                let why = uncertain(&uncertainty);
-                tracing::info!(session = %metadata.session_id, %why, "session uncertain");
+                tracing::info!(session = %metadata.session_id, ?uncertainty, "session uncertain");
                 (metadata, registry::Found::Uncertain)
             }
             Outcome::Stale(metadata, _) => (metadata, registry::Found::Stale),
         };
-        if let Some(metadata) = self.registry.discovered(metadata, found, now)
-            && let Some(supervisor) = &self.supervisor
-        {
-            supervisor.start_client(metadata);
+        if let Some(metadata) = self.registry.discovered(metadata, found, now) {
+            self.supervisor.start_client(metadata);
         }
     }
 
@@ -285,25 +269,64 @@ impl Monitor {
         ending
     }
 
-    /// Acts on the key `byte` completes: prefix+x ends the monitor, prefix+?
-    /// opens the key introduction, and prefix+s the selector unless the
-    /// modal key introduction is open; a typed key goes to the key
-    /// introduction while it is open, otherwise to the selector.
+    /// Acts on the key `byte` completes: prefix+x ends the monitor, and
+    /// other actions and typed keys go to [`Monitor::action`] and
+    /// [`Monitor::typed`].
     fn act(&mut self, byte: u8) -> Option<Ending> {
-        match self.keys.key(byte) {
-            Some(Key::Action(Action::Exit)) => return Some(Ending::Exit),
-            Some(Key::Action(Action::KeyIntroduction)) => self.introduction.open(),
-            Some(Key::Action(Action::SessionList)) if !self.introduction.is_open() => {
+        match self.keys.key(byte)? {
+            Key::Action(Action::Exit) => Some(Ending::Exit),
+            Key::Action(action) => {
+                self.action(action);
+                None
+            }
+            Key::Typed(byte) => {
+                self.typed(byte);
+                None
+            }
+        }
+    }
+
+    /// Prefix+? opens the key introduction, and prefix+s the selector
+    /// unless the modal key introduction is open.
+    fn action(&mut self, action: Action) {
+        match action {
+            Action::KeyIntroduction => self.introduction.open(),
+            Action::SessionList if !self.introduction.is_open() => {
                 self.selector.open(&self.registry.rows());
             }
-            Some(Key::Typed(byte)) if self.introduction.is_open() => self.introduction.key(byte),
-            Some(Key::Typed(byte)) if self.selector.is_open() => {
-                self.selector.key(byte, &self.registry.rows());
-            }
-            Some(Key::Action(Action::SessionList) | Key::Typed(_)) | None => {}
+            _ => {}
         }
-        None
     }
+
+    /// A typed key goes to the key introduction while it is open, otherwise
+    /// to the open selector, otherwise nowhere.
+    fn typed(&mut self, byte: u8) {
+        if self.introduction.is_open() {
+            self.introduction.key(byte);
+        } else if self.selector.is_open() {
+            self.selector.key(byte, &self.registry.rows());
+        }
+    }
+}
+
+/// What the supervisor's instances share, from the started configuration.
+fn context(startup: &Startup, filter: String) -> io::Result<Context> {
+    let config = &startup.config;
+    let limits = &config.settings().limits;
+    let home = startup.home.root();
+    let runtime = climon2_platform::runtime::RuntimeDirectory::prepare(home)?;
+    let lanes = limits.lanes();
+    Ok(Context {
+        load: loader(startup.executable.clone()),
+        home: startup.home.clone(),
+        runtime: runtime.path().to_owned(),
+        escape: config.escape_prefix(),
+        take_control: config.take_control_key(),
+        limits: limits.library(),
+        filter,
+        lanes,
+        shutdown: Duration::from_millis(lanes.shutdown_ms.into()),
+    })
 }
 
 /// The monitor's one validated loader, shared by every release it loads.
@@ -329,15 +352,5 @@ fn incomplete(progress: &Progress) -> Option<String> {
             tracing::warn!(%error, "discovery pass incomplete");
             Some(format!("cannot list sessions: {error}"))
         }
-    }
-}
-
-fn uncertain(uncertainty: &Uncertainty) -> String {
-    match uncertainty {
-        Uncertainty::Mismatched => "another session answered".into(),
-        Uncertainty::Unanswered(error) => format!("no answer: {error}"),
-        Uncertainty::Unreachable(error) => format!("unreachable: {error}"),
-        Uncertainty::DaemonAlive => "its daemon runs but does not answer".into(),
-        Uncertainty::IdentityUnknown(error) => format!("daemon identity unknown: {error}"),
     }
 }
