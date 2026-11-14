@@ -12,6 +12,7 @@
 #[cfg(feature = "test-hooks")]
 use super::REQUIREMENTS;
 use super::{
+    allocation::Account,
     failure::{
         BUSY, CLOSED, Failure, INVALID_ARGUMENT, PANIC, RESOURCE_LIMIT, TIMEOUT, WRONG_THREAD,
         require,
@@ -40,11 +41,6 @@ use tracing::{Dispatch, Span};
 /// Bytes one record is charged while queued or delivered and unreleased: the
 /// record itself, since library diagnostics point at static text.
 const RECORD: u64 = mem::size_of::<native::Record>() as u64;
-/// One delivery's allocation.
-const DELIVERY: u64 = mem::size_of::<Delivery>() as u64;
-/// The allocation of an instance's own structures: its shared state, its
-/// owner's record and both handles.
-const FIXED: u64 = mem::size_of::<(Shared, Owner, Communication, Control)>() as u64;
 
 // SAFETY (all three): every field is an integer or a raw pointer, for which
 // zero (null) is a valid value.
@@ -84,11 +80,11 @@ impl<T: Copy + Ord + AddAssign + SubAssign> Gauge<T> {
     }
 }
 
-/// What `snapshot` reports. Records and deliveries are accounted here
-/// alone: a record is charged from its queueing until its delivery's release.
+/// What `snapshot` reports besides allocation, which the instance's
+/// [`Account`] measures. Records and deliveries are accounted here alone: a
+/// record is charged from its queueing until its delivery's release.
 #[derive(Default)]
 struct Measures {
-    allocation: Gauge<u64>,
     event_bytes: Gauge<u64>,
     event_records: Gauge<u32>,
     deliveries: Gauge<u32>,
@@ -107,7 +103,6 @@ impl Measures {
     /// The queued record drained in a delivery of its own.
     fn deliver(&mut self) {
         self.deliveries.add(1);
-        self.allocation.add(DELIVERY);
         self.drained += 1;
     }
 
@@ -116,7 +111,6 @@ impl Measures {
         self.deliveries.sub(1);
         self.event_records.sub(1);
         self.event_bytes.sub(RECORD);
-        self.allocation.sub(DELIVERY);
         self.released += 1;
     }
 }
@@ -161,6 +155,8 @@ pub(super) struct Shared {
     settings: ClientSettings,
     descriptors: u32,
     notifier: Notifier,
+    /// Everything allocated while working for this instance.
+    account: Account,
     dispatch: Dispatch,
     /// Names this instance in every record: its generation.
     span: Span,
@@ -260,7 +256,7 @@ pub(super) type Handles = (Box<Owner>, Box<Communication>, Box<Control>);
 
 /// Local setup only: the notification descriptor, then the optional log
 /// file, the last step that can fail, so a failure leaves nothing behind.
-pub(super) fn create(startup: Startup) -> Result<Handles, Failure> {
+pub(super) fn create(startup: Startup, account: Account) -> Result<Handles, Failure> {
     let notifier = Notifier::new().map_err(|_| {
         Failure::new(
             RESOURCE_LIMIT,
@@ -278,7 +274,6 @@ pub(super) fn create(startup: Startup) -> Result<Handles, Failure> {
     let span = tracing::dispatcher::with_default(&dispatch, || {
         tracing::info_span!("client_instance", generation)
     });
-    let allocation = FIXED + paths.bytes();
     let shared = Arc::new(Shared {
         generation,
         limits,
@@ -286,13 +281,13 @@ pub(super) fn create(startup: Startup) -> Result<Handles, Failure> {
         settings,
         descriptors: Notifier::DESCRIPTORS + logs,
         notifier,
+        account,
         dispatch,
         span,
         terminal: OnceLock::new(),
         state: Mutex::new(State::default()),
         changed: Condvar::new(),
     });
-    shared.lock().measures.allocation.add(allocation);
     shared.scope(|| tracing::info!("client instance created"));
     let owner = Owner {
         shared: Arc::clone(&shared),
@@ -368,8 +363,11 @@ impl Shared {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Work for this instance: charged to it, under its diagnostics.
     fn scope<T>(&self, work: impl FnOnce() -> T) -> T {
-        tracing::dispatcher::with_default(&self.dispatch, || self.span.in_scope(work))
+        self.account.charged(|| {
+            tracing::dispatcher::with_default(&self.dispatch, || self.span.in_scope(work))
+        })
     }
 
     /// One exported call's work on this instance, under its diagnostics. A
@@ -545,9 +543,10 @@ impl Shared {
     pub(super) fn snapshot(&self) -> native::Metrics {
         let state = self.lock();
         let measures = &state.measures;
+        let (allocation, peak_allocation) = self.account.measure();
         native::Metrics {
-            allocation_bytes: measures.allocation.current,
-            peak_allocation_bytes: measures.allocation.peak,
+            allocation_bytes: allocation,
+            peak_allocation_bytes: peak_allocation,
             event_bytes: measures.event_bytes.current,
             peak_event_bytes: measures.event_bytes.peak,
             records_drained: measures.drained,

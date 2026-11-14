@@ -57,16 +57,6 @@ impl Startup {
     }
 }
 
-impl Paths {
-    /// The bytes these copies hold, which their instance's allocation counts.
-    pub(super) fn bytes(&self) -> u64 {
-        [&self.metadata, &self.home, &self.runtime]
-            .into_iter()
-            .map(|path| path.as_os_str().len() as u64)
-            .sum()
-    }
-}
-
 fn invalid(message: &'static str) -> Failure {
     Failure::new(INVALID_ARGUMENT, message)
 }

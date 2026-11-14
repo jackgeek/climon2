@@ -20,6 +20,15 @@ use std::{
 
 pub const FILL: u8 = 0xa5;
 
+/// One library call, which the host's heap count (Linux) attributes to the
+/// library.
+fn library<T>(call: impl FnOnce() -> T) -> T {
+    #[cfg(target_os = "linux")]
+    return crate::heap::calling(call);
+    #[cfg(not(target_os = "linux"))]
+    call()
+}
+
 /// A pointer the library owns, carried between host threads.
 pub struct Ptr<T>(pub *mut T);
 
@@ -324,7 +333,7 @@ impl Api {
     pub fn create(&self, startup: *const Startup) -> Creation {
         let mut out = filled::<native::Created>();
         // SAFETY: the startup is null or valid; the output is writable.
-        let result = unsafe { entry!(self, create)(startup, out.as_mut_ptr()) };
+        let result = library(|| unsafe { entry!(self, create)(startup, out.as_mut_ptr()) });
         let output = state(&out);
         let call = self.finish("create", result);
         if result.code != native::SUCCESS {
@@ -356,7 +365,7 @@ impl Api {
     pub fn run(&self, handles: Handles) -> (Value, Value) {
         let mut out = filled::<RunReport>();
         // SAFETY: the handle is live; the output is writable.
-        let result = unsafe { entry!(self, run)(handles.instance.0, out.as_mut_ptr()) };
+        let result = library(|| unsafe { entry!(self, run)(handles.instance.0, out.as_mut_ptr()) });
         let output = state(&out);
         let report = if output == "modified" {
             // SAFETY: the library wrote the report.
@@ -375,14 +384,15 @@ impl Api {
 
     pub fn shutdown(&self, handles: Handles) -> Value {
         // SAFETY: the handle is live.
-        let result = unsafe { entry!(self, shutdown)(handles.control.0) };
+        let result = library(|| unsafe { entry!(self, shutdown)(handles.control.0) });
         self.finish("shutdown", result)
     }
 
     pub fn drain(&self, handles: Handles) -> (Value, Drain) {
         let mut out = filled::<Drained>();
         // SAFETY: the handle is live; the output is writable.
-        let result = unsafe { entry!(self, drain)(handles.communication.0, out.as_mut_ptr()) };
+        let result =
+            library(|| unsafe { entry!(self, drain)(handles.communication.0, out.as_mut_ptr()) });
         let output = state(&out);
         let call = self.finish("drain", result);
         if result.code != native::SUCCESS {
@@ -428,7 +438,7 @@ impl Api {
         let address = object as usize;
         assert!(self.ledger.owned(kind, address), "host bug: not owned");
         // SAFETY: an owned, unreleased object of this library.
-        let result = unsafe { release(object) };
+        let result = library(|| unsafe { release(object) });
         if result.code == native::SUCCESS {
             self.ledger.release(kind, address, by);
         }
@@ -463,15 +473,18 @@ impl Api {
     pub fn notification(&self, handles: Handles) -> (Value, i32) {
         let mut descriptor = i32::from_ne_bytes([FILL; 4]);
         // SAFETY: the handle is live; the output is writable.
-        let result =
-            unsafe { entry!(self, notification)(handles.communication.0, &mut descriptor) };
+        let result = library(|| unsafe {
+            entry!(self, notification)(handles.communication.0, &mut descriptor)
+        });
         (self.finish("notification", result), descriptor)
     }
 
     pub fn snapshot(&self, handles: Handles) -> (Value, Value) {
         let mut out = filled::<Metrics>();
         // SAFETY: the handle is live; the output is writable.
-        let result = unsafe { entry!(self, snapshot)(handles.communication.0, out.as_mut_ptr()) };
+        let result = library(|| unsafe {
+            entry!(self, snapshot)(handles.communication.0, out.as_mut_ptr())
+        });
         let output = state(&out);
         let call = self.finish("snapshot", result);
         if result.code != native::SUCCESS {

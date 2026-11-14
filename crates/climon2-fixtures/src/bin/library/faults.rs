@@ -104,6 +104,10 @@ pub fn fault(setup: &Setup) -> Value {
             owner.call(move || api.destroy(handles)),
         );
         report.insert("delivery_before_release".into(), drained.observe_again());
+        report.insert(
+            "snapshot_before_release".into(),
+            json!(api.snapshot(handles)),
+        );
         let (released, ()) = attempts(|| (api.release_delivery(delivery), ()));
         report.insert("release_delivery".into(), released);
         report.insert(

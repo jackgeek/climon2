@@ -8,6 +8,7 @@
 //! nothing reaches the standard streams. `submit` is not implemented yet (Open
 //! arrives in #93): it fails with `CM1_UNSUPPORTED_OPERATION`.
 
+use allocation::Account;
 use climon2_core::native::{
     self, Bytes, Call, Communication, Control, Created, Delivery, Description, Drained, Instance,
     Interface, Metrics, Request, Requirements, RunReport, Startup, Tokens,
@@ -20,6 +21,7 @@ use std::{
     sync::{Arc, Once},
 };
 
+mod allocation;
 mod failure;
 #[cfg(feature = "test-hooks")]
 mod hooks;
@@ -214,24 +216,28 @@ unsafe extern "C" fn create(startup: *const Startup, created: *mut Created) -> C
     // SAFETY: the caller supplies null or writable output storage.
     unsafe { clear(created) };
     contained(|| {
-        hook("create");
-        // SAFETY: the caller supplies null or valid pointers.
-        let (Some(startup), Some(created)) =
-            (unsafe { startup.as_ref() }, unsafe { created.as_mut() })
-        else {
-            return Err(NULL);
-        };
-        // SAFETY: the startup's buffers cover their lengths for this call.
-        let startup = unsafe { startup::Startup::parse(startup) }?;
-        let effective_limits = startup.limits;
-        let (owner, communication, control) = instance::create(startup)?;
-        *created = Created {
-            instance: Box::into_raw(owner).cast(),
-            communication: Box::into_raw(communication).cast(),
-            control: Box::into_raw(control).cast(),
-            effective_limits,
-        };
-        Ok(())
+        // Everything the call allocates is the new instance's, from the start.
+        let account = Account::open();
+        account.charged(|| {
+            hook("create");
+            // SAFETY: the caller supplies null or valid pointers.
+            let (Some(startup), Some(created)) =
+                (unsafe { startup.as_ref() }, unsafe { created.as_mut() })
+            else {
+                return Err(NULL);
+            };
+            // SAFETY: the startup's buffers cover their lengths for this call.
+            let startup = unsafe { startup::Startup::parse(startup) }?;
+            let effective_limits = startup.limits;
+            let (owner, communication, control) = instance::create(startup, account.clone())?;
+            *created = Created {
+                instance: Box::into_raw(owner).cast(),
+                communication: Box::into_raw(communication).cast(),
+                control: Box::into_raw(control).cast(),
+                effective_limits,
+            };
+            Ok(())
+        })
     })
 }
 

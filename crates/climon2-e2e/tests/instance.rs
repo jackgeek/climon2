@@ -818,8 +818,10 @@ const A_LOG: &[u8] = b"logs/a-caf\xc3\xa9.log";
 /// after create; native paths copied losslessly; independent homes,
 /// settings, diagnostics and generations; instance-scoped, content-free
 /// logs at a non-ASCII log path (not UTF-8 on Linux), filtered by each
-/// instance's own grammar; allocation counts each instance's own copies).
-/// Instance `a` ends while `b` keeps running, then `b` ends.
+/// instance's own grammar). Instance `a` ends while `b` keeps running, then
+/// `b` ends. What each instance's allocation counts is proven against the
+/// host's own heap count in
+/// `installed_library_snapshot_counts_every_allocation_its_instance_holds`.
 #[test]
 fn installed_library_instances_keep_their_own_copies_paths_settings_and_logs() {
     let package = Package::new();
@@ -873,13 +875,6 @@ fn installed_library_instances_keep_their_own_copies_paths_settings_and_logs() {
             "{snapshot}"
         );
     }
-    let allocation = |snapshot: &Value| snapshot["allocation_bytes"].as_u64().unwrap();
-    // Only the homes differ in length; their copies are charged byte for byte.
-    assert_eq!(
-        allocation(snapshot_b) - allocation(snapshot_a),
-        (b_home.len() - a_home.len()) as u64,
-        "{snapshot_a} {snapshot_b}"
-    );
     let (_, terminal_a) = drains_to_terminal(&report["drains_a"]);
     assert_eq!(terminal_a, &stopped(7));
     assert_success(&report["run_a"][0]);
@@ -1232,7 +1227,8 @@ fn installed_library_queues_the_failure_diagnostic_only_within_event_bytes() {
 /// LIB-04 Fault (allocator pairing through the owning library): a drained
 /// delivery stays charged, by record, bytes, delivery and allocation, until
 /// released through the library; the release returns every measurement to
-/// its earlier value and only the peaks remember it.
+/// its earlier value and at least the record's bytes of allocation, and
+/// only the peaks remember it.
 #[test]
 fn installed_library_charges_a_delivery_until_it_is_released() {
     let package = Package::new();
@@ -1254,9 +1250,15 @@ fn installed_library_charges_a_delivery_until_it_is_released() {
     assert_eq!(during["records_drained"], 1, "{during}");
     assert_eq!(during["deliveries_released"], 0, "{during}");
     let allocation = |metrics: &Value| metrics["allocation_bytes"].as_u64().unwrap();
+    let peak = |metrics: &Value| metrics["peak_allocation_bytes"].as_u64().unwrap();
     assert!(allocation(during) > allocation(before), "{before} {during}");
-    assert_eq!(allocation(after), allocation(before), "{before} {after}");
-    assert_eq!(after["peak_allocation_bytes"], during["allocation_bytes"]);
+    let held = &report["snapshot_before_release"][1];
+    assert_eq!(held["deliveries"], 1, "{held}");
+    assert!(
+        allocation(held) >= allocation(after) + RECORD,
+        "{held} {after}"
+    );
+    assert!(peak(after) >= allocation(during), "{during} {after}");
     for (current, peak, value) in [
         ("event_records", "peak_event_records", 1),
         ("event_bytes", "peak_event_bytes", RECORD),
@@ -1285,6 +1287,84 @@ fn installed_library_charges_a_delivery_until_it_is_released() {
     }
     assert_eq!(after["descriptors"], NOTIFIER_DESCRIPTORS);
     assert_eq!(after["peak_descriptors"], NOTIFIER_DESCRIPTORS);
+    package.assert_clean();
+}
+
+/// The `allocation` scenario's startup for one instance: logging every record
+/// to `logs/<name>.log`, or not at all.
+fn accounted(root: &Path, log: Option<&str>) -> Value {
+    let Some(name) = log else {
+        return json!({});
+    };
+    let log = root.join(format!("logs/{name}.log"));
+    json!({
+        "diagnostics": {
+            "log_path": { "present": 1, "value": path(json!(log.to_str().unwrap())) },
+            "filter": "trace",
+        },
+    })
+}
+
+/// LIM-02 Library and LIB-03 Library (#180): `snapshot` counts every
+/// allocation the instance holds, its diagnostics dispatcher included, with
+/// logging on and off. The oracle is the host's own count of the heap: it
+/// defines glibc's allocation entry points, which the loaded library binds
+/// to, and records every block a call on the measured instance allocated
+/// until it is freed (Linux only: macOS binds the library to its system
+/// allocator directly). The host makes one call at a time. After create and
+/// after the drains to terminal evidence, the current and peak allocation
+/// equal the bytes those calls hold and the most they held at once. A warm-up
+/// lifecycle on the same threads first creates what the process and its
+/// threads keep for any instance, which no instance holds.
+#[cfg(target_os = "linux")]
+#[test]
+fn installed_library_snapshot_counts_every_allocation_its_instance_holds() {
+    let package = Package::new();
+    let root = root(&package);
+    let mut held = Vec::new();
+    for log in [Some("measured"), None] {
+        let report = scenario(
+            &package,
+            "allocation",
+            &input(
+                &root,
+                json!({
+                    "warm_up": accounted(&root, log.map(|_| "warm-up")),
+                    "measured": accounted(&root, log),
+                }),
+            ),
+            None,
+        );
+        for instance in ["warm_up", "measured"] {
+            let lifecycle = &report[instance];
+            assert_success(&lifecycle["create"]["call"]);
+            assert_success(&lifecycle["shutdown"]);
+            assert_success(&lifecycle["run"][0]);
+            assert_eq!(drains_to_terminal(&lifecycle["drains"]).1, &stopped(1));
+            for step in ["release_communication", "release_control", "destroy"] {
+                assert_success(&lifecycle[step]);
+            }
+        }
+        let measured = &report["measured"];
+        for checkpoint in ["created", "ended"] {
+            let observed = &measured[checkpoint];
+            assert_success(&observed["snapshot"][0]);
+            let (metrics, heap) = (&observed["snapshot"][1], &observed["heap"]);
+            assert_eq!(
+                metrics["allocation_bytes"], heap["live"],
+                "{log:?} {checkpoint}: {observed}"
+            );
+            assert_eq!(
+                metrics["peak_allocation_bytes"], heap["peak"],
+                "{log:?} {checkpoint}: {observed}"
+            );
+        }
+        assert_eq!(report["joined"], true);
+        held.push(measured["created"]["heap"]["live"].as_u64().unwrap());
+    }
+    // A dispatcher's registry alone reserves 32 KiB up front (sharded-slab
+    // 0.1.7), so logging holds at least that much more.
+    assert!(held[0] >= held[1] + 32 * 1024, "{held:?}");
     package.assert_clean();
 }
 
