@@ -193,6 +193,10 @@ that depend on how keystrokes or pastes are read stop the monitor (SIGSTOP):
 `wait_for_unread_input` shows when every byte sent has reached the terminal,
 then, after SIGCONT, when the monitor has read them all in one read of their
 own. The hang-up case completes its hang-up while the monitor is stopped.
+A resize after such a read shows that the monitor acted on every byte, because
+it handles each read before the next signal. Cases that do not test the key
+introduction first save **Don't show again** in their climon2 home, as an
+earlier run would, so they open on the empty state.
 
 | Scenario | Named packaged test (`tests/monitor.rs`) |
 |---|---|
@@ -213,6 +217,16 @@ own. The hang-up case completes its hang-up while the monitor is stopped.
 | EXT-03 (Fault, empty monitor) render failure or failed wait for host input releases the host before its one diagnostic, 125 | `debug_hook_render_failure_restores_the_host_before_its_diagnostic`, `debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic` |
 | Spec #73 host terminal; TRM-04 (empty monitor): SIGWINCH repaints exactly at the new size without erasing or showing the cursor | `resizing_the_host_redraws_the_monitor_at_the_new_size` |
 | Spec #73 exit: content-free monitor general log | `installed_monitor_logs_content_free_records_to_its_general_log` |
+| HLP-01 every start with hints on and nothing saved opens the key introduction: the actual prefix with x, s and ?, an unchecked box; Enter continues, closing saves nothing, prefix+x exits from it | `the_key_introduction_opens_at_every_start_until_dont_show_again_is_saved` |
+| HLP-01 hints off or the choice saved keep it closed; prefix+? opens it regardless, showing the saved choice, and is a no-op while open; a later version's preference file is honoured | `the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say` |
+| HLP-01 Space saves and reverses the choice per climon2 home: exact version 1 bytes, 0600 under umask 000, by rename, nothing left behind, a file already under the temporary name replaced; restarts and another home | `dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible` |
+| HLP-01 (derived scenario: a save interrupted before its rename) saving first removes the temporary files of processes no longer running, keeping those of running processes and any other file | `saving_removes_temporary_files_that_ended_processes_left_behind` |
+| HLP-01 (derived scenario: unreadable or malformed preference file) not suppressed, reason under the box and logged, never rewritten implicitly | `an_unreadable_or_malformed_preference_file_shows_why_beside_the_introduction` |
+| HLP-01 (Fault; derived scenario: unreadable or malformed preference file, key hints off) the introduction stays closed, the empty state shows the reason where the hint would be; prefix+? shows it under the box; a failing save shows its failure in both places, a successful one clears them | `without_key_hints_the_empty_state_shows_problems_with_the_saved_choice` |
+| HLP-01 (Fault) a save that cannot create its temporary file or replace the preference file is reported and logged, saves nothing, leaves nothing | `a_failing_save_is_reported_in_the_key_introduction_and_saves_nothing` |
+| HLP-02 (empty monitor) the key introduction owns typed keys, prefixed keys, reports and pastes, none acts; Enter closes, prefix+? reopens, prefix+x exits | `the_key_introduction_is_modal_and_prefix_x_still_exits_from_it` |
+| HLP-02 (empty monitor) with Ctrl+[ as the prefix Escape cannot close the key introduction, prefix+x still exits | `with_escape_as_the_prefix_escape_cannot_close_the_key_introduction_and_prefix_x_still_exits` |
+| HLP-02 (empty monitor) a doubled prefix reaches the key introduction as one literal prefix: with Ctrl+M as the prefix, Enter Enter continues, the prefix and Space reach nothing, prefix+x still exits | `with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction` |
 
 Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
 holds a packaged client between `Granted` and `Ready`; daemon
