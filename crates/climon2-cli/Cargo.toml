@@ -10,8 +10,8 @@ test-hooks = []
 
 [dependencies]
 climon2-core = { path = "../climon2-core" }
+climon2-discovery = { path = "../climon2-discovery" }
 climon2-platform = { path = "../climon2-platform" }
-libc = "0.2.191"
 tracing = "0.1.44"
 uuid = { workspace = true, features = ["v4"] }
 serde_json.workspace = true
@@ -19,6 +19,7 @@ time = { workspace = true, features = ["formatting", "parsing", "local-offset"] 
 unicode-width = "0.2.3"
 
 [dev-dependencies]
+libc = "0.2.191"
 tempfile = "3.27.0"
 filetime = "0.2.27"
 climon2-test-term = { path = "../climon2-test-term" }
