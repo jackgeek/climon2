@@ -193,7 +193,7 @@ refusal proves nothing called them.
 | LIB-02 missing symbol, handle kept | `library_without_the_bootstrap_is_refused_and_stays_loaded` |
 | LIB-02 unsupported revision; a bootstrap answer without a description is malformed | `bootstrap_without_a_revision_one_description_is_refused` |
 | LIB-02 contained bootstrap failure: refused, and a later load succeeds once it passes | `contained_bootstrap_failure_is_refused_and_recoverable` |
-| LIB-02 contained bootstrap failure that leaves its output: a malformed description | `contained_bootstrap_failure_that_leaves_its_output_is_a_malformed_description` |
+| LIB-02 contained bootstrap failure that leaves its output: a malformed description, handle stays loaded | `contained_bootstrap_failure_that_leaves_its_output_is_a_malformed_description` |
 | LIB-02 wrong release at the release text's bounds (255 bytes wrong, 256 bytes or none malformed) | `library_describing_another_release_is_refused` |
 | LIB-02 malformed description: revision, reserved, each missing requirement (a worker, even one, without a stack), incomplete table | `malformed_description_is_refused_before_any_instance` |
 | LIB-02 requirements present at their limits: each nonzero minimum accepted at 1; no workers need no worker stack | `requirements_are_accepted_at_their_minimums` |
