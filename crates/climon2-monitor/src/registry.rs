@@ -8,7 +8,7 @@ use std::{cmp::Reverse, collections::BTreeMap, time::SystemTime};
 use unicode_width::UnicodeWidthChar;
 
 /// What one discovery probe found about a session with valid metadata.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Found {
     Live,
     /// Neither proven live nor proven ended.
@@ -45,30 +45,50 @@ enum Connection {
     Disconnected,
 }
 
+impl Connection {
+    /// The status column. A connected row shows no effective status yet
+    /// (#107), except Unavailable when its daemon lacks `status-v1`.
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Own => "This monitor",
+            Self::Starting => "Starting",
+            Self::Disconnected => "Disconnected",
+            other => other.reachable(),
+        }
+    }
+
+    /// Connected with `status-v1`: its effective status arrives with #107;
+    /// otherwise not reachable for a status.
+    fn reachable(&self) -> &'static str {
+        if *self == (Self::Connected { status: true }) {
+            ""
+        } else {
+            "Unavailable"
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Row {
     metadata: SessionMetadata,
-    found: Found,
     connection: Connection,
     /// When the monitor recorded entering `connection`.
     since: SystemTime,
+    /// Whether a client was ever connected: such a row outlives its
+    /// session.
+    connected: bool,
     /// The latest nonempty daemon title.
     title: Option<String>,
 }
 
 impl Row {
-    /// The status column. A connected row shows no effective status yet
-    /// (#107), except Unavailable when its daemon lacks `status-v1`.
-    fn status(&self) -> &'static str {
-        match (&self.connection, &self.found) {
-            (Connection::Own, _) => "This monitor",
-            (Connection::Starting, _) => "Starting",
-            (Connection::Connected { status: true }, _) => "",
-            (Connection::Connected { status: false } | Connection::Unavailable(_), _) => {
-                "Unavailable"
-            }
-            (Connection::Disconnected, _) | (Connection::None, Found::Stale) => "Disconnected",
-            (Connection::None, Found::Uncertain | Found::Live) => "Unavailable",
+    fn new(metadata: SessionMetadata, connection: Connection, now: SystemTime) -> Self {
+        Self {
+            metadata,
+            connection,
+            since: now,
+            connected: false,
+            title: None,
         }
     }
 
@@ -84,9 +104,17 @@ impl Row {
     }
 
     fn connect(&mut self, connection: Connection, now: SystemTime) {
+        self.connected |= matches!(connection, Connection::Connected { .. });
         if self.connection != connection {
             self.connection = connection;
             self.since = now;
+        }
+    }
+
+    /// Keeps a nonempty title; an empty or unset one changes nothing.
+    fn retitle(&mut self, title: Option<String>) {
+        if let Some(title) = title.filter(|title| !title.is_empty()) {
+            self.title = Some(title);
         }
     }
 }
@@ -122,8 +150,8 @@ impl Registry {
 
     /// Records a probe's outcome. Returns the session's metadata when it now
     /// needs a passive client: a live session that has none and is not this
-    /// monitor's. Discovery never removes a row or changes a client's
-    /// connection, and a stale outcome for an unknown session adds no row.
+    /// monitor's. Discovery never changes a client's connection. A session
+    /// proven gone drops its row unless it was ever connected, and adds none.
     pub(crate) fn discovered(
         &mut self,
         metadata: SessionMetadata,
@@ -131,27 +159,21 @@ impl Registry {
         now: SystemTime,
     ) -> Option<SessionMetadata> {
         let id = metadata.session_id.clone();
+        if matches!(found, Found::Stale) {
+            self.rows.retain(|key, row| *key != id || row.connected);
+            return None;
+        }
         let own = self.own.as_ref() == Some(&id);
-        let row = match self.rows.get_mut(&id) {
-            Some(row) => row,
-            None if matches!(found, Found::Stale) => return None,
-            None => self.rows.entry(id).or_insert(Row {
-                metadata: metadata.clone(),
-                found: found.clone(),
-                connection: if own {
-                    Connection::Own
-                } else {
-                    Connection::None
-                },
-                since: now,
-                title: None,
-            }),
+        let connection = if own {
+            Connection::Own
+        } else {
+            Connection::None
         };
-        row.found = found;
-        let wanted = matches!(
-            (&row.found, &row.connection),
-            (Found::Live, Connection::None)
-        );
+        let row = self
+            .rows
+            .entry(id)
+            .or_insert_with(|| Row::new(metadata.clone(), connection, now));
+        let wanted = matches!(found, Found::Live) && row.connection == Connection::None;
         wanted.then(|| {
             row.connect(Connection::Starting, now);
             metadata
@@ -165,11 +187,7 @@ impl Registry {
         };
         match event {
             ClientEvent::Opened { status } => row.connect(Connection::Connected { status }, now),
-            ClientEvent::Title(title) => {
-                if let Some(title) = title.filter(|title| !title.is_empty()) {
-                    row.title = Some(title);
-                }
-            }
+            ClientEvent::Title(title) => row.retitle(title),
             ClientEvent::Unavailable(why) => row.connect(Connection::Unavailable(why), now),
             ClientEvent::Ended => row.connect(Connection::Disconnected, now),
         }
@@ -192,7 +210,7 @@ impl Registry {
         rows.into_iter()
             .map(|row| View {
                 id: row.metadata.session_id.clone(),
-                status: row.status(),
+                status: row.connection.label(),
                 label: row.label(),
                 since: row.since,
             })
@@ -312,8 +330,8 @@ mod tests {
         assert_eq!(shown(&registry), [("This monitor", "bash".to_owned())]);
     }
 
-    /// DSC-04 (pure supplement): uncertainty and staleness never remove a
-    /// row or change its client, an uncertain session shows Unavailable until
+    /// DSC-04 (pure supplement): uncertainty and staleness never change a
+    /// client's connection, an uncertain session shows Unavailable until
     /// proven live, and a stale session nobody knew adds no row.
     #[test]
     fn uncertainty_never_removes_rows_or_tears_down_clients() {
@@ -343,14 +361,56 @@ mod tests {
         registry.discovered(live.clone(), Found::Stale, at(3));
         assert_eq!(registry.rows()[0].status, "");
         assert_eq!(registry.rows()[0].since, at(2));
-        registry.discovered(unsure.clone(), Found::Stale, at(4));
-        assert_eq!(registry.rows()[1].status, "Disconnected");
         assert_eq!(
             registry.discovered(unsure.clone(), Found::Live, at(5)),
             Some(unsure)
         );
         assert_eq!(registry.rows()[1].status, "Starting");
         assert_eq!(registry.rows()[1].since, at(5));
+    }
+
+    /// Stale rows (owner decision on #106): a session proven gone drops its
+    /// row unless it was ever seen connected, whatever its status. A row that
+    /// was connected stays, and shows Disconnected once its connection ends,
+    /// with when that happened.
+    #[test]
+    fn a_session_proven_gone_drops_its_row_unless_it_was_ever_connected() {
+        let mut registry = Registry::new(None);
+        let sessions = [1, 2, 3, 4].map(|suffix| {
+            let created = format!("2026-11-13T10:00:0{suffix}.000Z");
+            metadata(&id(suffix), &created, &format!("s{suffix}"), &[])
+        });
+        let [unsure, starting, failed, connected] = &sessions;
+        registry.discovered(unsure.clone(), Found::Uncertain, at(1));
+        for live in [starting, failed, connected] {
+            registry.discovered(live.clone(), Found::Live, at(1));
+        }
+        registry.client(
+            &failed.session_id,
+            ClientEvent::Unavailable("refused".into()),
+            at(2),
+        );
+        registry.client(
+            &connected.session_id,
+            ClientEvent::Opened { status: false },
+            at(2),
+        );
+        registry.client(
+            &connected.session_id,
+            ClientEvent::Unavailable("lost".into()),
+            at(3),
+        );
+        for session in &sessions {
+            assert_eq!(
+                registry.discovered(session.clone(), Found::Stale, at(4)),
+                None
+            );
+        }
+        assert_eq!(shown(&registry), [("Unavailable", "s4".to_owned())]);
+        registry.client(&connected.session_id, ClientEvent::Ended, at(5));
+        registry.client(&starting.session_id, ClientEvent::Ended, at(5));
+        assert_eq!(shown(&registry), [("Disconnected", "s4".to_owned())]);
+        assert_eq!(registry.rows()[0].since, at(5));
     }
 
     /// COM-01 (Monitor, pure supplement) and the not-connected labels: a
