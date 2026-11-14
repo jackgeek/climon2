@@ -51,10 +51,11 @@ Bounds remain #69. Related: [Set viewing](request-viewing.md),
 
 ## Implemented behavior
 
-No revision-1 connection is an attachment yet, so until
-[#91](https://github.com/jackgeek/climon2/issues/91) serves Acknowledge the
+Until [#91](https://github.com/jackgeek/climon2/issues/91) serves Acknowledge, the
 [session daemon](../../../GLOSSARY.md#sessions) rejects it as impermissible
-with `invalid_state`, whether it is a connection's first request or arrives on
-a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control).
-No attention is acknowledged; the stream goes on and a registration stays.
+with `invalid_state`, before the connection has a role, on a
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) and
+on an interactive [attachment](../../../GLOSSARY.md#attachment-and-control)
+alike.
+No attention is acknowledged; the stream goes on and any role stays.
 This interim rejection comes before the `status-v1` check above.

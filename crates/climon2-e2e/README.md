@@ -79,6 +79,20 @@ tests load the exact archive's library, so the CI archive jobs exercise both
 macOS architectures' slices and the Linux library. The exported symbol set is
 a release check (`xtask`), not a Library-layer test.
 
+`tests/instance.rs` (#85) drives client instances through the same host's
+scenarios (`climon2-library-host <library> <scenario> <json>`), from the
+threads the contract names: an owner thread creates, runs and destroys each
+instance while the test's main thread shuts it down, drains and releases. The
+host is the Library layer's instrumented host: caller startup memory is one
+mapping it scrambles and unmaps as soon as `create` returns, an ownership
+ledger shows how every handle and delivery was released, a timeline records
+each call's thread, and probes compare the process's environment, working
+directory, signals and standard streams and the notification descriptor.
+Expected values come from the native header and contract. Fault cases select
+the hooked library's `CLIMON2_LIBRARY_FAULT` and return early in archive
+mode, whose release library has no hooks; every other case runs against the
+archive's library.
+
 ## Session continuity scenarios
 
 Detach and reattach, takeover and hand-back, the placeholder, kill, listing
@@ -90,8 +104,9 @@ acknowledgement files and observable completion, never sleeps.
 
 ## Specification mapping
 
-Each test also has a specification doc comment in `tests/packaged.rs` or, for
-session continuity (plan section 6.1), `tests/continuity.rs`.
+Each test also has a specification doc comment in `tests/packaged.rs`, for
+session continuity (plan section 6.1) in `tests/continuity.rs`, or for headless
+sessions in `tests/headless.rs`.
 
 | Requirement | Named packaged test |
 |---|---|
@@ -121,7 +136,30 @@ session continuity (plan section 6.1), `tests/continuity.rs`.
 | LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; bounded requirements; no unimplemented capability | `installed_library_describes_revision_one_with_its_version_identity` |
 | LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths (`LD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`), the absolute path maps the requested file (the system loader's lookup, which no library change can alter); the library answers from its own image with its own folder's release, not `current`'s, and a misplaced copy reports its compiled-in release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
 | LIB-02 Library: unsupported revisions rejected with a null description; null output storage | `installed_library_rejects_other_revisions_without_a_description` |
-| DOC-01: all eleven table entries report unsupported operation by the frozen call rules | `installed_library_table_reports_every_instance_call_unsupported` |
+| DOC-01: all eleven table entries reject null handles and outputs by the frozen call rules; `submit` stays unsupported | `installed_library_table_rejects_null_arguments_and_cannot_submit_yet` |
+
+### Library layer: client instances (`tests/instance.rs`, #85)
+
+| Scenario | Named test |
+|---|---|
+| LIB-03, LIB-04 and LIB-05 Library: create, run, shutdown, drain to terminal evidence, release, destroy and join; wrong-thread run and destroy, repeated run, busy destroy and release; terminal evidence apart from the cleanup report; every object released through the library | `installed_library_instance_runs_create_run_shutdown_drain_release_destroy_join` |
+| LIB-03 Library: failed creates return no handles and leave no descriptor: null arguments, mismatched release, generation, native paths (non-UTF-8 kept, `PATH_MAX` bound) | `installed_library_create_rejects_invalid_identity_and_paths_without_handles` |
+| LIB-03 Library: client keys, log path and `CLIMON2_LOG` filter | `installed_library_create_rejects_invalid_settings_and_diagnostics_without_handles` |
+| LIB-03 Library: limits it cannot honour, each at its bound, never raised or lowered; no descriptor left for the notification descriptor or for the log file (`CM1_RESOURCE_LIMIT`, no log file), one more is enough | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` |
+| LIB-03 Library and Fault: copies survive unmapped caller memory; lossless native paths; two instances' homes, settings, logs and allocations stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` |
+| LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` |
+| LIB-04 Library and Fault, Linux `eventfd`: borrowed descriptor, counted once; a scheduled race in which polling sees the stream end while the handle is used before shutdown and after the end, every call succeeding with the same descriptor | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` |
+| LIB-04 Fault: allocator pairing, a delivery charged until released | `installed_library_charges_a_delivery_until_it_is_released` |
+| LIB-04 Fault: the failure diagnostic only within `event_bytes`, at and one under the bound | `installed_library_queues_the_failure_diagnostic_only_within_event_bytes` |
+| LIB-05 Fault: injected panic at the bootstrap, `create` and `submit` | `installed_library_contains_a_panic_at_the_bootstrap_create_or_submit` |
+| LIB-05 and LIB-04 Fault: injected panic at `notification`, `snapshot`, `drain`, `shutdown` and `run` stops the instance, with no retry from `shutdown` on; a delivery held past terminal evidence alone keeps communication and destroy busy | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` |
+| LIB-04 and LIB-05 Fault: injected panic at `release_delivery`, `release_communication`, `release_control` and `destroy` keeps the object | `installed_library_contains_a_panic_in_a_release_and_keeps_the_object` |
+| LIB-05 Fault (`worker` hook): worker completion apart from terminal evidence | `installed_library_reports_worker_completion_apart_from_terminal_evidence` |
+| LIB-06 Fault (`stall-cleanup` hook): stalled worker cleanup incomplete, never complete or destroyed | `installed_library_reports_stalled_worker_cleanup_as_incomplete_and_never_destroys` |
+
+LIB-06 Library is not covered yet: without the fault hook this release starts
+no worker that could stall. Open
+([#93](https://github.com/jackgeek/climon2/issues/93)) brings the first.
 
 ### Session continuity (plan section 6.1)
 
@@ -155,6 +193,10 @@ that depend on how keystrokes or pastes are read stop the monitor (SIGSTOP):
 `wait_for_unread_input` shows when every byte sent has reached the terminal,
 then, after SIGCONT, when the monitor has read them all in one read of their
 own. The hang-up case completes its hang-up while the monitor is stopped.
+A resize after such a read shows that the monitor acted on every byte, because
+it handles each read before the next signal. Cases that do not test the key
+introduction first save **Don't show again** in their climon2 home, as an
+earlier run would, so they open on the empty state.
 
 | Scenario | Named packaged test (`tests/monitor.rs`) |
 |---|---|
@@ -175,6 +217,16 @@ own. The hang-up case completes its hang-up while the monitor is stopped.
 | EXT-03 (Fault, empty monitor) render failure or failed wait for host input releases the host before its one diagnostic, 125 | `debug_hook_render_failure_restores_the_host_before_its_diagnostic`, `debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic` |
 | Spec #73 host terminal; TRM-04 (empty monitor): SIGWINCH repaints exactly at the new size without erasing or showing the cursor | `resizing_the_host_redraws_the_monitor_at_the_new_size` |
 | Spec #73 exit: content-free monitor general log | `installed_monitor_logs_content_free_records_to_its_general_log` |
+| HLP-01 every start with hints on and nothing saved opens the key introduction: the actual prefix with x, s and ?, an unchecked box; Enter continues, closing saves nothing, prefix+x exits from it | `the_key_introduction_opens_at_every_start_until_dont_show_again_is_saved` |
+| HLP-01 hints off or the choice saved keep it closed; prefix+? opens it regardless, showing the saved choice, and is a no-op while open; a later version's preference file is honoured | `the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say` |
+| HLP-01 Space saves and reverses the choice per climon2 home: exact version 1 bytes, 0600 under umask 000, by rename, nothing left behind, a file already under the temporary name replaced; restarts and another home | `dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible` |
+| HLP-01 (derived scenario: a save interrupted before its rename) saving first removes the temporary files of processes no longer running, keeping those of running processes and any other file | `saving_removes_temporary_files_that_ended_processes_left_behind` |
+| HLP-01 (derived scenario: unreadable or malformed preference file) not suppressed, reason under the box and logged, never rewritten implicitly | `an_unreadable_or_malformed_preference_file_shows_why_beside_the_introduction` |
+| HLP-01 (Fault; derived scenario: unreadable or malformed preference file, key hints off) the introduction stays closed, the empty state shows the reason where the hint would be; prefix+? shows it under the box; a failing save shows its failure in both places, a successful one clears them | `without_key_hints_the_empty_state_shows_problems_with_the_saved_choice` |
+| HLP-01 (Fault) a save that cannot create its temporary file or replace the preference file is reported and logged, saves nothing, leaves nothing | `a_failing_save_is_reported_in_the_key_introduction_and_saves_nothing` |
+| HLP-02 (empty monitor) the key introduction owns typed keys, prefixed keys, reports and pastes, none acts; Enter closes, prefix+? reopens, prefix+x exits | `the_key_introduction_is_modal_and_prefix_x_still_exits_from_it` |
+| HLP-02 (empty monitor) with Ctrl+[ as the prefix Escape cannot close the key introduction, prefix+x still exits | `with_escape_as_the_prefix_escape_cannot_close_the_key_introduction_and_prefix_x_still_exits` |
+| HLP-02 (empty monitor) a doubled prefix reaches the key introduction as one literal prefix: with Ctrl+M as the prefix, Enter Enter continues, the prefix and Space reach nothing, prefix+x still exits | `with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction` |
 
 Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
 holds a packaged client between `Granted` and `Ready`; daemon
@@ -182,6 +234,32 @@ holds a packaged client between `Granted` and `Ready`; daemon
 and the ambiguous selector (random GUIDs; CLI
 `a_selector_must_match_exactly_one_live_session`). Daemon raw-socket (6.2) and
 client bridge (6.3) scenarios are mapped in those crates' test doc comments.
+
+### Headless sessions (spec #73, acceptance matrix HDL-01)
+
+Monitor-layer evidence through the packaged CLI on macOS and Linux, in
+`tests/headless.rs` unless noted. The Contract-layer cases are mapped in the
+daemon README. Scripted runs have stdin from `/dev/null` and pipes for
+output, so no terminal is involved; a CLI still running at its deadline is
+killed and reaped and its test fails. Scripted creation uses `c2`; the TTY
+case and every kill use `climon2`, the same installed launcher. Every
+headless session command ends itself after two minutes, so even a test
+killed before cleaning up cannot leave a session running forever.
+
+| Scenario | Named packaged test |
+|---|---|
+| Confirmed scenario: from a script with no terminal, exactly the full lowercase GUID and a newline, status 0 only once the session is listed `detached` with no client, 80x24 start; HDL-01 command completion with zero clients | `installed_headless_exec_from_a_script_prints_only_the_guid_and_starts_at_80x24` |
+| Confirmed scenario: a terminal on stdin sets the initial size, with stdout captured as in `id=$(climon2 exec --headless …)`; HDL-01 existing `climon2 kill` ends a headless session | `installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it` |
+| HDL-01 failed creation: 127, 126 and 125 with exec's diagnostics, nothing on stdout, nothing left | `installed_headless_creation_failures_keep_exec_statuses_and_diagnostics` |
+| HDL-01 failed creation and CFG-01 (exec case): an invalid `monitor` section, a wrong type or an out-of-range limit, refused with 125 before any session side effect: nothing on stdout, only the general log written, nothing left | `installed_headless_exec_rejects_an_invalid_monitor_section_before_any_session_side_effect` |
+| HDL-01 creation with an unwritable stdout (owner decision of 2026-11-13): status 0, nothing on stderr, the session keeps running, listed `detached`, until its command completes | `installed_headless_exec_that_cannot_print_the_guid_leaves_the_session_running` |
+| HDL-01 zero clients past the initial attach window (ordered, not slept: the next step follows the Kill of a reference session whose command ignores hang-up, which is confirmed only after the five-second hang-up grace), after a killed client and after a deliberate detach, then Kill | `installed_headless_session_survives_zero_clients_a_killed_client_and_a_detach` |
+| HDL-01 ordinary leave policy unchanged | `killed_installed_client_uses_daemon_leave_policy_and_leaves_nothing` (`tests/packaged.rs`) |
+
+The HDL-01 cases that need a monitor discovering sessions wait for it: headless
+rows appearing in the selector ([#106](https://github.com/jackgeek/climon2/issues/106))
+and `c2 kill` leaving an independently running monitor's row in place
+([#116](https://github.com/jackgeek/climon2/issues/116)).
 
 ### Deliberately reused preceding boundary evidence
 

@@ -1,10 +1,14 @@
 # Client library embedding and lifetime
 
-**Status:** agreed design. Only the library side of the bootstrap is
-implemented: every installed version ships its
+**Status:** agreed design. The library side of the bootstrap and of
+instance lifetime is implemented: every installed version ships its
 [client library](../../GLOSSARY.md#sessions) file, exporting
 only `climon2_client_get_interface`
-([#75](https://github.com/jackgeek/climon2/issues/75)). Loading by the
+([#75](https://github.com/jackgeek/climon2/issues/75)), and its instances are
+created, run, cleaned up and destroyed on their owner threads, and shut down,
+drained and released from any thread, as described below, with every panic
+contained and no process-global state changed
+([#85](https://github.com/jackgeek/climon2/issues/85)). Loading by the
 [monitor](../../GLOSSARY.md#sessions) and the
 [client executable](../../GLOSSARY.md#sessions) is not implemented. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
@@ -218,12 +222,14 @@ supplies configurable delay, cap and jitter.
 
 This is not native-crash isolation. Abort, native faults, and panic-abort builds
 can terminate the monitor and every hosted client. No new session-survival
-guarantee exists: ordinary sessions retain the daemon's existing
-[leave policy](../../GLOSSARY.md#attachment-and-control) and agreed succession.
-Future [headless sessions](../../GLOSSARY.md#sessions) explicitly survive zero
+guarantee exists: [ordinary sessions](../../GLOSSARY.md#sessions) retain the
+daemon's existing [leave policy](../../GLOSSARY.md#attachment-and-control) and
+agreed succession.
+[Headless sessions](../../GLOSSARY.md#sessions) explicitly survive zero
 clients even after later attachment loss, until completion or
 [Kill](../../GLOSSARY.md#attachment-and-control); that lifetime
-exception is agreed, not implemented, and adds no native-crash isolation.
+exception is implemented on the current private protocol and adds no
+native-crash isolation.
 
 ## Required automated evidence
 
