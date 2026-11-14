@@ -2824,14 +2824,18 @@ fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
     }
     read_alone(&mut terminal, monitor, b"\x1bx");
     received(&package, b"x");
-    assert!(!terminal.screen().contains('║'));
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
+        .unwrap();
     terminal.send("\x1d?").unwrap();
     shows_row(&mut terminal, "Exit the monitor");
     read_alone(&mut terminal, monitor, b"\x1b[");
     read_alone(&mut terminal, monitor, b"A");
     read_alone(&mut terminal, monitor, b"\x1bq");
     received(&package, b"xq");
-    assert!(!terminal.screen().contains("Exit the monitor"));
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| !screen.contains("Exit the monitor"))
+        .unwrap();
     terminal.send("\x1dx").unwrap();
     // Its many frames outgrow the oracle's recent bytes, so only the
     // title itself is checked.

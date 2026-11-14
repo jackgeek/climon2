@@ -101,8 +101,9 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   Ready accepted and painted, with no modal open and room on the host,
   receives application input; otherwise input is discarded, never kept for
   later. Ctrl+C is ordinary input. Each read's keys for the session are
-  submitted together, before anything after them acts, and nothing after
-  prefix+x. Unmodified cursor keys (`A`-`D`, `H`, `F`, as CSI or SS3) are
+  submitted together, before anything after them acts. Nothing read after
+  prefix+x is routed, and the shutdown it starts cancels input the library
+  has not yet sent. Unmodified cursor keys (`A`-`D`, `H`, `F`, as CSI or SS3) are
   sent as the application's cursor mode (DECCKM) expects, and application
   keypad keys (SS3) as its keypad mode (DECKPAM) expects; the host keypad is
   put in application mode while the selected, uncovered session asks for it,
