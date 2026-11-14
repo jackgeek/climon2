@@ -18,7 +18,10 @@
 mod client;
 mod owner;
 
-use crate::registry::ClientEvent;
+use crate::{
+    registry::ClientEvent,
+    terminal::{Presentation, Request},
+};
 use client::{Client, Drain, Stop};
 use climon2_core::{
     SessionId, Timestamp, VersionName, config::Lanes, keys::ControlKey, layout::HomeLayout,
@@ -80,6 +83,7 @@ pub(crate) struct Context {
 
 enum Command {
     Start(Box<SessionMetadata>),
+    Request(SessionId, Request),
     Shutdown,
 }
 
@@ -111,6 +115,12 @@ impl Supervisor {
     /// Asks for a passive client for `metadata`'s session.
     pub(crate) fn start_client(&self, metadata: SessionMetadata) {
         let _ = self.commands.send(Command::Start(Box::new(metadata)));
+    }
+
+    /// Submits `request` through `id`'s client. Its answer, or why it could
+    /// not be submitted, is reported as [`Presentation::Answered`].
+    pub(crate) fn request(&self, id: SessionId, request: Request) {
+        let _ = self.commands.send(Command::Request(id, request));
     }
 
     /// Shuts every client down, waiting at most `deadlines.shutdown_ms` (and
@@ -211,6 +221,10 @@ impl Phase {
 
 struct Instance {
     phase: Phase,
+    /// Submitted requests awaiting their answers, by request ID.
+    pending: BTreeMap<u64, Request>,
+    /// The next request ID; Open is 1.
+    next: u64,
     /// Tells the owner its handles are released, so it may destroy.
     released: Sender<()>,
     owner: JoinHandle<()>,
@@ -261,12 +275,25 @@ impl State {
     /// Takes every pending command; false once shutdown is asked for.
     fn commands(&mut self, commands: &Receiver<Command>) -> bool {
         loop {
-            match commands.try_recv() {
-                Ok(Command::Start(metadata)) => self.wait(*metadata),
-                Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => return false,
+            let more = match commands.try_recv() {
+                Ok(command) => self.command(command),
+                Err(TryRecvError::Disconnected) => false,
                 Err(TryRecvError::Empty) => return true,
+            };
+            if !more {
+                return false;
             }
         }
+    }
+
+    /// Acts on one command; false for shutdown.
+    fn command(&mut self, command: Command) -> bool {
+        match command {
+            Command::Start(metadata) => self.wait(*metadata),
+            Command::Request(id, request) => self.submit(&id, request),
+            Command::Shutdown => return false,
+        }
+        true
     }
 
     fn wait(&mut self, metadata: SessionMetadata) {
@@ -275,6 +302,47 @@ impl State {
             metadata.session_id.clone(),
         );
         self.waiting.insert(key, metadata);
+    }
+
+    /// Submits `request` through an open client and remembers it until its
+    /// answer; anything else is answered at once with why not.
+    fn submit(&mut self, id: &SessionId, request: Request) {
+        let open = self
+            .instances
+            .get_mut(id)
+            .and_then(|instance| match instance.phase {
+                Phase::Open(live) => Some((live, instance)),
+                _ => None,
+            });
+        let submitted = open.map_or_else(
+            || Err("the session's client is not connected".to_owned()),
+            |(live, instance)| {
+                let request_id = instance.next;
+                instance.next += 1;
+                instance.pending.insert(request_id, request);
+                live.client.submit(request_id, request)
+            },
+        );
+        if let Err(why) = submitted {
+            self.tell(
+                id,
+                ClientEvent::Presentation(Presentation::Answered(request, Err(why))),
+            );
+        }
+    }
+
+    /// A request's answer goes to the session's terminal as its request.
+    fn answer(&mut self, id: &SessionId, request_id: u64, answer: Result<(), String>) {
+        let pending = self
+            .instances
+            .get_mut(id)
+            .map(|instance| &mut instance.pending);
+        if let Some(request) = pending.and_then(|pending| pending.remove(&request_id)) {
+            self.report(
+                id,
+                ClientEvent::Presentation(Presentation::Answered(request, answer)),
+            );
+        }
     }
 
     fn internals(&mut self) {
@@ -379,6 +447,8 @@ impl State {
                 let phase = Phase::Creating;
                 let instance = Instance {
                     phase,
+                    pending: BTreeMap::new(),
+                    next: client::OPEN_ID + 1,
                     released,
                     owner,
                 };
@@ -447,6 +517,7 @@ impl State {
     fn event(&mut self, id: &SessionId, event: ClientEvent) {
         match event {
             ClientEvent::Unavailable(why) => self.fail(id, why),
+            ClientEvent::Answer(request_id, answer) => self.answer(id, request_id, answer),
             event => self.report(id, event),
         }
     }

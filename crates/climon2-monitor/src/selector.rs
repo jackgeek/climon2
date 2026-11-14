@@ -21,6 +21,8 @@ pub(crate) enum Move {
     Up,
     Down,
     Close,
+    /// Enter: choose the highlighted row.
+    Choose,
 }
 
 /// Where typed bytes stand in an escape sequence.
@@ -59,10 +61,19 @@ impl Selector {
         self.open
     }
 
-    /// Decodes one typed byte, acting on any key it completes.
-    pub(crate) fn key(&mut self, byte: u8, rows: &[View]) {
-        if let Some(found) = self.decode(byte) {
-            self.act(found, rows);
+    pub(crate) fn close(&mut self) {
+        self.open = false;
+    }
+
+    /// Decodes one typed byte, acting on any key it completes; Enter returns
+    /// the highlighted row's identity for the caller to select.
+    pub(crate) fn key(&mut self, byte: u8, rows: &[View]) -> Option<SessionId> {
+        match self.decode(byte)? {
+            Move::Choose => self.highlighted(rows).map(|index| rows[index].id.clone()),
+            found => {
+                self.act(found, rows);
+                None
+            }
         }
     }
 
@@ -93,7 +104,7 @@ impl Selector {
     fn act(&mut self, found: Move, rows: &[View]) {
         let index = self.highlighted(rows);
         let target = match (found, index) {
-            (Move::Close, _) => {
+            (Move::Close | Move::Choose, _) => {
                 self.open = false;
                 return;
             }
@@ -171,7 +182,7 @@ const ANY: &[Sequence] = &[
 ];
 const SEQUENCE: &[Sequence] = &[Sequence::Introduced, Sequence::Skipping];
 
-const RULES: [Rule; 8] = [
+const RULES: [Rule; 9] = [
     rule(ANY, 0x1b..=0x1b, Sequence::Escape, None),
     rule(&[Sequence::Escape], b'['..=b'[', Sequence::Introduced, None),
     rule(&[Sequence::Escape], b'O'..=b'O', Sequence::Introduced, None),
@@ -186,6 +197,12 @@ const RULES: [Rule; 8] = [
         b'B'..=b'B',
         Sequence::Ground,
         Some(Move::Down),
+    ),
+    rule(
+        &[Sequence::Ground],
+        b'\r'..=b'\r',
+        Sequence::Ground,
+        Some(Move::Choose),
     ),
     // A final byte ends any other control sequence.
     rule(SEQUENCE, 0x40..=0x7e, Sequence::Ground, None),

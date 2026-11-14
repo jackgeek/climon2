@@ -262,6 +262,7 @@ dependencies = [
  "climon2-vt",
  "libc",
  "ratatui",
+ "ratatui-core",
  "serde_json",
  "tempfile",
  "tracing",
