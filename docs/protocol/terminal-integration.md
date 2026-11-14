@@ -56,16 +56,17 @@ and painting. Enter in the selector on a connected row not known to be final
 selects it and takes [control](../../GLOSSARY.md#attachment-and-control); nothing
 is selected at startup, and no arrival moves the selection. Since
 [#110](https://github.com/jackgeek/climon2/issues/110), Enter on a Starting
-row or an Unavailable row without a connected client selects it read-only
-(no terminal content, its condition, never acquired), and on the monitor's
-own row keeps the selection and says why; Enter on disconnected and final
-rows waits for [#116](https://github.com/jackgeek/climon2/issues/116). A
+row or an Unavailable row without a connected client selects it without
+acquiring (no terminal content, its condition), and the monitor's own
+session has no row; Enter on disconnected and final rows waits for
+[#116](https://github.com/jackgeek/climon2/issues/116). A
 selected connected session the monitor does not control shows only the
 [placeholder](../../GLOSSARY.md#attachment-and-control) (with the
 [take-control key](../../GLOSSARY.md#attachment-and-control)'s hint while
 one is bound and key hints are on), never its cache; that key, unprefixed,
-acquires it and is consumed, does nothing in a modal and is ordinary input
-for a ready controller. Switching keeps background control, and the monitor
+acquires it and is consumed, even on a host too small to show it (owner
+decision on #110), does nothing in a modal and is ordinary input for a
+ready controller. Switching keeps background control, and the monitor
 never takes control back by itself. Each
 [session](../../GLOSSARY.md#sessions) has one allocation-bounded model, kept for
 the monitor's run: each [restoration](../../GLOSSARY.md#restoration-and-presentation)

@@ -169,13 +169,13 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
 - **The registry** (`registry.rs`) is pure and the single owner of row state,
   keyed by full session ID: the discovery outcome and metadata, the connection
   status with the time the monitor entered it, the latest nonempty daemon
-  title and whether the row is the monitor's own session
-  (`CLIMON2_SESSION_ID`). A live session with no client and not the monitor's
-  own gets exactly one client request. Discovery never changes a client's
+  title. The monitor's own enclosing session (`CLIMON2_SESSION_ID`) never
+  gets a row or a client (owner decision on #110): it is not listed at all.
+  A live session with no client gets exactly one client request. Discovery never changes a client's
   connection. A session proven gone (stale) drops its row unless a client
   was ever connected to it, and a stale session nobody knew adds no row; a
   row that was connected stays, with its history (owner decision on #106).
-  The status column is This monitor, Starting, Unavailable (uncertain,
+  The status column is Starting, Unavailable (uncertain,
   failed, or connected without `status-v1`), Disconnected (its connection
   ended), or empty for a connected row with `status-v1`,
   whose effective status arrives with #107. The label is the latest nonempty
@@ -329,11 +329,9 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
 - **Enter by row condition** (`registry.rs`, one `Kind` per row): a
   connected row not known to be final, a connected Unavailable row
   included, is selected and acquired; a Starting row, or an Unavailable row
-  with no connected client (uncertain or failed), is selected read-only and
-  never acquired; on This monitor the selection stays and the still-open
-  selector explains why on its bottom border (`This monitor runs in this
-  session, so it cannot be selected.`) until the next key; disconnected and
-  final rows are ignored until #116. Awaiting resources rows arrive with
+  with no connected client (uncertain or failed), is selected but never
+  acquired; disconnected and final rows are ignored until #116. The
+  monitor's own session has no row to press Enter on. Awaiting resources rows arrive with
   #120, which proves their Enter.
 - **Switching** keeps control of the session switched away from in the
   background: its client stays, its model stays live, and it gets no
@@ -342,18 +340,19 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   model shows at once.
 - **What the canvas shows.** A selected session with a live or frozen view
   shows it. Otherwise a connected session the monitor neither controls nor
-  is acquiring (revoked by another client, failed acquisition, or a
-  read-only selection whose client connected) shows only the placeholder,
+  is acquiring (revoked by another client, failed acquisition, or a row
+  selected without a client whose client connected) shows only the placeholder,
   centred: `This session is being viewed elsewhere.`, and `Press <key> to
   take control` while a take-control key is bound and
   `monitor.show_key_hints` is true; never its cached output. A row selected
-  read-only shows `No terminal content is available.` and its condition
+  without a connected client shows `No terminal content is available.` and its condition
   (`Starting` or `Unavailable`); a retained cache with its overlay is #116's.
   Anything else (acquiring, before the first restoration, disconnected or
   final without a view) shows a blank canvas.
 - **The take-control key** (`client.take_control_key`), unprefixed, acquires
   the selected session while it shows the placeholder, and is consumed
-  either way when nothing takes input; inside the selector or key
+  either way when nothing takes input, also on a host too small to show
+  the placeholder (owner decision on #110); inside the selector or key
   introduction it does nothing, and for the ready controller it is
   ordinary input. Prefixed it is two literal bytes (#109).
 - **Never automatic.** The monitor acquires only on Enter or the
@@ -416,10 +415,10 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | DSC-03 (Monitor, cadence): immediate first pass, each later pass a second after the previous one ended, no overlap, the selector opened during a pass | `discovery_passes_start_a_second_after_the_previous_one_ends_without_overlap` (e2e) |
 | Client supervisor (Fault): a failed notification lookup, or a run failing without terminal evidence, ends that instance cleanly (deliveries and handles released, destroyed) and frees its start slot | `a_failed_notification_lookup_ends_its_client_cleanly_and_frees_its_start_slot`, `a_failed_run_without_terminal_evidence_ends_its_client_cleanly_and_frees_its_start_slot` (`src/supervisor/tests`) |
 | Client supervisor (Fault): exit is bounded by `deadlines.shutdown_ms` and never destroys an instance with unreleased handles; a refused release is loaded once and its sessions are Unavailable | `exit_is_bounded_and_never_destroys_an_instance_with_unreleased_handles`, `a_refused_release_is_loaded_once_and_its_sessions_are_unavailable` (`src/supervisor/tests`) |
-| Own-session scenario (confirmed 2026-11-08), DSC-06 (Monitor), HDL-01 (Monitor rows), CTL-01 (controlled elsewhere), TRM-06 (wide labels), SEL-01 (cell-safe clipping) | `the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear` (e2e) |
+| Own-session scenario (confirmed 2026-11-08; hidden, owner decision on #110), DSC-06 (Monitor), HDL-01 (Monitor rows), CTL-01 (controlled elsewhere), TRM-06 (wide labels), SEL-01 (cell-safe clipping): the own session is never listed and gets no client, while nested and controlled sessions appear | `the_own_session_is_hidden_while_nested_and_controlled_sessions_appear` (e2e) |
 | SEL-01 (Monitor, basic cases): border, columns, highlight, Up/Down without wrap, Escape, no application resize or acquisition | `the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing` (e2e) |
 | DSC-01/DSC-03 (pure registry supplement): one client request per live session, newest-first order | `live_sessions_need_one_client_each_and_list_newest_first` (`src/registry.rs`) |
-| Own-session scenario (pure supplement) | `the_own_session_is_this_monitor_and_never_needs_a_client` (`src/registry.rs`) |
+| Own-session scenario (pure supplement): no row and no client for the own session | `the_own_session_is_hidden_and_never_needs_a_client` (`src/registry.rs`) |
 | DSC-04 (pure supplement): uncertainty never removes rows or tears down clients | `uncertainty_never_removes_rows_or_tears_down_clients` (`src/registry.rs`) |
 | Stale rows (owner decision on #106): a session proven gone drops its row unless it was ever connected | `a_session_proven_gone_drops_its_row_unless_it_was_ever_connected` (`src/registry.rs`) |
 | COM-01 and not-connected labels (pure supplement) | `connection_statuses_are_labelled_as_specified` (`src/registry.rs`) |
@@ -433,10 +432,11 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | Top-row key hints (#108): none with `monitor.show_key_hints` false | `without_key_hints_the_top_row_shows_no_hint` (e2e) |
 | Spec #73 Enter, never exposing cached output; CTL-05 (revoked): a revoked session shows only the placeholder, never its cache; its screen changes while revoked, and Enter takes control again and paints only the new restoration | `a_revoked_session_shows_no_cached_output_until_enter_takes_control_again` (e2e) |
 | #94 rule for #108: a finished session's view freezes at Command final; Enter does not acquire a final row | `a_finished_session_keeps_its_last_screen_and_cannot_be_acquired` (e2e) |
-| CTL-02 (Monitor), CTL-03 (Monitor), CTL-05 (Monitor: background and revoked), DSC-05 (Monitor: revocation), INP-01 (Monitor: takeover and the placeholder screen) (#110): switching keeps background control and input reaches only the selection; titles update in the background, under the selector and after revocation; another client's takeover wins and the selection shows only the placeholder with its hint, no input or resize reaches any session, the take-control key does nothing in modals and the monitor never takes control back; the key acquires and is consumed, then is ordinary input; prefix+s, prefix+? and prefix+x act from the placeholder | `a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key` (e2e) |
-| Spec #73 Enter on Starting and Unavailable rows without a connected client (derived scenarios), CTL-05 (Monitor: unavailable) (#110): selected read-only with no terminal content and the condition, never acquired, keys reach no session; once the client connects, the placeholder until the take-control key acquires | `enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires` (e2e) |
+| CTL-02 (Monitor), CTL-03 (Monitor), CTL-05 (Monitor: background and revoked), DSC-05 (Monitor: revocation), INP-01 (Monitor: takeover and the placeholder screen) (#110), titles only (status values are #107's): switching keeps background control and input reaches only the selection; titles update in the background, under the selector and after revocation; another client's takeover wins and the selection shows only the placeholder with its hint, no input or resize reaches any session, the take-control key does nothing in modals and the monitor never takes control back; the key acquires and is consumed, then is ordinary input; prefix+s and prefix+? act from the placeholder | `a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key` (e2e) |
+| Spec #73 Enter on Starting and Unavailable rows without a connected client (derived scenarios), CTL-05 (Monitor: unavailable) (#110): selected without acquiring, with no terminal content and the condition, keys reach no session; once the client connects, the placeholder until the take-control key acquires | `enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires` (e2e) |
 | CTL-04 (Monitor) (#110): promotion keeps a background model live without selection, resize or input; Enter then shows it at once and only then resizes | `promotion_keeps_a_background_model_without_selection_resize_or_input` (e2e) |
-| Own-session scenario, Enter (confirmed 2026-11-08; #110): Enter on This monitor keeps the selection and explains why | `enter_on_this_monitor_keeps_the_selection_and_explains_why` (e2e), `the_own_session_explanation_shows_until_the_next_key` (`src/selector.rs`) |
+| INP-01 (Monitor: takeover on a too-small host; owner decision on #110): the take-control key acquires with no placeholder showing, nothing is resized until the host has room; prefix+x exits from the placeholder | `the_take_control_key_acquires_on_a_too_small_host` (e2e) |
+| CTL-05 (Monitor: restoring) (#110): while a restoration is applied but its Ready not yet accepted, keys and a host resize reach no session, the background controller included; once ready, the session is sized to the host and keys reach it | `keys_and_resizes_during_a_restoration_reach_no_session` (e2e) |
 | DSC-05 (Monitor, Fault: failed acquisition and loss) (#110): a timed-out Acquire keeps the selection, shows the failure, and input reaches no session; the other controller keeps control | `a_failed_acquisition_keeps_the_selection_and_redirects_no_input` (e2e) |
 | DSC-05 (Monitor: completion) | `a_finished_session_keeps_its_last_screen_and_cannot_be_acquired` (e2e) |
 | CTL-02, INP-01 takeover, spec #73 placeholders (pure supplement, #110): only an uncontrolled connected row shows the placeholder and takes the key; without a view, the placeholder, the condition or nothing; the placeholder's hint only with a bound key and hints on | `only_an_uncontrolled_connected_row_shows_the_placeholder`, `a_selected_row_without_a_view_shows_the_placeholder_its_condition_or_nothing` (`src/lib.rs`), `the_placeholder_and_the_no_content_state_say_why_nothing_is_painted` (`src/screen.rs`) |
