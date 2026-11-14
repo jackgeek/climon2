@@ -2272,16 +2272,9 @@ fn enter_selects_and_acquires_a_session_and_paints_it_live() {
     headless(&package, &titled_hold("Later"), "finish");
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, &format!("║{STATUS} Later"));
-    // The selector covers the canvas: input could not reach a painted
-    // frame of the session, so it is not Controlling until it is uncovered.
-    top_row_is(
-        &mut terminal,
-        &session_top_row(
-            usize::from(COLS),
-            "Paint",
-            &[STATUS, "Restoring", SESSIONS_HINT],
-        ),
-    );
+    // The selector covers the canvas, but control has not changed: the top
+    // row still says Controlling (owner decision, 2026-11-14).
+    top_row_is(&mut terminal, &top);
     terminal.send("\x1b").unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
