@@ -168,6 +168,10 @@ _Avoid_: Space-to-control, hotkey
 The screen a non-controlling client shows instead of session content, saying the session is being viewed elsewhere.
 _Avoid_: Viewer mode, read-only view
 
+**Key introduction**:
+The monitor's modal list of its key actions, spelled with the configured client escape prefix, shown at startup until the user declines it for that climon2 home, and on request as help.
+_Avoid_: Splash screen, onboarding, welcome screen
+
 ## Status and attention
 
 **Activity state**:
@@ -236,6 +240,32 @@ _Avoid_: Emulated mode, redraw mode
 **Release**:
 The bytes that return a terminal to the normal-shell baseline when an attachment's presentation ends.
 _Avoid_: Reset, cleanup
+
+## Monitor links
+
+**Monitor link**:
+A planned secured connection between a hub monitor and a relay on another machine, authenticated and encrypted by climon2 itself whatever carries it.
+_Avoid_: Tunnel, remote connection, bridge
+
+**Hub monitor**:
+A monitor that also presents and drives remote sessions through monitor links.
+_Avoid_: Master, primary monitor, server
+
+**Relay**:
+A program, separate from the monitor, that serves one machine's sessions to a hub monitor over a monitor link.
+_Avoid_: Slave, relay monitor, agent, proxy
+
+**Link invitation**:
+What a relay produces and a hub monitor consumes to establish a monitor link for the first time.
+_Avoid_: Connection string, token, pairing code
+
+**Remote session**:
+A session that a hub monitor reaches through a monitor link.
+_Avoid_: Relayed session, foreign session
+
+**Local session**:
+A session whose session daemon runs on the same machine as the monitor presenting it.
+_Avoid_: Native session, own session
 
 ## Protocol and plugin concepts
 
