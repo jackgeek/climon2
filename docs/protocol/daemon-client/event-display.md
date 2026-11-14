@@ -1,6 +1,7 @@
 # Display — `0x49`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented for interactive attachments**
+([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) delivers ordered terminal
 [bytes](../TERMS.md#byte) to the controlling
 [client](../../../GLOSSARY.md#sessions), including background control.
@@ -42,7 +43,7 @@ Revoked clients receive metadata, not core live mirroring.
 For monitor-mode connections all display/restoration bytes use effective session
 geometry, including background grants, never outer-host/requested dimensions.
 The [canonical #63 policy](../terminal-integration.md#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1)
-needs no extra geometry field and leaves ordinary direct/derived attach unchanged.
+needs no extra geometry field and leaves ordinary [direct](../../../GLOSSARY.md#restoration-and-presentation)/[derived](../../../GLOSSARY.md#restoration-and-presentation) attach unchanged.
 The monitor parses exact bytes into its own model and paints read-only Rust views
 with Ratatui; no session bytes go directly to the host and no duplicate query
 replies are emitted. Native cell serialization is not introduced.
@@ -58,3 +59,18 @@ Required bytes cannot be silently lost on healthy streams; explicitly fail
 the affected connection under #69 policy instead.
 #63 owns rendering/application/fidelity, #69 numeric transfer/queue limits.
 Related: [Input](request-input.md).
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) sends Display to an
+interactive [attachment](../../../GLOSSARY.md#attachment-and-control) while
+it controls: its restoration chunks, live output, and the
+[release](../../../GLOSSARY.md#restoration-and-presentation) of its
+[presentation](../../../GLOSSARY.md#restoration-and-presentation) when its control or
+attachment ends, before
+[Control revoked](event-control-revoked.md) or the [Leave](request-leave.md)
+success. Each frame carries the period and restoration ID of the current
+restoration and at most 65,535 payload bytes, the chunk size of the private
+protocol's output. The daemon never sends an empty Display. Bytes are exact:
+the daemon's live-output policy decides what reaches the attachment, as for
+an ordinary attach, and terminal queries are answered by the daemon alone.

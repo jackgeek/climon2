@@ -5,7 +5,7 @@ use climon2_core::wire::{
     ControlRecord, Counter, Families, FatalCode, Focus, Frame, Mode, Open, Request, Requested,
     SetViewing,
 };
-use support::{counter, families, geometry};
+use support::{counter, families, geometry, ids};
 
 mod support;
 
@@ -280,8 +280,7 @@ fn viewing_and_focus_are_json_booleans() {
             format!(r#"{{"request_id":"6","period":"1","restoration_id":"1","viewing":{value}}}"#);
         let expected = SetViewing {
             request_id: counter(6),
-            period: counter(1),
-            restoration_id: counter(1),
+            authority: ids(1, 1),
             viewing: flag,
         };
         assert_eq!(
@@ -297,8 +296,7 @@ fn viewing_and_focus_are_json_booleans() {
             format!(r#"{{"request_id":"8","period":"2","restoration_id":"3","focused":{value}}}"#);
         let expected = Focus {
             request_id: counter(8),
-            period: counter(2),
-            restoration_id: counter(3),
+            authority: ids(2, 3),
             focused: flag,
         };
         assert_eq!(request(FOCUS, &body), Ok(Request::Focus(expected)));

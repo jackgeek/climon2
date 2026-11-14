@@ -1,9 +1,9 @@
 //! Server messages: session daemon to client, types `0x40` through `0x4d`.
 //! Core metadata flows to every selected family regardless of control.
 use super::{
-    Available, CommandResult, Counter, Display, Error, FatalCode, Frame, Geometry, Progress,
-    Response, Status,
-    record::{self, ControlRecord, Decoder, by_name, nullable},
+    AuthorityIds, Available, CommandResult, Counter, Display, Error, FatalCode, Frame, Geometry,
+    Progress, Response, Status,
+    record::{self, ControlRecord, Decoder, by_name, flat_authority, nullable},
 };
 use crate::ContractError;
 use serde::{Deserialize, Serialize};
@@ -169,14 +169,24 @@ pub struct ProgressChanged {
 /// this geometry. The matching Restoration begin follows; a grant is not
 /// readiness.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "ControlGrantedFields", into = "ControlGrantedFields")]
 pub struct ControlGranted {
-    pub period: Counter,
-    pub restoration_id: Counter,
+    pub authority: AuthorityIds,
     pub geometry: Geometry,
-    #[serde(deserialize_with = "by_name")]
     pub reason: GrantReason,
 }
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ControlGrantedFields {
+    period: Counter,
+    restoration_id: Counter,
+    geometry: Geometry,
+    #[serde(deserialize_with = "by_name")]
+    reason: GrantReason,
+}
+
+flat_authority!(ControlGranted, ControlGrantedFields { geometry, reason });
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -192,13 +202,22 @@ pub enum GrantReason {
 /// Control revoked `0x47`: a revocation, which ends this attachment's control
 /// but not the attachment. The old authority is already invalid.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "ControlRevokedFields", into = "ControlRevokedFields")]
 pub struct ControlRevoked {
-    pub period: Counter,
-    pub restoration_id: Counter,
-    #[serde(deserialize_with = "by_name")]
+    pub authority: AuthorityIds,
     pub reason: RevocationReason,
 }
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ControlRevokedFields {
+    period: Counter,
+    restoration_id: Counter,
+    #[serde(deserialize_with = "by_name")]
+    reason: RevocationReason,
+}
+
+flat_authority!(ControlRevoked, ControlRevokedFields { reason });
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -210,21 +229,38 @@ pub enum RevocationReason {
 /// Restoration begin `0x48`: a new restoration at this geometry, which
 /// invalidates earlier readiness.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "RestorationBeginFields", into = "RestorationBeginFields")]
 pub struct RestorationBegin {
-    pub period: Counter,
-    pub restoration_id: Counter,
+    pub authority: AuthorityIds,
     pub geometry: Geometry,
 }
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestorationBeginFields {
+    period: Counter,
+    restoration_id: Counter,
+    geometry: Geometry,
+}
+
+flat_authority!(RestorationBegin, RestorationBeginFields { geometry });
 
 /// Restoration complete `0x4a`: every Display of the restoration was sent.
 /// Receiving it is not readiness; applying the restoration is.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "RestorationCompleteFields", into = "RestorationCompleteFields")]
 pub struct RestorationComplete {
-    pub period: Counter,
-    pub restoration_id: Counter,
+    pub authority: AuthorityIds,
 }
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestorationCompleteFields {
+    period: Counter,
+    restoration_id: Counter,
+}
+
+flat_authority!(RestorationComplete, RestorationCompleteFields {});
 
 /// Geometry `0x4b`: the session's actual geometry, distinct from Resize
 /// acceptance.

@@ -1,5 +1,7 @@
 use std::{
-    env, io,
+    env,
+    ffi::OsString,
+    io,
     path::Path,
     process::{Command, ExitCode},
 };
@@ -8,13 +10,23 @@ mod coverage;
 mod dist;
 mod fixtures;
 mod library;
+mod mutation_plan;
 mod quality;
 mod release;
 
 const HELP: &str = "\
-Usage: cargo xtask <check [--mutate-all]|test|dist|install [--dir <directory>]|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--native-only] [--mutate-all]>
+Usage: cargo xtask <check [--full] [--mutate-all] [--print-mutation-plan]|test|dist|install [--dir <directory>]|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--native-only] [--mutate-all]>
 
 check runs test, append-only fixtures, tooling proofs, coverage, crapper, mutation-load measurement and mutation.
+check is the ticket gate: 1 load round, then mutation of only the functions, consts and statics
+added or changed since the merge base of CLIMON2_MUTATION_BASE (default HEAD) and HEAD;
+new files are mutated whole. One mutator run takes every file with a selected site, so the
+workspace baseline runs once; its --lines is the union of the lines holding each file's
+selected sites (from mutator --scan).
+check --full is the full gate, run before a feature branch merges to main with
+CLIMON2_MUTATION_BASE=origin/main: 5 load rounds, then mutation of whole files changed
+since that merge base.
+--mutate-all mutates every shipped file; --print-mutation-plan prints the selection and exits.
 test runs fmt, clippy and workspace tests, including packaged acceptance, plus ShellCheck.
 Before the workspace tests it runs the monitor's build test alone, against its plain binary.
 setup-quality installs the pinned Python quality tools and cargo-llvm-cov.
@@ -26,8 +38,8 @@ install builds verified production artifacts and runs their installer (optional 
 fixtures-check refuses any historical or uncommitted edit/deletion of an existing metadata golden.
 mutate runs coverage, crapper and mutation checks on shipped source.
 mutate --native-only excludes shared source; CI qualifies only host-exclusive implementations.
-check's mutation-load measurement runs 5 rounds of 8 workspace suites before mutating, even with
-nothing to mutate; mutate skips it. Logs remain in target/flake-logs.
+Each load round runs 8 workspace suites at once before mutating, even with nothing to mutate;
+mutate skips it. Logs remain in target/flake-logs.
 Cross-architecture execution of the same final archive is enforced in CI.";
 
 fn main() -> ExitCode {
@@ -36,10 +48,8 @@ fn main() -> ExitCode {
         println!("{HELP}");
         return ExitCode::SUCCESS;
     }
-    let result = if args == ["check"] {
-        check(false)
-    } else if args == ["check", "--mutate-all"] {
-        check(true)
+    let result = if let Some(options) = CheckOptions::parse(&args) {
+        check(options)
     } else if args == ["test"] {
         test()
     } else if args == ["setup-quality"] {
@@ -85,12 +95,54 @@ fn workspace_root() -> &'static Path {
         .expect("xtask is inside the workspace")
 }
 
-fn check(all: bool) -> io::Result<()> {
+/// `check [--full] [--mutate-all] [--print-mutation-plan]`, each flag at most once.
+#[derive(Debug, Default, Eq, PartialEq)]
+struct CheckOptions {
+    full: bool,
+    all: bool,
+    print: bool,
+}
+
+impl CheckOptions {
+    fn parse(args: &[OsString]) -> Option<Self> {
+        let (command, flags) = args.split_first()?;
+        if command != "check" {
+            return None;
+        }
+        let mut options = Self::default();
+        for flag in flags {
+            let slot = match flag.to_str()? {
+                "--full" => &mut options.full,
+                "--mutate-all" => &mut options.all,
+                "--print-mutation-plan" => &mut options.print,
+                _ => return None,
+            };
+            if *slot {
+                return None;
+            }
+            *slot = true;
+        }
+        Some(options)
+    }
+
+    fn scope(&self) -> quality::Scope {
+        if self.full {
+            quality::Scope::Full
+        } else {
+            quality::Scope::Ticket
+        }
+    }
+}
+
+fn check(options: CheckOptions) -> io::Result<()> {
+    if options.print {
+        return quality::plan(workspace_root(), options.all, options.scope());
+    }
     fixtures::check(workspace_root())?;
     test()?;
     quality::probe(workspace_root())?;
     quality::tooling_probe(workspace_root())?;
-    quality::check(workspace_root(), all, quality::Scope::Complete)
+    quality::check(workspace_root(), options.all, options.scope())
 }
 
 fn test() -> io::Result<()> {
@@ -132,4 +184,37 @@ fn test() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Option<CheckOptions> {
+        CheckOptions::parse(&args.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn check_takes_each_tier_flag_once_in_any_order() {
+        assert_eq!(parse(&["check"]), Some(CheckOptions::default()));
+        assert_eq!(
+            parse(&["check", "--mutate-all", "--full"]),
+            Some(CheckOptions {
+                full: true,
+                all: true,
+                print: false,
+            })
+        );
+        assert_eq!(
+            parse(&["check", "--print-mutation-plan"]),
+            Some(CheckOptions {
+                full: false,
+                all: false,
+                print: true,
+            })
+        );
+        assert_eq!(parse(&["check", "--full", "--full"]), None);
+        assert_eq!(parse(&["check", "--fast"]), None);
+        assert_eq!(parse(&["mutate", "--full"]), None);
+    }
 }

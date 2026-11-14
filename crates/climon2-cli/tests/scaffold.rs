@@ -8,7 +8,7 @@ fn missing_command_is_usage_error() {
     assert!(output.stdout.is_empty());
     assert_eq!(
         output.stderr,
-        b"climon2: error: usage: c2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon\n"
+        b"climon2: error: usage: c2 exec [--headless] <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon\n"
     );
 }
 
@@ -18,7 +18,7 @@ fn help_and_version_print_exact_presentation_without_home() {
     for (flag, expected) in [
         (
             "--help",
-            "usage: c2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon\n"
+            "usage: c2 exec [--headless] <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon\n"
                 .to_owned(),
         ),
         (

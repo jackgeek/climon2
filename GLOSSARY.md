@@ -61,13 +61,21 @@ A session whose daemon answers the hello handshake with the matching session ID.
 _Avoid_: Running session, active session
 
 **Detached session**:
-A live session with no attached clients that continues after deliberate detach.
+A live session that keeps running with no attachments: an ordinary session after a deliberate detach, or a headless session whenever it has none.
 _Avoid_: Disconnected session, completed session
 
 **Headless session**:
 A session explicitly created to run without an initial interactive client and to
 remain alive with zero clients, including after later clients leave.
-_Avoid_: Detached session, persistent session
+_Avoid_: Persistent session
+
+**Ordinary session**:
+A session created with an initial interactive client, which survives zero clients only after a deliberate detach, not before its first attachment or after an unexpected loss of its last.
+_Avoid_: Normal session, regular session
+
+**Lifetime policy**:
+Whether a session is ordinary or headless, fixed when the session is created.
+_Avoid_: Session mode, persistence
 
 **Capabilities**:
 The operations or extensions a climon2 participant explicitly advertises as supported; support is never inferred from release versions.
@@ -84,6 +92,10 @@ _Avoid_: Dead session, orphan
 **Session metadata**:
 The per-session record in climon2 home that describes a session and how to reach its daemon.
 _Avoid_: Session file, PTY file
+
+**Discovery pass**:
+One enumeration of the session metadata in a climon2 home, probing each session and classifying every entry as live, uncertain, stale or invalid.
+_Avoid_: Scan, refresh, poll
 
 **Runtime directory**:
 The private, per-user directory holding the sockets that clients use to reach session daemons, one per climon2 home.
@@ -164,6 +176,10 @@ _Avoid_: Space-to-control, hotkey
 The screen a non-controlling client shows instead of session content, saying the session is being viewed elsewhere.
 _Avoid_: Viewer mode, read-only view (what a monitor paints session content from)
 
+**Key introduction**:
+The monitor's modal list of its key actions, spelled with the configured client escape prefix, shown at startup until the user declines it for that climon2 home, and on request as help.
+_Avoid_: Splash screen, onboarding, welcome screen
+
 ## Status and attention
 
 **Activity state**:
@@ -232,6 +248,32 @@ _Avoid_: Emulated mode, redraw mode
 **Release**:
 The bytes that return a terminal to the normal-shell baseline when an attachment's presentation ends.
 _Avoid_: Reset, cleanup
+
+## Monitor links
+
+**Monitor link**:
+A planned secured connection between a hub monitor and a relay on another machine, authenticated and encrypted by climon2 itself whatever carries it.
+_Avoid_: Tunnel, remote connection, bridge
+
+**Hub monitor**:
+A monitor that also presents and drives remote sessions through monitor links.
+_Avoid_: Master, primary monitor, server
+
+**Relay**:
+A program, separate from the monitor, that serves one machine's sessions to a hub monitor over a monitor link.
+_Avoid_: Slave, relay monitor, agent, proxy
+
+**Link invitation**:
+What a relay produces and a hub monitor consumes to establish a monitor link for the first time.
+_Avoid_: Connection string, token, pairing code
+
+**Remote session**:
+A session that a hub monitor reaches through a monitor link.
+_Avoid_: Relayed session, foreign session
+
+**Local session**:
+A session whose session daemon runs on the same machine as the monitor presenting it.
+_Avoid_: Native session, own session
 
 ## Protocol and plugin concepts
 
@@ -318,3 +360,11 @@ _Avoid_: Sanity test, canary
 **Release gate**:
 A check that must pass before a version can be released.
 _Avoid_: Quality gate, CI check
+
+**Ticket gate**:
+`cargo xtask check`: the local qualification for one change, which mutates only the functions it adds or changes and measures mutation load for one round.
+_Avoid_: Fast gate, quick check
+
+**Full gate**:
+`cargo xtask check --full`: the local qualification run once before a feature branch merges to `main`, which mutates whole changed files and measures mutation load for five rounds.
+_Avoid_: Slow gate, complete check

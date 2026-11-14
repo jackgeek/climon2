@@ -21,7 +21,7 @@ use climon2_core::{
 };
 use serde_json::{Map, Value, json};
 use std::{collections::BTreeSet, num::NonZeroU32};
-use support::{counter, families, geometry, limit, page_dumps, page_examples, pages};
+use support::{counter, families, geometry, ids, limit, page_dumps, page_examples, pages};
 
 mod support;
 
@@ -78,8 +78,7 @@ fn published_control_request_examples_round_trip_byte_identically() {
     let (resize, frame) = request(0x32, "request-resize.md");
     let expected = Resize {
         request_id: counter(3),
-        period: counter(1),
-        restoration_id: counter(1),
+        authority: ids(1, 1),
         geometry: geometry(100, 30),
     };
     assert_eq!(resize, Request::Resize(expected));
@@ -95,8 +94,7 @@ fn published_control_request_examples_round_trip_byte_identically() {
     let (ready, frame) = request(0x34, "request-ready.md");
     let expected = Ready {
         request_id: counter(5),
-        period: counter(1),
-        restoration_id: counter(1),
+        authority: ids(1, 1),
     };
     assert_eq!(ready, Request::Ready(expected));
     assert_eq!(expected.to_frame(), frame);
@@ -104,8 +102,7 @@ fn published_control_request_examples_round_trip_byte_identically() {
     let (viewing, frame) = request(0x35, "request-viewing.md");
     let expected = SetViewing {
         request_id: counter(6),
-        period: counter(1),
-        restoration_id: counter(1),
+        authority: ids(1, 1),
         viewing: true,
     };
     assert_eq!(viewing, Request::SetViewing(expected));
@@ -114,8 +111,7 @@ fn published_control_request_examples_round_trip_byte_identically() {
     let (acknowledge, frame) = request(0x36, "request-acknowledge.md");
     let expected = Acknowledge {
         request_id: counter(7),
-        period: counter(1),
-        restoration_id: counter(1),
+        authority: ids(1, 1),
     };
     assert_eq!(acknowledge, Request::Acknowledge(expected));
     assert_eq!(expected.to_frame(), frame);
@@ -130,8 +126,7 @@ fn published_focus_examples_round_trip_byte_identically() {
     let frame = Frame::new(0x39, focus.into_bytes());
     let expected = Focus {
         request_id: counter(8),
-        period: counter(2),
-        restoration_id: counter(3),
+        authority: ids(2, 3),
         focused: false,
     };
     assert_eq!(Request::from_frame(&frame), Ok(Request::Focus(expected)));
@@ -276,8 +271,7 @@ fn published_core_metadata_examples_round_trip_byte_identically() {
 fn published_control_and_restoration_examples_round_trip_byte_identically() {
     let (granted, frame) = server(0x46, "event-control-granted.md");
     let expected = ControlGranted {
-        period: counter(2),
-        restoration_id: counter(3),
+        authority: ids(2, 3),
         geometry: geometry(80, 24),
         reason: GrantReason::Successor,
     };
@@ -286,8 +280,7 @@ fn published_control_and_restoration_examples_round_trip_byte_identically() {
 
     let (revoked, frame) = server(0x47, "event-control-revoked.md");
     let expected = ControlRevoked {
-        period: counter(1),
-        restoration_id: counter(1),
+        authority: ids(1, 1),
         reason: RevocationReason::Takeover,
     };
     assert_eq!(revoked, ServerMessage::ControlRevoked(expected));
@@ -295,8 +288,7 @@ fn published_control_and_restoration_examples_round_trip_byte_identically() {
 
     let (begin, frame) = server(0x48, "event-restoration-begin.md");
     let expected = RestorationBegin {
-        period: counter(2),
-        restoration_id: counter(3),
+        authority: ids(2, 3),
         geometry: geometry(80, 24),
     };
     assert_eq!(begin, ServerMessage::RestorationBegin(expected));
@@ -304,8 +296,7 @@ fn published_control_and_restoration_examples_round_trip_byte_identically() {
 
     let (complete, frame) = server(0x4a, "event-restoration-complete.md");
     let expected = RestorationComplete {
-        period: counter(2),
-        restoration_id: counter(3),
+        authority: ids(2, 3),
     };
     assert_eq!(complete, ServerMessage::RestorationComplete(expected));
     assert_eq!(expected.to_frame(), frame);
@@ -342,8 +333,7 @@ fn published_binary_examples_round_trip_byte_identically() {
     let (frame, bytes) = dumped("request-input.md");
     let expected = Input {
         request_id: counter(2),
-        period: counter(1),
-        restoration_id: counter(1),
+        authority: ids(1, 1),
         payload: vec![0x00, 0xff, 0x41],
     };
     assert_eq!(
@@ -354,8 +344,7 @@ fn published_binary_examples_round_trip_byte_identically() {
 
     let (frame, bytes) = dumped("event-display.md");
     let expected = Display {
-        period: counter(2),
-        restoration_id: counter(3),
+        authority: ids(2, 3),
         payload: vec![0x00, 0xff, 0x41],
     };
     assert_eq!(

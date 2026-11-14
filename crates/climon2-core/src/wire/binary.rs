@@ -1,7 +1,7 @@
 //! Binary records: Input `0x31` and Display `0x49`. A header of nonzero
 //! big-endian u64 counters comes first; the payload after it is exact bytes,
 //! never text: a NUL does not end it and its UTF-8 is never checked.
-use super::{Counter, FatalCode, Frame, record::correlated};
+use super::{AuthorityIds, Counter, FatalCode, Frame, record::correlated};
 use std::array;
 
 /// Input `0x31`: user bytes for the application under the current control
@@ -11,8 +11,7 @@ use std::array;
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Input {
     pub request_id: Counter,
-    pub period: Counter,
-    pub restoration_id: Counter,
+    pub authority: AuthorityIds,
     pub payload: Vec<u8>,
 }
 
@@ -20,9 +19,13 @@ impl Input {
     pub const CODE: u8 = 0x31;
 
     pub fn to_frame(&self) -> Frame {
+        let AuthorityIds {
+            period,
+            restoration_id,
+        } = self.authority;
         frame(
             Self::CODE,
-            [self.request_id, self.period, self.restoration_id],
+            [self.request_id, period, restoration_id],
             &self.payload,
         )
     }
@@ -31,8 +34,10 @@ impl Input {
         let ([request_id, period, restoration_id], payload) = split(Self::CODE, body)?;
         Ok(Self {
             request_id,
-            period,
-            restoration_id,
+            authority: AuthorityIds {
+                period,
+                restoration_id,
+            },
             payload: payload.to_vec(),
         })
     }
@@ -43,8 +48,7 @@ impl Input {
 /// client to judge, not a malformed record.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Display {
-    pub period: Counter,
-    pub restoration_id: Counter,
+    pub authority: AuthorityIds,
     pub payload: Vec<u8>,
 }
 
@@ -52,18 +56,20 @@ impl Display {
     pub const CODE: u8 = 0x49;
 
     pub fn to_frame(&self) -> Frame {
-        frame(
-            Self::CODE,
-            [self.period, self.restoration_id],
-            &self.payload,
-        )
+        let AuthorityIds {
+            period,
+            restoration_id,
+        } = self.authority;
+        frame(Self::CODE, [period, restoration_id], &self.payload)
     }
 
     pub(crate) fn decode(body: &[u8]) -> Result<Self, FatalCode> {
         let ([period, restoration_id], payload) = split(Self::CODE, body)?;
         Ok(Self {
-            period,
-            restoration_id,
+            authority: AuthorityIds {
+                period,
+                restoration_id,
+            },
             payload: payload.to_vec(),
         })
     }
