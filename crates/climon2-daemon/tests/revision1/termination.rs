@@ -540,3 +540,72 @@ fn a_kill_during_the_drain_lets_the_commands_last_output_through() {
     assert_closed(&mut killing);
     session.finish();
 }
+
+/// Stops the daemon process, runs `during` and lets it go on.
+fn while_stopped<T>(session: &Session, during: impl FnOnce() -> T) -> T {
+    let daemon = i32::try_from(session.pid).unwrap();
+    assert_eq!(unsafe { libc::kill(daemon, libc::SIGSTOP) }, 0);
+    let value = during();
+    assert_eq!(unsafe { libc::kill(daemon, libc::SIGCONT) }, 0);
+    value
+}
+
+/// A screen and history whose restoration takes many Display frames: 5,000
+/// rows of 90 cells in alternating colours, about 2.7 MB, then `tail-line`.
+/// A first attachment receives it all live, so the daemon has read it, and
+/// leaves. The command then exits 3 while the daemon is stopped, and a
+/// hello and an interactive Open at 91x37 are sent in one go, so the daemon
+/// grants the Open in the same pass in which it reaps the command and reads
+/// the end of its output, ending the drain. Returns the Open's stream, its
+/// hello reply read.
+fn opened_as_the_drain_ends(session: &Session) -> UnixStream {
+    let mut first = ready_attachment(session, &[]);
+    crate::issue(session, "colors 5000");
+    crate::issue(session, "text tail-line");
+    first.until_displayed(b"tail-line", 1);
+    first.leave();
+    let command = fixture_pid(session);
+    let mut stream = while_stopped(session, || {
+        crate::issue(session, "exit 3");
+        exited_unreaped(command);
+        let mut stream = UnixStream::connect(&session.socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        crate::send(&mut stream, ClientMessage::Hello { protocol: 1 });
+        request(
+            &mut stream,
+            &open(1, &[], &[], Mode::Interactive(geometry(91, 37))),
+        );
+        stream
+    });
+    assert!(matches!(
+        crate::receive(&mut stream),
+        PrivateMessage::Hello(_)
+    ));
+    stream
+}
+
+/// COM-06 (Contract: Command final means no more output follows) and
+/// COM-05 (Contract, interactive order): a restoration still in progress
+/// when the command's output drained delivers all of its Display, and its
+/// Restoration complete, before Command final. The restoration of a large
+/// screen and history begins in the pass that ends the drain
+/// ([`opened_as_the_drain_ends`]). The attachment receives the whole
+/// restoration, `tail-line` included, then Command final with exit 3 while
+/// it has not confirmed Ready, as does a passive monitor connection. Ready
+/// then ends the session.
+#[test]
+fn a_restoration_in_progress_when_the_drain_ends_completes_before_command_final() {
+    let mut session = Session::start("script");
+    let (mut watching, _) = monitor(&session, &[]);
+    let stream = opened_as_the_drain_ends(&session);
+    let mut attached = Attached::opened(stream, geometry(91, 37));
+    assert_eq!(crate::count(&attached.display, b"tail-line"), 1);
+    let result = exited(3);
+    assert_eq!(attached.next_after_display(), command_final(&result));
+    attached.confirm_ready();
+    attached.session_ended();
+    assert_final_then_closed(&mut watching, &result);
+    session.finish();
+}

@@ -193,7 +193,9 @@ impl Delivery {
             && std::mem::take(&mut self.stale)
     }
 
-    fn restoring(&self) -> bool {
+    /// A restoration is in progress: its frames, then the live output
+    /// held back behind it, are still to come.
+    pub fn restoring(&self) -> bool {
         self.granted
             .as_ref()
             .is_some_and(|granted| granted.restoration.is_some())
