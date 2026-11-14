@@ -1747,8 +1747,11 @@ dependencies = [
  "climon2-core",
  "climon2-install",
  "libc",
+ "proc-macro2",
+ "quote",
  "serde",
  "serde_json",
+ "syn 2.0.119",
  "tempfile",
 ]
 
