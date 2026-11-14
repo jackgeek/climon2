@@ -36,6 +36,10 @@ const NO_TERMINAL: &str = "climon2: error: climon2 monitor needs a terminal\r\n"
 /// alone, followed by a typed x.
 const PASTES: &[u8] = b"\x1b[200~\x1dx\x1b[201~\x1d\x1b[200~x\x1b[201~x\x1b[200~\x1d\x1b[201~x";
 const TOP_ROW: &str = "No session selected";
+/// Escape for the selector, then a focus report that nothing takes: a lone
+/// Escape waits for the byte after it (owner decision on #109), so the
+/// report makes it take effect at once.
+const ESCAPE: &str = "\x1b\x1b[I";
 const EMPTY: &str = "No sessions to show.";
 
 /// The [`support::outer`] shell, first titling its host and marking where
@@ -1726,7 +1730,7 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
         terminal.screen()
     );
 
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
@@ -1740,7 +1744,7 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
     );
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, "║Unavailable Live");
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains("Discovery incomplete"))
@@ -2070,7 +2074,7 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
         }
         assert_eq!(terminal.screen(), open);
     }
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     shows(&mut terminal, &body);
     for session in package.list() {
         assert_eq!(session["state"]["lifecycle"], "detached", "{session}");
@@ -2254,7 +2258,7 @@ fn enter_selects_and_acquires_a_session_and_paints_it_live() {
     headless(&package, &titled_hold("Later"), "finish");
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, &format!("║{STATUS} Later"));
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
         .unwrap();
@@ -2576,7 +2580,7 @@ fn a_finished_session_keeps_its_last_screen_and_cannot_be_acquired() {
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, "║Disconnected Done");
     terminal.send("\r").unwrap();
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
         .unwrap();
@@ -2662,15 +2666,16 @@ const TYPED: &[u8] = b"\x00\xff\x41\x03\xc3\x28\x1d\x1d\x1dd\x1dh\x1dr\x1dJ\x1d\
 const RECEIVED: &[u8] =
     b"\x00\xff\x41\x03\xc3\x28\x1d\x1dd\x1dh\x1dr\x1dJ\x1d\x14\x1b[A\x1b[B0\x1bxend";
 
-/// [`TYPED`] cut inside a doubled prefix, after a lone prefix, inside cursor
-/// and keypad keys, inside a reply, its OSC string and a mouse report.
+/// [`TYPED`] cut inside a doubled prefix, after a lone prefix, right after a
+/// cursor key's Escape (released to the session at once), inside a keypad
+/// key, a reply, its OSC string and a mouse report.
 const FRAGMENTS: [&[u8]; 10] = [
     b"\x00\xff\x41\x03\xc3",
     b"\x28\x1d",
     b"\x1d\x1d",
     b"d\x1dh\x1dr\x1dJ\x1d\x14\x1d",
-    b"j\x1b[",
-    b"A\x1bOB\x1bO",
+    b"j\x1b",
+    b"[A\x1bOB\x1bO",
     b"p\x1bx\x1b[?62;",
     b"22c\x1b]11;rgb",
     b":0/0/0\x07\x1b[I\x1b[<0;5",
@@ -2686,7 +2691,9 @@ const FRAGMENTS: [&[u8]; 10] = [
 /// cut into ten reads, each read alone, arrive identically. Once the
 /// application turns on application cursor keys and keypad, the host keypad
 /// follows it, and cursor keys typed in either form arrive as SS3, keypad
-/// keys as sent and modified cursor keys unchanged.
+/// keys as sent and modified cursor keys unchanged. A lone Escape reaches
+/// the session at once, before the rest of its key arrives, and that rest
+/// still follows the application's cursor mode.
 #[test]
 fn typed_bytes_reach_the_selected_session_exactly_however_reads_split() {
     let package = Package::new();
@@ -2713,10 +2720,12 @@ fn typed_bytes_reach_the_selected_session_exactly_however_reads_split() {
     terminal
         .send(b"\x1b[A\x1bOB\x1b[D\x1bOp\x1bOM\x1b[1;5A")
         .unwrap();
-    received(
-        &package,
-        &[&twice[..], b"\x1bOA\x1bOB\x1bOD\x1bOp\x1bOM\x1b[1;5A"].concat(),
-    );
+    let moded = [&twice[..], b"\x1bOA\x1bOB\x1bOD\x1bOp\x1bOM\x1b[1;5A"].concat();
+    received(&package, &moded);
+    read_alone(&mut terminal, monitor, b"\x1b");
+    received(&package, &[&moded[..], b"\x1b"].concat());
+    read_alone(&mut terminal, monitor, b"[C");
+    received(&package, &[&moded[..], b"\x1bOC"].concat());
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
@@ -2745,7 +2754,7 @@ fn global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffer
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, &format!("║{STATUS} Keys"));
     terminal.send("b").unwrap();
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
         .unwrap();
@@ -2756,7 +2765,7 @@ fn global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffer
     terminal.send("lost\x1ds").unwrap();
     terminal.resize(ROWS, COLS).unwrap();
     shows_row(&mut terminal, &format!("║{STATUS} Keys"));
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
         .unwrap();
@@ -2773,13 +2782,15 @@ fn global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffer
     package.assert_clean();
 }
 
-/// INP-02 (Monitor) and HLP-02 (Monitor, Escape), by owner decision on
-/// #106 and #105: Escape handling does not depend on read fragmentation.
-/// A Down key split across two reads, each read alone, moves the selector's
-/// highlight and never closes it, and Escape followed by a key in one read
-/// is Escape, closing the selector, then that key, which reaches the
-/// session. The same holds for the key introduction with Up split, and
-/// Escape closes it because the prefix (Ctrl+]) does not consume Escape.
+/// INP-02 (Monitor) and HLP-02 (Monitor, Escape), by owner decisions on
+/// #106, #105 and #109: Escape handling does not depend on read
+/// fragmentation and uses no timer. Down split right after its Escape and
+/// Up split after its introducer, each read alone, move the selector's
+/// highlight and never close it. A lone Escape leaves the selector open
+/// until the next key arrives, then closes it, and that key reaches the
+/// session; Escape and a key in one read do the same. The key introduction
+/// behaves alike with split Up and Down, and Escape closes it because the
+/// prefix (Ctrl+]) does not consume Escape.
 /// Neither dialog's keys reach the session, and prefix+x exits from the
 /// selector (INP-01).
 #[test]
@@ -2803,7 +2814,7 @@ fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
         .position(|line| line.contains(&keys))
         .unwrap()
         - 3;
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
         .unwrap();
@@ -2812,27 +2823,24 @@ fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, &format!("║{STATUS} Other"));
     assert_eq!(highlighted_rows(&terminal), [3]);
-    read_alone(&mut terminal, monitor, b"\x1b[");
-    read_alone(&mut terminal, monitor, b"B");
-    let deadline = Instant::now() + TIMEOUT;
-    while highlighted_rows(&terminal) != [4] {
-        assert!(
-            Instant::now() < deadline,
-            "highlight {:?}",
-            highlighted_rows(&terminal)
-        );
-        thread::sleep(Duration::from_millis(10));
+    for (reads, row) in [([&b"\x1b"[..], b"[B"], 4), ([b"\x1b[", b"A"], 3)] {
+        for read in reads {
+            read_alone(&mut terminal, monitor, read);
+        }
+        highlight_at(&terminal, row);
     }
-    read_alone(&mut terminal, monitor, b"\x1bx");
+    read_alone(&mut terminal, monitor, b"\x1b");
+    assert!(terminal.screen().contains('║'));
+    read_alone(&mut terminal, monitor, b"x");
     received(&package, b"x");
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
         .unwrap();
     terminal.send("\x1d?").unwrap();
     shows_row(&mut terminal, "Exit the monitor");
-    read_alone(&mut terminal, monitor, b"\x1b[");
-    read_alone(&mut terminal, monitor, b"A");
-    read_alone(&mut terminal, monitor, b"\x1bq");
+    for read in [&b"\x1b"[..], b"[A", b"\x1b[", b"B", b"\x1bq"] {
+        read_alone(&mut terminal, monitor, read);
+    }
     received(&package, b"xq");
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains("Exit the monitor"))
@@ -2848,11 +2856,24 @@ fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
     package.assert_clean();
 }
 
+/// Waits until the selector highlights host row `row` alone.
+fn highlight_at(terminal: &Terminal, row: usize) {
+    let deadline = Instant::now() + TIMEOUT;
+    while highlighted_rows(terminal) != [row] {
+        assert!(
+            Instant::now() < deadline,
+            "highlight {:?}",
+            highlighted_rows(terminal)
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Opens the selector until `label`'s row is connected, then closes it.
 fn shows_row_after_selector(terminal: &mut Terminal, label: &str) {
     terminal.send("\x1ds").unwrap();
     shows_row(terminal, &format!("║{STATUS} {label}"));
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
         .unwrap();
