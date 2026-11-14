@@ -79,6 +79,20 @@ tests load the exact archive's library, so the CI archive jobs exercise both
 macOS architectures' slices and the Linux library. The exported symbol set is
 a release check (`xtask`), not a Library-layer test.
 
+`tests/instance.rs` (#85) drives client instances through the same host's
+scenarios (`climon2-library-host <library> <scenario> <json>`), from the
+threads the contract names: an owner thread creates, runs and destroys each
+instance while the test's main thread shuts it down, drains and releases. The
+host is the Library layer's instrumented host: caller startup memory is one
+mapping it scrambles and unmaps as soon as `create` returns, an ownership
+ledger shows how every handle and delivery was released, a timeline records
+each call's thread, and probes compare the process's environment, working
+directory, signals and standard streams and the notification descriptor.
+Expected values come from the native header and contract. Fault cases select
+the hooked library's `CLIMON2_LIBRARY_FAULT` and return early in archive
+mode, whose release library has no hooks; every other case runs against the
+archive's library.
+
 ## Session continuity scenarios
 
 Detach and reattach, takeover and hand-back, the placeholder, kill, listing
@@ -122,7 +136,30 @@ sessions in `tests/headless.rs`.
 | LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; bounded requirements; no unimplemented capability | `installed_library_describes_revision_one_with_its_version_identity` |
 | LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths (`LD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`), the absolute path maps the requested file (the system loader's lookup, which no library change can alter); the library answers from its own image with its own folder's release, not `current`'s, and a misplaced copy reports its compiled-in release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
 | LIB-02 Library: unsupported revisions rejected with a null description; null output storage | `installed_library_rejects_other_revisions_without_a_description` |
-| DOC-01: all eleven table entries report unsupported operation by the frozen call rules | `installed_library_table_reports_every_instance_call_unsupported` |
+| DOC-01: all eleven table entries reject null handles and outputs by the frozen call rules; `submit` stays unsupported | `installed_library_table_rejects_null_arguments_and_cannot_submit_yet` |
+
+### Library layer: client instances (`tests/instance.rs`, #85)
+
+| Scenario | Named test |
+|---|---|
+| LIB-03, LIB-04 and LIB-05 Library: create, run, shutdown, drain to terminal evidence, release, destroy and join; wrong-thread run and destroy, repeated run, busy destroy and release; terminal evidence apart from the cleanup report; every object released through the library | `installed_library_instance_runs_create_run_shutdown_drain_release_destroy_join` |
+| LIB-03 Library: failed creates return no handles and leave no descriptor: null arguments, mismatched release, generation, native paths (non-UTF-8 kept, `PATH_MAX` bound) | `installed_library_create_rejects_invalid_identity_and_paths_without_handles` |
+| LIB-03 Library: client keys, log path and `CLIMON2_LOG` filter | `installed_library_create_rejects_invalid_settings_and_diagnostics_without_handles` |
+| LIB-03 Library: limits it cannot honour, each at its bound, never raised or lowered; no descriptor left for the notification descriptor or for the log file (`CM1_RESOURCE_LIMIT`, no log file), one more is enough | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` |
+| LIB-03 Library and Fault: copies survive unmapped caller memory; lossless native paths; two instances' homes, settings, logs and allocations stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` |
+| LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` |
+| LIB-04 Library and Fault, Linux `eventfd`: borrowed descriptor, counted once; a scheduled race in which polling sees the stream end while the handle is used before shutdown and after the end, every call succeeding with the same descriptor | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` |
+| LIB-04 Fault: allocator pairing, a delivery charged until released | `installed_library_charges_a_delivery_until_it_is_released` |
+| LIB-04 Fault: the failure diagnostic only within `event_bytes`, at and one under the bound | `installed_library_queues_the_failure_diagnostic_only_within_event_bytes` |
+| LIB-05 Fault: injected panic at the bootstrap, `create` and `submit` | `installed_library_contains_a_panic_at_the_bootstrap_create_or_submit` |
+| LIB-05 and LIB-04 Fault: injected panic at `notification`, `snapshot`, `drain`, `shutdown` and `run` stops the instance, with no retry from `shutdown` on; a delivery held past terminal evidence alone keeps communication and destroy busy | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` |
+| LIB-04 and LIB-05 Fault: injected panic at `release_delivery`, `release_communication`, `release_control` and `destroy` keeps the object | `installed_library_contains_a_panic_in_a_release_and_keeps_the_object` |
+| LIB-05 Fault (`worker` hook): worker completion apart from terminal evidence | `installed_library_reports_worker_completion_apart_from_terminal_evidence` |
+| LIB-06 Fault (`stall-cleanup` hook): stalled worker cleanup incomplete, never complete or destroyed | `installed_library_reports_stalled_worker_cleanup_as_incomplete_and_never_destroys` |
+
+LIB-06 Library is not covered yet: without the fault hook this release starts
+no worker that could stall. Open
+([#93](https://github.com/jackgeek/climon2/issues/93)) brings the first.
 
 ### Session continuity (plan section 6.1)
 

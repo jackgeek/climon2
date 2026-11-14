@@ -96,13 +96,17 @@ Commands that explicitly close inherited descriptors cannot retain this
 additional evidence. macOS keeps its kernel process/image ancestry tracking
 and does not use this adapter.
 
-**Current (#75):** every release builds and ships the client library in its
-version folder: `libclimon2_client.dylib` (universal arm64/x86_64) on macOS and
-`libclimon2_client.so` on x86-64 GNU/Linux, both from one Rust cdylib artifact
-of `climon2-client`. Each exports only the frozen
-`climon2_client_get_interface` bootstrap and implements the bootstrap and
-description of [native revision 1](protocol/monitor-client/core-v1.md); its
-instance calls report unsupported operation. The Linux library links the GCC
+**Current (#75, #85):** every release builds and ships the client library in
+its version folder: `libclimon2_client.dylib` (universal arm64/x86_64) on macOS
+and `libclimon2_client.so` on x86-64 GNU/Linux, both from one Rust cdylib
+artifact of `climon2-client`. Each exports only the frozen
+`climon2_client_get_interface` bootstrap and implements the bootstrap,
+description and local instance lifecycle of
+[native revision 1](protocol/monitor-client/core-v1.md); `submit` reports
+unsupported operation until Open (#93), so no instance connects to a session
+daemon yet. The library host fixture drives those instances through the
+function table, with the test-hooks library's fault injection, as the Library
+layer's instrumented host. The Linux library links the GCC
 unwinder statically, because no unwinding leaves it, so it needs only glibc's
 libraries and has no soname, RPATH or RUNPATH, as the
 [Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for
