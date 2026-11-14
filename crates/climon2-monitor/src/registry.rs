@@ -121,12 +121,39 @@ impl Row {
         }
     }
 
+    /// What Enter does on this row, and what its canvas shows without a view.
+    fn kind(&self) -> Kind {
+        match (&self.connection, self.finished) {
+            (Connection::Own, _) => Kind::Own,
+            (Connection::Disconnected, _) | (_, true) => Kind::Retained,
+            (Connection::Connected { .. }, false) => Kind::Connected,
+            _ => Kind::Unconnected,
+        }
+    }
+
     /// Keeps a nonempty title; an empty or unset one changes nothing.
     fn retitle(&mut self, title: Option<String>) {
         if let Some(title) = title.filter(|title| !title.is_empty()) {
             self.title = Some(title);
         }
     }
+}
+
+/// What Enter does on a row (spec #73, "Enter"), and what the canvas
+/// shows for a selected row whose terminal has no view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Kind {
+    /// This monitor's own session: never selected; Enter explains why.
+    Own,
+    /// Connected and not known to be final: selected and acquired, and the
+    /// non-controller placeholder while the monitor does not control it.
+    Connected,
+    /// Starting, or Unavailable with no connected client: selected
+    /// read-only, never acquired, with no terminal content to show.
+    Unconnected,
+    /// Disconnected or known final: its retained history arrives with #116;
+    /// until then Enter ignores it.
+    Retained,
 }
 
 /// One row as the selector shows it. The session ID identifies it and is
@@ -139,6 +166,7 @@ pub(crate) struct View {
     pub(crate) label: String,
     /// When the monitor recorded the row's current connection status.
     pub(crate) since: SystemTime,
+    pub(crate) kind: Kind,
 }
 
 pub(crate) struct Registry {
@@ -206,12 +234,9 @@ impl Registry {
         }
     }
 
-    /// Whether Enter on `id` selects and acquires it: connected and not
-    /// known to be final.
-    pub(crate) fn acquirable(&self, id: &SessionId) -> bool {
-        self.rows.get(id).is_some_and(|row| {
-            matches!(row.connection, Connection::Connected { .. }) && !row.finished
-        })
+    /// What Enter does on `id`'s row, if there is one.
+    pub(crate) fn kind(&self, id: &SessionId) -> Option<Kind> {
+        self.rows.get(id).map(Row::kind)
     }
 
     /// Records whether the latest pass reached every entry.
@@ -234,6 +259,7 @@ impl Registry {
                 status: row.connection.label(),
                 label: row.label(),
                 since: row.since,
+                kind: row.kind(),
             })
             .collect()
     }
@@ -469,12 +495,15 @@ mod tests {
         assert_eq!(registry.rows()[0].since, at(5));
     }
 
-    /// Enter (spec #73, Session registry; #108, pure supplement): only a
+    /// Enter (spec #73, Session registry; #108, #110, pure supplement): a
     /// connected row not known to be final, with or without `status-v1`, is
-    /// acquired; Starting, Unavailable, Disconnected, This monitor, final
-    /// and unknown rows are not, and control and display change nothing.
+    /// connected (selected and acquired); a Starting row and an Unavailable
+    /// row without a connected client, uncertain or failed, are unconnected
+    /// (selected read-only); Disconnected and final rows are retained
+    /// (#116); This monitor is its own kind; an unknown row has none.
+    /// Control and display change nothing.
     #[test]
-    fn only_connected_rows_not_known_to_be_final_are_acquirable() {
+    fn enter_kinds_follow_each_row_condition() {
         let mut registry = Registry::new(Some(OWN.parse().unwrap()));
         let sessions = [1, 2, 3, 4, 5, 6].map(|suffix| {
             let created = format!("2026-11-13T10:00:0{suffix}.000Z");
@@ -483,6 +512,8 @@ mod tests {
         for session in &sessions {
             registry.discovered(session.clone(), Found::Live, at(1));
         }
+        let uncertain = metadata(&id(8), "2026-11-13T10:00:08.000Z", "cmd", &[]);
+        registry.discovered(uncertain, Found::Uncertain, at(1));
         let own = metadata(OWN, "2026-11-13T10:00:00.000Z", "bash", &[]);
         registry.discovered(own, Found::Live, at(1));
         let key = |index: usize| sessions[index].session_id.clone();
@@ -499,13 +530,27 @@ mod tests {
         ] {
             registry.client(&key(0), event, at(4));
         }
-        let acquirable: Vec<_> = (0..6)
-            .map(|index| registry.acquirable(&key(index)))
-            .collect();
-        assert_eq!(acquirable, [true, true, false, false, false, false]);
-        assert!(!registry.acquirable(&OWN.parse().unwrap()));
-        assert!(!registry.acquirable(&id(7).parse().unwrap()));
-        assert_eq!(registry.rows()[5].since, at(2));
+        let kinds: Vec<_> = (0..6).map(|index| registry.kind(&key(index))).collect();
+        assert_eq!(
+            kinds,
+            [
+                Some(Kind::Connected),
+                Some(Kind::Connected),
+                Some(Kind::Retained),
+                Some(Kind::Unconnected),
+                Some(Kind::Retained),
+                Some(Kind::Unconnected),
+            ]
+        );
+        assert_eq!(
+            registry.kind(&id(8).parse().unwrap()),
+            Some(Kind::Unconnected)
+        );
+        assert_eq!(registry.kind(&OWN.parse().unwrap()), Some(Kind::Own));
+        assert_eq!(registry.kind(&id(7).parse().unwrap()), None);
+        let shown: Vec<_> = registry.rows().into_iter().map(|row| row.kind).collect();
+        assert_eq!(shown[0], Kind::Unconnected, "the newest row, uncertain");
+        assert_eq!(registry.rows()[6].since, at(2));
     }
 
     /// TRM-06 label cases: the latest nonempty title, otherwise command and

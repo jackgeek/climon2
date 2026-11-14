@@ -29,6 +29,11 @@ const EMPTY: &str = "No sessions to show.";
 /// The body once rows exist, while nothing is selected (#107).
 const UNSELECTED: &str = "No session selected.";
 const TOO_SMALL: &str = "Terminal too small";
+/// The non-controller placeholder, as the client executable words it.
+const VIEWED_ELSEWHERE: &str = "This session is being viewed elsewhere.";
+/// A selected session with no terminal content to show (spec #73,
+/// "Placeholders and states").
+const NO_CONTENT: &str = "No terminal content is available.";
 /// The smallest host that shows a session (owner decision, 2026-11-14):
 /// any host under four rows or five columns is too small.
 const MIN_HOST_ROWS: u16 = 4;
@@ -47,8 +52,30 @@ pub(crate) struct Session<'a> {
     pub(crate) status: &'a str,
     pub(crate) control: &'a str,
     pub(crate) error: Option<&'a str>,
-    /// Its live or frozen model; none while there is nothing to show.
-    pub(crate) view: Option<vt::View<'a>>,
+    pub(crate) canvas: Canvas<'a>,
+}
+
+/// What the canvas below the top row shows of the selected session.
+pub(crate) enum Canvas<'a> {
+    /// Its live or frozen model.
+    View(vt::View<'a>),
+    /// Connected and not controlled by this monitor: viewed elsewhere,
+    /// never its cached output.
+    Placeholder,
+    /// Selected read-only with no terminal content, and its condition.
+    Empty(&'a str),
+    /// Nothing to show yet: acquiring, before the first restoration, or a
+    /// retained session (#116).
+    Blank,
+}
+
+impl Canvas<'_> {
+    fn view(&self) -> Option<&vt::View<'_>> {
+        match self {
+            Self::View(view) => Some(view),
+            _ => None,
+        }
+    }
 }
 
 /// Everything one frame shows.
@@ -76,6 +103,9 @@ pub(crate) struct Screen {
     /// The top row's key hint while a session is selected, unless key hints
     /// are off.
     top_hint: Option<String>,
+    /// The placeholder's takeover hint, while a take-control key is bound
+    /// and key hints are on.
+    takeover: Option<String>,
     size: TerminalSize,
     /// The frame last painted.
     painted: Frame,
@@ -83,12 +113,21 @@ pub(crate) struct Screen {
 
 impl Screen {
     /// The empty state names `prefix` in its key hint, and the top row names
-    /// it beside a selected session, unless `hints` is off.
-    pub(crate) fn new(size: TerminalSize, prefix: ControlKey, hints: bool) -> Self {
+    /// it beside a selected session, and the placeholder names the
+    /// take-control key, unless `hints` is off.
+    pub(crate) fn new(
+        size: TerminalSize,
+        prefix: ControlKey,
+        take_control: Option<ControlKey>,
+        hints: bool,
+    ) -> Self {
         let exit = char::from(EXIT.key);
         Self {
             hint: hints.then(|| format!("Press {prefix} then {exit} to exit.")),
             top_hint: hints.then(|| format!("{prefix} then s: sessions")),
+            takeover: take_control
+                .filter(|_| hints)
+                .map(|key| format!("Press {key} to take control")),
             size,
             painted: Frame::default(),
         }
@@ -157,10 +196,7 @@ impl Screen {
             }
             (Some(_), Some(session)) => {
                 session_row(&mut buffer, top, session, self.top_hint.as_deref());
-                session
-                    .view
-                    .as_ref()
-                    .and_then(|view| canvas(view, &mut buffer))
+                self.canvas(&session.canvas, &mut buffer, below)
             }
             (Some(_), None) => {
                 top_row(&mut buffer, top, NO_SELECTION);
@@ -184,7 +220,7 @@ impl Screen {
         let view = scene
             .session
             .as_ref()
-            .and_then(|session| session.view.as_ref());
+            .and_then(|session| session.canvas.view());
         let shown = !scene.covered() && self.desire().is_some();
         shown && view.is_some_and(|view| view.modes().application_keypad)
     }
@@ -207,13 +243,35 @@ impl Screen {
         let lines: Vec<_> = std::iter::once(state)
             .chain(note)
             .chain(incomplete.as_deref())
-            .map(Line::from)
             .collect();
-        let height = Constraint::Length(lines.len() as u16);
-        Paragraph::new(lines)
-            .centered()
-            .render(below.centered_vertically(height), buffer);
+        centred(&lines, buffer, below);
     }
+
+    /// The selected session's canvas below the top row; returns the
+    /// cursor its view shows, if any.
+    fn canvas(&self, canvas: &Canvas<'_>, buffer: &mut Buffer, below: Rect) -> Option<HostCursor> {
+        match canvas {
+            Canvas::View(view) => return painted(view, buffer),
+            Canvas::Placeholder => {
+                let lines: Vec<_> = std::iter::once(VIEWED_ELSEWHERE)
+                    .chain(self.takeover.as_deref())
+                    .collect();
+                centred(&lines, buffer, below);
+            }
+            Canvas::Empty(condition) => centred(&[NO_CONTENT, condition], buffer, below),
+            Canvas::Blank => {}
+        }
+        None
+    }
+}
+
+/// `lines`, each centred, in the middle of `area`.
+fn centred(lines: &[&str], buffer: &mut Buffer, area: Rect) {
+    let height = Constraint::Length(lines.len() as u16);
+    let lines: Vec<_> = lines.iter().copied().map(Line::from).collect();
+    Paragraph::new(lines)
+        .centered()
+        .render(area.centered_vertically(height), buffer);
 }
 
 /// DECKPAM or DECKPNM when the host keypad's mode changes, otherwise nothing.
@@ -267,7 +325,7 @@ fn session_row(buffer: &mut Buffer, top: Rect, session: &Session<'_>, hint: Opti
 /// The session's active screen directly below the top row, at the model's
 /// geometry, clipped to the host; the cells it leaves stay blank margins.
 /// Returns its cursor if the host shows it.
-fn canvas(view: &vt::View<'_>, buffer: &mut Buffer) -> Option<HostCursor> {
+fn painted(view: &vt::View<'_>, buffer: &mut Buffer) -> Option<HostCursor> {
     let (vt::Screen::Normal { rows, .. } | vt::Screen::Alternate { rows }) = view.screen();
     let area = buffer.area;
     for (y, row) in (TOP_ROW..area.height).zip(rows.iter()) {
@@ -378,7 +436,7 @@ mod tests {
 
     fn desire(cols: u16, rows: u16) -> Option<(u16, u16)> {
         let prefix = ControlKey::from_byte(0x1d).unwrap();
-        let screen = Screen::new(TerminalSize { cols, rows }, prefix, true);
+        let screen = Screen::new(TerminalSize { cols, rows }, prefix, None, true);
         screen.desire().map(|size| (size.cols, size.rows))
     }
 
@@ -406,7 +464,7 @@ mod tests {
             status: "Unavailable",
             control,
             error,
-            view: None,
+            canvas: Canvas::Blank,
         };
         session_row(&mut buffer, area, &session, hint.then_some(HINT));
         assert!(
@@ -482,6 +540,66 @@ mod tests {
         );
     }
 
+    /// The canvas a `takeover` screen 50 by 6 paints, as text below its top
+    /// row: an odd spare row or column falls before the text.
+    fn shown(takeover: Option<u8>, hints: bool, canvas: &Canvas<'_>) -> Vec<String> {
+        let prefix = ControlKey::from_byte(0x1d).unwrap();
+        let takeover = takeover.map(|byte| ControlKey::from_byte(byte).unwrap());
+        let size = TerminalSize { cols: 50, rows: 6 };
+        let screen = Screen::new(size, prefix, takeover, hints);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 50, 6));
+        let below = Rect::new(0, 1, 50, 5);
+        assert_eq!(screen.canvas(canvas, &mut buffer, below), None);
+        (1..6)
+            .map(|y| {
+                let row: String = (0..50).map(|x| buffer[(x, y)].symbol()).collect();
+                row.trim_end().to_owned()
+            })
+            .collect()
+    }
+
+    /// CTL-02 and INP-01 (pure supplement, #110): the non-controller
+    /// placeholder says the session is viewed elsewhere, centred, with the
+    /// take-control key's hint only while one is bound and key hints are
+    /// on; a row selected read-only says it has no terminal content and its
+    /// condition; a blank canvas shows nothing.
+    #[test]
+    fn the_placeholder_and_the_no_content_state_say_why_nothing_is_painted() {
+        assert_eq!(
+            shown(Some(0x14), true, &Canvas::Placeholder),
+            [
+                "",
+                "",
+                "      This session is being viewed elsewhere.",
+                "           Press Ctrl+T to take control",
+                "",
+            ]
+        );
+        let alone = [
+            "",
+            "",
+            "      This session is being viewed elsewhere.",
+            "",
+            "",
+        ];
+        assert_eq!(shown(None, true, &Canvas::Placeholder), alone);
+        assert_eq!(shown(Some(0x14), false, &Canvas::Placeholder), alone);
+        assert_eq!(
+            shown(Some(0x14), true, &Canvas::Empty("Starting")),
+            [
+                "",
+                "",
+                "         No terminal content is available.",
+                "                     Starting",
+                "",
+            ]
+        );
+        assert_eq!(
+            shown(Some(0x14), true, &Canvas::Blank),
+            ["", "", "", "", ""]
+        );
+    }
+
     /// A model `cols` by `rows` that took `bytes`.
     fn model(cols: u16, rows: u16, bytes: &[u8]) -> Model {
         let limits = Limits {
@@ -497,7 +615,7 @@ mod tests {
     /// the host cursor.
     fn painted(model: &Model, cols: u16, rows: u16) -> (Buffer, Option<HostCursor>) {
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
-        let cursor = canvas(&model.view(), &mut buffer);
+        let cursor = super::painted(&model.view(), &mut buffer);
         (buffer, cursor)
     }
 
