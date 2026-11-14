@@ -39,6 +39,24 @@ fn log_cap_keeps_the_final_notice_inside_eight_mib() {
     );
 }
 
+/// #25 at the cap: content that exactly fills the log before its notice is
+/// kept whole, without the notice; one more byte is dropped and adds it.
+#[test]
+fn log_cap_adds_its_notice_only_once_something_is_dropped() {
+    let notice = b"\nlog limit reached\n";
+    let capture = Capture::default();
+    let mut writer = CappedWriter::new(capture.clone());
+    writer
+        .write_all(&vec![b'x'; LOG_LIMIT - notice.len()])
+        .unwrap();
+    assert_eq!(capture.0.lock().unwrap().len(), LOG_LIMIT - notice.len());
+    writer.write_all(b"y").unwrap();
+    let bytes = capture.0.lock().unwrap();
+    assert_eq!(bytes.len(), LOG_LIMIT);
+    assert!(bytes.ends_with(notice));
+    assert!(!bytes.contains(&b'y'));
+}
+
 /// #25: EnvFilter is honored, output is plain text, and invalid filters fail explicitly.
 #[test]
 fn diagnostic_filter_controls_events_without_ansi() {

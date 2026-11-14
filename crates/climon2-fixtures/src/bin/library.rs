@@ -1,68 +1,114 @@
-//! Library-layer test host (#75, #84): loads one version's client library
-//! from a climon2 executable home through the shared validated loader
+//! Library-layer test host (#75, #84, #85): loads one version's client
+//! library from a climon2 executable home through the shared validated loader
 //! (`climon2_platform::library`) and prints what it observed as one JSON
-//! object: the loader's refusal, or what the library shows through the frozen
-//! C ABI, its bootstrap and function table, and whether a second load of the
-//! version shared the first; then the client library files the process has
-//! loaded, and its environment.
+//! object.
 //!
-//! It never makes a Rust call into the library. It reports observations, not
+//! It never makes a Rust call into the library: only the bootstrap the loader
+//! resolved and the returned function table. It reports observations, not
 //! verdicts: tests decide what is correct. Nothing is unloaded, as the
 //! embedding contract requires.
+//!
+//! `climon2-library-host <home> <version>` reports the loader's refusal, or
+//! what the library shows through the frozen C ABI, its bootstrap and
+//! function table, and whether a second load of the version shared the
+//! first; then the client library files the process has loaded, and its
+//! environment.
+//! `climon2-library-host <home> <version> <scenario> <json>` drives instances
+//! through one scenario (`lifecycle`, `create`, `fault`, `workers`,
+//! `independence`, `ambient` or `race`) with the instrumentation every
+//! Library-layer test shares: caller startup memory the library can neither
+//! keep nor free (`startup`), an ownership ledger and a timeline of every call
+//! and its thread (`abi`), and descriptor and process-state probes (`probe`).
 
+#[path = "library/abi.rs"]
+mod abi;
+#[path = "library/faults.rs"]
+mod faults;
+#[path = "library/isolation.rs"]
+mod isolation;
+#[path = "library/probe.rs"]
+mod probe;
+#[path = "library/scenarios.rs"]
+mod scenarios;
+#[path = "library/startup.rs"]
+mod startup;
+
+use abi::{call, filled, state, text};
 use climon2_core::{
     VersionName,
     layout::{ExecutableHome, client_library_name},
-    native::{self, Bootstrap, Bytes, Call, Description, Interface, Tokens},
+    native::{self, Bootstrap, Description, Interface, Tokens},
 };
-use climon2_platform::library::Loader;
+use climon2_platform::library::{Failure, LoadError, Loader};
 use serde_json::{Map, Value, json};
 use std::{
     collections::BTreeMap,
     ffi::{CStr, OsString, c_void},
-    mem::{MaybeUninit, size_of},
+    mem::MaybeUninit,
+    os::unix::ffi::OsStrExt,
     path::PathBuf,
     ptr::{self, NonNull},
 };
 
-const FILL: u8 = 0xa5;
 const UNTOUCHED_DESCRIPTOR: i32 = 0x5a5a_5a5a;
 const OTHER_REVISIONS: [u32; 3] = [0, 2, u32::MAX];
 
 fn main() {
-    let (home, version) = arguments().unwrap_or_else(|| {
-        eprintln!("usage: climon2-library-host <absolute executable home> <version>");
+    let (home, version, requested) = arguments().unwrap_or_else(|| {
+        eprintln!(
+            "usage: climon2-library-host <absolute executable home> <version> [<scenario> <json>]"
+        );
         std::process::exit(2);
     });
-    let mut report = load(home, &version);
-    report["images"] = json!(images());
-    report["environment"] = json!(
-        std::env::vars_os()
-            .map(|(name, value)| (lossy(name), lossy(value)))
-            .collect::<BTreeMap<_, _>>()
-    );
+    let loader = Loader::new(home);
+    let report = match (loader.load(&version), requested) {
+        (loaded, Some((name, input))) => run_scenario(&loader, &version, loaded, &name, input),
+        (loaded, None) => describe_load(&loader, &version, loaded),
+    };
     println!("{report}");
 }
 
-fn arguments() -> Option<(ExecutableHome, VersionName)> {
+type Scenario = (String, Value);
+
+fn arguments() -> Option<(ExecutableHome, VersionName, Option<Scenario>)> {
     let mut arguments = std::env::args_os().skip(1);
     let home = ExecutableHome::new(&PathBuf::from(arguments.next()?)).ok()?;
     let version = arguments.next()?.to_str()?.parse().ok()?;
-    arguments.next().is_none().then_some((home, version))
+    let scenario = match arguments.next() {
+        Some(scenario) => {
+            let input = serde_json::from_slice(arguments.next()?.as_bytes()).ok()?;
+            Some((lossy(scenario), input))
+        }
+        None => None,
+    };
+    arguments
+        .next()
+        .is_none()
+        .then_some((home, version, scenario))
 }
 
 fn lossy(text: OsString) -> String {
     text.to_string_lossy().into_owned()
 }
 
-struct Library {
-    bootstrap: Bootstrap,
+/// The loader's refusal: its failure kind and message.
+fn refusal(error: &LoadError) -> Value {
+    json!({
+        "error": { "failure": format!("{:?}", error.failure()), "message": error.to_string() },
+    })
 }
 
-/// What the loader answered for `version`, twice.
-fn load(home: ExecutableHome, version: &VersionName) -> Value {
-    let loader = Loader::new(home);
-    match loader.load(version) {
+/// What the loader answered for `version`, and for a second load of it; then
+/// the client library files the process has loaded, and its environment.
+fn describe_load(
+    loader: &Loader,
+    version: &VersionName,
+    loaded: Result<
+        &'static climon2_platform::library::Library,
+        climon2_platform::library::LoadError,
+    >,
+) -> Value {
+    let mut report = match loaded {
         Ok(library) => {
             let mut report = observe(Library {
                 bootstrap: library.bootstrap(),
@@ -71,10 +117,86 @@ fn load(home: ExecutableHome, version: &VersionName) -> Value {
             report["shared"] = json!(again.is_ok_and(|again| ptr::eq(again, library)));
             report
         }
-        Err(error) => json!({
-            "error": { "failure": format!("{:?}", error.failure()), "message": error.to_string() },
-        }),
+        Err(error) => refusal(&error),
+    };
+    report["images"] = json!(images());
+    report["environment"] = json!(
+        std::env::vars_os()
+            .map(|(name, value)| (lossy(name), lossy(value)))
+            .collect::<BTreeMap<_, _>>()
+    );
+    report
+}
+
+/// Runs one scenario on the loaded library. A load the loader refused as a
+/// contained bootstrap failure is recoverable, so it loads once more; each
+/// refused attempt opens the report's bootstrap list.
+fn run_scenario(
+    loader: &Loader,
+    version: &VersionName,
+    mut loaded: Result<&'static climon2_platform::library::Library, LoadError>,
+    name: &str,
+    input: Value,
+) -> Value {
+    let mut refused = Vec::new();
+    loop {
+        match loaded {
+            Ok(library) => {
+                let library = Library {
+                    bootstrap: library.bootstrap(),
+                };
+                return drive(&library, name, input, refused);
+            }
+            Err(error) if error.failure() == Failure::BootstrapFailure && refused.is_empty() => {
+                refused.push(refusal(&error));
+                loaded = loader.load(version);
+            }
+            Err(error) => return refusal(&error),
+        }
     }
+}
+
+/// Bootstraps revision 1, once more if the first bootstrap failed explicitly
+/// with `CM1_INTERNAL_ERROR` (a contained panic), then runs one scenario.
+fn drive(library: &Library, name: &str, input: Value, mut bootstrap: Vec<Value>) -> Value {
+    let description = loop {
+        let (status, description, output) = request(library, native::REVISION);
+        bootstrap.push(json!({ "status": status, "output": output }));
+        if status != native::INTERNAL_ERROR || bootstrap.len() > 1 {
+            break description;
+        }
+    };
+    assert!(!description.is_null(), "bootstrap failed: {bootstrap:?}");
+    // SAFETY: success returns an immutable description that lives until exit.
+    let description: &'static Description = unsafe { &*description };
+    let setup = scenarios::Setup {
+        api: abi::Api::new(&description.functions),
+        release: abi::text(description.release)
+            .as_str()
+            .expect("UTF-8 release text")
+            .to_owned(),
+        input,
+    };
+    let mut report = match name {
+        "lifecycle" => scenarios::lifecycle(&setup),
+        "create" => scenarios::creates(&setup),
+        "fault" => faults::fault(&setup),
+        "workers" => faults::workers(&setup),
+        "independence" => isolation::independence(&setup),
+        "ambient" => isolation::ambient(&setup),
+        "race" => isolation::race(&setup),
+        _ => panic!("unknown scenario {name}"),
+    };
+    if let Some(object) = report.as_object_mut() {
+        object.insert("bootstrap".into(), Value::Array(bootstrap));
+    } else {
+        report = json!({ "cases": report, "bootstrap": bootstrap });
+    }
+    report
+}
+
+struct Library {
+    bootstrap: Bootstrap,
 }
 
 /// Every loaded image named like a client library, by the path it was
@@ -148,15 +270,6 @@ fn image(address: *const c_void) -> Value {
     json!(name.to_string_lossy())
 }
 
-fn text(bytes: Bytes) -> Value {
-    if bytes.data.is_null() || bytes.length > 65_536 {
-        return json!({ "null": bytes.data.is_null(), "length": bytes.length });
-    }
-    // SAFETY: a nonnull buffer covers `length` readable bytes by contract.
-    let slice = unsafe { std::slice::from_raw_parts(bytes.data, bytes.length as usize) };
-    json!(String::from_utf8_lossy(slice))
-}
-
 fn tokens(list: Tokens) -> Value {
     let mut values = Vec::new();
     if !list.data.is_null() && list.count <= 64 {
@@ -227,50 +340,13 @@ fn describe(description: &Description) -> Value {
     })
 }
 
-fn call(call: Call) -> Map<String, Value> {
-    let error = call.error;
-    let mut result = Map::new();
-    result.insert("code".into(), json!(call.code));
-    result.insert("reserved".into(), json!(call.reserved));
-    result.insert("origin".into(), json!(error.origin));
-    result.insert("error_reserved".into(), json!(error.reserved));
-    result.insert("error_code".into(), text(error.code));
-    result.insert("message".into(), text(error.message));
-    result
-}
-
-/// Output storage filled with a pattern, to see whether a call clears it.
-fn filled<T>() -> MaybeUninit<T> {
-    let mut value = MaybeUninit::<T>::uninit();
-    // SAFETY: the pointer covers exactly one T.
-    unsafe {
-        value
-            .as_mut_ptr()
-            .cast::<u8>()
-            .write_bytes(FILL, size_of::<T>())
-    };
-    value
-}
-
-fn state<T>(value: &MaybeUninit<T>) -> &'static str {
-    // SAFETY: every byte was initialized by `filled` or by the library.
-    let bytes = unsafe { std::slice::from_raw_parts(value.as_ptr().cast::<u8>(), size_of::<T>()) };
-    if bytes.iter().all(|byte| *byte == 0) {
-        "zeroed"
-    } else if bytes.iter().all(|byte| *byte == FILL) {
-        "untouched"
-    } else {
-        "modified"
-    }
-}
-
 fn with_output<T>(mut result: Map<String, Value>, output: &MaybeUninit<T>) -> Value {
     result.insert("output".into(), json!(state(output)));
     Value::Object(result)
 }
 
-/// Calls every entry once without an instance, as an embedder would before
-/// creating one; null handles are never dereferenced by unsupported calls.
+/// Calls every entry once without an instance: null handles and outputs are
+/// the invalid arguments a library can detect without dereferencing them.
 fn functions(table: &Interface) -> Value {
     let startup = MaybeUninit::<native::Startup>::zeroed();
     let request = MaybeUninit::<native::Request>::zeroed();

@@ -38,6 +38,11 @@ impl HomeLayout {
         self.0.join("config.jsonc")
     }
 
+    /// The monitor's preferences, kept apart from the configuration.
+    pub fn monitor_preferences(&self) -> PathBuf {
+        self.0.join(crate::preferences::FILE_NAME)
+    }
+
     pub fn sessions(&self) -> PathBuf {
         self.0.join("sessions")
     }

@@ -9,15 +9,13 @@
 #[allow(dead_code)]
 mod support;
 
-use climon2_core::layout::ExecutableHome;
-use climon2_test_term::{bin_path, copy_executable, output_within, process_command};
+use climon2_test_term::{copy_executable, output_within};
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
+use std::{fs, path::Path, process::Command};
+use support::{
+    LIBRARY, Package, TIMEOUT,
+    library::{VERSION, home, host, library, observe},
 };
-use support::{LIBRARY, Package, TIMEOUT};
 
 const SUCCESS: u64 = 0;
 const UNSUPPORTED_REVISION: u64 = 1;
@@ -25,18 +23,6 @@ const INVALID_ARGUMENT: u64 = 2;
 const UNSUPPORTED_OPERATION: u64 = 3;
 const ORIGIN_LIBRARY: u64 = 1;
 const MIB: u64 = 1024 * 1024;
-
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// The package's executable home, canonical as the monitor resolves it.
-fn home(package: &Package) -> ExecutableHome {
-    ExecutableHome::new(&package.executable_home().canonicalize().unwrap()).unwrap()
-}
-
-/// `version`'s library in `home`, by absolute path.
-fn library(home: &ExecutableHome, version: &str) -> PathBuf {
-    home.client_library(&version.parse().unwrap())
-}
 
 /// The version folder name, which is the library's release identity.
 fn version_folder(library: &Path) -> &str {
@@ -47,36 +33,6 @@ fn version_folder(library: &Path) -> &str {
         .unwrap()
         .to_str()
         .unwrap()
-}
-
-/// The host loading `version`'s library from `home`, with a cleared
-/// environment; instrumented builds keep their profile.
-fn host(home: &ExecutableHome, version: &str, directory: &Path) -> Command {
-    host_at(&bin_path("climon2-library-host"), home, version, directory)
-}
-
-/// `host`, run from a copy of the host executable at `executable`.
-fn host_at(executable: &Path, home: &ExecutableHome, version: &str, directory: &Path) -> Command {
-    let mut command = process_command(executable);
-    command
-        .arg(home.path())
-        .arg(version)
-        .current_dir(directory)
-        .env_clear();
-    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-        command.env("LLVM_PROFILE_FILE", profile);
-    }
-    command
-}
-
-fn observe(mut host: Command) -> Value {
-    let output = output_within(&mut host, TIMEOUT);
-    assert!(output.status.success(), "{output:?}");
-    assert!(
-        output.stderr.is_empty(),
-        "library or loader wrote: {output:?}"
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
 }
 
 /// LIB-01 Library case (absolute exact-release load; same-release instances
@@ -168,13 +124,14 @@ fn installed_library_rejects_other_revisions_without_a_description() {
 }
 
 /// DOC-01 named case (implemented table versus the frozen call rules): all
-/// eleven function-table entries exist. Until #85 and #93 implement them, each
-/// fails with `CM1_UNSUPPORTED_OPERATION`, library origin, zero reserved
-/// fields and a nonempty stable error code and message; failed calls clear
-/// their output structs, notification writes -1, and null outputs are not
-/// written.
+/// eleven function-table entries exist. A null handle or output pointer, the
+/// one invalid address the library can detect, fails with
+/// `CM1_INVALID_ARGUMENT`, library origin, zero reserved fields and a
+/// nonempty stable error code and message; failed calls clear their output
+/// structs and notification writes -1. `submit` fails with
+/// `CM1_UNSUPPORTED_OPERATION` until Open (#93).
 #[test]
-fn installed_library_table_reports_every_instance_call_unsupported() {
+fn installed_library_table_rejects_null_arguments_and_cannot_submit_yet() {
     let package = Package::new();
     let report = observe(host(&home(&package), VERSION, package.isolation.home()));
     let functions = &report["description"]["functions"];
@@ -195,11 +152,16 @@ fn installed_library_table_reports_every_instance_call_unsupported() {
     assert_eq!(entries.len(), names.len(), "{functions:#}");
     for name in names {
         let entry = &entries[name];
-        assert_eq!(entry["code"], UNSUPPORTED_OPERATION, "{name}: {entry}");
+        let (code, error_code) = if name == "submit" {
+            (UNSUPPORTED_OPERATION, "unsupported_operation")
+        } else {
+            (INVALID_ARGUMENT, "invalid_argument")
+        };
+        assert_eq!(entry["code"], code, "{name}: {entry}");
         assert_eq!(entry["reserved"], 0, "{name}: {entry}");
         assert_eq!(entry["origin"], ORIGIN_LIBRARY, "{name}: {entry}");
         assert_eq!(entry["error_reserved"], 0, "{name}: {entry}");
-        assert_eq!(entry["error_code"], "unsupported_operation", "{name}");
+        assert_eq!(entry["error_code"], error_code, "{name}");
         assert!(!entry["message"].as_str().unwrap().is_empty(), "{name}");
     }
     for name in ["create", "run", "drain", "snapshot"] {
@@ -209,11 +171,11 @@ fn installed_library_table_reports_every_instance_call_unsupported() {
     assert_eq!(
         functions["null_outputs"],
         json!({
-            "create": UNSUPPORTED_OPERATION,
-            "run": UNSUPPORTED_OPERATION,
-            "drain": UNSUPPORTED_OPERATION,
-            "notification": UNSUPPORTED_OPERATION,
-            "snapshot": UNSUPPORTED_OPERATION,
+            "create": INVALID_ARGUMENT,
+            "run": INVALID_ARGUMENT,
+            "drain": INVALID_ARGUMENT,
+            "notification": INVALID_ARGUMENT,
+            "snapshot": INVALID_ARGUMENT,
         })
     );
     package.assert_clean();
@@ -381,6 +343,8 @@ fn installed_library_substituted_through_dyld_library_path_is_refused() {
 #[cfg(target_os = "macos")]
 #[test]
 fn substitute_without_a_bootstrap_is_refused_naming_every_loaded_image_of_its_name() {
+    use climon2_test_term::bin_path;
+    use support::library::host_at;
     let package = Package::new();
     let home = home(&package);
     let library = library(&home, VERSION);
