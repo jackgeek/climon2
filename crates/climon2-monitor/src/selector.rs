@@ -12,6 +12,7 @@ use ratatui::{
     style::Style,
     widgets::{Block, BorderType, Clear, Widget},
 };
+use std::ops::RangeInclusive;
 use unicode_width::UnicodeWidthStr;
 
 /// A key the selector acts on, decoded from typed bytes.
@@ -75,24 +76,22 @@ impl Selector {
     }
 
     fn decode(&mut self, byte: u8) -> Option<Move> {
-        let (next, found) = match (self.sequence, byte) {
-            (_, 0x1b) => (Sequence::Escape, None),
-            (Sequence::Escape, b'[' | b'O') => (Sequence::Introduced, None),
-            (Sequence::Introduced, b'A') => (Sequence::Ground, Some(Move::Up)),
-            (Sequence::Introduced, b'B') => (Sequence::Ground, Some(Move::Down)),
-            (Sequence::Introduced | Sequence::Skipping, 0x40..=0x7e) => (Sequence::Ground, None),
-            (Sequence::Introduced | Sequence::Skipping, _) => (Sequence::Skipping, None),
-            (Sequence::Escape | Sequence::Ground, _) => (Sequence::Ground, None),
-        };
-        self.sequence = next;
-        found
+        let rule = RULES
+            .iter()
+            .find(|rule| rule.from.contains(&self.sequence) && rule.bytes.contains(&byte))
+            .expect("the last rules cover every byte in every state");
+        self.sequence = rule.next;
+        rule.found
+    }
+
+    /// The highlighted row's index in `rows`, if it is there.
+    fn highlighted(&self, rows: &[View]) -> Option<usize> {
+        let id = self.highlight.as_ref()?;
+        rows.iter().position(|row| &row.id == id)
     }
 
     fn act(&mut self, found: Move, rows: &[View]) {
-        let index = self
-            .highlight
-            .as_ref()
-            .and_then(|id| rows.iter().position(|row| &row.id == id));
+        let index = self.highlighted(rows);
         let target = match (found, index) {
             (Move::Close, _) => {
                 self.open = false;
@@ -110,14 +109,8 @@ impl Selector {
     /// each label clipped to the cells left. The highlighted row is reversed
     /// and kept in view.
     pub(crate) fn render(&self, rows: &[View], area: Rect, buffer: &mut Buffer) {
-        if !self.open || area.width < 3 || area.height < 3 {
+        let Some(outer) = self.frame(area) else {
             return;
-        }
-        let outer = Rect {
-            x: area.x + 1,
-            y: area.y + 1,
-            width: area.width - 2,
-            height: area.height - 2,
         };
         Clear.render(outer, buffer);
         let block = Block::bordered().border_type(BorderType::Double);
@@ -125,30 +118,92 @@ impl Selector {
         block.render(outer, buffer);
         let status = rows.iter().map(|row| row.status.width()).max().unwrap_or(0);
         let visible = usize::from(inner.height);
-        let highlighted = self
-            .highlight
-            .as_ref()
-            .and_then(|id| rows.iter().position(|row| &row.id == id));
+        let highlighted = self.highlighted(rows);
         let first = highlighted.map_or(0, |index| (index + 1).saturating_sub(visible));
-        let width = usize::from(inner.width);
-        for (line, (index, row)) in rows
-            .iter()
-            .enumerate()
-            .skip(first)
-            .take(visible)
-            .enumerate()
-        {
+        let shown = rows.iter().enumerate().skip(first).take(visible);
+        for (line, (index, row)) in (0..).zip(shown) {
             let text = format!("{:status$} {}", row.status, row.label);
-            let y = inner.y + line as u16;
-            let style = if Some(index) == highlighted {
-                Style::new().reversed()
-            } else {
-                Style::new()
-            };
-            let clipped = clip(&text, width);
-            buffer.set_style(Rect::new(inner.x, y, inner.width, 1), style);
-            buffer.set_string(inner.x, y, clipped, style);
+            let area = Rect::new(inner.x, inner.y + line, inner.width, 1);
+            line_at(buffer, area, &text, Some(index) == highlighted);
         }
+    }
+
+    /// The selector's border, one cell in from each edge of `area`, while
+    /// open and when it fits.
+    fn frame(&self, area: Rect) -> Option<Rect> {
+        let fits = area.width >= 3 && area.height >= 3;
+        (self.open && fits).then(|| Rect {
+            x: area.x + 1,
+            y: area.y + 1,
+            width: area.width - 2,
+            height: area.height - 2,
+        })
+    }
+}
+
+/// One row of the list in `area`, clipped by display cell, reversed when
+/// highlighted.
+fn line_at(buffer: &mut Buffer, area: Rect, text: &str, highlighted: bool) {
+    let style = if highlighted {
+        Style::new().reversed()
+    } else {
+        Style::new()
+    };
+    buffer.set_style(area, style);
+    buffer.set_string(area.x, area.y, clip(text, usize::from(area.width)), style);
+}
+
+/// One transition of the escape decoder: in a `from` state, a byte in
+/// `bytes` moves to `next`, completing `found`. The first matching rule
+/// applies.
+struct Rule {
+    from: &'static [Sequence],
+    bytes: RangeInclusive<u8>,
+    next: Sequence,
+    found: Option<Move>,
+}
+
+const ANY: &[Sequence] = &[
+    Sequence::Ground,
+    Sequence::Escape,
+    Sequence::Introduced,
+    Sequence::Skipping,
+];
+const SEQUENCE: &[Sequence] = &[Sequence::Introduced, Sequence::Skipping];
+
+const RULES: [Rule; 8] = [
+    rule(ANY, 0x1b..=0x1b, Sequence::Escape, None),
+    rule(&[Sequence::Escape], b'['..=b'[', Sequence::Introduced, None),
+    rule(&[Sequence::Escape], b'O'..=b'O', Sequence::Introduced, None),
+    rule(
+        &[Sequence::Introduced],
+        b'A'..=b'A',
+        Sequence::Ground,
+        Some(Move::Up),
+    ),
+    rule(
+        &[Sequence::Introduced],
+        b'B'..=b'B',
+        Sequence::Ground,
+        Some(Move::Down),
+    ),
+    // A final byte ends any other control sequence.
+    rule(SEQUENCE, 0x40..=0x7e, Sequence::Ground, None),
+    rule(SEQUENCE, 0x00..=0xff, Sequence::Skipping, None),
+    rule(ANY, 0x00..=0xff, Sequence::Ground, None),
+];
+
+const fn rule(
+    from: &'static [Sequence],
+    bytes: RangeInclusive<u8>,
+    next: Sequence,
+    found: Option<Move>,
+) -> Rule {
+    Rule {
+        from,
+        bytes,
+        next,
+        found,
     }
 }
 
@@ -261,5 +316,20 @@ mod tests {
         assert!(lines(&buffer).iter().all(|line| line.trim().is_empty()));
         selector.open(&rows);
         assert_eq!(view(&selector), (" ║ a    ║ ".to_owned(), vec![2]));
+    }
+
+    /// SEL-01 basic cases (pure supplement): prefix+s while the selector is
+    /// open changes nothing: the highlight stays where it was moved.
+    #[test]
+    fn opening_an_open_selector_keeps_its_highlight() {
+        let rows = rows(&[("", "a"), ("", "b"), ("", "c")]);
+        let mut selector = Selector::default();
+        selector.open(&rows);
+        typed(&mut selector, b"\x1b[B", &rows);
+        selector.open(&rows);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 10, 7));
+        selector.render(&rows, buffer.area, &mut buffer);
+        assert_eq!(highlighted(&buffer), [3]);
+        assert!(selector.is_open());
     }
 }
