@@ -22,6 +22,7 @@ pub const REVOKED: u64 = 8;
 pub const RESTORATION_BEGIN: u64 = 9;
 pub const DISPLAY: u64 = 10;
 pub const RESTORATION_COMPLETE: u64 = 11;
+pub const FINAL: u64 = 12;
 pub const GEOMETRY: u64 = 13;
 pub const ATTACH: u64 = 1;
 pub const TAKE_CONTROL: u64 = 2;
@@ -170,6 +171,12 @@ impl Session {
     pub fn end(&self) {
         fs::write(&self.end, b"").unwrap();
     }
+
+    /// The file whose creation lets the application exit, for a `touch`
+    /// step.
+    pub fn end_path(&self) -> &str {
+        self.end.to_str().unwrap()
+    }
 }
 
 /// A record's active presentation member, after its header.
@@ -259,7 +266,10 @@ pub fn assert_restored(
 ) -> [u64; 2] {
     let presented_only: Vec<&Value> = records
         .iter()
-        .filter(|record| (GRANTED..=GEOMETRY).contains(&record["tag"].as_u64().unwrap()))
+        .filter(|record| {
+            let tag = record["tag"].as_u64().unwrap();
+            (GRANTED..=GEOMETRY).contains(&tag) && tag != FINAL
+        })
         .collect();
     let granted = presented(presented_only[0], GRANTED, generation);
     let authority = ids(granted);
@@ -288,4 +298,49 @@ pub fn assert_restored(
         authority
     );
     authority
+}
+
+/// The report of the step `steps` labels `label` with `"as"`, a member the
+/// host ignores.
+pub fn labelled<'a>(report: &'a Value, steps: &[Value], label: &str) -> &'a Value {
+    let index = steps
+        .iter()
+        .position(|step| step["as"] == label)
+        .unwrap_or_else(|| panic!("no step labelled {label}"));
+    &report["steps"][index]
+}
+
+/// The records the step `steps` labels `label` drained.
+pub fn drained(report: &Value, steps: &[Value], label: &str) -> Vec<Value> {
+    labelled(report, steps, label)["records"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+/// A `CM1_FINAL` record of `generation`: its command result, with status
+/// unavailable, since `status-v1` is never selected.
+pub fn assert_final(record: &Value, generation: u64, command: Value) {
+    assert_header(record, FINAL, generation);
+    assert_eq!(record["final"]["command_result"], command, "{record:#}");
+    assert_eq!(
+        record["final"]["status"],
+        json!({ "available": 0, "reserved": 0 }),
+        "{record:#}"
+    );
+}
+
+/// An exit or signal command result as the native record carries it,
+/// with no signal name.
+pub fn command_result(kind: u64, value: u64) -> Value {
+    let unnamed = json!({ "present": 0, "reserved": 0, "value": { "null": true, "length": 0 } });
+    json!({ "kind": kind, "value": value, "signal_name": unnamed })
+}
+
+/// The tags of `records`.
+pub fn tags(records: &[Value]) -> Vec<u64> {
+    records
+        .iter()
+        .map(|record| record["tag"].as_u64().unwrap())
+        .collect()
 }

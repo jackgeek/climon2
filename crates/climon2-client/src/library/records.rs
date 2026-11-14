@@ -28,6 +28,9 @@ const TOKEN: u64 = mem::size_of::<native::Bytes>() as u64;
 const NO_RECORD: native::Record = unsafe { mem::zeroed() };
 const NO_ERROR: native::Error = unsafe { mem::zeroed() };
 const NO_COMMAND: native::OptionalCommand = unsafe { mem::zeroed() };
+// SAFETY: every field is an integer, for which zero is valid, and zero is
+// "unavailable".
+const NO_STATUS: native::AvailableStatus = unsafe { mem::zeroed() };
 
 /// One record, as the library holds it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,6 +61,9 @@ pub(super) enum Metadata {
     Initial(Initial),
     /// A Title changed, by value; never unavailable.
     Title(Title),
+    /// The command's final result, after an Initial metadata that did not
+    /// know it (#94): status stays unavailable.
+    Final(Command),
 }
 
 /// What the daemon presents to the role it controls, under immutable
@@ -279,6 +285,7 @@ impl Metadata {
                 initial.title.bytes() + initial.command.as_ref().map_or(0, Command::bytes)
             }
             Self::Title(title) => title.bytes(),
+            Self::Final(command) => command.bytes(),
         }
     }
 
@@ -295,6 +302,15 @@ impl Metadata {
                 native::TITLE,
                 native::RecordData {
                     title: title.native(),
+                },
+            ),
+            Self::Final(command) => (
+                native::FINAL,
+                native::RecordData {
+                    r#final: native::Final {
+                        command_result: command.native(),
+                        status: NO_STATUS,
+                    },
                 },
             ),
         }

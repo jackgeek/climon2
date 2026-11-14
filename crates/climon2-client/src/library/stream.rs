@@ -36,6 +36,10 @@ const UNHELD: Fault = Fault::transport(
     "invalid_record",
     "a record names an authority the connection does not hold",
 );
+const REPEATED: Fault = Fault::transport(
+    "invalid_record",
+    "a Command final follows a known final result",
+);
 const EMPTY_DISPLAY: Fault = Fault::transport("invalid_record", "a Display carries no bytes");
 const MISMATCHED: Fault = Fault::transport(
     "invalid_record",
@@ -280,6 +284,7 @@ impl Effect {
     pub(super) fn concludes(&self) -> bool {
         match self {
             Self::Record(Event::Metadata(Metadata::Initial(initial))) => initial.command.is_some(),
+            Self::Record(Event::Metadata(Metadata::Final(_))) => true,
             Self::Opened(response, _) => matches!(response.answer, Some(Answer::KnownFinal(_))),
             _ => false,
         }
@@ -295,6 +300,9 @@ pub(super) struct Stream {
     selected: Option<Selection>,
     /// Whether the Initial metadata arrived.
     synchronized: bool,
+    /// Whether the command's final result is known, from the Initial
+    /// metadata or a Command final.
+    known: bool,
     /// The period and restoration the role holds, from its grant until its
     /// revocation.
     held: Option<AuthorityIds>,
@@ -308,6 +316,7 @@ impl Stream {
             pending: Vec::new(),
             selected: None,
             synchronized: false,
+            known: false,
             held: None,
         }
     }
@@ -449,6 +458,7 @@ impl Stream {
     fn other(&mut self, message: ServerMessage) -> Result<Effect, Fault> {
         match message {
             ServerMessage::FatalError(wire::FatalError(error)) => Err(Fault::daemon(&error)),
+            ServerMessage::CommandFinal(finished) => self.finished(&finished).map(Effect::Record),
             message => self.report(message).map(Effect::Record),
         }
     }
@@ -609,7 +619,21 @@ impl Stream {
         require(self.awaiting_metadata(), UNEXPECTED)?;
         let event = self.metadata(metadata)?;
         self.synchronized = true;
+        self.known = metadata.command_result().is_some();
         Ok(event)
+    }
+
+    /// The command's final result, once, after an Initial metadata that
+    /// did not know it; its status is null, since `status-v1` is never
+    /// selected. The stream reads on: the release, the `session_ending`
+    /// revocation and the close may follow.
+    fn finished(&mut self, finished: &wire::CommandFinal) -> Result<Event, Fault> {
+        require(self.synchronized, UNEXPECTED)?;
+        require(!self.known, REPEATED)?;
+        require(finished.status().is_none(), UNEXPECTED)?;
+        self.known = true;
+        let command = Command::from(finished.command_result());
+        Ok(Event::Metadata(Metadata::Final(command)))
     }
 
     /// Status and progress are never selected yet, so both must be

@@ -83,6 +83,12 @@ fn shown(period: u64, restoration: u64, hex: &str) -> Value {
     json!({ "send": { "type": 0x49, "hex": format!("{period:016x}{restoration:016x}{hex}") } })
 }
 
+/// A Command final of the wire `result`, with the null status of an
+/// unselected `status-v1`.
+fn command_final(result: Value) -> Value {
+    send(0x4c, json!({ "command_result": result, "status": null }))
+}
+
 /// The fake daemon's Response to the latest request of `kind`.
 fn answered(kind: &str, outcome: &str, result: Value, error: Value) -> Value {
     response(&format!("${kind}"), outcome, result, error)
@@ -172,14 +178,6 @@ impl Plan {
         let root = root(package);
         (script(package, &root, json!(self.steps)), self.finishes)
     }
-}
-
-/// The tags of `records`.
-fn tags(records: &[Value]) -> Vec<u64> {
-    records
-        .iter()
-        .map(|record| record["tag"].as_u64().unwrap())
-        .collect()
 }
 
 /// COM-02 and COM-03 Library control cases, local rejection: `submit`
@@ -829,10 +827,11 @@ fn installed_library_refuses_presentation_records_out_of_authority() {
 /// confirmed with the attachment detached, never a second Leave. COM-05
 /// Library and Fault (records arrive in causal order with immutable
 /// identities, and a fresh attempt never sees an old one's deliveries): an
-/// attached instance of generation 1 receives a Geometry and its period's
-/// revocation for `session_ending` before losing its connection; a fresh
-/// instance of generation 2 against another daemon receives only its own
-/// records, each of generation 2.
+/// attached instance of generation 1 receives, as a real daemon sends them
+/// when its command ends, the Command final, a Geometry and its period's
+/// revocation for `session_ending` before the connection closes, which
+/// then calls for no retry; a fresh instance of generation 2 against
+/// another daemon receives only its own records, each of generation 2.
 #[test]
 fn installed_library_resolves_a_promotion_racing_leave_and_fresh_attempts_stand_alone() {
     let package = Package::new();
@@ -861,6 +860,7 @@ fn installed_library_resolves_a_promotion_racing_leave_and_fresh_attempts_stand_
     );
     let mut ending = attach_records(&ATTACHED);
     ending.extend([
+        command_final(json!({ "kind": "exit", "code": 0 })),
         geometry(PERIOD, 90, 25),
         revoked(PERIOD, 2, "session_ending"),
         "close".into(),
@@ -904,17 +904,18 @@ fn installed_library_resolves_a_promotion_racing_leave_and_fresh_attempts_stand_
         .position(|record| record["tag"] == RESTORATION_COMPLETE)
         .unwrap();
     let records = &all[completed + 1..];
-    assert_eq!(records.len(), 3, "{records:#?}");
-    let actual = presented(&records[0], GEOMETRY, 1);
+    assert_eq!(records.len(), 4, "{records:#?}");
+    assert_final(&records[0], 1, command_result(EXIT, 0));
+    let actual = presented(&records[1], GEOMETRY, 1);
     assert_eq!(actual, &json!({ "period": PERIOD, "geometry": [90, 25] }));
-    let ended = presented(&records[1], REVOKED, 1);
+    let ended = presented(&records[2], REVOKED, 1);
     assert_eq!(ids(ended), [PERIOD, 2]);
     assert_eq!(ended["reason"], SESSION_ENDING);
-    assert_diagnostic(&records[2], 1, ORIGIN_TRANSPORT, "io_error");
+    assert_diagnostic(&records[3], 1, ORIGIN_TRANSPORT, "io_error");
     assert_terminal(
         terminal,
         1,
-        (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED),
+        (CLIENT_FAILED, RETRY_NONE, LEAVE_NOT_REQUIRED),
         Some((ORIGIN_TRANSPORT, "io_error")),
     );
     let attach_step = finishes[1].1 + 4;
@@ -940,5 +941,149 @@ fn installed_library_resolves_a_promotion_racing_leave_and_fresh_attempts_stand_
     assert_eq!(display(&first, 2, [PERIOD, 2]), "42");
     let (_, terminal) = finished(step(&report, finishes[2].1));
     assert_detached(terminal, 2);
+    assert_all_released(&report["ledger"]);
+}
+
+/// A final-result case: its name, what the daemon sends after the Open's
+/// success, the tags delivered, and the error and retry that end it.
+type FinalCase = (&'static str, Vec<Value>, Vec<u64>, (u64, &'static str), u64);
+
+/// COM-03 Library and Fault (the Command final follows the reference's
+/// rules; minimal handling, owner decision on #94): after an Initial
+/// metadata that did not know the result, a Command final reaches the
+/// caller as `CM1_FINAL` with its exit or signal and status unavailable,
+/// and the stream reads on until the daemon closes it, which then calls
+/// for no retry. The connection fails with transport `invalid_record` on a
+/// second Command final, on one after an Initial metadata that knew the
+/// result (agreeing or contradicting it), on one before the Initial
+/// metadata, and on one with a status `status-v1` was not selected for;
+/// only a refused first result leaves passive retry. Exit and signal
+/// detail, repeat semantics and evidence surviving disconnection belong
+/// to #96.
+#[test]
+fn installed_library_relays_one_command_final_after_the_initial_metadata() {
+    let package = Package::new();
+    let monitor = ["daemon-wire-v1", "monitor-v1", "title-v1"];
+    let exit = |code: u64| json!({ "kind": "exit", "code": code });
+    let signal = json!({ "kind": "signal", "number": 15, "name": "SIGTERM" });
+    let knowing = |result: Value| {
+        send(
+            0x41,
+            json!({
+                "title": { "available": true, "value": "t" },
+                "status": { "available": false, "value": null },
+                "progress": { "available": false, "value": null },
+                "command_result": result,
+            }),
+        )
+    };
+    let invalid = (ORIGIN_TRANSPORT, "invalid_record");
+    let cases: Vec<FinalCase> = vec![
+        (
+            "signalled",
+            vec![
+                initial(json!("t")),
+                command_final(signal.clone()),
+                "close".into(),
+            ],
+            vec![RESPONSE, INITIAL_METADATA, FINAL, DIAGNOSTIC],
+            (ORIGIN_TRANSPORT, "io_error"),
+            RETRY_NONE,
+        ),
+        (
+            "second",
+            vec![
+                initial(json!("t")),
+                command_final(exit(0)),
+                command_final(exit(0)),
+                "hold".into(),
+            ],
+            vec![RESPONSE, INITIAL_METADATA, FINAL, DIAGNOSTIC],
+            invalid,
+            RETRY_NONE,
+        ),
+        (
+            "agreeing",
+            vec![knowing(exit(3)), command_final(exit(3)), "hold".into()],
+            vec![RESPONSE, INITIAL_METADATA, DIAGNOSTIC],
+            invalid,
+            RETRY_NONE,
+        ),
+        (
+            "contradicting",
+            vec![
+                knowing(exit(3)),
+                command_final(signal.clone()),
+                "hold".into(),
+            ],
+            vec![RESPONSE, INITIAL_METADATA, DIAGNOSTIC],
+            invalid,
+            RETRY_NONE,
+        ),
+        (
+            "early",
+            vec![command_final(exit(0)), "hold".into()],
+            vec![RESPONSE, DIAGNOSTIC],
+            invalid,
+            RETRY_PASSIVE,
+        ),
+        (
+            "with-status",
+            vec![
+                initial(json!("t")),
+                send(
+                    0x4c,
+                    json!({
+                        "command_result": exit(0),
+                        "status": {
+                            "state": "completed",
+                            "changed_at": "2026-11-06T12:00:02.000Z",
+                            "episode_id": null,
+                        },
+                    }),
+                ),
+                "hold".into(),
+            ],
+            vec![RESPONSE, INITIAL_METADATA, DIAGNOSTIC],
+            invalid,
+            RETRY_PASSIVE,
+        ),
+    ];
+    let mut plan = Plan::new();
+    for (name, records, _, _, _) in &cases {
+        let mut sent = vec![opened(&monitor)];
+        sent.extend(records.iter().cloned());
+        let peer = json!({ "open": sent });
+        plan.add(
+            name,
+            vec![
+                json!({ "do": "create", "instance": name, "peer": peer }),
+                json!({ "do": "submit", "instance": name,
+                        "request": open(1, &REQUIRED, &["title-v1"]) }),
+                json!({ "do": "run", "instance": name }),
+            ],
+        );
+    }
+    let (report, finishes) = plan.run(&package);
+    for ((name, _, expected, error, retry), (_, finish)) in cases.iter().zip(&finishes) {
+        let (records, terminal) = finished(step(&report, *finish));
+        assert_eq!(&tags(&records), expected, "{name}: {records:#?}");
+        assert_diagnostic(records.last().unwrap(), 1, error.0, error.1);
+        assert_terminal(
+            terminal,
+            1,
+            (CLIENT_FAILED, *retry, LEAVE_NOT_REQUIRED),
+            Some(*error),
+        );
+    }
+    let (signalled, _) = finished(step(&report, finishes[0].1));
+    let named = json!({ "present": 1, "reserved": 0, "value": "SIGTERM" });
+    assert_final(
+        &signalled[2],
+        1,
+        json!({ "kind": SIGNAL, "value": 15, "signal_name": named }),
+    );
+    let (second, _) = finished(step(&report, finishes[1].1));
+    assert_final(&second[2], 1, command_result(EXIT, 0));
     assert_all_released(&report["ledger"]);
 }

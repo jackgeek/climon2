@@ -127,7 +127,8 @@ fn attach(name: &str, session: &Session, package: &Package, generation: u64) -> 
         json!({ "do": "create", "instance": name, "startup": session.startup(package, generation) }),
         json!({ "do": "submit", "instance": name, "request": interactive(1, 100, 30) }),
         json!({ "do": "run", "instance": name }),
-        json!({ "do": "drain", "instance": name, "until": { "tag": RESTORATION_COMPLETE } }),
+        json!({ "do": "drain", "instance": name, "until": { "tag": RESTORATION_COMPLETE },
+                "as": format!("attached-{name}") }),
     ]
 }
 
@@ -520,5 +521,59 @@ fn installed_library_promotes_the_newest_registration_with_a_canonical_restorati
     assert_detached(terminal, 1);
     assert_all_released(&report["ledger"]);
     session.end();
+    package.assert_clean();
+}
+
+/// COM-05 Library (a session that ends while an instance controls it keeps
+/// its causal order through the library: the Command final arrives first,
+/// as `CM1_FINAL` with exit 0 and status unavailable, then the release
+/// Display under the held authority and Control revoked `session_ending`;
+/// the stream then ends with retry none, since the final result is known,
+/// and no Leave required) and COM-06 Library (the final result reaches an
+/// attached controller). Exit and signal detail, repeats and evidence that
+/// outlives the connection belong to #96.
+#[test]
+fn installed_library_relays_the_command_final_before_the_release_and_session_ending() {
+    let package = Package::new();
+    let root = root(&package);
+    let mut session = Session::start(&package, &root);
+    let mut steps = attach("a", &session, &package, 7);
+    steps.extend([
+        on("a", json!({ "do": "submit", "request": ready(2, 7, CURRENT) })),
+        on("a", json!({ "do": "drain", "until": { "response": 2 } })),
+        on(
+            "a",
+            json!({ "do": "submit", "request": input(3, 7, CURRENT, "454e44") }),
+        ),
+        on(
+            "a",
+            json!({ "do": "drain", "until": { "all": [{ "response": 3 }, { "display": "454e44" }] } }),
+        ),
+        json!({ "do": "touch", "path": session.end_path() }),
+        json!({ "do": "finish", "instance": "a", "as": "ended" }),
+    ]);
+    let report = script(&package, &root, json!(steps));
+    let authority = assert_attached(&drained(&report, &steps, "attached-a"), 1, 7, [100, 30]);
+    let (records, terminal) = finished(labelled(&report, &steps, "ended"));
+    assert_eq!(
+        tags(&records),
+        [FINAL, DISPLAY, REVOKED, DIAGNOSTIC],
+        "{records:#?}"
+    );
+    assert_final(&records[0], 7, command_result(EXIT, 0));
+    assert_released(&records[1..2], 7, authority);
+    let ended = presented(&records[2], REVOKED, 7);
+    assert_eq!(ids(ended), authority, "{ended:#}");
+    assert_eq!(ended["reason"], SESSION_ENDING, "{ended:#}");
+    let closed = (ORIGIN_TRANSPORT, "io_error");
+    assert_diagnostic(&records[3], 7, closed.0, closed.1);
+    assert_terminal(
+        terminal,
+        7,
+        (CLIENT_FAILED, RETRY_NONE, LEAVE_NOT_REQUIRED),
+        Some(closed),
+    );
+    assert_all_released(&report["ledger"]);
+    assert_eq!(session.terminal.wait_exit(TIMEOUT).unwrap(), 0);
     package.assert_clean();
 }

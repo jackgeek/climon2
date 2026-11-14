@@ -346,6 +346,16 @@ fn presentation(record: &Record) -> Option<Value> {
     })
 }
 
+fn finished(finished: &native::Final) -> Value {
+    json!({
+        "command_result": command(&finished.command_result),
+        "status": {
+            "available": finished.status.available,
+            "reserved": finished.status.reserved,
+        },
+    })
+}
+
 fn metadata(metadata: &native::Metadata) -> Value {
     json!({
         "title": title(&metadata.title),
@@ -383,6 +393,7 @@ pub fn record(record: &Record) -> Value {
         native::RESPONSE => value["response"] = response(unsafe { &record.data.response }),
         native::INITIAL_METADATA => value["metadata"] = metadata(unsafe { &record.data.metadata }),
         native::TITLE => value["title"] = title(unsafe { &record.data.title }),
+        native::FINAL => value["final"] = finished(unsafe { &record.data.r#final }),
         _ => {
             if let Some(presented) = presentation(record) {
                 value["presentation"] = presented;
