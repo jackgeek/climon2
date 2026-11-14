@@ -177,8 +177,8 @@ All `cm1_limits` fields are required effective values, never zero-as-default.
 The caller resolves configuration defaults and checks aggregate admission.
 Create rejects values it cannot honor with `CM1_UNSUPPORTED_LIMIT`; it never
 raises or silently lowers them; `drain_payload_bytes` below
-`metadata_record_bytes` is one such value, since a delivery must hold a whole
-record. `effective_limits` equals the accepted snapshot.
+`metadata_record_bytes` or `chunk_bytes` is one such value, since a delivery
+must hold a whole record. `effective_limits` equals the accepted snapshot.
 The library owns allocations only within its remaining share of `client_bytes`;
 the caller subtracts/reserves monitor-owned model/history/staging capacity before
 supplying that ceiling. No double-counted independent 64 MiB allowances.
@@ -511,9 +511,19 @@ this section.
   exceeds it alone, because create refuses `drain_payload_bytes` below
   `metadata_record_bytes` or `chunk_bytes`. A Display owns its bytes. `drain` is `CM1_FULL` while `deliveries` deliveries are
   outstanding. Every received [frame](../TERMS.md#frame), type byte included,
-  must fit `metadata_record_bytes`, except a Display, whose bytes must fit
-  `chunk_bytes`, and every title `title_bytes`; any breach fails the
-  connection with library `resource_limit`.
+  must fit `metadata_record_bytes`, except a Display, and every title
+  `title_bytes`; any breach fails the connection with library
+  `resource_limit`. A Display is bounded only by the daemon's server frames,
+  which the hello fits to `wire_frame_bytes`, since the daemon never learns
+  `chunk_bytes`: the library delivers it as `CM1_DISPLAY` records of at most
+  `chunk_bytes` bytes each, in order, under its authority
+  ([#94](https://github.com/jackgeek/climon2/issues/94)).
+- **Backpressure.** While a record waits for event room the library reads
+  nothing, so no answer behind it can arrive, and `operation_ms` and
+  `leave_ms` do not expire. Instead `delivery_stall_ms` bounds the wait,
+  restarting each time a waiting record is queued; on expiry the connection
+  fails with library `delivery_stalled`, and the requests it held back stay
+  unanswered. Once nothing waits, request deadlines apply again.
 - **Open.** The session metadata, read up to `client_bytes`, must name the
   startup's session (`invalid_configuration`) and release
   (`release_mismatch`); an unreadable file is library `io_error`. Hello, within
@@ -540,15 +550,35 @@ this section.
   authority the role holds: a grant only when none is held; a revocation,
   Display or complete only the held period and restoration; a beginning,
   which makes its restoration current, or a Geometry only the held period.
+  Restoration IDs increase within a period: a beginning names the granted
+  restoration once, right after the grant, or a newer one.
   Anything else, and an empty Display
   ([owner decision on #81](https://github.com/jackgeek/climon2/issues/81)),
-  fails the connection with transport `invalid_record`. A departure or
-  revocation follows the release Display the daemon sends under the held
-  authority.
+  fails the connection with transport `invalid_record`. The Display just
+  before a Control revoked, or before a successful Leave of an attachment,
+  is the release: it resets what the application set on the caller's
+  terminal under the held authority, and the caller applies it before
+  ending its presentation
+  ([#108](https://github.com/jackgeek/climon2/issues/108)).
+- **Command final.** Minimal handling
+  ([owner decision on #94](https://github.com/jackgeek/climon2/issues/94)):
+  after an Initial metadata that did not know the result, a Command final is
+  delivered as `CM1_FINAL` with its exit code or signal (and signal name, if
+  sent) and status unavailable. It calls for no retry, and the connection
+  reads on: the last output, the release Display, Control revoked
+  `session_ending` and the close follow, and the close then fails the stream
+  with transport `io_error`, Leave not required. A second Command final, one
+  after an Initial metadata that knew the result, one before the Initial
+  metadata and one with a status are `invalid_record`. A finished
+  session's view freezes at the Command final: later Displays are only its
+  last output and the release. Exit and signal detail tests, repeat
+  semantics and evidence that survives disconnection belong to
+  [#96](https://github.com/jackgeek/climon2/issues/96).
 - **Failures.** Transport origin covers the socket, framing and the wire's
   rules: `io_error`, `truncated_frame`, the wire's framing codes,
   `invalid_record` and `invalid_request_id`. Daemon origin covers the daemon's
-  own errors, copied. Library origin covers `timeout`, `cancelled`,
+  own errors, copied. Library origin covers `timeout`,
+  `delivery_stalled`, `cancelled`,
   `invalid_state` (a second Open, or a Leave or command without a role or
   while a Leave is unanswered), `stale_generation`, `resource_limit` and the Open
   refusals above. A failure ends the connection, queues one diagnostic when it
@@ -566,8 +596,8 @@ this section.
   is `CM1_REJECTED` `cancelled`.
 - **Terminal evidence.** Retry is none once shutdown is requested, once a
   Leave the caller asked for is sent, answered or lost, and once the
-  command's final result is known, from a known-final rejection or the
-  Initial metadata's command result; otherwise permanent for the
+  command's final result is known, from a known-final rejection, the
+  Initial metadata's command result or a Command final; otherwise permanent for the
   library's `unsupported_revision`, `unsupported_capability`,
   `invalid_configuration`, `release_mismatch` and `unsupported_limit`
   refusals and the daemon's `unsupported_revision` and
