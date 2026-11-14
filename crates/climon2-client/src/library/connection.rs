@@ -13,7 +13,7 @@ use super::{
     instance::{Descriptor, Next, Shared, Taken},
     link::{self, Link, TIMEOUT},
     records::{Event, Response},
-    request::{Act, Command, Open, Operation, Submitted},
+    request::{Act, Command, Held, Open, Operation, Submitted},
     stream::{Departure, Effect, Stream},
 };
 use climon2_core::{
@@ -163,7 +163,7 @@ impl<'a> Driver<'a> {
 
     /// A command goes on the role unless refused; Focus needs `focus-v1`.
     fn command(&mut self, id: u64, command: Command) {
-        let unfocused = matches!(command.act, Act::Focus(..)) && !self.stream.focus();
+        let unfocused = matches!(command.act, Act::Held(_, Held::Focus(_))) && !self.stream.focus();
         let refusal = self
             .refusal(command.generation)
             .or(unfocused.then_some(UNFOCUSED));
@@ -355,7 +355,6 @@ impl<'a> Driver<'a> {
             Effect::Opened(response, opened) => self.opened(response, opened),
             Effect::Answered(response) => self.taken.answer(response),
             Effect::Left(response, departure) => self.left(response, departure),
-            Effect::Fatal(fault) => self.broken(fault),
         }
     }
 

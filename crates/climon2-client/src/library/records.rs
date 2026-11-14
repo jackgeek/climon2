@@ -34,10 +34,8 @@ const NO_COMMAND: native::OptionalCommand = unsafe { mem::zeroed() };
 pub(super) enum Event {
     /// One accepted request's outcome.
     Response(Response),
-    /// The atomic Initial metadata after a successful Open.
+    /// What the session reports about itself.
     Metadata(Metadata),
-    /// A Title changed, by value; never unavailable.
-    Title(Title),
     /// A control, restoration or display record (#94).
     Presentation(Presentation),
     /// An explicit error the stream reports, such as a connection failure.
@@ -49,7 +47,17 @@ pub(super) struct Response {
     /// The caller's public request ID.
     pub(super) id: u64,
     pub(super) outcome: Outcome,
-    pub(super) answer: Answer,
+    /// Its active result, if it carries one.
+    pub(super) answer: Option<Answer>,
+}
+
+/// Session metadata records.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Metadata {
+    /// The atomic Initial metadata after a successful Open.
+    Initial(Initial),
+    /// A Title changed, by value; never unavailable.
+    Title(Title),
 }
 
 /// What the daemon presents to the role it controls, under immutable
@@ -125,7 +133,7 @@ impl Response {
         Self {
             id,
             outcome,
-            answer: Answer::None,
+            answer: None,
         }
     }
 }
@@ -133,7 +141,6 @@ impl Response {
 /// A response's active result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Answer {
-    None,
     Opened {
         connection: [u8; 16],
         selected: Selection,
@@ -153,8 +160,8 @@ pub(super) enum Done {
     /// Input accepted, all of its bytes.
     Input(u32),
     Resized,
-    Acquired(wire::AuthorityResult),
-    Ready(wire::AuthorityResult),
+    /// Acquire's or Ready's authority result, under its native result tag.
+    Authority(u32, wire::AuthorityResult),
     /// Focus: whether it changed, the state, and the bytes forwarded.
     Focus {
         changed: bool,
@@ -173,7 +180,7 @@ pub(super) enum Title {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Metadata {
+pub(super) struct Initial {
     pub(super) title: Title,
     pub(super) command: Option<Command>,
 }
@@ -258,12 +265,38 @@ impl Event {
     pub(super) fn payload(&self) -> u64 {
         match self {
             Self::Response(response) => response.bytes(),
-            Self::Metadata(metadata) => {
-                metadata.title.bytes() + metadata.command.as_ref().map_or(0, Command::bytes)
-            }
-            Self::Title(title) => title.bytes(),
+            Self::Metadata(metadata) => metadata.bytes(),
             Self::Presentation(presentation) => presentation.bytes(),
             Self::Diagnostic(fault) => fault.bytes(),
+        }
+    }
+}
+
+impl Metadata {
+    fn bytes(&self) -> u64 {
+        match self {
+            Self::Initial(initial) => {
+                initial.title.bytes() + initial.command.as_ref().map_or(0, Command::bytes)
+            }
+            Self::Title(title) => title.bytes(),
+        }
+    }
+
+    /// Its tag and data, pointing into its own text.
+    fn native(&self) -> (u32, native::RecordData) {
+        match self {
+            Self::Initial(initial) => (
+                native::INITIAL_METADATA,
+                native::RecordData {
+                    metadata: initial.native(),
+                },
+            ),
+            Self::Title(title) => (
+                native::TITLE,
+                native::RecordData {
+                    title: title.native(),
+                },
+            ),
         }
     }
 }
@@ -271,8 +304,8 @@ impl Event {
 impl Response {
     fn bytes(&self) -> u64 {
         let answer = match &self.answer {
-            Answer::Opened { selected, .. } => TOKEN * selected.families().count() as u64,
-            Answer::KnownFinal(command) => command.bytes(),
+            Some(Answer::Opened { selected, .. }) => TOKEN * selected.families().count() as u64,
+            Some(Answer::KnownFinal(command)) => command.bytes(),
             _ => 0,
         };
         answer + self.outcome.fault().map_or(0, Fault::bytes)
@@ -332,12 +365,7 @@ fn record(
             record.data.response = response.native(tokens);
         }
         Event::Metadata(metadata) => {
-            record.tag = native::INITIAL_METADATA;
-            record.data.metadata = metadata.native();
-        }
-        Event::Title(title) => {
-            record.tag = native::TITLE;
-            record.data.title = title.native();
+            (record.tag, record.data) = metadata.native();
         }
         Event::Diagnostic(fault) => {
             record.tag = native::DIAGNOSTIC;
@@ -464,7 +492,7 @@ impl Screen {
     }
 }
 
-impl Metadata {
+impl Initial {
     /// Status and progress stay explicitly unavailable: `status-v1` and
     /// `progress-v1` are never selected yet.
     fn native(&self) -> native::Metadata {
@@ -492,26 +520,34 @@ impl Response {
         response.request_id = self.id;
         response.outcome = self.outcome.code();
         response.error = self.outcome.fault().map_or(NO_ERROR, Fault::error);
-        match &self.answer {
-            Answer::None => {}
-            Answer::Opened {
+        if let Some(answer) = &self.answer {
+            answer.native(&mut response, tokens);
+        }
+        response
+    }
+}
+
+impl Answer {
+    /// Writes its result tag and active result into `response`.
+    fn native(&self, response: &mut native::Response, tokens: &mut Vec<Box<[native::Bytes]>>) {
+        match self {
+            Self::Opened {
                 connection,
                 selected,
             } => {
                 response.result_tag = native::OPENED;
                 response.result.opened = opened(*connection, *selected, tokens);
             }
-            Answer::Left { detached } => {
+            Self::Left { detached } => {
                 response.result_tag = native::LEFT;
                 response.result.attachment_detached = u8::from(*detached);
             }
-            Answer::KnownFinal(command) => {
+            Self::KnownFinal(command) => {
                 response.result_tag = native::KNOWN_FINAL;
                 response.result.known_final = command.native();
             }
-            Answer::Done(done) => done.native(&mut response),
+            Self::Done(done) => done.native(response),
         }
-        response
     }
 }
 
@@ -525,13 +561,9 @@ impl Done {
                 response.result.accepted_bytes = accepted_bytes;
             }
             Self::Resized => response.result_tag = native::RESIZE_ACCEPTED,
-            Self::Acquired(acquired) => {
-                response.result_tag = native::ACQUIRED;
-                response.result.authority = authority(&acquired);
-            }
-            Self::Ready(ready) => {
-                response.result_tag = native::READY_RESULT;
-                response.result.authority = authority(&ready);
+            Self::Authority(tag, result) => {
+                response.result_tag = tag;
+                response.result.authority = authority(&result);
             }
             Self::Focus {
                 changed,

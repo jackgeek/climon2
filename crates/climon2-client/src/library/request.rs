@@ -56,15 +56,21 @@ pub(super) struct Command {
     pub(super) act: Act,
 }
 
-/// What a command asks of the daemon, under the period and restoration it
-/// names, if any. Input owns its exact bytes.
+/// What a command asks of the daemon: control, or an act under the period
+/// and restoration it names.
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum Act {
     Acquire,
-    Input(AuthorityIds, Box<[u8]>),
-    Resize(AuthorityIds, Geometry),
-    Ready(AuthorityIds),
-    Focus(AuthorityIds, bool),
+    Held(AuthorityIds, Held),
+}
+
+/// An act under a named authority. Input owns its exact bytes.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum Held {
+    Input(Box<[u8]>),
+    Resize(Geometry),
+    Ready,
+    Focus(bool),
 }
 
 fn invalid(message: &'static str) -> Failure {
@@ -202,7 +208,7 @@ fn authority(authority: native::Authority) -> Result<(u64, AuthorityIds), Failur
 unsafe fn ready(request: &native::Request, _: Capacity) -> Result<(Operation, u64), Failure> {
     // SAFETY: guaranteed by the caller.
     let (generation, ids) = authority(unsafe { request.args.authority })?;
-    Ok(command(generation, Act::Ready(ids), REQUEST))
+    Ok(command(generation, Act::Held(ids, Held::Ready), REQUEST))
 }
 
 /// Positive columns and rows.
@@ -220,7 +226,11 @@ unsafe fn resize(request: &native::Request, _: Capacity) -> Result<(Operation, u
     let resize = unsafe { request.args.resize };
     let (generation, ids) = authority(resize.authority)?;
     let geometry = geometry(resize.geometry).ok_or(invalid("geometry must be positive"))?;
-    Ok(command(generation, Act::Resize(ids, geometry), REQUEST))
+    Ok(command(
+        generation,
+        Act::Held(ids, Held::Resize(geometry)),
+        REQUEST,
+    ))
 }
 
 /// Only 0 and 1, with every reserved byte zero.
@@ -238,7 +248,7 @@ unsafe fn focus(request: &native::Request, _: Capacity) -> Result<(Operation, u6
     )?;
     Ok(command(
         generation,
-        Act::Focus(ids, flag.value == 1),
+        Act::Held(ids, Held::Focus(flag.value == 1)),
         REQUEST,
     ))
 }
@@ -255,7 +265,11 @@ unsafe fn input(
     let (generation, ids) = authority(input.authority)?;
     // SAFETY: as above.
     let (payload, bytes) = unsafe { payload(input.bytes, capacity) }?;
-    Ok(command(generation, Act::Input(ids, payload), bytes))
+    Ok(command(
+        generation,
+        Act::Held(ids, Held::Input(payload)),
+        bytes,
+    ))
 }
 
 /// Nonempty exact bytes of at most `chunk_bytes`, which with the request

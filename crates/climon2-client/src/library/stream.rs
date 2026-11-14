@@ -11,9 +11,10 @@ use super::{
     families::{self, Selection},
     link::fatal,
     records::{
-        Answer, Command, Done, Event, Metadata, Outcome, Presentation, Response, Screen, Title,
+        Answer, Command, Done, Event, Initial, Metadata, Outcome, Presentation, Response, Screen,
+        Title,
     },
-    request::Act,
+    request::{Act, Held},
 };
 use climon2_core::{
     native,
@@ -85,7 +86,7 @@ impl Expects {
 
 fn acquired(success: Success) -> Option<Done> {
     match success {
-        Success::Acquired(result) => Some(Done::Acquired(result)),
+        Success::Acquired(result) => Some(Done::Authority(native::ACQUIRED, result)),
         _ => None,
     }
 }
@@ -106,7 +107,7 @@ fn resized(success: Success) -> Option<Done> {
 
 fn readied(success: Success) -> Option<Done> {
     match success {
-        Success::Ready(result) => Some(Done::Ready(result)),
+        Success::Ready(result) => Some(Done::Authority(native::READY_RESULT, result)),
         _ => None,
     }
 }
@@ -129,38 +130,56 @@ fn focused(success: Success) -> Option<Done> {
 impl Act {
     /// The result its success must carry.
     fn expects(&self) -> Expects {
-        let (result, input): (fn(Success) -> Option<Done>, _) = match self {
-            Self::Acquire => (acquired, None),
-            Self::Input(_, payload) => (accepted, Some(payload.len() as u32)),
-            Self::Resize(..) => (resized, None),
-            Self::Ready(_) => (readied, None),
-            Self::Focus(..) => (focused, None),
-        };
-        Expects { result, input }
+        match self {
+            Self::Acquire => Expects {
+                result: acquired,
+                input: None,
+            },
+            Self::Held(_, held) => held.expects(),
+        }
     }
 
     /// Its wire request, as `request_id`.
     fn frame(self, request_id: Counter) -> Frame {
         match self {
             Self::Acquire => wire::Acquire { request_id }.to_frame(),
-            Self::Input(authority, payload) => wire::Input {
+            Self::Held(authority, held) => held.frame(request_id, authority),
+        }
+    }
+}
+
+impl Held {
+    fn expects(&self) -> Expects {
+        let (result, input): (fn(Success) -> Option<Done>, _) = match self {
+            Self::Input(payload) => (accepted, Some(payload.len() as u32)),
+            Self::Resize(_) => (resized, None),
+            Self::Ready => (readied, None),
+            Self::Focus(_) => (focused, None),
+        };
+        Expects { result, input }
+    }
+
+    /// Its wire request under `authority`, as `request_id`.
+    fn frame(self, request_id: Counter, authority: AuthorityIds) -> Frame {
+        match self {
+            Self::Input(payload) => wire::Input {
                 request_id,
                 authority,
                 payload: payload.into_vec(),
             }
             .to_frame(),
-            Self::Resize(authority, geometry) => wire::Resize {
+            Self::Resize(geometry) => wire::Resize {
                 request_id,
                 authority,
                 geometry,
             }
             .to_frame(),
-            Self::Ready(authority) => wire::Ready {
+            Self::Ready => wire::Ready {
                 request_id,
                 authority,
             }
             .to_frame(),
-            Self::Focus(authority, focused) => wire::Focus {
+            Self::Focus(focused) => wire::Focus {
                 request_id,
                 authority,
                 focused,
@@ -206,12 +225,7 @@ impl Departure {
 
     /// Only a confirmed departure can have detached an attachment.
     fn answered(outcome: &Outcome, detached: bool) -> Self {
-        let leave = match outcome {
-            Outcome::Ok => native::LEAVE_CONFIRMED,
-            Outcome::Rejected(_) => native::LEAVE_REJECTED,
-            Outcome::Failed(_) => native::LEAVE_FAILED,
-            Outcome::Indeterminate(_) => native::LEAVE_INDETERMINATE,
-        };
+        let leave = evidence(outcome);
         Self {
             leave,
             detached: detached && leave == native::LEAVE_CONFIRMED,
@@ -238,6 +252,16 @@ impl Departure {
     }
 }
 
+/// The Leave evidence a Leave's outcome gives.
+fn evidence(outcome: &Outcome) -> u32 {
+    match outcome {
+        Outcome::Ok => native::LEAVE_CONFIRMED,
+        Outcome::Rejected(_) => native::LEAVE_REJECTED,
+        Outcome::Failed(_) => native::LEAVE_FAILED,
+        Outcome::Indeterminate(_) => native::LEAVE_INDETERMINATE,
+    }
+}
+
 /// What one daemon record means for the connection.
 #[derive(Debug)]
 pub(super) enum Effect {
@@ -249,16 +273,14 @@ pub(super) enum Effect {
     Answered(Response),
     /// A Leave's outcome: delivered when public, and its evidence.
     Left(Option<Response>, Departure),
-    /// The daemon reported a connection-fatal error.
-    Fatal(Fault),
 }
 
 impl Effect {
     /// Whether this record makes the command's final result known.
     pub(super) fn concludes(&self) -> bool {
         match self {
-            Self::Record(Event::Metadata(metadata)) => metadata.command.is_some(),
-            Self::Opened(response, _) => matches!(response.answer, Answer::KnownFinal(_)),
+            Self::Record(Event::Metadata(Metadata::Initial(initial))) => initial.command.is_some(),
+            Self::Opened(response, _) => matches!(response.answer, Some(Answer::KnownFinal(_))),
             _ => false,
         }
     }
@@ -415,7 +437,8 @@ impl Stream {
         self.synchronized
     }
 
-    /// One frame from the daemon.
+    /// One frame from the daemon; a connection-fatal error it reports
+    /// fails the connection with the daemon's error.
     pub(super) fn receive(&mut self, frame: &Frame) -> Result<Effect, Fault> {
         match ServerMessage::from_frame(frame).map_err(fatal)? {
             ServerMessage::Response(response) => self.respond(response),
@@ -425,9 +448,7 @@ impl Stream {
 
     fn other(&mut self, message: ServerMessage) -> Result<Effect, Fault> {
         match message {
-            ServerMessage::FatalError(wire::FatalError(error)) => {
-                Ok(Effect::Fatal(Fault::daemon(&error)))
-            }
+            ServerMessage::FatalError(wire::FatalError(error)) => Err(Fault::daemon(&error)),
             message => self.report(message).map(Effect::Record),
         }
     }
@@ -445,11 +466,15 @@ impl Stream {
     }
 
     /// A grant starts a period when none is held; a revocation ends the
-    /// one held; every other record shows the held period.
+    /// one held; a Geometry names the held period; every other record
+    /// shows its current restoration.
     fn present(&mut self, message: ServerMessage) -> Result<Presentation, Fault> {
         match message {
             ServerMessage::ControlGranted(granted) => self.grant(granted),
             ServerMessage::ControlRevoked(revoked) => self.revoke(revoked),
+            ServerMessage::Geometry(actual) => self
+                .in_period(actual.period)
+                .map(|()| Presentation::Screen(Screen::Geometry(actual.period, actual.geometry))),
             message => self.screen(message).map(Presentation::Screen),
         }
     }
@@ -471,8 +496,7 @@ impl Stream {
     }
 
     /// A beginning in the held period makes its restoration current; a
-    /// Display or a complete names the current restoration, and a Geometry
-    /// the held period.
+    /// Display or a complete names the current restoration.
     fn screen(&mut self, message: ServerMessage) -> Result<Screen, Fault> {
         match message {
             ServerMessage::RestorationBegin(begin) => self.begin(begin),
@@ -480,9 +504,6 @@ impl Stream {
             ServerMessage::RestorationComplete(complete) => self
                 .holds(complete.authority)
                 .map(|()| Screen::Complete(complete.authority)),
-            ServerMessage::Geometry(actual) => self
-                .in_period(actual.period)
-                .map(|()| Screen::Geometry(actual.period, actual.geometry)),
             _ => Err(UNEXPECTED),
         }
     }
@@ -543,10 +564,9 @@ impl Stream {
             carried,
             retry,
         } = verdict;
-        let answer = match carried {
-            None => Answer::None,
-            Some(carried) => self.result(carried, sent)?,
-        };
+        let answer = carried
+            .map(|carried| self.result(carried, sent))
+            .transpose()?;
         let refused = outcome
             .fault()
             .map(|fault| Failed::new(fault.clone(), retry));
@@ -600,10 +620,10 @@ impl Stream {
             && matches!(metadata.progress(), Available::Unavailable);
         unselected
             .then(|| {
-                Event::Metadata(Metadata {
+                Event::Metadata(Metadata::Initial(Initial {
                     title,
                     command: metadata.command_result().map(Command::from),
-                })
+                }))
             })
             .ok_or(UNEXPECTED)
     }
@@ -621,7 +641,8 @@ impl Stream {
             self.synchronized && self.selects(Family::TitleV1),
             UNEXPECTED,
         )?;
-        self.value(title).map(Event::Title)
+        self.value(title)
+            .map(|title| Event::Metadata(Metadata::Title(title)))
     }
 
     /// A title by value, never truncated.
@@ -639,16 +660,8 @@ fn left(id: Option<u64>, verdict: Verdict) -> Result<Effect, Fault> {
     let Verdict {
         outcome, carried, ..
     } = verdict;
-    let answer = match carried {
-        None => Answer::None,
-        Some(Carried::Success(Success::Left {
-            attachment_detached,
-        })) => Answer::Left {
-            detached: attachment_detached,
-        },
-        Some(_) => return Err(MISMATCHED),
-    };
-    let detached = matches!(answer, Answer::Left { detached: true });
+    let answer = carried.map(departed).transpose()?;
+    let detached = matches!(answer, Some(Answer::Left { detached: true }));
     let departure = Departure::answered(&outcome, detached);
     let response = id.map(|id| Response {
         id,
@@ -658,17 +671,30 @@ fn left(id: Option<u64>, verdict: Verdict) -> Result<Effect, Fault> {
     Ok(Effect::Left(response, departure))
 }
 
+/// A Leave's result: whether it detached an attachment.
+fn departed(carried: Carried) -> Result<Answer, Fault> {
+    match carried {
+        Carried::Success(Success::Left {
+            attachment_detached,
+        }) => Ok(Answer::Left {
+            detached: attachment_detached,
+        }),
+        _ => Err(MISMATCHED),
+    }
+}
+
 /// A command's answer: its result when it succeeded, or a failure's known
 /// partial result of its own operation.
 fn answered(id: u64, expects: Expects, verdict: Verdict) -> Result<Effect, Fault> {
     let Verdict {
         outcome, carried, ..
     } = verdict;
-    let answer = match carried {
-        None => Answer::None,
-        Some(Carried::Success(success)) => expects.answer(success)?,
-        Some(Carried::KnownFinal(_)) => return Err(MISMATCHED),
-    };
+    let answer = carried
+        .map(|carried| match carried {
+            Carried::Success(success) => expects.answer(success),
+            Carried::KnownFinal(_) => Err(MISMATCHED),
+        })
+        .transpose()?;
     Ok(Effect::Answered(Response {
         id,
         outcome,
