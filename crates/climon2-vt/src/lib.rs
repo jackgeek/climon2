@@ -14,6 +14,7 @@ mod presentation;
 mod printed;
 mod render;
 mod restore;
+mod scroll;
 mod sync;
 mod title;
 pub mod token;

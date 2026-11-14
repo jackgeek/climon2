@@ -160,7 +160,11 @@ fn one_parser_serves_every_model_and_counts_once() {
             .unwrap();
     }
     let footprints: usize = models.iter().map(Model::footprint).sum();
-    assert!(meter.peak() <= footprints, "{} > {footprints}", meter.peak());
+    assert!(
+        meter.peak() <= footprints,
+        "{} > {footprints}",
+        meter.peak()
+    );
     assert_eq!(models[2].screen()[22], "model 2");
 }
 
@@ -859,6 +863,7 @@ fn cleared_history_releases_its_marks() {
 fn history_never_grows_past_its_configured_rows() {
     let at = geometry(8, 2);
     let mut model = Model::new(at, limits(ROOMY, 1000)).unwrap();
+    model.feed_shared(b"first\r\nscroll\r\n").unwrap();
     let footprint = model.footprint();
 
     model
@@ -1032,11 +1037,11 @@ fn history_yields_to_the_alternate_screen() {
     }
 }
 
-/// LIM-03 Contract (worked case from the #159 review): at 500x200 with
-/// 64 MiB, a model whose 3,100 history rows fill four chunks refused every
-/// restoration, because both models could not fit. The current model's
-/// oldest history now yields first: staging is accepted at the bound with
-/// every row, and one byte below it, or at 64 MiB, with the newest 3,000.
+/// LIM-03 Contract (worked case from the #159 review): at 500x200, a model
+/// whose 3,100 history rows fill four chunks once refused every restoration
+/// its limit could not hold beside it. The current model's oldest history
+/// now yields first: staging is accepted at the bound with every row, and
+/// one byte below it with the newest 3,000.
 #[test]
 fn staging_a_restoration_discards_the_current_models_oldest_history_first() {
     let at = geometry(500, 200);
@@ -1049,11 +1054,7 @@ fn staging_a_restoration_discards_the_current_models_oldest_history_first() {
     };
     let bound = current(ROOMY).footprint() + needed(Model::new(at, limits(0, 10_000)));
 
-    for (limit, kept) in [
-        (bound, 0..3100),
-        (bound - 1, 100..3100),
-        (64 << 20, 100..3100),
-    ] {
+    for (limit, kept) in [(bound, 0..3100), (bound - 1, 100..3100)] {
         let meter = Meter::watch();
         let mut model = current(limit);
         model.stage(at).unwrap();
@@ -1064,15 +1065,15 @@ fn staging_a_restoration_discards_the_current_models_oldest_history_first() {
 }
 
 /// LIM-03 Contract: staging never takes the current model's first history
-/// chunk. A model at 80x24 with 3,100 history rows stages a 500x200
-/// restoration that fits only beside that chunk: at the bound it is staged
-/// and the newest 1,000 rows stay; one byte below it the staging is rejected
-/// before anything is allocated, keeping the newest 1,000 rows and the page,
-/// and the model is read-only.
+/// chunk. A model at 80x24 with 1,500 history rows in two chunks stages a
+/// 500x200 restoration that fits only beside the first: at the bound it is
+/// staged and the newest 1,000 rows stay; one byte below it the staging is
+/// rejected before anything is allocated, keeping the newest 1,000 rows and
+/// the page, and the model is read-only.
 #[test]
 fn staging_never_takes_the_current_models_first_history_chunk() {
     let (small, large) = (geometry(80, 24), geometry(500, 200));
-    let rows = rows(0..3124);
+    let rows = rows(0..1524);
     let output = rows.join("\r\n");
     let current = |limit| {
         let mut model = Model::new(small, limits(limit, 10_000)).unwrap();
@@ -1087,7 +1088,7 @@ fn staging_never_takes_the_current_models_first_history_chunk() {
     let mut model = current(bound);
     model.stage(large).unwrap();
     assert!(meter.peak() <= bound, "{} > {bound}", meter.peak());
-    assert_eq!(model.history(), rows[2100..3100]);
+    assert_eq!(model.history(), rows[500..1500]);
 
     let mut model = current(bound - 1);
     let rejected = Rejected {
@@ -1096,8 +1097,8 @@ fn staging_never_takes_the_current_models_first_history_chunk() {
     };
     assert_eq!(model.stage(large), Err(rejected));
     assert_eq!(model.feed_shared(b"x"), Err(rejected));
-    assert_eq!(model.history(), rows[2100..3100]);
-    assert_eq!(model.screen(), rows[3100..]);
+    assert_eq!(model.history(), rows[500..1500]);
+    assert_eq!(model.screen(), rows[1500..]);
 }
 
 /// LIM-03 Contract: while a restoration is staged, the current model's
@@ -1490,4 +1491,189 @@ fn the_engine_sees_only_what_a_host_would_receive() {
 
     model.feed_shared(b"\x1b[?47;1049h").unwrap();
     assert_eq!(model.screen(), ["", ""]);
+}
+
+/// `top`, then `lines` line feeds, at the screen's top-left.
+fn top_then(lines: usize) -> String {
+    format!("top{}", "\n".repeat(lines))
+}
+
+/// The charge of the first history chunk for an 80x24 model keeping
+/// [`HISTORY`] rows: what its first scroll adds to its footprint.
+fn first_chunk() -> usize {
+    let mut model = Model::new(geometry(80, 24), limits(ROOMY, HISTORY)).unwrap();
+    model.feed_shared(top_then(24).as_bytes()).unwrap();
+    model.footprint() - mandatory(geometry(80, 24))
+}
+
+/// Feed `before` and then `update` to a roomy 80x24 model keeping
+/// [`HISTORY`] rows, and to its twin keeping none, which charges the same
+/// growth. Before the update the model charges no history chunk. After it,
+/// it charges the first chunk exactly when `pushed` is not empty, and its
+/// history is `pushed`.
+#[track_caller]
+fn assert_first_scroll(before: impl AsRef<[u8]>, update: &str, pushed: &[&str]) {
+    let before = before.as_ref();
+    let at = geometry(80, 24);
+    let mut model = Model::new(at, limits(ROOMY, HISTORY)).unwrap();
+    let mut twin = Model::new(at, limits(ROOMY, NO_HISTORY)).unwrap();
+    for model in [&mut model, &mut twin] {
+        model.feed_shared(before).unwrap();
+    }
+    let before = String::from_utf8_lossy(before);
+    assert_eq!(
+        model.footprint(),
+        twin.footprint(),
+        "{before:?} admitted a chunk"
+    );
+    assert!(model.history().is_empty(), "{before:?}");
+
+    for model in [&mut model, &mut twin] {
+        model.feed_shared(update.as_bytes()).unwrap();
+    }
+    let chunk = if pushed.is_empty() { 0 } else { first_chunk() };
+    let history = model.footprint() - twin.footprint();
+    assert_eq!(history, chunk, "{before:?} then {update:?}");
+    assert_eq!(model.history(), pushed, "{before:?} then {update:?}");
+}
+
+/// LIM-03 Contract: a model that keeps history needs no history chunk
+/// before its normal screen first scrolls: it is admitted with the same
+/// mandatory bytes as a model that keeps none, and holds no more.
+#[test]
+fn a_model_keeping_history_needs_no_chunk_before_it_scrolls() {
+    let at = geometry(80, 24);
+    let idle = mandatory(at);
+    assert_eq!(needed(Model::new(at, limits(0, 10_000))), idle);
+
+    let meter = Meter::watch();
+    let mut model = Model::new(at, limits(idle, 10_000)).unwrap();
+    model.feed_shared(top_then(23).as_bytes()).unwrap();
+    assert!(meter.peak() <= idle, "{} > {idle}", meter.peak());
+    assert_eq!(model.footprint(), idle);
+    assert!(model.history().is_empty());
+}
+
+/// LIM-03 Contract: the first history chunk, which holds the protected
+/// newest page, is admitted on the normal screen's first scroll, before the
+/// row it pushes is allocated: not after 23 line feeds from the top row of
+/// a 24-row screen, but on the 24th, whether the line feeds arrive in one
+/// token or one at a time. At the bound the scroll keeps the pushed row;
+/// one byte below it the scrolling line feed is rejected before growth,
+/// keeping the page.
+#[test]
+fn the_first_history_chunk_is_admitted_on_the_first_scroll() {
+    assert_first_scroll(top_then(23), "\n", &["top"]);
+    assert_first_scroll("", &top_then(24), &["top"]);
+    for _ in 0..23 {
+        assert_first_scroll("top", &"\n".repeat(22), &[]);
+    }
+
+    let at = geometry(80, 24);
+    let bound = mandatory(at) + first_chunk();
+    let meter = Meter::watch();
+    let mut model = Model::new(at, limits(bound, HISTORY)).unwrap();
+    model.feed_shared(top_then(24).as_bytes()).unwrap();
+    assert!(meter.peak() <= bound, "{} > {bound}", meter.peak());
+    assert_eq!(model.history(), ["top"]);
+
+    let mut model = Model::new(at, limits(bound - 1, HISTORY)).unwrap();
+    model.feed_shared(top_then(23).as_bytes()).unwrap();
+    let page = model.screen();
+    assert_eq!(
+        model.feed_shared(b"\n"),
+        Err(Rejected {
+            needed: bound,
+            limit: bound - 1
+        })
+    );
+    assert_eq!(model.screen(), page);
+    assert_eq!(page[0], "top");
+}
+
+/// LIM-03 Contract: within a scroll region that starts at the top row, the
+/// first chunk is admitted when the region's bottom row first scrolls; an
+/// invalid region (top not above bottom) changes nothing, a bottom past the
+/// screen is the screen's, and a full reset restores the whole screen.
+#[test]
+fn the_first_chunk_follows_the_scroll_region() {
+    let feeds = |lines| "\n".repeat(lines);
+    for region in ["\x1b[1;10r", "\x1b[1;10r\x1b[5;5r", "\x1b[1;10r\x1b[6;5r"] {
+        assert_first_scroll(format!("{region}top{}", feeds(9)), "\n", &["top"]);
+    }
+    for region in ["\x1b[r", "\x1b[0;0r", "\x1b[1;30r", "\x1b[2;10r\x1bc"] {
+        assert_first_scroll(format!("{region}top{}", feeds(23)), "\n", &["top"]);
+    }
+}
+
+/// LIM-03 Contract: rows scrolled out of a region that starts below the top
+/// row, or line feeds below a region's bottom row, never reach history, so
+/// they never admit a chunk.
+#[test]
+fn scrolling_away_from_the_top_row_admits_no_chunk() {
+    let many = "\n".repeat(60);
+    assert_first_scroll("\x1b[2;10rtop", &format!("{many}\x1b[S\x1b[M"), &[]);
+    assert_first_scroll("\x1b[1;10r\x1b[11Htop", &many, &[]);
+    assert_first_scroll("\x1b[2;10rtop", "\x1b[M", &[]);
+}
+
+/// LIM-03 Contract: sequences that scroll the whole region wherever the
+/// cursor is (scroll up, deleting lines from the top row, erasing the
+/// screen) admit the first chunk; deleting lines below the top row does
+/// not. Index and next line scroll from the bottom row as a line feed does,
+/// and so do line feeds executed inside a sequence.
+#[test]
+fn scrolling_sequences_admit_the_first_chunk() {
+    for (before, update, pushed) in [
+        ("top".to_owned(), "\x1b[S", &["top"][..]),
+        ("top".to_owned(), "\x1b[M", &["top"]),
+        ("top\r\n".to_owned(), "\x1b[M", &[]),
+        ("top".to_owned(), "\x1b[2J", &["top"]),
+        ("top".to_owned(), "\x1b[J\x1b[1J\x1b[?2J\x1b[?S", &[]),
+        (top_then(23), "\x1bD", &["top"]),
+        (top_then(22), "\x1bD", &[]),
+        (top_then(23), "\x1bE", &["top"]),
+        (top_then(22), "\x1b[\n\n1m", &["top"]),
+        (top_then(21), "\x1b[\n\n1m", &[]),
+    ] {
+        assert_first_scroll(&before, update, pushed);
+    }
+}
+
+/// LIM-03 Contract: printing on the bottom row admits the first chunk only
+/// once a character could wrap: one printed in the last column, or after a
+/// wide character filled it; a repeat on the bottom row does too, while a
+/// short repeat higher up does not. Multi-byte characters printed on the
+/// bottom row stay whole.
+#[test]
+fn printing_admits_the_first_chunk_once_it_could_wrap() {
+    let bottom = top_then(23);
+    let full = "x".repeat(79);
+    assert_first_scroll(format!("{bottom}\r{full}"), "xy", &["top"]);
+    assert_first_scroll(format!("{bottom}\r{full}"), "\r", &[]);
+    assert_first_scroll(
+        format!("{bottom}\r{}\u{4e00}", "x".repeat(78)),
+        "y",
+        &["top"],
+    );
+    assert_first_scroll(format!("{bottom}a"), "\x1b[80b", &["top"]);
+    assert_first_scroll("topa", "\x1b[3b", &[]);
+
+    let printed = [
+        format!("{bottom}\rab\u{4e00}\u{e9}\u{301}").as_bytes(),
+        b"\xff",
+    ]
+    .concat();
+    assert_first_scroll(&printed, "", &[]);
+    let mut model = Model::new(geometry(80, 24), limits(ROOMY, HISTORY)).unwrap();
+    model.feed_shared(&printed).unwrap();
+    assert_eq!(model.screen()[23], "ab\u{4e00}\u{e9}\u{301}\u{fffd}");
+}
+
+/// LIM-03 Contract: the alternate screen never scrolls into history, so it
+/// never admits the first chunk.
+#[test]
+fn the_alternate_screen_admits_no_chunk() {
+    let many = "\n".repeat(60);
+    assert_first_scroll("top\x1b[?1049h", &format!("{many}\x1b[?1049l"), &[]);
 }

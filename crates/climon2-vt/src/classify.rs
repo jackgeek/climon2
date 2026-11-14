@@ -23,6 +23,27 @@ pub(crate) enum Clear {
     Reset,
 }
 
+/// What a token's sequence does that can push normal-screen rows into
+/// history, or changes where line feeds scroll.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scrolling {
+    Nothing,
+    /// `ESC D` (IND) or `ESC E` (NEL): one line feed.
+    LineFeed,
+    /// `CSI n S` (SU): scrolls the region wherever the cursor is.
+    Up,
+    /// `CSI n M` (DL): scrolls the region below the cursor's row.
+    DeleteLines,
+    /// `CSI 2 J` (ED 2): the normal screen's rows scroll into history.
+    ClearScreen,
+    /// `CSI t ; b r` (DECSTBM): the 1-based top row, and the bottom row
+    /// when one is given.
+    Region {
+        top: usize,
+        bottom: Option<usize>,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Policy {
     pub(crate) live: Live,
@@ -32,6 +53,7 @@ pub(crate) struct Policy {
     /// How many more times the engine prints its preceding character
     /// (`CSI n b`).
     pub(crate) repeats: usize,
+    pub(crate) scrolling: Scrolling,
 }
 
 impl Policy {
@@ -41,6 +63,7 @@ impl Policy {
             sync: None,
             clear: Clear::Nothing,
             repeats: 0,
+            scrolling: Scrolling::Nothing,
         }
     }
 
@@ -159,8 +182,14 @@ fn escape(dispatch: &Dispatch) -> Policy {
     } else {
         Clear::Nothing
     };
+    let scrolling = if dispatch.is(b'D', b"") || dispatch.is(b'E', b"") {
+        Scrolling::LineFeed
+    } else {
+        Scrolling::Nothing
+    };
     Policy {
         clear,
+        scrolling,
         ..Policy::of(live)
     }
 }
@@ -171,6 +200,38 @@ fn csi(dispatch: &Dispatch) -> Policy {
         sync: sync(dispatch),
         clear: csi_clear(dispatch),
         repeats: repeats(dispatch),
+        scrolling: csi_scrolling(dispatch),
+    }
+}
+
+/// The parameter vte reads for a missing or zero one.
+fn param_or(dispatch: &Dispatch, index: usize, default: u16) -> u16 {
+    dispatch
+        .params
+        .get(index)
+        .copied()
+        .filter(|&param| param != 0)
+        .unwrap_or(default)
+}
+
+fn csi_scrolling(dispatch: &Dispatch) -> Scrolling {
+    match dispatch.action {
+        _ if !dispatch.is(dispatch.action, b"") => Scrolling::Nothing,
+        b'S' => Scrolling::Up,
+        b'M' => Scrolling::DeleteLines,
+        b'J' if param_or(dispatch, 0, 0) == 2 => Scrolling::ClearScreen,
+        b'r' => region(dispatch),
+        _ => Scrolling::Nothing,
+    }
+}
+
+/// DECSTBM's rows as vte reads them: a missing or zero top is the first
+/// row, and a missing or zero bottom is none.
+fn region(dispatch: &Dispatch) -> Scrolling {
+    let bottom = param_or(dispatch, 1, 0);
+    Scrolling::Region {
+        top: usize::from(param_or(dispatch, 0, 1)),
+        bottom: (bottom != 0).then_some(usize::from(bottom)),
     }
 }
 

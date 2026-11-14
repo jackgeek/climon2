@@ -2,13 +2,14 @@
 //! Alacritty engine, never asked to grow past what its model admitted.
 
 use crate::{
-    classify::{Clear, classify},
+    classify::{Clear, Policy, Scrolling, classify},
     cost,
     engine::{Core, Parser},
     geometry::{Geometry, STEP},
     model::Rejected,
     printed,
     render::cells,
+    scroll::{Cursor, Region},
     token::{Kind, Token, Tokenizer, incomplete_utf8},
 };
 use alacritty_terminal::{
@@ -33,6 +34,9 @@ pub(crate) struct Bounded {
     /// The character vte printed last for this instance, which `CSI n b`
     /// repeats: the parser is shared, so its own is another model's.
     preceding: Option<char>,
+    /// The engine's scroll region, which decides where line feeds can
+    /// first push rows into history.
+    region: Region,
 }
 
 /// The normal screen's history: the rows the model shows, and the engine's
@@ -51,15 +55,19 @@ struct History {
 }
 
 impl History {
-    /// The first chunk, which holds the protected newest page; none when the
-    /// model keeps no history.
+    /// No chunk yet: the first, which holds the protected newest page, is
+    /// admitted when the normal screen first scrolls.
     fn new(shown: usize) -> Self {
-        let first = shown.min(1);
         Self {
             shown,
-            chunks: first,
-            peak: first,
+            chunks: 0,
+            peak: 0,
         }
+    }
+
+    /// Whether the first chunk is still to be admitted.
+    fn awaited(self) -> bool {
+        self.chunks == 0 && self.shown > 0
     }
 
     /// The engine's history limit in rows.
@@ -84,10 +92,9 @@ impl History {
         }
     }
 
-    /// One chunk less, unless only the first is left.
+    /// One chunk less, unless only the first is left, or none.
     fn shorter(self) -> Option<Self> {
-        let first = Self::new(self.shown).chunks;
-        (self.chunks > first).then(|| Self {
+        (self.chunks > 1).then(|| Self {
             chunks: self.chunks - 1,
             ..self
         })
@@ -182,17 +189,16 @@ impl<'a> Room<'a> {
         geometry: Geometry,
         history_rows: usize,
     ) -> Result<Bounded, Rejected> {
-        self.fit(Bounded::mandatory(geometry, history_rows))?;
+        self.fit(Bounded::mandatory(geometry))?;
         Ok(Bounded::new(geometry, history_rows))
     }
 }
 
 impl Bounded {
     /// What a fresh instance holds and may grow to before any output: the
-    /// engine, both screens and the first chunk of history, which holds the
-    /// protected newest page.
-    pub(crate) fn mandatory(geometry: Geometry, history_rows: usize) -> usize {
-        cost::fixed(geometry) + History::new(history_rows).cost(geometry)
+    /// engine and both screens. History waits for the first scroll.
+    pub(crate) fn mandatory(geometry: Geometry) -> usize {
+        cost::fixed(geometry)
     }
 
     pub(crate) fn new(geometry: Geometry, history_rows: usize) -> Self {
@@ -204,6 +210,7 @@ impl Bounded {
             history,
             extras: Extras::default(),
             preceding: None,
+            region: Region::full(usize::from(geometry.rows())),
         }
     }
 
@@ -238,8 +245,8 @@ impl Bounded {
     /// Only what the live output policy forwards to a Direct controller
     /// reaches the engine. The daemon already applied that policy, so a
     /// stripped token can only be malformed input; only the controls it
-    /// executes remain. Growth and history are admitted from the policy's own
-    /// parse of the token.
+    /// executes remain. Text is fed in pieces while the first history chunk
+    /// waits for a scroll, so that only a piece that could scroll admits it.
     fn token(
         &mut self,
         parser: &mut Parser,
@@ -247,12 +254,82 @@ impl Bounded {
         room: &mut Room,
     ) -> Result<(), Rejected> {
         let policy = classify(&token);
-        let bytes = policy.forwarded(&token);
-        self.admit(self.growth(token.kind, bytes, policy.repeats), room)?;
-        self.grow(bytes.len() + policy.repeats, room);
-        self.apply(parser, token.kind, bytes, policy.repeats);
-        self.settle(policy.clear);
+        let mut rest = policy.forwarded(&token);
+        if token.kind != Kind::Text {
+            return self.step(parser, token.kind, rest, &policy, room);
+        }
+        while !rest.is_empty() {
+            let (piece, tail) = rest.split_at(self.piece(rest));
+            self.step(parser, Kind::Text, piece, &policy, room)?;
+            rest = tail;
+        }
         Ok(())
+    }
+
+    /// The bytes of `text` to feed as one step.
+    fn piece(&self, text: &[u8]) -> usize {
+        if self.awaiting() {
+            self.region.piece(text, self.cursor().line)
+        } else {
+            text.len()
+        }
+    }
+
+    /// Growth and history are admitted from the policy's own parse of the
+    /// token: the first history chunk too, if the token could scroll, and
+    /// the token is rejected if that chunk cannot fit.
+    fn step(
+        &mut self,
+        parser: &mut Parser,
+        kind: Kind,
+        bytes: &[u8],
+        policy: &Policy,
+        room: &mut Room,
+    ) -> Result<(), Rejected> {
+        let first = self.awaiting() && self.could_scroll(kind, bytes, policy);
+        let page = if first { self.first_chunk() } else { 0 };
+        self.admit(self.growth(kind, bytes, policy.repeats), page, room)?;
+        if first {
+            self.history = self.history.next();
+            self.core.set_history(self.history.rows());
+        }
+        self.grow(bytes.len() + policy.repeats, room);
+        self.apply(parser, kind, bytes, policy.repeats);
+        self.settle(policy);
+        Ok(())
+    }
+
+    /// Whether the first history chunk waits for the normal screen to
+    /// scroll: the alternate screen never pushes history.
+    fn awaiting(&self) -> bool {
+        self.history.awaited() && !self.core.alternate()
+    }
+
+    /// What admitting the first history chunk adds to the charge.
+    fn first_chunk(&self) -> usize {
+        self.charge_with(self.history.next()) - self.charge()
+    }
+
+    fn could_scroll(&self, kind: Kind, bytes: &[u8], policy: &Policy) -> bool {
+        let cursor = self.cursor();
+        if kind == Kind::Text {
+            let cols = usize::from(self.geometry.cols());
+            return self.region.text_scrolls(bytes, cursor, cols);
+        }
+        let feeds = bytes
+            .iter()
+            .filter(|byte| (0x0a..=0x0c).contains(*byte))
+            .count();
+        self.region
+            .could_scroll(cursor.line, policy.scrolling, feeds + policy.repeats)
+    }
+
+    fn cursor(&self) -> Cursor {
+        let cursor = &self.core.active().cursor;
+        Cursor {
+            line: cursor.point.line.0 as usize,
+            column: cursor.point.column.0,
+        }
     }
 
     /// Feed an admitted token through the shared parser so that it leaves
@@ -272,7 +349,7 @@ impl Bounded {
     fn repeat(&mut self, parser: &mut Parser, bytes: &[u8], repeats: usize) {
         bytes
             .iter()
-            .filter(|&&byte| byte < 0x20 && byte != 0x1b)
+            .filter(|byte| byte.is_ascii_control() && **byte != 0x1b)
             .for_each(|control| self.core.advance(parser, slice::from_ref(control)));
         if let Some(character) = self.preceding {
             self.core.repeat(character, repeats);
@@ -291,16 +368,17 @@ impl Bounded {
         self.preceding = printed::last(text).or(self.preceding);
     }
 
-    /// Charge `growth` if it fits. When the running charge leaves no room,
-    /// the active screen is measured first; then history yields, oldest
-    /// chunk first: the current model's beside a staged restoration, then
-    /// this instance's own.
-    fn admit(&mut self, growth: usize, room: &mut Room) -> Result<(), Rejected> {
-        if !room.fits(self.charge() + growth) {
+    /// Charge `growth`, and `page` for the first history chunk, if they
+    /// fit. When the running charge leaves no room, the active screen is
+    /// measured first; then history yields, oldest chunk first: the current
+    /// model's beside a staged restoration, then this instance's own.
+    fn admit(&mut self, growth: usize, page: usize, room: &mut Room) -> Result<(), Rejected> {
+        let needed = growth + page;
+        if !room.fits(self.charge() + needed) {
             self.measure();
         }
-        while room.fit(self.charge() + growth).is_err() && self.shorten() {}
-        room.fit(self.charge() + growth)?;
+        while room.fit(self.charge() + needed).is_err() && self.shorten() {}
+        room.fit(self.charge() + needed)?;
         *self.extras.of(self.active()) += growth;
         Ok(())
     }
@@ -312,7 +390,11 @@ impl Bounded {
     /// pushes at most a row per byte and per repetition, or a screenful, so
     /// one long repeat or released run of controls can fill several chunks.
     fn grow(&mut self, reach: usize, room: &mut Room) {
-        let Some(history) = self.core.normal_history() else {
+        let Some(history) = self
+            .core
+            .normal_history()
+            .filter(|_| self.history.chunks > 0)
+        else {
             return;
         };
         let wanted = self
@@ -341,11 +423,19 @@ impl Bounded {
         true
     }
 
-    /// After a token clears history the engine keeps its storage rows, cell
-    /// data and all, beyond the history it shows; drop them at once, so
-    /// measuring sees every row that holds cell data.
-    fn settle(&mut self, clear: Clear) {
-        if clear != Clear::Nothing {
+    /// Follow the scroll region the token set, or reset. After a token
+    /// clears history the engine keeps its storage rows, cell data and all,
+    /// beyond the history it shows; drop them at once, so measuring sees
+    /// every row that holds cell data.
+    fn settle(&mut self, policy: &Policy) {
+        let rows = usize::from(self.geometry.rows());
+        if let Scrolling::Region { top, bottom } = policy.scrolling {
+            self.region = self.region.set(top, bottom, rows);
+        }
+        if policy.clear == Clear::Reset {
+            self.region = Region::full(rows);
+        }
+        if policy.clear != Clear::Nothing {
             self.core.truncate();
         }
     }

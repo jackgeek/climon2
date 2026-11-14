@@ -84,6 +84,7 @@ fn repeat_counts_at_their_lower_boundaries() {
         (b"a\x1b[0b", ["aa", ""]),
         (b"a\x1b[1b", ["aa", ""]),
         (b"a\x1b[2b", ["aaa", ""]),
+        (b"a\x1b[2bz", ["aaaz", ""]),
         (b"a\x1b[\r\n2b", ["a", "aa"]),
         (b"a\x1b[1m\n\x1b[1b", ["a", " a"]),
         (b"\xff\x1b[1b", ["\u{fffd}\u{fffd}", ""]),
