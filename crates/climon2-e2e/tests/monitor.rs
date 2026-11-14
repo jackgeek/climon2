@@ -851,7 +851,11 @@ fn a_hung_up_host_input_releases_the_host_before_its_diagnostic() {
 /// diagnostic, also in its general log, with the climon2 error code. Here the
 /// monitor is a background job of the outer shell with SIGTTIN ignored, so
 /// its read of the typed newline fails with EIO; the shell then reads that
-/// newline once the monitor has restored termios. Only the monitor writes
+/// newline once the monitor has restored termios, with echo off for that
+/// read alone and then exactly the termios the monitor left: macOS re-runs
+/// input that arrived in raw mode through its input processing at the next
+/// canonical read (`PENDIN`), which would echo the newline after the
+/// diagnostic, where Linux echoed nothing on arrival. Only the monitor writes
 /// errors to the host: older bash (macOS `/bin/bash` 3.2, Ubuntu 24.04's
 /// 5.2) reports the finished job (`[1]+  Exit 125 ...`) on its own stderr,
 /// which goes nowhere.
@@ -863,7 +867,7 @@ fn host_input_failing_with_eio_releases_the_host_before_its_diagnostic() {
         &package,
         "trap '' TTIN TTOU; set -m; exec 3>&2 2>/dev/null; \
          climon2 monitor 2>&3 3>&- & wait $!; s=$?; set +m; exec 3>&-; \
-         IFS= read -r _; (exit $s)",
+         r=$(stty -g); stty -echo; IFS= read -r _; stty \"$r\"; (exit $s)",
     );
     terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
     terminal.send(b"\n").unwrap();
