@@ -4,7 +4,7 @@ use super::{
     assert_closed, assert_final_then_closed, assert_rejected, assert_rejected_knowing,
     command_final, counter, exited, frame,
     interactive::{Attached, geometry, ready_attachment},
-    kill, message, monitor, open, peer, request, signalled, terminating,
+    kill, message, monitor, open, peer, request, signalled, terminating, title_changed,
 };
 use crate::Session;
 use climon2_core::{
@@ -443,5 +443,54 @@ fn the_end_of_the_commands_output_while_it_runs_is_no_final_result() {
         crate::until_terminal(&mut controlling).1,
         PrivateMessage::Exit { code: 3 }
     );
+    session.finish();
+}
+
+/// Waits until the command `pid` exited while its parent, the daemon, has
+/// not reaped it yet.
+fn exited_unreaped(pid: u32) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let output = std::process::Command::new("/bin/ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        if String::from_utf8_lossy(&output.stdout)
+            .trim_start()
+            .starts_with('Z')
+        {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the command never exited");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// COM-06 (Contract: Command final means no more output follows): the
+/// command's last output reaches every opened connection before its Command
+/// final, even when the daemon learns of the exit before it reads that
+/// output. The daemon is stopped while the command sets a title, prints its
+/// last line and exits 3, so all three are waiting for it as it resumes.
+/// The ready controller receives every Display holding the last line, and
+/// a passive monitor that selected `title-v1` the new title, before their
+/// Command final.
+#[test]
+fn command_final_follows_the_commands_last_output() {
+    let mut session = Session::start("script");
+    let mut attached = ready_attachment(&session, &[]);
+    let (mut watching, _) = monitor(&session, &["title-v1"]);
+    let command = fixture_pid(&session);
+    let daemon = i32::try_from(session.pid).unwrap();
+    assert_eq!(unsafe { libc::kill(daemon, libc::SIGSTOP) }, 0);
+    crate::issue(&session, "title done");
+    crate::issue(&session, "text last line");
+    crate::issue(&session, "exit 3");
+    exited_unreaped(command);
+    assert_eq!(unsafe { libc::kill(daemon, libc::SIGCONT) }, 0);
+    let result = exited(3);
+    assert_eq!(title_changed(&mut watching), Some("done".into()));
+    assert_final_then_closed(&mut watching, &result);
+    attached.ended(&result);
+    assert_eq!(crate::count(&attached.display, b"last line"), 1);
     session.finish();
 }

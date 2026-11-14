@@ -619,11 +619,11 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.end_stream(id);
     }
 
-    /// The command's result, once the daemon first knows it: every opened
-    /// connection receives it as Command final (a standalone Kill's
-    /// connection, which opened nothing, gets it in its answer instead), and
-    /// later Opens in their Initial metadata. Knowing it again publishes
-    /// nothing.
+    /// The command's result, once it is final: no more of the command's
+    /// output follows. Every opened connection receives it as Command final
+    /// (a standalone Kill's connection, which opened nothing, gets it in its
+    /// answer instead), and later Opens in their Initial metadata.
+    /// Publishing it again sends nothing.
     pub(super) fn publish(&mut self, result: &CommandResult) {
         if self.command_result.is_some() {
             return;

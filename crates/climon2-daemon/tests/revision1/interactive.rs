@@ -37,7 +37,7 @@ pub(super) struct Attached {
     /// From its Control granted until its Control revoked.
     controlling: bool,
     request: u64,
-    display: Vec<u8>,
+    pub(super) display: Vec<u8>,
 }
 
 impl Attached {
