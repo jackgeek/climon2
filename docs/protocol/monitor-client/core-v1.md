@@ -15,9 +15,11 @@ release_control, notification and snapshot follow the rules below, with these
 gaps: create does not read the session ID, and snapshot reports no
 shared-release allocation. Snapshot's instance allocation counts every block
 the library's allocator holds for work on that instance, its diagnostics
-included ([#180](https://github.com/jackgeek/climon2/issues/180)); state a
-library dependency keeps for the whole process or one thread is charged to
-the instance whose call created it. `submit`
+and workers included ([#180](https://github.com/jackgeek/climon2/issues/180)),
+except each worker's thread handle, which the Rust standard library
+allocates outside the library's allocator. State a library dependency keeps
+for the whole process or a caller's thread is shared-release allocation, so
+it is not counted. `submit`
 reports `CM1_UNSUPPORTED_OPERATION` until Open
 ([#93](https://github.com/jackgeek/climon2/issues/93)). No instance can open a
 [daemon](../../../GLOSSARY.md#sessions) connection yet, so

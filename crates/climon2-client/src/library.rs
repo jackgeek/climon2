@@ -33,6 +33,7 @@ mod platform;
 #[path = "library/macos.rs"]
 mod platform;
 mod startup;
+mod warm;
 
 /// The release identity: the version folder name, compiled in.
 const RELEASE: &str = env!("CARGO_PKG_VERSION");
@@ -93,12 +94,16 @@ const NULL: Failure = Failure::new(
     "a required handle or output pointer is null",
 );
 
-static SILENT_PANICS: Once = Once::new();
+static PREPARED: Once = Once::new();
 
-/// The library's panics are contained and reported as results, so its own
-/// panic hook (this image's, not the host's) writes nothing.
-fn silence_panics() {
+/// What the library sets up once, at bootstrap, outside any instance. Its
+/// panics are contained and reported as results, so its own panic hook (this
+/// image's, not the host's) writes nothing. The allocator measures its
+/// ledgers, and process-wide dependency state is created uncharged.
+fn prepare() {
     panic::set_hook(Box::new(|_| {}));
+    allocation::prepare();
+    warm::process();
 }
 
 /// The `test-hooks` panic point at an exported call's boundary.
@@ -123,7 +128,7 @@ pub unsafe extern "C" fn climon2_client_get_interface(
     description: *mut *const Description,
 ) -> u32 {
     climon2_core::test_hook_marker!();
-    SILENT_PANICS.call_once(silence_panics);
+    PREPARED.call_once(prepare);
     // SAFETY: the caller supplies null or writable storage for one pointer.
     let Some(output) = (unsafe { description.as_mut() }) else {
         return native::INVALID_ARGUMENT;
@@ -216,7 +221,9 @@ unsafe extern "C" fn create(startup: *const Startup, created: *mut Created) -> C
     // SAFETY: the caller supplies null or writable output storage.
     unsafe { clear(created) };
     contained(|| {
-        // Everything the call allocates is the new instance's, from the start.
+        // Everything the call allocates is the new instance's, from the
+        // start, once the caller's thread is warmed.
+        warm::thread();
         let account = Account::open();
         account.charged(|| {
             hook("create");

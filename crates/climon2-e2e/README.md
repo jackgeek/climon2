@@ -88,11 +88,14 @@ mapping it scrambles and unmaps as soon as `create` returns, an ownership
 ledger shows how every handle and delivery was released, a timeline records
 each call's thread, and probes compare the process's environment, working
 directory, signals and standard streams and the notification descriptor.
-On Linux the host also counts the library's heap (#180): it defines glibc's
-`malloc`, `calloc`, `realloc`, `free` and `posix_memalign`, exported
-dynamically, so the loaded library binds to them, and records each block a
-library call allocated until it is freed. macOS binds a library to its system
-allocator directly, so that oracle is Linux only.
+On x86-64 GNU/Linux the host also counts the library's heap (#180): it
+defines glibc's `malloc`, `calloc`, `realloc`, `free` and `posix_memalign`,
+exported dynamically, so the loaded library binds to them. Each allocating
+entry is a naked function that passes on its return address, and the host
+records each block the library image's own code allocated until it is freed;
+glibc's internal blocks are never the library's. macOS binds a library to its
+system allocator directly, so there the tests check exact self-consistency
+instead: each instance's own changes return exactly to their earlier values.
 Expected values come from the native header and contract. Fault cases select
 the hooked library's `CLIMON2_LIBRARY_FAULT` and return early in archive
 mode, whose release library has no hooks; every other case runs against the
@@ -154,8 +157,10 @@ sessions in `tests/headless.rs`.
 | LIB-03 Library and Fault: copies survive unmapped caller memory; lossless native paths; two instances' homes, settings and logs stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` |
 | LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` |
 | LIB-04 Library and Fault, Linux `eventfd`: borrowed descriptor, counted once; a scheduled race in which polling sees the stream end while the handle is used before shutdown and after the end, every call succeeding with the same descriptor | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` |
-| LIB-04 Fault: allocator pairing, a delivery charged until released | `installed_library_charges_a_delivery_until_it_is_released` |
-| LIM-02 and LIB-03 Library, Linux: `snapshot`'s current and peak allocation equal the host's own count of the heap the measured instance's calls hold (the host defines glibc's allocation entry points the library binds to), after create and after the drains, with logging on (its dispatcher included) and off, after a warm-up lifecycle on the same threads | `installed_library_snapshot_counts_every_allocation_its_instance_holds` |
+| LIB-04 Fault: allocator pairing, a delivery charged until released, the release returning exactly what the drain charged | `installed_library_charges_a_delivery_until_it_is_released` |
+| LIM-02 and LIB-03 Library, x86-64 GNU/Linux: `snapshot`'s current and peak allocation equal the host's own count of the library's heap, after create and once ended, one call at a time after a warm-up lifecycle on the same threads, with logging on (its dispatcher included) and off, and with a `joined-worker` (its peak bounded: the standard library allocates the thread handle outside every allocator) | `installed_library_snapshot_counts_every_allocation_its_instance_holds` |
+| LIB-03 Library: while `a` lives, a whole lifecycle of `b` leaves `a`'s current and peak allocation exactly unchanged | `installed_library_instances_never_change_each_others_allocation` |
+| LIB-03 Library: successive instances on one owner thread whose startups differ only in the home's length differ by exactly that many bytes, current and peak | `installed_library_charges_successive_instances_only_for_their_own_differences` |
 | LIB-04 Fault: the failure diagnostic only within `event_bytes`, at and one under the bound | `installed_library_queues_the_failure_diagnostic_only_within_event_bytes` |
 | LIB-05 Fault: injected panic at the bootstrap, `create` and `submit` | `installed_library_contains_a_panic_at_the_bootstrap_create_or_submit` |
 | LIB-05 and LIB-04 Fault: injected panic at `notification`, `snapshot`, `drain`, `shutdown` and `run` stops the instance, with no retry from `shutdown` on; a delivery held past terminal evidence alone keeps communication and destroy busy | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` |

@@ -8,11 +8,12 @@ It tracks no shared-release allocation, and request, operation, input and
 display measurements stay zero until [requests](../TERMS.md#request) exist
 ([#93](https://github.com/jackgeek/climon2/issues/93)). Instance allocation
 is measured at the library's allocator: every block allocated while working
-for the instance, its diagnostics included, with each block's accounting
-prefix, from creation until the block is freed
-([#180](https://github.com/jackgeek/climon2/issues/180)). State a library
-dependency keeps for the whole process or one thread is charged to the
-instance whose call created it. The caller is not implemented.**
+for the instance, its diagnostics and workers included, from creation until
+the block is freed ([#180](https://github.com/jackgeek/climon2/issues/180)).
+Each worker's thread handle, which the Rust standard library allocates
+outside the library's allocator, is not counted. State a library dependency
+keeps for the whole process or a caller's thread is shared-release
+allocation, so it is not counted either. The caller is not implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) queries its
 [client](../../../GLOSSARY.md#sessions)'s local resource/progress measurements.
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

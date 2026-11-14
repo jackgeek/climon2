@@ -194,12 +194,25 @@ signal handlers or standard streams.
   its ledger first, and each call's work on the instance runs charged to it,
   so its structures, copied paths, deliveries, diagnostics dispatcher
   (subscriber, registry and filter) and any dependency's internal allocations
-  are counted, prefix included, until freed on any thread. A resized block
-  stays charged to its ledger, and the ledger counts its own block. State a
-  dependency keeps for the whole process or one thread (for example tracing's
-  dispatcher registry or a per-thread formatting buffer) is charged to the
-  instance whose call created it. The `climon2-client` executable links the
-  same allocator; outside any instance nothing is charged.
+  are counted, prefix included, until freed on any thread. The ledger counts
+  its own block, measured once at bootstrap. A block resized while working
+  for its own instance stays charged; resized for another instance, or for
+  none, it moves to the shared-release allocation, which is not tracked yet.
+  Workers start through one helper that charges the whole thread, its
+  thread-wide state included, to its instance; only its thread handle, which
+  the standard library allocates from the system allocator directly, is in
+  no ledger.
+- Process- and thread-wide dependency state is never an instance's
+  (`src/library/warm.rs`). Bootstrap creates tracing's process-wide
+  dispatcher list through a dispatcher of the library's own that writes
+  nowhere (and, with `test-hooks`, reserves the injected-panic list). Before a
+  caller's thread first works for an instance, it is warmed outside any
+  charge: its standard-library handle and the record-formatting buffer the
+  thread keeps.
+- `#[global_allocator]` replaces the allocator of every artifact that links
+  the crate: the library, the `climon2-client` executable and the package's
+  own test binaries. Outside any instance nothing is charged; each block
+  still carries its prefix.
 - A panic in an instance call stops that instance: the call fails with
   `CM1_INTERNAL_ERROR`, one library `CM1_DIAGNOSTIC` record (`internal_error`)
   is queued when it fits `event_bytes`, and terminal evidence is failed with
@@ -210,9 +223,10 @@ signal handlers or standard streams.
 With `test-hooks` only (`src/library/hooks.rs`), `CLIMON2_LIBRARY_FAULT`
 selects faults: `panic:<call>[,<call>...]` panics once at each named export's
 boundary (`bootstrap` names `climon2_client_get_interface`), `worker` makes
-`run` start a worker that ends with its stream, and `stall-cleanup` one whose
-cleanup never ends. Release builds have no workers yet: Open (#93) brings the
-first.
+`run` start a worker that ends with its stream, `stall-cleanup` one whose
+cleanup never ends, and `joined-worker` one that ends at once and that `run`
+joins before going on. Release builds have no workers yet: Open (#93) brings
+the first.
 
 Loaders open the absolute `<executable home>/<version>/<library file>` with
 eager, local resolution (`RTLD_NOW | RTLD_LOCAL`); `current`, the working
@@ -255,8 +269,12 @@ private target directory and checks.
 | LIB-03 Library and Fault: caller startup memory scrambled and unmapped after create; lossless native paths; two instances' homes, settings and logs stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` (`instance.rs`) |
 | LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` (`instance.rs`) |
 | LIB-04 Library and Fault, Linux `eventfd`: the descriptor stays borrowed and counted once; in a scheduled race, polling sees the stream end while the handle is used before shutdown and after the end, and every call succeeds | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` (`instance.rs`) |
-| LIB-04 Fault (allocator pairing): a delivery stays charged until released through the library | `installed_library_charges_a_delivery_until_it_is_released` (`instance.rs`) |
-| LIM-02 and LIB-03 Library, Linux: `snapshot`'s current and peak allocation equal the host's own count of the heap the instance's calls hold, with logging on (its dispatcher included) and off | `installed_library_snapshot_counts_every_allocation_its_instance_holds` (`instance.rs`) |
+| LIB-04 Fault (allocator pairing): a delivery stays charged until released through the library, which returns exactly what the drain charged | `installed_library_charges_a_delivery_until_it_is_released` (`instance.rs`) |
+| LIM-02 and LIB-03 Library, x86-64 GNU/Linux: `snapshot`'s current and peak allocation equal the host's own count of the library's heap, with logging on (its dispatcher included) and off, and with a joined worker (its peak bounded: the thread handle) | `installed_library_snapshot_counts_every_allocation_its_instance_holds` (`instance.rs`) |
+| LIB-03 Library: a whole second instance's life leaves the first's current and peak allocation exactly unchanged | `installed_library_instances_never_change_each_others_allocation` (`instance.rs`) |
+| LIB-03 Library: successive instances on one owner thread differ by exactly their homes' length; nothing process- or thread-wide is charged to the first | `installed_library_charges_successive_instances_only_for_their_own_differences` (`instance.rs`) |
+| Allocator unit seam: a ledger holds its own block; a block resized for its own instance stays charged in one step, for another or none moves off | `a_new_ledger_holds_its_own_block`, `a_block_stays_charged_only_while_resized_for_its_own_instance` (`src/library/allocation.rs`) |
+| Warm unit seam: a caller's thread keeps its formatting buffer uncharged; a thread an instance owns is charged for its own | `a_callers_thread_is_warmed_uncharged_and_an_instances_own_is_not` (`src/library/warm.rs`) |
 | LIB-04 Fault: the failure diagnostic is queued only within `event_bytes` | `installed_library_queues_the_failure_diagnostic_only_within_event_bytes` (`instance.rs`) |
 | LIB-05 Fault: a panic at the bootstrap, `create` or `submit` fails only that call | `installed_library_contains_a_panic_at_the_bootstrap_create_or_submit` (`instance.rs`) |
 | LIB-05 and LIB-04 Fault: a panic in a running instance stops it, with a diagnostic delivery and failed terminal evidence (no retry from `shutdown` on); a delivery held past terminal evidence alone keeps communication and destroy busy | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` (`instance.rs`) |

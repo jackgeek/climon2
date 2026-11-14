@@ -5,7 +5,9 @@
 //!   each named exported call, the first time it is made (`bootstrap` is
 //!   `climon2_client_get_interface`);
 //! - `worker` makes `run` start one worker that ends with its stream;
-//! - `stall-cleanup` makes `run` start one worker whose cleanup never ends.
+//! - `stall-cleanup` makes `run` start one worker whose cleanup never ends;
+//! - `joined-worker` makes `run` start one worker that ends at once, and join
+//!   it before going on, so it never runs beside its instance's other work.
 
 use std::sync::Mutex;
 
@@ -26,6 +28,18 @@ pub(super) fn panic_at(call: &'static str) {
     }
 }
 
+/// Every exported call a panic can be injected at.
+const CALLS: usize = 12;
+
+/// Reserves the list of injected panics at bootstrap, so recording one
+/// allocates nothing an instance is charged for.
+pub(super) fn prepare() {
+    PANICKED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .reserve(CALLS);
+}
+
 /// Whether this is the first injected panic at `call`.
 fn first(call: &'static str) -> bool {
     let mut panicked = PANICKED
@@ -36,11 +50,26 @@ fn first(call: &'static str) -> bool {
     first
 }
 
-/// Whether `run` starts a worker, and whether that worker's cleanup stalls.
-pub(super) fn worker() -> Option<bool> {
+/// The worker a fault makes `run` start.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Worker {
+    /// Ends with its instance's stream.
+    Ends,
+    /// Never ends, so its cleanup stalls.
+    Stalls,
+    /// Ends at once, and `run` joins it before it goes on.
+    Joined,
+}
+
+/// The worker `run` starts, if any.
+pub(super) fn worker() -> Option<Worker> {
     let fault = fault();
-    [("worker", false), ("stall-cleanup", true)]
-        .into_iter()
-        .find(|(name, _)| fault == *name)
-        .map(|(_, stalls)| stalls)
+    [
+        ("worker", Worker::Ends),
+        ("stall-cleanup", Worker::Stalls),
+        ("joined-worker", Worker::Joined),
+    ]
+    .into_iter()
+    .find(|(name, _)| fault == *name)
+    .map(|(_, worker)| worker)
 }

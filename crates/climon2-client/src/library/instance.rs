@@ -10,7 +10,7 @@
 //! connection remains open.
 
 #[cfg(feature = "test-hooks")]
-use super::REQUIREMENTS;
+use super::{REQUIREMENTS, hooks::Worker};
 use super::{
     allocation::Account,
     failure::{
@@ -20,6 +20,7 @@ use super::{
     hook,
     platform::Notifier,
     startup::{Diagnostics, Paths, Startup},
+    warm,
 };
 use climon2_core::{
     diagnostics::{CappedWriter, dispatch},
@@ -64,9 +65,9 @@ unsafe impl<T> Sync for Shareable<T> {}
 
 /// A current measurement and its peak.
 #[derive(Clone, Copy, Default)]
-struct Gauge<T> {
-    current: T,
-    peak: T,
+pub(super) struct Gauge<T> {
+    pub(super) current: T,
+    pub(super) peak: T,
 }
 
 impl<T: Copy + Ord + AddAssign + SubAssign> Gauge<T> {
@@ -363,10 +364,28 @@ impl Shared {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Work for this instance: charged to it, under its diagnostics.
+    /// Work for this instance: charged to it, under its diagnostics. A
+    /// caller's thread is warmed first, outside any charge.
     fn scope<T>(&self, work: impl FnOnce() -> T) -> T {
+        warm::thread();
         self.account.charged(|| {
             tracing::dispatcher::with_default(&self.dispatch, || self.span.in_scope(work))
+        })
+    }
+
+    /// Starts one of this instance's own threads. It works for the instance
+    /// from its start, so everything it allocates, its thread-wide state
+    /// included, is charged here. Every worker starts through this.
+    #[cfg(feature = "test-hooks")]
+    fn spawn(
+        self: &Arc<Self>,
+        builder: thread::Builder,
+        work: impl FnOnce() + Send + 'static,
+    ) -> io::Result<JoinHandle<()>> {
+        let shared = Arc::clone(self);
+        builder.spawn(move || {
+            warm::adopt();
+            shared.scope(work);
         })
     }
 
@@ -543,10 +562,10 @@ impl Shared {
     pub(super) fn snapshot(&self) -> native::Metrics {
         let state = self.lock();
         let measures = &state.measures;
-        let (allocation, peak_allocation) = self.account.measure();
+        let allocation = self.account.measure();
         native::Metrics {
-            allocation_bytes: allocation,
-            peak_allocation_bytes: peak_allocation,
+            allocation_bytes: allocation.current,
+            peak_allocation_bytes: allocation.peak,
             event_bytes: measures.event_bytes.current,
             peak_event_bytes: measures.event_bytes.peak,
             records_drained: measures.drained,
@@ -684,18 +703,23 @@ impl Run {
     #[cfg(not(feature = "test-hooks"))]
     fn start_workers(&mut self, _: &Arc<Shared>) {}
 
-    /// `worker` and `stall-cleanup` start one worker, whose stack is the
-    /// release's qualified worker stack.
+    /// `worker`, `stall-cleanup` and `joined-worker` start one worker, whose
+    /// stack is the release's qualified worker stack; a joined worker is
+    /// joined at once.
     #[cfg(feature = "test-hooks")]
     fn start_workers(&mut self, shared: &Arc<Shared>) {
-        if let Some(stalls) = super::hooks::worker() {
+        if let Some(kind) = super::hooks::worker() {
             let counted = Counted::new(shared);
-            let worker = thread::Builder::new()
+            let builder = thread::Builder::new()
                 .name("climon2-client-worker".into())
-                .stack_size(REQUIREMENTS.worker_stack_bytes as usize)
-                .spawn(move || work(counted, stalls))
+                .stack_size(REQUIREMENTS.worker_stack_bytes as usize);
+            let worker = shared
+                .spawn(builder, move || work(counted, kind))
                 .expect("the worker starts");
-            self.workers.push(worker);
+            match kind {
+                Worker::Joined => drop(worker.join()),
+                Worker::Ends | Worker::Stalls => self.workers.push(worker),
+            }
         }
     }
 }
@@ -721,11 +745,13 @@ impl Drop for Counted {
     }
 }
 
-/// A worker that ends with its instance's stream, or whose cleanup stalls.
+/// A worker that ends with its instance's stream, at once, or never.
 #[cfg(feature = "test-hooks")]
-fn work(worker: Counted, stalls: bool) {
-    worker.0.wait_for_stop();
-    if stalls {
+fn work(worker: Counted, kind: Worker) {
+    if kind != Worker::Joined {
+        worker.0.wait_for_stop();
+    }
+    if kind == Worker::Stalls {
         loop {
             thread::park();
         }

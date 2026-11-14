@@ -1227,8 +1227,8 @@ fn installed_library_queues_the_failure_diagnostic_only_within_event_bytes() {
 /// LIB-04 Fault (allocator pairing through the owning library): a drained
 /// delivery stays charged, by record, bytes, delivery and allocation, until
 /// released through the library; the release returns every measurement to
-/// its earlier value and at least the record's bytes of allocation, and
-/// only the peaks remember it.
+/// its earlier value, and exactly the allocation the drain charged, and only
+/// the peaks remember it.
 #[test]
 fn installed_library_charges_a_delivery_until_it_is_released() {
     let package = Package::new();
@@ -1254,8 +1254,13 @@ fn installed_library_charges_a_delivery_until_it_is_released() {
     assert!(allocation(during) > allocation(before), "{before} {during}");
     let held = &report["snapshot_before_release"][1];
     assert_eq!(held["deliveries"], 1, "{held}");
-    assert!(
-        allocation(held) >= allocation(after) + RECORD,
+    // The panic the first drain contained left nothing allocated, so the
+    // delivery alone is what the second drain charged.
+    let charged = allocation(during) - allocation(before);
+    assert!(charged > RECORD, "{before} {during}");
+    assert_eq!(
+        allocation(held) - allocation(after),
+        charged,
         "{held} {after}"
     );
     assert!(peak(after) >= allocation(during), "{during} {after}");
@@ -1292,7 +1297,8 @@ fn installed_library_charges_a_delivery_until_it_is_released() {
 
 /// The `allocation` scenario's startup for one instance: logging every record
 /// to `logs/<name>.log`, or not at all.
-fn accounted(root: &Path, log: Option<&str>) -> Value {
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+fn accounted(root: &Path, log: Option<String>) -> Value {
     let Some(name) = log else {
         return json!({});
     };
@@ -1305,66 +1311,184 @@ fn accounted(root: &Path, log: Option<&str>) -> Value {
     })
 }
 
+/// The steps of an instance that ended one call at a time and was cleaned up:
+/// every call succeeded and its terminal evidence is stopped (`generation`).
+fn assert_ended_and_released(end: &Value, release: &Value, generation: u64) {
+    assert_success(&end["shutdown"]);
+    assert_success(&end["run"][0]);
+    assert_eq!(end["run"][1]["workers_cleanup"], CLEANUP_COMPLETE, "{end}");
+    assert_eq!(drains_to_terminal(&end["drains"]).1, &stopped(generation));
+    for step in ["release_communication", "release_control", "destroy"] {
+        assert_success(&release[step]);
+    }
+}
+
 /// LIM-02 Library and LIB-03 Library (#180): `snapshot` counts every
 /// allocation the instance holds, its diagnostics dispatcher included, with
-/// logging on and off. The oracle is the host's own count of the heap: it
-/// defines glibc's allocation entry points, which the loaded library binds
-/// to, and records every block a call on the measured instance allocated
-/// until it is freed (Linux only: macOS binds the library to its system
-/// allocator directly). The host makes one call at a time. After create and
-/// after the drains to terminal evidence, the current and peak allocation
-/// equal the bytes those calls hold and the most they held at once. A warm-up
-/// lifecycle on the same threads first creates what the process and its
-/// threads keep for any instance, which no instance holds.
-#[cfg(target_os = "linux")]
+/// logging on and off, and with a worker of the library's own (the hooked
+/// library's `joined-worker` fault, which run joins at once, so the worker
+/// never allocates beside another thread; its handle, which the standard
+/// library allocates from the system allocator directly, is the one block no
+/// ledger can see, so that peak is only bounded). The oracle is the host's own count of the heap
+/// (x86-64 GNU/Linux only): it defines glibc's allocation entry points, which
+/// the loaded library binds to, and records every block the library image's
+/// code allocated until it is freed; glibc's own blocks are not the
+/// library's. The host makes one call at a time. After create and after the
+/// instance ended, the current and peak allocation equal the bytes the
+/// library holds and the most it held at once. A warm-up lifecycle on the
+/// same threads first runs the library's first call on each, whose
+/// per-thread state the library warms uncharged.
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
 #[test]
 fn installed_library_snapshot_counts_every_allocation_its_instance_holds() {
     let package = Package::new();
     let root = root(&package);
     let mut held = Vec::new();
-    for log in [Some("measured"), None] {
+    let worker = (!archive()).then_some("joined-worker");
+    for (log, fault) in [
+        (Some("measured"), None),
+        (None, None),
+        (Some("worker"), worker),
+    ] {
+        if log == Some("worker") && fault.is_none() {
+            continue;
+        }
         let report = scenario(
             &package,
             "allocation",
             &input(
                 &root,
                 json!({
-                    "warm_up": accounted(&root, log.map(|_| "warm-up")),
-                    "measured": accounted(&root, log),
+                    "warm_up": accounted(&root, log.map(|name| format!("{name}-warm-up"))),
+                    "measured": accounted(&root, log.map(str::to_owned)),
                 }),
             ),
-            None,
+            fault,
         );
         for instance in ["warm_up", "measured"] {
             let lifecycle = &report[instance];
             assert_success(&lifecycle["create"]["call"]);
-            assert_success(&lifecycle["shutdown"]);
-            assert_success(&lifecycle["run"][0]);
-            assert_eq!(drains_to_terminal(&lifecycle["drains"]).1, &stopped(1));
-            for step in ["release_communication", "release_control", "destroy"] {
-                assert_success(&lifecycle[step]);
-            }
+            assert_ended_and_released(&lifecycle["end"], &lifecycle["release"], 1);
         }
         let measured = &report["measured"];
+        if fault.is_some() {
+            let run = &measured["end"]["run"][1];
+            assert_eq!(run["workers_cleanup"], CLEANUP_COMPLETE, "{run}");
+        }
         for checkpoint in ["created", "ended"] {
             let observed = &measured[checkpoint];
             assert_success(&observed["snapshot"][0]);
             let (metrics, heap) = (&observed["snapshot"][1], &observed["heap"]);
             assert_eq!(
                 metrics["allocation_bytes"], heap["live"],
-                "{log:?} {checkpoint}: {observed}"
+                "{log:?} {fault:?} {checkpoint}: {observed}"
             );
-            assert_eq!(
-                metrics["peak_allocation_bytes"], heap["peak"],
-                "{log:?} {checkpoint}: {observed}"
-            );
+            let peak = (&metrics["peak_allocation_bytes"], &heap["peak"]);
+            if fault.is_some() && checkpoint == "ended" {
+                // The standard library allocates each thread's handle from
+                // the system allocator directly, bypassing every global
+                // allocator, so no ledger holds the worker's while it lives.
+                assert!(peak.0.as_u64() < peak.1.as_u64(), "{observed}");
+            } else {
+                assert_eq!(peak.0, peak.1, "{log:?} {fault:?} {checkpoint}: {observed}");
+            }
         }
         assert_eq!(report["joined"], true);
         held.push(measured["created"]["heap"]["live"].as_u64().unwrap());
     }
-    // A dispatcher's registry alone reserves 32 KiB up front (sharded-slab
-    // 0.1.7), so logging holds at least that much more.
-    assert!(held[0] >= held[1] + 32 * 1024, "{held:?}");
+    // The dispatcher is counted: logging holds more.
+    assert!(held[0] > held[1], "{held:?}");
+    package.assert_clean();
+}
+
+/// LIB-03 Library (#180): instances share no allocation. While `a` is
+/// alive, `b` lives its whole life beside it, one call at a time (created,
+/// ended, released and destroyed), and `a`'s current and peak allocation are
+/// exactly the same before, beside and after `b`. (Two instances' totals are
+/// not compared: a dependency sizes some per-thread storage by the thread's
+/// index, so equal startups on different owner threads can differ.)
+#[test]
+fn installed_library_instances_never_change_each_others_allocation() {
+    let package = Package::new();
+    let root = root(&package);
+    let base = root.to_str().unwrap();
+    let startup = |log: &str| {
+        json!({
+            "diagnostics": {
+                "log_path": { "present": 1, "value": path(json!(format!("{base}/logs/{log}.log"))) },
+                "filter": "trace",
+            },
+        })
+    };
+    let report = scenario(
+        &package,
+        "bystander",
+        &input(&root, json!({ "a": startup("a"), "b": startup("b") })),
+        None,
+    );
+    assert_success(&report["create_a"]["call"]);
+    assert_success(&report["create_b"]["call"]);
+    let metrics = |name: &str| {
+        let snapshot = &report[name];
+        assert_success(&snapshot[0]);
+        let metrics = &snapshot[1];
+        (
+            metrics["allocation_bytes"].as_u64().unwrap(),
+            metrics["peak_allocation_bytes"].as_u64().unwrap(),
+        )
+    };
+    let a = metrics("a_before");
+    assert_eq!(metrics("a_beside"), a, "{report:#}");
+    assert_eq!(metrics("a_after"), a, "{report:#}");
+    assert_ended_and_released(&report["end_b"], &report["release_b"], 1);
+    assert_ended_and_released(&report["end_a"], &report["release_a"], 1);
+    assert_eq!(report["joined"], json!([true, true]));
+    package.assert_clean();
+}
+
+/// LIB-03 Library (#180): what the process and each caller thread keep for
+/// any instance is no instance's. Instances `a` and `b` are created one after
+/// the other on the same owner thread, each ended and destroyed before the
+/// next, from startups that differ only in the home path's length: right
+/// after create, `b`'s current and peak allocation exceed `a`'s by exactly
+/// that many bytes, though `a` was the first instance in the process.
+#[test]
+fn installed_library_charges_successive_instances_only_for_their_own_differences() {
+    let package = Package::new();
+    let root = root(&package);
+    let base = root.to_str().unwrap();
+    let startup = |home: &str| {
+        json!({
+            "home_path": path(json!(format!("{base}/{home}"))),
+            "diagnostics": {
+                "log_path": { "present": 1, "value": path(json!(format!("{base}/logs/{home}.log"))) },
+                "filter": "trace",
+            },
+        })
+    };
+    let (a_home, b_home) = ("a", "b-longer");
+    let report = scenario(
+        &package,
+        "successive",
+        &input(&root, json!({ "a": startup(a_home), "b": startup(b_home) })),
+        None,
+    );
+    let created = |name: &str| {
+        let instance = &report[name];
+        assert_success(&instance["create"]["call"]);
+        assert_ended_and_released(&instance["end"], &instance["release"], 1);
+        let snapshot = &instance["created"];
+        assert_success(&snapshot[0]);
+        let metrics = &snapshot[1];
+        (
+            metrics["allocation_bytes"].as_u64().unwrap(),
+            metrics["peak_allocation_bytes"].as_u64().unwrap(),
+        )
+    };
+    let (a, b) = (created("a"), created("b"));
+    let longer = (b_home.len() - a_home.len()) as u64;
+    assert_eq!(b, (a.0 + longer, a.1 + longer), "{report:#}");
+    assert_eq!(report["joined"], true);
     package.assert_clean();
 }
 
