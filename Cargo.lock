@@ -263,6 +263,7 @@ dependencies = [
  "libc",
  "ratatui",
  "serde_json",
+ "tempfile",
  "tracing",
  "unicode-width",
 ]

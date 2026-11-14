@@ -20,6 +20,7 @@ unicode-width = "0.2.3"
 
 [dev-dependencies]
 serde_json.workspace = true
+tempfile = "3.27.0"
 
 [lints]
 workspace = true

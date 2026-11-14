@@ -33,7 +33,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
-use supervisor::{Context, Supervisor};
+use supervisor::{Context, Load, Refusal, Supervisor};
 
 /// A one-line diagnostic that the thin main prints, after the host is
 /// restored, with the climon2 error code.
@@ -161,7 +161,7 @@ impl Monitor {
             .to_owned();
         let lanes = limits.lanes();
         let context = Context {
-            loader: climon2_platform::library::Loader::new(startup.executable),
+            load: loader(startup.executable),
             home: startup.home.clone(),
             runtime,
             escape: prefix,
@@ -193,7 +193,7 @@ impl Monitor {
     /// Consuming the monitor drops its screen before the host is released.
     fn serve(mut self, host: &mut Host) -> io::Result<Ending> {
         let ending = self.events(host);
-        if let Some(supervisor) = self.supervisor.take() {
+        if let Some(mut supervisor) = self.supervisor.take() {
             supervisor.stop();
         }
         ending
@@ -304,6 +304,17 @@ impl Monitor {
         }
         None
     }
+}
+
+/// The monitor's one validated loader, shared by every release it loads.
+fn loader(executables: climon2_core::layout::ExecutableHome) -> Load {
+    let loader = climon2_platform::library::Loader::new(executables);
+    Box::new(move |version| {
+        loader
+            .load(version)
+            .map(climon2_platform::library::Library::functions)
+            .map_err(|error| Refusal::Library(error.failure(), error.to_string()))
+    })
 }
 
 /// Why a pass was incomplete, as the monitor shows it; `None` when complete.
