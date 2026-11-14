@@ -292,7 +292,8 @@ impl Monitor {
     }
 
     /// Enter on a connected row not known to be final selects it, closes
-    /// the selector and acquires it; any other row changes nothing yet.
+    /// the selector and acquires it; Enter on any other row is ignored until
+    /// #110 and #116, which own those cases.
     fn enter(&mut self, id: SessionId) {
         if !self.registry.acquirable(&id) {
             return;
