@@ -103,9 +103,11 @@ fn load_version(home: &Path, version: &str) -> Value {
             let mut report = observe(Library {
                 bootstrap: library.bootstrap(),
             });
-            report["shared"] = json!(loader
-                .load(&version)
-                .is_ok_and(|again| std::ptr::eq(again, library)));
+            report["shared"] = json!(
+                loader
+                    .load(&version)
+                    .is_ok_and(|again| std::ptr::eq(again, library))
+            );
             report["images"] = json!(client_library_images());
             report["environment"] = json!(
                 std::env::vars_os()
