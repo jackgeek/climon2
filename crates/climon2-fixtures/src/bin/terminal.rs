@@ -105,10 +105,12 @@ fn await_input(expected: &str) -> io::Result<()> {
 /// Starts a copy of this fixture running `script` like a daemon would: in its own session,
 /// detached from the terminal, and with an empty environment.
 fn detach(script: &[&String]) -> Result<(), Box<dyn std::error::Error>> {
-    use nix::unistd::{
-        ForkResult, dup2_stderr, dup2_stdin, dup2_stdout, execve, fork, getsid, setsid,
+    use nix::{
+        fcntl::{FcntlArg, FdFlag, fcntl},
+        poll::{PollFd, PollFlags, PollTimeout, poll},
+        unistd::{ForkResult, dup2_stderr, dup2_stdin, dup2_stdout, execve, fork, pipe, setsid},
     };
-    use std::{ffi::CString, os::unix::ffi::OsStringExt};
+    use std::{ffi::CString, os::fd::AsFd, os::unix::ffi::OsStringExt};
     let program = CString::new(env::current_exe()?.into_os_string().into_vec())?;
     let mut argv = vec![program.clone()];
     for argument in script {
@@ -118,9 +120,18 @@ fn detach(script: &[&String]) -> Result<(), Box<dyn std::error::Error>> {
         .read(true)
         .write(true)
         .open("/dev/null")?;
+    // The child holds `started` until it execs or exits, which ends the poll below with EOF.
+    // That proves only that the child got past setsid or gave up: if setsid fails, the child
+    // reports the error and exits 127 while still in this session, and `detach` returns Ok.
+    // Polling the child's session instead loses a child that exits between two polls: macOS
+    // getsid reports an exited child as missing.
+    let (ready, started) = pipe()?;
+    for end in [&ready, &started] {
+        fcntl(end, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))?;
+    }
     // The fixture is single-threaded, so the child may run arbitrary code before exec.
-    let child = match unsafe { fork() }? {
-        ForkResult::Parent { child } => child,
+    match unsafe { fork() }? {
+        ForkResult::Parent { .. } => {}
         ForkResult::Child => {
             let error = setsid()
                 .and_then(|_| dup2_stdin(&null))
@@ -131,14 +142,13 @@ fn detach(script: &[&String]) -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("climon2-fixture: error: detach: {error}");
             std::process::exit(127);
         }
-    };
+    }
+    drop(started);
     // Until the child leads its own session, this fixture exiting would hang it up.
-    let deadline = Instant::now() + BOUND;
-    while getsid(Some(child)) != Ok(child) {
-        if Instant::now() >= deadline {
-            return Err("detached child never started its session".into());
-        }
-        thread::sleep(Duration::from_millis(1));
+    let timeout = PollTimeout::try_from(BOUND).map_err(|_| "fixture bound exceeds poll")?;
+    let mut descriptors = [PollFd::new(ready.as_fd(), PollFlags::POLLIN)];
+    if poll(&mut descriptors, timeout)? == 0 {
+        return Err("detached child never started its session".into());
     }
     Ok(())
 }

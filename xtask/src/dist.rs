@@ -1,4 +1,5 @@
 use crate::{quality, release};
+use climon2_core::{VersionName, layout::ExecutableHome};
 use std::{
     collections::BTreeSet,
     env,
@@ -60,7 +61,7 @@ fn build_payload(root: &Path) -> io::Result<BuiltPayload> {
         };
         package_binary(&platform, &build, binary, &destination)?;
     }
-    package_library(&platform, &build, &payload.join(version), version)?;
+    package_library(&platform, &build, &payload, version)?;
     for file in ["LICENSE", "README.md"] {
         fs::copy(root.join(file), payload.join(file))?;
     }
@@ -150,18 +151,19 @@ fn package_binary(
     unhooked(destination)
 }
 
-/// The client library is packaged like an executable, then checked as the
-/// library of exactly this `version`.
+/// The client library is packaged like an executable into `payload`'s
+/// version folder, then checked as the library of exactly this `version`.
 fn package_library(
     platform: &Platform,
     build: &Path,
-    folder: &Path,
+    payload: &Path,
     version: &str,
 ) -> io::Result<()> {
+    let home = ExecutableHome::new(payload).map_err(io::Error::other)?;
+    let version: VersionName = version.parse().map_err(io::Error::other)?;
     let name = climon2_core::layout::client_library_name();
-    let destination = folder.join(&name);
-    package_binary(platform, build, &name, &destination)?;
-    crate::library::verify(&destination, version)
+    package_binary(platform, build, &name, &home.client_library(&version))?;
+    crate::library::verify(&home, &version)
 }
 
 /// Release builds never enable `test-hooks`, so no shipped binary carries the marker.
@@ -176,9 +178,7 @@ pub(crate) fn unhooked(path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn verify_linux_binary(path: &Path) -> io::Result<()> {
-    let bytes = fs::read(path)?;
-    // ELF64, little-endian, current ELF version, AMD64 e_machine.
-    if !bytes.starts_with(b"\x7fELF\x02\x01\x01") || bytes.get(18..20) != Some(&[62, 0]) {
+    if !climon2_platform::library::is_x86_64_elf(&fs::read(path)?) {
         return Err(io::Error::other(format!(
             "{} is not an x86_64 Linux ELF executable",
             path.display()

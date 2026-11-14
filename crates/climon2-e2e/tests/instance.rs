@@ -1009,20 +1009,23 @@ fn assert_unaffected(report: &Value) {
 /// LIB-05 Fault: a panic injected at the bootstrap, at `create` or at
 /// `submit` returns an explicit `CM1_INTERNAL_ERROR` without unwinding (the
 /// host survives, nothing reaches its standard error), with cleared output
-/// and no handles; the retry succeeds, and no instance is affected.
+/// and no handles; the retry succeeds, and no instance is affected. The
+/// shared loader makes the first bootstrap call: it refuses the load as a
+/// recoverable bootstrap failure only because the bootstrap cleared its
+/// output (an uncleared one is a malformed description, owner decision on
+/// #84), and the host's second load succeeds.
 #[test]
 fn installed_library_contains_a_panic_at_the_bootstrap_create_or_submit() {
     let package = Package::new();
     let Some(report) = fault(&package, "bootstrap", json!({})) else {
         return;
     };
+    let (refused, retried) = twice(&report["bootstrap"]);
     assert_eq!(
-        report["bootstrap"],
-        json!([
-            { "status": INTERNAL_ERROR, "output": "null" },
-            { "status": SUCCESS, "output": "set" },
-        ])
+        refused["error"]["failure"], "BootstrapFailure",
+        "{report:#}"
     );
+    assert_eq!(retried, &json!({ "status": SUCCESS, "output": "set" }));
     assert_unaffected(&report);
     let report = fault(&package, "create", json!({})).unwrap();
     let (failed, retried) = twice(&report["create"]);

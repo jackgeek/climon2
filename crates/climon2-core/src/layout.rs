@@ -99,6 +99,29 @@ pub fn client_library_name() -> String {
     format!("{DLL_PREFIX}climon2_client{DLL_SUFFIX}")
 }
 
+/// A climon2 executable home: the absolute, canonical directory of an install
+/// layout. It owns the path of each version's client library, as
+/// [`ExecutableLayout`] owns those of its version binaries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutableHome(PathBuf);
+
+impl ExecutableHome {
+    pub fn new(canonical: &Path) -> Result<Self, ContractError> {
+        canonical_absolute(canonical)?;
+        Ok(Self(canonical.to_owned()))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+
+    /// `<home>/<version>/<library file>`: the version folder, not the file
+    /// name, carries the release.
+    pub fn client_library(&self, version: &VersionName) -> PathBuf {
+        self.0.join(version.as_str()).join(client_library_name())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutableLayout {
     root: PathBuf,
@@ -136,6 +159,11 @@ impl ExecutableLayout {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The executable home this layout's binary lives in.
+    pub fn home(&self) -> ExecutableHome {
+        ExecutableHome(self.root.clone())
     }
 
     pub fn version(&self) -> &VersionName {

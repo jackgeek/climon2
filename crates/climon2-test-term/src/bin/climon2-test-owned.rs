@@ -1,6 +1,6 @@
-//! Linux test-only exec adapter: carry ownership through environment clearing and reparenting.
+//! Unix test-only exec adapter: carry ownership through environment clearing and reparenting.
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn main() -> std::process::ExitCode {
     use std::{
         fs::File,
@@ -24,5 +24,5 @@ fn main() -> std::process::ExitCode {
     ExitCode::from(125)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 fn main() {}

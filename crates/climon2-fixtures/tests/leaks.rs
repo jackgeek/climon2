@@ -99,3 +99,40 @@ fn leak_check_finds_environment_cleared_processes_in_detached_sessions() {
     wait_gone(daemon);
     assert_leak_found_then_clean(&isolation, &leaks);
 }
+
+/// #21.5: a daemon that forks into a new session several times, each parent exiting as soon
+/// as its child leads its session, leaves a leak even when no process-table sample saw any
+/// of the short-lived parents.
+#[test]
+fn leak_check_finds_a_multiply_detached_process_whose_parents_exited_unsampled() {
+    const HOPS: usize = 4;
+    let isolation = Isolation::new();
+    let parents: Vec<_> = (0..HOPS)
+        .map(|hop| isolation.home().join(format!("parent-{hop}.pid")))
+        .collect();
+    let leak = isolation.home().join("leak.pid");
+    // Innermost first: the leak sleeps; each parent records itself, detaches the next
+    // process, and exits as soon as that process leads its own session.
+    let mut script: Vec<std::ffi::OsString> = vec!["write-pid".into(), leak.clone().into()];
+    script.extend(["sleep".into(), "5000".into()]);
+    for parent in parents.iter().rev() {
+        let mut outer: Vec<std::ffi::OsString> = vec!["write-pid".into(), parent.into()];
+        outer.extend(["detach".into(), script.len().to_string().into()]);
+        outer.append(&mut script);
+        script = outer;
+    }
+    let mut command = isolation.command(bin_path("climon2-fixture"));
+    command.arg("detach");
+    command.arg(script.len().to_string());
+    command.args(&script);
+    command.args(["exit", "0"]);
+    let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
+    assert_eq!(terminal.wait_exit(DEADLINE).unwrap(), 0);
+    drop(terminal);
+    let parents: Vec<_> = parents.iter().map(|path| pid_from(path)).collect();
+    let leaks = Leaks(vec![pid_from(&leak)]);
+    for &parent in &parents {
+        wait_gone(parent);
+    }
+    assert_leak_found_then_clean(&isolation, &leaks);
+}
