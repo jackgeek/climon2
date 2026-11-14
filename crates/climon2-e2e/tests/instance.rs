@@ -698,7 +698,8 @@ fn installed_library_create_rejects_invalid_settings_and_diagnostics_without_han
 /// described instance allocation and `max_workers` the described workers,
 /// each exactly at its bound, and `drain_payload_bytes` must hold a whole
 /// record of `metadata_record_bytes`, at that bound too (owner decision 4 on
-/// #93: no delivery ever holds one oversized record). With no descriptor
+/// #93: no delivery ever holds one oversized record), and a whole Display of
+/// `chunk_bytes`, at that bound too (#94). With no descriptor
 /// left for the notification descriptor and the waker, or for the log file
 /// after them, create fails with `CM1_RESOURCE_LIMIT`, no handles and no log
 /// file; one more descriptor is enough.
@@ -750,13 +751,29 @@ fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descri
         ),
         (
             "drain_payload_bytes below metadata_record_bytes",
-            limits(json!({ "metadata_record_bytes": 4096, "drain_payload_bytes": 4095 })),
+            limits(json!({ "metadata_record_bytes": 4096, "chunk_bytes": 1024,
+                           "drain_payload_bytes": 4095 })),
             UNSUPPORTED_LIMIT,
             "unsupported_limit",
         ),
         (
             "drain_payload_bytes at metadata_record_bytes",
-            limits(json!({ "metadata_record_bytes": 4096, "drain_payload_bytes": 4096 })),
+            limits(json!({ "metadata_record_bytes": 4096, "chunk_bytes": 1024,
+                           "drain_payload_bytes": 4096 })),
+            SUCCESS,
+            "",
+        ),
+        (
+            "drain_payload_bytes below chunk_bytes",
+            limits(json!({ "metadata_record_bytes": 1024, "chunk_bytes": 4096,
+                           "drain_payload_bytes": 4095 })),
+            UNSUPPORTED_LIMIT,
+            "unsupported_limit",
+        ),
+        (
+            "drain_payload_bytes at chunk_bytes",
+            limits(json!({ "metadata_record_bytes": 1024, "chunk_bytes": 4096,
+                           "drain_payload_bytes": 4096 })),
             SUCCESS,
             "",
         ),
@@ -805,7 +822,7 @@ fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descri
         }
     }
     let report = creates(&package, &root, &cases);
-    assert_eq!(report["cases"].as_array().unwrap().len(), 11 + 25);
+    assert_eq!(report["cases"].as_array().unwrap().len(), 13 + 25);
     assert!(!unopened.exists(), "a failed create leaves no log file");
     assert!(opened.exists());
     package.assert_clean();

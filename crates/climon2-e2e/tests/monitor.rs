@@ -7,7 +7,7 @@
 #[allow(dead_code)]
 mod support;
 
-use climon2_test_term::{InputTerminal, Modes, Terminal, bin_path};
+use climon2_test_term::{AnsiColor, Color, InputTerminal, Modes, Terminal, Width, bin_path};
 use nix::{
     sys::signal::{Signal, kill},
     unistd::Pid,
@@ -519,7 +519,7 @@ fn overlaid(screen: &str, dialog: &[String]) -> String {
 /// mouse reports and focus reports, no cursor, every other mode at the
 /// baseline, and the host's title untouched.
 fn opened(terminal: &mut Terminal) {
-    terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
+    whole_frame_shows(terminal, EMPTY, |screen| screen.contains(EMPTY));
     owns_host(terminal);
 }
 
@@ -527,6 +527,39 @@ fn opened(terminal: &mut Terminal) {
 fn opened_on(terminal: &mut Terminal, expected: &str) {
     shows(terminal, expected);
     owns_host(terminal);
+}
+
+/// Whether `output` ends where a monitor frame ends: its closing SGR 0, or
+/// the cursor shown after it. Neither occurs inside a frame, whose cells
+/// set SGR as `0;...` and whose cursor is hidden while they are written.
+fn frame_ended(output: &[u8]) -> bool {
+    output.ends_with(b"\x1b[0m") || output.ends_with(b"\x1b[?25h")
+}
+
+/// Waits until `condition` holds of a screen that shows only whole frames:
+/// the output ended where a frame ends and nothing arrived while the screen
+/// was read. A host read can split a frame, so the screen alone may show one
+/// half painted. `what` names the condition for a failure.
+fn whole_frame_shows(terminal: &Terminal, what: &str, condition: impl Fn(&str) -> bool) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let before = terminal.received();
+        let screen = terminal.screen();
+        let whole = frame_ended(&before) && terminal.received() == before;
+        if whole && condition(&screen) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{what} never shown in a whole frame:\n{screen}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waits until a whole frame shows no selector.
+fn selector_closed(terminal: &Terminal) {
+    whole_frame_shows(terminal, "no selector", |screen| !screen.contains('║'));
 }
 
 /// Waits until the host shows exactly `expected`.
@@ -1413,13 +1446,11 @@ fn library_logs(package: &Package, id: &str) -> Vec<PathBuf> {
     logs
 }
 
-/// Waits until a row of the host screen contains `text`.
+/// Waits until a whole frame has a row that contains `text`.
 fn shows_row(terminal: &mut Terminal, text: &str) {
-    terminal
-        .wait_for_screen(TIMEOUT, |screen| {
-            screen.lines().any(|line| line.contains(text))
-        })
-        .unwrap_or_else(|_| panic!("{text:?} never shown:\n{}", terminal.screen()));
+    whole_frame_shows(terminal, text, |screen| {
+        screen.lines().any(|line| line.contains(text))
+    });
 }
 
 /// DSC-03 (Monitor), CTL-01 (Monitor), COM-01 (Monitor), LIB-01 (Monitor)
@@ -1948,7 +1979,16 @@ fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
     let own = listed(&package, "c2 monitor");
     let own = own["session_id"].as_str().unwrap();
     assert!(library_logs(&package, own).is_empty());
-    assert_eq!(listed(&package, "Nested")["depth"], 2);
+    // The session that started the nested one names it in its arguments too.
+    let inner = package
+        .list()
+        .into_iter()
+        .find(|session| {
+            let args = session["args"].to_string();
+            args.contains("Nested") && !args.contains("--headless")
+        })
+        .unwrap();
+    assert_eq!(inner["depth"], 2);
     assert_eq!(
         listed(&package, "Elsewhere")["state"],
         serde_json::json!({"lifecycle": "attached", "attachments": 1, "controlled": true})
@@ -2077,5 +2117,533 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
             "{name} was resized"
         );
     }
+    package.assert_clean();
+}
+
+/// The top row's key hint beside a selected session, with the default
+/// prefix.
+const SESSIONS_HINT: &str = "Ctrl+] then s: sessions";
+/// The status a selected session shows until status reaches the monitor
+/// (#95, #107), and the control the monitor holds once input may go.
+const STATUS: &str = "Unavailable";
+const CONTROLLING: &str = "Controlling";
+
+/// The top row with a session selected, as #108 lays it out (owner
+/// decision, 2026-11-14): the label from the left, then fixed slots at the
+/// right edge, each after ` | `: the status (`fields[0]`) in 18 cells, the
+/// control (`fields[1]`) in 15 and any key hint (`fields[2]`).
+fn session_top_row(cols: usize, label: &str, fields: &[&str]) -> String {
+    let mut slots = format!(" | {:<18} | {:<15}", fields[0], fields[1]);
+    if let Some(hint) = fields.get(2) {
+        slots.push_str(&format!(" | {hint}"));
+    }
+    let width = cols - slots.chars().count();
+    format!("{label:<width$}{slots}")
+}
+
+/// Waits until a whole frame's top row is exactly `expected`.
+fn top_row_is(terminal: &mut Terminal, expected: &str) {
+    whole_frame_shows(terminal, expected, |screen| {
+        screen.lines().next() == Some(expected)
+    });
+}
+
+/// Waits until the host shows its cursor at `row` and `column`: a frame's
+/// cursor follows its cells, and a host read can split them.
+fn cursor_at(terminal: &Terminal, row: usize, column: usize) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let cursor = terminal.cursor();
+        if (cursor.row, cursor.column, cursor.visible) == (row, column, true) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "cursor {cursor:?}");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Opens the selector once `label`'s session is connected (listed as
+/// Unavailable without `status-v1`), moves the highlight `downs` rows down
+/// from the first and selects that row with Enter.
+fn select(terminal: &mut Terminal, label: &str, downs: usize) {
+    terminal.send("\x1ds").unwrap();
+    shows_row(terminal, &format!("║{STATUS} {label}"));
+    let mut keys = "\x1b[B".repeat(downs);
+    keys.push('\r');
+    terminal.send(keys).unwrap();
+}
+
+/// Bash that titles its session `title`, then, until `$HOME/finish` exists,
+/// appends each new `stty size` of its terminal to `$HOME/<title>.sizes`.
+/// A `$HOME/<title>.probe` seen before a read is renamed `.probed` after it.
+fn sized(title: &str) -> String {
+    format!(
+        "printf '\\033]2;{title}\\007'; p=; \
+         until [ -e \"$HOME/finish\" ] || [ \"$SECONDS\" -ge 120 ]; do \
+         q=; [ -e \"$HOME/{title}.probe\" ] && q=1; \
+         s=$(stty size); if [ \"$s\" != \"$p\" ]; then echo \"$s\" >> \"$HOME/{title}.sizes\"; p=$s; fi; \
+         [ -n \"$q\" ] && mv \"$HOME/{title}.probe\" \"$HOME/{title}.probed\"; \
+         sleep 0.05; done"
+    )
+}
+
+/// The sizes [`sized`]'s session `title` has had once it has read its size
+/// after this call: every resize applied before the call is among them.
+fn settled_sizes(package: &Package, title: &str) -> Vec<String> {
+    let home = package.isolation.home();
+    let probed = home.join(format!("{title}.probed"));
+    let _ = fs::remove_file(&probed);
+    fs::write(home.join(format!("{title}.probe")), b"").unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !probed.exists() {
+        assert!(Instant::now() < deadline, "{title} never read its size");
+        thread::sleep(Duration::from_millis(20));
+    }
+    sizes(package, title)
+}
+
+/// The sizes [`sized`]'s session `title` has had, oldest first.
+fn sizes(package: &Package, title: &str) -> Vec<String> {
+    let path = package.isolation.home().join(format!("{title}.sizes"));
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Waits until session `title` has had exactly the sizes `expected`.
+fn sized_to(package: &Package, title: &str, expected: &[&str]) {
+    let deadline = Instant::now() + TIMEOUT;
+    while sizes(package, title) != expected {
+        assert!(
+            Instant::now() < deadline,
+            "{title} sizes {:?}, not {expected:?}",
+            sizes(package, title)
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// CTL-05 (Monitor) and TRM-01 (Monitor, basic cases), with spec #73's Enter
+/// and initial selection before status (#108): nothing is selected at
+/// startup however many sessions exist. Enter on a connected row selects and
+/// acquires it, and its screen is painted directly below the top row from
+/// the monitor's own model: plain, ANSI-coloured, bold-on-blue, wide and
+/// combining text, each cell as written, and the cursor where the
+/// application left it. Later output is painted live. A session created
+/// later never moves the selection, and the monitor controls the session.
+#[test]
+fn enter_selects_and_acquires_a_session_and_paints_it_live() {
+    let package = Package::new();
+    without_introduction(&package);
+    let script = r#"printf '\033]2;Paint\007plain \033[31mred\033[0m \033[1;44mbold\033[0m \xe7\x95\x8ce\xcc\x81\r\n\033[3;5H'; until [ -e "$HOME/more" ] || [ "$SECONDS" -ge 120 ]; do sleep 0.05; done; printf 'MORE'"#;
+    headless(&package, script, "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    let unselected = empty_monitor(
+        ROWS,
+        COLS,
+        &["No session selected.", "Press Ctrl+] then x to exit."],
+    );
+    shows(&mut terminal, &unselected);
+    select(&mut terminal, "Paint", 0);
+    let top = session_top_row(
+        usize::from(COLS),
+        "Paint",
+        &[STATUS, CONTROLLING, SESSIONS_HINT],
+    );
+    top_row_is(&mut terminal, &top);
+    // The host's row text has each cell's character alone, and a blank for
+    // the column a wide character covers.
+    assert_eq!(terminal.row(1).trim_end(), "plain red bold 界 e");
+    let cells = terminal.cells(1);
+    let red = Color::Ansi(AnsiColor::Red);
+    assert_eq!(
+        (cells[5].text.as_str(), cells[5].foreground),
+        (" ", Color::Default)
+    );
+    for cell in &cells[6..9] {
+        assert_eq!(cell.foreground, red, "{cell:?}");
+        assert!(!cell.rendition.bold);
+    }
+    assert_eq!(cells[9].foreground, Color::Default);
+    for cell in &cells[10..14] {
+        assert!(cell.rendition.bold, "{cell:?}");
+        assert_eq!(
+            (cell.foreground, cell.background),
+            (Color::Default, Color::Ansi(AnsiColor::Blue))
+        );
+    }
+    assert_eq!(cells[14].background, Color::Default);
+    assert_eq!(
+        (cells[15].text.as_str(), cells[15].width),
+        ("界", Width::Wide)
+    );
+    assert_eq!(cells[16].width, Width::Spacer);
+    assert_eq!(
+        (cells[17].text.as_str(), cells[17].width),
+        ("e\u{301}", Width::Single)
+    );
+    cursor_at(&terminal, 3, 4);
+    for row in 2..usize::from(ROWS) {
+        assert_eq!(terminal.row(row).trim_end(), "", "row {row}");
+    }
+
+    fs::write(package.isolation.home().join("more"), b"").unwrap();
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| {
+            screen
+                .lines()
+                .nth(3)
+                .is_some_and(|row| row.starts_with("    MORE"))
+        })
+        .unwrap();
+    cursor_at(&terminal, 3, 8);
+
+    headless(&package, &titled_hold("Later"), "finish");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{STATUS} Later"));
+    // The selector covers the canvas, but control has not changed: the top
+    // row still says Controlling (owner decision, 2026-11-14).
+    top_row_is(&mut terminal, &top);
+    terminal.send("\x1b").unwrap();
+    selector_closed(&terminal);
+    assert_eq!(terminal.row(0), top);
+    assert_eq!(
+        listed(&package, "Paint")["state"],
+        serde_json::json!({"lifecycle": "attached", "attachments": 1, "controlled": true})
+    );
+    assert_eq!(listed(&package, "Later")["state"]["controlled"], false);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// TRM-02 (Monitor): the session daemon alone answers a session's queries;
+/// the monitor never asks the host anything, never forwards a session's
+/// bytes (its queries and a title it sets) to the host, and shows the title
+/// only as an inert label, so the host title stays the outer shell's.
+#[test]
+fn only_the_daemon_answers_session_queries_and_no_session_byte_reaches_the_host() {
+    let package = Package::new();
+    without_introduction(&package);
+    let script = r#"printf '\033]2;Queries\007\033[6n'; IFS= read -rs -t 10 -d R reply; printf 'GOT %s\r\n\033[c' "${reply#*[}""#;
+    headless(&package, script, "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    select(&mut terminal, "Queries", 0);
+    top_row_is(
+        &mut terminal,
+        &session_top_row(
+            usize::from(COLS),
+            "Queries",
+            &[STATUS, CONTROLLING, SESSIONS_HINT],
+        ),
+    );
+    assert_eq!(terminal.row(1).trim_end(), "GOT 1;1");
+    assert_eq!(terminal.host_requests(), Vec::<String>::new());
+    let received = terminal.received();
+    for forwarded in [&b"\x1b[6n"[..], b"\x1b[c", b"\x1b]2;Queries"] {
+        assert!(
+            !contains(&received, forwarded),
+            "{forwarded:?} reached the host"
+        );
+    }
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// TRM-03 (Monitor) at 80x24, 200x60, the 500x200 boundary and a larger
+/// host: one top row; the selected session is asked for the host width by
+/// its height less one, which the daemon clamps to 500x200; the session's
+/// bottom-right cell, written by absolute position at its own geometry,
+/// lands there below the top row; and the margins beyond it stay blank.
+#[test]
+fn the_selected_session_fills_the_host_below_one_top_row_at_its_effective_geometry() {
+    let hosts: [(u16, u16, (u16, u16)); 4] = [
+        (24, 80, (23, 80)),
+        (60, 200, (59, 200)),
+        (201, 500, (200, 500)),
+        (204, 503, (200, 500)),
+    ];
+    for (rows, cols, session) in hosts {
+        let package = Package::new();
+        without_introduction(&package);
+        let corner = format!(
+            "printf '\\033]2;Corner\\007'; until [ \"$(stty size)\" = '{} {}' ] || [ \"$SECONDS\" -ge 60 ]; do sleep 0.05; done; printf '\\033[{};{}HZ'",
+            session.0, session.1, session.0, session.1
+        );
+        headless(&package, &corner, "finish");
+        let mut terminal =
+            support::outer(&package, Path::new("/bin/bash"), "c2 monitor", rows, cols);
+        terminal
+            .wait_for_text("No session selected.", TIMEOUT)
+            .unwrap();
+        select(&mut terminal, "Corner", 0);
+        let (bottom, right) = (usize::from(session.0), usize::from(session.1) - 1);
+        terminal
+            .wait_for_screen(TIMEOUT, |screen| {
+                screen
+                    .lines()
+                    .nth(bottom)
+                    .and_then(|row| row.chars().nth(right))
+                    == Some('Z')
+            })
+            .unwrap_or_else(|_| panic!("{rows}x{cols}: no corner"));
+        let top = session_top_row(
+            usize::from(cols),
+            "Corner",
+            &[STATUS, CONTROLLING, SESSIONS_HINT],
+        );
+        top_row_is(&mut terminal, &top);
+        let screen = terminal.screen();
+        let lines: Vec<&str> = screen.lines().collect();
+        assert_eq!(lines.len(), usize::from(rows));
+        for (index, line) in lines.iter().enumerate().skip(1) {
+            let expected = if index == bottom {
+                format!("{}Z", " ".repeat(right))
+            } else {
+                String::new()
+            };
+            assert_eq!(line.trim_end(), expected, "{rows}x{cols} row {index}");
+        }
+        cursor_at(&terminal, bottom, right);
+        terminal.send("\x1dx").unwrap();
+        support::assert_released(&package, &mut terminal, 0);
+        finish_sessions(&package, "finish");
+        package.assert_clean();
+    }
+}
+
+/// CTL-05 (Monitor) and TRM-03 (real host resizes): Resize goes only to the
+/// selected controller. Selecting a session sizes it to the host less the
+/// top row; after another is selected, host resizes reach only that one,
+/// although the first stays controlled in the background; selecting the
+/// first again sizes it to the host as it is then.
+#[test]
+fn host_resizes_reach_only_the_selected_controller() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &sized("First"), "finish");
+    headless(&package, &sized("Second"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    // Rows list newest first: Second, then First.
+    select(&mut terminal, "First", 1);
+    sized_to(&package, "First", &["24 80", "29 120"]);
+    select(&mut terminal, "Second", 0);
+    sized_to(&package, "Second", &["24 80", "29 120"]);
+    terminal.resize(40, 100).unwrap();
+    sized_to(&package, "Second", &["24 80", "29 120", "39 100"]);
+    terminal.resize(35, 90).unwrap();
+    sized_to(&package, "Second", &["24 80", "29 120", "39 100", "34 90"]);
+    select(&mut terminal, "First", 1);
+    sized_to(&package, "First", &["24 80", "29 120", "34 90"]);
+    for session in package.list() {
+        assert_eq!(session["state"]["controlled"], true, "{session}");
+    }
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    assert_eq!(sizes(&package, "First"), ["24 80", "29 120", "34 90"]);
+    package.assert_clean();
+}
+
+/// The host shows only `Terminal too small` in its top row, clipped to
+/// its width, above blank rows, with no cursor.
+fn shows_too_small(terminal: &mut Terminal, rows: u16, cols: u16) {
+    let width = usize::from(cols);
+    let shown: String = "Terminal too small".chars().take(width).collect();
+    let blank = format!("\n{:width$}", "").repeat(usize::from(rows) - 1);
+    shows(terminal, &format!("{shown:<width$}{blank}"));
+    assert!(!terminal.cursor().visible);
+}
+
+/// TRM-04 (Monitor, too-small cases; owner decision 2026-11-14): a host
+/// under four rows or five columns shows `Terminal too small` and sends no
+/// resize, at each limit and one below it: once the too-small frame shows,
+/// the session reads its size, and never had the one a resize would have
+/// given it (2x120, 29x4). Four rows and five columns are room enough, and
+/// each recovery resizes the selected session to the host less its top
+/// row. The client and control survive throughout, and prefix+x still exits
+/// while too small.
+#[test]
+fn a_host_too_small_for_a_session_says_so_sends_no_resize_and_recovers() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &sized("Small"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    select(&mut terminal, "Small", 0);
+    sized_to(&package, "Small", &["24 80", "29 120"]);
+    let fields = [STATUS, CONTROLLING, SESSIONS_HINT];
+    let mut expected = vec!["24 80", "29 120"];
+    for (rows, cols, size) in [
+        (3, 120, None),
+        (4, 120, Some("3 120")),
+        (30, 4, None),
+        (30, 5, Some("29 5")),
+        (30, 120, Some("29 120")),
+    ] {
+        terminal.resize(rows, cols).unwrap();
+        match size {
+            None => {
+                shows_too_small(&mut terminal, rows, cols);
+                assert_eq!(settled_sizes(&package, "Small"), expected);
+            }
+            Some(size) => {
+                expected.push(size);
+                sized_to(&package, "Small", &expected);
+            }
+        }
+    }
+    top_row_is(
+        &mut terminal,
+        &session_top_row(usize::from(COLS), "Small", &fields),
+    );
+    assert_eq!(listed(&package, "Small")["state"]["controlled"], true);
+    terminal.resize(3, 120).unwrap();
+    shows_too_small(&mut terminal, 3, 120);
+    terminal.send("\x1dx").unwrap();
+    terminal.wait_for_bytes(b"OUTER-DONE=0", TIMEOUT).unwrap();
+    // The outer shell's lines need more than three rows to be read back.
+    terminal.resize(ROWS, COLS).unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    assert_eq!(sizes(&package, "Small"), expected);
+    package.assert_clean();
+}
+
+/// Top-row key hints (#108): with `monitor.show_key_hints` false, the top
+/// row beside a selected session shows its label, status and control and
+/// no hint.
+#[test]
+fn without_key_hints_the_top_row_shows_no_hint() {
+    let package = Package::new();
+    fs::write(
+        config_file(&package),
+        r#"{"monitor": {"show_key_hints": false}}"#,
+    )
+    .unwrap();
+    headless(&package, &titled_hold("Plain"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    select(&mut terminal, "Plain", 0);
+    top_row_is(
+        &mut terminal,
+        &session_top_row(usize::from(COLS), "Plain", &[STATUS, CONTROLLING]),
+    );
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Spec #73 Enter ("never exposing cached output") and CTL-05 (revoked):
+/// when another client takes control of the selected session, the monitor
+/// shows it is no longer controlling and no longer paints the session, so
+/// its now-cached screen never shows. The session's screen then changes
+/// while the other client controls it; Enter takes control back, and only
+/// the new restoration is painted, never the cache.
+#[test]
+fn a_revoked_session_shows_no_cached_output_until_enter_takes_control_again() {
+    let package = Package::new();
+    without_introduction(&package);
+    let script = "printf '\\033]2;Taken\\007VISIBLE\\r\\n'; \
+         until [ -e \"$HOME/change\" ] || [ \"$SECONDS\" -ge 120 ]; do sleep 0.05; done; \
+         printf '\\033[2J\\033[HCHANGED\\r\\n'";
+    let id = headless(&package, script, "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    select(&mut terminal, "Taken", 0);
+    let fields = |control| [STATUS, control, SESSIONS_HINT];
+    let controlling = session_top_row(usize::from(COLS), "Taken", &fields(CONTROLLING));
+    top_row_is(&mut terminal, &controlling);
+    assert_eq!(terminal.row(1).trim_end(), "VISIBLE");
+
+    let mut attach = package.command("c2");
+    attach.args(["attach", &id]);
+    let mut attach = Terminal::spawn(attach, ROWS, COLS).unwrap();
+    attach.wait_for_text("VISIBLE", TIMEOUT).unwrap();
+    let revoked = session_top_row(usize::from(COLS), "Taken", &fields("Not controlling"));
+    // The whole frame, since a host read can split it after its top row.
+    let blank = format!(
+        "{revoked}{}",
+        format!("\n{:width$}", "", width = usize::from(COLS)).repeat(usize::from(ROWS) - 1)
+    );
+    shows(&mut terminal, &blank);
+    assert!(!terminal.cursor().visible);
+    fs::write(package.isolation.home().join("change"), b"").unwrap();
+    attach.wait_for_text("CHANGED", TIMEOUT).unwrap();
+
+    select(&mut terminal, "Taken", 0);
+    top_row_is(&mut terminal, &controlling);
+    assert_eq!(terminal.row(1).trim_end(), "CHANGED");
+    assert_eq!(terminal.row(2).trim_end(), "");
+    attach
+        .wait_for_text("This session is being viewed elsewhere.", TIMEOUT)
+        .unwrap();
+    attach.send("\x1dd").unwrap();
+    assert_eq!(attach.wait_exit(TIMEOUT).unwrap(), 0);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// The #94 rule for #108: a finished session's view freezes at its Command
+/// final. Its last screen stays painted, the top row says it ended and,
+/// once its connection closes, that it is disconnected; Enter on its row,
+/// now known final, neither selects nor acquires anything.
+#[test]
+fn a_finished_session_keeps_its_last_screen_and_cannot_be_acquired() {
+    let package = Package::new();
+    without_introduction(&package);
+    let script = "printf '\\033]2;Done\\007FINAL OUTPUT'; until [ -e \"$HOME/end\" ] || [ \"$SECONDS\" -ge 120 ]; do sleep 0.05; done; exit 3";
+    headless(&package, script, "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    select(&mut terminal, "Done", 0);
+    top_row_is(
+        &mut terminal,
+        &session_top_row(
+            usize::from(COLS),
+            "Done",
+            &[STATUS, CONTROLLING, SESSIONS_HINT],
+        ),
+    );
+    fs::write(package.isolation.home().join("end"), b"").unwrap();
+    let ended = session_top_row(
+        usize::from(COLS),
+        "Done",
+        &["Disconnected", "Ended", SESSIONS_HINT],
+    );
+    top_row_is(&mut terminal, &ended);
+    assert_eq!(terminal.row(1).trim_end(), "FINAL OUTPUT");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "║Disconnected Done");
+    terminal.send("\r").unwrap();
+    terminal.send("\x1b").unwrap();
+    selector_closed(&terminal);
+    assert_eq!(terminal.row(0), ended);
+    assert_eq!(terminal.row(1).trim_end(), "FINAL OUTPUT");
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
     package.assert_clean();
 }

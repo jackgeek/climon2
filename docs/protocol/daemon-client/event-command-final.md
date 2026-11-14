@@ -1,6 +1,8 @@
 # Command final — `0x4c`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** without terminal status
+([#88](https://github.com/jackgeek/climon2/issues/88)), owned by [#67](https://github.com/jackgeek/climon2/issues/67);
+status arrives with `status-v1` ([#91](https://github.com/jackgeek/climon2/issues/91)).
 The [session daemon](../../../GLOSSARY.md#sessions) reports an authoritative
 final command result to the [client](../../../GLOSSARY.md#sessions).
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
@@ -54,3 +56,38 @@ dismissal. A final event never proves successful Leave. #69 owns numerical
 bounds/deadlines; [native declarations](../monitor-client/core-v1.md) are agreed
 in #71; the [acceptance matrix](../../monitor-acceptance.md) is agreed in #62,
 not executed conformance evidence.
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) sends Command final as
+soon as it first knows how the command ended: when it reaps a command that
+exited by itself, or when it confirms the end of a
+[hang-up grace](../../../GLOSSARY.md#attachment-and-control) that a
+[Kill](request-kill.md), a final unexpected departure, a failure or the
+initial-attachment deadline began. Every connection that opened then
+receives it once, each
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) and
+interactive [attachment](../../../GLOSSARY.md#attachment-and-control) alike;
+a standalone Kill's connection gets the result in its answer instead.
+`status` is null, since no connection can select `status-v1` yet, and no
+Status changed is sent. A normal exit keeps its raw status and a signal its
+number, with a null `name`: exit 143 and signal 15 stay apart. A later Open
+gets the result in its [Initial metadata](event-initial-metadata.md), and no
+Command final follows it; learning the same result again sends nothing.
+After a command exits by itself, the session goes on until its last output
+has drained and its controller confirmed [Ready](request-ready.md): until
+then an interactive Open still attaches and [Acquire](request-acquire.md)
+is still granted.
+
+Command final is metadata, sent whatever the
+[readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts): the
+[controller](../../../GLOSSARY.md#attachment-and-control) may still receive
+the command's last output as [Display](event-display.md) after it, then the
+[release](../../../GLOSSARY.md#restoration-and-presentation) of its
+[presentation](../../../GLOSSARY.md#restoration-and-presentation),
+[Control revoked](event-control-revoked.md) with reason `session_ending`,
+and the end of its stream. Neither the end of the command's terminal output
+while the command still runs nor the end of a stream is a result. When the
+daemon never learns how the command ended, because its hang-up or the kill
+of what remained of the command's terminal session failed before it reaped
+the command, it sends no Command final: the streams end without one.

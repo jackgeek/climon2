@@ -21,6 +21,8 @@ pub(crate) enum Move {
     Up,
     Down,
     Close,
+    /// Enter: choose the highlighted row.
+    Choose,
 }
 
 /// Where typed bytes stand in an escape sequence.
@@ -59,10 +61,19 @@ impl Selector {
         self.open
     }
 
-    /// Decodes one typed byte, acting on any key it completes.
-    pub(crate) fn key(&mut self, byte: u8, rows: &[View]) {
-        if let Some(found) = self.decode(byte) {
-            self.act(found, rows);
+    pub(crate) fn close(&mut self) {
+        self.open = false;
+    }
+
+    /// Decodes one typed byte, acting on any key it completes; Enter returns
+    /// the highlighted row's identity for the caller to select.
+    pub(crate) fn key(&mut self, byte: u8, rows: &[View]) -> Option<SessionId> {
+        match self.decode(byte)? {
+            Move::Choose => self.highlighted(rows).map(|index| rows[index].id.clone()),
+            found => {
+                self.act(found, rows);
+                None
+            }
         }
     }
 
@@ -93,7 +104,7 @@ impl Selector {
     fn act(&mut self, found: Move, rows: &[View]) {
         let index = self.highlighted(rows);
         let target = match (found, index) {
-            (Move::Close, _) => {
+            (Move::Close | Move::Choose, _) => {
                 self.open = false;
                 return;
             }
@@ -171,7 +182,7 @@ const ANY: &[Sequence] = &[
 ];
 const SEQUENCE: &[Sequence] = &[Sequence::Introduced, Sequence::Skipping];
 
-const RULES: [Rule; 8] = [
+const RULES: [Rule; 9] = [
     rule(ANY, 0x1b..=0x1b, Sequence::Escape, None),
     rule(&[Sequence::Escape], b'['..=b'[', Sequence::Introduced, None),
     rule(&[Sequence::Escape], b'O'..=b'O', Sequence::Introduced, None),
@@ -186,6 +197,12 @@ const RULES: [Rule; 8] = [
         b'B'..=b'B',
         Sequence::Ground,
         Some(Move::Down),
+    ),
+    rule(
+        &[Sequence::Ground],
+        b'\r'..=b'\r',
+        Sequence::Ground,
+        Some(Move::Choose),
     ),
     // A final byte ends any other control sequence.
     rule(SEQUENCE, 0x40..=0x7e, Sequence::Ground, None),
@@ -331,5 +348,29 @@ mod tests {
         selector.render(&rows, buffer.area, &mut buffer);
         assert_eq!(highlighted(&buffer), [3]);
         assert!(selector.is_open());
+    }
+
+    /// Spec #73 Enter (pure supplement, #108): a typed CR chooses the
+    /// highlighted row, leaving the selector to its caller; no other key
+    /// chooses, a CR inside an escape sequence is no Enter, and with no
+    /// rows nothing is chosen.
+    #[test]
+    fn enter_chooses_the_highlighted_row() {
+        let rows = rows(&[("", "A"), ("", "B")]);
+        let mut selector = Selector::default();
+        selector.open(&rows);
+        let chosen: Vec<_> = b"\x1b[B\x1b\r\r"
+            .iter()
+            .map(|&byte| selector.key(byte, &rows))
+            .collect();
+        let none = [None, None, None, None, None];
+        assert_eq!(chosen[..5], none);
+        assert_eq!(chosen[5], Some(rows[1].id.clone()));
+        assert!(selector.is_open());
+        selector.close();
+        assert!(!selector.is_open());
+        let mut empty = Selector::default();
+        empty.open(&[]);
+        assert_eq!(empty.key(b'\r', &[]), None);
     }
 }

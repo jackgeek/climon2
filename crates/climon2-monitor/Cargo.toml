@@ -15,6 +15,9 @@ climon2-platform = { path = "../climon2-platform" }
 climon2-vt = { path = "../climon2-vt" }
 libc = "0.2.191"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+# Only to paint SGR 58 underline colours; `ratatui/underline-color` would also
+# lock every optional backend.
+ratatui-core = { version = "0.1.2", default-features = false, features = ["underline-color"] }
 tracing = "0.1.44"
 unicode-width = "0.2.3"
 

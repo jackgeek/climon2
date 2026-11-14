@@ -209,6 +209,21 @@ pub(crate) fn selected_fault(name: &str) -> bool {
     std::env::var("CLIMON2_DAEMON_FAULT").is_ok_and(|value| value == name)
 }
 
+/// `CLIMON2_DAEMON_HOLD=<path>`: while `<path>` exists the session loop
+/// reads no incoming frame, and it announces each held pass by creating
+/// `<path>` with its extension replaced by `.held`.
+#[cfg(feature = "test-hooks")]
+pub(crate) fn held() -> bool {
+    let Some(hold) = std::env::var_os("CLIMON2_DAEMON_HOLD").map(std::path::PathBuf::from) else {
+        return false;
+    };
+    if !hold.exists() {
+        return false;
+    }
+    let _ = std::fs::write(hold.with_extension("held"), b"");
+    true
+}
+
 #[cfg(feature = "test-hooks")]
 fn never_ready() {
     std::thread::sleep(std::time::Duration::MAX);

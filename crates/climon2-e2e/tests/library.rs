@@ -77,9 +77,10 @@ fn observe(mut host: Command) -> Value {
 /// share one load): the loader accepts the installed library, loaded by
 /// absolute path with eager local resolution, which returns revision 1's
 /// immutable description. Its release text is exactly the version folder name,
-/// it advertises no capability this build does not implement, its
-/// requirements are present and within the default reservations, and a
-/// second bootstrap returns the same description. A second load of the version shares the first, and the
+/// it advertises exactly the families it relays (#93: core, passive monitor
+/// entry and titles; #94: focus), its requirements are present and within
+/// the default reservations, and a second bootstrap returns the same
+/// description. A second load of the version shares the first, and the
 /// process has loaded that one client library file.
 #[test]
 fn installed_library_describes_revision_one_with_its_version_identity() {
@@ -102,8 +103,8 @@ fn installed_library_describes_revision_one_with_its_version_identity() {
         description["capabilities"],
         json!({
             "null": false,
-            "count": 3,
-            "tokens": ["daemon-wire-v1", "monitor-v1", "title-v1"],
+            "count": 4,
+            "tokens": ["daemon-wire-v1", "monitor-v1", "title-v1", "focus-v1"],
         })
     );
     assert_within_default_reservations(&description["requirements"]);

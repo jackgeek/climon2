@@ -351,6 +351,15 @@ pub struct DiscoveryLimits {
     pub metadata_depth: u32,
 }
 
+/// What bounds each session's terminal model in the monitor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ModelLimits {
+    /// Allocation capacity for the model and its staged restoration.
+    pub bytes: u64,
+    /// `history.max_rows`.
+    pub history_rows: u32,
+}
+
 /// The client supervisor's bounded lanes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Lanes {
@@ -421,6 +430,16 @@ impl Limits {
             batch_bytes: discovery.batch_bytes,
             metadata_file_bytes: discovery.metadata_file_bytes,
             metadata_depth: discovery.metadata_depth,
+        }
+    }
+
+    /// Each session's terminal model: until admission divides
+    /// `memory.client_bytes` between the library and the model (#120), the
+    /// model may hold all of it too, and `history.max_rows` rows.
+    pub fn model(&self) -> ModelLimits {
+        ModelLimits {
+            bytes: self.0.memory.client_bytes,
+            history_rows: self.0.history.max_rows,
         }
     }
 

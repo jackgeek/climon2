@@ -1,6 +1,9 @@
 # Control grant and revocation
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification, implemented by the
+[client library](../../../GLOSSARY.md#sessions)
+([#94](https://github.com/jackgeek/climon2/issues/94)) as its
+[implemented behavior](core-v1.md#implemented-behavior) details; the monitor applies it ([#108](https://github.com/jackgeek/climon2/issues/108); [monitor README](../../../crates/climon2-monitor/README.md#selection-control-and-painting-108)).**
 The [client](../../../GLOSSARY.md#sessions) reports daemon
 [grants](../../../GLOSSARY.md#attachment-and-control) and
 [revocations](../../../GLOSSARY.md#attachment-and-control) to the

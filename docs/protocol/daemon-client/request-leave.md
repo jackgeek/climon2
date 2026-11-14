@@ -4,8 +4,9 @@
 [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
 ([#86](https://github.com/jackgeek/climon2/issues/86)) and
 [attachments](../../../GLOSSARY.md#attachment-and-control)
-([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67);
-promotion races arrive with [#89](https://github.com/jackgeek/climon2/issues/89).
+([#87](https://github.com/jackgeek/climon2/issues/87)), including when a
+[promotion](../../../GLOSSARY.md#attachment-and-control) races it
+([#89](https://github.com/jackgeek/climon2/issues/89)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) requests accepted departure from the
 [session daemon](../../../GLOSSARY.md#sessions) after Open.
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
@@ -65,19 +66,33 @@ the [session daemon](../../../GLOSSARY.md#sessions) removes the registration
 in the same step that queues the success Response
 `{"kind":"left","attachment_detached":false}`, then closes the stream once that
 Response is written; requests sent after Leave are not served, and no core
-metadata follows it. Leave before any Open is `invalid_state` and the stream
-goes on. A peer may half-close after sending Leave and still read its
-Response.
+metadata follows it. Leave on a connection that opened nothing, before any
+Open or on a standalone [Kill](request-kill.md#implemented-behavior)'s
+connection, is `invalid_state` and the stream goes on. A peer may half-close
+after sending Leave and still read its Response.
 
-An interactive attachment's Leave is an accepted detach. A controller first
+An attachment's Leave is an accepted detach. A controller first
 receives the [release](../../../GLOSSARY.md#restoration-and-presentation) of its
 [presentation](../../../GLOSSARY.md#restoration-and-presentation) as
 [Display](event-display.md), then control is
 [handed back](../../../GLOSSARY.md#attachment-and-control) to the most recently
 controlling remaining attachment, of either protocol, with reason
-`hand_back`. The success reports `attachment_detached:true`, and the stream
-then closes. The [leave policy](../../../GLOSSARY.md#attachment-and-control) is
-the private protocol's: a final deliberate Leave keeps the session running,
-detached, while a final unexpected departure, closing without Leave, ends
-it. During committed termination Leave still removes the attachment, after
-releasing a presentation it still has, and hands nothing back.
+`hand_back`; when no attachment remains, the newest passive monitor
+connection is promoted instead, with a [Control granted](event-control-granted.md)
+of reason `successor`. The success reports `attachment_detached:true`, and the
+stream then closes. Every controller departure, a loss included, passes
+control on the same way. Only then does the
+[leave policy](../../../GLOSSARY.md#attachment-and-control) apply, as the private
+protocol's: a final deliberate Leave keeps the session running, detached,
+while a final unexpected departure, closing without Leave, ends it. A
+registered monitor therefore keeps a session alive when its last attachment
+departs. During committed termination Leave still removes the attachment,
+after releasing a presentation it still has, and nothing is handed back or
+promoted.
+
+Leave is atomic when a promotion races it. A passive monitor connection
+whose Leave the daemon reads after a departure promoted it is an attachment
+by then, whether or not the client had read its Control granted: the Leave
+is an accepted detach that releases its presentation, passes control on
+again and reports `attachment_detached:true`. A registration whose Leave is
+read first is removed before any later departure, which never promotes it.

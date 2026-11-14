@@ -262,6 +262,7 @@ dependencies = [
  "climon2-vt",
  "libc",
  "ratatui",
+ "ratatui-core",
  "serde_json",
  "tempfile",
  "tracing",
@@ -306,6 +307,7 @@ name = "climon2-vt"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "unicode-width",
  "vt100",
 ]
 
@@ -1771,6 +1773,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "syn 2.0.119",
  "tempfile",
 ]
 

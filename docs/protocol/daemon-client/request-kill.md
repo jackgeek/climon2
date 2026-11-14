@@ -1,6 +1,6 @@
 # Kill — `0x38`
 
-**Status: agreed; first-role validation implemented, termination not yet**
+**Status: agreed and implemented**
 ([#88](https://github.com/jackgeek/climon2/issues/88)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) sends a standalone first-role
 [kill](../../../GLOSSARY.md#attachment-and-control) request to the
@@ -66,10 +66,37 @@ Related: [Command final](event-command-final.md).
 
 The [session daemon](../../../GLOSSARY.md#sessions) validates a first-role
 Kill like Open: `unsupported_revision` unless revision 1, and
-`unsupported_capability` for an unknown or unadvertised required family; each
-rejection has no effects and ends the stream. A Kill on a registered
-[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) is
-`invalid_state` and keeps the registration. Until
-[#88](https://github.com/jackgeek/climon2/issues/88) serves it, a valid
-standalone Kill is rejected without effects with `internal_error`, and the
-session goes on; `c2 kill` still uses the private protocol.
+`unsupported_capability` for an unknown or unadvertised required family. Each
+rejection has no effects, carries the command's result as `known_final` once
+the daemon knows it, and ends the stream. A Kill on a connection that already
+has a role, such as a registered
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control), is
+`invalid_state` and keeps that role.
+
+A valid standalone Kill gives its connection the Kill role, which is not an
+[attachment](../../../GLOSSARY.md#attachment-and-control), and commits the
+session's termination at once, as the private protocol's kill does: the
+command's terminal is hung up, new interactive work is refused, and after the
+five-second [hang-up grace](../../../GLOSSARY.md#attachment-and-control) the
+daemon kills what remains of the command's terminal session and cleans up. A
+Kill of either protocol sent while termination is committed joins it without
+restarting the grace. Every Kill is answered once the session has ended, at
+once if it already had:
+
+- success, `{"kind":"termination","command_result":<CommandResult>,"cleanup":"complete"}`,
+  when the daemon confirmed how the command ended and its cleanup completed;
+- otherwise outcome `failed` with `cleanup_failed` and
+  `{"kind":"termination","command_result":<CommandResult or null>,"cleanup":"incomplete"}`:
+  the daemon could not confirm the command's end, or its cleanup of the
+  session metadata and socket failed. The result is the one the daemon
+  knew, even when it could not confirm the end; it is null only when the
+  daemon never learned it.
+
+The stream then ends. An authoritative failure of the session, such as a
+failed write to the command's terminal, does not by itself fail a Kill whose
+termination was confirmed and cleaned up. While a Kill awaits its answer, a
+later Open or Kill on its connection is `invalid_state`, as are Leave and
+Acquire, since it opened nothing; Input, Resize and Ready are
+`not_attached`, and Focus is `unsupported_capability`. The Kill's connection
+receives no [Command final](event-command-final.md): its answer carries the
+result. `c2 kill` still uses the private protocol.

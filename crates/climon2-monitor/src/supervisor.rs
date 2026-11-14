@@ -18,7 +18,10 @@
 mod client;
 mod owner;
 
-use crate::registry::ClientEvent;
+use crate::{
+    registry::ClientEvent,
+    terminal::{Presentation, Request},
+};
 use client::{Client, Drain, Stop};
 use climon2_core::{
     SessionId, Timestamp, VersionName, config::Lanes, keys::ControlKey, layout::HomeLayout,
@@ -80,6 +83,7 @@ pub(crate) struct Context {
 
 enum Command {
     Start(Box<SessionMetadata>),
+    Request(SessionId, Request),
     Shutdown,
 }
 
@@ -111,6 +115,12 @@ impl Supervisor {
     /// Asks for a passive client for `metadata`'s session.
     pub(crate) fn start_client(&self, metadata: SessionMetadata) {
         let _ = self.commands.send(Command::Start(Box::new(metadata)));
+    }
+
+    /// Submits `request` through `id`'s client. Its answer, or why it could
+    /// not be submitted, is reported as [`Presentation::Answered`].
+    pub(crate) fn request(&self, id: SessionId, request: Request) {
+        let _ = self.commands.send(Command::Request(id, request));
     }
 
     /// Shuts every client down, waiting at most `deadlines.shutdown_ms` (and
@@ -211,6 +221,11 @@ impl Phase {
 
 struct Instance {
     phase: Phase,
+    /// Accepted requests awaiting their answers, by request ID: at most
+    /// [`State::ledger`].
+    pending: BTreeMap<u64, Request>,
+    /// The next request ID; Open is 1.
+    next: u64,
     /// Tells the owner its handles are released, so it may destroy.
     released: Sender<()>,
     owner: JoinHandle<()>,
@@ -224,6 +239,9 @@ struct State {
     waiting: BTreeMap<(Reverse<Timestamp>, SessionId), SessionMetadata>,
     releases: BTreeMap<VersionName, Release>,
     instances: BTreeMap<SessionId, Instance>,
+    /// The most requests one instance's pending ledger holds: every request
+    /// its library may have accepted, queued or under way.
+    ledger: usize,
 }
 
 /// What scheduling does for one waiting session.
@@ -236,7 +254,10 @@ enum Step {
 impl State {
     fn new(context: Context, report: Sender<(SessionId, ClientEvent)>) -> Self {
         let (internal, internals) = mpsc::channel();
+        let limits = context.limits;
+        let accepted = limits.request_records as usize + limits.operations as usize;
         Self {
+            ledger: accepted,
             context: Arc::new(context),
             report,
             internal,
@@ -262,11 +283,24 @@ impl State {
     fn commands(&mut self, commands: &Receiver<Command>) -> bool {
         loop {
             match commands.try_recv() {
-                Ok(Command::Start(metadata)) => self.wait(*metadata),
-                Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => return false,
-                Err(TryRecvError::Empty) => return true,
+                Ok(command) => {
+                    if !self.command(command) {
+                        return false;
+                    }
+                }
+                Err(error) => return error == TryRecvError::Empty,
             }
         }
+    }
+
+    /// Acts on one command; false for shutdown.
+    fn command(&mut self, command: Command) -> bool {
+        match command {
+            Command::Start(metadata) => self.wait(*metadata),
+            Command::Request(id, request) => self.submit(&id, request),
+            Command::Shutdown => return false,
+        }
+        true
     }
 
     fn wait(&mut self, metadata: SessionMetadata) {
@@ -275,6 +309,56 @@ impl State {
             metadata.session_id.clone(),
         );
         self.waiting.insert(key, metadata);
+    }
+
+    /// Submits `request` through an open client and remembers it until its
+    /// answer; anything else is answered at once with why not.
+    fn submit(&mut self, id: &SessionId, request: Request) {
+        if let Err(why) = self.submit_one(id, request) {
+            self.tell(
+                id,
+                ClientEvent::Presentation(Presentation::Answered(request, Err(why))),
+            );
+        }
+    }
+
+    /// Submits one request and enters it in the pending ledger once the
+    /// library accepts it. A request refused, here or by the library,
+    /// consumes no request ID.
+    fn submit_one(&mut self, id: &SessionId, request: Request) -> Result<(), String> {
+        let capacity = self.ledger;
+        let open = self
+            .instances
+            .get_mut(id)
+            .and_then(|instance| match instance.phase {
+                Phase::Open(live) => Some((live, instance)),
+                _ => None,
+            });
+        let Some((live, instance)) = open else {
+            return Err("the session's client is not connected".to_owned());
+        };
+        if instance.pending.len() >= capacity {
+            return Err("too many requests are awaiting their answers".to_owned());
+        }
+        let request_id = instance.next;
+        live.client.submit(request_id, request)?;
+        instance.next += 1;
+        instance.pending.insert(request_id, request);
+        Ok(())
+    }
+
+    /// A request's answer goes to the session's terminal as its request.
+    fn answer(&mut self, id: &SessionId, request_id: u64, answer: Result<(), String>) {
+        let pending = self
+            .instances
+            .get_mut(id)
+            .map(|instance| &mut instance.pending);
+        if let Some(request) = pending.and_then(|pending| pending.remove(&request_id)) {
+            self.report(
+                id,
+                ClientEvent::Presentation(Presentation::Answered(request, answer)),
+            );
+        }
     }
 
     fn internals(&mut self) {
@@ -379,6 +463,8 @@ impl State {
                 let phase = Phase::Creating;
                 let instance = Instance {
                     phase,
+                    pending: BTreeMap::new(),
+                    next: client::OPEN_ID + 1,
                     released,
                     owner,
                 };
@@ -447,6 +533,7 @@ impl State {
     fn event(&mut self, id: &SessionId, event: ClientEvent) {
         match event {
             ClientEvent::Unavailable(why) => self.fail(id, why),
+            ClientEvent::Answer(request_id, answer) => self.answer(id, request_id, answer),
             event => self.report(id, event),
         }
     }

@@ -45,7 +45,8 @@ geometry or takeover. Interactive mode attaches and
 [grants](../../../GLOSSARY.md#attachment-and-control)
 [control](../../../GLOSSARY.md#attachment-and-control) using requested geometry
 under daemon policy. See [succession](core-v1.md#membership-and-succession).
-Monitor-mode display/restoration after acquisition or promotion uses effective
+Monitor-mode display/restoration after acquisition or
+[promotion](../../../GLOSSARY.md#attachment-and-control) uses effective
 session geometry regardless of outer host or requested size under the
 [canonical terminal contract](../terminal-integration.md#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1).
 Ordinary interactive [direct](../../../GLOSSARY.md#restoration-and-presentation)/[derived](../../../GLOSSARY.md#restoration-and-presentation)/native-history behavior is unchanged.
@@ -78,7 +79,12 @@ fresh random `connection_id`.
 
 A monitor-mode Open registers a passive monitor connection, answers success,
 then sends the Initial metadata in the same daemon loop step. It never
-changes the hello `state`. It is accepted during committed termination too,
+changes the hello `state`, and registering never takes control. From then on
+the registration may inherit control: a controller's departure that leaves
+no attachment promotes the newest registration, and the registration's own
+[Acquire](request-acquire.md#implemented-behavior) converts it into an
+attachment (see [Control granted](event-control-granted.md#implemented-behavior)).
+It is accepted during committed termination too,
 which rejects new interactive work only, so a monitor can still learn the
 outcome passively. A later Open on a registered connection is
 `invalid_state` and keeps the registration.
@@ -101,5 +107,8 @@ takes control from any current
 included,
 and the hello `state` counts it like any attachment. During committed
 termination an interactive Open is rejected with `session_terminating` and
-ends its stream. Rejections carry no `known_final` yet: a known command
-result arrives with [#88](https://github.com/jackgeek/climon2/issues/88).
+ends its stream. Once the daemon knows how the command ended (see
+[Command final](event-command-final.md#implemented-behavior)), every
+rejection of a first-role Open carries that result as `known_final`; a
+later Open on a connection that already has a role is `invalid_state`
+without it.

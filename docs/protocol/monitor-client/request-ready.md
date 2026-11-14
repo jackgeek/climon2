@@ -1,6 +1,9 @@
 # Report readiness
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification, implemented by the
+[client library](../../../GLOSSARY.md#sessions)
+([#94](https://github.com/jackgeek/climon2/issues/94)) as its
+[implemented behavior](core-v1.md#implemented-behavior) details; the monitor submits it after each applied restoration ([#108](https://github.com/jackgeek/climon2/issues/108); [monitor README](../../../crates/climon2-monitor/README.md#selection-control-and-painting-108)).**
 The [monitor](../../../GLOSSARY.md#sessions) reports applied
 [restoration](../../../GLOSSARY.md#restoration-and-presentation) through its
 [client](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),
