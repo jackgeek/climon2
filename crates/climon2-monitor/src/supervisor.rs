@@ -123,7 +123,9 @@ impl Supervisor {
         let _ = self.commands.send(Command::Request(id, request));
     }
 
-    /// Shuts every client down, waiting at most `deadlines.shutdown_ms` (and
+    /// Waits for accepted input to be answered (at most
+    /// `deadlines.operation_ms`), then shuts every client down, waiting at
+    /// most `deadlines.shutdown_ms` (and
     /// one tick) for their terminal evidence, released handles and joined
     /// owners. Instances unconfirmed by then are logged and left, never
     /// destroyed, to process exit; the fail-stop arrives with #118.
@@ -269,7 +271,32 @@ impl State {
             self.schedule();
             self.poll();
         }
+        self.settle_input();
         self.shut_down();
+    }
+
+    /// Before shutting down, waits until every input chunk an open client
+    /// accepted is answered, at most `deadlines.operation_ms` (owner decision
+    /// on #109): typed keys read with prefix+x still reach their session, and
+    /// a stuck one holds exit no longer than one operation may take.
+    fn settle_input(&mut self) {
+        let bound = Duration::from_millis(self.context.limits.operation_ms.into());
+        let deadline = Instant::now() + bound;
+        while self.input_pending() && Instant::now() < deadline {
+            self.internals();
+            self.poll();
+        }
+    }
+
+    /// Whether an open client has accepted input not yet answered.
+    fn input_pending(&self) -> bool {
+        self.instances.values().any(|instance| {
+            matches!(instance.phase, Phase::Open(_))
+                && instance
+                    .pending
+                    .values()
+                    .any(|request| matches!(request, Request::Input(..)))
+        })
     }
 
     /// Takes every pending command; false once shutdown is asked for.

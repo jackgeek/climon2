@@ -2693,7 +2693,9 @@ const FRAGMENTS: [&[u8]; 10] = [
 /// follows it, and cursor keys typed in either form arrive as SS3, keypad
 /// keys as sent and modified cursor keys unchanged. A lone Escape reaches
 /// the session at once, before the rest of its key arrives, and that rest
-/// still follows the application's cursor mode.
+/// still follows the application's cursor mode. Keys read with prefix+x
+/// before it reach the session before the monitor shuts down (owner
+/// decision on #109), and none after it.
 #[test]
 fn typed_bytes_reach_the_selected_session_exactly_however_reads_split() {
     let package = Package::new();
@@ -2725,9 +2727,11 @@ fn typed_bytes_reach_the_selected_session_exactly_however_reads_split() {
     read_alone(&mut terminal, monitor, b"\x1b");
     received(&package, &[&moded[..], b"\x1b"].concat());
     read_alone(&mut terminal, monitor, b"[C");
-    received(&package, &[&moded[..], b"\x1bOC"].concat());
-    terminal.send("\x1dx").unwrap();
+    let moded = [&moded[..], b"\x1bOC"].concat();
+    received(&package, &moded);
+    read_alone(&mut terminal, monitor, b"z\x1dxlate");
     assert_released(&package, &mut terminal, 0);
+    received(&package, &[&moded[..], b"z"].concat());
     finish_sessions(&package, "finish");
     package.assert_clean();
 }
@@ -2911,6 +2915,37 @@ fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
     terminal.send("h").unwrap();
     received(&package, b"abcdh");
     terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Spec #73 exit (owner decision on #109): input accepted before prefix+x
+/// holds shutdown only until it is answered or `deadlines.operation_ms`
+/// passes. With the session's daemon stopped, a key read with prefix+x is
+/// never answered, and the monitor still exits with status 0 within the
+/// one-second operation deadline plus the two-second shutdown deadline
+/// (and a few seconds' margin for the host's release).
+#[test]
+fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        serde_json::json!({"deadlines": {"operation_ms": 1000, "shutdown_ms": 2000}}),
+    );
+    headless(&package, &recorder("Keys"), "finish");
+    let daemon = package.metadata().daemon_pid as i32;
+    let mut terminal = outer(&package, "c2 monitor");
+    record(&mut terminal, "Keys", 0, COLS);
+    let monitor = monitor_process(&package).0;
+    stop(daemon);
+    let started = Instant::now();
+    read_alone(&mut terminal, monitor, b"k\x1dx");
+    terminal.wait_for_bytes(DONE, TIMEOUT).unwrap();
+    let took = started.elapsed();
+    kill(Pid::from_raw(daemon), Signal::SIGCONT).unwrap();
+    assert!(took < Duration::from_secs(6), "{took:?}");
     assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
     package.assert_clean();

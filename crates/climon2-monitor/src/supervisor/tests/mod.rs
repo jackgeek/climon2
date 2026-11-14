@@ -34,6 +34,8 @@ struct Script {
     stalls: bool,
     /// After Open, one delivery of control and display records.
     presents: bool,
+    /// Input is accepted and never answered, as by a stuck session.
+    ignores_input: bool,
 }
 
 /// What the observer saw of one session's instance.
@@ -329,9 +331,12 @@ extern "C" fn submit(communication: *mut Communication, request: *const Request)
             .submitted
             .push((request.tag, request.request_id, words));
     });
+    let fake = fake(communication);
+    if request.tag == native::INPUT && fake.script.ignores_input {
+        return success();
+    }
     // Ready is refused; anything else accepted, after an answer to a
     // request never made.
-    let fake = fake(communication);
     let refused = request.tag == native::READY;
     fake.push(Item::Delivery(vec![
         answer(99, false),
@@ -932,7 +937,7 @@ fn input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte() {
     assert_eq!(
         submitted
             .into_iter()
-            .filter(|(tag, ..)| *tag == native::INPUT)
+            .filter(|(tag, _, words)| *tag == native::INPUT && words[..3] == [1, 5, 6])
             .collect::<Vec<_>>(),
         [
             (native::INPUT, 2, words(b"abc")),
@@ -942,4 +947,43 @@ fn input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte() {
             (native::INPUT, 6, words(b"k")),
         ]
     );
+}
+
+/// Spec #73 exit (#109, owner decision): stopping first waits until every
+/// accepted input chunk is answered, at most `deadlines.operation_ms`, so a
+/// stuck session's unanswered input holds shutdown for the bound and no
+/// longer; answered input holds it not at all.
+#[test]
+fn stopping_waits_for_accepted_input_at_most_the_operation_deadline() {
+    let held = Authority {
+        generation: 1,
+        period: 9,
+        restoration: 9,
+    };
+    for (index, ignores_input, operation_ms) in [(1, true, 400), (2, false, 30_000)] {
+        let id = session(8, index);
+        script(
+            &id,
+            Script {
+                ignores_input,
+                ..Script::default()
+            },
+        );
+        let mut limits = climon2_core::config::Limits::default().library();
+        limits.operation_ms = operation_ms;
+        let (_home, mut supervisor) = limited(1, 1_000, fake_library(), limits);
+        supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+        assert_eq!(
+            next(&supervisor),
+            (id.clone(), ClientEvent::Opened { status: false })
+        );
+        supervisor.request(id.clone(), Asked::Input(held, b"z".to_vec()));
+        let started = Instant::now();
+        supervisor.stop();
+        let took = started.elapsed();
+        if ignores_input {
+            assert!(took >= Duration::from_millis(400), "{took:?}");
+        }
+        assert!(took < Duration::from_secs(15), "{took:?}");
+    }
 }
