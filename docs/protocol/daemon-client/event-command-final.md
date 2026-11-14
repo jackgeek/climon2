@@ -74,9 +74,25 @@ output can follow:
   end of the terminal's output (every holder of the terminal closed it),
   100 ms without output, or 1 s after the reap, even while a background job
   that holds the terminal still writes. The daemon reads nothing more after
-  the drain. It sends Command final in the same step that delivered the
-  drained output, after that output's Display and Title changed records, so
-  at most about 1 s after the reap.
+  the drain. It sends Command final after the drained output's Display and
+  Title changed records, once nothing the output produced is still held
+  back from a connection (below), so usually at most about 1 s after the
+  reap.
+- Command final also waits while a
+  [restoration](../../../GLOSSARY.md#restoration-and-presentation) is in
+  progress for any connection: the restoration's remaining Display, its
+  [Restoration complete](event-restoration-complete.md) and the live output
+  held back behind it come first. A grant that waits for its restoration to
+  begin holds it as well. Each wait ends within its existing bounds: the
+  restoration completes, or a reader that takes nothing for 5 s is lost
+  ([#203](https://github.com/jackgeek/climon2/issues/203)).
+- Command final also waits while a
+  [synchronized update](../TERMS.md#synchronized-update) is open, until the
+  application ends it or its 150 ms latch expires, so the update it held
+  back from a controller under
+  [derived presentation](../../../GLOSSARY.md#restoration-and-presentation)
+  reaches that controller first
+  ([#203](https://github.com/jackgeek/climon2/issues/203)).
 - A [Kill](request-kill.md), a final unexpected departure, a failure (such
   as a failed read of the command's terminal) or the initial-attachment
   deadline that comes after the command exited does not cut that drain
@@ -113,19 +129,12 @@ when the session ends, the
 [release](../../../GLOSSARY.md#restoration-and-presentation) of its
 [presentation](../../../GLOSSARY.md#restoration-and-presentation) as Display,
 [Control revoked](event-control-revoked.md) with reason `session_ending`,
-and the end of its stream. The release is not command output. Not yet
-covered: a [restoration](../../../GLOSSARY.md#restoration-and-presentation)
-still in progress when the drain ends sends the rest of its Display, and the
-live output held back behind it, after Command final, as does the update
-of a controller under
-[derived presentation](../../../GLOSSARY.md#restoration-and-presentation)
-held back by an open [synchronized update](../TERMS.md#synchronized-update);
-a grant after Command final replays the screen in its restoration. Holding
-Command final until no restoration is in progress and no synchronized update
-is held is follow-up
-[#203](https://github.com/jackgeek/climon2/issues/203); the replay after a
-later grant stays. Neither the end of the command's terminal output
-while the command still runs nor the end of a stream is a result. When the
+and the end of its stream. The release is not command output. A grant
+after Command final, by an Open or Acquire while the session waits for
+Ready, replays the screen in its restoration after Command final; that
+replay is not new command output. Neither the end of the command's
+terminal output while the command still runs nor the end of a stream is a
+result. When the
 daemon never learns how the command ended, because its hang-up or the kill
 of what remained of the command's terminal session failed before it reaped
 the command, it sends no Command final: the streams end without one.
