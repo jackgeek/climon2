@@ -9,9 +9,10 @@ unimplemented. Packaged
 [client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
 description ([#75](https://github.com/jackgeek/climon2/issues/75)) and their
 local instance lifecycle
-([#85](https://github.com/jackgeek/climon2/issues/85)) and open passive
-monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
-but no monitor loads them yet. Headless
+([#85](https://github.com/jackgeek/climon2/issues/85)), open passive
+monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93))
+and relay Command final and Kill
+([#96](https://github.com/jackgeek/climon2/issues/96)), but no monitor loads them yet. Headless
 creation is implemented; its HDL-01 Contract cases and its Monitor-layer cases
 through the packaged CLI are mapped in the daemon and packaged-test READMEs,
 while the case that needs a running monitor waits for it. Resolving this

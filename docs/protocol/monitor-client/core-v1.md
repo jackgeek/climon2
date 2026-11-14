@@ -3,8 +3,10 @@
 **Status: developer-confirmed specification for [#71](https://github.com/jackgeek/climon2/issues/71).
 Implemented for the bootstrap and the immutable description
 ([#75](https://github.com/jackgeek/climon2/issues/75)), the instance
-lifecycle calls ([#85](https://github.com/jackgeek/climon2/issues/85)) and
-passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)).**
+lifecycle calls ([#85](https://github.com/jackgeek/climon2/issues/85)),
+passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93))
+and termination: Kill, Command final and their terminal evidence
+([#96](https://github.com/jackgeek/climon2/issues/96)).**
 The shipped [client library](../../../GLOSSARY.md#sessions)
 (`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux)
 returns revision 1's description and rejects other revisions as specified
@@ -15,18 +17,19 @@ the rules below, with one gap: snapshot reports no shared-release allocation
 and undercounts instance allocation, because it does not yet count each
 instance's diagnostics dispatcher
 ([#180](https://github.com/jackgeek/climon2/issues/180)). `submit` accepts
-monitor-mode `CM1_OPEN` and `CM1_LEAVE`; interactive Open
+monitor-mode `CM1_OPEN`, `CM1_LEAVE` and `CM1_KILL`; interactive Open
 ([#94](https://github.com/jackgeek/climon2/issues/94)) and every other request
 report `CM1_UNSUPPORTED_OPERATION`. An instance opens a
 [passive monitor connection](../../../GLOSSARY.md#attachment-and-control) to
 its [session daemon](../../../GLOSSARY.md#sessions) over
 [daemon wire revision 1](../daemon-client/core-v1.md), delivers Response,
-Initial metadata, Title and diagnostic records, and attempts
-[Leave](../daemon-client/request-leave.md) once on shutdown.
+Initial metadata, Title, Command final and diagnostic records, and attempts
+[Leave](../daemon-client/request-leave.md) once on shutdown. It sends
+[Kill](../daemon-client/request-kill.md) on an auxiliary connection of its
+own.
 [Implemented behavior](#implemented-behavior) records the choices this page
-leaves open. Interactive roles, [Kill](../daemon-client/request-kill.md) and
-the status, notification, progress, control, display and final records are
-not implemented. The [C ABI](../TERMS.md#c-abi)
+leaves open. Interactive roles and the status, notification, progress,
+control and display records are not implemented. The [C ABI](../TERMS.md#c-abi)
 [header](client-v1.h) is authoritative for declarations, numeric tags and field
 order. This page owns their semantics. The [examples](examples.c) compile but
 do not link to a shipped library. [Declaration checks](check.py) are not runtime
@@ -472,9 +475,12 @@ public-interface timeline, not a runtime test or a release prerequisite for plug
 
 ## Implemented behavior
 
-The [Library-layer tests](../../../crates/climon2-e2e/README.md#library-layer-passive-monitor-connections-testspassivers-93)
-are the evidence for this section
-([#93](https://github.com/jackgeek/climon2/issues/93)).
+The Library-layer tests of
+[passive monitor connections](../../../crates/climon2-e2e/README.md#library-layer-passive-monitor-connections-testspassivers-93)
+([#93](https://github.com/jackgeek/climon2/issues/93)) and of
+[termination](../../../crates/climon2-e2e/README.md#library-layer-termination-teststerminationrs-96)
+([#96](https://github.com/jackgeek/climon2/issues/96)) are the evidence for
+this section.
 
 - **Description.** `capabilities` lists exactly the families the library
   relays: `daemon-wire-v1`, `monitor-v1` and `title-v1`. `focus-v1` joins with
@@ -523,8 +529,8 @@ are the evidence for this section
   rules: `io_error`, `truncated_frame`, the wire's framing codes,
   `invalid_record` and `invalid_request_id`. Daemon origin covers the daemon's
   own errors, copied. Library origin covers `timeout`, `cancelled`,
-  `invalid_state` (a second Open, or Leave without a role or while another
-  Leave is unanswered), `stale_generation`, `resource_limit` and the Open
+  `invalid_state` (a second Open, Leave without a role or while another
+  Leave is unanswered, or a Kill while another is pending), `stale_generation`, `resource_limit` and the Open
   refusals above. A failure ends the connection, queues one diagnostic when it
   fits and fails terminal evidence with its error.
 - **Deadlines and loss.** `start_ms` bounds an Open until its Initial metadata,
@@ -538,16 +544,61 @@ are the evidence for this section
   rejects queued requests, waits for an Open under way, then attempts its own
   Leave once; an Open whose hello completes after shutdown is never sent and
   is `CM1_REJECTED` `cancelled`.
+- **Command final.** After the Initial metadata, the daemon's Command final
+  becomes one `CM1_FINAL` record: the command result as sent (a normal exit
+  keeps its raw code, a signal its number and optional name, so exit 143 is
+  not signal 15) and status unavailable, since `status-v1` is never
+  selected yet. A second Command final, consistent or not, one after an
+  Initial metadata that knew the result, one before the Initial metadata
+  and one with a non-null status are `invalid_record`; a record already
+  queued, a Command final included, stays deliverable after any failure.
+  Once the result is known, from the Initial metadata or a Command final,
+  the daemon closing the connection between frames with no Leave under way
+  ends the stream cleanly: stopped, no error, retry none, Leave not
+  required ([owner decision on #94](https://github.com/jackgeek/climon2/issues/94)).
+  Any other close is a failure: without final evidence it calls for passive
+  retry, and a close that meets an unanswered Leave leaves that Leave
+  indeterminate. Closure never makes a result or a Leave known.
+- **Kill.** `CM1_KILL`'s required list is admitted as an Open's lists are
+  (unique nonempty UTF-8 tokens, each relayed, charged with the request).
+  At execution the library reads the session metadata and exchanges hello
+  on a new connection of the Kill's own, with the same checks as an Open
+  except that `monitor-v1` is not needed: every required family must be
+  advertised. Hello is bounded by `kill_ms` and its 2-second limit. It
+  then sends one wire Kill, request ID 1, revision 1, naming the required
+  families, and waits for its answer until `kill_ms` after the Kill
+  started. A Kill refused before it is sent is `CM1_REJECTED` with the
+  refusal; one whose hello completes after shutdown is `cancelled`. At
+  most one Kill is pending per instance: another meanwhile is
+  `CM1_REJECTED` `invalid_state` at once. The answer maps to a Response:
+  success is `CM1_OK` with `CM1_TERMINATION`, the command result present
+  and cleanup `CM1_CLEANUP_COMPLETE`; a rejection carries `CM1_KNOWN_FINAL`
+  when the daemon sent one; a failed or indeterminate answer carries its
+  partial `CM1_TERMINATION`, an optional command result and cleanup
+  incomplete or unknown. A lost answer, one later than `kill_ms`
+  (`timeout`), a Fatal error, an uncorrelated or mismatched Response and
+  any other record are `CM1_INDETERMINATE` with that error. The library
+  then closes the connection and never sends the Kill again. On an
+  instance with an opened role, the Kill only answers its request; the
+  role and its stream go on. An instance that never executed an Open ends
+  its run after the Kill's result: stopped with no error after a
+  confirmed termination, otherwise failed with the Kill's error. Shutdown
+  waits for a Kill under way, bounded by `kill_ms`.
 - **Terminal evidence.** Retry is none once shutdown is requested, once a
   Leave the caller asked for is sent, answered or lost, and once the
-  command's final result is known, from a known-final rejection or the
-  Initial metadata's command result; otherwise permanent for the
+  command's final result is known, from a known-final rejection, the
+  Initial metadata's command result, a Command final or a Kill's
+  termination result; otherwise permanent for the
   library's `unsupported_revision`, `unsupported_capability`,
   `invalid_configuration`, `release_mismatch` and `unsupported_limit`
   refusals and the daemon's `unsupported_revision` and
-  `unsupported_capability`; passive otherwise. Leave is not required when no
+  `unsupported_capability`; passive otherwise, including a lost or late
+  Kill answer, whose outcome only a fresh passive instance may learn. Leave
+  is not required when no
   Leave was attempted, since closing the connection ends a passive
-  registration, and indeterminate when one was lost or late.
+  registration, and indeterminate when one was lost or late. Every
+  connection, a Kill's included, is closed before terminal evidence is
+  published.
 - **Signals.** Sending never raises `SIGPIPE` in the embedding process.
 
 ## Required runtime evidence

@@ -44,8 +44,9 @@ notification and progress messages, promotion of passive registrations,
 canonical monitor-mode presentation and bounded delivery remain
 unimplemented. The
 [client library](../../../GLOSSARY.md#sessions) speaks this revision for
-passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93));
-no other [client](../../../GLOSSARY.md#sessions) does yet. The
+passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
+with Command final, and for standalone Kill
+([#96](https://github.com/jackgeek/climon2/issues/96)); no other [client](../../../GLOSSARY.md#sessions) does yet. The
 [daemon's contract tests](../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
 are the evidence for the implemented parts.
 

@@ -5,7 +5,9 @@
 release ([#85](https://github.com/jackgeek/climon2/issues/85)) and delivers
 [Response](response.md), [Initial metadata](event-initial-metadata.md),
 [Title](event-title.md) and [diagnostic](event-diagnostic.md) records
-([#93](https://github.com/jackgeek/climon2/issues/93)); the other records are
+([#93](https://github.com/jackgeek/climon2/issues/93)) and
+[Command final](event-session-ended.md) records
+([#96](https://github.com/jackgeek/climon2/issues/96)); the other records are
 not implemented.**
 The [client](../../../GLOSSARY.md#sessions) delivers an
 [event](../TERMS.md#event) to the [monitor](../../../GLOSSARY.md#sessions).

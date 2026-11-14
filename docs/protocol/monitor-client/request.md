@@ -3,7 +3,8 @@
 **Status: agreed revision-1 specification. The
 [client library](../../../GLOSSARY.md#sessions) admits monitor-mode
 [Open](request-open.md) and [Leave](request-detach.md)
-([#93](https://github.com/jackgeek/climon2/issues/93)); every other
+([#93](https://github.com/jackgeek/climon2/issues/93)) and
+[Kill](request-kill.md) ([#96](https://github.com/jackgeek/climon2/issues/96)); every other
 [request](../TERMS.md#request) reports `CM1_UNSUPPORTED_OPERATION`. See its
 [implemented behavior](core-v1.md#implemented-behavior). The caller is not
 implemented.**

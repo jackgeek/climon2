@@ -85,9 +85,9 @@ fn outcome<'a>(report: &'a Value, index: usize, name: &str) -> (&'a Value, Vec<V
     (step(report, start + 1), records, terminal.clone())
 }
 
-/// COM-01 Fault and REC-01 Fault (startup failure calls for passive
-/// retry; missing revision-1 support or an invalid configuration for none
-/// possible) (missing required support is rejected explicitly
+/// REC-01 Fault (startup failure calls for passive retry; missing
+/// revision-1 support or an invalid configuration for none possible) and
+/// COM-01 Fault (missing required support is rejected explicitly
 /// before any role takes effect, support is never inferred from the release,
 /// and incompatible peers are rejected): against fake daemons of this very
 /// release, the Open is rejected (never sent: each daemon saw only hello, or
