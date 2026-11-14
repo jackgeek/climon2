@@ -6,8 +6,9 @@ not implementation or executed acceptance evidence.** The
 [monitor](../GLOSSARY.md#sessions) is the walking skeleton of
 [#74](https://github.com/jackgeek/climon2/issues/74) with discovery, passive
 clients and the basic selector of
-[#106](https://github.com/jackgeek/climon2/issues/106), whose Monitor-layer
-cases are mapped in the monitor README; the daemon wire is partly
+[#106](https://github.com/jackgeek/climon2/issues/106) and the selection,
+control and painting of [#108](https://github.com/jackgeek/climon2/issues/108),
+whose Monitor-layer cases are mapped in the monitor README; the daemon wire is partly
 implemented, and headless creation is implemented. Packaged
 [client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
 description ([#75](https://github.com/jackgeek/climon2/issues/75)), their

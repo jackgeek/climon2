@@ -49,8 +49,29 @@ any byte at it.
 **Implemented with crate tests only ([#83](https://github.com/jackgeek/climon2/issues/83)):**
 `climon2-vt`'s read-only Rust views of a monitor's
 [virtual terminal](../../GLOSSARY.md#sessions), described
-[below](#ownership-representation-and-fidelity), which the monitor does not
-paint from yet.
+[below](#ownership-representation-and-fidelity).
+
+**Implemented with packaged evidence ([#108](https://github.com/jackgeek/climon2/issues/108)):** selection
+and painting. Enter in the selector on a connected row not known to be final
+selects it and takes [control](../../GLOSSARY.md#attachment-and-control); nothing
+is selected at startup, and no arrival moves the selection. Each
+[session](../../GLOSSARY.md#sessions) has one allocation-bounded model, kept for
+the monitor's run: each [restoration](../../GLOSSARY.md#restoration-and-presentation)
+is staged and replaces the model whole once complete, and only then is
+[Ready](monitor-client/request-ready.md) submitted. A model from an earlier
+[control period](../../GLOSSARY.md#attachment-and-control) is never shown, a
+Display at a [geometry](TERMS.md#geometry) the model lacks marks it stale
+until the next restoration, and a finished session's view freezes at its
+Command final. The selected session is painted directly below the top row at
+its effective geometry, with blank margins, its cells, colours (ANSI colours as
+their own SGR) and cursor, never in the top row; the top row shows its label,
+status (Unavailable until status reaches the monitor), control, any error and,
+with key hints on, a hint. Host resizes go only to the selected controller, as
+the host width by its height less one, after every grant too; a host under two
+rows or columns shows `Terminal too small` and sends no resize. Input
+readiness (applied, Ready accepted and a painted frame) is tracked for the input
+router ([#109](https://github.com/jackgeek/climon2/issues/109)), which forwards
+nothing yet.
 
 Everything else in this document remains agreed and unimplemented, including
 Escape closing the dialog when Escape is not the prefix.
@@ -92,8 +113,8 @@ The monitor parses those bytes into its own per-[session](../../GLOSSARY.md#sess
 [virtual terminal](../../GLOSSARY.md#sessions), using `climon2-vt`, and Ratatui
 paints its read-only Rust views. `climon2-vt` provides these views of cells,
 modes, cursor, screens and history ([#83](https://github.com/jackgeek/climon2/issues/83)),
-but the monitor does not paint from them yet and uses the crate only for its
-release bytes. The monitor runs as its own
+and the monitor paints its selected session from them
+([#108](https://github.com/jackgeek/climon2/issues/108)). The monitor runs as its own
 `climon2-monitor` executable, beside the other executables of its release
 ([ADR 0004](../adr/0004-crate-layout-and-dependency-direction.md)); this contract
 chooses no workspace crate.
@@ -132,8 +153,8 @@ The monitor parses at those dimensions and paints local margins itself.
 No additional presentation-geometry field is introduced.
 
 The session daemon implements this amendment
-([#89](https://github.com/jackgeek/climon2/issues/89)); the monitor's parsing
-and painting remain unimplemented. Ordinary-client restoration can use host
+([#89](https://github.com/jackgeek/climon2/issues/89)), and the monitor parses
+and paints at the effective geometry ([#108](https://github.com/jackgeek/climon2/issues/108)). Ordinary-client restoration can use host
 coordinates: a 600x250 host around a 500x200 session cannot safely be
 reparsed as a 500x200 model. The single wire geometry suffices only with this
 monitor policy. A monitor model is never reflowed in place: every change of

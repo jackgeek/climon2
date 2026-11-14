@@ -349,4 +349,28 @@ mod tests {
         assert_eq!(highlighted(&buffer), [3]);
         assert!(selector.is_open());
     }
+
+    /// Spec #73 Enter (pure supplement, #108): a typed CR chooses the
+    /// highlighted row, leaving the selector to its caller; no other key
+    /// chooses, a CR inside an escape sequence is no Enter, and with no
+    /// rows nothing is chosen.
+    #[test]
+    fn enter_chooses_the_highlighted_row() {
+        let rows = rows(&[("", "A"), ("", "B")]);
+        let mut selector = Selector::default();
+        selector.open(&rows);
+        let chosen: Vec<_> = b"\x1b[B\x1b\r\r"
+            .iter()
+            .map(|&byte| selector.key(byte, &rows))
+            .collect();
+        let none = [None, None, None, None, None];
+        assert_eq!(chosen[..5], none);
+        assert_eq!(chosen[5], Some(rows[1].id.clone()));
+        assert!(selector.is_open());
+        selector.close();
+        assert!(!selector.is_open());
+        let mut empty = Selector::default();
+        empty.open(&[]);
+        assert_eq!(empty.key(b'\r', &[]), None);
+    }
 }

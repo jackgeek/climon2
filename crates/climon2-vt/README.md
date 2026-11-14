@@ -11,8 +11,8 @@ normal-shell baseline in its release.
 The [#63 terminal contract](../../docs/protocol/terminal-integration.md) has
 the monitor paint each session with Ratatui from
 [read-only views](#read-only-views) of its model (#83). They are Rust types,
-not a native cross-release cell schema, and the monitor does not paint from
-them yet (#108, #112). The daemon remains the sole query authority; the
+not a native cross-release cell schema; the monitor paints its selected
+session from them (#108). The daemon remains the sole query authority; the
 monitor never forwards parser replies or session bytes directly to its host.
 
 **Implemented ([#89](https://github.com/jackgeek/climon2/issues/89)):** the

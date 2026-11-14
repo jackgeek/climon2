@@ -84,9 +84,12 @@ test-only executable of the existing harness crate.
 crate, `climon2-monitor`, with a library and the `climon2-monitor` binary. It
 consumes `core`, `discovery` (#106), `platform` and `vt` (the only exception to
 [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)'s daemon-only
-`climon2-vt` rule) and never the CLI, client or daemon crates.
+`climon2-vt` rule: the release baseline, and since #108 each session's model
+and its read-only views for painting) and never the CLI, client or daemon
+crates.
 `climon2-test-term` consumes it only to unify `test-hooks` into the test build.
-Ratatui is a dependency of this crate alone; third-party crates are
+Ratatui (with `ratatui-core`, enabled for underline colours) is a dependency
+of this crate alone; third-party crates are
 deliberately excluded from this workspace-only diagram.
 
 **Current (#75):** the [client library](../GLOSSARY.md#sessions)'s `cdylib`,

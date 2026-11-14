@@ -11,7 +11,9 @@ executables of one release is not frozen. The library boundary is
 
 This is the #74 walking skeleton of spec #73, with its key introduction and
 help (#105), session discovery, passive clients and the basic selector
-(#106). Nothing is selected or acquired yet (#107, #108).
+(#106), and selection, control and painting of the selected session (#108).
+Nothing is selected automatically yet (#107), and typed input reaches no
+session yet (#109).
 
 ## Startup, before the host terminal changes
 
@@ -45,10 +47,14 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   alternate screen and enables bracketed paste, button-event mouse tracking
   with SGR encoding, and focus reporting. It never writes an OSC, so the host
   title is untouched.
-- Ratatui 0.30 renders each frame into a buffer, and its crossterm backend
-  paints every cell of it over the monitor-owned stdout. Nothing is erased
-  first, the cursor stays hidden, and the host is never queried. The permanent
-  top row reads `No session selected`; below it the centred empty state reads
+- Ratatui 0.30 renders each frame into a buffer, and the monitor's own
+  writer (`paint.rs`) paints every cell of it over the monitor-owned stdout,
+  each with its full SGR: the 16 ANSI colours keep their own SGR 30-37 and
+  90-97 (and backgrounds), which Ratatui's crossterm backend would rewrite as
+  palette entries, and SGR 58 underline colours are kept. Nothing is erased
+  first, the cursor is hidden while cells are written and shown only for a
+  selected session (below), and the host is never queried. With nothing
+  selected, the permanent top row reads `No session selected`; below it the centred empty state reads
   `No sessions to show.` and, unless `monitor.show_key_hints` is false, the key
   hint `Press <prefix> then x to exit.` with the configured prefix. Hiding the
   hint changes no binding. With it false, any problem with the key
@@ -73,8 +79,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
 - Host input is read as raw bytes and classified byte by byte (`keys.rs`):
   typed prefix+x exits, typed prefix+? opens the key introduction, and every
   other typed byte outside a prefix, Ctrl+C included, goes to it while it is
-  open, otherwise to the open selector, and is otherwise discarded, because
-  nothing is selected. A doubled prefix
+  open, otherwise to the open selector, and is otherwise discarded: routing
+  it to the selected session is the input router's (#109). A doubled prefix
   is one literal prefix, which goes there too, so with `Ctrl+M` as the prefix
   Enter Enter continues. A prefix and the byte after it that completes no
   action reach nothing. The key introduction acts only on Enter (close) and
@@ -174,9 +180,12 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   table) move the highlight without wrapping, and an Escape that ends a host
   read closes it. Known gap (owner decision on #106): an Escape followed by
   other bytes in the same read does not close it; the input router closes
-  this gap (#109, INP-02). It never resizes an
-  application or acquires anything. While rows exist and the selector is
-  closed, the body reads `No session selected.` above the key hint.
+  this gap (#109, INP-02). Opening it never resizes an application or
+  acquires anything. Enter (a typed CR) on a connected row not known to be
+  final selects that session, closes the selector and acquires it (below);
+  on any other row it does nothing yet. While rows exist, nothing is
+  selected and the selector is closed, the body reads `No session selected.`
+  above the key hint.
 - **Exit** first asks the supervisor to shut every instance down and keeps
   draining until each has ended, its handles are released and its owner is
   joined, for at most `deadlines.shutdown_ms` (and one tick), then releases
@@ -184,6 +193,59 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   unconfirmed at its deadline`) and left to process exit: its owner never
   destroys it while its handles may be unreleased. The fail-stop that
   should follow arrives with #118.
+
+## Selection, control and painting (#108)
+
+- **Selection.** Nothing is selected at startup; Enter selects. Once a
+  session is selected, no arrival moves the selection. Selecting submits
+  Acquire through the session's client (`supervisor.rs` numbers each request
+  from 2, after Open, and matches each answer to its request). A session
+  selected earlier keeps control in the background when another is selected.
+- **Terminals** (`terminal.rs`, pure): each session has one `climon2-vt`
+  model, kept by session ID for the whole run and bounded by
+  `memory.client_bytes` and `history.max_rows` (until admission divides that
+  budget with the library, #120). Its client's records drive it: a grant
+  starts a control period; each Restoration begin stages a separate model
+  (a newer one supersedes it, and it never becomes current); its Display
+  bytes build it; Restoration complete replaces the model and its history
+  whole, and only then is Ready submitted, also for a background controller.
+  Live Display bytes update the current model, but a Display at a geometry
+  the model does not have (after a Geometry with no restoration yet) marks
+  it stale: it is never reflowed and takes no more bytes until the next
+  restoration replaces it. The model never answers queries and nothing of
+  the session reaches the host. A revocation, or the end of the client,
+  ends control and abandons a staged restoration; the model is then a cache
+  and is never shown, nor while a later grant's restoration is staged. A
+  Command final (from the Initial metadata or its own record) freezes the
+  view: the last output and the release that follow change nothing, and the
+  frozen view stays shown. Applied, Ready accepted and painted are
+  distinct; input may use the period's authority only with all three and a
+  current model (`Terminal::input`, for #109's router).
+- **Canvas.** The selected session's active screen is painted directly below
+  the top row at the model's geometry, clipped to the host, with blank
+  margins: each cell's character and combining marks, a wide character over
+  two columns (blank if the right edge would cut it), colours and rendition
+  (every underline style as a single underline). Its cursor is shown with its
+  DECSCUSR shape and blink where the application left it, unless hidden, off
+  the host or covered by the selector or key introduction; never in the top
+  row. While its restoration is staged the last applied frame stays; before
+  any, the canvas is blank.
+- **Top row.** With a session selected: its label (clipped, never moved by
+  the fields), then at the right edge, two spaces apart, its status as the
+  selector shows it (Unavailable until status reaches the monitor, #95,
+  #107), its control (`Acquiring`, `Restoring`, `Controlling` once input may
+  go, `Not controlling`, or `Ended` once frozen), the latest error (a refused
+  request, or the model's limit) until the next applied restoration, and,
+  unless `monitor.show_key_hints` is false, `<prefix> then s: sessions`. A
+  request refused under a restoration since superseded is not an error; a
+  Resize refused so is sent again under the current one.
+- **Geometry.** The selected controller is asked for the host width by its
+  height less the top row: after every grant, on selection and on each real
+  host resize, once per control period and size. Background controllers get
+  none. A host under two rows (no row below the top row) or two columns
+  shows only `Terminal too small` in its top row and sends no resize; clients,
+  control and models carry on, global keys still act, and a larger host
+  resizes and paints the session again.
 
 ## Exit
 
@@ -247,6 +309,24 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | COM-01 and not-connected labels (pure supplement) | `connection_statuses_are_labelled_as_specified` (`src/registry.rs`) |
 | TRM-06 label cases (pure supplement): latest nonempty title, command fallback, literal, never IDs; cell-safe clipping | `labels_are_the_latest_nonempty_title_or_command_and_arguments_literally`, `clipping_is_display_cell_safe` (`src/registry.rs`) |
 | SEL-01 basic cases (pure supplement) | `the_selector_draws_a_captionless_double_border_with_two_columns`, `up_and_down_move_without_wrapping_and_escape_closes`, `opening_an_open_selector_keeps_its_highlight` (`src/selector.rs`) |
+| CTL-05 (Monitor), TRM-01 (Monitor, basic cases), spec #73 Enter and initial selection before status (#108): nothing selected at startup; Enter selects and acquires; plain, ANSI-coloured, bold-on-blue, wide and combining text and the cursor painted as written, live; a later arrival never moves the selection | `enter_selects_and_acquires_a_session_and_paints_it_live` (e2e) |
+| TRM-02 (Monitor): only the daemon answers session queries; no session byte or title reaches the host; the host is never queried | `only_the_daemon_answers_session_queries_and_no_session_byte_reaches_the_host` (e2e) |
+| TRM-03 (Monitor) at 80x24, 200x60, 500x200 and a larger host: one top row; the desired area is the host less one row; canonical bytes at the effective geometry with blank margins | `the_selected_session_fills_the_host_below_one_top_row_at_its_effective_geometry` (e2e) |
+| CTL-05 (Monitor, resize), TRM-03 (real host resizes): Resize only to the selected controller, never to a background one | `host_resizes_reach_only_the_selected_controller` (e2e) |
+| TRM-04 (Monitor, too-small cases): one row too small, two rows and two columns enough; no resize while too small; recovery; prefix+x still exits | `a_host_too_small_for_a_session_says_so_sends_no_resize_and_recovers` (e2e) |
+| Top-row key hints (#108): none with `monitor.show_key_hints` false | `without_key_hints_the_top_row_shows_no_hint` (e2e) |
+| Spec #73 Enter, never exposing cached output; CTL-05 (revoked): a revoked session's cache is never painted; Enter takes control again | `a_revoked_session_shows_no_cached_output_until_enter_takes_control_again` (e2e) |
+| #94 rule for #108: a finished session's view freezes at Command final; Enter does not acquire a final row | `a_finished_session_keeps_its_last_screen_and_cannot_be_acquired` (e2e) |
+| CTL-05, COM-05 (pure supplement): Ready only after the apply; applied, Ready accepted and painted distinct, input needs all three; only Ready for the applied restoration counts | `ready_applied_and_painted_stay_distinct_and_input_needs_all_three`, `only_ready_accepted_for_the_applied_restoration_opens_input` (`src/terminal.rs`) |
+| TRM-04, COM-05 (pure supplement): staged restorations replace the model whole once applied; superseded ones never become current; a cache is never shown | `a_restoration_replaces_the_model_whole_only_once_applied`, `a_cache_from_an_earlier_period_is_never_shown` (`src/terminal.rs`) |
+| Carried from #76 (owner decision 2026-11-13): a Display at a geometry the model lacks marks it stale until the next restoration | `a_display_at_a_geometry_the_model_lacks_marks_it_stale_until_restored` (`src/terminal.rs`) |
+| #94 rule (pure supplement): the view freezes at Command final | `the_view_freezes_at_the_command_final` (`src/terminal.rs`) |
+| CTL-05 (pure supplement): Resize once per grant and desire, never without control; superseded refusals are not errors and a refused Resize is resent; Acquiring and errors | `resize_follows_every_grant_and_each_new_desire_only_while_controlling`, `work_refused_under_a_superseded_restoration_is_not_an_error_and_resize_is_resent`, `acquiring_ends_at_the_grant_or_the_answer_and_errors_are_shown`, `each_control_has_its_label` (`src/terminal.rs`) |
+| LIM-03 (pure supplement): a restoration over the model's limit is an error without Ready | `a_restoration_over_the_model_limit_is_an_error_without_ready` (`src/terminal.rs`) |
+| TRM-01 (pure supplement): exact SGR for the 16 ANSI, palette, direct and default colours, underline colour and renditions; wide and combining text; the cursor | `colours_and_renditions_are_painted_with_their_own_sgr`, `wide_and_combining_text_and_the_cursor_are_painted_in_place`, `each_row_starts_with_its_own_cursor_position` (`src/paint.rs`) |
+| TRM-03, TRM-04 (pure supplement): the desired area, and one column or one row too small | `the_application_area_is_the_host_less_its_top_row_unless_too_small` (`src/screen.rs`) |
+| Spec #73 Enter (pure supplement): only connected rows not known to be final are acquirable; Enter chooses the highlighted row | `only_connected_rows_not_known_to_be_final_are_acquirable` (`src/registry.rs`), `enter_chooses_the_highlighted_row` (`src/selector.rs`) |
+| Client supervisor (#108): control and display records reach the terminal as delivered; Acquire, Ready and Resize submitted in order and answered as themselves | `control_and_display_records_reach_the_terminal_as_delivered`, `requests_are_submitted_in_order_and_answered_as_themselves` (`src/supervisor/tests`) |
 | HLP-01 (Monitor): at every start with hints on and nothing saved, the introduction lists the actual prefix with x, s and ? and an unchecked box; Enter continues, closing saves nothing, prefix+x exits from it | `the_key_introduction_opens_at_every_start_until_dont_show_again_is_saved` (e2e) |
 | HLP-01 (Monitor): hints off or the choice saved keep it closed; prefix+? opens it regardless, showing the saved choice; prefix+? while open is a no-op; a later version's file with unknown fields is honoured | `the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say` (e2e) |
 | HLP-01 (Monitor): Space saves and reverses the choice per climon2 home, exact version 1 bytes, mode 0600 under umask 000, by rename (a hard link keeps the old bytes), nothing left behind, a file already under the temporary name replaced; restarts and another home | `dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible` (e2e) |
@@ -267,8 +347,11 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), application input such
 as Ctrl+C (#109), mouse and focus report classification (#109) and their
 routing to applications (#111), HLP-02 over the selector (#113), selector
-search, footer and Enter (#108, #113), status order and initial selection
-(#107), resource admission and fairness, including newest-first starts
+search and footer (#113), Enter on a row that is not connected, is final or
+is this monitor (read-only selection and its placeholders), the revoked
+placeholder and take-control key (#110), the label marquee and synchronized
+updates (#112), underline styles other than single, status order and
+initial selection (#107), resource admission and fairness, including newest-first starts
 across discovery batches, and `discovery.stall_ms` (#120), passive retry
 (#116), an Escape that does not end its host read closing the selector
 (#109, INP-02), the fail-stop after an unconfirmed shutdown (#118), Escape closing the key introduction when Escape is not

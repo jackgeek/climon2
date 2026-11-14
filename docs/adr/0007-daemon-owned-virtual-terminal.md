@@ -241,8 +241,8 @@ ordered exact daemon terminal bytes, reparsed into monitor-owned `climon2-vt`
 models and painted by Ratatui. This deliberately reopens the rejected
 client-side-emulator option for the monitor role, not ordinary clients or query
 authority. The [read-only views](#read-only-views-for-painting) keep engine
-types private; the monitor, the one other consumer allowed by ADR 0004, does
-not paint from them yet and uses the crate only for the documented
+types private; the monitor, the one other consumer allowed by ADR 0004, paints
+its selected session from them (#108) and uses the crate for the documented
 normal-shell baseline.
 No native cross-release cell schema or new workspace crate is selected.
 

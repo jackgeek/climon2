@@ -37,8 +37,7 @@ flowchart TB
         monitor -->|"hello probes for discovery"| daemon
         monitor -->|"loads session-version library through shared loader; one owner thread per live session's passive client"| library
         client -.->|"loads same-release library through shared loader; versioned C interface planned"| library
-        library -->|"daemon wire revision 1: passive monitor connections"| daemon
-        library -.->|"daemon wire revision 1: control and display; planned"| daemon
+        library -->|"daemon wire revision 1: passive monitor connections; control and display of the selected session"| daemon
         monitor -.->|"consumes forwarded sessions over TCP/IP; future"| source_monitor
         browser -.->|"consumes forwarded terminal traffic over WebSocket; future"| monitor
     end
@@ -138,14 +137,21 @@ new sessions, and background clients never take control. Native client crashes
 can terminate the entire monitor. Ratatui draws the permanent top row, the
 body and the basic [selector](../GLOSSARY.md#attachment-and-control).
 
+**Current (#108):** Enter acquires the selected session through its client,
+which relays its control, restorations and display. The monitor parses them
+into its own allocation-bounded `climon2-vt` model per session and paints the
+selected one from `climon2-vt`'s read-only views, below the top row at the
+session's effective geometry; it submits Ready and Resize through the client.
+Session bytes never go directly to the host, and the daemon alone answers
+session queries.
+
 **Planned:** background clients relay negotiated plugin data, and the rest of
 the monitor's terminal integration is agreed, unimplemented.
-The [agreed terminal contract](protocol/terminal-integration.md), not implemented,
-selects exact ordered terminal bytes/control/restoration through existing
-in-process record queues and monitor-owned `climon2-vt` models, with read-only
-Rust views for Ratatui, which `climon2-vt` provides (#83) but the monitor does
-not use yet. Session bytes never go directly to the host;
-daemon query authority stays unique. Monitor-mode daemon presentation uses
+The [agreed terminal contract](protocol/terminal-integration.md), implemented
+for selection and painting (#108), selects exact ordered terminal
+bytes/control/restoration through existing in-process record queues and
+monitor-owned `climon2-vt` models, with read-only Rust views for Ratatui.
+Monitor-mode daemon presentation uses
 effective session geometry, not host/requested dimensions, including background
 [promotion](../GLOSSARY.md#attachment-and-control); session daemons already
 serialize it so. Optional core Focus is not

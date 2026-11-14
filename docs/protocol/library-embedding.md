@@ -24,8 +24,10 @@ descriptors, drains and releases every delivery, and on exit requests
 shutdown of every instance and waits up to `deadlines.shutdown_ms` for each to
 end, its handles to be released and its owner to be joined. An instance
 unconfirmed by then is reported and left, never destroyed, to process exit:
-the monitor does not claim it joined. Admission,
-recovery, acquisition and fail-stop remain unimplemented, and the client
+the monitor does not claim it joined. It acquires the session selected with
+Enter and submits Ready and Resize through that instance
+([#108](https://github.com/jackgeek/climon2/issues/108)). Admission,
+recovery and fail-stop remain unimplemented, and the client
 executable does not load the library yet. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
 requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)
