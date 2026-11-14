@@ -333,8 +333,8 @@ fn installed_library_substituted_through_dyld_library_path_is_refused() {
     package.assert_clean();
 }
 
-/// LIB-01 Library case on macOS (a substitute without the bootstrap; owner
-/// decision on #84): when the file dyld loaded through `DYLD_LIBRARY_PATH`
+/// LIB-01 Fault case on macOS (an adversarial decoy without the bootstrap;
+/// owner decision on #84): when the file dyld loaded through `DYLD_LIBRARY_PATH`
 /// lacks `climon2_client_get_interface`, `dladdr` cannot name it, so the
 /// refusal lists every loaded image with the library's file name, the main
 /// executable included. The host runs as a copy named like the library

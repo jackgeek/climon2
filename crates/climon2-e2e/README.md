@@ -81,7 +81,8 @@ Each host run is bounded; one that outlives its deadline is killed, reaped and
 failed. In archive mode the same tests load the exact archive's library, so
 the CI archive jobs exercise both macOS architectures' slices and the Linux
 library. The exported symbol set is a release check (`xtask`), not a
-Library-layer test; the loader's Fault-layer cases are `climon2-platform`'s.
+Library-layer test; the loader's Fault-layer cases are `climon2-platform`'s,
+except the macOS decoy found through `DYLD_LIBRARY_PATH` without the bootstrap.
 
 `tests/instance.rs` (#85) drives client instances through the same host's
 scenarios (`climon2-library-host <home> <version> <scenario> <json>`), from the
@@ -142,7 +143,7 @@ sessions in `tests/headless.rs`.
 | LIB-02 Library: a version folder holding a copy that describes another release is refused as the wrong release, naming the compiled-in release; the copy stays loaded and the release it describes is not substituted; a folder without a library is a missing library and nothing loads | `installed_library_of_another_release_or_none_is_refused_without_substitution` |
 | LIB-01 Library, Linux: with `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` set, the library loads and all four stay as they were | `installed_library_loads_under_the_users_loader_environment` |
 | LIB-01 Library, macOS (#84 owner decision): a copy found through `DYLD_LIBRARY_PATH` is refused as a substituted image, naming both files, and stays loaded | `installed_library_substituted_through_dyld_library_path_is_refused` |
-| LIB-01 Library, macOS (#84 owner decision): a substitute without the bootstrap is refused, listing every loaded image of the library's file name in load order, the main executable included | `substitute_without_a_bootstrap_is_refused_naming_every_loaded_image_of_its_name` |
+| LIB-01 Fault, macOS (#84 owner decision): an adversarial decoy without the bootstrap is refused, listing every loaded image of the library's file name in load order, the main executable included | `substitute_without_a_bootstrap_is_refused_naming_every_loaded_image_of_its_name` |
 | LIB-02 Library: unsupported revisions rejected with a null description; null output storage | `installed_library_rejects_other_revisions_without_a_description` |
 | DOC-01: all eleven table entries reject null handles and outputs by the frozen call rules; `submit` stays unsupported | `installed_library_table_rejects_null_arguments_and_cannot_submit_yet` |
 
