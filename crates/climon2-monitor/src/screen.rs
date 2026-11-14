@@ -4,19 +4,22 @@ use crate::{
     introduction::KeyIntroduction,
     keys::EXIT,
     paint::{ANSI, Frame, HostCursor, paint},
-    registry::{View, clip},
+    registry::View,
     selector::Selector,
 };
 use climon2_core::{keys::ControlKey, protocol::TerminalSize};
 use climon2_vt::view::{self as vt, Content, CursorShape};
 use ratatui::{
-    buffer::Buffer,
+    buffer::{Buffer, CellDiffOption},
     layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::Line,
     widgets::{Paragraph, Widget},
 };
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    num::NonZeroU16,
+};
 use unicode_width::UnicodeWidthStr;
 
 /// The permanent top row's height.
@@ -26,12 +29,17 @@ const EMPTY: &str = "No sessions to show.";
 /// The body once rows exist, while nothing is selected (#107).
 const UNSELECTED: &str = "No session selected.";
 const TOO_SMALL: &str = "Terminal too small";
-/// The smallest application area a session supports: two columns (the
-/// engine's minimum) by one row.
-const MIN_COLS: u16 = 2;
-const MIN_ROWS: u16 = 1;
-/// Between the top row's stationary fields.
-const SEPARATOR: &str = "  ";
+/// The smallest host that shows a session (owner decision, 2026-11-14):
+/// any host under four rows or five columns is too small.
+const MIN_HOST_ROWS: u16 = 4;
+const MIN_HOST_COLS: u16 = 5;
+/// Between the top row's slots.
+const SEPARATOR: &str = " | ";
+/// The status slot's width: the longest status a row shows, "Awaiting
+/// resources".
+const STATUS_SLOT: u16 = 18;
+/// The control slot's width: the longest control, "Not controlling".
+const CONTROL_SLOT: u16 = 15;
 
 /// The selected session as the top row and canvas show it.
 pub(crate) struct Session<'a> {
@@ -92,13 +100,13 @@ impl Screen {
     }
 
     /// The application area a selected controller should have: the host
-    /// width by its height less the top row, or none when that is too small
-    /// for any session.
+    /// width by its height less the top row, or none when the host is too
+    /// small to show a session.
     pub(crate) fn desire(&self) -> Option<TerminalSize> {
-        let rows = self.size.rows.saturating_sub(TOP_ROW);
-        (self.size.cols >= MIN_COLS && rows >= MIN_ROWS).then_some(TerminalSize {
-            cols: self.size.cols,
-            rows,
+        let TerminalSize { cols, rows } = self.size;
+        (cols >= MIN_HOST_COLS && rows >= MIN_HOST_ROWS).then(|| TerminalSize {
+            cols,
+            rows: rows - TOP_ROW,
         })
     }
 
@@ -142,12 +150,18 @@ impl Screen {
         };
         let cursor = match (self.desire(), &scene.session) {
             (None, _) => {
-                top_row(&mut buffer, top, TOO_SMALL, &[]);
+                top_row(&mut buffer, top, TOO_SMALL);
                 None
             }
-            (Some(_), Some(session)) => self.session(session, &mut buffer, top),
+            (Some(_), Some(session)) => {
+                session_row(&mut buffer, top, session, self.top_hint.as_deref());
+                session
+                    .view
+                    .as_ref()
+                    .and_then(|view| canvas(view, &mut buffer))
+            }
             (Some(_), None) => {
-                top_row(&mut buffer, top, NO_SELECTION, &[]);
+                top_row(&mut buffer, top, NO_SELECTION);
                 self.body(scene, &mut buffer, below);
                 None
             }
@@ -158,20 +172,6 @@ impl Screen {
             buffer,
             cursor: cursor.filter(|_| !scene.covered()),
         }
-    }
-
-    /// The selected session's top row and canvas, and its cursor if visible
-    /// on the host.
-    fn session(&self, session: &Session<'_>, buffer: &mut Buffer, top: Rect) -> Option<HostCursor> {
-        let fields: Vec<&str> = [session.status, session.control]
-            .into_iter()
-            .chain(session.error)
-            .chain(self.top_hint.as_deref())
-            .collect();
-        top_row(buffer, top, session.label, &fields);
-        let view = session.view?;
-        canvas(&view, buffer);
-        cursor(&view, buffer.area)
     }
 
     /// The body with nothing selected, centred: the empty state until a row
@@ -201,23 +201,49 @@ impl Screen {
     }
 }
 
-/// The reversed top row: `label` from the left, clipped by display cell to
-/// what the stationary `fields` leave, and the fields at the right edge.
-fn top_row(buffer: &mut Buffer, top: Rect, label: &str, fields: &[&str]) {
+/// The reversed top row: `text` from the left, clipped by display cell.
+fn top_row(buffer: &mut Buffer, top: Rect, text: &str) {
     let style = Style::new().reversed();
-    buffer.set_style(top, style);
-    let width = usize::from(top.width);
-    let fields = fields.join(SEPARATOR);
-    let fields = clip(&fields, width);
-    let room = width - fields.width();
-    let label = clip(label, room.saturating_sub(1));
-    buffer.set_string(top.x, top.y, label, style);
-    buffer.set_string(top.x + room as u16, top.y, fields, style);
+    buffer.set_string(top.x, top.y, " ".repeat(top.width.into()), style);
+    buffer.set_stringn(top.x, top.y, text, top.width.into(), style);
+}
+
+/// The reversed top row of a selected session. Its status, control and
+/// any key hint have fixed-width slots at the right edge, separated by
+/// `|`, so none of them ever moves whatever the values. The label fills
+/// the cells they leave from the left, and any error follows it in what
+/// the label leaves: the error is clipped first, and never squeezes out the
+/// label.
+fn session_row(buffer: &mut Buffer, top: Rect, session: &Session<'_>, hint: Option<&str>) {
+    let style = Style::new().reversed();
+    top_row(buffer, top, "");
+    let separator = SEPARATOR.width() as u16;
+    let slots = [
+        (session.status, STATUS_SLOT),
+        (session.control, CONTROL_SLOT),
+    ]
+    .into_iter()
+    .chain(hint.map(|hint| (hint, hint.width() as u16)));
+    let slots: Vec<_> = slots.collect();
+    let width: u16 = slots.iter().map(|(_, width)| separator + width).sum();
+    let room = top.width.saturating_sub(width);
+    let mut x = top.x + room;
+    for (text, slot) in slots {
+        buffer.set_stringn(x, top.y, SEPARATOR, usize::from(separator), style);
+        buffer.set_stringn(x + separator, top.y, text, usize::from(slot), style);
+        x += separator + slot;
+    }
+    let (end, _) = buffer.set_stringn(top.x, top.y, session.label, room.into(), style);
+    let left = usize::from(room - (end - top.x));
+    if let Some(error) = session.error.filter(|_| left > SEPARATOR.width()) {
+        buffer.set_stringn(end, top.y, format!("{SEPARATOR}{error}"), left, style);
+    }
 }
 
 /// The session's active screen directly below the top row, at the model's
 /// geometry, clipped to the host; the cells it leaves stay blank margins.
-fn canvas(view: &vt::View<'_>, buffer: &mut Buffer) {
+/// Returns its cursor if the host shows it.
+fn canvas(view: &vt::View<'_>, buffer: &mut Buffer) -> Option<HostCursor> {
     let (vt::Screen::Normal { rows, .. } | vt::Screen::Alternate { rows }) = view.screen();
     let area = buffer.area;
     for (y, row) in (TOP_ROW..area.height).zip(rows.iter()) {
@@ -226,19 +252,27 @@ fn canvas(view: &vt::View<'_>, buffer: &mut Buffer) {
             paint_cell(&mut buffer[(x, y)], &cell, wide_fits);
         }
     }
+    cursor(view, area)
 }
 
-/// One session cell: its glyph and combining marks, colours and rendition.
-/// A wide character's second column has nothing of its own; one that the
-/// host's right edge would cut is left blank.
+/// One session cell: its glyph and combining marks, colours and rendition,
+/// with the width the engine gave it, never a re-measured one. A wide
+/// character's second column has nothing of its own; one that the host's
+/// right edge would cut is left blank.
 fn paint_cell(target: &mut ratatui::buffer::Cell, cell: &vt::Cell<'_>, wide_fits: bool) {
-    match cell.content {
-        Content::Narrow(glyph) => target.set_symbol(&symbol(glyph)),
-        Content::Wide(glyph) if wide_fits => target.set_symbol(&symbol(glyph)),
-        Content::Wide(_) | Content::Spacer => target.set_symbol(" "),
+    let (symbol, width) = match cell.content {
+        Content::Narrow(glyph) => (symbol(glyph), NARROW),
+        Content::Wide(glyph) if wide_fits => (symbol(glyph), WIDE),
+        Content::Wide(_) | Content::Spacer => (" ".to_owned(), NARROW),
     };
-    target.set_style(style(cell));
+    target
+        .set_symbol(&symbol)
+        .set_diff_option(CellDiffOption::ForcedWidth(width))
+        .set_style(style(cell));
 }
+
+const NARROW: NonZeroU16 = NonZeroU16::MIN;
+const WIDE: NonZeroU16 = NonZeroU16::new(2).expect("two is not zero");
 
 fn symbol(glyph: vt::Glyph<'_>) -> String {
     std::iter::once(glyph.character)
@@ -257,10 +291,10 @@ fn style(cell: &vt::Cell<'_>) -> Style {
         (rendition.hidden, Modifier::HIDDEN),
         (rendition.strikeout, Modifier::CROSSED_OUT),
     ];
-    let modifier = flags
+    let modifier: Modifier = flags
         .into_iter()
-        .filter(|(on, _)| *on)
-        .fold(Modifier::empty(), |all, (_, modifier)| all | modifier);
+        .filter_map(|(on, modifier)| on.then_some(modifier))
+        .collect();
     Style::new()
         .fg(colour(cell.foreground))
         .bg(colour(cell.background))
@@ -305,6 +339,8 @@ fn decscusr(shape: CursorShape, blinking: bool) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::Control;
+    use climon2_vt::{Geometry, Limits, Model};
 
     fn desire(cols: u16, rows: u16) -> Option<(u16, u16)> {
         let prefix = ControlKey::from_byte(0x1d).unwrap();
@@ -312,16 +348,206 @@ mod tests {
         screen.desire().map(|size| (size.cols, size.rows))
     }
 
-    /// TRM-03 and TRM-04 (pure supplement): the desired application area is
-    /// the host width by its height less the top row; one column, or one
-    /// row (no room below the top row), is too small, and two of each are
-    /// room enough.
+    /// TRM-03 and TRM-04 (pure supplement; owner decision 2026-11-14): the
+    /// desired application area is the host width by its height less the
+    /// top row; a host under four rows or five columns is too small, at
+    /// each limit and one below it.
     #[test]
     fn the_application_area_is_the_host_less_its_top_row_unless_too_small() {
         assert_eq!(desire(120, 30), Some((120, 29)));
-        assert_eq!(desire(2, 2), Some((2, 1)));
-        assert_eq!(desire(1, 30), None);
-        assert_eq!(desire(120, 1), None);
+        assert_eq!(desire(5, 4), Some((5, 3)));
+        assert_eq!(desire(4, 30), None);
+        assert_eq!(desire(120, 3), None);
         assert_eq!(desire(0, 0), None);
+    }
+
+    const HINT: &str = "Ctrl+] then s: sessions";
+
+    /// The top row of a selected session `width` cells wide, as text.
+    fn top(width: u16, label: &str, control: &str, error: Option<&str>, hint: bool) -> String {
+        let area = Rect::new(0, 0, width, 1);
+        let mut buffer = Buffer::empty(area);
+        let session = Session {
+            label,
+            status: "Unavailable",
+            control,
+            error,
+            view: None,
+        };
+        session_row(&mut buffer, area, &session, hint.then_some(HINT));
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .all(|cell| cell.modifier == Modifier::REVERSED),
+            "the whole top row is reversed"
+        );
+        buffer.content().iter().map(|cell| cell.symbol()).collect()
+    }
+
+    /// Top row (owner decision 2026-11-14): status, control and the key
+    /// hint have fixed-width slots at the right edge, separated by `|`, so
+    /// no control word moves them or the label.
+    #[test]
+    fn status_and_control_keep_their_slots_whatever_the_control() {
+        let rows = [
+            "Paint           | Unavailable        | Acquiring       | Ctrl+] then s: sessions",
+            "Paint           | Unavailable        | Restoring       | Ctrl+] then s: sessions",
+            "Paint           | Unavailable        | Controlling     | Ctrl+] then s: sessions",
+            "Paint           | Unavailable        | Not controlling | Ctrl+] then s: sessions",
+            "Paint           | Unavailable        | Ended           | Ctrl+] then s: sessions",
+        ];
+        let controls = [
+            Control::Acquiring,
+            Control::Restoring,
+            Control::Controlling,
+            Control::NotControlling,
+            Control::Ended,
+        ];
+        for (control, row) in controls.into_iter().zip(rows) {
+            assert_eq!(top(80, "Paint", control.label(), None, true), row);
+        }
+        assert_eq!(
+            top(60, "Paint", "Controlling", None, false),
+            "Paint                 | Unavailable        | Controlling    "
+        );
+    }
+
+    /// Top row (owner decision 2026-11-14): an error follows the label in
+    /// what the label leaves and is clipped first; a long label is never
+    /// squeezed out by it, and an error with no room for more than its
+    /// separator is not shown.
+    #[test]
+    fn an_error_is_clipped_first_and_never_squeezes_out_the_label() {
+        let error = Some("connection refused by the daemon");
+        assert_eq!(
+            top(60, "Build", "Controlling", error, false),
+            "Build | connection re | Unavailable        | Controlling    "
+        );
+        assert_eq!(
+            top(
+                60,
+                "A very long session title here",
+                "Controlling",
+                error,
+                false
+            ),
+            "A very long session t | Unavailable        | Controlling    "
+        );
+        assert_eq!(
+            top(60, "seventeen columns", "Controlling", error, false),
+            "seventeen columns | c | Unavailable        | Controlling    "
+        );
+        assert_eq!(
+            top(60, "eighteen columns..", "Controlling", error, false),
+            "eighteen columns..    | Unavailable        | Controlling    "
+        );
+        assert_eq!(
+            top(30, "Paint", "Controlling", error, true),
+            " | Unavailable        | Contro"
+        );
+    }
+
+    /// A model `cols` by `rows` that took `bytes`.
+    fn model(cols: u16, rows: u16, bytes: &[u8]) -> Model {
+        let limits = Limits {
+            bytes: 64 << 20,
+            history_rows: 100,
+        };
+        let mut model = Model::new(Geometry::for_host(cols, rows).unwrap(), limits).unwrap();
+        model.feed(bytes).unwrap();
+        model
+    }
+
+    /// `model`'s canvas on a host `cols` by `rows`: each row's symbols and
+    /// the host cursor.
+    fn painted(model: &Model, cols: u16, rows: u16) -> (Buffer, Option<HostCursor>) {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
+        let cursor = canvas(&model.view(), &mut buffer);
+        (buffer, cursor)
+    }
+
+    /// TRM-01 (pure supplement): the cursor shows on the host only where
+    /// the host has its cell, below the top row: its last column and row
+    /// are in, one past either is out, and a hidden cursor never shows.
+    #[test]
+    fn the_cursor_shows_only_inside_the_host() {
+        let corner = model(10, 3, b"\x1b[3;10H\x1b[6 q");
+        let at = |column, row| HostCursor {
+            column,
+            row,
+            style: 6,
+        };
+        assert_eq!(painted(&corner, 10, 4).1, Some(at(9, 3)));
+        assert_eq!(painted(&corner, 9, 4).1, None);
+        assert_eq!(painted(&corner, 10, 3).1, None);
+        let hidden = model(10, 3, b"\x1b[?25l");
+        assert_eq!(painted(&hidden, 10, 4).1, None);
+    }
+
+    /// TRM-01 (pure supplement): a wide character in the host's last
+    /// column is left blank rather than cut; one with room keeps the
+    /// engine's width of two, and its second column is a blank narrow
+    /// cell the painter skips.
+    #[test]
+    fn a_wide_character_the_host_edge_would_cut_is_left_blank() {
+        let wide = model(4, 1, "ab界".as_bytes());
+        let width = |cell: &ratatui::buffer::Cell| match cell.diff_option {
+            CellDiffOption::ForcedWidth(width) => width.get(),
+            _ => 0,
+        };
+        let (fits, _) = painted(&wide, 4, 2);
+        let row: Vec<_> = fits.content()[4..]
+            .iter()
+            .map(|cell| (cell.symbol(), width(cell)))
+            .collect();
+        assert_eq!(row, [("a", 1), ("b", 1), ("界", 2), (" ", 1)]);
+        let (cut, _) = painted(&wide, 3, 2);
+        let row: Vec<_> = cut.content()[3..]
+            .iter()
+            .map(|cell| (cell.symbol(), width(cell)))
+            .collect();
+        assert_eq!(row, [("a", 1), ("b", 1), (" ", 1)]);
+    }
+
+    /// TRM-01 (pure supplement): each rendition the engine reports, and
+    /// only those, reaches the cell.
+    #[test]
+    fn each_rendition_reaches_its_cell() {
+        let styled = model(4, 1, b"\x1b[1;3mA\x1b[0;1;2;3;4;7;8;9mB\x1b[0mC");
+        let (buffer, _) = painted(&styled, 4, 2);
+        let modifiers: Vec<_> = buffer.content()[4..7]
+            .iter()
+            .map(|cell| cell.modifier)
+            .collect();
+        let every = Modifier::BOLD
+            | Modifier::DIM
+            | Modifier::ITALIC
+            | Modifier::UNDERLINED
+            | Modifier::REVERSED
+            | Modifier::HIDDEN
+            | Modifier::CROSSED_OUT;
+        assert_eq!(
+            modifiers,
+            [Modifier::BOLD | Modifier::ITALIC, every, Modifier::empty()]
+        );
+    }
+
+    /// TRM-01 (pure supplement): DECSCUSR's `Ps` for every shape, steady
+    /// and blinking; the host's own shape is 0 either way.
+    #[test]
+    fn each_cursor_shape_has_its_decscusr() {
+        let shapes = [
+            (CursorShape::Default, 0, 0),
+            (CursorShape::Block, 1, 2),
+            (CursorShape::Underline, 3, 4),
+            (CursorShape::Bar, 5, 6),
+        ];
+        for (shape, blinking, steady) in shapes {
+            assert_eq!(
+                (decscusr(shape, true), decscusr(shape, false)),
+                (blinking, steady)
+            );
+        }
     }
 }
