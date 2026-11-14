@@ -37,7 +37,7 @@ use std::{
     collections::BTreeMap,
     fmt, io, mem,
     path::{Path, PathBuf},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 use supervisor::{Context, Load, Refusal, Supervisor};
 use terminal::{Presentation, Request, Terminal};
@@ -144,8 +144,6 @@ fn own_session() -> Option<SessionId> {
 struct Monitor {
     screen: Screen,
     router: Router,
-    /// When the host last sent input, for the router's escape time.
-    heard: Instant,
     introduction: KeyIntroduction,
     registry: Registry,
     selector: Selector,
@@ -178,7 +176,6 @@ impl Monitor {
         let mut monitor = Self {
             screen: Screen::new(size, prefix, hints),
             router: Router::new(prefix),
-            heard: Instant::now(),
             introduction,
             registry: Registry::new(own_session()),
             selector: Selector::default(),
@@ -231,7 +228,7 @@ impl Monitor {
                 self.show(true).map(|()| None)
             }
             Event::Input(bytes) => Ok(self.input(bytes)),
-            Event::Idle => Ok(self.idle()),
+            Event::Idle => Ok(None),
         }
     }
 
@@ -369,18 +366,16 @@ impl Monitor {
         }
     }
 
-    /// Routes one host read.
+    /// Routes one host read; a lone Escape that ends it then goes at once
+    /// to a session taking input, while a modal waits for the next byte.
     fn input(&mut self, bytes: &[u8]) -> Option<Ending> {
-        self.heard = Instant::now();
         let routed = self.router.read(bytes);
-        self.route(routed)
-    }
-
-    /// Routes what the host's silence since its last read means: a lone
-    /// Escape becomes bare after the escape time.
-    fn idle(&mut self) -> Option<Ending> {
-        let routed = self.router.idle(self.heard.elapsed());
-        self.route(routed)
+        let ending = self.route(routed);
+        if ending.is_none() && self.accepting().is_some() {
+            let released = self.router.release();
+            self.route(released.into_iter().collect());
+        }
+        ending
     }
 
     /// Acts on each routed input in turn until one ends the monitor, each
@@ -412,7 +407,7 @@ impl Monitor {
                 self.modal(&key);
                 None
             }
-            Routed::Unknown(..) => None,
+            Routed::Unknown(..) | Routed::Rest(_) => None,
         }
     }
 

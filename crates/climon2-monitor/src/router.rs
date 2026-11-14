@@ -4,19 +4,19 @@
 //! a key that reaches an application is its host bytes, re-encoded only for
 //! the application's cursor and keypad modes.
 //!
-//! Classification never depends on how the host splits its reads: a
-//! sequence waits for its next byte whatever read brings it. Only a lone
-//! Escape is ambiguous, because it is also how every sequence begins; it is
-//! a bare Escape once the host has been quiet for [`ESCAPE_TIME`], and the
-//! byte after it decides otherwise.
+//! Classification never depends on how the host splits its reads, and no
+//! timer is involved: a sequence waits for its next byte whatever read
+//! brings it. A lone Escape, which also begins every sequence, waits for
+//! the byte after it too (owner decision on #109): `[`, `O`, `]`, `P`, `_`
+//! or `^` begins a sequence, and anything else makes it a bare Escape
+//! followed by that key. So in the selector and the key introduction
+//! Escape takes effect when the next key arrives. A lone Escape bound for an
+//! application is instead released to it at once ([`Router::release`]):
+//! applications do their own Escape timing, and the rest of a sequence that
+//! follows goes after it.
 use crate::keys::{Action, action};
 use climon2_core::keys::ControlKey;
 use climon2_vt::view::Modes;
-use std::time::Duration;
-
-/// How long the host stays quiet after a lone Escape before it is a bare
-/// Escape rather than the start of a sequence.
-pub(crate) const ESCAPE_TIME: Duration = Duration::from_millis(50);
 
 /// A key, as the host sent it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,6 +43,10 @@ pub(crate) enum Routed {
     /// The prefix byte and a key that completes no action: an application
     /// receives both, a modal neither.
     Unknown(u8, Key),
+    /// The rest of a key whose Escape was released to the application
+    /// before the rest arrived: an application receives the key without its
+    /// leading Escape, a modal nothing.
+    Rest(Key),
 }
 
 /// Classifies host input, however the host splits its reads.
@@ -51,6 +55,9 @@ pub(crate) struct Router {
     /// A lone prefix waits for the key after it.
     pending: bool,
     scan: Scan,
+    /// The Escape that began the current sequence already reached the
+    /// application.
+    released: bool,
     /// The latest pasted bytes, to find the paste's end marker.
     recent: [u8; MARKER],
 }
@@ -60,12 +67,12 @@ pub(crate) struct Router {
 enum Scan {
     #[default]
     Ground,
-    /// A lone Escape: the next byte, or the escape time, decides.
+    /// A lone Escape: the next byte decides.
     Escape,
     /// A control sequence after `ESC` and its introducer (`[` or `O`): its
     /// bytes so far, or none while an overlong one is skipped.
     Sequence(u8, Option<Vec<u8>>),
-    /// An OSC, DCS or APC string, which only a host reply sends; true just
+    /// An OSC, DCS, APC or PM string, which only a host reply sends; true just
     /// after an Escape inside it.
     Text(bool),
     /// A bracketed paste, until its end marker.
@@ -76,6 +83,8 @@ enum Scan {
 #[derive(Debug, Eq, PartialEq)]
 enum Token {
     Key(Key),
+    /// A key whose Escape was released already.
+    Rest(Key),
     /// A bracketed paste began.
     Paste,
 }
@@ -129,6 +138,7 @@ impl Router {
             prefix: prefix.byte(),
             pending: false,
             scan: Scan::Ground,
+            released: false,
             recent: [0; MARKER],
         }
     }
@@ -142,14 +152,15 @@ impl Router {
         self.route(tokens)
     }
 
-    /// What the host's silence for `quiet` since its last read means: a
-    /// lone Escape is bare once `quiet` reaches the escape time.
-    pub(crate) fn idle(&mut self, quiet: Duration) -> Vec<Routed> {
-        if !matches!(self.scan, Scan::Escape) || quiet < ESCAPE_TIME {
-            return Vec::new();
-        }
-        self.scan = Scan::Ground;
-        self.route(vec![Token::Key(Key::Escape)])
+    /// After a read whose keys go to an application: a lone Escape it ended
+    /// with is released to the application at once, unless it may be the
+    /// prefix or a prefix's key. The byte after it still decides whether a
+    /// sequence follows; if one does, only its rest is sent.
+    pub(crate) fn release(&mut self) -> Option<Routed> {
+        let lone = matches!(self.scan, Scan::Escape) && !self.released;
+        let releasable = lone && !self.pending && self.prefix != ESC;
+        self.released |= releasable;
+        releasable.then_some(Routed::Key(Key::Escape))
     }
 
     fn route(&mut self, tokens: Vec<Token>) -> Vec<Routed> {
@@ -159,12 +170,20 @@ impl Router {
             .collect()
     }
 
-    /// Applies the prefix: a paste discards a pending one.
+    /// A paste discards a pending prefix.
     fn token(&mut self, token: Token) -> Option<Routed> {
-        let Token::Key(key) = token else {
-            self.pending = false;
-            return None;
-        };
+        match token {
+            Token::Key(key) => self.key(key),
+            Token::Rest(key) => Some(Routed::Rest(key)),
+            Token::Paste => {
+                self.pending = false;
+                None
+            }
+        }
+    }
+
+    /// Applies the prefix.
+    fn key(&mut self, key: Key) -> Option<Routed> {
         let pending = std::mem::take(&mut self.pending);
         match (pending, self.is_prefix(&key)) {
             (false, true) => {
@@ -223,13 +242,18 @@ impl Router {
     }
 
     /// The byte after a lone Escape: a sequence's introducer, or the next
-    /// key after a bare Escape.
+    /// key after a bare Escape (unless it was released already).
     fn escaped(&mut self, byte: u8, tokens: &mut Vec<Token>) {
         match byte {
             b'[' | b'O' => self.scan = Scan::Sequence(byte, Some(Vec::new())),
-            b']' | b'P' | b'_' => self.scan = Scan::Text(false),
+            b']' | b'P' | b'_' | b'^' => {
+                self.released = false;
+                self.scan = Scan::Text(false);
+            }
             _ => {
-                tokens.push(Token::Key(Key::Escape));
+                if !std::mem::take(&mut self.released) {
+                    tokens.push(Token::Key(Key::Escape));
+                }
                 self.ground(byte, tokens);
             }
         }
@@ -245,7 +269,8 @@ impl Router {
         tokens: &mut Vec<Token>,
     ) {
         if !(0x20..=0x7e).contains(&byte) {
-            tokens.extend(body.map(|body| literal(introducer, &body)));
+            let released = std::mem::take(&mut self.released);
+            tokens.extend(body.map(|body| literal(introducer, &body, released)));
             return self.ground(byte, tokens);
         }
         let ends = introducer == b'O' || (0x40..=0x7e).contains(&byte);
@@ -260,7 +285,9 @@ impl Router {
 
     /// An overlong sequence is skipped through its final byte.
     fn skipped(&mut self, introducer: u8, ends: bool) {
-        if !ends {
+        if ends {
+            self.released = false;
+        } else {
             self.scan = Scan::Sequence(introducer, None);
         }
     }
@@ -275,6 +302,7 @@ impl Router {
         self.scan = Scan::Sequence(introducer, kept);
     }
 
+    /// A complete sequence; a key whose Escape was released is only its rest.
     fn complete(&mut self, introducer: u8, body: &[u8], tokens: &mut Vec<Token>) {
         let token = if introducer == b'O' {
             Some(Token::Key(ss3(body[0])))
@@ -285,7 +313,8 @@ impl Router {
             self.scan = Scan::Paste;
             self.recent = [0; MARKER];
         }
-        tokens.extend(token);
+        let released = std::mem::take(&mut self.released);
+        tokens.extend(token.map(|token| rest(token, released)));
     }
 
     /// A host reply's string ends at BEL or ST; an Escape followed by
@@ -336,8 +365,19 @@ fn ss3(last: u8) -> Key {
 }
 
 /// A broken sequence's bytes, as one key.
-fn literal(introducer: u8, body: &[u8]) -> Token {
-    Token::Key(Key::Bytes([&[ESC, introducer], body].concat()))
+fn literal(introducer: u8, body: &[u8], released: bool) -> Token {
+    rest(
+        Token::Key(Key::Bytes([&[ESC, introducer], body].concat())),
+        released,
+    )
+}
+
+/// `token`, as only its rest when its Escape was released.
+fn rest(token: Token, released: bool) -> Token {
+    match token {
+        Token::Key(key) if released => Token::Rest(key),
+        token => token,
+    }
 }
 
 impl Key {
@@ -384,17 +424,22 @@ impl Routed {
                 out.push(*prefix);
                 key.encode(modes, out);
             }
+            Self::Rest(key) => {
+                let mut whole = Vec::new();
+                key.encode(modes, &mut whole);
+                let rest = whole.strip_prefix(&[ESC]).unwrap_or(&whole);
+                out.extend_from_slice(rest);
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ESCAPE_TIME, Key, Routed, Router};
+    use super::{Key, Routed, Router};
     use crate::keys::Action;
     use climon2_core::keys::ControlKey;
     use climon2_vt::view::{Modes, MouseEncoding, MouseReporting};
-    use std::time::Duration;
 
     const EXIT: Routed = Routed::Action(Action::Exit);
     const JUMP: Routed = Routed::Action(Action::Jump);
@@ -500,13 +545,13 @@ mod tests {
         );
     }
 
-    /// INP-01 (pure input-router supplement): a lone prefix waits, through
-    /// any silence, for the key after it.
+    /// INP-01 (pure input-router supplement): a lone prefix waits for the key
+    /// after it, and is never released to an application.
     #[test]
     fn a_lone_prefix_waits_indefinitely() {
         let mut router = router("Ctrl+]");
         assert_eq!(router.read(b"\x1d"), []);
-        assert_eq!(router.idle(Duration::from_secs(3600)), []);
+        assert_eq!(router.release(), None);
         assert_eq!(router.read(b"x"), [EXIT]);
     }
 
@@ -546,14 +591,15 @@ mod tests {
     }
 
     /// INP-02 (pure input-router supplement): a cursor key split across two
-    /// reads is still one cursor key, never an Escape, however long the
-    /// host is quiet between its bytes once its introducer has arrived.
+    /// reads, after its Escape or after its introducer, is still one cursor
+    /// key, never an Escape.
     #[test]
     fn a_split_cursor_key_is_never_an_escape() {
         let mut router = router("Ctrl+]");
+        assert_eq!(router.read(b"\x1b"), []);
+        assert_eq!(router.read(b"[B"), [Routed::Key(Key::Cursor(b'B'))]);
         assert_eq!(router.read(b"\x1b["), []);
-        assert_eq!(router.idle(Duration::from_secs(3600)), []);
-        assert_eq!(router.read(b"B"), [Routed::Key(Key::Cursor(b'B'))]);
+        assert_eq!(router.read(b"A"), [Routed::Key(Key::Cursor(b'A'))]);
     }
 
     /// INP-02 (pure input-router supplement): Escape and a key in one read are
@@ -564,18 +610,87 @@ mod tests {
         assert_eq!(router("Ctrl+]").read(b"\x1b\x1dx"), [ESCAPE, EXIT]);
     }
 
-    /// INP-02 (pure input-router supplement): a lone Escape is bare once the
-    /// host has been quiet for exactly the escape time, and not a moment
-    /// before.
+    /// INP-02 (pure input-router supplement): with no timer, a lone Escape
+    /// waits for the byte after it: `[`, `O`, `]`, `P`, `_` or `^` begins a
+    /// sequence, and any other byte makes it a bare Escape and then that
+    /// key.
     #[test]
-    fn a_lone_escape_is_bare_after_the_escape_time() {
+    fn a_lone_escape_waits_for_the_next_byte() {
         let mut router = router("Ctrl+]");
         assert_eq!(router.read(b"\x1b"), []);
-        let before = ESCAPE_TIME - Duration::from_millis(1);
-        assert_eq!(router.idle(before), []);
-        assert_eq!(router.idle(ESCAPE_TIME), [ESCAPE]);
-        assert_eq!(router.idle(ESCAPE_TIME), []);
-        assert_eq!(router.read(b"[A"), typed(b"[A"));
+        assert_eq!(router.read(b"q"), [ESCAPE, bytes(b"q")]);
+        for introducer in [&b"]0;t\x07"[..], b"P1$r\x1b\\", b"_G\x07", b"^x\x07"] {
+            assert_eq!(router.read(b"\x1b"), []);
+            assert_eq!(router.read(introducer), [], "{introducer:?}");
+        }
+        assert_eq!(router.read(b"\x1b"), []);
+        assert_eq!(router.read(b"\x1b"), [ESCAPE]);
+        assert_eq!(router.read(b"OA"), [Routed::Key(Key::Cursor(b'A'))]);
+    }
+
+    /// INP-02 and COM-04 (pure input-router supplement): a lone Escape that
+    /// ends a read bound for an application is released to it at once, once;
+    /// the byte after it still decides, so a sequence's rest follows without
+    /// a second Escape, encoded for the application's modes, and any other
+    /// key follows alone. A lone prefix, a prefix's key and, with Ctrl+[ as
+    /// the prefix, Escape itself are never released.
+    #[test]
+    fn a_lone_escape_for_an_application_is_released_at_once() {
+        let mut router = router("Ctrl+]");
+        assert_eq!(router.release(), None);
+        assert_eq!(router.read(b"\x1b"), []);
+        assert_eq!(router.release(), Some(ESCAPE));
+        assert_eq!(router.release(), None);
+        let rest = router.read(b"[A");
+        assert_eq!(rest, [Routed::Rest(Key::Cursor(b'A'))]);
+        assert_eq!(sent(&rest, &modes(true, false)), b"OA");
+        assert_eq!(sent(&rest, &modes(false, false)), b"[A");
+        assert_eq!(router.read(b"\x1b"), []);
+        assert_eq!(router.release(), Some(ESCAPE));
+        assert_eq!(router.read(b"x"), [bytes(b"x")]);
+        assert_eq!(router.read(b"\x1b"), []);
+        assert_eq!(router.release(), Some(ESCAPE));
+        assert_eq!(
+            router.read(b"[1\x03"),
+            [Routed::Rest(Key::Bytes(b"\x1b[1".to_vec())), bytes(b"\x03")]
+        );
+        assert_eq!(router.read(b"\x1b"), []);
+        assert_eq!(router.release(), Some(ESCAPE));
+        assert_eq!(router.read(b"[<0;1;1M\x1b"), []);
+        assert_eq!(router.release(), Some(ESCAPE));
+        assert_eq!(router.read(b"]0;t\x07\x1b"), []);
+        assert_eq!(router.release(), Some(ESCAPE));
+        let overlong = [&b"["[..], &[b'1'; 64], b"~\x1b"].concat();
+        assert_eq!(router.read(&overlong), []);
+        assert_eq!(router.release(), Some(ESCAPE));
+        assert_eq!(router.read(b"\x1d"), []);
+        assert_eq!(router.read(b"\x1b"), []);
+        assert_eq!(router.release(), None);
+        let mut escape = self::router("Ctrl+[");
+        assert_eq!(escape.read(b"\x1b"), []);
+        assert_eq!(escape.release(), None);
+    }
+
+    /// INP-02 (pure input-router supplement): what an application receives is
+    /// the same for every split of the reads, even with a lone Escape at the
+    /// end of a read released to it at once, in either cursor mode. (Its
+    /// keypad is in application mode: a keypad key split after its released
+    /// Escape cannot become a numeric key.)
+    #[test]
+    fn an_application_receives_the_same_bytes_for_every_split() {
+        let input: &[u8] = b"a\x1b[A\x1bOB\x1bOp\x1b[1;5C\x1bx\x1b\x1b[3~\x1d\x1bq\x1b\x1dd\xff";
+        for modes in [modes(false, true), modes(true, true)] {
+            let whole = sent(&router("Ctrl+]").read(input), &modes);
+            for reads in splits(input) {
+                let mut router = router("Ctrl+]");
+                let mut routed = Vec::new();
+                for read in reads.iter() {
+                    routed.extend(router.read(read));
+                    routed.extend(router.release());
+                }
+                assert_eq!(sent(&routed, &modes), whole, "{reads:?}");
+            }
+        }
     }
 
     /// INP-02 (pure input-router supplement), with Ctrl+[ as the prefix: a
@@ -590,10 +705,10 @@ mod tests {
             [LIST, EXIT, JUMP, HELP]
         );
         assert_eq!(router.read(b"\x1b"), []);
-        assert_eq!(router.idle(Duration::from_secs(3600)), []);
+        assert_eq!(router.release(), None);
         assert_eq!(router.read(b"x"), [EXIT]);
         assert_eq!(router.read(b"\x1b\x1b"), []);
-        assert_eq!(router.idle(ESCAPE_TIME), [bytes(b"\x1b")]);
+        assert_eq!(router.read(b"q"), [bytes(b"\x1b"), bytes(b"q")]);
         assert_eq!(
             router.read(b"\x1b[A\x1bd"),
             [
