@@ -519,7 +519,7 @@ fn overlaid(screen: &str, dialog: &[String]) -> String {
 /// mouse reports and focus reports, no cursor, every other mode at the
 /// baseline, and the host's title untouched.
 fn opened(terminal: &mut Terminal) {
-    terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
+    whole_frame_shows(terminal, EMPTY, |screen| screen.contains(EMPTY));
     owns_host(terminal);
 }
 
@@ -527,6 +527,39 @@ fn opened(terminal: &mut Terminal) {
 fn opened_on(terminal: &mut Terminal, expected: &str) {
     shows(terminal, expected);
     owns_host(terminal);
+}
+
+/// Whether `output` ends where a monitor frame ends: its closing SGR 0, or
+/// the cursor shown after it. Neither occurs inside a frame, whose cells
+/// set SGR as `0;...` and whose cursor is hidden while they are written.
+fn frame_ended(output: &[u8]) -> bool {
+    output.ends_with(b"\x1b[0m") || output.ends_with(b"\x1b[?25h")
+}
+
+/// Waits until `condition` holds of a screen that shows only whole frames:
+/// the output ended where a frame ends and nothing arrived while the screen
+/// was read. A host read can split a frame, so the screen alone may show one
+/// half painted. `what` names the condition for a failure.
+fn whole_frame_shows(terminal: &Terminal, what: &str, condition: impl Fn(&str) -> bool) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let before = terminal.received();
+        let screen = terminal.screen();
+        let whole = frame_ended(&before) && terminal.received() == before;
+        if whole && condition(&screen) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{what} never shown in a whole frame:\n{screen}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waits until a whole frame shows no selector.
+fn selector_closed(terminal: &Terminal) {
+    whole_frame_shows(terminal, "no selector", |screen| !screen.contains('║'));
 }
 
 /// Waits until the host shows exactly `expected`.
@@ -1413,13 +1446,11 @@ fn library_logs(package: &Package, id: &str) -> Vec<PathBuf> {
     logs
 }
 
-/// Waits until a row of the host screen contains `text`.
+/// Waits until a whole frame has a row that contains `text`.
 fn shows_row(terminal: &mut Terminal, text: &str) {
-    terminal
-        .wait_for_screen(TIMEOUT, |screen| {
-            screen.lines().any(|line| line.contains(text))
-        })
-        .unwrap_or_else(|_| panic!("{text:?} never shown:\n{}", terminal.screen()));
+    whole_frame_shows(terminal, text, |screen| {
+        screen.lines().any(|line| line.contains(text))
+    });
 }
 
 /// DSC-03 (Monitor), CTL-01 (Monitor), COM-01 (Monitor), LIB-01 (Monitor)
@@ -2110,11 +2141,11 @@ fn session_top_row(cols: usize, label: &str, fields: &[&str]) -> String {
     format!("{label:<width$}{slots}")
 }
 
-/// Waits until the host's top row is exactly `expected`.
+/// Waits until a whole frame's top row is exactly `expected`.
 fn top_row_is(terminal: &mut Terminal, expected: &str) {
-    terminal
-        .wait_for_screen(TIMEOUT, |screen| screen.lines().next() == Some(expected))
-        .unwrap_or_else(|_| panic!("top row never {expected:?}:\n{}", terminal.screen()));
+    whole_frame_shows(terminal, expected, |screen| {
+        screen.lines().next() == Some(expected)
+    });
 }
 
 /// Waits until the host shows its cursor at `row` and `column`: a frame's
@@ -2276,9 +2307,7 @@ fn enter_selects_and_acquires_a_session_and_paints_it_live() {
     // row still says Controlling (owner decision, 2026-11-14).
     top_row_is(&mut terminal, &top);
     terminal.send("\x1b").unwrap();
-    terminal
-        .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
-        .unwrap();
+    selector_closed(&terminal);
     assert_eq!(terminal.row(0), top);
     assert_eq!(
         listed(&package, "Paint")["state"],
@@ -2610,9 +2639,7 @@ fn a_finished_session_keeps_its_last_screen_and_cannot_be_acquired() {
     shows_row(&mut terminal, "║Disconnected Done");
     terminal.send("\r").unwrap();
     terminal.send("\x1b").unwrap();
-    terminal
-        .wait_for_screen(TIMEOUT, |screen| !screen.contains('║'))
-        .unwrap();
+    selector_closed(&terminal);
     assert_eq!(terminal.row(0), ended);
     assert_eq!(terminal.row(1).trim_end(), "FINAL OUTPUT");
     terminal.send("\x1dx").unwrap();
