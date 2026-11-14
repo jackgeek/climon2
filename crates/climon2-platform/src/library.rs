@@ -42,7 +42,7 @@ use std::{
     ops::Range,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
-    ptr,
+    ptr::NonNull,
     sync::{Mutex, PoisonError},
 };
 
@@ -295,27 +295,54 @@ fn validate(
 
 /// Revision 1's description, as the bootstrap contract allows it to answer.
 fn describe(bootstrap: Bootstrap) -> Result<&'static Description, Refusal> {
-    let mut description: *const Description = ptr::null();
+    let untouched = NonNull::<Description>::dangling().as_ptr().cast_const();
+    let mut description = untouched;
     // SAFETY: the output is writable storage for one pointer.
     let status = unsafe { bootstrap(native::REVISION, &mut description) };
-    // SAFETY: a description the bootstrap returns is immutable until exit.
-    match (status, unsafe { description.as_ref() }) {
-        (native::SUCCESS, Some(description)) => Ok(description),
+    match (status, Output::of(description, untouched)) {
+        (native::SUCCESS, Output::Described(description)) => Ok(description),
         (native::UNSUPPORTED_REVISION, _) => Err((
             Failure::UnsupportedRevision,
             "it does not support revision 1 of the native client interface".into(),
         )),
-        (native::INTERNAL_ERROR, _) => Err((
+        (native::INTERNAL_ERROR, Output::Cleared) => Err((
             Failure::BootstrapFailure,
             "its bootstrap reported a contained failure (CM1_INTERNAL_ERROR)".into(),
         )),
-        (status, description) => Err((
-            Failure::MalformedDescription,
-            format!(
-                "its bootstrap answered revision 1 with status {status} and {}",
-                description.map_or("no description", |_| "a description")
-            ),
-        )),
+        (status, output) => Err((Failure::MalformedDescription, output.malformed(status))),
+    }
+}
+
+/// What a bootstrap left in the output it was given.
+enum Output {
+    /// As the loader set it, so the bootstrap neither cleared nor set it.
+    Untouched,
+    Cleared,
+    Described(&'static Description),
+}
+
+impl Output {
+    fn of(description: *const Description, untouched: *const Description) -> Self {
+        if description == untouched {
+            return Self::Untouched;
+        }
+        // SAFETY: a description the bootstrap returns is immutable until exit.
+        unsafe { description.as_ref() }.map_or(Self::Cleared, Self::Described)
+    }
+
+    /// Why a bootstrap that answered `status` and left this broke its
+    /// contract. A contained failure must clear the output.
+    fn malformed(&self, status: u32) -> String {
+        if status == native::INTERNAL_ERROR {
+            return "its bootstrap reported a contained failure (CM1_INTERNAL_ERROR) \
+                    without clearing its output"
+                .into();
+        }
+        let description = match self {
+            Self::Described(_) => "a description",
+            Self::Untouched | Self::Cleared => "no description",
+        };
+        format!("its bootstrap answered revision 1 with status {status} and {description}")
     }
 }
 

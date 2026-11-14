@@ -107,7 +107,12 @@ Classify Linux load failures from the loader's own checks, never from
 header that is not x86-64 is an incompatible architecture. A `dlopen` failure
 after both checks pass is a missing dependency, reported with the `dlerror()`
 text only for diagnosis. A missing `climon2_client_get_interface` is a missing
-symbol. macOS classifies the same way, except that a file without a
+symbol. A `CM1_INTERNAL_ERROR` from the bootstrap is a recoverable bootstrap
+failure only when it cleared the output storage, which the loader initializes
+to a value the bootstrap cannot return; otherwise it is a malformed description
+([bootstrap rules](monitor-client/core-v1.md#representation-and-compatibility);
+owner decision on [#84](https://github.com/jackgeek/climon2/issues/84)).
+macOS classifies the same way, except that a file without a
 [Mach-O slice](TERMS.md#mach-o-and-slices) dyld would load into the running
 process is an incompatible architecture. A file the loader cannot open at all,
 missing or unreadable, counts as a missing library, and an ELF header it

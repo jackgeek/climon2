@@ -51,9 +51,13 @@ independently of the negotiated table. `requested_revision=1` returns
 `CM1_SUCCESS` and a nonnull immutable `cm1_description` supporting precisely 1.
 Unsupported revisions return `CM1_UNSUPPORTED_REVISION` and null. Null output
 storage returns `CM1_INVALID_ARGUMENT`; containable bootstrap failure returns
-`CM1_INTERNAL_ERROR`, which a loader reports as a recoverable failure, not as
-a malformed description: a later load may succeed. No other bootstrap results
-are permitted. Bootstrap opens
+`CM1_INTERNAL_ERROR` and null, which a loader reports as a recoverable failure,
+not as a malformed description: a later load may succeed. A
+`CM1_INTERNAL_ERROR` that leaves the output storage as the caller set it, or
+sets it, breaks this contract and is a malformed description, which is not
+recoverable (owner decision on
+[#84](https://github.com/jackgeek/climon2/issues/84)). No other bootstrap
+results are permitted. Bootstrap opens
 no [daemon](../../../GLOSSARY.md#sessions) connection and creates no instance.
 Description, table, [capability](../../../GLOSSARY.md#sessions) tokens and release
 text live until process exit; all eleven function pointers are nonnull.

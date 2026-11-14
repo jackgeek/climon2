@@ -12,7 +12,8 @@
  * Loader defects: NO_BOOTSTRAP (no climon2_client_get_interface export),
  * UNSUPPORTED (refuses revision 1), BOOTSTRAP_STATUS=<code> (answers revision
  * 1 with that status and no description), FAIL_FIRST_BOOTSTRAP (a contained
- * failure, CM1_INTERNAL_ERROR, on the first call only), REVISION=<n> and
+ * failure, CM1_INTERNAL_ERROR, on the first call only), UNCLEARED_FAILURE
+ * (answers without clearing the output it was given), REVISION=<n> and
  * RESERVED=<n> (the
  * description's fields), NULL_RELEASE (no release text), INCOMPLETE_TABLE (no
  * snapshot entry), and any of the requirements INSTANCE_BYTES,
@@ -115,7 +116,9 @@ uint32_t BOOTSTRAP(uint32_t revision, const cm1_description **out)
 {
     if (out == 0)
         return CM1_INVALID_ARGUMENT;
+#ifndef UNCLEARED_FAILURE
     *out = 0;
+#endif
 #if defined(UNSUPPORTED)
     return CM1_UNSUPPORTED_REVISION;
 #elif defined(BOOTSTRAP_STATUS)
