@@ -1,4 +1,13 @@
-use std::{io, os::fd::AsRawFd};
+use std::{
+    io::{self, Read},
+    os::fd::AsRawFd,
+    time::{Duration, Instant},
+};
+
+/// The longest a fixture waits, for its test or for itself: longer than any
+/// test waits on a fixture under load, and short enough that a fixture left by
+/// a killed test ends soon.
+pub const BOUND: Duration = Duration::from_secs(60);
 
 pub fn size() -> io::Result<[u16; 2]> {
     let mut size = nix::libc::winsize {
@@ -25,6 +34,27 @@ pub fn report(args: &[String]) -> Result<serde_json::Value, Box<dyn std::error::
         "pgid": nix::unistd::getpgrp().as_raw(),
         "isatty": [nix::unistd::isatty(io::stdin())?, nix::unistd::isatty(io::stdout())?, nix::unistd::isatty(io::stderr())?],
     }))
+}
+
+/// Reads input in raw mode (see [`RawTerminal`]) until `done` holds for all of
+/// it so far, asking before the first read and after every read, for at most
+/// [`BOUND`].
+pub fn read_until(mut done: impl FnMut(&[u8]) -> io::Result<bool>) -> io::Result<Vec<u8>> {
+    let deadline = Instant::now() + BOUND;
+    let mut input = Vec::new();
+    while !done(&input)? {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "input deadline exceeded",
+            ));
+        }
+        // Raw mode returns from a read after at most 0.1 s without input.
+        let mut buffer = [0; 1024];
+        let count = io::stdin().read(&mut buffer)?;
+        input.extend_from_slice(&buffer[..count]);
+    }
+    Ok(input)
 }
 
 pub struct RawTerminal(nix::sys::termios::Termios);

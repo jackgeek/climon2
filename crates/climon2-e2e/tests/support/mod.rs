@@ -1,11 +1,15 @@
+/// Only the Library-layer suites use it.
+#[allow(dead_code)]
+pub mod library;
+
 use climon2_install::{Payload, install};
-use climon2_test_term::{Isolation, Terminal, bin_path};
+use climon2_test_term::{Isolation, Modes, Terminal, bin_path, process_command};
 use portable_pty::CommandBuilder;
 use serde_json::Value;
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output, Stdio},
     sync::{Arc, Mutex, Weak},
     thread,
     time::{Duration, Instant},
@@ -13,6 +17,14 @@ use std::{
 
 // A failed handoff can spend both the five-second startup and leave budgets.
 pub const TIMEOUT: Duration = Duration::from_secs(20);
+/// The escape prefix, Ctrl+], then `d`.
+#[allow(dead_code)]
+pub const DETACH: &[u8] = b"\x1dd";
+/// The client library's file name in every version folder (library embedding).
+#[cfg(target_os = "macos")]
+pub const LIBRARY: &str = "libclimon2_client.dylib";
+#[cfg(target_os = "linux")]
+pub const LIBRARY: &str = "libclimon2_client.so";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 static INSTALLED: Mutex<Weak<Installed>> = Mutex::new(Weak::new());
 
@@ -288,6 +300,169 @@ pub fn quote(path: &Path) -> String {
     format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"))
 }
 
+/// An outer non-interactive `bash` on a `rows` x `cols` terminal that records
+/// termios around `command`, reports its status as `OUTER-DONE=<status>`,
+/// then echoes one ordinary typed line as `TYPED=<line>`. The continuity and
+/// monitor scenarios run climon2 from it; packaged.rs does not.
+#[allow(dead_code)]
+pub fn outer(package: &Package, bash: &Path, command: &str, rows: u16, cols: u16) -> Terminal {
+    let mut shell = package.command(bash);
+    shell.args(["--noprofile", "--norc", "-c"]);
+    shell.arg(format!(
+        "stty -g > ~/before; {command}; s=$?; stty -g > ~/after; \
+         printf 'OUTER-DONE=%s\\n' \"$s\"; IFS= read -r line; printf 'TYPED=%s\\n' \"$line\""
+    ));
+    Terminal::spawn(shell, rows, cols).unwrap()
+}
+
+/// After the [`outer`] shell's `command` returned `status`: the documented
+/// normal-shell baseline, exact termios and ordinary shell input.
+#[allow(dead_code)]
+pub fn assert_released(package: &Package, terminal: &mut Terminal, status: i32) {
+    terminal
+        .wait_for_text(&format!("OUTER-DONE={status}"), TIMEOUT)
+        .unwrap();
+    assert_eq!(terminal.modes(), Modes::BASELINE, "{}", terminal.screen());
+    let home = package.isolation.home();
+    assert_eq!(
+        termios(&home.join("after")),
+        termios(&home.join("before")),
+        "termios restored"
+    );
+    terminal.send("plain words\n").unwrap();
+    terminal
+        .wait_for_text("TYPED=plain words", TIMEOUT)
+        .unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+}
+
+/// `stty -g` settings without macOS's transient `PENDIN`, which the kernel
+/// sets whenever a terminal returns to canonical mode.
+#[allow(dead_code)]
+fn termios(path: &Path) -> String {
+    const PENDIN: u64 = 0x2000_0000;
+    fs::read_to_string(path)
+        .unwrap()
+        .trim_end()
+        .split(':')
+        .map(|field| match field.strip_prefix("lflag=") {
+            Some(flags) => {
+                let flags = u64::from_str_radix(flags, 16).unwrap() & !PENDIN;
+                format!("lflag={flags:x}")
+            }
+            None => field.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// `<launcher> <args>` as a script runs it: stdin from /dev/null, stdout and
+/// stderr into pipes, so none of them is a terminal.
+#[allow(dead_code)]
+pub fn scripted(package: &Package, launcher: &str, args: &[&str]) -> Output {
+    scripted_to(package, launcher, args, Stdio::piped())
+}
+
+/// Like [`scripted`], with stdout going to `stdout`. A CLI still running at
+/// the deadline is killed and reaped, and the test fails.
+#[allow(dead_code)]
+pub fn scripted_to(package: &Package, launcher: &str, args: &[&str], stdout: Stdio) -> Output {
+    let isolated = package.command(launcher);
+    let mut cli = process_command(package.executable_home().join(launcher))
+        .args(args)
+        .env_clear()
+        .envs(isolated.iter_full_env_as_str())
+        .current_dir(package.isolation.home())
+        .stdin(Stdio::null())
+        .stdout(stdout)
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while cli.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            cli.kill().unwrap();
+            cli.wait().unwrap();
+            panic!("{launcher} {args:?} was still running after {TIMEOUT:?}");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    cli.wait_with_output().unwrap()
+}
+
+/// The contents of `path` once it exists.
+#[allow(dead_code)]
+pub fn wait_file(path: &Path) -> String {
+    let deadline = Instant::now() + TIMEOUT;
+    while !path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "{} never appeared",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    fs::read_to_string(path).unwrap()
+}
+
+/// Types the harmless `command` until `output` appears, waiting for input
+/// readiness before each try. A client discards keys typed before it confirmed
+/// its restoration and nothing on the screen marks that, so only the session's
+/// answer to typed input proves the client takes input; `command` must be
+/// harmless to repeat, and `output` must differ from its echo.
+pub fn type_until(terminal: &mut Terminal, command: &str, output: &str) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        terminal.wait_for_input_ready(TIMEOUT).unwrap();
+        terminal.send(command).unwrap();
+        if terminal
+            .wait_for_text(output, Duration::from_secs(1))
+            .is_ok()
+        {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{output:?} never appeared");
+    }
+}
+
+/// Explicit detach: [`DETACH`] sent exactly once, then status 0 and the
+/// reattach hint on stderr. The client must already have confirmed its
+/// restoration, or it discards the keys: a just-attached client proves it
+/// with [`type_until`] first.
+#[allow(dead_code)]
+pub fn detach(terminal: &mut Terminal, id: &str) {
+    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    terminal.send(DETACH).unwrap();
+    assert_eq!(
+        terminal.wait_exit(TIMEOUT).unwrap(),
+        0,
+        "{}",
+        terminal.screen()
+    );
+    terminal
+        .wait_for_bytes(
+            format!("climon2: detached from session {id}; reattach with: climon2 attach {id}")
+                .as_bytes(),
+            TIMEOUT,
+        )
+        .unwrap();
+}
+
+/// `climon2 kill <id>` from a script: silent and status 0, which it returns
+/// only once the session has ended and is cleaned up.
+#[allow(dead_code)]
+pub fn kill_session(package: &Package, id: &str) {
+    let output = scripted(package, "climon2", &["kill", id]);
+    assert_eq!(
+        (
+            output.status.code(),
+            output.stdout.as_slice(),
+            output.stderr.as_slice()
+        ),
+        (Some(0), &b""[..], &b""[..])
+    );
+}
+
 fn extract_payload(archive: &std::ffi::OsStr, directory: &Path) -> (PathBuf, String) {
     let archive = PathBuf::from(archive).canonicalize().unwrap();
     assert!(
@@ -318,6 +493,8 @@ fn extract_payload(archive: &std::ffi::OsStr, directory: &Path) -> (PathBuf, Str
         format!("{root}/{version}/climon2-cli"),
         format!("{root}/{version}/climon2-daemon"),
         format!("{root}/{version}/climon2-client"),
+        format!("{root}/{version}/climon2-monitor"),
+        format!("{root}/{version}/{LIBRARY}"),
         format!("{root}/LICENSE"),
         format!("{root}/README.md"),
     ];

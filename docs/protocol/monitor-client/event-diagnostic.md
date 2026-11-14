@@ -1,6 +1,11 @@
 # Diagnostic
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification. The
+[client library](../../../GLOSSARY.md#sessions) implements its own
+content-free diagnostic for a contained panic
+([#85](https://github.com/jackgeek/climon2/issues/85));
+[daemon](../../../GLOSSARY.md#sessions) and transport diagnostics are not
+implemented.**
 The [client](../../../GLOSSARY.md#sessions) supplies explicit inert error
 information to the [monitor](../../../GLOSSARY.md#sessions).
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

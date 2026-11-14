@@ -1,6 +1,6 @@
 # Monitor lifecycle, exit and failure
 
-**Status: agreed specification, not implemented behavior.** This resolves
+**Status: agreed specification, almost entirely unimplemented.** This resolves
 [Define monitor exit and failure behavior](https://github.com/jackgeek/climon2/issues/61)
 within [the monitor planning map](https://github.com/jackgeek/climon2/issues/57).
 It amends the earlier selector/history and session-management scope decisions.
@@ -12,7 +12,18 @@ Read the [domain glossary](../GLOSSARY.md), [status mechanics](session-status.md
 [selector](monitor-selector.md), [terminal contract](protocol/terminal-integration.md),
 [embedding](protocol/library-embedding.md) and
 [daemon wire](protocol/daemon-client/core-v1.md) together with this document.
-No monitor, new wire, native interface or headless implementation is delivered.
+
+**Implemented with packaged evidence:** the empty
+[monitor](../GLOSSARY.md#sessions) of [#74](https://github.com/jackgeek/climon2/issues/74),
+and headless creation and lifetime of [#78](https://github.com/jackgeek/climon2/issues/78),
+specified [below](#headless-creation-and-existing-cli-kill). The monitor
+discovers no sessions and shows its empty state until it exits. Prefix+x exits
+0; a catchable SIGINT, SIGTERM or SIGHUP exits with signal-style status; a
+render failure or a failed or hung-up host input exits with the climon2 error
+code. Every one of these exits restores the host terminal's modes and termios
+before any diagnostic. Keyboard Ctrl+C is not an exit. Discovery, clients and
+their shutdown, Leave, the root attention `clear`, new wire and native
+interfaces remain unimplemented.
 
 ## Monitor and selection lifetime
 
@@ -191,22 +202,30 @@ or failed host restoration uses the existing climon2 error code. Catchable
 signal-initiated exit uses signal-style status after successful cleanup; cleanup
 failure instead uses the climon2 error code.
 
-## Future headless creation and existing CLI kill
+## Headless creation and existing CLI kill
 
-Reserve future `c2 exec --headless <command> [args...]`. It starts no
+**Implemented** (#78). `c2 exec --headless <command> [args...]` starts no
 interactive client and returns success only after daemon-confirmed successful
 session creation. A later command outcome is the session's outcome, not the
 already-returned CLI's status. Creation failure must be reported truthfully.
 
-Headless is an explicit durable per-session creation policy: zero clients are
+Headless is an explicit, durable per-session
+[lifetime policy](../GLOSSARY.md#sessions) chosen at creation: zero clients are
 allowed from startup and throughout that session's lifetime, including after the
 last client unexpectedly disappears. The session ends on command completion or
-explicit Kill. Normal sessions retain their existing leave policy; deliberate
-detach retains its established behavior. This narrowly scoped headless lifetime
-exception does not make every session persistent or add native-crash isolation.
+explicit Kill. [Ordinary sessions](../GLOSSARY.md#sessions) retain their
+existing leave policy; deliberate detach retains its established behavior.
+This narrowly scoped headless lifetime exception does not make every session
+persistent or add native-crash isolation.
+The developer confirmed on 2026-11-08 that a headless session reports the
+existing `detached` lifecycle whenever it has no attachment, from startup on;
+the five-second initial attach window and its exit hold do not apply. The owner
+decided on 2026-11-13 that success means the session was created: when its
+session ID cannot be written to stdout, the session keeps running and the CLI
+still exits 0.
 
 `c2 kill <session>` already exists. Preserve it and require it to terminate
-future headless sessions using the same authoritative Kill semantics. Selector
+headless sessions using the same authoritative Kill semantics. Selector
 Delete adds confirmation and run-local dismissal, not a different wire Kill.
 CLI kill does not dismiss rows in an independently running monitor.
 
@@ -234,6 +253,11 @@ manual screenshots or assertions about this documentation:
   dismissal, no same-run rediscovery and non-acquiring selection fallback.
 - Headless creation acknowledgement and zero-client survival before/after
   attachment loss; command completion and existing CLI kill of headless sessions.
+  Delivered as HDL-01 evidence in the daemon's lifecycle tests and the packaged
+  headless tests; their mappings are in the
+  [daemon](../crates/climon2-daemon/README.md#monitor-acceptance-scenarios) and
+  [packaged-test](../crates/climon2-e2e/README.md#headless-sessions-spec-73-acceptance-matrix-hdl-01)
+  READMEs.
 
 These obligations supplement [final monitor acceptance](https://github.com/jackgeek/climon2/issues/62).
 Exact budgets are in [operational limits](monitor-operational-limits.md);

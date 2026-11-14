@@ -5,6 +5,12 @@
 
 use std::{fs, path::Path, process::Command};
 
+/// The client library's file name in every version folder (library embedding).
+#[cfg(target_os = "macos")]
+const LIBRARY: &str = "libclimon2_client.dylib";
+#[cfg(target_os = "linux")]
+const LIBRARY: &str = "libclimon2_client.so";
+
 fn xtask() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
     command
@@ -27,6 +33,8 @@ fn assert_installed(destination: &Path) {
         destination.join(version).join("climon2-cli"),
         destination.join(version).join("climon2-daemon"),
         destination.join(version).join("climon2-client"),
+        destination.join(version).join("climon2-monitor"),
+        destination.join(version).join(LIBRARY),
     ] {
         let bytes = fs::read(path).unwrap();
         assert!(

@@ -60,6 +60,7 @@ fn build_payload(root: &Path) -> io::Result<BuiltPayload> {
         };
         package_binary(&platform, &build, binary, &destination)?;
     }
+    package_library(&platform, &build, &payload.join(version), version)?;
     for file in ["LICENSE", "README.md"] {
         fs::copy(root.join(file), payload.join(file))?;
     }
@@ -146,16 +147,35 @@ fn package_binary(
         )?;
         verify_macos_binary(destination)?;
     }
-    if release::has_marker(&fs::read(destination)?) {
+    unhooked(destination)
+}
+
+/// The client library is packaged like an executable, then checked as the
+/// library of exactly this `version`.
+fn package_library(
+    platform: &Platform,
+    build: &Path,
+    folder: &Path,
+    version: &str,
+) -> io::Result<()> {
+    let name = climon2_core::layout::client_library_name();
+    let destination = folder.join(&name);
+    package_binary(platform, build, &name, &destination)?;
+    crate::library::verify(&destination, version)
+}
+
+/// Release builds never enable `test-hooks`, so no shipped binary carries the marker.
+pub(crate) fn unhooked(path: &Path) -> io::Result<()> {
+    if release::has_marker(&fs::read(path)?) {
         return Err(io::Error::other(format!(
             "{} contains test hooks",
-            destination.display()
+            path.display()
         )));
     }
     Ok(())
 }
 
-fn verify_linux_binary(path: &Path) -> io::Result<()> {
+pub(crate) fn verify_linux_binary(path: &Path) -> io::Result<()> {
     let bytes = fs::read(path)?;
     // ELF64, little-endian, current ELF version, AMD64 e_machine.
     if !bytes.starts_with(b"\x7fELF\x02\x01\x01") || bytes.get(18..20) != Some(&[62, 0]) {
@@ -194,6 +214,11 @@ fn validate_versions(root: &Path, version: &str) -> io::Result<()> {
     let packages = metadata["packages"]
         .as_array()
         .ok_or_else(|| io::Error::other("Cargo metadata omitted packages"))?;
+    shipped_versions(packages, version)
+}
+
+/// Every shipped package exists at exactly the release version.
+fn shipped_versions(packages: &[serde_json::Value], version: &str) -> io::Result<()> {
     for (name, _) in release::PACKAGES {
         let package = packages
             .iter()
@@ -215,13 +240,17 @@ fn validate_tag(tag: &str, expected: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn verify_macos_binary(path: &Path) -> io::Result<()> {
-    quality::run(
+pub(crate) fn verify_macos_binary(path: &Path) -> io::Result<()> {
+    quality::output_within(
         Command::new("codesign")
             .args(["--verify", "--strict"])
             .arg(path),
+        quality::TOOL_TIMEOUT,
     )?;
-    let archs = quality::output(Command::new("lipo").arg("-archs").arg(path))?;
+    let archs = quality::output_within(
+        Command::new("lipo").arg("-archs").arg(path),
+        quality::TOOL_TIMEOUT,
+    )?;
     let archs = String::from_utf8(archs.stdout).map_err(io::Error::other)?;
     if archs.split_whitespace().collect::<BTreeSet<_>>() != BTreeSet::from(["arm64", "x86_64"]) {
         return Err(io::Error::other(format!(
@@ -250,4 +279,138 @@ fn stamped_script(template: &str, version: &str) -> io::Result<String> {
         ));
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+    use std::path::PathBuf;
+
+    fn packages(monitor: Option<&str>) -> Vec<Value> {
+        let mut packages: Vec<_> = release::PACKAGES
+            .iter()
+            .filter(|(name, _)| *name != "climon2-monitor")
+            .map(|(name, _)| json!({"name": name, "version": "1.2.3"}))
+            .collect();
+        if let Some(version) = monitor {
+            packages.push(json!({"name": "climon2-monitor", "version": version}));
+        }
+        packages
+    }
+
+    /// #74: the release version check covers the shipped monitor package, so a
+    /// missing or differently versioned monitor fails before any build.
+    #[test]
+    fn version_check_rejects_a_missing_or_wrong_version_monitor() {
+        assert!(shipped_versions(&packages(Some("1.2.3")), "1.2.3").is_ok());
+        let wrong = shipped_versions(&packages(Some("1.2.4")), "1.2.3").unwrap_err();
+        assert_eq!(wrong.to_string(), "climon2-monitor version is not 1.2.3");
+        let missing = shipped_versions(&packages(None), "1.2.3").unwrap_err();
+        assert_eq!(
+            missing.to_string(),
+            "missing shipped package climon2-monitor"
+        );
+    }
+
+    /// This workspace's monitor test build: an executable of this host's one
+    /// architecture.
+    fn built_monitor() -> PathBuf {
+        let built = env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("climon2-monitor");
+        assert!(built.is_file(), "run cargo test --workspace first");
+        built
+    }
+
+    /// The monitor test build, with the test-hook marker only if `hooked`,
+    /// whatever features built it: a stand-in that differs from a release
+    /// build in at most that one respect.
+    fn monitor_stand_in(hooked: bool) -> Vec<u8> {
+        const MARKER: &[u8] = b"CLIMON2_TEST_HOOKS_ENABLED";
+        let mut bytes = fs::read(built_monitor()).unwrap();
+        while let Some(start) = bytes
+            .windows(MARKER.len())
+            .position(|window| window == MARKER)
+        {
+            bytes[start..start + MARKER.len()].fill(b'-');
+        }
+        if hooked {
+            bytes.extend_from_slice(MARKER);
+        }
+        bytes
+    }
+
+    /// #74 (Linux amendment): packaging for the Linux release archive accepts
+    /// an x86-64 monitor without test hooks, and rejects one-defect stand-ins:
+    /// an AArch64 ELF, and an x86-64 binary carrying the test-hook marker.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    #[test]
+    fn linux_packaging_rejects_a_non_x86_64_or_hooked_monitor() {
+        const AARCH64: u16 = 183;
+        let platform = host_platform().unwrap();
+        let scratch = tempfile::tempdir_in(built_monitor().parent().unwrap()).unwrap();
+        let build = scratch.path().join("build");
+        let release = build.join(platform.targets[0]).join("release");
+        fs::create_dir_all(&release).unwrap();
+        let packaged = scratch.path().join("climon2-monitor");
+        let package = |bytes: &[u8]| {
+            fs::write(release.join("climon2-monitor"), bytes).unwrap();
+            package_binary(&platform, &build, "climon2-monitor", &packaged)
+                .map_err(|error| error.to_string())
+        };
+        let plain = monitor_stand_in(false);
+        package(&plain).unwrap();
+        assert_eq!(fs::read(&packaged).unwrap(), plain);
+        let mut arm = plain;
+        arm[18..20].copy_from_slice(&AARCH64.to_le_bytes());
+        assert_eq!(
+            package(&arm).unwrap_err(),
+            format!(
+                "{} is not an x86_64 Linux ELF executable",
+                packaged.display()
+            )
+        );
+        assert_eq!(
+            package(&monitor_stand_in(true)).unwrap_err(),
+            format!("{} contains test hooks", packaged.display())
+        );
+    }
+
+    /// #74: the universal-binary check rejects a monitor that is not exactly
+    /// arm64 plus x86_64, such as this host's single-architecture test build.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn binary_check_rejects_a_single_architecture_monitor() {
+        let built = built_monitor();
+        let scratch = tempfile::tempdir_in(built.parent().unwrap()).unwrap();
+        let thin = scratch.path().join("climon2-monitor");
+        fs::write(&thin, monitor_stand_in(false)).unwrap();
+        quality::run(
+            Command::new("codesign")
+                .args(["--force", "-s", "-"])
+                .arg(&thin),
+        )
+        .unwrap();
+        let error = verify_macos_binary(&thin).unwrap_err().to_string();
+        assert!(error.contains("is not exactly arm64 + x86_64"), "{error}");
+    }
+
+    /// #74: the release binary check accepts a monitor without the test-hook
+    /// marker and rejects the same binary carrying it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn binary_check_rejects_a_hooked_monitor() {
+        let scratch = tempfile::tempdir_in(built_monitor().parent().unwrap()).unwrap();
+        let monitor = scratch.path().join("climon2-monitor");
+        fs::write(&monitor, monitor_stand_in(false)).unwrap();
+        unhooked(&monitor).unwrap();
+        fs::write(&monitor, monitor_stand_in(true)).unwrap();
+        let error = unhooked(&monitor).unwrap_err().to_string();
+        assert_eq!(error, format!("{} contains test hooks", monitor.display()));
+    }
 }

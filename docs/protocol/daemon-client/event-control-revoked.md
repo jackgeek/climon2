@@ -1,6 +1,7 @@
 # Control revoked — `0x47`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented for interactive attachments**
+([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) reports the end of the
 receiving [client](../../../GLOSSARY.md#sessions)'s
 [control](../../../GLOSSARY.md#attachment-and-control).
@@ -38,3 +39,20 @@ No [request ID](../TERMS.md#request-id)/defaults/unknown members. Invalid record
 Required control records must be preserved or the connection explicitly failed,
 not lossily coalesced. Numeric bounds/deadlines/policy remain #69.
 Related: [Ready](request-ready.md), [Leave](request-leave.md).
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) sends Control revoked to
+an interactive [attachment](../../../GLOSSARY.md#attachment-and-control)
+whose control ends while the attachment stays: with reason `takeover` when
+another attachment, of either protocol, attaches or takes control, and with
+reason `session_ending` when the session ends while it still controls, just
+before its stream closes. Each time, the
+[release](../../../GLOSSARY.md#restoration-and-presentation) of its
+[presentation](../../../GLOSSARY.md#restoration-and-presentation) reaches it first as
+[Display](event-display.md), and Control revoked carries the
+[control period](../../../GLOSSARY.md#attachment-and-control) and
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts) that Display used; no
+Display follows it.
+[Command final](event-command-final.md) is not sent yet: it arrives with
+[#88](https://github.com/jackgeek/climon2/issues/88).

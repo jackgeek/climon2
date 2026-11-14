@@ -9,12 +9,17 @@ mod identity;
 mod json;
 pub mod keys;
 pub mod layout;
+pub mod lifetime;
 pub mod metadata;
+mod names;
+pub mod native;
+pub mod preferences;
 pub mod protocol;
 pub mod selector;
 pub mod session;
 pub mod startup_envelope;
 pub mod title;
+pub mod wire;
 pub use identity::{ContractError, SessionId, Timestamp, VersionName};
 
 /// Keep hook instrumentation local to each binary's own feature selection (ADR 0004).

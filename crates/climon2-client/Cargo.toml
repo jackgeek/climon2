@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+# The cdylib is libclimon2_client.dylib; `lib` keeps the rlib for the binary and tests.
+[lib]
+crate-type = ["lib", "cdylib"]
+
 [features]
 test-hooks = []
 

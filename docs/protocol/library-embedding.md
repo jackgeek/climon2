@@ -1,6 +1,16 @@
 # Client library embedding and lifetime
 
-**Status:** agreed design, not implemented. The
+**Status:** agreed design. The library side of the bootstrap and of
+instance lifetime is implemented: every installed version ships its
+[client library](../../GLOSSARY.md#sessions) file, exporting
+only `climon2_client_get_interface`
+([#75](https://github.com/jackgeek/climon2/issues/75)), and its instances are
+created, run, cleaned up and destroyed on their owner threads, and shut down,
+drained and released from any thread, as described below, with every panic
+contained and no process-global state changed
+([#85](https://github.com/jackgeek/climon2/issues/85)). Loading by the
+[monitor](../../GLOSSARY.md#sessions) and the
+[client executable](../../GLOSSARY.md#sessions) is not implemented. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
 requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)
 adds x86-64 GNU/Linux. [Native revision 1](monitor-client/core-v1.md), confirmed in
@@ -49,6 +59,14 @@ GNU/Linux; the version folder, not the file name, carries the release. Never
 substitute `current`, another installed release, or a library found through a
 search path. The [client executable](../../GLOSSARY.md#sessions) loads the same
 filename beside itself and verifies its own exact release.
+
+On macOS, [dyld](TERMS.md#dynamic-loader) searches each `DYLD_LIBRARY_PATH`
+directory for the library file's name before it opens an absolute path, so
+that variable can substitute another release's file. How the loader detects or
+permits such a substitution is not yet decided; it belongs to the shared loader
+([#84](https://github.com/jackgeek/climon2/issues/84)). The working directory,
+`current` and `DYLD_FALLBACK_LIBRARY_PATH` never change which file an absolute
+path loads.
 
 Load with eager symbol resolution and local symbol visibility. Bundled private
 dependencies resolve relative to the library, not the current working directory
@@ -204,12 +222,14 @@ supplies configurable delay, cap and jitter.
 
 This is not native-crash isolation. Abort, native faults, and panic-abort builds
 can terminate the monitor and every hosted client. No new session-survival
-guarantee exists: ordinary sessions retain the daemon's existing
-[leave policy](../../GLOSSARY.md#attachment-and-control) and agreed succession.
-Future [headless sessions](../../GLOSSARY.md#sessions) explicitly survive zero
+guarantee exists: [ordinary sessions](../../GLOSSARY.md#sessions) retain the
+daemon's existing [leave policy](../../GLOSSARY.md#attachment-and-control) and
+agreed succession.
+[Headless sessions](../../GLOSSARY.md#sessions) explicitly survive zero
 clients even after later attachment loss, until completion or
 [Kill](../../GLOSSARY.md#attachment-and-control); that lifetime
-exception is agreed, not implemented, and adds no native-crash isolation.
+exception is implemented on the current private protocol and adds no
+native-crash isolation.
 
 ## Required automated evidence
 

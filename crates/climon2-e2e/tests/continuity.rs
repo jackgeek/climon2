@@ -14,9 +14,11 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use support::{Package, TIMEOUT, quote};
+use support::{
+    DETACH, Package, TIMEOUT, assert_released, detach, kill_session, outer, quote, type_until,
+    wait_file,
+};
 
-const DETACH: &[u8] = b"\x1dd";
 const TAKE_CONTROL: &[u8] = b"\x14";
 const PLACEHOLDER: &str = "This session is being viewed elsewhere.";
 const NOTICE: &str = "[climon2: older session scrollback was discarded]";
@@ -101,18 +103,6 @@ fn session_id(package: &Package) -> String {
     package.metadata().session_id.to_string()
 }
 
-fn wait_file(path: &Path) {
-    let deadline = Instant::now() + TIMEOUT;
-    while !path.exists() {
-        assert!(
-            Instant::now() < deadline,
-            "{} never appeared",
-            path.display()
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
 fn wait_contents(path: &Path, done: impl Fn(&[u8]) -> bool) -> Vec<u8> {
     let deadline = Instant::now() + TIMEOUT;
     loop {
@@ -128,24 +118,6 @@ fn wait_contents(path: &Path, done: impl Fn(&[u8]) -> bool) -> Vec<u8> {
         );
         thread::sleep(Duration::from_millis(10));
     }
-}
-
-/// Explicit detach: status 0, then the reattach hint on stderr.
-fn detach(terminal: &mut Terminal, id: &str) {
-    terminal.send(DETACH).unwrap();
-    assert_eq!(
-        terminal.wait_exit(TIMEOUT).unwrap(),
-        0,
-        "{}",
-        terminal.screen()
-    );
-    terminal
-        .wait_for_bytes(
-            format!("climon2: detached from session {id}; reattach with: climon2 attach {id}")
-                .as_bytes(),
-            TIMEOUT,
-        )
-        .unwrap();
 }
 
 /// Native scrollback then the visible screen, one trimmed line per row.
@@ -229,10 +201,17 @@ fn installed_session_after_vim_keeps_outer_shell_input_below_restored_output() {
             quote(&bash)
         ))
         .unwrap();
-    prompt(&mut terminal);
+    // The nested client drops keys typed before it confirms its restoration.
+    terminal.wait_for_text("INNER> ", TIMEOUT).unwrap();
+    type_until(
+        &mut terminal,
+        "printf 'SESSION-%s\\n' HISTORY\n",
+        "SESSION-HISTORY",
+    );
+    prompt_after(&mut terminal, "SESSION-HISTORY");
     terminal
         .send(format!(
-            "printf 'SESSION-%s\\n' HISTORY; /usr/bin/vim -Nu NONE -i NONE -n {}\n",
+            "/usr/bin/vim -Nu NONE -i NONE -n {}\n",
             quote(&path)
         ))
         .unwrap();
@@ -294,7 +273,6 @@ fn installed_session_detaches_and_reattaches_on_an_occupied_host() {
         .unwrap();
     // Detaching discards input not yet written to the PTY; wait for the echo.
     first.wait_for_text(": > ~/done", TIMEOUT).unwrap();
-    first.wait_for_input_ready(TIMEOUT).unwrap();
     let id = session_id(&package);
     detach(&mut first, &id);
     drop(first);
@@ -323,7 +301,6 @@ fn installed_session_detaches_and_reattaches_on_an_occupied_host() {
     );
     second.send("echo typed-$((2+3))\n").unwrap();
     second.wait_for_text("typed-5", TIMEOUT).unwrap();
-    second.wait_for_input_ready(TIMEOUT).unwrap();
     detach(&mut second, &id);
     drop(second);
 
@@ -360,7 +337,6 @@ fn installed_alternate_screen_is_reattached_and_quitting_shows_normal_content() 
     first.wait_for_text("NORMAL-2", TIMEOUT).unwrap();
     first.send(format!("{}\n", quote(&tui))).unwrap();
     first.wait_for_text("ALT-DISPLAY", TIMEOUT).unwrap();
-    first.wait_for_input_ready(TIMEOUT).unwrap();
     let id = session_id(&package);
     detach(&mut first, &id);
     drop(first);
@@ -594,14 +570,18 @@ fn retention_session(package: &Package, bash: &Path) -> Terminal {
 
 /// Section 6.1.7: a small `max_rows` keeps only the newest history rows,
 /// preceded by the truncation notice; `max_rows: 0` restores the screen
-/// without history or notice.
+/// without history or notice. CFG-01 (exec case): the monitor's own history
+/// limit, which exec validates too, never changes the daemon's.
 #[test]
 fn installed_scrollback_max_rows_bounds_restored_history() {
     let Some(bash) = controlled_bash() else {
         return;
     };
     let package = Package::new();
-    configure(&package, r#"{"scrollback": {"max_rows": 5}}"#);
+    configure(
+        &package,
+        r#"{"scrollback": {"max_rows": 5}, "monitor": {"limits": {"history": {"max_rows": 200}}}}"#,
+    );
     let mut small = retention_session(&package, &bash);
     let on_screen: Vec<u32> = (40 - (u32::from(ROWS) - 2)..=40).collect();
     let first_shown = on_screen[0];
@@ -615,7 +595,10 @@ fn installed_scrollback_max_rows_bounds_restored_history() {
     assert_eq!(small.wait_exit(TIMEOUT).unwrap(), 0);
     drop(small);
 
-    configure(&package, r#"{"scrollback": {"max_rows": 0}}"#);
+    configure(
+        &package,
+        r#"{"scrollback": {"max_rows": 0}, "monitor": {"limits": {"history": {"max_rows": 100000}}}}"#,
+    );
     let mut none = retention_session(&package, &bash);
     assert_eq!(numbered(&none, "row-"), on_screen, "{:?}", lines(&none));
     assert!(!lines(&none).iter().any(|line| line == NOTICE));
@@ -670,7 +653,6 @@ fn installed_session_answers_queries_without_the_host() {
     let detached = home.join("detached");
     first.send("~/query.sh ~/detached DETACHED-DONE\n").unwrap();
     first.wait_for_text("DETACHED-DONE", TIMEOUT).unwrap();
-    first.wait_for_input_ready(TIMEOUT).unwrap();
     detach(&mut first, &id);
     let first_requests = first.host_requests();
     drop(first);
@@ -782,7 +764,6 @@ fn installed_detached_session_absorbs_a_large_write() {
         ))
         .unwrap();
     first.wait_for_text(": > ~/done", TIMEOUT).unwrap();
-    first.wait_for_input_ready(TIMEOUT).unwrap();
     let id = session_id(&package);
     detach(&mut first, &id);
     drop(first);
@@ -811,62 +792,6 @@ stty raw -echo
 dd bs=1 count=1 >/dev/null 2>&1 || exec sleep 1000
 "#;
 
-/// An outer non-interactive shell that records termios around `climon2
-/// <args>`, then reports the status and echoes one ordinary input line.
-fn released(package: &Package, bash: &Path, args: &str) -> Terminal {
-    let mut command = package.command(bash);
-    command.args(["--noprofile", "--norc", "-c"]);
-    command.arg(format!(
-        "stty -g > ~/before; climon2 {args}; s=$?; stty -g > ~/after; \
-         printf 'OUTER-DONE=%s\\n' $s; IFS= read -r line; echo TYPED=$line"
-    ));
-    Terminal::spawn(command, ROWS, COLS).unwrap()
-}
-
-/// After the client returned `status`: the documented baseline, exact
-/// termios and ordinary shell input.
-fn assert_released(package: &Package, terminal: &mut Terminal, status: i32) {
-    terminal
-        .wait_for_text(&format!("OUTER-DONE={status}"), TIMEOUT)
-        .unwrap();
-    assert_eq!(terminal.modes(), Modes::BASELINE, "{}", terminal.screen());
-    let home = package.isolation.home();
-    assert_eq!(
-        termios(&home.join("after")),
-        termios(&home.join("before")),
-        "termios restored"
-    );
-    terminal.send("plain words\n").unwrap();
-    terminal
-        .wait_for_text("TYPED=plain words", TIMEOUT)
-        .unwrap();
-    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
-}
-
-/// `stty -g` settings without macOS's transient `PENDIN`, which the kernel
-/// sets whenever a terminal returns to canonical mode.
-fn termios(path: &Path) -> String {
-    const PENDIN: u64 = 0x2000_0000;
-    fs::read_to_string(path)
-        .unwrap()
-        .trim_end()
-        .split(':')
-        .map(|field| match field.strip_prefix("lflag=") {
-            Some(flags) => {
-                let flags = u64::from_str_radix(flags, 16).unwrap() & !PENDIN;
-                format!("lflag={flags:x}")
-            }
-            None => field.to_owned(),
-        })
-        .collect::<Vec<_>>()
-        .join(":")
-}
-
-fn kill_session(package: &Package, id: &str) {
-    let mut kill = climon2(package, &["kill", id], ROWS, COLS);
-    assert_eq!(kill.wait_exit(TIMEOUT).unwrap(), 0);
-}
-
 /// Section 6.1.11: detach, natural exit with modes left set, kill, and a
 /// non-controlling departure each return the host to the documented baseline
 /// with exact termios and ordinary shell input.
@@ -877,14 +802,14 @@ fn installed_client_releases_the_host_on_every_ending() {
     };
     let package = Package::new();
     let tui = script(&package, &bash, "tui.sh", TUI);
-    let exec = format!("exec {}", quote(&tui));
+    let exec = format!("climon2 exec {}", quote(&tui));
     let ready = |terminal: &mut Terminal| {
         terminal.wait_for_text("TUI-READY", TIMEOUT).unwrap();
         terminal.wait_for_input_ready(TIMEOUT).unwrap();
         assert!(terminal.modes().alternate_screen && terminal.modes().mouse);
     };
 
-    let mut detached = released(&package, &bash, &exec);
+    let mut detached = outer(&package, &bash, &exec, ROWS, COLS);
     ready(&mut detached);
     let id = session_id(&package);
     detached.send(DETACH).unwrap();
@@ -892,20 +817,20 @@ fn installed_client_releases_the_host_on_every_ending() {
     drop(detached);
     kill_session(&package, &id);
 
-    let mut natural = released(&package, &bash, &exec);
+    let mut natural = outer(&package, &bash, &exec, ROWS, COLS);
     ready(&mut natural);
     natural.send("q").unwrap();
     assert_released(&package, &mut natural, 0);
     drop(natural);
 
-    let mut killed = released(&package, &bash, &exec);
+    let mut killed = outer(&package, &bash, &exec, ROWS, COLS);
     ready(&mut killed);
     let id = session_id(&package);
     kill_session(&package, &id);
     assert_released(&package, &mut killed, 129);
     drop(killed);
 
-    let mut observer = released(&package, &bash, &exec);
+    let mut observer = outer(&package, &bash, &exec, ROWS, COLS);
     ready(&mut observer);
     let id = session_id(&package);
     let mut controller = climon2(&package, &["attach", &id], ROWS, COLS);
@@ -1077,7 +1002,6 @@ fn installed_large_restoration_is_complete_and_ordered() {
         ))
         .unwrap();
     first.wait_for_text("42-producer-ready", TIMEOUT).unwrap();
-    first.wait_for_input_ready(TIMEOUT).unwrap();
     let id = session_id(&package);
     detach(&mut first, &id);
     drop(first);

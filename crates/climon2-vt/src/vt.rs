@@ -34,6 +34,10 @@ pub struct Fed {
     /// Oversized tokens dropped from both engine and output; log their count
     /// without content.
     pub dropped: u32,
+    /// Each change of the application's title, in order; `None` is unset.
+    pub titles: Vec<Option<String>>,
+    /// A token turned focus reporting (mode 1004) on, and it is still on.
+    pub focus_enabled: bool,
 }
 
 /// The session's virtual terminal: the front filter, the engine and the
@@ -176,6 +180,7 @@ impl Vt {
         for token in self.tokenizer.push(bytes) {
             self.token(&token, now, &mut fed);
         }
+        fed.focus_enabled &= self.focus_reporting();
         fed
     }
 
@@ -203,15 +208,29 @@ impl Vt {
         self.engine.mode().contains(TermMode::BRACKETED_PASTE)
     }
 
+    /// Whether the application enabled focus reporting (mode 1004).
+    pub fn focus_reporting(&self) -> bool {
+        self.engine.mode().contains(TermMode::FOCUS_IN_OUT)
+    }
+
+    /// The application's own title: `None` while it has set none (or reset
+    /// it) and the default title shows.
+    pub fn application_title(&self) -> Option<&str> {
+        self.engine.title()
+    }
+
     fn token(&mut self, token: &Token, now: Instant, fed: &mut Fed) {
         fed.dropped += u32::from(token.kind == Kind::Oversized);
         let policy = classify(token);
         let title = self.engine.title().map(str::to_owned);
+        let reporting = self.focus_reporting();
         self.execute(&token.bytes, policy.clear, &mut fed.replies);
+        fed.focus_enabled |= !reporting && self.focus_reporting();
         self.latch.observe(policy.sync, now);
         fed.live.extend_from_slice(live(token, &policy.live));
         if self.engine.title() != title.as_deref() {
             fed.live.extend(self.title());
+            fed.titles.push(self.application_title().map(str::to_owned));
         }
     }
 

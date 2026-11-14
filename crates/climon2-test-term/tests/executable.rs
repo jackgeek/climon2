@@ -1,6 +1,6 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
-use climon2_test_term::copy_executable;
+use climon2_test_term::{copy_executable, output_within};
 use nix::libc;
 use std::{
     ffi::CString,
@@ -41,6 +41,35 @@ fn a_fork_while_the_copy_is_written_leaves_the_copy_executable() {
     let status = Command::new(&copy).status().unwrap();
     assert_eq!(status.code(), Some(7));
     drop(holder);
+}
+
+/// #75 bounded waits: a command still running at its deadline is killed and
+/// reaped, and the waiting test fails instead of hanging.
+#[test]
+fn output_within_kills_and_reaps_a_command_that_outlives_its_deadline() {
+    let mut sleeper = Command::new("sleep");
+    sleeper.arg("600");
+    let started = Instant::now();
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        output_within(&mut sleeper, Duration::from_secs(1))
+    }))
+    .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(60));
+    let message = failure.downcast_ref::<String>().unwrap();
+    assert!(
+        message.ends_with("did not exit within 1s; killed and reaped"),
+        "{message}"
+    );
+    let pid: libc::pid_t = message
+        .split_once("(pid ")
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(pid, _)| pid.parse().unwrap())
+        .unwrap();
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "the sleeper survives");
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
 }
 
 /// A forked child that keeps every descriptor it inherited, except the source's writer,

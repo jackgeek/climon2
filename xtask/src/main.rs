@@ -9,6 +9,7 @@ use std::{
 mod coverage;
 mod dist;
 mod fixtures;
+mod library;
 mod mutation_plan;
 mod quality;
 mod release;
@@ -27,6 +28,7 @@ CLIMON2_MUTATION_BASE=origin/main: 5 load rounds, then mutation of whole files c
 since that merge base.
 --mutate-all mutates every shipped file; --print-mutation-plan prints the selection and exits.
 test runs fmt, clippy and workspace tests, including packaged acceptance, plus ShellCheck.
+Before the workspace tests it runs the monitor's build test alone, against its plain binary.
 setup-quality installs the pinned Python quality tools and cargo-llvm-cov.
 mutation-probe checks real-binary worker isolation.
 tooling-probe proves staged coverage, complexity counting and covered mutation gates.
@@ -156,6 +158,16 @@ fn test() -> io::Result<()> {
             "--",
             "-D",
             "warnings",
+        ],
+        // Alone, the monitor package builds its binary without test hooks; the
+        // workspace tests that follow rebuild the hooked sibling in its place.
+        &[
+            "test",
+            "-p",
+            "climon2-monitor",
+            "--locked",
+            "--test",
+            "build",
         ],
         &["test", "--workspace", "--locked"],
     ] {

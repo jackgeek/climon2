@@ -480,12 +480,14 @@ prefix+j stays data and s/x stay unchanged.
 
 Needs-attention toasts hint the actual configured prefix plus lowercase j,
 describing the dynamic most-recent jump rather than guaranteeing their own session.
-Planned `monitor.show_key_hints` is boolean, default true; it controls all implicit
+`monitor.show_key_hints` is boolean, default true; it controls all implicit
 toast/chrome/selector/empty hints, not bindings or application text. Validate the
 startup snapshot before terminal changes; wrong type/duplicate known fields fail,
-missing fields default, no live reload, and no new monitor bindings.
+missing fields default, no live reload, and no new monitor bindings. The monitor
+validates it and honors it for its empty-state hint, the only hint implemented
+([#82](https://github.com/jackgeek/climon2/issues/82)).
 See the [canonical amendments](protocol/terminal-integration.md#attention-jump-and-configurable-hints)
-and [future configuration example](../README.md#planned-monitor-settings-not-implemented).
+and [configuration example](../README.md#configuration).
 
 ## Connection loss and retained terminal views
 
@@ -550,14 +552,15 @@ first hands back to the most recently controlling attachment, otherwise promotes
 the newest accepted passive registration, before final-participant
 [leave policy](../GLOSSARY.md#attachment-and-control). Registration alone does
 not take over a detached session. Committed termination overrides succession.
-No new native-crash survival guarantee is implied. Future
-[headless sessions](../GLOSSARY.md#sessions) explicitly survive zero clients for
+No new native-crash survival guarantee is implied.
+[Headless sessions](../GLOSSARY.md#sessions) explicitly survive zero clients for
 their entire lifetime, including later attachment loss, until command completion
-or Kill; ordinary sessions retain leave policy. Future
+or Kill; ordinary sessions retain leave policy.
 `c2 exec --headless <command> [args...]` returns only after daemon-confirmed
-creation. This CLI spelling and lifetime are agreed in
-[lifecycle](monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill),
-not implemented; preserve existing CLI kill and test it with headless sessions.
+creation. This CLI spelling and lifetime, specified in
+[lifecycle](monitor-lifecycle.md#headless-creation-and-existing-cli-kill), are
+implemented, and existing CLI kill ends headless sessions. A headless session
+without attachments reports the `detached` lifecycle.
 
 Keep selection identity through loss/completion/revocation/failed acquisition;
 never automatically acquire a replacement. Retain rows and metadata for this
@@ -617,8 +620,9 @@ never routed to another/background session. Modal menus also clear keyboard focu
 The daemon wire schemas, compatibility/rejection, source normalization, viewing
 validation and notification identities are now agreed in #67, not implemented.
 The [lifecycle specification](monitor-lifecycle.md) now agrees recovery,
-concurrent shutdown, truthful Leave/closure/outcome/cleanup/join evidence,
-bounded whole-process fail-stop and headless lifetime, all unimplemented.
+concurrent shutdown, truthful Leave/closure/outcome/cleanup/join evidence and
+bounded whole-process fail-stop, all unimplemented, and headless lifetime, which
+is implemented.
 The [operational specification](monitor-operational-limits.md) now agrees
 numerical budgets/rate limits/retry intervals/retention (#69), not implemented.
 [Native declarations](protocol/monitor-client/core-v1.md) are agreed in #71;

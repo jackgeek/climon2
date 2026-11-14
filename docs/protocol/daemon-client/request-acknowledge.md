@@ -1,6 +1,6 @@
 # Acknowledge attention — `0x36`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed, not implemented; rejected until served**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) asks the
 [session daemon](../../../GLOSSARY.md#sessions) to acknowledge current pending
 [attention](../../../GLOSSARY.md#status-and-attention).
@@ -48,3 +48,14 @@ termination and operational failures use the
 No optional fields/defaults/unknown members; malformed records or IDs are fatal.
 Bounds remain #69. Related: [Set viewing](request-viewing.md),
 [local rules](core-v1.md#viewing-acknowledgement-and-local-notifications).
+
+## Implemented behavior
+
+Until [#91](https://github.com/jackgeek/climon2/issues/91) serves Acknowledge, the
+[session daemon](../../../GLOSSARY.md#sessions) rejects it as impermissible
+with `invalid_state`, before the connection has a role, on a
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) and
+on an interactive [attachment](../../../GLOSSARY.md#attachment-and-control)
+alike.
+No attention is acknowledged; the stream goes on and any role stays.
+This interim rejection comes before the `status-v1` check above.

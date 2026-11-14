@@ -18,16 +18,21 @@ exchange. macOS executables retain universal slices and ad-hoc signing.
 
 `cargo xtask dist` builds only the shipped packages, in a private target
 directory, without test hooks or inherited instrumentation. It checks release
-versions and tags, verifies every executable's architecture (and macOS
-signatures), and rejects hook markers. Outputs go to `target/dist`:
+versions and tags, verifies every executable's and the client library's
+architecture (and macOS signatures), and rejects hook markers. The client
+library must export only `climon2_client_get_interface` and describe exactly
+the release version; on Linux it must also have no soname, RPATH or RUNPATH and
+need no shared library beyond glibc's. Outputs go to `target/dist`:
 
 - The native platform's versioned archive.
 - `install.sh`, stamped with that exact version.
 - `SHA256SUMS`, covering both files.
 
 Each archive contains the installer `install`, launcher `climon2`, license,
-README and `<version>/{climon2-cli,climon2-daemon,climon2-client}`. There are no
-test fixtures or Cargo dependencies inside the archive.
+README and `<version>/{climon2-cli,climon2-daemon,climon2-client,climon2-monitor}`
+plus the client library, `libclimon2_client.dylib` on macOS or
+`libclimon2_client.so` on Linux.
+There are no test fixtures or Cargo dependencies inside the archive.
 
 ## Installation
 

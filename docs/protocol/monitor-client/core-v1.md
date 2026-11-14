@@ -1,7 +1,28 @@
 # Native client interface revision 1
 
-**Status: developer-confirmed specification for [#71](https://github.com/jackgeek/climon2/issues/71),
-not a client-library implementation.** The [C ABI](../TERMS.md#c-abi)
+**Status: developer-confirmed specification for [#71](https://github.com/jackgeek/climon2/issues/71).
+Implemented for the bootstrap and the immutable description
+([#75](https://github.com/jackgeek/climon2/issues/75)) and for the instance
+lifecycle calls ([#85](https://github.com/jackgeek/climon2/issues/85)).** The
+shipped [client library](../../../GLOSSARY.md#sessions)
+(`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux)
+returns revision 1's description and rejects other revisions as specified
+below. Its requirements are provisional bounded values
+until [#121](https://github.com/jackgeek/climon2/issues/121) records qualified
+ones. Its [function-table](../TERMS.md#function-table) calls create, run,
+destroy, drain, release_delivery, shutdown, release_communication,
+release_control, notification and snapshot follow the rules below, with these
+gaps: create does not read the session ID, and snapshot reports no
+shared-release allocation and undercounts instance allocation, because it does
+not yet count each instance's diagnostics dispatcher
+([#180](https://github.com/jackgeek/climon2/issues/180)). `submit`
+reports `CM1_UNSUPPORTED_OPERATION` until Open
+([#93](https://github.com/jackgeek/climon2/issues/93)). No instance can open a
+[daemon](../../../GLOSSARY.md#sessions) connection yet, so
+[Leave](../daemon-client/request-leave.md) is never required and the only
+records are the library's own diagnostics. Everything else on this page
+(requests, responses, daemon events, [Kill](../daemon-client/request-kill.md)
+and Leave) is not implemented. The [C ABI](../TERMS.md#c-abi)
 [header](client-v1.h) is authoritative for declarations, numeric tags and field
 order. This page owns their semantics. The [examples](examples.c) compile but
 do not link to a shipped library. [Declaration checks](check.py) are not runtime

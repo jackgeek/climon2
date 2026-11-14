@@ -2,9 +2,10 @@
 
 use climon2_core::{
     SessionId,
-    hello::{Lifecycle, SessionState, advertise},
+    hello::{Lifecycle, SessionState, advertise_revision1},
     metadata::SessionMetadata,
     protocol::{Frame, HelloReply, PROTOCOL_VERSION, read_frame, write_frame},
+    wire::{Advertisement, FrameLimit, FrameLimits},
 };
 use climon2_platform::{process, runtime};
 use climon2_test_term::{Isolation, Terminal, bin_path, copy_executable};
@@ -103,9 +104,16 @@ fn legacy(metadata: &SessionMetadata) -> Frame {
     Frame::new(1, body).unwrap()
 }
 
+/// A current daemon: capabilities, state and revision 1 (here with no
+/// optional families).
 fn current(metadata: &SessionMetadata) -> Frame {
     let state = SessionState::new(Lifecycle::Detached, 0, false).unwrap();
-    advertise(&reply(metadata), state).unwrap()
+    let limit = FrameLimit::new(1_048_576).unwrap();
+    let limits = FrameLimits {
+        max_request_frame_bytes: limit,
+        max_server_frame_bytes: limit,
+    };
+    advertise_revision1(&reply(metadata), state, &Advertisement::new([], limits)).unwrap()
 }
 
 /// Runs `climon2 attach` in a terminal and returns its status and screen.
@@ -129,6 +137,8 @@ fn home(isolation: &Isolation) -> PathBuf {
     runtime::canonical_home(&isolation.climon2_home()).unwrap()
 }
 
+/// DSC-06 (CLI part): attach selects exactly one of the live sessions that discovery finds;
+/// no match, or several, is refused with 125 naming every match, and probing changes nothing.
 #[test]
 fn a_selector_must_match_exactly_one_live_session() {
     let isolation = Isolation::new();
@@ -157,6 +167,7 @@ fn a_selector_must_match_exactly_one_live_session() {
     isolation.assert_clean();
 }
 
+/// DSC-06 (CLI part): attach refuses a live session whose hello advertises no capabilities.
 #[test]
 fn a_session_without_attach_capabilities_is_refused() {
     let isolation = Isolation::new();
@@ -173,6 +184,7 @@ fn a_session_without_attach_capabilities_is_refused() {
     isolation.assert_clean();
 }
 
+/// DSC-06 (CLI part): attach refuses the live session that the CLI runs inside.
 #[test]
 fn a_session_cannot_attach_to_itself() {
     let isolation = Isolation::new();
@@ -187,6 +199,7 @@ fn a_session_cannot_attach_to_itself() {
     isolation.assert_clean();
 }
 
+/// DSC-06 (CLI part): attach to a live session without a terminal is refused with 125.
 #[test]
 fn attach_needs_a_terminal() {
     let isolation = Isolation::new();
@@ -205,6 +218,8 @@ fn attach_needs_a_terminal() {
     isolation.assert_clean();
 }
 
+/// DSC-06 (CLI part): only live sessions are candidates, so metadata that is not live never
+/// makes a prefix ambiguous; attach then names the selected session's uninstalled version.
 #[test]
 fn a_session_of_an_uninstalled_version_names_that_version() {
     let isolation = Isolation::new();
@@ -253,6 +268,8 @@ fn installed_cli(isolation: &Isolation) -> PathBuf {
     cli
 }
 
+/// DSC-06 (CLI part): kill selects exactly one live session as attach does, with nothing on
+/// stdout, and probing changes nothing.
 #[test]
 fn kill_selects_exactly_one_live_session() {
     let isolation = Isolation::new();
@@ -275,6 +292,7 @@ fn kill_selects_exactly_one_live_session() {
     isolation.assert_clean();
 }
 
+/// DSC-06 (CLI part): kill refuses a live session whose hello advertises no capabilities.
 #[test]
 fn kill_refuses_an_older_session_without_capabilities() {
     let isolation = Isolation::new();
@@ -290,7 +308,8 @@ fn kill_refuses_an_older_session_without_capabilities() {
     isolation.assert_clean();
 }
 
-/// Kill never reads the configuration, so a malformed file cannot stop it.
+/// DSC-06 (CLI part): kill never reads the configuration, so a malformed file cannot stop it;
+/// only live sessions are candidates, and the selected one's uninstalled version is named.
 #[test]
 fn kill_of_an_uninstalled_version_names_that_version_and_ignores_config() {
     let isolation = Isolation::new();
@@ -315,15 +334,20 @@ fn kill_of_an_uninstalled_version_names_that_version_and_ignores_config() {
     isolation.assert_clean();
 }
 
-/// Attach validates the client section only: an unused bad retention is ignored,
-/// but a malformed file still fails before dispatch.
+/// DSC-06 (CLI part): attach validates the client section only: an unused bad retention or
+/// monitor section is ignored (CFG-01, attach case), but a malformed file still fails before
+/// dispatch.
 #[test]
 fn attach_validates_only_the_client_configuration() {
     let isolation = Isolation::new();
     let cli = installed_cli(&isolation);
     let home = home(&isolation);
     let config = home.join("config.jsonc");
-    fs::write(&config, r#"{"scrollback":{"max_rows":100001}}"#).unwrap();
+    fs::write(
+        &config,
+        r#"{"scrollback":{"max_rows":100001},"monitor":{"bell":null,"limits":{"ui":{"fps":0}}}}"#,
+    )
+    .unwrap();
     let session = FakeSession::start(&home, 11, current);
     let (status, screen) = attach_in_terminal(&isolation, &cli, "12345678", None);
     assert_eq!(status, 125);

@@ -12,21 +12,29 @@ flowchart TB
     subgraph shipped["Shipped crates"]
         launcher["climon2-launcher"]
         cli["climon2-cli"]
+        discovery["climon2-discovery"]
         client["climon2-client"]
         daemon["climon2-daemon"]
         install["climon2-install"]
+        monitor["climon2-monitor"]
         platform["climon2-platform"]
         core["climon2-core"]
         vt["climon2-vt"]
 
         cli --> core
+        cli --> discovery
         cli --> platform
+        discovery --> core
+        discovery --> platform
         client --> core
         client --> platform
         daemon --> core
         daemon --> platform
         daemon --> vt
         install --> core
+        monitor --> core
+        monitor --> platform
+        monitor --> vt
         platform --> core
     end
 
@@ -38,63 +46,82 @@ flowchart TB
     end
 
     cli -.->|"dev"| test_term
+    discovery -.->|"dev"| test_term
     client -.->|"dev"| test_term
     daemon -.->|"dev"| test_term
     test_term --> cli
     test_term --> client
+    test_term --> core
     test_term --> daemon
     test_term --> install
+    test_term --> monitor
     test_term --> platform
     e2e -.->|"dev"| core
     e2e -.->|"dev"| install
     e2e -.->|"dev"| test_term
+    fixtures --> core
     fixtures -.->|"dev"| test_term
+    xtask --> core
     xtask --> install
 
-    subgraph planned["Planned crate; not implemented"]
-        discovery["climon2-discovery"]
-    end
-    cli -.->|"planned"| discovery
-    style discovery stroke-dasharray: 5 5
+    monitor -.->|"planned"| discovery
 ```
 
 The launcher has no workspace crate dependencies. Cycles through
-`climon2-test-term` are test-only: CLI, [client](../GLOSSARY.md#sessions) and daemon tests consume
-the harness, which consumes their libraries and other runtime libraries.
+`climon2-test-term` are test-only: CLI, discovery, [client](../GLOSSARY.md#sessions)
+and daemon tests consume the harness, which consumes their libraries and other
+runtime libraries. It consumes `core` directly for the frozen framing of its
+raw-socket hello peer.
 Linux support adds native bodies inside `climon2-platform`, not another
 workspace crate or runtime dependency edge. The test harness consumes those
 same Unix seams on Linux and macOS; Linux's ownership exec adapter is a
 test-only executable of the existing harness crate.
 
-**Planned:** a separate discovery crate will share session discovery between
-the CLI and [monitor](../GLOSSARY.md#sessions), retained in
-[Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59).
-The monitor will consume discovery continuously and load version-matched client
-libraries in-process, with one client thread per [live session](../GLOSSARY.md#sessions). Its crate
-placement and the discovery crate's dependencies are not yet specified, so no
-additional crate names or edges are implied. Dynamic loading is shown in the
-artifact diagram, not as a Cargo dependency. The client library's planned
-`cdylib` form is an artifact decision, not a decision to add another crate.
-Ratatui is required for monitor rendering; third-party crates are deliberately
-excluded from this workspace-only diagram.
+**Current (#74):** the [monitor](../GLOSSARY.md#sessions) is its own shipped
+crate, `climon2-monitor`, with a library and the `climon2-monitor` binary. It
+consumes `core`, `platform` and `vt` (the only exception to
+[ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)'s daemon-only
+`climon2-vt` rule) and never the CLI, client or daemon crates.
+`climon2-test-term` consumes it only to unify `test-hooks` into the test build.
+Ratatui is a dependency of this crate alone; third-party crates are
+deliberately excluded from this workspace-only diagram.
 
-The [status/activity revision](session-status.md) also requires the monitor role
-to consume `climon2-vt`, keeping one terminal model per session across uncertain
-disconnections. Its crate placement remains undecided, so this is not an
-invented Cargo edge or a new workspace crate. Daemon-core title detection and
+**Current (#75):** the [client library](../GLOSSARY.md#sessions)'s `cdylib`,
+`libclimon2_client.dylib` on macOS and `libclimon2_client.so` on Linux, is an
+artifact of `climon2-client`, not another crate. The `#[repr(C)]` declarations
+of its native interface live in `climon2-core`, so the client library, the
+client executable and the monitor can share them without new edges; today the
+library, the library host fixture and xtask's release checks consume them.
+
+**Current (#77):** `climon2-discovery` holds the session discovery that
+[Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59)
+planned to share between the CLI and the monitor. It consumes only `core` and
+`platform`, and today only the CLI consumes it.
+
+**Planned:** the monitor will consume discovery continuously (#106) and load
+version-matched client libraries in-process, with one client thread per
+[live session](../GLOSSARY.md#sessions). Dynamic loading is shown in the
+artifact diagram, not as a Cargo dependency.
+
+The [status/activity revision](session-status.md) also requires the monitor
+to keep one `climon2-vt` terminal model per session across uncertain
+disconnections, through its existing `vt` edge. Daemon-core title detection and
 activity/[attention](../GLOSSARY.md#status-and-attention) machines, terminal-signal interpretation, and structured
 notification/progress relay do not require a plugin crate; plugin
 implementation is deferred. The agreed detection modes and fallback policy
 do not assign another workspace crate or change the current dependency edges.
 The [agreed terminal contract](protocol/terminal-integration.md) specifies planned
 read-only Rust cell/mode/cursor/history views for this monitor reuse. Current
-`climon2-vt` remains daemon-only with no public cells; the future monitor
-exception does not change current edges or select monitor crate placement.
+`climon2-vt` exposes no public cells; today the monitor uses it only for the
+documented normal-shell baseline.
 Exact-release libraries carry terminal bytes, not a native cross-release cell
 schema; the monitor parses at effective daemon geometry and paints locally.
 Canonical monitor presentation and optional core Focus introduce no new crate.
 
-The agreed [daemon wire revision 1](protocol/daemon-client/core-v1.md) also
+The platform-neutral encoder and validator for
+[daemon wire revision 1](protocol/daemon-client/core-v1.md) lives in
+`climon2-core`, which the daemon and client already consume, so it adds no
+crate or edge. The agreed revision also
 anticipates source-monitor session consumption and browser terminal consumption
 over future forwarding boundaries, shown in the artifact diagram. Their crate
 placement is unassigned; no new crate or Cargo edge is implied. The wire
@@ -104,9 +131,11 @@ browser. All workspace crates above remain unchanged.
 The [agreed lifecycle](monitor-lifecycle.md), not implemented, specifies
 concurrent per-instance shutdown/joins and exponential passive recovery. Selector
 Delete reuses Kill and dismisses a row/cache only after definitive termination
-and local cleanup. Future headless creation changes only an explicitly headless
-session's zero-client lifetime; it does not select another crate or alter a
-current Cargo edge. No new crate or consumption arrow is introduced here.
+and local cleanup. Implemented headless creation changes only an explicitly
+headless session's zero-client lifetime. Its policy type lives in
+`climon2-core`, which the CLI and daemon already consume; it does not select
+another crate or alter a current Cargo edge. No new crate or consumption arrow
+is introduced here.
 
 The agreed [operational limits](monitor-operational-limits.md), unimplemented,
 require allocation-aware terminal/parser updates and bounded discovery/queues/

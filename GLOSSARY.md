@@ -57,13 +57,21 @@ A session whose daemon answers the hello handshake with the matching session ID.
 _Avoid_: Running session, active session
 
 **Detached session**:
-A live session with no attached clients that continues after deliberate detach.
+A live session that keeps running with no attachments: an ordinary session after a deliberate detach, or a headless session whenever it has none.
 _Avoid_: Disconnected session, completed session
 
 **Headless session**:
 A session explicitly created to run without an initial interactive client and to
 remain alive with zero clients, including after later clients leave.
-_Avoid_: Detached session, persistent session
+_Avoid_: Persistent session
+
+**Ordinary session**:
+A session created with an initial interactive client, which survives zero clients only after a deliberate detach, not before its first attachment or after an unexpected loss of its last.
+_Avoid_: Normal session, regular session
+
+**Lifetime policy**:
+Whether a session is ordinary or headless, fixed when the session is created.
+_Avoid_: Session mode, persistence
 
 **Capabilities**:
 The operations or extensions a climon2 participant explicitly advertises as supported; support is never inferred from release versions.
@@ -80,6 +88,10 @@ _Avoid_: Dead session, orphan
 **Session metadata**:
 The per-session record in climon2 home that describes a session and how to reach its daemon.
 _Avoid_: Session file, PTY file
+
+**Discovery pass**:
+One enumeration of the session metadata in a climon2 home, probing each session and classifying every entry as live, uncertain, stale or invalid.
+_Avoid_: Scan, refresh, poll
 
 **Runtime directory**:
 The private, per-user directory holding the sockets that clients use to reach session daemons, one per climon2 home.
@@ -101,7 +113,7 @@ Probes, passive monitor connections and kill requests are not attachments.
 _Avoid_: Session, control
 
 **Passive monitor connection**:
-A monitor's connection that receives session metadata and is eligible to inherit control, but has not yet become an attachment.
+A monitor's connection that receives the session's core metadata, such as its title and status, and is eligible to inherit control, but has not yet become an attachment.
 _Avoid_: Observer-only attachment, read-only viewer
 
 **Successor**:
@@ -159,6 +171,10 @@ _Avoid_: Space-to-control, hotkey
 **Placeholder**:
 The screen a non-controlling client shows instead of session content, saying the session is being viewed elsewhere.
 _Avoid_: Viewer mode, read-only view
+
+**Key introduction**:
+The monitor's modal list of its key actions, spelled with the configured client escape prefix, shown at startup until the user declines it for that climon2 home, and on request as help.
+_Avoid_: Splash screen, onboarding, welcome screen
 
 ## Status and attention
 
@@ -323,8 +339,11 @@ A climon2-owned test program that checks the session contract (args, cwd, enviro
 _Avoid_: Test shell, dummy command
 
 **TUI fixture**:
-A climon2-owned full-screen test program that exercises alternate screen, cursor queries, mouse, bracketed paste, and resize redraws.
+A climon2-owned full-screen test program that exercises alternate screen, cursor queries, focus reporting, mouse, bracketed paste, and resize redraws.
 _Avoid_: Fake app, mock TUI
+
+**Terminal oracle**:
+The test harness's emulated host, whose visible cells, cursor, modes, bells and status reports stand for what a user observes in their terminal.
 
 **Shell profile**:
 The test harness's description of how to start one shell in a controlled way and drive it in tests; the only place climon2 knows about specific shells.

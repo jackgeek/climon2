@@ -1,13 +1,16 @@
 //! `<home>/config.jsonc` (plan 1.3). A lexical normaliser turns JSONC into JSON
 //! (comments become whitespace, trailing commas are dropped), then serde reads
 //! operation-specific structs, so attach never validates scrollback it ignores.
+mod limits;
+
 use crate::{
     json::{self, Field, Object},
     keys::{ClientSettings, ControlKey, SettingsError},
     layout::HomeLayout,
 };
+pub use limits::Limits;
 use serde::{
-    Deserialize, Deserializer,
+    Deserialize, Deserializer, Serialize, Serializer,
     de::{DeserializeOwned, Error as _},
 };
 use serde_json::error::Category;
@@ -35,7 +38,29 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-const MAX_ROWS_LIMIT: u32 = 100_000;
+/// The integers a setting accepts, `min` through `max`. `scrollback.max_rows`
+/// and every `monitor.limits` setting check their ranges here, so a refusal
+/// always has one shape and names its setting.
+#[derive(Clone, Copy)]
+struct Range {
+    min: u64,
+    max: u64,
+}
+
+impl Range {
+    /// Why `setting` may not hold `value`, if it may not.
+    fn refusal(self, setting: &str, value: u64) -> Option<String> {
+        let Self { min, max } = self;
+        (!(min..=max).contains(&value))
+            .then(|| format!("{setting} must be an integer from {min} to {max}"))
+    }
+}
+
+const MAX_ROWS: &str = "scrollback.max_rows";
+const MAX_ROWS_RANGE: Range = Range {
+    min: 0,
+    max: 100_000,
+};
 
 /// Retained history rows, 0..=100000; zero disables retained history only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,11 +68,15 @@ pub struct MaxRows(u32);
 
 impl MaxRows {
     pub fn new(rows: u32) -> Option<Self> {
-        (rows <= MAX_ROWS_LIMIT).then_some(Self(rows))
+        Self::refusal(rows).is_none().then_some(Self(rows))
     }
 
     pub fn get(self) -> u32 {
         self.0
+    }
+
+    fn refusal(rows: u32) -> Option<String> {
+        MAX_ROWS_RANGE.refusal(MAX_ROWS, rows.into())
     }
 }
 
@@ -60,9 +89,7 @@ impl Default for MaxRows {
 impl<'de> Deserialize<'de> for MaxRows {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let rows = u32::deserialize(deserializer)?;
-        Self::new(rows).ok_or_else(|| {
-            D::Error::custom("scrollback.max_rows must be an integer from 0 to 100000")
-        })
+        Self::refusal(rows).map_or(Ok(Self(rows)), |error| Err(D::Error::custom(error)))
     }
 }
 
@@ -102,6 +129,94 @@ impl AttachConfig {
     }
 }
 
+/// The `monitor` section, which `exec` validates too.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct MonitorSettings {
+    /// Whether implicit key hints show; bindings never change.
+    pub show_key_hints: bool,
+    /// Whether a toast rings the host bell as it first draws; only reported
+    /// until toasts read it.
+    bell: bool,
+    #[serde(deserialize_with = "object")]
+    pub limits: Limits,
+}
+
+impl Default for MonitorSettings {
+    fn default() -> Self {
+        Self {
+            show_key_hints: true,
+            bell: true,
+            limits: Limits::default(),
+        }
+    }
+}
+
+const NULL_PREFIX: &str = "client.escape_prefix may not be null for climon2 monitor";
+
+/// Everything the monitor validates before it changes the host terminal (spec
+/// #73): the client bindings, with the escape prefix it needs to reach its
+/// actions, and the `monitor` section. It is read once; nothing reloads it.
+/// `Display` writes the effective values as JSON in the file's own shape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct MonitorConfig {
+    client: MonitorKeys,
+    monitor: MonitorSettings,
+}
+
+/// The client bindings as the monitor reports them; it acts only on the
+/// escape prefix so far.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+struct MonitorKeys {
+    #[serde(serialize_with = "key_name")]
+    escape_prefix: ControlKey,
+    #[serde(serialize_with = "optional_key_name")]
+    take_control_key: Option<ControlKey>,
+}
+
+impl MonitorConfig {
+    pub fn parse(text: &[u8]) -> Result<Self, ConfigError> {
+        let file = parse::<MonitorFile>(text)?;
+        let escape_prefix = file
+            .client
+            .escape_prefix()
+            .ok_or_else(|| ConfigError::Invalid(NULL_PREFIX.into()))?;
+        Ok(Self {
+            client: MonitorKeys {
+                escape_prefix,
+                take_control_key: file.client.take_control_key(),
+            },
+            monitor: file.monitor,
+        })
+    }
+
+    pub fn escape_prefix(&self) -> ControlKey {
+        self.client.escape_prefix
+    }
+
+    pub fn settings(&self) -> &MonitorSettings {
+        &self.monitor
+    }
+}
+
+impl fmt::Display for MonitorConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let json = serde_json::to_string(self).map_err(|_| fmt::Error)?;
+        formatter.write_str(&json)
+    }
+}
+
+fn key_name<S: Serializer>(key: &ControlKey, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(key)
+}
+
+fn optional_key_name<S: Serializer>(
+    key: &Option<ControlKey>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    key.map(|key| key.to_string()).serialize(serializer)
+}
+
 /// The configuration file's bytes, read once per operation; `None` if absent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigSource(Option<Vec<u8>>);
@@ -123,27 +238,42 @@ impl ConfigSource {
         self.parse(AttachConfig::parse)
     }
 
-    fn parse<T: Default>(
-        &self,
-        parse: fn(&[u8]) -> Result<T, ConfigError>,
-    ) -> Result<T, ConfigError> {
-        self.0.as_deref().map_or_else(|| Ok(T::default()), parse)
+    pub fn monitor(&self) -> Result<MonitorConfig, ConfigError> {
+        self.parse(MonitorConfig::parse)
+    }
+
+    /// A missing file reads as an empty object: every setting its default.
+    fn parse<T>(&self, parse: fn(&[u8]) -> Result<T, ConfigError>) -> Result<T, ConfigError> {
+        parse(self.0.as_deref().unwrap_or(b"{}"))
     }
 }
 
+/// Exec validates the `monitor` section and passes none of it on.
 #[derive(Deserialize)]
 struct ExecFile {
     #[serde(default, deserialize_with = "client")]
     client: ClientSettings,
     #[serde(default, deserialize_with = "object")]
     scrollback: ScrollbackSettings,
+    #[serde(default, rename = "monitor", deserialize_with = "object")]
+    _monitor: MonitorSettings,
 }
 
-/// Unnamed `scrollback` is unknown here, so serde ignores it entirely.
+/// Unnamed `scrollback` and `monitor` are unknown here, so serde ignores them
+/// entirely.
 #[derive(Deserialize)]
 struct AttachFile {
     #[serde(default, deserialize_with = "client")]
     client: ClientSettings,
+}
+
+/// Unnamed `scrollback` is unknown here: the monitor never changes it.
+#[derive(Deserialize)]
+struct MonitorFile {
+    #[serde(default, deserialize_with = "client")]
+    client: ClientSettings,
+    #[serde(default, deserialize_with = "object")]
+    monitor: MonitorSettings,
 }
 
 #[derive(Deserialize)]
