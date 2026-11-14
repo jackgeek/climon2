@@ -52,7 +52,12 @@ fn version_folder(library: &Path) -> &str {
 /// The host loading `version`'s library from `home`, with a cleared
 /// environment; instrumented builds keep their profile.
 fn host(home: &ExecutableHome, version: &str, directory: &Path) -> Command {
-    let mut command = process_command(bin_path("climon2-library-host"));
+    host_at(&bin_path("climon2-library-host"), home, version, directory)
+}
+
+/// `host`, run from a copy of the host executable at `executable`.
+fn host_at(executable: &Path, home: &ExecutableHome, version: &str, directory: &Path) -> Command {
+    let mut command = process_command(executable);
     command
         .arg(home.path())
         .arg(version)
@@ -363,5 +368,54 @@ fn installed_library_substituted_through_dyld_library_path_is_refused() {
     assert!(message.contains(library.to_str().unwrap()), "{message}");
     assert!(message.contains(decoy.to_str().unwrap()), "{message}");
     assert_eq!(report["images"], json!([decoy]));
+    package.assert_clean();
+}
+
+/// LIB-01 Library case on macOS (a substitute without the bootstrap; owner
+/// decision on #84): when the file dyld loaded through `DYLD_LIBRARY_PATH`
+/// lacks `climon2_client_get_interface`, `dladdr` cannot name it, so the
+/// refusal lists every loaded image with the library's file name, the main
+/// executable included. The host runs as a copy named like the library
+/// outside the search path, so the refusal names that copy first, then the
+/// decoy, in dyld's load order.
+#[cfg(target_os = "macos")]
+#[test]
+fn substitute_without_a_bootstrap_is_refused_naming_every_loaded_image_of_its_name() {
+    let package = Package::new();
+    let home = home(&package);
+    let library = library(&home, VERSION);
+    let scratch = scratch();
+    let scratch = scratch.path().canonicalize().unwrap();
+    let search = scratch.join("search");
+    let hosts = scratch.join("host");
+    fs::create_dir(&search).unwrap();
+    fs::create_dir(&hosts).unwrap();
+    let source = scratch.join("decoy.c");
+    fs::write(&source, "int climon2_decoy_without_a_bootstrap;\n").unwrap();
+    let decoy = search.join(LIBRARY);
+    let output = output_within(
+        Command::new("cc")
+            .arg("-dynamiclib")
+            .arg("-o")
+            .arg(&decoy)
+            .arg(&source),
+        TIMEOUT,
+    );
+    assert!(output.status.success(), "{output:?}");
+    let named_host = hosts.join(LIBRARY);
+    copy_executable(&bin_path("climon2-library-host"), &named_host);
+    let mut substituted = host_at(&named_host, &home, VERSION, &scratch);
+    substituted.env("DYLD_LIBRARY_PATH", &search);
+    let report = observe(substituted);
+    assert_eq!(report["error"]["failure"], "SubstitutedImage", "{report:#}");
+    let message = report["error"]["message"].as_str().unwrap();
+    assert!(message.contains(library.to_str().unwrap()), "{message}");
+    let expected = format!(
+        "loaded a file of the same name ({}, {}) instead",
+        named_host.display(),
+        decoy.display()
+    );
+    assert!(message.contains(&expected), "{message}");
+    assert_eq!(report["images"], json!([named_host, decoy]));
     package.assert_clean();
 }
