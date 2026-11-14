@@ -540,3 +540,126 @@ fn a_kill_during_the_drain_lets_the_commands_last_output_through() {
     assert_closed(&mut killing);
     session.finish();
 }
+
+/// Stops the daemon process, runs `during` and lets it go on.
+fn while_stopped<T>(session: &Session, during: impl FnOnce() -> T) -> T {
+    let daemon = i32::try_from(session.pid).unwrap();
+    assert_eq!(unsafe { libc::kill(daemon, libc::SIGSTOP) }, 0);
+    let value = during();
+    assert_eq!(unsafe { libc::kill(daemon, libc::SIGCONT) }, 0);
+    value
+}
+
+/// A screen and history whose restoration takes many Display frames: 5,000
+/// rows of 90 cells in alternating colours, about 2.7 MB, then `tail-line`.
+/// A first attachment receives it all live, so the daemon has read it, and
+/// leaves. The command then exits 3 while the daemon is stopped, and a
+/// hello and an interactive Open at 91x37 are sent in one go, so the daemon
+/// grants the Open in the same pass in which it reaps the command and reads
+/// the end of its output, ending the drain. Returns the Open's stream, its
+/// hello reply read, and an instant before the daemon resumed.
+fn opened_as_the_drain_ends(session: &Session) -> (UnixStream, Instant) {
+    let mut first = ready_attachment(session, &[]);
+    crate::issue(session, "colors 5000");
+    crate::issue(session, "text tail-line");
+    first.until_displayed(b"tail-line", 1);
+    first.leave();
+    let command = fixture_pid(session);
+    let (mut stream, resumed) = while_stopped(session, || {
+        crate::issue(session, "exit 3");
+        exited_unreaped(command);
+        let mut stream = UnixStream::connect(&session.socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        crate::send(&mut stream, ClientMessage::Hello { protocol: 1 });
+        request(
+            &mut stream,
+            &open(1, &[], &[], Mode::Interactive(geometry(91, 37))),
+        );
+        (stream, Instant::now())
+    });
+    assert!(matches!(
+        crate::receive(&mut stream),
+        PrivateMessage::Hello(_)
+    ));
+    (stream, resumed)
+}
+
+/// COM-06 (Contract: Command final means no more output follows) and
+/// COM-05 (Contract, interactive order): a restoration still in progress
+/// when the command's output drained delivers all of its Display, and its
+/// Restoration complete, before Command final. The restoration of a large
+/// screen and history begins in the pass that ends the drain
+/// ([`opened_as_the_drain_ends`]). The attachment receives the whole
+/// restoration, `tail-line` included, then Command final with exit 3 while
+/// it has not confirmed Ready, as does a passive monitor connection. Ready
+/// then ends the session.
+#[test]
+fn a_restoration_in_progress_when_the_drain_ends_completes_before_command_final() {
+    let mut session = Session::start("script");
+    let (mut watching, _) = monitor(&session, &[]);
+    let (stream, _) = opened_as_the_drain_ends(&session);
+    let mut attached = Attached::opened(stream, geometry(91, 37));
+    assert_eq!(crate::count(&attached.display, b"tail-line"), 1);
+    let result = exited(3);
+    assert_eq!(attached.next_after_display(), command_final(&result));
+    attached.confirm_ready();
+    attached.session_ended();
+    assert_final_then_closed(&mut watching, &result);
+    session.finish();
+}
+
+/// COM-06 (Contract: Command final means no more output follows): the
+/// update a controller under derived presentation is owed, held back by a
+/// synchronized update, reaches it before Command final, which waits for
+/// the update's latch to expire. A ready controller whose 600-column host
+/// is wider than the session's 500-column limit is served a derived
+/// presentation. The daemon is stopped while the command begins a
+/// synchronized update it never ends, prints `held-frame` and exits 3, so
+/// the daemon reads all three, then the end of the output, as it resumes.
+/// The controller receives `held-frame` as Display before its Command
+/// final, no sooner than the latch's 150 ms after the daemon resumed, and
+/// only then its release and Control revoked.
+#[test]
+fn a_held_synchronized_update_reaches_a_derived_controller_before_command_final() {
+    let mut session = Session::start("script");
+    let mut attached = Attached::open(&session, geometry(600, 37), &[], geometry(500, 37));
+    attached.confirm_ready();
+    attached.until_displayed(b"fixture-ready", 1);
+    let command = fixture_pid(&session);
+    while_stopped(&session, || {
+        crate::issue(&session, "sync");
+        crate::issue(&session, "text held-frame");
+        crate::issue(&session, "exit 3");
+        exited_unreaped(command);
+    });
+    let resumed = Instant::now();
+    assert_eq!(attached.next_after_display(), command_final(&exited(3)));
+    assert!(resumed.elapsed() >= Duration::from_millis(150));
+    assert_eq!(crate::count(&attached.display, b"held-frame"), 1);
+    attached.session_ended();
+    session.finish();
+}
+
+/// COM-06 (Contract: Command final is still sent within the existing
+/// bounds): a restoration whose reader stalls holds Command final only until
+/// that reader is lost. The restoration of a large screen and history
+/// begins in the pass that ends the drain ([`opened_as_the_drain_ends`]),
+/// and its reader never reads. The restoration is larger than the
+/// restoration window and the socket's buffer together, so it cannot
+/// complete, and after five seconds without progress the daemon loses the
+/// attachment. Only then does the passive monitor connection get Command
+/// final with exit 3, followed by the end of its stream when the session
+/// ends.
+#[test]
+fn a_stalled_restoration_holds_command_final_only_until_its_reader_is_lost() {
+    let mut session = Session::start("script");
+    let (mut watching, _) = monitor(&session, &[]);
+    let (stalled, resumed) = opened_as_the_drain_ends(&session);
+    assert_eq!(message(&mut watching), command_final(&exited(3)));
+    assert!(resumed.elapsed() >= Duration::from_secs(5));
+    assert_closed(&mut watching);
+    drop(stalled);
+    session.finish();
+}
