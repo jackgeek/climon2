@@ -18,8 +18,11 @@ The [monitor](../../GLOSSARY.md#sessions) uses it
 session's exact-release library once per release on a worker thread, creates,
 runs and destroys each passive client's instance on that instance's own owner
 thread, submits monitor-mode Open, polls the borrowed notification
-descriptors, drains and releases every delivery, and on exit shuts every
-instance down and joins its owner within `deadlines.shutdown_ms`. Admission,
+descriptors, drains and releases every delivery, and on exit requests
+shutdown of every instance and waits up to `deadlines.shutdown_ms` for each to
+end, its handles to be released and its owner to be joined. An instance
+unconfirmed by then is reported and left, never destroyed, to process exit:
+the monitor does not claim it joined. Admission,
 recovery, acquisition and fail-stop remain unimplemented, and the client
 executable does not load the library yet. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these

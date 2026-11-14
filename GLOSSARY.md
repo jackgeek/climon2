@@ -207,7 +207,7 @@ A monitor's record of whether its client is connected to a session daemon, disti
 _Avoid_: Session status, daemon outcome
 
 **Not-connected row labels**:
-The status a monitor shows for a session row without a current daemon status: Starting while its client starts, Awaiting resources while it cannot be admitted, Unavailable when it cannot be reached or reports no status, This monitor for the monitor's own session, and Disconnected once its connection is lost or the session is proven gone.
+The status a monitor shows for a session row without a current daemon status: Starting while its client starts, Awaiting resources while it cannot be admitted, Unavailable when it cannot be reached or reports no status, This monitor for the monitor's own session, and Disconnected once its connection is lost. A row never seen connected is dropped, not shown Disconnected, once its session is proven gone; a row that was connected keeps Disconnected with its history.
 _Avoid_: Error state, dead, offline, unknown status
 
 ## Restoration and presentation

@@ -74,8 +74,10 @@ pub fn Continuation::pass(&mut self, home: &HomeLayout, scan: &Scan, report: imp
   frozen hello probes in flight, each under the two-second deadline.
 - `report` receives each `Batch` (`sessions` newest created first, then
   ascending session ID, and `invalid`) as soon as it is probed.
-- No probe starts once `Scan::pass_time` has passed, except the pass's first,
-  so every pass makes progress. The pass then ends
+- `Scan::pass_time` runs from the pass's start. Once it has passed, no probe
+  and no further batch starts, as soon as the pass has made progress
+  (reported an entry or started a probe), so every pass makes progress, even
+  over invalid metadata alone. The pass then ends
   `Progress::Incomplete(Incomplete::Deadline)` and the next continues after
   the last entry it reported. A sessions directory that cannot be listed ends
   it `Progress::Incomplete(Incomplete::Inaccessible(error))`. Otherwise it is
@@ -124,6 +126,7 @@ hello peers.
 | DSC-03 and DSC-04 Contract cases (incremental passes): every entry once, in batches bounded by records and by bytes at and one byte short of the bound; complete versus completed empty passes; nothing deleted | `incremental_passes_report_every_entry_once_in_bounded_batches` |
 | DSC-03 Contract case (fair continuation while the directory changes) | `a_pass_continues_through_directory_changes_and_the_next_pass_reaches_what_it_missed` |
 | DSC-04 Contract and Fault cases (slow and dead probes, incomplete discovery) with DSC-03 fair continuation | `a_pass_deadline_reports_incomplete_progress_and_the_next_pass_continues_after_it` |
+| DSC-04 Contract case (bounded passes) with DSC-03 fair continuation: the deadline binds a pass that finds only invalid metadata | `a_pass_deadline_bounds_a_pass_that_finds_only_invalid_metadata` |
 | DSC-04 Contract case (bounded probes) | `probes_are_bounded_by_the_scans_concurrency`, `probes_run_concurrently_up_to_the_bound` |
 | DSC-04 Contract case (inaccessible discovery, incremental) | `an_unlistable_sessions_directory_makes_the_pass_incomplete` |
 

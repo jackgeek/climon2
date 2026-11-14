@@ -109,8 +109,11 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   `climon2_discovery::Continuation`: the first pass at once, each later one a
   second after the previous one ended, so passes never overlap, bounded by
   `scheduling.probes` and `monitor.limits.discovery` (`pass_ms`,
-  `batch_records`, `batch_bytes`, `metadata_file_bytes`, `metadata_depth`).
-  Each batch reaches the UI thread as it is probed. It never deletes metadata.
+  `batch_records`, `batch_bytes`, `metadata_file_bytes`, `metadata_depth`;
+  `discovery.stall_ms` is not applied, #120). The pass deadline runs from the
+  pass's start once it has reached an entry or started a probe. Opening the
+  selector requests nothing of discovery, so it can neither start a pass
+  early nor overlap one. Each batch reaches the UI thread as it is probed. It never deletes metadata.
   Invalid metadata is logged and adds no row; an incomplete pass shows
   `Discovery incomplete: <why>` under the body until a pass completes. The
   thread is never joined: a pass cannot be interrupted, and it changes
@@ -120,11 +123,13 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   status with the time the monitor entered it, the latest nonempty daemon
   title and whether the row is the monitor's own session
   (`CLIMON2_SESSION_ID`). A live session with no client and not the monitor's
-  own gets exactly one client request. Discovery never removes a row or
-  changes a client's connection; a stale session nobody knew adds no row. The
-  status column is This monitor, Starting, Unavailable (uncertain, failed, or
-  connected without `status-v1`), Disconnected (connection ended, or proven
-  stale without a client), or empty for a connected row with `status-v1`,
+  own gets exactly one client request. Discovery never changes a client's
+  connection. A session proven gone (stale) drops its row unless a client
+  was ever connected to it, and a stale session nobody knew adds no row; a
+  row that was connected stays, with its history (owner decision on #106).
+  The status column is This monitor, Starting, Unavailable (uncertain,
+  failed, or connected without `status-v1`), Disconnected (its connection
+  ended), or empty for a connected row with `status-v1`,
   whose effective status arrives with #107. The label is the latest nonempty
   title, otherwise the command and arguments joined by spaces, with control
   characters escaped, never a session ID. Rows list newest created first, then
@@ -141,30 +146,44 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   1, geometry 0x0; `daemon-wire-v1` and `monitor-v1` required, `title-v1`,
   `status-v1`, `notification-v1`, `progress-v1` and `focus-v1` optional),
   publishes its handles, runs it, and destroys it once the supervisor has
-  released them after terminal evidence. The supervisor polls the borrowed
-  notification descriptors every 20 ms tick, drains each ready instance until
-  it is empty, releases every delivery at once, and reports Open's outcome
+  released them. The supervisor waits up to a 20 ms tick on the borrowed
+  notification descriptors, then drains every live instance until it is
+  empty (so one whose descriptor lookup failed still ends), releases every
+  delivery at once (`supervisor/client.rs`), and reports Open's outcome
   (with whether `status-v1` was selected), titles from Initial metadata and
-  `CM1_TITLE`, and the end. A refused release, a failed create or Open, or a
-  client that ends before opening makes the row Unavailable; one that ends
-  after opening, Disconnected. Nothing is retried yet, and resource admission
-  arrives with #120. The general log records `client library loaded` or
-  `client library refused`, `client starting session=<id>`, `client opened`,
-  `client open refused`, `client ended` and client diagnostics, content-free.
+  `CM1_TITLE`, and the end. A refused release (its loader `Failure` kept for
+  #116's retry), a failed create, Open, notification lookup or drain, a run
+  that returns without terminal evidence, or a client that ends before
+  opening makes the row Unavailable; one that ends after opening,
+  Disconnected. A failed instance is asked to stop and drained until its
+  stream is over; its handles are then released, its start slot is free
+  (only instances still creating or opening hold one), and its owner
+  destroys it. Nothing is retried yet. Starts are newest created first only
+  among the sessions waiting together: fairness across discovery batches
+  and resource admission arrive with #120. The general log records `client
+  library loaded` or `client library refused`, `client starting
+  session=<id>`, `client published`, `client failed`, `client stopped`,
+  `client ended` and client diagnostics, content-free.
 - **The selector** (`selector.rs`): prefix+s, unless the modal key
   introduction is open, overlays the rows below the top row, one cell in from
   each edge, with a captionless double border. Each row is its status, padded
   to the widest status shown, a space and its label, clipped by display cell
   without splitting a wide character; the highlighted row is reversed and
   kept in view. It opens on the first row; prefix+s while open does nothing.
-  Typed Up and Down (`ESC [ A`/`B` or `ESC O A`/`B`) move the highlight
-  without wrapping, and an Escape that ends a host read closes it; the input
-  router (#109) replaces this per-read Escape rule. It never resizes an
+  Typed Up and Down (`ESC [ A`/`B` or `ESC O A`/`B`, decoded by one rule
+  table) move the highlight without wrapping, and an Escape that ends a host
+  read closes it. Known gap (owner decision on #106): an Escape followed by
+  other bytes in the same read does not close it; the input router closes
+  this gap (#109, INP-02). It never resizes an
   application or acquires anything. While rows exist and the selector is
   closed, the body reads `No session selected.` above the key hint.
 - **Exit** first asks the supervisor to shut every instance down and keeps
   draining until each has ended, its handles are released and its owner is
-  joined, for at most `deadlines.shutdown_ms`, then releases the host.
+  joined, for at most `deadlines.shutdown_ms` (and one tick), then releases
+  the host. An instance unconfirmed by then is logged (`client shutdown
+  unconfirmed at its deadline`) and left to process exit: its owner never
+  destroys it while its handles may be unreleased. The fail-stop that
+  should follow arrives with #118.
 
 ## Exit
 
@@ -215,15 +234,19 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | Spec #73 exit: content-free general log | `installed_monitor_logs_content_free_records_to_its_general_log` (e2e) |
 | DSC-03 (Monitor), CTL-01 (Monitor), COM-01 (Monitor), LIB-01 (Monitor, Linux maps), HDL-01 (Monitor rows): sessions created after an empty start appear unasked, one passive client and library log each, reused across passes; never attached or controlled; Unavailable without `status-v1`; titles and command fallback; exactly the version's `libclimon2_client.so` | `sessions_appear_as_they_are_created_each_with_one_passive_client` (e2e) |
 | DSC-04 (Monitor, Fault): malformed and oversized metadata, mismatched hello, silent probe, inaccessible discovery, uncertain disappearance; no metadata deleted, no client torn down | `uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients` (e2e) |
-| DSC-01 (Monitor, start order): bounded starts newest created first, ascending ID ties | `clients_start_one_at_a_time_newest_first_with_ascending_id_ties` (e2e) |
+| DSC-01 (Monitor, start order): bounded starts newest created first, ascending ID ties, each after the previous one failed, as the fake daemons heard them | `clients_start_one_at_a_time_newest_first_with_ascending_id_ties` (e2e) |
+| DSC-03 (Monitor, cadence): immediate first pass, each later pass a second after the previous one ended, no overlap, the selector opened during a pass | `discovery_passes_start_a_second_after_the_previous_one_ends_without_overlap` (e2e) |
+| Client supervisor (Fault): a failed notification lookup, or a run failing without terminal evidence, ends that instance cleanly (deliveries and handles released, destroyed) and frees its start slot | `a_failed_notification_lookup_ends_its_client_cleanly_and_frees_its_start_slot`, `a_failed_run_without_terminal_evidence_ends_its_client_cleanly_and_frees_its_start_slot` (`src/supervisor/tests`) |
+| Client supervisor (Fault): exit is bounded by `deadlines.shutdown_ms` and never destroys an instance with unreleased handles; a refused release is loaded once and its sessions are Unavailable | `exit_is_bounded_and_never_destroys_an_instance_with_unreleased_handles`, `a_refused_release_is_loaded_once_and_its_sessions_are_unavailable` (`src/supervisor/tests`) |
 | Own-session scenario (confirmed 2026-11-08), DSC-06 (Monitor), HDL-01 (Monitor rows), CTL-01 (controlled elsewhere), TRM-06 (wide labels), SEL-01 (cell-safe clipping) | `the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear` (e2e) |
 | SEL-01 (Monitor, basic cases): border, columns, highlight, Up/Down without wrap, Escape, no application resize or acquisition | `the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing` (e2e) |
 | DSC-01/DSC-03 (pure registry supplement): one client request per live session, newest-first order | `live_sessions_need_one_client_each_and_list_newest_first` (`src/registry.rs`) |
 | Own-session scenario (pure supplement) | `the_own_session_is_this_monitor_and_never_needs_a_client` (`src/registry.rs`) |
 | DSC-04 (pure supplement): uncertainty never removes rows or tears down clients | `uncertainty_never_removes_rows_or_tears_down_clients` (`src/registry.rs`) |
+| Stale rows (owner decision on #106): a session proven gone drops its row unless it was ever connected | `a_session_proven_gone_drops_its_row_unless_it_was_ever_connected` (`src/registry.rs`) |
 | COM-01 and not-connected labels (pure supplement) | `connection_statuses_are_labelled_as_specified` (`src/registry.rs`) |
 | TRM-06 label cases (pure supplement): latest nonempty title, command fallback, literal, never IDs; cell-safe clipping | `labels_are_the_latest_nonempty_title_or_command_and_arguments_literally`, `clipping_is_display_cell_safe` (`src/registry.rs`) |
-| SEL-01 basic cases (pure supplement) | `the_selector_draws_a_captionless_double_border_with_two_columns`, `up_and_down_move_without_wrapping_and_escape_closes` (`src/selector.rs`) |
+| SEL-01 basic cases (pure supplement) | `the_selector_draws_a_captionless_double_border_with_two_columns`, `up_and_down_move_without_wrapping_and_escape_closes`, `opening_an_open_selector_keeps_its_highlight` (`src/selector.rs`) |
 | HLP-01 (Monitor): at every start with hints on and nothing saved, the introduction lists the actual prefix with x, s and ? and an unchecked box; Enter continues, closing saves nothing, prefix+x exits from it | `the_key_introduction_opens_at_every_start_until_dont_show_again_is_saved` (e2e) |
 | HLP-01 (Monitor): hints off or the choice saved keep it closed; prefix+? opens it regardless, showing the saved choice; prefix+? while open is a no-op; a later version's file with unknown fields is honoured | `the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say` (e2e) |
 | HLP-01 (Monitor): Space saves and reverses the choice per climon2 home, exact version 1 bytes, mode 0600 under umask 000, by rename (a hard link keeps the old bytes), nothing left behind, a file already under the temporary name replaced; restarts and another home | `dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible` (e2e) |
@@ -245,8 +268,10 @@ Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), application input such
 as Ctrl+C (#109), mouse and focus report classification (#109) and their
 routing to applications (#111), HLP-02 over the selector (#113), selector
 search, footer and Enter (#108, #113), status order and initial selection
-(#107), resource admission and fairness (#120), passive retry and
-`discovery.stall_ms`, Escape closing the key introduction when Escape is not
+(#107), resource admission and fairness, including newest-first starts
+across discovery batches, and `discovery.stall_ms` (#120), passive retry
+(#116), an Escape that does not end its host read closing the selector
+(#109, INP-02), the fail-stop after an unconfirmed shutdown (#118), Escape closing the key introduction when Escape is not
 the prefix (#109, whose input router tells a bare Escape from an escape
 sequence), and the universal archive's runtime on both architectures, which
 only CI's `dist` and `archive` jobs build and execute.
