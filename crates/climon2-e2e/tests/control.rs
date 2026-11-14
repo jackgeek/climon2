@@ -593,3 +593,47 @@ fn installed_library_relays_the_command_final_before_the_release_and_session_end
     assert_eq!(session.terminal.wait_exit(TIMEOUT).unwrap(), 0);
     package.assert_clean();
 }
+
+/// CTL-04 and EXT-01 Library (Leave racing a promotion, against a real
+/// daemon; owner decision on #94): registration `p` shuts down after the
+/// controller `i` left, which promoted `p`, but before `p`'s caller drained
+/// anything of it, so `p`'s one Leave reaches the daemon as a controller's.
+/// The library delivers the `successor` grant and its canonical
+/// restoration at the session's effective geometry, then the release
+/// Display under that authority, and reports the Leave confirmed with the
+/// attachment detached; nobody is left to promote, so the session stays
+/// detached with no attachment.
+#[test]
+fn installed_library_leave_racing_a_promotion_leaves_as_the_attachment() {
+    let package = Package::new();
+    let root = root(&package);
+    let session = Session::detached(&package, &root);
+    let mut steps = register("p", &session, &package, 1);
+    steps.extend(attach("i", &session, &package, 2));
+    steps.extend([
+        on("i", json!({ "do": "shutdown" })),
+        json!({ "do": "finish", "instance": "i", "as": "departed" }),
+        on("p", json!({ "do": "shutdown" })),
+        json!({ "do": "finish", "instance": "p", "as": "left" }),
+        json!({ "do": "probe", "socket": session.socket(), "as": "after" }),
+    ]);
+    let report = script(&package, &root, json!(steps));
+    let held = assert_attached(&drained(&report, &steps, "attached-i"), 1, 2, [100, 30]);
+    let (rest, terminal) = finished(labelled(&report, &steps, "departed"));
+    assert_released(&rest, 2, held);
+    assert_detached(terminal, 2);
+    let (records, terminal) = finished(labelled(&report, &steps, "left"));
+    let promoted = assert_restored(&records, 1, SUCCESSOR, [100, 30]);
+    assert!(promoted[0] > held[0], "a new period");
+    let complete = records
+        .iter()
+        .position(|record| record["tag"] == RESTORATION_COMPLETE)
+        .unwrap();
+    assert_released(&records[complete + 1..], 1, promoted);
+    assert_detached(terminal, 1);
+    let detached = json!({ "lifecycle": "detached", "attachments": 0, "controlled": false });
+    assert_eq!(labelled(&report, &steps, "after")["state"], detached);
+    assert_all_released(&report["ledger"]);
+    session.end();
+    package.assert_clean();
+}
