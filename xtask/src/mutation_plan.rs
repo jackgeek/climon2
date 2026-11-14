@@ -6,10 +6,13 @@
 //! It is changed when no base item with the same path has the same tokens.
 //! Tokens ignore whitespace, ordinary comments and doc comments, so a moved
 //! but unchanged function, or a doc-comment-only edit, is not changed. A
-//! function's tokens exclude its nested items, which are compared on their
-//! own; its lines exclude theirs. An item's tokens include each enclosing impl
-//! header (generics, bounds, where clause, self type, trait path; body
-//! excluded), so a header edit changes every item in that impl. Test-only code (`mod tests`, `#[test]` and
+//! function's tokens exclude its nested items (including those in const and
+//! static initializers), which are compared on their own. An item's lines are
+//! the lines its own tokens are on, so a line it shares with a nested item stays
+//! and the list is never empty. An item's tokens include each enclosing
+//! module's attributes and impl or trait header (generics, bounds, where
+//! clause, self type, trait path, attributes; body excluded), so a header edit
+//! changes every item inside. Test-only code (`mod tests`, `#[test]` and
 //! `#[cfg(test)]` items) is skipped, as the mutator skips it.
 
 use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
@@ -46,18 +49,18 @@ pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Vec<ChangedItem
             Some(count) if *count > 0 => *count -= 1,
             _ => changed.push(ChangedItem {
                 name: record.name.clone(),
-                lines: own_lines(record, &new),
+                lines: record.lines.clone(),
             }),
         }
     }
     Ok(changed)
 }
 
-/// A function, `const` or `static` in source order, with its own tokens and whole span.
+/// A function, `const` or `static` in source order, with its own tokens and the lines they are on.
 struct Record {
     name: String,
     tokens: String,
-    lines: RangeInclusive<usize>,
+    lines: Vec<RangeInclusive<usize>>,
 }
 
 fn records(source: &str) -> syn::Result<Vec<Record>> {
@@ -67,19 +70,17 @@ fn records(source: &str) -> syn::Result<Vec<Record>> {
     Ok(collector.records)
 }
 
-/// The record's lines, less those of every item nested inside it.
-fn own_lines(record: &Record, all: &[Record]) -> Vec<RangeInclusive<usize>> {
-    let mut lines: BTreeSet<usize> = record.lines.clone().collect();
-    for nested in all.iter().filter(|other| {
-        other.lines != record.lines
-            && record.lines.contains(other.lines.start())
-            && record.lines.contains(other.lines.end())
-    }) {
-        for line in nested.lines.clone() {
-            lines.remove(&line);
+/// Every line a token of `stream` is on: a group's delimiters and each other token's span.
+fn token_lines(stream: TokenStream, lines: &mut BTreeSet<usize>) {
+    for token in stream {
+        if let TokenTree::Group(group) = &token {
+            lines.insert(group.span_open().start().line);
+            lines.insert(group.span_close().end().line);
+            token_lines(group.stream(), lines);
+        } else {
+            lines.extend(token.span().start().line..=token.span().end().line);
         }
     }
-    ranges(lines)
 }
 
 fn ranges(lines: BTreeSet<usize>) -> Vec<RangeInclusive<usize>> {
@@ -96,7 +97,8 @@ fn ranges(lines: BTreeSet<usize>) -> Vec<RangeInclusive<usize>> {
 #[derive(Default)]
 struct Collector {
     scope: Vec<String>,
-    /// Tokens of each enclosing impl header, body excluded, which belong to every method's tokens.
+    /// Tokens of each enclosing module's attributes and impl or trait header, body
+    /// excluded, which belong to every item's tokens.
     headers: Vec<String>,
     records: Vec<Record>,
 }
@@ -110,20 +112,19 @@ impl Collector {
     ) {
         let mut own = item.clone();
         strip(&mut StripNested, &mut own);
-        let whole = strip_docs(item.to_token_stream());
-        let mut tokens = whole.clone().into_iter();
-        let start = tokens.next().map_or(1, |first| first.span().start().line);
-        let end = tokens.last().map_or(start, |last| last.span().end().line);
+        let own = strip_docs(own.to_token_stream());
+        let mut lines = BTreeSet::new();
+        token_lines(own.clone(), &mut lines);
         self.records.push(Record {
             name: self.path(&name.to_string()),
             tokens: self
                 .headers
                 .iter()
                 .cloned()
-                .chain([strip_docs(own.to_token_stream()).to_string()])
+                .chain([own.to_string()])
                 .collect::<Vec<_>>()
                 .join("\n"),
-            lines: start..=end,
+            lines: ranges(lines),
         });
     }
 
@@ -141,12 +142,22 @@ impl Collector {
         visit(self);
         self.scope.pop();
     }
+
+    /// Visits a module, impl or trait whose `header` belongs to every item inside it.
+    fn enclosed(&mut self, name: String, header: TokenStream, visit: impl FnOnce(&mut Self)) {
+        self.headers.push(strip_docs(header).to_string());
+        self.within(name, visit);
+        self.headers.pop();
+    }
 }
 
 impl<'ast> Visit<'ast> for Collector {
     fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
         if !test_only(&item.attrs) && item.ident != "tests" {
-            self.within(item.ident.to_string(), |c| visit::visit_item_mod(c, item));
+            let attributes = item.attrs.iter().map(ToTokens::to_token_stream).collect();
+            self.enclosed(item.ident.to_string(), attributes, |c| {
+                visit::visit_item_mod(c, item)
+            });
         }
     }
 
@@ -161,15 +172,18 @@ impl<'ast> Visit<'ast> for Collector {
         };
         let mut header = item.clone();
         header.items.clear();
-        self.headers
-            .push(strip_docs(header.to_token_stream()).to_string());
-        self.within(name, |c| visit::visit_item_impl(c, item));
-        self.headers.pop();
+        self.enclosed(name, header.to_token_stream(), |c| {
+            visit::visit_item_impl(c, item)
+        });
     }
 
     fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
         if !test_only(&item.attrs) {
-            self.within(item.ident.to_string(), |c| visit::visit_item_trait(c, item));
+            let mut header = item.clone();
+            header.items.clear();
+            self.enclosed(item.ident.to_string(), header.to_token_stream(), |c| {
+                visit::visit_item_trait(c, item)
+            });
         }
     }
 
@@ -203,24 +217,34 @@ impl<'ast> Visit<'ast> for Collector {
     fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
         if !test_only(&item.attrs) {
             self.record(&item.ident, item, StripNested::visit_item_const_mut);
+            self.within(item.ident.to_string(), |c| visit::visit_item_const(c, item));
         }
     }
 
     fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
         if !test_only(&item.attrs) {
             self.record(&item.ident, item, StripNested::visit_item_static_mut);
+            self.within(item.ident.to_string(), |c| {
+                visit::visit_item_static(c, item)
+            });
         }
     }
 
     fn visit_impl_item_const(&mut self, item: &'ast syn::ImplItemConst) {
         if !test_only(&item.attrs) {
             self.record(&item.ident, item, StripNested::visit_impl_item_const_mut);
+            self.within(item.ident.to_string(), |c| {
+                visit::visit_impl_item_const(c, item)
+            });
         }
     }
 
     fn visit_trait_item_const(&mut self, item: &'ast syn::TraitItemConst) {
         if item.default.is_some() && !test_only(&item.attrs) {
             self.record(&item.ident, item, StripNested::visit_trait_item_const_mut);
+            self.within(item.ident.to_string(), |c| {
+                visit::visit_trait_item_const(c, item)
+            });
         }
     }
 }
@@ -485,6 +509,83 @@ fn outer() -> u8 {
             changed_items(old, &outer_only).unwrap(),
             vec![item("outer", &[1..=1, 5..=6])]
         );
+    }
+
+    /// Review 1: a function in a const or static initializer is an item too.
+    #[test]
+    fn a_function_inside_a_const_or_static_initializer_is_compared() {
+        let old = "\
+static H: fn() -> u8 = {
+    fn h() -> u8 { 1 }
+    h
+};
+";
+        let new = old.replace("{ 1 }", "{ 2 }");
+        assert_eq!(
+            changed_items(old, &new).unwrap(),
+            vec![item("H::h", &[2..=2])]
+        );
+    }
+
+    /// Review 2 and 3: a parent keeps every line its own tokens are on, even lines
+    /// shared with nested items, so its list is never empty.
+    #[test]
+    fn a_parent_keeps_lines_it_shares_with_nested_items() {
+        let old = "\
+fn outer() -> usize {
+    let v = { const N: usize = 4; [0u8; N].len() + 1 };
+    v
+}
+";
+        let new = old.replace("+ 1", "+ 2");
+        assert_eq!(
+            changed_items(old, &new).unwrap(),
+            vec![item("outer", &[1..=4])]
+        );
+        let old = "\
+fn outer() -> u8 { fn a() -> u8 { 1 }
+    fn b() -> u8 { 2 }
+    a() + b() + { fn c() -> u8 { 3 } c() } }
+";
+        let new = old.replace("a() + b()", "a() - b()");
+        assert_eq!(
+            changed_items(old, &new).unwrap(),
+            vec![item("outer", &[1..=1, 3..=3])]
+        );
+    }
+
+    /// Review 4: a trait header edit changes every default method, as an impl header does.
+    #[test]
+    fn an_edited_trait_header_changes_its_default_methods() {
+        let old = "\
+trait T: Clone {
+    fn d(&self) -> u8 { 1 }
+}
+";
+        let new = old.replace("Clone", "Copy");
+        assert_eq!(
+            changed_items(old, &new).unwrap(),
+            vec![item("T::d", &[2..=2])]
+        );
+    }
+
+    /// Review 5: an enclosing module's or impl's attributes belong to its items; doc comments do not.
+    #[test]
+    fn enclosing_attributes_but_not_doc_comments_belong_to_items() {
+        let old = "\
+/// Unix only.
+#[cfg(unix)]
+mod m {
+    pub fn g() -> u8 { 1 }
+}
+";
+        let platform = old.replace("cfg(unix)", "cfg(windows)");
+        assert_eq!(
+            changed_items(old, &platform).unwrap(),
+            vec![item("m::g", &[4..=4])]
+        );
+        let docs = old.replace("Unix only.", "Only on Unix.");
+        assert_eq!(changed_items(old, &docs).unwrap(), vec![]);
     }
 
     #[test]
