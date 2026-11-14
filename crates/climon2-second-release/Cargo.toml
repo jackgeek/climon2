@@ -1,0 +1,32 @@
+# Test-only fixture, never shipped (#97): a second release's client library,
+# built from climon2-client's library source as a package of its own version,
+# so that it carries a release identity of its own. Its version is that
+# release's identity; `climon2-e2e` installs it in a sibling version folder.
+[package]
+name = "climon2-second-release"
+version = "0.0.97"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The cdylib is the second release's client library. `lib` exists only so
+# that a dependent package makes Cargo build the cdylib; nothing links it.
+[lib]
+crate-type = ["lib", "cdylib"]
+test = false
+doctest = false
+
+# The library source's fault hooks: declared so that the source compiles,
+# and never enabled, so this release's private behaviour differs from the
+# hooked release under test.
+[features]
+test-hooks = []
+
+[dependencies]
+climon2-core = { path = "../climon2-core" }
+climon2-platform = { path = "../climon2-platform" }
+libc = "0.2.191"
+tracing = "0.1.44"
+
+[lints]
+workspace = true

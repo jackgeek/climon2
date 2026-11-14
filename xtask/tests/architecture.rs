@@ -15,8 +15,12 @@ const PACKAGES: &[&str] = &[
     "climon2-test-term",
     "climon2-fixtures",
     "climon2-e2e",
+    "climon2-second-release",
     "xtask",
 ];
+/// The test-only second release (#97) is built as its own version, the
+/// release identity it describes.
+const SECOND_RELEASE: (&str, &str) = ("climon2-second-release", "0.0.97");
 
 #[derive(Clone, Deserialize)]
 struct Metadata {
@@ -69,7 +73,11 @@ fn metadata() -> Metadata {
 fn is_test_only(name: &str) -> bool {
     matches!(
         name,
-        "climon2-test-term" | "climon2-fixtures" | "climon2-e2e" | "xtask"
+        "climon2-test-term"
+            | "climon2-fixtures"
+            | "climon2-e2e"
+            | "climon2-second-release"
+            | "xtask"
     )
 }
 
@@ -146,16 +154,17 @@ fn every_binary_package_has_an_integration_test() {
     }
 }
 
-/// #23/#24: one workspace version; none of these packages is published to crates.io.
+/// #23/#24: one workspace version, but for the second release's own (#97);
+/// none of these packages is published to crates.io.
 #[test]
 fn packages_share_one_version_and_are_not_publishable() {
     for package in metadata().packages {
-        assert_eq!(
-            package.version,
-            env!("CARGO_PKG_VERSION"),
-            "{}",
-            package.name
-        );
+        let version = if package.name == SECOND_RELEASE.0 {
+            SECOND_RELEASE.1
+        } else {
+            env!("CARGO_PKG_VERSION")
+        };
+        assert_eq!(package.version, version, "{}", package.name);
         assert_eq!(package.publish, Some(vec![]), "{}", package.name);
     }
 }

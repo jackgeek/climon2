@@ -346,6 +346,10 @@ _Avoid_: Fake app, mock TUI
 A clearly labelled, test-only client library that is exact or carries one deliberate defect, and is never shipped; carrying a defect, it is a faulty library.
 _Avoid_: Mock library, fake library
 
+**Second-release fixture**:
+A clearly labelled, test-only second release, installed beside the release under test in a sibling version folder: the same client library source built with its own release identity and without test hooks, so that a call crossing releases shows. It is never shipped.
+_Avoid_: Fake release, old version
+
 **Terminal oracle**:
 The test harness's emulated host, whose visible cells, cursor, modes, bells and status reports stand for what a user observes in their terminal.
 

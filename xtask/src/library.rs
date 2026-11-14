@@ -211,6 +211,37 @@ mod tests {
         verify(&home, &version()).unwrap();
     }
 
+    /// #97 (the second-version fixture is an honest release): the test-only
+    /// `climon2-second-release` library, which Cargo leaves beside this test
+    /// executable, passes as release 0.0.97's library every release check
+    /// that applies to one architecture: it exports only the bootstrap, on
+    /// Linux needs nothing beyond glibc and has no soname, RPATH or RUNPATH,
+    /// carries no test-hook marker, and the shared loader accepts it as
+    /// exactly 0.0.97's library; as this version's library it describes the
+    /// wrong release.
+    #[test]
+    fn release_checks_accept_the_second_release_fixture_as_its_own_release() {
+        let name = format!(
+            "{}climon2_second_release{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        );
+        let built = std::env::current_exe().unwrap().with_file_name(name);
+        let scratch = scratch();
+        let home = home(scratch.path(), "second");
+        let second: VersionName = "0.0.97".parse().unwrap();
+        for version in [&second, &version()] {
+            let library = home.client_library(version);
+            fs::create_dir_all(library.parent().unwrap()).unwrap();
+            fs::copy(&built, &library).unwrap();
+        }
+        let library = home.client_library(&second);
+        crate::dist::unhooked(&library).unwrap();
+        verify(&home, &second).unwrap();
+        let error = verify(&home, &version()).unwrap_err();
+        assert!(error.to_string().contains("0.0.97"), "{error}");
+    }
+
     /// #75 (evidence policy: test hooks never ship): release checks reject a
     /// library carrying the test-hook marker.
     #[test]
