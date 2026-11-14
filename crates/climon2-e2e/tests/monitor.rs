@@ -783,7 +783,9 @@ fn assert_diagnosed_after_release(terminal: &mut Terminal, diagnostic: &str) {
     let written = written(terminal);
     let entered = written.find("\x1b[?1049h").unwrap();
     let left = written.rfind("\x1b[?1049l").unwrap();
-    let reported = written.find(diagnostic).unwrap();
+    let reported = written
+        .find(diagnostic)
+        .unwrap_or_else(|| panic!("{diagnostic:?} missing from {written:?}"));
     assert!(entered < left && left < reported, "{written:?}");
     assert!(written.ends_with(")\r\n"), "{written:?}");
     assert_eq!(written.matches("climon2: error:").count(), 1, "{written:?}");
@@ -809,11 +811,26 @@ fn debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic() {
     package.assert_clean();
 }
 
+/// The monitor released the host before its one closed-terminal diagnostic,
+/// logged it and exited 125, leaving nothing behind.
+fn assert_closed_host_terminal(package: &Package, terminal: &mut Terminal) {
+    assert_diagnosed_after_release(terminal, "climon2: error: the host terminal closed (logs: ");
+    assert_released(package, terminal, 125);
+    let log = monitor_log(package);
+    assert!(
+        log.contains("monitor failed error=the host terminal closed"),
+        "{log}"
+    );
+    package.assert_clean();
+}
+
 /// EXT-03 (Monitor layer, empty monitor): when its host input hangs up, the
 /// monitor ends at once instead of spinning: it releases the host it still
 /// writes to, then reports the closed terminal, also in its general log, with
-/// the climon2 error code. Linux wakes readers before it finishes hanging a
-/// terminal up, so the monitor is stopped until the hang-up is complete.
+/// the climon2 error code. The terminal hangs up while the monitor waits for
+/// input, so the monitor may read either the end of input or, while Linux is
+/// still hanging the terminal up, EIO: the last close of its master can come
+/// later than this test's, from a child that another test is spawning.
 #[test]
 fn a_hung_up_host_input_releases_the_host_before_its_diagnostic() {
     let package = Package::new();
@@ -824,21 +841,33 @@ fn a_hung_up_host_input_releases_the_host_before_its_diagnostic() {
         &format!("climon2 monitor < {}", quote(input.path())),
     );
     terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
-    let monitor = monitor_process(&package).0;
-    stop(monitor);
     input.hang_up();
-    kill(Pid::from_raw(monitor), Signal::SIGCONT).unwrap();
-    assert_diagnosed_after_release(
-        &mut terminal,
-        "climon2: error: the host terminal closed (logs: ",
+    assert_closed_host_terminal(&package, &mut terminal);
+}
+
+/// EXT-03 (Monitor layer, empty monitor): host input that fails with EIO is
+/// the closed host terminal too, as Linux fails reads while it is still
+/// hanging a terminal up: the monitor releases the host before the same one
+/// diagnostic, also in its general log, with the climon2 error code. Here the
+/// monitor is a background job of the outer shell with SIGTTIN ignored, so
+/// its read of the typed newline fails with EIO; the shell then reads that
+/// newline once the monitor has restored termios. Only the monitor writes
+/// errors to the host: older bash (macOS `/bin/bash` 3.2, Ubuntu 24.04's
+/// 5.2) reports the finished job (`[1]+  Exit 125 ...`) on its own stderr,
+/// which goes nowhere.
+#[test]
+fn host_input_failing_with_eio_releases_the_host_before_its_diagnostic() {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(
+        &package,
+        "trap '' TTIN TTOU; set -m; exec 3>&2 2>/dev/null; \
+         climon2 monitor 2>&3 3>&- & wait $!; s=$?; set +m; exec 3>&-; \
+         IFS= read -r _; (exit $s)",
     );
-    assert_released(&package, &mut terminal, 125);
-    let log = monitor_log(&package);
-    assert!(
-        log.contains("monitor failed error=the host terminal closed"),
-        "{log}"
-    );
-    package.assert_clean();
+    terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
+    terminal.send(b"\n").unwrap();
+    assert_closed_host_terminal(&package, &mut terminal);
 }
 
 /// Spec #73 Exit (diagnostics): the monitor writes content-free records to its
