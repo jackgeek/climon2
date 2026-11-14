@@ -66,6 +66,7 @@ flowchart TB
         tests -->|"uses directly or as a session command"| tui_fixture
         tests -->|"runs as the Library-layer host"| library_host
         library_host -->|"loads through the C ABI"| library
+        library -->|"allocates through its exported glibc malloc family; Linux tests only"| library_host
         tests -->|"loads in release-check tests"| library_stand_in
         tests -->|"execs registered terminal roots through; Linux only"| owned_exec
         owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
@@ -106,7 +107,10 @@ description and local instance lifecycle of
 unsupported operation until Open (#93), so no instance connects to a session
 daemon yet. The library host fixture drives those instances through the
 function table, with the test-hooks library's fault injection, as the Library
-layer's instrumented host. The Linux library links the GCC
+layer's instrumented host. On Linux the host exports glibc's allocation entry
+points, which the loaded library binds to, so it can count the library's heap
+independently of the library's own allocation accounting (#180). The Linux
+library links the GCC
 unwinder statically, because no unwinding leaves it, so it needs only glibc's
 libraries and has no soname, RPATH or RUNPATH, as the
 [Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for

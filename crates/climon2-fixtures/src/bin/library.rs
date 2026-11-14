@@ -1,4 +1,4 @@
-//! Library-layer test host (#75, #85): loads one client library by absolute
+//! Library-layer test host (#75, #85, #180): loads one client library by absolute
 //! path through the frozen C ABI and prints what it observed as one JSON
 //! object.
 //!
@@ -10,15 +10,23 @@
 //! `climon2-library-host <library>` describes the library.
 //! `climon2-library-host <library> <scenario> <json>` drives instances through
 //! one scenario (`lifecycle`, `create`, `fault`, `workers`, `independence`,
-//! `ambient` or `race`) with the instrumentation every Library-layer test
-//! shares: caller startup memory the library can neither keep nor free
+//! `ambient`, `race` or, on Linux, `allocation`) with the instrumentation
+//! every Library-layer test shares: caller startup memory the library can
+//! neither keep nor free
 //! (`startup`), an ownership ledger and a timeline of every call and its
-//! thread (`abi`), and descriptor and process-state probes (`probe`).
+//! thread (`abi`), descriptor and process-state probes (`probe`) and, on
+//! Linux, the host's own count of the heap library calls hold (`heap`).
 
 #[path = "library/abi.rs"]
 mod abi;
+#[cfg(target_os = "linux")]
+#[path = "library/accounting.rs"]
+mod accounting;
 #[path = "library/faults.rs"]
 mod faults;
+#[cfg(target_os = "linux")]
+#[path = "library/heap.rs"]
+mod heap;
 #[path = "library/isolation.rs"]
 mod isolation;
 #[path = "library/probe.rs"]
@@ -93,6 +101,8 @@ fn drive(library: &Library, name: &str, input: Value) -> Value {
         "independence" => isolation::independence(&setup),
         "ambient" => isolation::ambient(&setup),
         "race" => isolation::race(&setup),
+        #[cfg(target_os = "linux")]
+        "allocation" => accounting::allocation(&setup),
         _ => panic!("unknown scenario {name}"),
     };
     if let Some(object) = report.as_object_mut() {
