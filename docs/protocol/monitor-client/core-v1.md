@@ -529,8 +529,9 @@ this section.
   nothing, so no answer behind it can arrive, and `operation_ms` and
   `leave_ms` do not expire. Instead `delivery_stall_ms` bounds the wait,
   restarting each time a waiting record is queued; on expiry the connection
-  fails with library `delivery_stalled`, and the requests it held back stay
-  unanswered. Once nothing waits, request deadlines apply again.
+  fails with library `delivery_stalled`, retry passive
+  ([owner decision on #94](https://github.com/jackgeek/climon2/issues/94)),
+  and the requests it held back stay unanswered. Once nothing waits, request deadlines apply again.
 - **Open.** The session metadata, read up to `client_bytes`, must name the
   startup's session (`invalid_configuration`) and release
   (`release_mismatch`); an unreadable file is library `io_error`. Hello, within
@@ -573,8 +574,14 @@ this section.
   delivered as `CM1_FINAL` with its exit code or signal (and signal name, if
   sent) and status unavailable. It calls for no retry, and the connection
   reads on: the last output, the release Display, Control revoked
-  `session_ending` and the close follow, and the close then fails the stream
-  with transport `io_error`, Leave not required. A second Command final, one
+  `session_ending` and the close follow. The daemon closing the connection
+  between frames then stops the stream cleanly: client outcome stopped, no
+  error, retry none, Leave not required
+  ([owner decision on #94](https://github.com/jackgeek/climon2/issues/94)).
+  A close inside a frame is still `truncated_frame`, and a close that meets
+  an unanswered Leave still leaves that Leave indeterminate; a close after
+  only an Initial metadata that knew the result fails with `io_error`, retry
+  none. A second Command final, one
   after an Initial metadata that knew the result, one before the Initial
   metadata and one with a status are `invalid_record`. A finished
   session's view freezes at the Command final: later Displays are only its
