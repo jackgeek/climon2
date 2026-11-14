@@ -2432,13 +2432,9 @@ fn a_host_too_small_for_a_session_says_so_sends_no_resize_and_recovers() {
                 .chars()
                 .take(usize::from(cols))
                 .collect();
-            top_row_is(
-                &mut terminal,
-                &format!("{shown:<width$}", width = usize::from(cols)),
-            );
-            for row in 1..usize::from(rows) {
-                assert_eq!(terminal.row(row).trim_end(), "", "{rows}x{cols}");
-            }
+            let width = usize::from(cols);
+            let blank = format!("\n{:width$}", "").repeat(usize::from(rows) - 1);
+            shows(&mut terminal, &format!("{shown:<width$}{blank}"));
             assert!(!terminal.cursor().visible);
         } else {
             expected.push(size);
@@ -2519,10 +2515,12 @@ fn a_revoked_session_shows_no_cached_output_until_enter_takes_control_again() {
     let mut attach = Terminal::spawn(attach, ROWS, COLS).unwrap();
     attach.wait_for_text("VISIBLE", TIMEOUT).unwrap();
     let revoked = session_top_row(usize::from(COLS), "Taken", &fields("Not controlling"));
-    top_row_is(&mut terminal, &revoked);
-    for row in 1..usize::from(ROWS) {
-        assert_eq!(terminal.row(row).trim_end(), "", "row {row}");
-    }
+    // The whole frame, since a host read can split it after its top row.
+    let blank = format!(
+        "{revoked}{}",
+        format!("\n{:width$}", "", width = usize::from(COLS)).repeat(usize::from(ROWS) - 1)
+    );
+    shows(&mut terminal, &blank);
     assert!(!terminal.cursor().visible);
 
     select(&mut terminal, "Taken", 0);
