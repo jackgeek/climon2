@@ -194,10 +194,11 @@ No new artifact or consumption arrow is added. Monitor-client communication is
 an agreed specification, not implemented.
 [Daemon wire revision 1](protocol/daemon-client/core-v1.md) is agreed and
 partly implemented: session daemons serve
-[passive monitor connections](../GLOSSARY.md#attachment-and-control) and
-interactive [attachments](../GLOSSARY.md#attachment-and-control) over it,
-beside the private protocol, but no climon2 executable or library consumes it
-yet, so no arrow changes.
+[passive monitor connections](../GLOSSARY.md#attachment-and-control),
+interactive [attachments](../GLOSSARY.md#attachment-and-control) and
+standalone [Kill](../GLOSSARY.md#attachment-and-control) over it, with the
+command's final result, beside the private protocol, but no climon2
+executable or library consumes it yet, so no arrow changes.
 
 The planned wire core is independent of the current private Unix socket carrier.
 The main/downstream monitor consumes source-monitor sessions over

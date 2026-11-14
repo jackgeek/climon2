@@ -11,18 +11,20 @@ mod writes;
 use crate::{
     args::Options,
     connection::{Connection, Failure, Received},
-    control::{Authority, ConnectionId, Control, Effect, Lifecycle, Restoration},
+    control::{
+        Authority, CommandEnd, ConnectionId, Control, Effect, Lifecycle, PrivateResult,
+        Restoration, SessionEnd,
+    },
     pty::Pty,
 };
 use climon2_core::{
-    exit::CLIMON2_ERROR,
     hello::{SessionState, advertise_revision1},
     protocol::{
         ClientMessage, Frame, HANGUP_GRACE, HelloReply, MAX_DATA_FRAME_LENGTH, PROTOCOL_VERSION,
         PTY_DRAIN_CAP, ServerMessage, TerminalSize,
     },
     title::default_title,
-    wire::{GrantReason, RevocationReason},
+    wire::{CommandResult, Counter, GrantReason, RevocationReason},
 };
 use climon2_platform::{
     peer,
@@ -30,7 +32,7 @@ use climon2_platform::{
     terminal::Signals,
 };
 use climon2_vt::{Geometry, Vt, VtConfig};
-use command::{Command, Drain, Read, classify};
+use command::{Command, Read, classify};
 use delivery::{Delivery, Out};
 use paste::PasteTracker;
 use std::{
@@ -62,6 +64,11 @@ struct Session<'a, C> {
     /// Revision-1 connections after their Open: passive monitor connections
     /// and interactive attachments.
     opened: BTreeMap<u64, wire::Opened>,
+    /// Revision-1 connections whose standalone Kill awaits its answer: the
+    /// Kill's request ID.
+    kills: BTreeMap<u64, Counter>,
+    /// The command's result, once published as final.
+    command_result: Option<CommandResult>,
     control: Control,
     vt: Vt,
     next_id: u64,
@@ -94,6 +101,8 @@ pub(crate) fn serve(
         connections: BTreeMap::new(),
         deliveries: BTreeMap::new(),
         opened: BTreeMap::new(),
+        kills: BTreeMap::new(),
+        command_result: None,
         control: Control::new(options.size, options.lifetime),
         vt,
         next_id: Default::default(),
@@ -300,17 +309,31 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.initial_deadline(now)
     }
 
+    /// A hang-up the daemon cannot confirm keeps only what it already knew.
     fn end_hangup(&mut self, now: Instant) -> io::Result<()> {
         if !self.command.hung_up(now) {
             return Ok(());
         }
-        let code = self.pty.end_hangup().unwrap_or(CLIMON2_ERROR);
-        self.end_command(code)
+        let end = match self.pty.end_hangup() {
+            Ok(result) => CommandEnd::Confirmed(result),
+            Err(_) => self.unconfirmed(),
+        };
+        self.end_command(end)
     }
 
-    fn end_command(&mut self, code: u32) -> io::Result<()> {
+    /// The command's end, unconfirmed, with any result already reaped.
+    fn unconfirmed(&self) -> CommandEnd {
+        CommandEnd::Unconfirmed(self.pty.result())
+    }
+
+    /// Nothing more of the command's output is read once it ended, so a
+    /// known result is final.
+    fn end_command(&mut self, command: CommandEnd) -> io::Result<()> {
+        if let Some(result) = command.known() {
+            self.publish(result);
+        }
         self.command = Command::Ended;
-        self.react(|control| control.command_exited(code))
+        self.react(|control| control.command_exited(command))
     }
 
     fn terminate_on_signal(&mut self) -> io::Result<()> {
@@ -332,11 +355,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let Ok(status) = observed else {
             return self.fail("cannot observe the command");
         };
-        if let Some(code) = status {
-            self.command = Command::Draining {
-                code,
-                drain: Drain::new(now),
-            };
+        if let Some(result) = status {
+            self.command = Command::draining(result, now);
         }
         Ok(())
     }
@@ -585,16 +605,22 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
-    /// The exit is reported once output drained, the initial attachment had
-    /// its chance and no grant awaits `Ready`.
+    /// The result is final once the command's output drained to the
+    /// connections. A termination that waited for the drain then hangs up;
+    /// otherwise the exit is reported once, in addition, the initial
+    /// attachment had its chance and no grant awaits `Ready`.
     fn report_exit(&mut self, now: Instant) -> io::Result<()> {
-        let Some(code) = self.command.drained(now) else {
+        let Some(result) = self.command.drained(now) else {
             return Ok(());
         };
+        self.publish(&result);
+        if self.command.hangs_up_when_drained() {
+            return self.hang_up(now);
+        }
         if self.awaiting(now) {
             return Ok(());
         }
-        self.end_command(code)
+        self.end_command(CommandEnd::Confirmed(result))
     }
 
     fn awaiting(&self, now: Instant) -> bool {
@@ -704,9 +730,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn final_effect(&mut self, effect: Effect) {
         match effect {
-            Effect::ConfirmKill { conn, code } => {
-                self.terminal(conn.0, ServerMessage::Terminated { code });
-            }
+            Effect::ConfirmKill { conn, end } => self.confirm_kill(conn.0, &end),
             Effect::Finish => self.finish(),
             other => self.grant_effect(other),
         }
@@ -756,24 +780,45 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
-    /// The grace is a loop deadline, so probes, refusals and joining kills
-    /// are served while the command session hangs up.
+    /// A command that already exited drains its output first, so a
+    /// termination never cuts that output short.
     fn begin_shutdown(&mut self) -> io::Result<()> {
+        let now = Instant::now();
+        self.observe_command(now)?;
+        if self.command.hang_up_when_drained() {
+            return Ok(());
+        }
+        self.hang_up(now)
+    }
+
+    /// The grace is a loop deadline, so probes, refusals and joining kills
+    /// are served while the command session hangs up. A failed hang-up
+    /// confirms nothing.
+    fn hang_up(&mut self, now: Instant) -> io::Result<()> {
         if self.pty.hang_up().is_err() {
-            return self.end_command(CLIMON2_ERROR);
+            return self.end_command(self.unconfirmed());
         }
         self.command = Command::HangingUp {
-            until: Instant::now() + HANGUP_GRACE,
+            until: now + HANGUP_GRACE,
         };
         Ok(())
     }
 
     fn run_cleanup(&mut self) -> io::Result<()> {
-        let effects = match (self.cleanup)() {
+        let effects = match self.clean_up() {
             Ok(()) => self.control.cleanup_finished(),
             Err(_) => self.control.authoritative_failure(),
         };
         self.effects(effects)
+    }
+
+    /// Removes the session metadata and socket.
+    fn clean_up(&mut self) -> io::Result<()> {
+        #[cfg(feature = "test-hooks")]
+        if crate::startup::selected_fault("cleanup") {
+            return Err(super::io_error("controlled cleanup fault"));
+        }
+        (self.cleanup)()
     }
 
     fn finish(&mut self) {
@@ -844,6 +889,15 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.report_revocation(id, RevocationReason::Takeover);
     }
 
+    /// A kill requester's answer: a standalone Kill's Response, or the
+    /// private protocol's confirmation.
+    fn confirm_kill(&mut self, id: u64, end: &SessionEnd) {
+        match self.kill_request(id) {
+            Some(request_id) => self.answer_kill(id, request_id, end),
+            None => self.terminal(id, private_confirmation(end)),
+        }
+    }
+
     /// An attachment's result: control it still holds ends as the session
     /// ends, then the connection's last message.
     fn ending(&mut self, id: u64, message: ServerMessage) {
@@ -876,7 +930,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// A private message; a revision-1 connection never receives one.
     fn reply(&mut self, id: u64, message: ServerMessage) {
-        if self.opened.contains_key(&id) {
+        if self.holds_role(id) {
             return;
         }
         let Some(connection) = self.connections.get_mut(&id) else {
@@ -924,6 +978,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn remove_delivery(&mut self, id: u64) {
         self.deliveries.remove(&id);
         self.opened.remove(&id);
+        self.kills.remove(&id);
         self.pty_writes.discard(id);
         self.pending_restorations.remove(&id);
         self.forget_controller(id);
@@ -984,6 +1039,14 @@ fn ending_effects(
         return control.kill(conn);
     }
     control.lost(conn)
+}
+
+/// `Terminated` with the private protocol's status, or `Error`.
+fn private_confirmation(end: &SessionEnd) -> ServerMessage {
+    match end.private_result() {
+        PrivateResult::Status(code) => ServerMessage::Terminated { code },
+        PrivateResult::Error => failure_message(),
+    }
 }
 
 fn failure_message() -> ServerMessage {

@@ -1,18 +1,23 @@
 //! Daemon wire revision 1 on the session loop, beside the private protocol:
-//! passive monitor connections and ordinary interactive attachments, their
-//! requests, their control and terminal records and their core metadata.
+//! passive monitor connections, ordinary interactive attachments and
+//! standalone Kills, their requests, their control and terminal records and
+//! their core metadata.
 use super::Session;
 use crate::{
     connection::{Connection, frame_limit},
-    control::{self, Authority, Authorized, ConnectionId, Needs, Period, Restoration},
+    control::{
+        self, Authority, Authorized, CleanupResult, CommandEnd, ConnectionId, Needs, Period,
+        Restoration, SessionEnd,
+    },
 };
 use climon2_core::{
     protocol::TerminalSize,
     wire::{
-        ActualGeometry, Advertisement, AuthorityIds, AuthorityResult, Available, ControlGranted,
-        ControlRecord, ControlRevoked, Counter, Display, Error, Families, Family, Focus,
-        FocusBytes, Frame, FrameLimits, Geometry, GrantReason, Guid, InitialMetadata, Input, Kill,
-        Mode, Open, OperationalCode, Outcome, Ready, Rejection, Request, Resize, Response,
+        ActualGeometry, Advertisement, AuthorityIds, AuthorityResult, Available, Cleanup,
+        CommandFinal, CommandResult, ControlGranted, ControlRecord, ControlRevoked, Counter,
+        Display, Error, Failure, Families, Family, Focus, FocusBytes, Frame, FrameLimits, Geometry,
+        GrantReason, Guid, InitialMetadata, Input, Kill, KnownResult, Mode, Open, OperationalCode,
+        Outcome, PartialCleanup, PartialTermination, Ready, Rejection, Request, Resize, Response,
         RestorationBegin, RestorationComplete, RevocationReason, Success, TitleChanged,
     },
 };
@@ -20,14 +25,16 @@ use std::{collections::BTreeSet, io, num::NonZeroU32};
 
 const HAS_ROLE: &str = "this connection already has a role";
 const NO_ROLE: &str = "this connection has no role";
+const NOT_OPENED: &str = "this connection opened nothing";
 const UNSUPPORTED_REVISION: &str = "this daemon supports revision 1 only";
 const UNSUPPORTED_CAPABILITY: &str = "a required capability is not supported";
 const FOCUS_NOT_SELECTED: &str = "focus-v1 was not selected";
 const UNSUPPORTED_GEOMETRY: &str = "the geometry exceeds the supported terminal size";
 const EMPTY_INPUT: &str = "Input carries no bytes";
 const TERMINATING: &str = "the session is terminating";
-/// Standalone Kill (#88), Acquire by a passive monitor connection (#89),
-/// and Set viewing and Acknowledge (#91) are not served yet.
+const CLEANUP_INCOMPLETE: &str = "the session's termination or cleanup did not complete";
+/// Acquire by a passive monitor connection (#89), and Set viewing and
+/// Acknowledge (#91) are not served yet.
 const NOT_YET_SERVED: &str = "this daemon does not serve this request yet";
 
 /// What hello advertises: only the families this daemon implements.
@@ -43,7 +50,8 @@ pub(super) fn advertisement() -> Advertisement {
 }
 
 /// A revision-1 connection after its successful Open: the families it
-/// selected, which decide the core metadata it receives, and its role.
+/// selected, which decide the core metadata it receives, and its role. A
+/// standalone Kill's connection is not one: it opened nothing.
 pub(super) struct Opened {
     selected: BTreeSet<Family>,
     role: Role,
@@ -61,6 +69,29 @@ enum Role {
 enum Kind {
     Monitor,
     Attachment,
+}
+
+impl Role {
+    fn kind(&self) -> Kind {
+        match self {
+            Self::Monitor => Kind::Monitor,
+            Self::Attachment(_) => Kind::Attachment,
+        }
+    }
+
+    fn attachment(&self) -> Option<&Attachment> {
+        match self {
+            Self::Attachment(attachment) => Some(attachment),
+            Self::Monitor => None,
+        }
+    }
+
+    fn attachment_mut(&mut self) -> Option<&mut Attachment> {
+        match self {
+            Self::Attachment(attachment) => Some(attachment),
+            Self::Monitor => None,
+        }
+    }
 }
 
 struct Attachment {
@@ -100,10 +131,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn control_request(&mut self, id: u64, request: Request) -> io::Result<()> {
         match request {
             Request::Ready(ready) => self.ready(id, ready),
-            Request::Kill(kill) => {
-                self.wire_kill(id, kill);
-                Ok(())
-            }
+            Request::Kill(kill) => self.wire_kill(id, kill),
             other => {
                 self.attachment_request(id, other);
                 Ok(())
@@ -133,7 +161,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// A later Open never repurposes an existing role.
     fn open(&mut self, id: u64, open: Open) -> io::Result<()> {
-        if self.opened.contains_key(&id) {
+        if self.holds_role(id) {
             self.has_role(id, open.request_id);
             return Ok(());
         }
@@ -213,15 +241,18 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     pub(super) fn refused(&mut self, id: u64) {
         if let Some(request_id) = self.open_request(id) {
             let error = error(OperationalCode::SessionTerminating, TERMINATING);
-            self.reject_with(id, request_id, error);
+            self.reject_role(id, request_id, error);
         }
     }
 
     fn open_request(&self, id: u64) -> Option<Counter> {
-        match &self.opened.get(&id)?.role {
-            Role::Attachment(attachment) => Some(attachment.open),
-            Role::Monitor => None,
-        }
+        Some(self.opened.get(&id)?.role.attachment()?.open)
+    }
+
+    /// Whether the connection has a revision-1 role: an Open's or a
+    /// standalone Kill's.
+    pub(super) fn holds_role(&self, id: u64) -> bool {
+        self.opened.contains_key(&id) || self.kills.contains_key(&id)
     }
 
     /// Success, then the atomic Initial metadata: the connection captures
@@ -240,15 +271,17 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             selected_capabilities: tokens(&opened.selected),
         };
         self.respond(id, request_id, Outcome::Ok(success));
-        self.send_wire(id, &initial_metadata(title).to_frame());
+        let metadata = initial_metadata(title, self.command_result.clone());
+        self.send_wire(id, &metadata.to_frame());
     }
 
     /// Leave removes the role in one step and reports whether an attachment
-    /// was detached, then closes the stream.
+    /// was detached, then closes the stream. A connection that opened
+    /// nothing, a standalone Kill's included, has nothing to leave.
     fn leave(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
         match self.kind(id) {
             None => {
-                self.reject(id, request_id, OperationalCode::InvalidState, NO_ROLE);
+                self.reject(id, request_id, OperationalCode::InvalidState, NOT_OPENED);
                 Ok(())
             }
             Some(Kind::Monitor) => {
@@ -279,11 +312,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// Acquire takes control for a non-controlling attachment and is an
     /// explicit no-op for the controller. A passive monitor connection
-    /// cannot acquire until #89 serves it.
+    /// cannot acquire until #89 serves it, and a connection that opened
+    /// nothing, a standalone Kill's included, has nothing to convert.
     fn acquire(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
         match self.kind(id) {
             None => {
-                self.reject(id, request_id, OperationalCode::InvalidState, NO_ROLE);
+                self.reject(id, request_id, OperationalCode::InvalidState, NOT_OPENED);
                 Ok(())
             }
             Some(Kind::Monitor) => {
@@ -416,12 +450,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         request_id: Counter,
         (requested, needs): (AuthorityIds, Needs),
     ) -> Option<Authorized> {
-        let authorized = match self.kind(id) {
-            None => Err(error(OperationalCode::InvalidState, NO_ROLE)),
-            Some(_) => self
-                .control
+        let authorized = if self.holds_role(id) {
+            self.control
                 .authorize(ConnectionId(id), authority(requested), needs)
-                .map_err(refusal),
+                .map_err(refusal)
+        } else {
+            Err(error(OperationalCode::InvalidState, NO_ROLE))
         };
         authorized
             .inspect_err(|error| self.reject_with(id, request_id, error.clone()))
@@ -429,11 +463,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn kind(&self, id: u64) -> Option<Kind> {
-        let kind = match self.opened.get(&id)?.role {
-            Role::Monitor => Kind::Monitor,
-            Role::Attachment(_) => Kind::Attachment,
-        };
-        Some(kind)
+        Some(self.opened.get(&id)?.role.kind())
     }
 
     fn selects(&self, id: u64, family: Family) -> bool {
@@ -443,19 +473,14 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn attachment_mut(&mut self, id: u64) -> Option<&mut Attachment> {
-        match &mut self.opened.get_mut(&id)?.role {
-            Role::Attachment(attachment) => Some(attachment),
-            Role::Monitor => None,
-        }
+        self.opened.get_mut(&id)?.role.attachment_mut()
     }
 
     /// The authority under which an interactive attachment receives
     /// Display, or `None` for a private connection.
     pub(super) fn display_authority(&self, id: u64) -> Option<Authority> {
-        match &self.opened.get(&id)?.role {
-            Role::Attachment(attachment) => attachment.held.map(|held| held.authority),
-            Role::Monitor => None,
-        }
+        let attachment = self.opened.get(&id)?.role.attachment()?;
+        attachment.held.map(|held| held.authority)
     }
 
     /// A grant: Control granted, then its restoration's beginning, both
@@ -566,14 +591,51 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// Standalone Kill is validated like any first role; a later Kill never
-    /// repurposes an existing role.
-    fn wire_kill(&mut self, id: u64, kill: Kill) {
-        if self.opened.contains_key(&id) {
-            return self.has_role(id, kill.request_id);
+    /// repurposes an existing role. A valid one commits the session's
+    /// termination, or joins the one under way.
+    fn wire_kill(&mut self, id: u64, kill: Kill) -> io::Result<()> {
+        if self.holds_role(id) {
+            self.has_role(id, kill.request_id);
+            return Ok(());
         }
         let none = Families::default();
-        let selected = select(kill.revision, &kill.required_capabilities, &none);
-        self.reject_role(id, kill.request_id, selected.err().unwrap_or_else(not_yet));
+        if let Err(error) = select(kill.revision, &kill.required_capabilities, &none) {
+            self.reject_role(id, kill.request_id, error);
+            return Ok(());
+        }
+        self.kills.insert(id, kill.request_id);
+        self.react(|control| control.kill(ConnectionId(id)))
+    }
+
+    /// The request a standalone Kill connection awaits the answer to.
+    pub(super) fn kill_request(&self, id: u64) -> Option<Counter> {
+        self.kills.get(&id).copied()
+    }
+
+    /// A standalone Kill's answer once the session ended, then the end of
+    /// its stream.
+    pub(super) fn answer_kill(&mut self, id: u64, request_id: Counter, end: &SessionEnd) {
+        self.respond(id, request_id, kill_answer(end));
+        self.end_stream(id);
+    }
+
+    /// The command's result, once it is final: no more of the command's
+    /// output follows. Every opened connection receives it as Command final
+    /// (a standalone Kill's connection, which opened nothing, gets it in its
+    /// answer instead), and later Opens in their Initial metadata.
+    /// Publishing it again sends nothing.
+    pub(super) fn publish(&mut self, result: &CommandResult) {
+        if self.command_result.is_some() {
+            return;
+        }
+        self.command_result = Some(result.clone());
+        let frame = CommandFinal::new(result.clone(), None)
+            .expect("no status disagrees with a result")
+            .to_frame();
+        let opened: Vec<u64> = self.opened.keys().copied().collect();
+        for id in opened {
+            self.send_wire(id, &frame);
+        }
     }
 
     /// Sends a Title changed to every connection that selected `title-v1`,
@@ -605,9 +667,11 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.reject_with(id, request_id, error(code, message));
     }
 
-    /// A rejected first role has no effects and ends its stream.
+    /// A rejected first role has no effects, carries the command's result
+    /// once it is final, and ends its stream.
     fn reject_role(&mut self, id: u64, request_id: Counter, error: Error) {
-        self.reject_with(id, request_id, error);
+        let known_final = self.command_result.clone();
+        self.rejection(id, request_id, error, known_final);
         self.end_stream(id);
     }
 
@@ -618,11 +682,19 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
+    /// A rejected later request has no effects, and its stream goes on.
     fn reject_with(&mut self, id: u64, request_id: Counter, error: Error) {
-        let rejection = Rejection {
-            error,
-            known_final: None,
-        };
+        self.rejection(id, request_id, error, None);
+    }
+
+    fn rejection(
+        &mut self,
+        id: u64,
+        request_id: Counter,
+        error: Error,
+        known_final: Option<CommandResult>,
+    ) {
+        let rejection = Rejection { error, known_final };
         self.respond(id, request_id, Outcome::Rejected(rejection));
     }
 
@@ -650,6 +722,30 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let queued = connection.queue_wire(frame);
         self.queued_or_lost(id, queued);
     }
+}
+
+/// A Kill succeeds only with the command's confirmed result after complete
+/// cleanup. Otherwise it failed: its termination or cleanup did not
+/// complete, and it reports the result the daemon knew, if any.
+fn kill_answer(end: &SessionEnd) -> Outcome {
+    match (&end.command, end.cleanup) {
+        (CommandEnd::Confirmed(command_result), CleanupResult::Complete) => {
+            Outcome::Ok(Success::Termination {
+                command_result: command_result.clone(),
+                cleanup: Cleanup::Complete,
+            })
+        }
+        (command, _) => Outcome::Failed(incomplete(command.known().cloned())),
+    }
+}
+
+fn incomplete(command_result: Option<CommandResult>) -> Failure {
+    let known = KnownResult::Termination(PartialTermination {
+        command_result,
+        cleanup: PartialCleanup::Incomplete,
+    });
+    let error = error(OperationalCode::CleanupFailed, CLEANUP_INCOMPLETE);
+    Failure::new(error, Some(known)).expect("a partial termination confirms nothing")
 }
 
 /// The application's focus report: `ESC [ I` for focus in, `ESC [ O` out.
@@ -746,11 +842,19 @@ fn tokens(selected: &BTreeSet<Family>) -> Families {
 }
 
 /// The title by value when `title-v1` is selected (an available `None` is
-/// unset), with status and progress explicitly unavailable. No command result
-/// is reported: the exit-or-signal result it needs arrives with #88.
-fn initial_metadata(title: Available<Option<String>>) -> InitialMetadata {
-    InitialMetadata::new(title, Available::Unavailable, Available::Unavailable, None)
-        .expect("unavailable status agrees with any command result")
+/// unset), with status and progress explicitly unavailable, and the
+/// command's result once known.
+fn initial_metadata(
+    title: Available<Option<String>>,
+    command_result: Option<CommandResult>,
+) -> InitialMetadata {
+    InitialMetadata::new(
+        title,
+        Available::Unavailable,
+        Available::Unavailable,
+        command_result,
+    )
+    .expect("unavailable status agrees with any command result")
 }
 
 /// A fresh logical connection identity, never reused.

@@ -1894,7 +1894,12 @@ fn natural_exit_kills_jobs_left_in_the_command_session() {
 
 /// #19/#27 (owner decision): leaving hangs up, waits the real grace, then kills every process
 /// still in the command's terminal session, across job-control process groups. A process that
-/// started its own session is not part of it and survives.
+/// started its own session is not part of it and survives. The jobs ignore SIGHUP, so only the
+/// daemon's end-of-grace kill ends them: they are gone by the time the daemon exits. How long
+/// that kill takes after the grace is host load, not policy (each kill round lists every host
+/// process once per recorded job group), so here the daemon's exit is bounded only by
+/// `FINISH_BOUND`; `every_controlling_leave_hangs_up_then_kills_after_real_grace` bounds the
+/// grace itself.
 #[test]
 fn leave_kills_every_job_of_the_command_session_but_not_new_sessions() {
     let mut session = job_control_session();
@@ -1928,10 +1933,9 @@ fn leave_kills_every_job_of_the_command_session_but_not_new_sessions() {
     );
     session.finish();
     assert!(started.elapsed() >= Duration::from_secs(5), "grace skipped");
-    assert!(started.elapsed() < Duration::from_secs(7), "grace exceeded");
     let survivors = [("foreground", foreground), ("background", background)]
         .into_iter()
-        .filter(|(_, pid)| !wait_gone(*pid))
+        .filter(|(_, pid)| process::start_time(*pid).unwrap().is_some())
         .collect::<Vec<_>>();
     let outsider_alive = process::start_time(outsider).unwrap().is_some();
     for (_, pid) in &survivors {
@@ -2661,7 +2665,8 @@ fn record_lines() -> ! {
 /// UTF-8 bytes, `é` repeated) and `titles A B` (`t-A` through `t-B` in one
 /// write); `text TEXT` prints TEXT as a line, `colors N` prints `N` rows
 /// whose every cell changes colour, `reset` is `ESC c`, and `exit` ends the
-/// fixture with status 0.
+/// fixture with status 0, `exit N` with status `N` and `signal N` by signal
+/// `N`.
 fn follow_script() -> ! {
     print!("fixture-ready\r\n");
     io::stdout().flush().unwrap();
@@ -2686,6 +2691,11 @@ fn follow_script() -> ! {
                 ["clear"] => write!(out, "\x1b[3J").unwrap(),
                 ["sync"] => write!(out, "\x1b[?2026h").unwrap(),
                 ["exit"] => std::process::exit(0),
+                ["exit", code] => std::process::exit(code.parse().unwrap()),
+                ["signal", number] => {
+                    unsafe { libc::raise(number.parse().unwrap()) };
+                    unreachable!("signal {number} did not end the fixture");
+                }
                 ["reset"] => write!(out, "\x1bc").unwrap(),
                 ["title-empty"] => write!(out, "\x1b]2;\x07").unwrap(),
                 ["title-bytes", bytes] => {
@@ -2750,6 +2760,21 @@ fn record_input(file: &str, query: Option<&str>) -> ! {
         fs::write(file, &pasted).unwrap();
     }
     std::process::exit(0);
+}
+
+/// Closes every descriptor of its terminal, so the daemon reads the end of
+/// its output, and keeps running: `terminal-closed` says it closed them.
+/// It exits with status 3 once `finish` appears, or after 45 seconds.
+fn close_terminal() -> ! {
+    for descriptor in 0..3 {
+        unsafe { libc::close(descriptor) };
+    }
+    fs::write("terminal-closed", b"").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(45);
+    while !Path::new("finish").exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(2));
+    }
+    std::process::exit(3);
 }
 
 /// A raw application recording every byte it reads in `focused` until
@@ -2921,6 +2946,9 @@ fn fixture_child() {
     io::stdout().flush().unwrap();
     if mode == "lines" {
         record_lines();
+    }
+    if mode == "close-terminal" {
+        close_terminal();
     }
     if mode.starts_with("drain-") {
         let mut line = String::new();
