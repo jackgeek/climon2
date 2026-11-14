@@ -610,12 +610,9 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// otherwise the exit is reported once, in addition, the initial
     /// attachment had its chance and no grant awaits `Ready`.
     fn report_exit(&mut self, now: Instant) -> io::Result<()> {
-        let Some(result) = self.command.drained(now) else {
+        let Some(result) = self.delivered(now) else {
             return Ok(());
         };
-        if self.presenting(now) {
-            return Ok(());
-        }
         self.publish(&result);
         if self.command.hangs_up_when_drained() {
             return self.hang_up(now);
@@ -626,14 +623,19 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.end_command(CommandEnd::Confirmed(result))
     }
 
-    /// Output still held back from a connection: a restoration in progress
-    /// with the live output behind it, or a synchronized update that holds
-    /// a derived update and every grant's snapshot. Run after this pass's
-    /// restorations started, so a grant still waiting holds an update too.
-    /// Each ends within its own bounds: a restoration completes or its
+    /// The command's result, once its output drained and nothing it
+    /// produced is still held back from a connection: no restoration is in
+    /// progress, with the live output behind it, and no synchronized update
+    /// holds a derived update or a grant's snapshot. Run after this pass's
+    /// restorations started, so a grant still waiting is held by an update.
+    /// Each hold ends within its own bounds: a restoration completes or its
     /// stalled reader is lost, and the update's latch expires.
-    fn presenting(&self, now: Instant) -> bool {
-        self.vt.sync_pending(now) || self.deliveries.values().any(Delivery::restoring)
+    fn delivered(&self, now: Instant) -> Option<CommandResult> {
+        let held = self.vt.sync_pending(now) || self.deliveries.values().any(Delivery::restoring);
+        if held {
+            return None;
+        }
+        self.command.drained(now)
     }
 
     fn awaiting(&self, now: Instant) -> bool {
