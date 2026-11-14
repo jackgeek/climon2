@@ -300,7 +300,12 @@ fn describe(bootstrap: Bootstrap) -> Result<&'static Description, Refusal> {
     // SAFETY: the output is writable storage for one pointer.
     let status = unsafe { bootstrap(native::REVISION, &mut description) };
     match (status, Output::of(description, untouched)) {
-        (native::SUCCESS, Output::Described(description)) => Ok(description),
+        (native::SUCCESS, Output::Described) => {
+            // SAFETY: the bootstrap answered CM1_SUCCESS with an output it
+            // set, so it is a description that stays immutable until exit.
+            // Any other answer's output is only compared, never referenced.
+            Ok(unsafe { &*description })
+        }
         (native::UNSUPPORTED_REVISION, _) => Err((
             Failure::UnsupportedRevision,
             "it does not support revision 1 of the native client interface".into(),
@@ -318,16 +323,18 @@ enum Output {
     /// As the loader set it, so the bootstrap neither cleared nor set it.
     Untouched,
     Cleared,
-    Described(&'static Description),
+    Described,
 }
 
 impl Output {
     fn of(description: *const Description, untouched: *const Description) -> Self {
         if description == untouched {
-            return Self::Untouched;
+            Self::Untouched
+        } else if description.is_null() {
+            Self::Cleared
+        } else {
+            Self::Described
         }
-        // SAFETY: a description the bootstrap returns is immutable until exit.
-        unsafe { description.as_ref() }.map_or(Self::Cleared, Self::Described)
     }
 
     /// Why a bootstrap that answered `status` and left this broke its
@@ -339,7 +346,7 @@ impl Output {
                 .into();
         }
         let description = match self {
-            Self::Described(_) => "a description",
+            Self::Described => "a description",
             Self::Untouched | Self::Cleared => "no description",
         };
         format!("its bootstrap answered revision 1 with status {status} and {description}")
