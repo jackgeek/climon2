@@ -18,9 +18,13 @@ Usage: cargo xtask <check [--full] [--mutate-all] [--print-mutation-plan]|test|d
 
 check runs test, append-only fixtures, tooling proofs, coverage, crapper, mutation-load measurement and mutation.
 check is the ticket gate: 1 load round, then mutation of only the functions, consts and statics
-added or changed since CLIMON2_MUTATION_BASE (default HEAD); new files are mutated whole.
+added or changed since the merge base of CLIMON2_MUTATION_BASE (default HEAD) and HEAD;
+new files are mutated whole. One mutator run takes every file with a selected site, so the
+workspace baseline runs once; its --lines is the union of the lines holding each file's
+selected sites (from mutator --scan).
 check --full is the full gate, run before a feature branch merges to main with
-CLIMON2_MUTATION_BASE=origin/main: 5 load rounds, then mutation of whole changed files.
+CLIMON2_MUTATION_BASE=origin/main: 5 load rounds, then mutation of whole files changed
+since that merge base.
 --mutate-all mutates every shipped file; --print-mutation-plan prints the selection and exits.
 test runs fmt, clippy and workspace tests, including packaged acceptance, plus ShellCheck.
 setup-quality installs the pinned Python quality tools and cargo-llvm-cov.

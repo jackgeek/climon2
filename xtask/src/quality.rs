@@ -7,6 +7,7 @@ use std::{
     env,
     ffi::OsStr,
     fs, io,
+    ops::RangeInclusive,
     path::{Path, PathBuf},
     process::{Command, Output},
 };
@@ -53,8 +54,12 @@ impl Scope {
     fn select(self, sources: Vec<PathBuf>) -> Vec<PathBuf> {
         sources
             .into_iter()
-            .filter(|path| self != Self::Native || native_source_os(path).is_some())
+            .filter(|path| self.keeps(path))
             .collect()
+    }
+
+    fn keeps(self, path: &Path) -> bool {
+        self != Self::Native || native_source_os(path).is_some()
     }
 
     fn workers(self) -> io::Result<String> {
@@ -80,10 +85,13 @@ impl Scope {
     fn changed_targets(self, root: &Path) -> io::Result<Vec<Target>> {
         // Upstream --changed reads only git status and cannot limit itself to shipped crates.
         let base = env::var_os("CLIMON2_MUTATION_BASE").unwrap_or_else(|| "HEAD".into());
-        if self == Self::Ticket {
-            return function_targets(root, &base);
-        }
-        Ok(Target::whole(self.select(changed_sources(root, &base)?)))
+        let mut targets = if self == Self::Ticket {
+            function_targets(root, &base)?
+        } else {
+            Target::whole(changed_sources(root, &base)?)
+        };
+        targets.retain(|target| self.keeps(&target.path));
+        Ok(targets)
     }
 }
 
@@ -102,21 +110,79 @@ impl Target {
             .collect()
     }
 
-    /// The mutator's `--lines` value, or `None` to mutate the whole file.
-    fn lines(&self) -> Option<String> {
+    /// The changed items' lines, or `None` for a whole file.
+    fn lines(&self) -> Option<BTreeSet<usize>> {
         let items = self.items.as_ref()?;
-        let lines: BTreeSet<usize> = items
-            .iter()
-            .flat_map(|item| item.lines.iter().cloned().flatten())
-            .collect();
         Some(
-            lines
+            items
                 .iter()
-                .map(usize::to_string)
-                .collect::<Vec<_>>()
-                .join(","),
+                .flat_map(|item| item.lines.iter().cloned().flatten())
+                .collect(),
         )
     }
+}
+
+fn line_count(root: &Path, path: &Path) -> io::Result<usize> {
+    Ok(fs::read_to_string(root.join(path))?.lines().count())
+}
+
+/// The single mutator run, so the full-workspace baseline runs once.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct RunPlan {
+    /// The targets with a selected mutation site.
+    targets: Vec<Target>,
+    /// `--lines`, or `None` when every target is a whole file.
+    lines: Option<BTreeSet<usize>>,
+}
+
+/// `--lines` applies to every file in a run, so it is the union of the lines that hold each
+/// target's own selected sites (`sites`), and a target with none is dropped. A file may also
+/// mutate a site at a line number another file selected: a safe superset, never less.
+fn run_plan(
+    targets: Vec<Target>,
+    mut sites: impl FnMut(&Target) -> io::Result<BTreeSet<usize>>,
+) -> io::Result<RunPlan> {
+    if targets.iter().all(|target| target.items.is_none()) {
+        return Ok(RunPlan {
+            targets,
+            lines: None,
+        });
+    }
+    let mut lines = BTreeSet::new();
+    let mut kept = Vec::new();
+    for target in targets {
+        let found = sites(&target)?;
+        if !found.is_empty() {
+            lines.extend(found);
+            kept.push(target);
+        }
+    }
+    Ok(RunPlan {
+        targets: kept,
+        lines: Some(lines),
+    })
+}
+
+/// The lines of `target`'s selected mutation sites, from the mutator's own scan, which runs no tests.
+fn scanned_sites(root: &Path, target: &Target) -> io::Result<BTreeSet<usize>> {
+    let mut scan = tool(root, "mutator");
+    scan.args(["--scan", "--no-coverage"]);
+    if let Some(lines) = target.lines() {
+        scan.args(["--lines", &joined(&lines)]);
+    }
+    let scanned = output(scan.arg(&target.path))?;
+    let prefix = format!("  {}:", target.path.display());
+    String::from_utf8_lossy(&scanned.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix(&prefix))
+        .map(|rest| {
+            rest.split(' ')
+                .next()
+                .unwrap_or_default()
+                .parse()
+                .map_err(|error| io::Error::other(format!("mutator scan: {rest}: {error}")))
+        })
+        .collect()
 }
 
 pub(crate) fn run(command: &mut Command) -> io::Result<()> {
@@ -223,10 +289,10 @@ fn verify_llvm_cov() -> io::Result<()> {
     Ok(())
 }
 
-fn tool(root: &Path, name: &str) -> io::Result<Command> {
+/// Fails unless the pinned quality tools are installed; run once before using [`tool`].
+fn verify_tools(root: &Path) -> io::Result<()> {
     let tools = tool_root(root);
-    let python = tools.join("venv/bin/python");
-    if !python.is_file() {
+    if !tools.join("venv/bin/python").is_file() {
         return Err(io::Error::other(
             "quality tools are missing; run cargo xtask setup-quality",
         ));
@@ -234,13 +300,17 @@ fn tool(root: &Path, name: &str) -> io::Result<Command> {
     for (package, revision) in [("crapper", CRAPPER), ("mutator", MUTATOR)] {
         verify_checkout(&tools.join(package), revision)?;
     }
-    let mut command = Command::new(python);
-    command.args(["-m", name]).current_dir(root);
-    Ok(command)
+    Ok(())
 }
 
-fn mutation_command(root: &Path) -> io::Result<Command> {
-    let mut command = tool(root, "mutator")?;
+fn tool(root: &Path, name: &str) -> Command {
+    let mut command = Command::new(tool_root(root).join("venv/bin/python"));
+    command.args(["-m", name]).current_dir(root);
+    command
+}
+
+fn mutation_command(root: &Path) -> Command {
+    let mut command = tool(root, "mutator");
     // Each overlay owns this relative target; inherited build paths must not re-share it.
     command
         .env_remove("CARGO_TARGET_DIR")
@@ -252,7 +322,7 @@ fn mutation_command(root: &Path) -> io::Result<Command> {
         )
         .args(["--test-command", TEST_COMMAND])
         .args(["--timeout-factor", MUTATION_TIMEOUT_FACTOR]);
-    Ok(command)
+    command
 }
 
 fn changed_sources(root: &Path, base: &OsStr) -> io::Result<Vec<PathBuf>> {
@@ -264,7 +334,8 @@ fn changed_sources(root: &Path, base: &OsStr) -> io::Result<Vec<PathBuf>> {
 /// A changed source and its path at the base, which is `None` when the file is new.
 type ChangedFile = (PathBuf, Option<PathBuf>);
 
-/// Changed shipped sources, each with its path at `base` unless git reports it as new.
+/// Changed shipped sources since the merge base of `base` and `HEAD`, each with its base
+/// path unless git reports it as new.
 /// Renames compare against their old path; added, copied and untracked files are new.
 fn changed_files(root: &Path, base: &OsStr) -> io::Result<(String, Vec<ChangedFile>)> {
     let commit = output(
@@ -273,7 +344,15 @@ fn changed_files(root: &Path, base: &OsStr) -> io::Result<(String, Vec<ChangedFi
             .args(["rev-parse", "--verify", "--end-of-options"])
             .arg(format!("{}^{{commit}}", base.to_string_lossy())),
     )?;
-    let commit = String::from_utf8(commit.stdout)
+    let commit = String::from_utf8(commit.stdout).map_err(io::Error::other)?;
+    // A base that moved on after the branch point must not bring in its own changes.
+    let merge_base =
+        output(
+            Command::new("git")
+                .current_dir(root)
+                .args(["merge-base", commit.trim(), "HEAD"]),
+        )?;
+    let commit = String::from_utf8(merge_base.stdout)
         .map_err(io::Error::other)?
         .trim()
         .to_owned();
@@ -455,33 +534,60 @@ fn mutation_targets(root: &Path, all: bool, scope: Scope) -> io::Result<Vec<Targ
     }
 }
 
+/// What the gate would mutate: each target, its line counts, and the single run's lines.
+fn plan_text(root: &Path, targets: &[Target], run: &RunPlan) -> io::Result<String> {
+    if targets.is_empty() {
+        return Ok("No changed shipped Rust source to mutate.\n".to_owned());
+    }
+    let mut text = String::new();
+    for target in targets {
+        let total = line_count(root, &target.path)?;
+        let path = target.path.display();
+        let (Some(items), Some(lines)) = (&target.items, target.lines()) else {
+            text += &format!("{path}: whole file, {total} lines\n");
+            continue;
+        };
+        text += &format!(
+            "{path}: {} changed items, {} of {total} lines\n",
+            items.len(),
+            lines.len()
+        );
+        for item in items {
+            let spans: Vec<_> = item.lines.iter().map(span).collect();
+            text += &format!("  {}  lines {}\n", item.name, spans.join(","));
+        }
+    }
+    let files = run.targets.len();
+    text += &match &run.lines {
+        None => format!("One mutator run over {files} files, whole files.\n"),
+        Some(_) if files == 0 => {
+            "No selected line holds a mutation site; nothing to mutate.\n".to_owned()
+        }
+        Some(lines) => format!(
+            "One mutator run over {files} files, --lines {} \
+             (the union of the lines holding each file's selected mutation sites).\n",
+            joined(lines)
+        ),
+    };
+    Ok(text)
+}
+
+fn span(lines: &RangeInclusive<usize>) -> String {
+    if lines.start() == lines.end() {
+        lines.start().to_string()
+    } else {
+        format!("{}-{}", lines.start(), lines.end())
+    }
+}
+
 /// Prints what the gate would mutate, without running anything else.
 pub fn plan(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
     let targets = mutation_targets(root, all, scope)?;
-    if targets.is_empty() {
-        println!("No changed shipped Rust source to mutate.");
+    if targets.iter().any(|target| target.items.is_some()) {
+        verify_tools(root)?;
     }
-    for target in &targets {
-        let total = fs::read_to_string(root.join(&target.path))?.lines().count();
-        let Some(items) = &target.items else {
-            println!("{}: whole file, {total} lines", target.path.display());
-            continue;
-        };
-        let lines = target.lines().map_or(0, |lines| lines.split(',').count());
-        println!(
-            "{}: {} changed items, {lines} of {total} lines",
-            target.path.display(),
-            items.len()
-        );
-        for item in items {
-            let spans: Vec<_> = item
-                .lines
-                .iter()
-                .map(|span| format!("{}-{}", span.start(), span.end()))
-                .collect();
-            println!("  {}  lines {}", item.name, spans.join(","));
-        }
-    }
+    let run = run_plan(targets.clone(), |target| scanned_sites(root, target))?;
+    print!("{}", plan_text(root, &targets, &run)?);
     Ok(())
 }
 
@@ -494,7 +600,7 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
         return Ok(());
     }
     verify_llvm_cov()?;
-    mutation_command(root)?;
+    verify_tools(root)?;
     let report = root.join("target/coverage/rust/lcov.info");
     fs::create_dir_all(report.parent().expect("report directory"))?;
     if report.try_exists()? {
@@ -507,7 +613,7 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
         return Err(io::Error::other("coverage report is empty"));
     }
     verify_native_coverage(root, &report)?;
-    run(tool(root, "crapper")?
+    run(tool(root, "crapper")
         .args(["--use-existing-coverage", "--threshold", CRAP_THRESHOLD])
         .args(&scored))?;
     let workers = scope.workers()?;
@@ -525,48 +631,36 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
         eprintln!("No changed shipped Rust source to mutate.");
         return Ok(());
     }
+    let run = run_plan(targets, |target| scanned_sites(root, target))?;
+    if run.targets.is_empty() {
+        eprintln!("No selected line holds a mutation site; nothing to mutate.");
+        return Ok(());
+    }
     verify_worker_baseline(root, &sources)?;
-    mutate(root, &workers, targets)
+    mutate(root, &workers, run)
 }
 
-/// Whole files in one mutator run; each line-scoped file in its own, as `--lines` is global.
-/// Every run happens, so one file's survivors do not hide another's.
-fn mutate(root: &Path, workers: &str, targets: Vec<Target>) -> io::Result<()> {
-    let (whole, scoped): (Vec<_>, Vec<_>) = targets
-        .into_iter()
-        .partition(|target| target.items.is_none());
-    let mut runs: Vec<(Vec<String>, Vec<PathBuf>)> = Vec::new();
-    if !whole.is_empty() {
-        runs.push((
-            Vec::new(),
-            whole.into_iter().map(|target| target.path).collect(),
-        ));
+/// One mutator run for every target, so the full-workspace baseline runs once.
+fn mutate(root: &Path, workers: &str, run_plan: RunPlan) -> io::Result<()> {
+    let mut mutation = mutation_command(root);
+    mutation.args([
+        "--use-existing-coverage",
+        "--mutate-all",
+        "--max-workers",
+        workers,
+    ]);
+    if let Some(lines) = &run_plan.lines {
+        mutation.args(["--lines", &joined(lines)]);
     }
-    for target in scoped {
-        let lines = target.lines().expect("scoped target has lines");
-        runs.push((vec!["--lines".to_owned(), lines], vec![target.path]));
-    }
-    let mut failures = Vec::new();
-    for (lines, paths) in runs {
-        let mut mutation = mutation_command(root)?;
-        mutation
-            .args([
-                "--use-existing-coverage",
-                "--mutate-all",
-                "--max-workers",
-                workers,
-            ])
-            .args(lines)
-            .args(paths);
-        if let Err(error) = run(&mut mutation) {
-            failures.push(error.to_string());
-        }
-    }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(io::Error::other(failures.join("\n")))
-    }
+    run(mutation.args(run_plan.targets.into_iter().map(|target| target.path)))
+}
+
+fn joined(lines: &BTreeSet<usize>) -> String {
+    lines
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// A repository quality script, run by the pinned tools' Python with the workspace and Cargo.
@@ -592,7 +686,8 @@ pub fn probe(root: &Path) -> io::Result<()> {
     let scratch = probe_workspace(root)?;
     let observations = scratch.path().join("observations");
     let forbidden = scratch.path().join("shared-target-must-not-be-used");
-    let mut command = mutation_command(root)?;
+    verify_tools(root)?;
+    let mut command = mutation_command(root);
     command
         .current_dir(scratch.path())
         .env("CLIMON2_MUTATION_OBSERVATIONS", &observations)
@@ -698,6 +793,7 @@ fn staged_count(report: &Path) -> io::Result<u64> {
 /// #31/#33: installer-built binaries contribute coverage and the pinned gates reject defects.
 pub fn tooling_probe(root: &Path) -> io::Result<()> {
     verify_llvm_cov()?;
+    verify_tools(root)?;
     let scratch = probe_workspace(root)?;
     let workspace = scratch.path();
     let build = workspace.join("target/instrumented");
@@ -791,7 +887,7 @@ fn install_instrumented_probe(workspace: &Path, build: &Path) -> io::Result<Path
 }
 
 fn prove_crapper(root: &Path, workspace: &Path) -> io::Result<()> {
-    run(tool(root, "crapper")?.current_dir(workspace).args([
+    run(tool(root, "crapper").current_dir(workspace).args([
         "--use-existing-coverage",
         "--threshold",
         CRAP_THRESHOLD,
@@ -833,7 +929,7 @@ fn prove_rejection(
 ) -> io::Result<()> {
     let excessive = workspace.join(fixture);
     fs::copy(root.join("xtask/tests/fixtures").join(fixture), &excessive)?;
-    let rejected = tool(root, "crapper")?
+    let rejected = tool(root, "crapper")
         .current_dir(workspace)
         .args(["--use-existing-coverage", "--threshold", CRAP_THRESHOLD])
         .arg(&excessive)
@@ -884,7 +980,7 @@ fn prove_covered_mutations(root: &Path, workspace: &Path, observations: &Path) -
     text.push('\n');
     fs::write(source, text)?;
     for mode in ["--changed", "--mutate-all"] {
-        run(mutation_command(root)?
+        run(mutation_command(root)
             .current_dir(workspace)
             .env("CLIMON2_MUTATION_OBSERVATIONS", observations)
             .args([
@@ -992,10 +1088,13 @@ mod tests {
 
     /// A `quality::check` run whose git, coverage and Python quality tools are controlled.
     #[cfg(unix)]
+    #[derive(Default)]
     struct Gate {
         scope: &'static str,
         load_fails: bool,
         changed: bool,
+        /// A three-line shipped source the diff adds, mutated whole beside the changed one.
+        added: bool,
     }
 
     #[cfg(unix)]
@@ -1039,6 +1138,13 @@ mod tests {
         };
         fs::create_dir_all(root.join(&source).parent().unwrap()).unwrap();
         fs::write(root.join(&source), "pub fn changed() -> u8 { 1 }\n").unwrap();
+        let added = if gate.added {
+            let added = "crates/climon2-core/src/added.rs";
+            fs::write(root.join(added), "pub fn added() -> u8 {\n    1\n}\n").unwrap();
+            added
+        } else {
+            ""
+        };
         fs::write(
             root.join("Cargo.toml"),
             format!(
@@ -1056,11 +1162,13 @@ mod tests {
             &root.join("bin/git"),
             &format!(
                 "#!/bin/sh\ncase \"$*\" in\n\
-             *crapper*rev-parse*) echo {CRAPPER} ;;\n\
+             *crapper*rev-parse*) echo {CRAPPER}; echo verify >> \"$CLIMON2_LOAD_GATE_FIXTURE/events\" ;;\n\
              *mutator*rev-parse*) echo {MUTATOR} ;;\n\
              *'rev-parse --verify'*) echo fixture ;;\n\
-             *'ls-files --cached'*) printf '%s\\0' \"$LOAD_GATE_SOURCE\" ;;\n\
-             *'diff --name-status'*) if [ \"$LOAD_GATE_CHANGED\" = yes ]; then printf 'M\\0%s\\0' \"$LOAD_GATE_SOURCE\"; fi ;;\n\
+             *merge-base*) echo fixture ;;\n\
+             *'ls-files --cached'*) printf '%s\\0' \"$LOAD_GATE_SOURCE\" $LOAD_GATE_ADDED ;;\n\
+             *'diff --name-status'*) if [ \"$LOAD_GATE_CHANGED\" = yes ]; then printf 'M\\0%s\\0' \"$LOAD_GATE_SOURCE\"; fi; \
+             if [ -n \"$LOAD_GATE_ADDED\" ]; then printf 'A\\0%s\\0' \"$LOAD_GATE_ADDED\"; fi ;;\n\
              *'cat-file'*) echo 'pub fn changed() -> u8 {{ 0 }}' ;;\n\
              esac\n"
             ),
@@ -1092,6 +1200,18 @@ case "$*" in
         fi
         ;;
     *check-mutation-workspace.py*) echo baseline >> "$events" ;;
+    *'-m mutator --scan'*)
+        lines=1,3
+        previous=
+        for last do
+            if [ "$previous" = --lines ]; then lines=$last; fi
+            previous=$last
+        done
+        printf 'scan %s\n' "$last" >> "$events"
+        for site in 1 3; do
+            case ",$lines," in *",$site,"*) printf '  %s:%s + -> -  [defn/f]\n' "$last" "$site" ;; esac
+        done
+        ;;
     *'-m mutator'*) shift 2; printf 'mutation %s\n' "$*" >> "$events" ;;
 esac
 "#,
@@ -1110,6 +1230,7 @@ esac
             .env("CLIMON2_LOAD_GATE_FIXTURE", root)
             .env("LOAD_GATE_SCOPE", gate.scope)
             .env("LOAD_GATE_SOURCE", &source)
+            .env("LOAD_GATE_ADDED", added)
             .env("LOAD_GATE_CHANGED", if gate.changed { "yes" } else { "no" })
             .env("LOAD_GATE_FAIL", if gate.load_fails { "yes" } else { "no" })
             .env("PATH", env::join_paths(path).unwrap())
@@ -1148,6 +1269,7 @@ esac
             scope: "full",
             load_fails: false,
             changed: true,
+            added: false,
         });
         assert!(run.success, "{}", run.output);
         let load = run.started("load").unwrap();
@@ -1169,6 +1291,7 @@ esac
             scope: "full",
             load_fails: true,
             changed: true,
+            added: false,
         });
         assert!(!run.success, "{}", run.output);
         assert!(run.output.contains("flaky_fixture"), "{}", run.output);
@@ -1182,6 +1305,7 @@ esac
             scope: "full",
             load_fails: true,
             changed: false,
+            added: false,
         });
         assert!(!run.success, "{}", run.output);
         assert!(run.output.contains("flaky_fixture"), "{}", run.output);
@@ -1189,6 +1313,7 @@ esac
             scope: "full",
             load_fails: false,
             changed: false,
+            added: false,
         });
         assert!(run.success, "{}", run.output);
         assert!(run.started("load").is_some(), "{:?}", run.events);
@@ -1204,6 +1329,7 @@ esac
                 scope,
                 load_fails: true,
                 changed: true,
+                added: false,
             });
             assert!(run.success, "{scope}: {}", run.output);
             assert_eq!(run.started("load"), None, "{scope}: {:?}", run.events);
@@ -1223,6 +1349,7 @@ esac
             scope: "full",
             load_fails: false,
             changed: true,
+            added: false,
         });
         assert!(run.success, "{}", run.output);
         assert_eq!(run.option("load", "--rounds"), "5");
@@ -1242,6 +1369,7 @@ esac
             scope: "ticket",
             load_fails: false,
             changed: true,
+            added: false,
         });
         assert!(run.success, "{}", run.output);
         assert_eq!(run.option("load", "--rounds"), "1");
@@ -1255,10 +1383,40 @@ esac
             scope: "ticket",
             load_fails: false,
             changed: false,
+            added: false,
         });
         assert!(run.success, "{}", run.output);
         assert_eq!(run.option("load", "--rounds"), "1");
         assert_eq!(run.started("mutation"), None, "{:?}", run.events);
+    }
+
+    /// Review 7 and 8: one mutator run (one workspace baseline) takes every target, with the union
+    /// of the lines holding each target's selected sites; the quality tools are verified once.
+    #[cfg(unix)]
+    #[test]
+    fn the_ticket_gate_mutates_every_target_in_one_run_after_one_tool_check() {
+        let run = run_gate(Gate {
+            scope: "ticket",
+            changed: true,
+            added: true,
+            ..Gate::default()
+        });
+        assert!(run.success, "{}", run.output);
+        let checks = run.events.iter().filter(|event| *event == "verify").count();
+        assert_eq!(checks, 1, "{:?}", run.events);
+        let mutations: Vec<_> = run
+            .events
+            .iter()
+            .filter(|event| event.starts_with("mutation "))
+            .collect();
+        assert_eq!(mutations.len(), 1, "{:?}", run.events);
+        assert_eq!(run.option("mutation", "--lines"), "1,3");
+        assert!(
+            mutations[0]
+                .ends_with(" crates/climon2-core/src/added.rs crates/climon2-core/src/lib.rs"),
+            "{}",
+            mutations[0]
+        );
     }
 
     /// #21 isolation amendment: a reported kill cannot stand in for the selected binary.
@@ -1402,9 +1560,156 @@ esac
             function_targets(root, OsStr::new("HEAD"))
                 .unwrap()
                 .iter()
-                .map(Target::lines)
+                .map(|target| target.items.clone())
                 .collect::<Vec<_>>(),
             vec![None]
+        );
+    }
+
+    /// Review 6: a base that moved on after the branch point does not bring in its own changes.
+    #[test]
+    fn changes_are_measured_from_the_merge_base() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        git(root, &["init", "--quiet"]);
+        let cli = "crates/climon2-cli/src/lib.rs";
+        let core = "crates/climon2-core/src/lib.rs";
+        for path in [cli, core] {
+            fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            fs::write(root.join(path), "pub fn f() -> u8 {\n    1\n}\n").unwrap();
+        }
+        commit(root);
+        git(root, &["branch", "branch-point"]);
+        fs::write(root.join(core), "pub fn f() -> u8 {\n    2\n}\n").unwrap();
+        commit(root);
+        git(root, &["branch", "moved-on"]);
+        git(root, &["reset", "--quiet", "--hard", "branch-point"]);
+        fs::write(root.join(cli), "pub fn f() -> u8 {\n    3\n}\n").unwrap();
+        commit(root);
+
+        assert_eq!(
+            changed_sources(root, OsStr::new("moved-on")).unwrap(),
+            vec![PathBuf::from(cli)]
+        );
+        assert_eq!(
+            function_targets(root, OsStr::new("moved-on"))
+                .unwrap()
+                .into_iter()
+                .map(|target| target.path)
+                .collect::<Vec<_>>(),
+            vec![PathBuf::from(cli)]
+        );
+    }
+
+    /// Review 7: the run's lines are the union of the lines holding each target's own selected
+    /// sites; a target without any is dropped, and whole-file-only runs need no `--lines`.
+    #[test]
+    fn the_single_run_unions_site_lines_and_drops_targets_without_sites() {
+        let scoped = |path: &str| Target {
+            path: path.into(),
+            items: Some(vec![ChangedItem {
+                name: "f".to_owned(),
+                lines: vec![1..=9],
+            }]),
+        };
+        let whole = Target {
+            path: "new.rs".into(),
+            items: None,
+        };
+        let sites = |target: &Target| -> io::Result<BTreeSet<usize>> {
+            Ok(match target.path.to_str().unwrap() {
+                "a.rs" => BTreeSet::from([2, 7]),
+                "b.rs" => BTreeSet::new(),
+                _ => BTreeSet::from([4]),
+            })
+        };
+        let plan = run_plan(vec![scoped("a.rs"), scoped("b.rs"), whole.clone()], sites).unwrap();
+        assert_eq!(plan.lines, Some(BTreeSet::from([2, 4, 7])));
+        assert_eq!(
+            plan.targets
+                .iter()
+                .map(|target| target.path.clone())
+                .collect::<Vec<_>>(),
+            vec![PathBuf::from("a.rs"), PathBuf::from("new.rs")]
+        );
+        let unscanned =
+            |_: &Target| -> io::Result<BTreeSet<usize>> { panic!("whole files need no scan") };
+        let plan = run_plan(vec![whole.clone()], unscanned).unwrap();
+        assert_eq!(plan.lines, None);
+        assert_eq!(plan.targets, vec![whole]);
+        assert!(
+            run_plan(vec![scoped("b.rs")], sites)
+                .unwrap()
+                .targets
+                .is_empty()
+        );
+    }
+
+    /// Review 9: the printed plan names whole-file and item targets, their line counts and the run.
+    #[test]
+    fn the_plan_lists_each_target_and_the_single_runs_lines() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        fs::write(root.join("new.rs"), "a\nb\nc\n").unwrap();
+        fs::write(root.join("old.rs"), "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n").unwrap();
+        let targets = vec![
+            Target {
+                path: "new.rs".into(),
+                items: None,
+            },
+            Target {
+                path: "old.rs".into(),
+                items: Some(vec![
+                    ChangedItem {
+                        name: "W::f".to_owned(),
+                        lines: vec![2..=3, 5..=5],
+                    },
+                    ChangedItem {
+                        name: "LIMIT".to_owned(),
+                        lines: vec![9..=9],
+                    },
+                ]),
+            },
+        ];
+        let run = RunPlan {
+            targets: targets.clone(),
+            lines: Some(BTreeSet::from([1, 3, 9])),
+        };
+        assert_eq!(
+            plan_text(root, &targets, &run).unwrap(),
+            "\
+new.rs: whole file, 3 lines
+old.rs: 2 changed items, 4 of 10 lines
+  W::f  lines 2-3,5
+  LIMIT  lines 9
+One mutator run over 2 files, --lines 1,3,9 \
+(the union of the lines holding each file's selected mutation sites).
+"
+        );
+        let whole = RunPlan {
+            targets: targets[..1].to_vec(),
+            lines: None,
+        };
+        assert_eq!(
+            plan_text(root, &targets[..1], &whole).unwrap(),
+            "new.rs: whole file, 3 lines\nOne mutator run over 1 files, whole files.\n"
+        );
+        let nothing = RunPlan {
+            targets: Vec::new(),
+            lines: Some(BTreeSet::new()),
+        };
+        assert_eq!(
+            plan_text(root, &targets[1..], &nothing).unwrap(),
+            "\
+old.rs: 2 changed items, 4 of 10 lines
+  W::f  lines 2-3,5
+  LIMIT  lines 9
+No selected line holds a mutation site; nothing to mutate.
+"
+        );
+        assert_eq!(
+            plan_text(root, &[], &nothing).unwrap(),
+            "No changed shipped Rust source to mutate.\n"
         );
     }
 

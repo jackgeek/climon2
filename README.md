@@ -430,10 +430,17 @@ zero-survivor mutation. It has two tiers:
   (for example `<Pty as Drop>::drop` or `outer::inner`) has the same tokens.
   Whitespace, comments and doc comments do not count, so moved or
   doc-only-edited functions are not mutated. Nested items are compared on their
-  own. An edited impl header (generics, bounds, where clause, self type or
-  trait path) changes every item in that impl. Renamed files compare against their old path; added, copied and
-  untracked files are mutated whole. Test-only code is skipped. Each such file
-  gets its own mutator run, limited with `--lines`.
+  own, including those in const and static initializers; an item keeps every
+  line its own code is on. An edited impl or trait header (generics, bounds,
+  where clause, self type, trait path or attributes) or an enclosing module's
+  attributes change every item inside. Renamed files compare against their
+  old path; added, copied and untracked files are mutated whole. Test-only
+  code is skipped. One mutator run takes every file with a selected mutation
+  site, so the full-workspace baseline runs once. Its `--lines` applies to
+  every file, so it is the union of the lines that hold each file's selected
+  sites, found with the mutator's test-free `--scan`. A file may therefore
+  also mutate a site at a line number another file selected: a safe superset,
+  never less.
   `cargo xtask check --print-mutation-plan` prints this selection and exits.
 - The **full gate**, `cargo xtask check --full`, runs five load rounds and
   mutates whole changed files. Run it once before a feature branch merges to
@@ -467,6 +474,8 @@ baseline always runs the full workspace. Workers receive private copies of
 its warm build artifacts (copy-on-write where supported), rather than
 rebuilding dependencies from scratch for every changed file.
 `CLIMON2_MUTATION_BASE` selects the changed-source comparison (default `HEAD`).
+Both tiers compare against the merge base of that revision and `HEAD`, so a base
+such as `origin/main` that has moved on does not bring in its own changes.
 For committed work, set it to the target branch or merge base, for example
 `CLIMON2_MUTATION_BASE=origin/main cargo xtask check --full`.
 Native implementations must live in registered source files; shared files
