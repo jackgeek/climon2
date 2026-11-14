@@ -871,8 +871,8 @@ fn installed_library_refuses_presentation_records_out_of_authority() {
 /// identities, and a fresh attempt never sees an old one's deliveries): an
 /// attached instance of generation 1 receives, as a real daemon sends them
 /// when its command ends, the Command final, a Geometry and its period's
-/// revocation for `session_ending` before the connection closes, which
-/// then calls for no retry; a fresh instance of generation 2 against
+/// revocation for `session_ending` before the connection closes, a clean
+/// stop with no error and no retry; a fresh instance of generation 2 against
 /// another daemon receives only its own records, each of generation 2.
 #[test]
 fn installed_library_resolves_a_promotion_racing_leave_and_fresh_attempts_stand_alone() {
@@ -945,19 +945,18 @@ fn installed_library_resolves_a_promotion_racing_leave_and_fresh_attempts_stand_
         .position(|record| record["tag"] == RESTORATION_COMPLETE)
         .unwrap();
     let records = &all[completed + 1..];
-    assert_eq!(records.len(), 4, "{records:#?}");
+    assert_eq!(records.len(), 3, "{records:#?}");
     assert_final(&records[0], 1, command_result(EXIT, 0));
     let actual = presented(&records[1], GEOMETRY, 1);
     assert_eq!(actual, &json!({ "period": PERIOD, "geometry": [90, 25] }));
     let ended = presented(&records[2], REVOKED, 1);
     assert_eq!(ids(ended), [PERIOD, 2]);
     assert_eq!(ended["reason"], SESSION_ENDING);
-    assert_diagnostic(&records[3], 1, ORIGIN_TRANSPORT, "io_error");
     assert_terminal(
         terminal,
         1,
-        (CLIENT_FAILED, RETRY_NONE, LEAVE_NOT_REQUIRED),
-        Some((ORIGIN_TRANSPORT, "io_error")),
+        (CLIENT_STOPPED, RETRY_NONE, LEAVE_NOT_REQUIRED),
+        None,
     );
     let first = drained(&report, &steps, "attached-fresh");
     assert_eq!(
@@ -983,18 +982,27 @@ fn installed_library_resolves_a_promotion_racing_leave_and_fresh_attempts_stand_
 
 /// A final-result case: its name, what the daemon sends after the Open's
 /// success, the tags delivered, and the error and retry that end it.
-type FinalCase = (&'static str, Vec<Value>, Vec<u64>, (u64, &'static str), u64);
+type FinalCase = (
+    &'static str,
+    Vec<Value>,
+    Vec<u64>,
+    Option<(u64, &'static str)>,
+    u64,
+);
 
 /// COM-03 Library and Fault (the Command final follows the reference's
 /// rules; minimal handling, owner decision on #94): after an Initial
 /// metadata that did not know the result, a Command final reaches the
 /// caller as `CM1_FINAL` with its exit or signal and status unavailable,
-/// and the stream reads on until the daemon closes it, which then calls
-/// for no retry. The connection fails with transport `invalid_record` on a
+/// and the stream reads on until the daemon closes it: a clean stop, with
+/// no error and no retry (owner decision on #94). The connection fails with transport `invalid_record` on a
 /// second Command final, on one after an Initial metadata that knew the
 /// result (agreeing or contradicting it), on one before the Initial
 /// metadata, and on one with a status `status-v1` was not selected for;
-/// only a refused first result leaves passive retry. Exit and signal
+/// only a refused first result leaves passive retry. A close inside a
+/// frame after the final is still `truncated_frame`, and a close that meets
+/// shutdown's Leave after the final still leaves the Leave unconfirmed:
+/// indeterminate, failed with `io_error`, retry none. Exit and signal
 /// detail, repeat semantics and evidence surviving disconnection belong
 /// to #96.
 #[test]
@@ -1023,8 +1031,20 @@ fn installed_library_relays_one_command_final_after_the_initial_metadata() {
                 command_final(signal.clone()),
                 "close".into(),
             ],
+            vec![RESPONSE, INITIAL_METADATA, FINAL],
+            None,
+            RETRY_NONE,
+        ),
+        (
+            "truncated",
+            vec![
+                initial(json!("t")),
+                command_final(exit(0)),
+                json!({ "raw": "0000001049" }),
+                "close".into(),
+            ],
             vec![RESPONSE, INITIAL_METADATA, FINAL, DIAGNOSTIC],
-            (ORIGIN_TRANSPORT, "io_error"),
+            Some((ORIGIN_TRANSPORT, "truncated_frame")),
             RETRY_NONE,
         ),
         (
@@ -1036,14 +1056,14 @@ fn installed_library_relays_one_command_final_after_the_initial_metadata() {
                 "hold".into(),
             ],
             vec![RESPONSE, INITIAL_METADATA, FINAL, DIAGNOSTIC],
-            invalid,
+            Some(invalid),
             RETRY_NONE,
         ),
         (
             "agreeing",
             vec![knowing(exit(3)), command_final(exit(3)), "hold".into()],
             vec![RESPONSE, INITIAL_METADATA, DIAGNOSTIC],
-            invalid,
+            Some(invalid),
             RETRY_NONE,
         ),
         (
@@ -1054,14 +1074,14 @@ fn installed_library_relays_one_command_final_after_the_initial_metadata() {
                 "hold".into(),
             ],
             vec![RESPONSE, INITIAL_METADATA, DIAGNOSTIC],
-            invalid,
+            Some(invalid),
             RETRY_NONE,
         ),
         (
             "early",
             vec![command_final(exit(0)), "hold".into()],
             vec![RESPONSE, DIAGNOSTIC],
-            invalid,
+            Some(invalid),
             RETRY_PASSIVE,
         ),
         (
@@ -1082,7 +1102,7 @@ fn installed_library_relays_one_command_final_after_the_initial_metadata() {
                 "hold".into(),
             ],
             vec![RESPONSE, INITIAL_METADATA, DIAGNOSTIC],
-            invalid,
+            Some(invalid),
             RETRY_PASSIVE,
         ),
     ];
@@ -1101,17 +1121,42 @@ fn installed_library_relays_one_command_final_after_the_initial_metadata() {
             ],
         );
     }
+    let leaving = json!({
+        "open": [opened(&monitor), initial(json!("t")), command_final(exit(0))],
+        "leave": ["close"],
+    });
+    plan.add(
+        "leaving",
+        vec![
+            json!({ "do": "create", "instance": "leaving", "peer": leaving }),
+            json!({ "do": "submit", "instance": "leaving",
+                    "request": open(1, &REQUIRED, &["title-v1"]) }),
+            json!({ "do": "run", "instance": "leaving" }),
+            json!({ "do": "drain", "instance": "leaving", "until": { "tag": FINAL } }),
+            json!({ "do": "shutdown", "instance": "leaving" }),
+        ],
+    );
     let (report, finishes) = plan.run(&package);
+    let (rest, terminal) = finished(step(&report, finishes[cases.len()].1));
+    let lost = (ORIGIN_TRANSPORT, "io_error");
+    assert_eq!(tags(&rest), [DIAGNOSTIC], "{rest:#?}");
+    assert_terminal(
+        terminal,
+        1,
+        (CLIENT_FAILED, RETRY_NONE, LEAVE_INDETERMINATE),
+        Some(lost),
+    );
     for ((name, _, expected, error, retry), (_, finish)) in cases.iter().zip(&finishes) {
         let (records, terminal) = finished(step(&report, *finish));
         assert_eq!(&tags(&records), expected, "{name}: {records:#?}");
-        assert_diagnostic(records.last().unwrap(), 1, error.0, error.1);
-        assert_terminal(
-            terminal,
-            1,
-            (CLIENT_FAILED, *retry, LEAVE_NOT_REQUIRED),
-            Some(*error),
-        );
+        let outcome = match error {
+            Some((origin, code)) => {
+                assert_diagnostic(records.last().unwrap(), 1, *origin, code);
+                CLIENT_FAILED
+            }
+            None => CLIENT_STOPPED,
+        };
+        assert_terminal(terminal, 1, (outcome, *retry, LEAVE_NOT_REQUIRED), *error);
     }
     let (signalled, _) = finished(step(&report, finishes[0].1));
     let named = json!({ "present": 1, "reserved": 0, "value": "SIGTERM" });
@@ -1120,7 +1165,7 @@ fn installed_library_relays_one_command_final_after_the_initial_metadata() {
         1,
         json!({ "kind": SIGNAL, "value": 15, "signal_name": named }),
     );
-    let (second, _) = finished(step(&report, finishes[1].1));
+    let (second, _) = finished(step(&report, finishes[2].1));
     assert_final(&second[2], 1, command_result(EXIT, 0));
     assert_all_released(&report["ledger"]);
 }

@@ -342,9 +342,21 @@ impl<'a> Driver<'a> {
             .link
             .receive(connection.peer.receive)
             .unwrap_or_else(|fault| {
-                self.broken(fault);
+                self.lost_link(fault);
                 None
             })
+    }
+
+    /// The daemon closing the connection between frames after a Command
+    /// final, with no Leave under way, stops the stream cleanly (owner
+    /// decision on #94); any other loss breaks it.
+    fn lost_link(&mut self, fault: Fault) {
+        let clean = fault == link::CLOSED && self.stream.ended_by_final() && !self.stream.leaving();
+        if clean {
+            self.ended = true;
+        } else {
+            self.broken(fault);
+        }
     }
 
     fn handle(&mut self, frame: &Frame) {

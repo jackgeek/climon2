@@ -303,6 +303,9 @@ pub(super) struct Stream {
     /// Whether the command's final result is known, from the Initial
     /// metadata or a Command final.
     known: bool,
+    /// Whether a Command final arrived: the daemon may then close the
+    /// stream cleanly.
+    finished: bool,
     /// The period and restoration the role holds, from its grant until its
     /// revocation.
     held: Option<AuthorityIds>,
@@ -320,6 +323,7 @@ impl Stream {
             selected: None,
             synchronized: false,
             known: false,
+            finished: false,
             held: None,
             begun: false,
         }
@@ -443,6 +447,11 @@ impl Stream {
     fn selects(&self, family: Family) -> bool {
         self.selected
             .is_some_and(|selected| selected.contains(family))
+    }
+
+    /// Whether a Command final arrived.
+    pub(super) fn ended_by_final(&self) -> bool {
+        self.finished
     }
 
     /// Whether the Initial metadata arrived.
@@ -647,6 +656,7 @@ impl Stream {
         require(!self.known, REPEATED)?;
         require(finished.status().is_none(), UNEXPECTED)?;
         self.known = true;
+        self.finished = true;
         let command = Command::from(finished.command_result());
         Ok(Event::Metadata(Metadata::Final(command)))
     }
