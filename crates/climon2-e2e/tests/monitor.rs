@@ -2780,7 +2780,8 @@ fn global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffer
 /// is Escape, closing the selector, then that key, which reaches the
 /// session. The same holds for the key introduction with Up split, and
 /// Escape closes it because the prefix (Ctrl+]) does not consume Escape.
-/// Neither dialog's keys reach the session.
+/// Neither dialog's keys reach the session, and prefix+x exits from the
+/// selector (INP-01).
 #[test]
 fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
     let package = Package::new();
@@ -2836,6 +2837,8 @@ fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains("Exit the monitor"))
         .unwrap();
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{STATUS} Other"));
     terminal.send("\x1dx").unwrap();
     // Its many frames outgrow the oracle's recent bytes, so only the
     // title itself is checked.
