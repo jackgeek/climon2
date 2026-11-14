@@ -34,6 +34,7 @@ const SHIPPED: &[&str] = &[
     "crates/climon2-core/src",
     "crates/climon2-platform/src",
     "crates/climon2-cli/src",
+    "crates/climon2-discovery/src",
     "crates/climon2-daemon/src",
     "crates/climon2-client/src",
     "crates/climon2-install/src",

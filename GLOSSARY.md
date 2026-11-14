@@ -89,6 +89,10 @@ _Avoid_: Dead session, orphan
 The per-session record in climon2 home that describes a session and how to reach its daemon.
 _Avoid_: Session file, PTY file
 
+**Discovery pass**:
+One enumeration of the session metadata in a climon2 home, probing each session and classifying every entry as live, uncertain, stale or invalid.
+_Avoid_: Scan, refresh, poll
+
 **Runtime directory**:
 The private, per-user directory holding the sockets that clients use to reach session daemons, one per climon2 home.
 _Avoid_: Socket dir, run dir, temp dir

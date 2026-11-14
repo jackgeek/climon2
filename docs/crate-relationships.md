@@ -12,6 +12,7 @@ flowchart TB
     subgraph shipped["Shipped crates"]
         launcher["climon2-launcher"]
         cli["climon2-cli"]
+        discovery["climon2-discovery"]
         client["climon2-client"]
         daemon["climon2-daemon"]
         install["climon2-install"]
@@ -21,7 +22,10 @@ flowchart TB
         vt["climon2-vt"]
 
         cli --> core
+        cli --> discovery
         cli --> platform
+        discovery --> core
+        discovery --> platform
         client --> core
         client --> platform
         daemon --> core
@@ -42,10 +46,12 @@ flowchart TB
     end
 
     cli -.->|"dev"| test_term
+    discovery -.->|"dev"| test_term
     client -.->|"dev"| test_term
     daemon -.->|"dev"| test_term
     test_term --> cli
     test_term --> client
+    test_term --> core
     test_term --> daemon
     test_term --> install
     test_term --> monitor
@@ -62,17 +68,14 @@ flowchart TB
     xtask --> platform
     xtask -.->|"dev"| fixtures
 
-    subgraph planned["Planned crate; not implemented"]
-        discovery["climon2-discovery"]
-    end
-    cli -.->|"planned"| discovery
     monitor -.->|"planned"| discovery
-    style discovery stroke-dasharray: 5 5
 ```
 
 The launcher has no workspace crate dependencies. Cycles through
-`climon2-test-term` are test-only: CLI, [client](../GLOSSARY.md#sessions) and daemon tests consume
-the harness, which consumes their libraries and other runtime libraries.
+`climon2-test-term` are test-only: CLI, discovery, [client](../GLOSSARY.md#sessions)
+and daemon tests consume the harness, which consumes their libraries and other
+runtime libraries. It consumes `core` directly for the frozen framing of its
+raw-socket hello peer.
 Linux support adds native bodies inside `climon2-platform`, not another
 workspace crate or runtime dependency edge. The test harness consumes those
 same Unix seams on Linux and macOS; Linux's ownership exec adapter is a
@@ -94,23 +97,21 @@ of its native interface live in `climon2-core`, so the client library, the
 client executable and the monitor can share them without new edges; today the
 library, the library host fixture and xtask's release checks consume them.
 
+**Current (#77):** `climon2-discovery` holds the session discovery that
+[Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59)
+planned to share between the CLI and the monitor. It consumes only `core` and
+`platform`, and today only the CLI consumes it.
+
 **Current (#84):** the one validated loader for client libraries lives in
 `climon2-platform`, as [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)
-records, so the monitor and the client executable will share it through their
-existing `platform` edges. Today the library host fixture
-(`climon2-fixtures`) and xtask's release checks consume it, which adds their
-`platform` edges. `climon2-fixtures` also builds the
-[client library stand-in](../GLOSSARY.md#testing) for tests, so
-`climon2-platform`'s and xtask's tests consume it as a dev-dependency.
+records. The library-host fixture and xtask release checks use it; the monitor
+and client executable do not yet. Test-only loader fixtures consume the
+platform crate as dev-dependencies.
 
-**Planned:** a separate discovery crate will share session discovery between
-the CLI and monitor, retained in
-[Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59).
-The monitor will consume discovery continuously and load version-matched client
-libraries in-process, with one client thread per [live session](../GLOSSARY.md#sessions).
-The discovery crate's own dependencies are not yet specified, so no further
-crate names or edges are implied. Dynamic loading is shown in the artifact
-diagram, not as a Cargo dependency.
+**Planned:** the monitor will consume discovery continuously (#106) and load
+version-matched client libraries in-process through the shared loader, with one
+client thread per [live session](../GLOSSARY.md#sessions). Dynamic loading is
+shown in the artifact diagram, not as a Cargo dependency.
 
 The [status/activity revision](session-status.md) also requires the monitor
 to keep one `climon2-vt` terminal model per session across uncertain
@@ -150,8 +151,10 @@ The agreed [operational limits](monitor-operational-limits.md), unimplemented,
 require allocation-aware terminal/parser updates and bounded discovery/queues/
 thread resources. Monitor reuse of `climon2-vt` must qualify its combining and
 auxiliary allocations; the narrow unchanged-engine/infallible-interface
-assumptions are reopened, not silently treated as bounded. No replacement
-engine, additional workspace crate or dependency edge is selected.
+assumptions are reopened, not silently treated as bounded. `climon2-vt`'s
+allocation-bounded `Model` (#76, ADR 0007) qualifies them on the unchanged
+engine; the monitor does not use it yet. No replacement engine, additional
+workspace crate or dependency edge is selected.
 
 Current edges come from workspace `Cargo.toml` files. This is a consumption
 index, not a replacement for the architecture decisions or their permitted

@@ -113,8 +113,10 @@ libraries and has no soname, RPATH or RUNPATH, as the
 release isolation; release checks enforce each rule. Only test tooling loads it
 today, the library host fixture and xtask's release checks; the monitor's and
 client executable's loading remain planned. Cargo's ordinary
-`lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,
-are not separately loaded dynamic libraries. System and third-party libraries
+`lib` targets, including `climon2-core`, `climon2-platform`,
+`climon2-discovery` and `climon2-vt`, are not separately loaded dynamic
+libraries; the CLI's hello probes for discovery come from `climon2-discovery`
+linked into the CLI executable. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
 
 **Planned:** the [monitor](../GLOSSARY.md#sessions) loads version-matched
@@ -163,8 +165,10 @@ bound admission, queues, client threads/workers/descriptors and retained shared
 release resources. Resource-blocked rows remain visible; history pressure
 preserves a recent page. Unsafe growth/cleanup is explicit failure, not client
 eviction or unloading. Allocation-aware terminal qualification reopens the
-narrow unbounded-engine assumption; it chooses no new executable/library or
-consumption arrow, and does not sandbox trusted native code.
+narrow unbounded-engine assumption; `climon2-vt`'s allocation-bounded `Model`
+(#76) provides it for the monitor's planned per-session models, which the
+monitor does not use yet. It chooses no new executable/library or consumption
+arrow, and does not sandbox trusted native code.
 
 The client executable will also load its same-release library for ordinary
 operations.
