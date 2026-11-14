@@ -44,6 +44,11 @@ the monitor never forwards parser replies or session bytes directly to its host.
   across reads.
 - `Vt::application_title()`: the application's current title, `None` while
   unset; the session daemon reports it as inert core metadata.
+- `Vt::viewport()`: the active screen's characters, every cell of each line
+  (a cell's character, then its zero-width characters) with lines separated
+  by a line feed. Rendition, the cursor, history and which screen is active
+  are not part of it, so the session daemon's activity samples compare what
+  the screen says, not how it says it.
 - `Vt::sync_pending(now)` / `Vt::tick(now)`: the first-begin synchronized
   update latch (150 ms). Take no snapshot and derive nothing while pending;
   when `tick` returns true, commit `Presentation::end_sync()` for hosts that
@@ -94,4 +99,5 @@ layer and the monitor's evidence.
 | Scenario | Named tests |
 |---|---|
 | CTL-03 (crate case): application title changes are reported by value, in order and one per change; unset, empty and a value stay distinct; an oversized title is ignored | `application_title_changes_are_reported_in_order_by_value` |
+| STA-02 (crate case): the sampled viewport is the active screen's characters only; styles, cursor-only movement, identical redraws and a screen switch with identical characters leave it unchanged, while a changed character, a combining mark and a resize change it | `the_viewport_is_the_active_screens_characters_only` |
 | FOC-01 (crate case): the application's focus reporting mode (1004) is reported, and each feed says whether it newly enabled the mode, however its tokens were split across reads | `focus_reporting_reports_the_mode_and_each_feed_that_newly_enabled_it` |

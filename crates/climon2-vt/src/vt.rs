@@ -6,7 +6,7 @@ use crate::{
     history::Ledger,
     modes::{DIRECT, SHARED, cursor_style, transitions},
     presentation::{Mode, Presentation},
-    render::{cursor, cursors, screen},
+    render::{characters, cursor, cursors, screen},
     restore::{Chunk, PROLOGUE, Restoration, Snapshot, lead},
     sync::Latch,
     title,
@@ -217,6 +217,14 @@ impl Vt {
     /// it) and the default title shows.
     pub fn application_title(&self) -> Option<&str> {
         self.engine.title()
+    }
+
+    /// The active screen's characters as the application shows them now,
+    /// line by line and including blanks: what the session daemon samples
+    /// to notice activity. Rendition, the cursor, history and which screen
+    /// is active are not part of it.
+    pub fn viewport(&self) -> String {
+        characters(self.engine.active())
     }
 
     fn token(&mut self, token: &Token, now: Instant, fed: &mut Fed) {
