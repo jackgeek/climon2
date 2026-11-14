@@ -692,11 +692,13 @@ fn terminal_is_raw(fd: i32) -> io::Result<bool> {
     Ok(termios.c_lflag & (nix::libc::ICANON | nix::libc::ECHO) == 0)
 }
 
+/// The emulator's smallest screen, one row by two columns, is the smallest
+/// PTY: a one-row host is how monitor tests reach `Terminal too small`.
 fn pty_size(rows: u16, cols: u16) -> io::Result<PtySize> {
-    if rows < 2 || cols < 2 {
+    if rows < 1 || cols < 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "PTY needs at least 2 rows and columns",
+            "PTY needs at least 1 row and 2 columns",
         ));
     }
     Ok(PtySize {
