@@ -68,9 +68,11 @@ fn refusal(request: &Request, error: String) -> String {
 pub(crate) enum Control {
     /// Acquire is submitted and not yet answered or granted.
     Acquiring,
-    /// Control is held, but input would not reach a painted, ready frame.
+    /// Control is held, but its restoration is not yet applied and ready.
     Restoring,
-    /// Control is held with a ready restoration painted: input may go.
+    /// Control is held with its restoration applied and Ready accepted,
+    /// whether or not the canvas shows now; input additionally needs a
+    /// painted frame ([`Terminal::input`]).
     Controlling,
     NotControlling,
     /// The command ended: its view is frozen.
@@ -120,6 +122,17 @@ struct Held {
     live: bool,
     /// The desire last sent in this period, if any.
     resized: Option<TerminalSize>,
+}
+
+impl Held {
+    /// Controlling once the period's restoration is applied and its Ready
+    /// accepted, painted or not; Restoring before that.
+    fn control(self) -> Control {
+        match self.phase {
+            Phase::Applied { ready: true, .. } => Control::Controlling,
+            _ => Control::Restoring,
+        }
+    }
 }
 
 /// One session's terminal: kept per session ID for the monitor's whole run.
@@ -357,9 +370,7 @@ impl Terminal {
             return Control::Ended;
         }
         match self.held {
-            Some(_) => self
-                .input()
-                .map_or(Control::Restoring, |_| Control::Controlling),
+            Some(held) => held.control(),
             None if self.acquiring => Control::Acquiring,
             None => Control::NotControlling,
         }
@@ -658,8 +669,8 @@ mod tests {
 
     /// Review of 8582801 (painted is not sticky): input needs the frame on
     /// the host to show the applied restoration now. A frame that does not
-    /// (covered, too small, or another session selected) closes input and
-    /// the Controlling label until a frame shows it again.
+    /// (covered, too small, or another session selected) closes input until
+    /// a frame shows it again.
     #[test]
     fn a_frame_that_stops_showing_the_restoration_closes_input() {
         let held = authority(2, 3);
@@ -669,10 +680,27 @@ mod tests {
         assert_eq!(terminal.input(), Some(held));
         terminal.painted(false);
         assert_eq!(terminal.input(), None);
-        assert_eq!(terminal.control(), Control::Restoring);
         terminal.painted(true);
         assert_eq!(terminal.input(), Some(held));
-        assert_eq!(terminal.control(), Control::Controlling);
+    }
+
+    /// Owner decision (2026-11-14, follow-up): the control label follows
+    /// control and restoration only, never visibility. Controlling once the
+    /// period's restoration is applied and its Ready accepted, painted or
+    /// not; Restoring before that, whatever the frame shows.
+    #[test]
+    fn the_control_label_ignores_whether_the_canvas_shows() {
+        let held = authority(2, 3);
+        let mut terminal = restored(b"x");
+        terminal.painted(true);
+        assert_eq!(terminal.control(), Control::Restoring, "Ready unanswered");
+        terminal.present(Presentation::Answered(Request::Ready(held), Ok(())));
+        for shown in [false, true, false] {
+            terminal.painted(shown);
+            assert_eq!(terminal.control(), Control::Controlling, "shown {shown}");
+        }
+        terminal.present(Presentation::Begin(authority(2, 4), geometry(10, 3)));
+        assert_eq!(terminal.control(), Control::Restoring);
     }
 
     /// CTL-05 (pure supplement): a finished session is sent no Resize.

@@ -282,9 +282,10 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   (`Terminal::input`, which the input router checks). Painted is decided before each
   frame: true only for the selected session's terminal while nothing covers
   its canvas and the host has room, so selecting another session, opening
-  the selector or key introduction, or a too-small host closes input (and
-  the control reads `Restoring`) until a frame shows the restoration
-  again.
+  the selector or key introduction, or a too-small host closes input until a
+  frame shows the restoration again. The control label ignores visibility
+  (owner decision, 2026-11-14): `Controlling` once the restoration is applied
+  and Ready accepted, even while the canvas is covered.
 - **Canvas.** The selected session's active screen is painted directly below
   the top row at the model's geometry, clipped to the host, with blank
   margins: each cell's character and combining marks, a wide character over
@@ -303,7 +304,7 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   fixed-width slots at the right edge, each after ` | `, never move whatever
   their values: its status as the selector shows it (Unavailable until
   status reaches the monitor, #95, #107) in 18 cells, its control
-  (`Acquiring`, `Restoring`, `Controlling` once input may go, `Not
+  (`Acquiring`, `Restoring`, `Controlling` once its restoration is applied and ready, `Not
   controlling`, or `Ended` once frozen) in 15, and, unless
   `monitor.show_key_hints` is false, `<prefix> then s: sessions`. The label
   fills the cells they leave from the left; the latest error (a refused
@@ -383,7 +384,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | COM-01 and not-connected labels (pure supplement) | `connection_statuses_are_labelled_as_specified` (`src/registry.rs`) |
 | TRM-06 label cases (pure supplement): latest nonempty title, command fallback, literal, never IDs; cell-safe clipping | `labels_are_the_latest_nonempty_title_or_command_and_arguments_literally`, `clipping_is_display_cell_safe` (`src/registry.rs`) |
 | SEL-01 basic cases (pure supplement) | `the_selector_draws_a_captionless_double_border_with_two_columns`, `up_and_down_move_without_wrapping_and_escape_closes`, `opening_an_open_selector_keeps_its_highlight` (`src/selector.rs`) |
-| CTL-05 (Monitor), TRM-01 (Monitor, basic cases), spec #73 Enter and initial selection before status (#108): nothing selected at startup; Enter selects and acquires; plain, ANSI-coloured, bold-on-blue, wide and combining text and the cursor painted as written, live; a later arrival never moves the selection; the open selector covers the canvas, so the control reads Restoring until it closes | `enter_selects_and_acquires_a_session_and_paints_it_live` (e2e) |
+| CTL-05 (Monitor), TRM-01 (Monitor, basic cases), spec #73 Enter and initial selection before status (#108): nothing selected at startup; Enter selects and acquires; plain, ANSI-coloured, bold-on-blue, wide and combining text and the cursor painted as written, live; a later arrival never moves the selection; the open selector covers the canvas and the control still reads Controlling | `enter_selects_and_acquires_a_session_and_paints_it_live` (e2e) |
 | TRM-02 (Monitor): only the daemon answers session queries; no session byte or title reaches the host; the host is never queried | `only_the_daemon_answers_session_queries_and_no_session_byte_reaches_the_host` (e2e) |
 | TRM-03 (Monitor) at 80x24, 200x60, 500x200 and a larger host: one top row; the desired area is the host less one row; canonical bytes at the effective geometry with blank margins | `the_selected_session_fills_the_host_below_one_top_row_at_its_effective_geometry` (e2e) |
 | CTL-05 (Monitor, resize), TRM-03 (real host resizes): Resize only to the selected controller, never to a background one | `host_resizes_reach_only_the_selected_controller` (e2e) |
@@ -394,7 +395,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | CTL-05, COM-05 (pure supplement): Ready only after the apply; applied, Ready accepted and painted distinct, input needs all three; only Ready for the applied restoration counts | `ready_applied_and_painted_stay_distinct_and_input_needs_all_three`, `only_ready_accepted_for_the_applied_restoration_opens_input` (`src/terminal.rs`) |
 | TRM-04, COM-05 (pure supplement): staged restorations replace the model whole once applied; superseded ones never become current; a cache is never shown | `a_restoration_replaces_the_model_whole_only_once_applied`, `a_cache_from_an_earlier_period_is_never_shown` (`src/terminal.rs`) |
 | Carried from #76 (owner decision 2026-11-13): a Display at a geometry the model lacks marks it stale until the next restoration | `a_display_at_a_geometry_the_model_lacks_marks_it_stale_until_restored` (`src/terminal.rs`) |
-| #94 rule (pure supplement): the view freezes at Command final, only if the period held then had applied a restoration; a finished session gets no Resize; painted is not sticky | `the_view_freezes_at_the_command_final`, `a_command_final_without_a_live_model_shows_no_view`, `a_finished_session_is_sent_no_resize`, `a_frame_that_stops_showing_the_restoration_closes_input` (`src/terminal.rs`) |
+| #94 rule (pure supplement): the view freezes at Command final, only if the period held then had applied a restoration; a finished session gets no Resize; painted is not sticky; the control label ignores visibility | `the_view_freezes_at_the_command_final`, `a_command_final_without_a_live_model_shows_no_view`, `a_finished_session_is_sent_no_resize`, `a_frame_that_stops_showing_the_restoration_closes_input`, `the_control_label_ignores_whether_the_canvas_shows` (`src/terminal.rs`) |
 | CTL-05 (pure supplement): Resize once per grant and desire, never without control; superseded refusals are not errors and a refused Resize is resent; Acquiring and errors | `resize_follows_every_grant_and_each_new_desire_only_while_controlling`, `work_refused_under_a_superseded_restoration_is_not_an_error_and_resize_is_resent`, `acquiring_ends_at_the_grant_or_the_answer_and_errors_are_shown`, `each_control_has_its_label` (`src/terminal.rs`) |
 | LIM-03 (pure supplement): a restoration over the model's limit is an error without Ready | `a_restoration_over_the_model_limit_is_an_error_without_ready` (`src/terminal.rs`) |
 | TRM-01 (pure supplement): exact SGR for the 16 ANSI, palette, direct and default colours, underline colour (colon form, underlined cells only) and renditions; wide and combining text; each cell covers its given width; the cursor | `colours_and_renditions_are_painted_with_their_own_sgr`, `wide_and_combining_text_and_the_cursor_are_painted_in_place`, `each_cell_covers_the_width_it_was_given`, `each_row_starts_with_its_own_cursor_position` (`src/paint.rs`) |
