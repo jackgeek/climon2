@@ -497,3 +497,46 @@ fn command_final_follows_the_commands_last_output() {
     session.finish();
 }
 
+/// COM-06 (Contract: Command final means no more output follows) and
+/// COM-03 (Contract, Kill cases): a Kill that arrives after the command
+/// exited but before its output drained waits for the drain. The daemon is
+/// stopped while the command sets a title, prints its last line and exits
+/// 3, and while a hello and a standalone Kill are sent in one go, so the daemon serves the Kill
+/// before it reads that output. The ready controller still receives every
+/// Display holding the last line, and a passive monitor that selected
+/// `title-v1` the new title, before their Command final with exit 3; the
+/// Kill then confirms that result.
+#[test]
+fn a_kill_during_the_drain_lets_the_commands_last_output_through() {
+    let mut session = Session::start("script");
+    let mut attached = ready_attachment(&session, &[]);
+    let (mut watching, _) = monitor(&session, &["title-v1"]);
+    let command = fixture_pid(&session);
+    let daemon = i32::try_from(session.pid).unwrap();
+    assert_eq!(unsafe { libc::kill(daemon, libc::SIGSTOP) }, 0);
+    crate::issue(&session, "title done");
+    crate::issue(&session, "text last line");
+    crate::issue(&session, "exit 3");
+    exited_unreaped(command);
+    let mut killing = UnixStream::connect(&session.socket).unwrap();
+    killing
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    crate::send(&mut killing, ClientMessage::Hello { protocol: 1 });
+    request(&mut killing, &kill(1, 1, &[]));
+    assert_eq!(unsafe { libc::kill(daemon, libc::SIGCONT) }, 0);
+    let result = exited(3);
+    assert_eq!(title_changed(&mut watching), Some("done".into()));
+    assert_final_then_closed(&mut watching, &result);
+    assert_eq!(attached.next_after_display(), command_final(&result));
+    let before_final = attached.display.clone();
+    attached.session_ended();
+    assert_eq!(crate::count(&before_final, b"last line"), 1);
+    assert!(matches!(
+        crate::receive(&mut killing),
+        PrivateMessage::Hello(_)
+    ));
+    assert_eq!(message(&mut killing), terminated(1, &result));
+    assert_closed(&mut killing);
+    session.finish();
+}
