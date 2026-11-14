@@ -609,3 +609,35 @@ fn a_restoration_in_progress_when_the_drain_ends_completes_before_command_final(
     assert_final_then_closed(&mut watching, &result);
     session.finish();
 }
+
+/// COM-06 (Contract: Command final means no more output follows): the
+/// update a controller under derived presentation is owed, held back by a
+/// synchronized update, reaches it before Command final, which waits for
+/// the update's latch to expire. A ready controller whose 600-column host
+/// is wider than the session's 500-column limit is served a derived
+/// presentation. The daemon is stopped while the command begins a
+/// synchronized update it never ends, prints `held-frame` and exits 3, so
+/// the daemon reads all three, then the end of the output, as it resumes.
+/// The controller receives `held-frame` as Display before its Command
+/// final, no sooner than the latch's 150 ms after the daemon resumed, and
+/// only then its release and Control revoked.
+#[test]
+fn a_held_synchronized_update_reaches_a_derived_controller_before_command_final() {
+    let mut session = Session::start("script");
+    let mut attached = Attached::open(&session, geometry(600, 37), &[], geometry(500, 37));
+    attached.confirm_ready();
+    attached.until_displayed(b"fixture-ready", 1);
+    let command = fixture_pid(&session);
+    while_stopped(&session, || {
+        crate::issue(&session, "sync");
+        crate::issue(&session, "text held-frame");
+        crate::issue(&session, "exit 3");
+        exited_unreaped(command);
+    });
+    let resumed = Instant::now();
+    assert_eq!(attached.next_after_display(), command_final(&exited(3)));
+    assert!(resumed.elapsed() >= Duration::from_millis(150));
+    assert_eq!(crate::count(&attached.display, b"held-frame"), 1);
+    attached.session_ended();
+    session.finish();
+}
