@@ -306,6 +306,9 @@ pub(super) struct Stream {
     /// The period and restoration the role holds, from its grant until its
     /// revocation.
     held: Option<AuthorityIds>,
+    /// Whether the held restoration's Restoration begin arrived: a grant's
+    /// restoration has not begun yet.
+    begun: bool,
 }
 
 impl Stream {
@@ -318,6 +321,7 @@ impl Stream {
             synchronized: false,
             known: false,
             held: None,
+            begun: false,
         }
     }
 
@@ -492,6 +496,7 @@ impl Stream {
     fn grant(&mut self, granted: wire::ControlGranted) -> Result<Presentation, Fault> {
         require(self.held.is_none(), UNHELD)?;
         self.held = Some(granted.authority);
+        self.begun = false;
         Ok(Presentation::Granted(
             granted.authority,
             granted.geometry,
@@ -520,7 +525,9 @@ impl Stream {
 
     fn begin(&mut self, begin: wire::RestorationBegin) -> Result<Screen, Fault> {
         self.in_period(begin.authority.period)?;
+        require(self.follows(begin.authority.restoration_id), UNHELD)?;
         self.held = Some(begin.authority);
+        self.begun = true;
         Ok(Screen::Begin(begin.authority, begin.geometry))
     }
 
@@ -535,6 +542,14 @@ impl Stream {
 
     fn holds(&self, authority: AuthorityIds) -> Result<(), Fault> {
         require(self.held == Some(authority), UNHELD)
+    }
+
+    /// Restoration IDs increase within a period: a beginning names the
+    /// granted restoration, once, or a newer one.
+    fn follows(&self, restoration: Counter) -> bool {
+        self.held.is_some_and(|held| {
+            held.restoration_id < restoration || (!self.begun && held.restoration_id == restoration)
+        })
     }
 
     fn in_period(&self, period: Counter) -> Result<(), Fault> {

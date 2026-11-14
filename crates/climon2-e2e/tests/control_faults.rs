@@ -185,7 +185,8 @@ impl Plan {
 /// `invalid_argument`, retains nothing and never consumes its ID (an
 /// interactive Open at zero geometry, Acquire of generation zero, Input with
 /// a zero period, no bytes or more than `chunk_bytes`, Resize to zero
-/// columns, Ready with a zero restoration, Focus of 2 or with a reserved
+/// columns, Ready with a zero restoration, Resize whose authority names
+/// generation zero, Focus of 2 or with a reserved
 /// byte set); Set viewing remains `unsupported_operation`; Input of
 /// `chunk_bytes` whose charge exceeds `request_bytes` by one is
 /// `queue_full`, while Input charging exactly `request_bytes` is accepted. The accepted requests are then
@@ -206,6 +207,8 @@ fn installed_library_rejects_malformed_control_requests_locally() {
         json!({ "tag": "resize", "request_id": 1, "authority": [1, 2, 2],
                 "geometry": [0, 25] }),
         json!({ "tag": "ready", "request_id": 1, "authority": [1, 2, 0] }),
+        json!({ "tag": "resize", "request_id": 1, "authority": [0, 2, 2],
+                "geometry": [90, 25] }),
         json!({ "tag": "focus", "request_id": 1, "authority": [1, 2, 2], "value": 2 }),
         json!({ "tag": "focus", "request_id": 1, "authority": [1, 2, 2], "value": 1,
                 "flag_reserved": 1 }),
@@ -632,7 +635,10 @@ type RecordCase = (&'static str, Vec<Value>, Vec<u64>, (u64, &'static str));
 /// #81: the shared codec decodes it, the library refuses it), a Display
 /// under a restoration it does not hold, a Display after its revocation, a
 /// grant before the Initial metadata, a second grant without a revocation,
-/// a Restoration begin or Geometry of another period, and a Restoration
+/// a Restoration begin or Geometry of another period, a Restoration begin
+/// that does not follow the held restoration (the granted one again
+/// after its beginning, or an older one: restoration IDs increase within
+/// a period), and a Restoration
 /// complete or Control revoked of a restoration it does not hold. A
 /// Display larger than `chunk_bytes`, which the daemon's frame size allows
 /// whatever `chunk_bytes` is, is delivered in order as Displays of at most
@@ -743,6 +749,30 @@ fn installed_library_refuses_presentation_records_out_of_authority() {
                 DIAGNOSTIC,
             ],
             closed,
+        ),
+        (
+            "repeated-begin",
+            with(vec![begin(PERIOD, 2)]),
+            vec![
+                RESPONSE,
+                INITIAL_METADATA,
+                GRANTED,
+                RESTORATION_BEGIN,
+                DIAGNOSTIC,
+            ],
+            invalid,
+        ),
+        (
+            "older-begin",
+            with(vec![begin(PERIOD, 1)]),
+            vec![
+                RESPONSE,
+                INITIAL_METADATA,
+                GRANTED,
+                RESTORATION_BEGIN,
+                DIAGNOSTIC,
+            ],
+            invalid,
         ),
         (
             "foreign-begin",
