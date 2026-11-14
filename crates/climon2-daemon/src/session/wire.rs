@@ -668,7 +668,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// A rejected first role has no effects, carries the command's result
-    /// once the daemon knows it, and ends its stream.
+    /// once it is final, and ends its stream.
     fn reject_role(&mut self, id: u64, request_id: Counter, error: Error) {
         let known_final = self.command_result.clone();
         self.rejection(id, request_id, error, known_final);
