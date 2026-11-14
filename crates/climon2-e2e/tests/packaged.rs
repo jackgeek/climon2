@@ -105,6 +105,16 @@ fn installed_generic_fixture_preserves_runtime_contract_and_log_privacy() {
         "",
         "print",
         "resize-ready",
+        // Answers the harmless probe, then shows the typed secret reached the command.
+        "raw",
+        "await-input",
+        "probe",
+        "print",
+        "input-ready",
+        "await-input",
+        "\r",
+        "print",
+        "input-received",
         "sleep",
         "5000",
         "report",
@@ -118,8 +128,9 @@ fn installed_generic_fixture_preserves_runtime_contract_and_log_privacy() {
     command.args(args);
     let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
     terminal.wait_for_text("resize-ready", TIMEOUT).unwrap();
-    terminal.wait_for_input_ready(TIMEOUT).unwrap();
-    terminal.send("input-secret-not-for-logs-72c").unwrap();
+    type_until(&mut terminal, "probe", "input-ready");
+    terminal.send("input-secret-not-for-logs-72c\r").unwrap();
+    terminal.wait_for_text("input-received", TIMEOUT).unwrap();
     terminal.resize(43, 137).unwrap();
     assert_eq!(
         terminal.wait_exit(TIMEOUT).unwrap(),
@@ -183,7 +194,7 @@ fn installed_nested_bash_sessions_are_both_listed_and_route_exit_status() {
     command.env("PS1", "ENCLOSING> ");
     let mut terminal = Terminal::spawn(command, 30, 160).unwrap();
     terminal.wait_for_text("ENCLOSING> ", TIMEOUT).unwrap();
-    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    type_until(&mut terminal, "echo enclosing-$((1+1))\n", "enclosing-2");
     terminal
         .send(format!(
             "PS1='INNER> ' climon2 exec {} --noprofile --norc -i; s=$?; printf '\\nNESTED-STATUS=%s\\n' \"$s\"\n",
@@ -229,10 +240,9 @@ fn installed_tui_roundtrips_queries_mouse_paste_and_resize_without_reset() {
     let mut terminal = launch(&package, "climon2-tui-fixture", &[path.to_str().unwrap()]);
     terminal.wait_for_bytes(b"\x1b[?1049h", TIMEOUT).unwrap();
     terminal.wait_for_text("cursor-ok", TIMEOUT).unwrap();
-    terminal.wait_for_input_ready(TIMEOUT).unwrap();
-    terminal
-        .send("\x1b[<0;7;9M\x1b[200~paste-exact\x1b[201~")
-        .unwrap();
+    // The first mouse report is the one recorded, so it is harmless to repeat.
+    type_until(&mut terminal, "\x1b[<0;7;9M", "mouse-ok");
+    terminal.send("\x1b[200~paste-exact\x1b[201~").unwrap();
     terminal
         .wait_for_text("mouse-ok paste-ok", TIMEOUT)
         .unwrap();
@@ -264,7 +274,7 @@ fn installed_real_vim_edits_and_saves() {
         &["-Nu", "NONE", "-i", "NONE", "-n", path.to_str().unwrap()],
     );
     terminal.wait_for_text("vim-original", TIMEOUT).unwrap();
-    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    type_until(&mut terminal, ":echo 'probe-'.(6*7)\r", "probe-42");
     terminal.send("Govim-through-session\x1b:wq\r").unwrap();
     assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
     drop(terminal);
@@ -288,7 +298,8 @@ fn installed_real_less_navigates_and_resizes() {
     .unwrap();
     let mut terminal = launch(&package, "/usr/bin/less", &["-R", path.to_str().unwrap()]);
     terminal.wait_for_text("less-top", TIMEOUT).unwrap();
-    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    // `=` shows the file's position until the next key, which less then obeys.
+    type_until(&mut terminal, "=", "(press RETURN)");
     terminal.resize(38, 132).unwrap();
     terminal.send("G").unwrap();
     terminal.wait_for_text("less-bottom", TIMEOUT).unwrap();
@@ -511,8 +522,7 @@ fn installed_session_survives_raw_socket_abuse_and_pending_hello() {
     };
     let package = Package::new();
     let mut terminal = launch_bash(&package, &bash);
-    terminal.send("echo $((40+2))-raw\n").unwrap();
-    terminal.wait_for_text("42-raw", TIMEOUT).unwrap();
+    type_until(&mut terminal, "echo $((40+2))-raw\n", "42-raw");
     let metadata = package.metadata();
     let mut pending = UnixStream::connect(metadata.socket_path.to_string()).unwrap();
     pending
@@ -563,8 +573,11 @@ fn actual_previous_release_remains_live_across_current_archive_install() {
     };
     let start = || {
         let mut terminal = launch_bash(&package, &bash);
-        terminal.send("echo $((6*7))-upgrade-ready\n").unwrap();
-        terminal.wait_for_text("42-upgrade-ready", TIMEOUT).unwrap();
+        type_until(
+            &mut terminal,
+            "echo $((6*7))-upgrade-ready\n",
+            "42-upgrade-ready",
+        );
         terminal
     };
     let mut previous = start();
@@ -666,8 +679,11 @@ fn debug_hook_mid_install_crash_recovers_without_stranding_live_client() {
     let installer = package.executable_home().join("install");
     copy_executable(&climon2_test_term::bin_path("climon2-install"), &installer);
     let mut terminal = launch_bash(&package, &bash);
-    terminal.send("echo $((6*7))-install-ready\n").unwrap();
-    terminal.wait_for_text("42-install-ready", TIMEOUT).unwrap();
+    type_until(
+        &mut terminal,
+        "echo $((6*7))-install-ready\n",
+        "42-install-ready",
+    );
     let session = package.metadata().session_id.to_string();
     let current = fs::read(package.executable_home().join("current")).unwrap();
     let invoke = |fault: Option<&str>| {
@@ -764,9 +780,11 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
         command.env("PS1", "PACKAGED> ");
         let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
         terminal.wait_for_text("PACKAGED> ", TIMEOUT).unwrap();
-        terminal.wait_for_input_ready(TIMEOUT).unwrap();
-        terminal.send("echo $((6*7))-version-ready\n").unwrap();
-        terminal.wait_for_text("42-version-ready", TIMEOUT).unwrap();
+        type_until(
+            &mut terminal,
+            "echo $((6*7))-version-ready\n",
+            "42-version-ready",
+        );
         terminal
     };
     let mut old = start();
