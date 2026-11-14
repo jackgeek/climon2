@@ -145,6 +145,7 @@ name = "climon2-cli"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-discovery",
  "climon2-platform",
  "climon2-test-term",
  "filetime",
@@ -200,6 +201,18 @@ dependencies = [
  "tracing",
  "uuid",
  "vt100",
+]
+
+[[package]]
+name = "climon2-discovery"
+version = "0.1.0"
+dependencies = [
+ "climon2-core",
+ "climon2-platform",
+ "climon2-test-term",
+ "libc",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -271,6 +284,7 @@ dependencies = [
  "alacritty_terminal",
  "climon2-cli",
  "climon2-client",
+ "climon2-core",
  "climon2-daemon",
  "climon2-install",
  "climon2-monitor",
