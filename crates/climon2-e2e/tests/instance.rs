@@ -1063,7 +1063,8 @@ struct Panicked {
     retry: u64,
 }
 
-/// LIB-05 Fault and LIB-04 Fault: a panic injected while an instance is in
+/// LIB-05 Fault, LIB-04 Fault and REC-01 Fault (a contained panic calls
+/// for passive retry): a panic injected while an instance is in
 /// use (at `submit`, `notification`, `snapshot`, `drain`, `shutdown` or
 /// `run`) returns an explicit `CM1_INTERNAL_ERROR` with cleared output (run
 /// still reports its cleanup and terminal evidence) and stops the instance
