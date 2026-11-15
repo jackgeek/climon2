@@ -48,7 +48,7 @@ pub struct SystemRandom;
 
 impl Random for SystemRandom {
     fn next(&mut self) -> u64 {
-        uuid::Uuid::new_v4().as_u64_pair().0
+        uuid::Uuid::new_v4().as_u128() as u64
     }
 }
 
@@ -128,7 +128,7 @@ mod hooked {
         fn turn_starting(&mut self) -> io::Result<()> {
             while sibling(&self.path, ".hold").try_exists()? {
                 fs::write(sibling(&self.path, ".held"), b"")?;
-                std::thread::sleep(Duration::from_millis(1));
+                std::thread::sleep(crate::session::TICK);
             }
             Ok(())
         }

@@ -49,7 +49,7 @@ const DISPLAY_CHUNK: usize = MAX_DATA_FRAME_LENGTH - 1;
 const MAX_CONNECTIONS: usize = 64;
 const ACCEPTS_PER_TICK: usize = 8;
 const INITIAL_TIMEOUT: Duration = Duration::from_secs(5);
-const TICK: Duration = Duration::from_millis(2);
+pub(crate) const TICK: Duration = Duration::from_millis(2);
 const FAILURE_MESSAGE: &str = "session failed; see daemon log";
 /// The kill requester standing for a termination signal; never a connection.
 const SIGNAL: ConnectionId = ConnectionId(u64::MAX);

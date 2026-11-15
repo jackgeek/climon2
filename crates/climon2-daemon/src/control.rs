@@ -491,10 +491,10 @@ impl Control {
 
     /// Whether the current controller's latest reported viewing is true.
     pub fn viewing(&self) -> bool {
-        match &self.stage {
-            Stage::Open(Open::Attached(attachments)) => attachments.controller.viewing(),
-            _ => false,
-        }
+        matches!(
+            &self.stage,
+            Stage::Open(Open::Attached(attachments)) if attachments.controller.viewing()
+        )
     }
 
     /// Records a pending host size; [`Control::apply_pending`] applies it.
