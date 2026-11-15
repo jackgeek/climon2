@@ -349,6 +349,8 @@ fn exec_restores_a_waiting_alternate_screen_without_application_redraw() {
     layout.clean();
 }
 
+/// DSC-06 (CLI part): a detached session stays live, and attach finds it again by a one-digit
+/// prefix in the other case, framed by hyphens.
 #[test]
 fn packaged_client_can_detach_and_reattach_to_a_live_session() {
     let layout = Layout::new();
@@ -1002,6 +1004,8 @@ fn kill_session(layout: &Layout, selector: &str) -> (i32, String, String) {
     )
 }
 
+/// DSC-06 (CLI part): kill selects a detached live session by prefix and succeeds silently
+/// within its deadline, only once the session's files are cleaned up.
 #[test]
 fn kill_terminates_a_detached_session_silently_after_cleanup() {
     let layout = Layout::new();
@@ -1021,6 +1025,8 @@ fn kill_terminates_a_detached_session_silently_after_cleanup() {
     layout.clean();
 }
 
+/// DSC-06 (CLI part): kill of an attached live session succeeds silently, and the attached
+/// client exits with the command's signal status.
 #[test]
 fn kill_while_attached_gives_the_client_the_signal_status() {
     let layout = Layout::new();
@@ -1034,6 +1040,8 @@ fn kill_while_attached_gives_the_client_the_signal_status() {
     layout.clean();
 }
 
+/// DSC-06 (CLI part): attach to a detached live session replaces an inherited kill envelope
+/// with its own, so it attaches instead of killing.
 #[test]
 fn attach_overwrites_an_inherited_kill_envelope() {
     let layout = Layout::new();
@@ -1116,6 +1124,8 @@ fn unconfirming_session(layout: &Layout) -> climon2_core::metadata::SessionMetad
     metadata
 }
 
+/// DSC-06 (CLI part): kill of a live session that never confirms fails with 125 at the
+/// ten-second deadline, reaps only its own helper and keeps the metadata.
 #[test]
 fn an_unconfirmed_kill_fails_at_the_deadline_and_reaps_only_its_helper() {
     let layout = Layout::new();
