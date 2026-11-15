@@ -348,18 +348,9 @@ impl Bounded {
         self.geometry
     }
 
-    /// How many of the normal screen's newest history rows the model shows:
-    /// none while the alternate screen is active.
-    fn shown(&self) -> usize {
-        self.core
-            .normal_history()
-            .unwrap_or(0)
-            .min(self.history.shown)
-    }
-
     /// What this instance shows, for painting.
     pub(crate) fn view(&self) -> View<'_> {
-        View::new(&self.core, self.shown(), self.history.truncated)
+        View::new(&self.core, self.history.shown, self.history.truncated)
     }
 }
 
