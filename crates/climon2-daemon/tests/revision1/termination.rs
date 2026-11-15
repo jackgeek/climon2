@@ -452,20 +452,35 @@ fn the_end_of_the_commands_output_while_it_runs_is_no_final_result() {
 /// stages only an exit whose output the daemon already read.
 fn exited_unreaped(pid: u32) {
     let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let output = std::process::Command::new("/bin/ps")
-            .args(["-o", "stat=", "-p", &pid.to_string()])
-            .output()
-            .unwrap();
-        if String::from_utf8_lossy(&output.stdout)
-            .trim_start()
-            .starts_with('Z')
-        {
-            return;
-        }
+    while !reapable(pid) {
         assert!(Instant::now() < deadline, "the command never exited");
         thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// Whether the command `pid` ended, so that its parent can reap it. A
+/// zombie main thread is not enough on Linux: the fixture runs on a thread
+/// of its own, and its exit can leave the main thread a zombie while that
+/// thread is still exiting, with the terminal still open and the command
+/// not yet reapable, so the daemon would still see it running. The command
+/// ended once its zombie main thread is its only thread.
+#[cfg(target_os = "linux")]
+fn reapable(pid: u32) -> bool {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    let lines: Vec<&str> = status.lines().collect();
+    lines.contains(&"State:\tZ (zombie)") && lines.contains(&"Threads:\t1")
+}
+
+/// Whether the command `pid` ended, as `ps` reports its state.
+#[cfg(target_os = "macos")]
+fn reapable(pid: u32) -> bool {
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .trim_start()
+        .starts_with('Z')
 }
 
 /// COM-06 (Contract: Command final means no more output follows): the
