@@ -78,9 +78,14 @@ impl Region {
         match scrolling {
             Scrolling::ClearScreen => true,
             Scrolling::Up => self.top,
-            Scrolling::DeleteLines => self.top && line == 0,
+            Scrolling::DeleteLines => self.on_top_row(line),
             _ => false,
         }
+    }
+
+    /// Whether the region starts at the top row and `line` is that row.
+    fn on_top_row(self, line: usize) -> bool {
+        self.top && line == 0
     }
 
     /// Whether text could push rows into history at `cursor`, on a screen

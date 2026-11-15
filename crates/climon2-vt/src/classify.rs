@@ -226,10 +226,17 @@ fn csi_scrolling(dispatch: &Dispatch) -> Scrolling {
 /// Scrolling by a CSI sequence without intermediates.
 fn plain_scrolling(dispatch: &Dispatch) -> Scrolling {
     match dispatch.action {
-        b'S' => Scrolling::Up,
-        b'M' => Scrolling::DeleteLines,
         b'J' => erase(dispatch),
         b'r' => region(dispatch),
+        action => parameterless(action),
+    }
+}
+
+/// SU and DL scroll whatever their parameters.
+fn parameterless(action: u8) -> Scrolling {
+    match action {
+        b'S' => Scrolling::Up,
+        b'M' => Scrolling::DeleteLines,
         _ => Scrolling::Nothing,
     }
 }
