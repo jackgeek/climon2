@@ -2050,10 +2050,14 @@ fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
         &mut terminal,
         "║Unavailable  /bin/bash -c c2 exec --headless",
     );
-    // Wide labels, and the long one clipped to the list, keep the border whole.
-    for row in terminal.screen().lines().filter(|row| row.contains('║')) {
-        assert!(row.ends_with("║ "), "{row:?}");
-    }
+    // Wide labels, and the long one clipped to the list, keep the border
+    // whole once the frame is painted: one snapshot may land mid-paint.
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| {
+            let bordered: Vec<_> = screen.lines().filter(|row| row.contains('║')).collect();
+            !bordered.is_empty() && bordered.iter().all(|row| row.ends_with("║ "))
+        })
+        .unwrap_or_else(|_| panic!("a bordered row stays broken:\n{}", terminal.screen()));
 
     let own = listed(&package, "c2 monitor");
     let own = own["session_id"].as_str().unwrap();
