@@ -125,6 +125,10 @@ impl Pty {
         }
         Ok(self.status.clone())
     }
+    /// The reaped command's result, without reaping.
+    pub fn result(&self) -> Option<CommandResult> {
+        self.status.clone()
+    }
     fn reap(&mut self) -> io::Result<()> {
         if let Some(status) = process::try_wait(self.pid)? {
             self.exited(status)?;

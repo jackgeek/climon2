@@ -44,6 +44,7 @@ flowchart TB
         e2e["climon2-e2e"]
         fixtures["climon2-fixtures"]
         xtask["xtask"]
+        second["climon2-second-release"]
     end
 
     cli -.->|"dev"| test_term
@@ -68,6 +69,12 @@ flowchart TB
     xtask --> install
     xtask --> platform
     xtask -.->|"dev"| fixtures
+    xtask -.->|"dev"| second
+    e2e -.->|"dev"| second
+    second --> core
+    second --> daemon
+    second --> platform
+
 ```
 
 The launcher has no workspace crate dependencies. Cycles through
@@ -112,6 +119,16 @@ records. The monitor (#106), the library-host fixture and xtask release checks
 use it; the client executable does not yet. Test-only loader fixtures consume the
 platform crate as dev-dependencies.
 
+**Current (#97):** `climon2-second-release` is the test-only
+[second-release fixture](../GLOSSARY.md#testing). Its library compiles
+`climon2-client`'s library source as a package of its own version, so it
+consumes what that source consumes, `core` and `platform`, and not
+`climon2-client` itself. Its daemon binary runs the `climon2-daemon` library
+behind a thin main with that version compiled in. `climon2-e2e` and `xtask`
+consume the package as dev-dependencies only so that Cargo builds its
+`cdylib`; no code links it. The developer accepted this package on
+2026-11-15 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
+
 **Current (#106):** the monitor loads version-matched client libraries
 in-process through the shared loader, with one owner thread per
 [live session](../GLOSSARY.md#sessions)'s passive client. Dynamic loading is
@@ -128,7 +145,8 @@ The [agreed terminal contract](protocol/terminal-integration.md) has the monitor
 paint read-only Rust cell, cursor, mode and history views of these models, which
 `climon2-vt` provides (#83) without exposing engine types; the monitor does not
 paint from them yet, and today uses the crate only for the documented
-normal-shell baseline.
+normal-shell baseline and, at startup, the `Model`'s mandatory allocation, to
+check that its limits hold one session's terminal model (#167).
 Exact-release libraries carry terminal bytes, not a native cross-release cell
 schema; the monitor parses at effective daemon geometry and paints locally.
 Canonical monitor presentation and optional core Focus introduce no new crate.
@@ -157,9 +175,10 @@ require allocation-aware terminal/parser updates and bounded discovery/queues/
 thread resources. Monitor reuse of `climon2-vt` must qualify its combining and
 auxiliary allocations; the narrow unchanged-engine/infallible-interface
 assumptions are reopened, not silently treated as bounded. `climon2-vt`'s
-allocation-bounded `Model` (#76, ADR 0007) qualifies them on the unchanged
-engine; the monitor does not use it yet. No replacement engine, additional
-workspace crate or dependency edge is selected.
+allocation-bounded `Model` (#76, ADR 0007), with one `Parser` shared per
+monitor (#166), qualifies them on the unchanged engine; the monitor keeps no
+models yet and reads only their mandatory allocation (#167). No replacement
+engine, additional workspace crate or dependency edge is selected.
 
 Current edges come from workspace `Cargo.toml` files. This is a consumption
 index, not a replacement for the architecture decisions or their permitted

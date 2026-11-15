@@ -9,33 +9,19 @@
 #[allow(dead_code)]
 mod support;
 
-use climon2_core::layout::ExecutableHome;
-use climon2_test_term::{bin_path, copy_executable, output_within, process_command};
+use climon2_test_term::{copy_executable, output_within};
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
+use std::{fs, path::Path, process::Command};
+use support::{
+    LIBRARY, Package, TIMEOUT,
+    library::{VERSION, home, host, library, observe},
 };
-use support::{LIBRARY, Package, TIMEOUT};
 
 const SUCCESS: u64 = 0;
 const UNSUPPORTED_REVISION: u64 = 1;
 const INVALID_ARGUMENT: u64 = 2;
 const ORIGIN_LIBRARY: u64 = 1;
 const MIB: u64 = 1024 * 1024;
-
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// The package's executable home, canonical as the monitor resolves it.
-fn home(package: &Package) -> ExecutableHome {
-    ExecutableHome::new(&package.executable_home().canonicalize().unwrap()).unwrap()
-}
-
-/// `version`'s library in `home`, by absolute path.
-fn library(home: &ExecutableHome, version: &str) -> PathBuf {
-    home.client_library(&version.parse().unwrap())
-}
 
 /// The version folder name, which is the library's release identity.
 fn version_folder(library: &Path) -> &str {
@@ -48,40 +34,15 @@ fn version_folder(library: &Path) -> &str {
         .unwrap()
 }
 
-/// The host loading `version`'s library from `home`, with a cleared
-/// environment; instrumented builds keep their profile.
-fn host(home: &ExecutableHome, version: &str, directory: &Path) -> Command {
-    let mut command = process_command(bin_path("climon2-library-host"));
-    command
-        .arg(home.path())
-        .arg(version)
-        .current_dir(directory)
-        .env_clear();
-    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-        command.env("LLVM_PROFILE_FILE", profile);
-    }
-    command
-}
-
-fn observe(mut host: Command) -> Value {
-    let output = output_within(&mut host, TIMEOUT);
-    assert!(output.status.success(), "{output:?}");
-    assert!(
-        output.stderr.is_empty(),
-        "library or loader wrote: {output:?}"
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
-}
-
 /// LIB-01 Library case (absolute exact-release load; same-release instances
 /// share one load): the loader accepts the installed library, loaded by
 /// absolute path with eager local resolution, which returns revision 1's
 /// immutable description. Its release text is exactly the version folder name,
 /// it advertises exactly the families it relays (#93: core, passive monitor
-/// entry and titles; #94: focus), its requirements are present and within
-/// the default reservations, and a second bootstrap returns the same
-/// description. A second load of the version shares the first, and the
-/// process has loaded that one client library file.
+/// entry and titles; #94: focus), its requirements are present and within the
+/// default reservations, and a second bootstrap returns the same description.
+/// A second load of the version shares the first, and the process has loaded
+/// that one client library file.
 #[test]
 fn installed_library_describes_revision_one_with_its_version_identity() {
     let package = Package::new();
@@ -367,5 +328,56 @@ fn installed_library_substituted_through_dyld_library_path_is_refused() {
     assert!(message.contains(library.to_str().unwrap()), "{message}");
     assert!(message.contains(decoy.to_str().unwrap()), "{message}");
     assert_eq!(report["images"], json!([decoy]));
+    package.assert_clean();
+}
+
+/// LIB-01 Fault case on macOS (an adversarial decoy without the bootstrap;
+/// owner decision on #84): when the file dyld loaded through `DYLD_LIBRARY_PATH`
+/// lacks `climon2_client_get_interface`, `dladdr` cannot name it, so the
+/// refusal lists every loaded image with the library's file name, the main
+/// executable included. The host runs as a copy named like the library
+/// outside the search path, so the refusal names that copy first, then the
+/// decoy, in dyld's load order.
+#[cfg(target_os = "macos")]
+#[test]
+fn substitute_without_a_bootstrap_is_refused_naming_every_loaded_image_of_its_name() {
+    use climon2_test_term::bin_path;
+    use support::library::host_at;
+    let package = Package::new();
+    let home = home(&package);
+    let library = library(&home, VERSION);
+    let scratch = scratch();
+    let scratch = scratch.path().canonicalize().unwrap();
+    let search = scratch.join("search");
+    let hosts = scratch.join("host");
+    fs::create_dir(&search).unwrap();
+    fs::create_dir(&hosts).unwrap();
+    let source = scratch.join("decoy.c");
+    fs::write(&source, "int climon2_decoy_without_a_bootstrap;\n").unwrap();
+    let decoy = search.join(LIBRARY);
+    let output = output_within(
+        Command::new("cc")
+            .arg("-dynamiclib")
+            .arg("-o")
+            .arg(&decoy)
+            .arg(&source),
+        TIMEOUT,
+    );
+    assert!(output.status.success(), "{output:?}");
+    let named_host = hosts.join(LIBRARY);
+    copy_executable(&bin_path("climon2-library-host"), &named_host);
+    let mut substituted = host_at(&named_host, &home, VERSION, &scratch);
+    substituted.env("DYLD_LIBRARY_PATH", &search);
+    let report = observe(substituted);
+    assert_eq!(report["error"]["failure"], "SubstitutedImage", "{report:#}");
+    let message = report["error"]["message"].as_str().unwrap();
+    assert!(message.contains(library.to_str().unwrap()), "{message}");
+    let expected = format!(
+        "loaded a file of the same name ({}, {}) instead",
+        named_host.display(),
+        decoy.display()
+    );
+    assert!(message.contains(&expected), "{message}");
+    assert_eq!(report["images"], json!([named_host, decoy]));
     package.assert_clean();
 }

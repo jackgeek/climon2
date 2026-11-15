@@ -3,12 +3,17 @@
 The default macOS and GNU/Linux packaged acceptance tier (#38), using the public installer,
 the PATH launcher, real sibling binaries and `climon2-test-term` PTYs.
 There are no nested Cargo builds, ignored packaged tests, test retries, or shortened
-production deadlines. A client discards keys typed during its restoration and
-nothing on the screen marks its end, so typed input is ordered by observed output:
+production deadlines. A client discards keys typed during a restoration, which every
+grant starts (a new attachment, take control or hand-back), and nothing on the screen
+marks its end, so typed input is ordered by observed output:
 before input that must reach the session, `type_until` retypes a harmless command
 until its output (or echo) appears, and the input itself is then sent exactly once.
 That orders the input; it does not retry an assertion. Where typing would only end
 the command, the command instead waits for an acknowledgement file the test creates.
+A command that cannot answer a harmless key, because it records every byte or any key
+ends it, answers an acknowledgement file with output instead: created only once the
+client shows restored output, the file's answer is live output, which a client writes
+only after its restoration.
 Each scenario has an isolated HOME and climon2 home;
 normal completion checks owned processes, session metadata and runtime sockets.
 Logs intentionally survive until the isolated home is dropped.
@@ -81,10 +86,11 @@ Each host run is bounded; one that outlives its deadline is killed, reaped and
 failed. In archive mode the same tests load the exact archive's library, so
 the CI archive jobs exercise both macOS architectures' slices and the Linux
 library. The exported symbol set is a release check (`xtask`), not a
-Library-layer test; the loader's Fault-layer cases are `climon2-platform`'s.
+Library-layer test; the loader's Fault-layer cases are `climon2-platform`'s,
+except the macOS decoy found through `DYLD_LIBRARY_PATH` without the bootstrap.
 
 `tests/instance.rs` (#85) drives client instances through the same host's
-scenarios (`climon2-library-host <library> <scenario> <json>`), from the
+scenarios (`climon2-library-host <home> <version> <scenario> <json>`), from the
 threads the contract names: an owner thread creates, runs and destroys each
 instance while the test's main thread shuts it down, drains and releases. The
 host is the Library layer's instrumented host: caller startup memory is one
@@ -120,6 +126,23 @@ Focus under the authority the host last drained, against real sessions
 whose application (the fixture's `raw` and `echo-until` actions) writes
 back every input byte unchanged, and against the fake peer for holds,
 losses, mismatches and records out of authority.
+
+`tests/mixed.rs` (#97) runs two releases in one host process. Each test
+installs, in its own executable home and with the real installer, the
+[second-release fixture](../../GLOSSARY.md#testing) as release 0.0.97 in a
+sibling version folder: this build's other executables with the test-only
+`climon2-second-release` crate's library and session daemon. The library is
+the client library source built with its own release identity and without
+test hooks. The daemon is the daemon library behind a thin main that serves
+only 0.0.97 and gives its session's command `CLIMON2_SECOND_RELEASE_DAEMON`;
+each test session turns that into its title, so a library relays over
+`title-v1` which release's daemon it is connected to. Each release's CLI
+starts headless sessions served by its own folder's daemon. The host loads
+both releases' libraries through the shared loader (`script` input
+`releases`; each `create` step names its `release`) and runs instances of
+both at the same time. Releases ship no private dependencies, so
+release-relative private-dependency resolution (LIB-01) is not exercised.
+The Fault case returns early in archive mode.
 
 ## Session continuity scenarios
 
@@ -161,11 +184,12 @@ sessions in `tests/headless.rs`.
 
 | Scenario | Named test |
 |---|---|
-| LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; exactly the relayed families (`daemon-wire-v1`, `monitor-v1`, `title-v1`); requirements fit default reservations; a same-version load shares the first and only the requested file is mapped | `installed_library_describes_revision_one_with_its_version_identity` |
-| LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths (`LD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`), the absolute path maps only the requested file; the library reports its own folder's release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
-| LIB-02 Library: a copied library from another release is refused as the wrong release and remains mapped; a missing library is refused without substitution | `installed_library_of_another_release_or_none_is_refused_without_substitution` |
-| LIB-01 Library, Linux: `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` remain unchanged while the library loads | `installed_library_loads_under_the_users_loader_environment` |
-| LIB-01 Library, macOS (#84 owner decision): a copy found through `DYLD_LIBRARY_PATH` is refused as a substituted image and remains mapped | `installed_library_substituted_through_dyld_library_path_is_refused` |
+| LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; requirements present and within the default `monitor.limits` reservations; exactly the relayed families (`daemon-wire-v1`, `monitor-v1`, `title-v1`); a second load of the version shares the first, and only that file is loaded | `installed_library_describes_revision_one_with_its_version_identity` |
+| LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths (`LD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`), the absolute path maps the requested file and only it (the system loader's lookup, which no library change can alter); the library answers from its own image with its own folder's release, not `current`'s | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
+| LIB-02 Library: a version folder holding a copy that describes another release is refused as the wrong release, naming the compiled-in release; the copy stays loaded and the release it describes is not substituted; a folder without a library is a missing library and nothing loads | `installed_library_of_another_release_or_none_is_refused_without_substitution` |
+| LIB-01 Library, Linux: with `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` set, the library loads and all four stay as they were | `installed_library_loads_under_the_users_loader_environment` |
+| LIB-01 Library, macOS (#84 owner decision): a copy found through `DYLD_LIBRARY_PATH` is refused as a substituted image, naming both files, and stays loaded | `installed_library_substituted_through_dyld_library_path_is_refused` |
+| LIB-01 Fault, macOS (#84 owner decision): an adversarial decoy without the bootstrap is refused, listing every loaded image of the library's file name in load order, the main executable included | `substitute_without_a_bootstrap_is_refused_naming_every_loaded_image_of_its_name` |
 | LIB-02 Library: unsupported revisions rejected with a null description; null output storage | `installed_library_rejects_other_revisions_without_a_description` |
 | DOC-01: all eleven table entries reject null handles and outputs by the frozen call rules, `submit`'s null request included | `installed_library_table_rejects_null_arguments` |
 
@@ -246,6 +270,15 @@ before it.
 | COM-03 Library and Fault, backpressure: a Display waiting for `event_bytes` room stops `operation_ms`; `delivery_stall_ms` fails the connection `delivery_stalled`, retry passive, the held-back Ready unanswered | `installed_library_fails_a_stalled_delivery_without_timing_out_its_commands` (`control_faults.rs`) |
 | COM-03 Library and Fault: once waiting records are queued no stall deadline remains, and a Ready times out at `operation_ms` | `installed_library_times_commands_out_again_once_waiting_records_are_queued` (`control_faults.rs`) |
 
+### Library layer: mixed releases (`tests/mixed.rs`, #97)
+
+| Scenario | Named test |
+|---|---|
+| LIB-01 Library (exact-version lookup and one shared load; private-dependency resolution not exercised, releases ship none): both releases installed; with `current`, the working directory, `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` naming the other release, one process loads each by its exact version folder, in both orders; two instances of each register passively with a session of their own release at the same time, relay the title only their own release's daemon produces, and leave; a second load of each release shares the first, and exactly the two files are loaded once each | `mixed_releases_load_by_exact_version_and_run_side_by_side_whatever_current_cwd_and_search_paths` |
+| LIB-01 Library (exact-release pairing): the second-release fixture's daemon, with its release compiled in, starts no session for a CLI of another release (folder 0.0.98) | `second_release_daemon_serves_only_its_compiled_in_release` |
+| LIB-03 Library, identity separation: beside registered instances of both releases, a create expecting the other release fails `CM1_RELEASE_MISMATCH` without handles, and an Open of the other release's session, served by the other release's daemon, is refused `release_mismatch`, permanently, before any role | `mixed_release_instances_keep_their_own_release_identity_side_by_side` |
+| LIB-03 Fault, fault containment: `panic:receive`, once per hooked image, cannot reach the second-release fixture's instance, which opens and receives its Initial metadata before the hooked release's instance is submitted; that instance then fails (`internal_error`) and the second-release fixture's instance leaves | `a_fault_in_one_release_never_reaches_the_other_releases_instances` |
+
 ### Session continuity (plan section 6.1)
 
 | Scenario | Named packaged test (`tests/continuity.rs` unless noted) |
@@ -289,6 +322,7 @@ earlier run would, so they open on the empty state.
 | INP-01 configured prefix hint and exit 0, null take-control key accepted; once read, Ctrl+C and the default prefix+x are not exits (SIGTERM then gives 143) | `installed_monitor_hints_and_exits_with_the_configured_prefix` |
 | INP-01 null escape prefix and invalid keys refused before terminal changes | `installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys` |
 | CFG-01 unreadable and malformed JSONC, null, wrong type, duplicate, overflow, out-of-range and inconsistent settings: one diagnostic, 125, no terminal change | `installed_monitor_refuses_every_invalid_configuration_before_the_terminal_changes` |
+| CFG-01 limits one byte short of the monitor's parser and one 500x200 session's documented current model and recent page (total), of the model and page (client budget) or recent page (history total, then per-session history budget): one diagnostic naming that limit, 125, no terminal change; at those limits the monitor opens and prefix+x exits 0 (#167) | `installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model` |
 | CFG-01 `monitor.show_key_hints` false hides the empty state's hint, prefix+x still exits; unknown and unrelated settings ignored | `installed_monitor_without_key_hints_shows_none_and_still_exits` |
 | CFG-01 no live reload: after an edit, a repaint keeps the started settings and the edited prefix, once read, does not exit (SIGTERM then gives 143) | `editing_the_configuration_while_the_monitor_runs_changes_nothing` |
 | CFG-01 every effective setting in the monitor's general log | `installed_monitor_logs_its_effective_configuration` |
@@ -298,7 +332,7 @@ earlier run would, so they open on the empty state.
 | Spec #73 entry: missing monitor fails with 125 naming the version | `missing_installed_monitor_fails_naming_its_version` |
 | Spec #73 startup: no executable home outside a version folder | `a_monitor_outside_a_version_folder_refuses_to_start` |
 | EXT-03 (Monitor, empty monitor) SIGINT/SIGTERM/SIGHUP give 130/143/129 | `signals_release_the_host_with_signal_style_status` |
-| EXT-03 (Monitor, empty monitor) hung-up host input releases the host before its one diagnostic, logged, 125 | `a_hung_up_host_input_releases_the_host_before_its_diagnostic` |
+| EXT-03 (Monitor, empty monitor) hung-up host input, read as its end or as EIO, releases the host before its one diagnostic, logged, 125 | `a_hung_up_host_input_releases_the_host_before_its_diagnostic`, `host_input_failing_with_eio_releases_the_host_before_its_diagnostic` |
 | EXT-03 (Fault, empty monitor) render failure or failed wait for host input releases the host before its one diagnostic, 125 | `debug_hook_render_failure_restores_the_host_before_its_diagnostic`, `debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic` |
 | Spec #73 host terminal; TRM-04 (empty monitor): SIGWINCH repaints exactly at the new size without erasing or showing the cursor | `resizing_the_host_redraws_the_monitor_at_the_new_size` |
 | Spec #73 exit: content-free monitor general log | `installed_monitor_logs_content_free_records_to_its_general_log` |

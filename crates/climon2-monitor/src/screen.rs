@@ -340,7 +340,7 @@ fn decscusr(shape: CursorShape, blinking: bool) -> u8 {
 mod tests {
     use super::*;
     use crate::terminal::Control;
-    use climon2_vt::{Geometry, Limits, Model};
+    use climon2_vt::{Geometry, Limits, Model, Parser};
 
     fn desire(cols: u16, rows: u16) -> Option<(u16, u16)> {
         let prefix = ControlKey::from_byte(0x1d).unwrap();
@@ -455,7 +455,7 @@ mod tests {
             history_rows: 100,
         };
         let mut model = Model::new(Geometry::for_host(cols, rows).unwrap(), limits).unwrap();
-        model.feed(bytes).unwrap();
+        model.feed(&mut Parser::new(), bytes).unwrap();
         model
     }
 

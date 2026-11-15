@@ -30,17 +30,17 @@ fn lookup<K, V: Copy>(table: &[(K, V)], matches: impl Fn(&K) -> bool) -> Option<
 #[derive(Clone, Copy)]
 pub struct View<'a> {
     core: &'a Core<VoidListener>,
-    /// How many of the normal screen's history rows the model shows.
-    history_len: usize,
+    /// The most of the normal screen's newest history rows the model shows.
+    history_limit: usize,
     /// Whether that history is truncated.
     truncated: bool,
 }
 
 impl<'a> View<'a> {
-    pub(crate) fn new(core: &'a Core<VoidListener>, history_len: usize, truncated: bool) -> Self {
+    pub(crate) fn new(core: &'a Core<VoidListener>, history_limit: usize, truncated: bool) -> Self {
         Self {
             core,
-            history_len,
+            history_limit,
             truncated,
         }
     }
@@ -57,11 +57,12 @@ impl<'a> View<'a> {
         if self.core.alternate() {
             return Screen::Alternate { rows };
         }
+        let len = grid.history_size().min(self.history_limit);
         let history = History {
             rows: Rows {
                 grid,
-                top: -(self.history_len as i32),
-                len: self.history_len,
+                top: -(len as i32),
+                len,
             },
             truncated: self.truncated,
         };
