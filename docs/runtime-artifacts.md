@@ -54,6 +54,7 @@ flowchart TB
         library_host["climon2-library-host"]
         library_stand_in[["Client library stand-in<br/>test-only C dylib / .so; faulty library"]]
         second_library[["Second-release fixture library<br/>test-only cdylib of release 0.0.97"]]
+        second_daemon["climon2-second-release-daemon<br/>second-release fixture's session daemon, release 0.0.97"]
         owned_exec["climon2-test-owned<br/>test ownership exec adapter"]
         terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
@@ -71,9 +72,10 @@ flowchart TB
         library_host -->|"hello probes for a session's state"| daemon
         library -->|"daemon wire revision 1 to the host's fake daemon peer"| library_host
         tests -->|"loads through the shared loader in release-check and Fault-layer tests"| library_stand_in
-        tests -->|"installs in a sibling version folder; checks as release 0.0.97's"| second_library
+        tests -->|"loads through the shared loader in release-check tests"| second_library
         library_host -->|"loads beside the release under test through the shared loader"| second_library
-        second_library -->|"daemon wire revision 1: passive monitor connections"| daemon
+        cli -->|"starts 0.0.97 sessions from the 0.0.97 folder"| second_daemon
+        second_library -->|"daemon wire revision 1: passive monitor connections"| second_daemon
         tests -->|"execs registered terminal roots through"| owned_exec
         owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
@@ -193,17 +195,20 @@ load it through the same release checks as the real library, and
 `climon2-platform`'s loader tests load it, as the faulty library, through the
 loader. It is never shipped.
 
-**Current (#97):** the [second-release fixture](../GLOSSARY.md#testing)'s
-library is the `cdylib` of the test-only `climon2-second-release` crate:
-`climon2-client`'s library source built as release 0.0.97, without test
-hooks. Cargo leaves it in `deps/`. The mixed-release Library-layer tests
-package it with this build's executables as a 0.0.97 release and install it
-with the real installer in a sibling version folder; that folder's daemon,
-the installed daemon started by that folder's CLI, serves 0.0.97 sessions.
-One library host loads both releases through the shared loader, and each
-release's instances open passive monitor connections to their own release's
-daemons. xtask's tests run the release checks on it as 0.0.97's library. It
-is never shipped. The developer accepted this fixture on 2026-11-15
+**Current (#97):** the [second-release fixture](../GLOSSARY.md#testing) is
+two test-only artifacts of the `climon2-second-release` crate, both release
+0.0.97: its library, the `cdylib` of `climon2-client`'s library source built
+without test hooks, which Cargo leaves in `deps/`; and its session daemon,
+`climon2-second-release-daemon`, the `climon2-daemon` library behind a thin
+main that serves only 0.0.97 and gives its session's command
+`CLIMON2_SECOND_RELEASE_DAEMON`. The mixed-release Library-layer tests package
+both with this build's other executables as a 0.0.97 release and install it
+with the real installer in a sibling version folder, so that folder's CLI
+starts 0.0.97 sessions served by the fixture's daemon. One library host loads
+both releases' libraries through the shared loader, and each release's
+instances open passive monitor connections to their own release's daemons.
+xtask's tests run the release checks on the library as 0.0.97's. Neither is
+ever shipped. The developer accepted this fixture on 2026-11-15
 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
 
 **Current (#74):** every version folder ships the `climon2-monitor` executable,

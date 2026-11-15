@@ -10,8 +10,9 @@ workspace = true
 
 [dev-dependencies]
 climon2-core = { path = "../climon2-core" }
+climon2-fixtures = { path = "../climon2-fixtures" }
 climon2-install = { path = "../climon2-install" }
-# Only so that Cargo builds the test-only second release's library (#97).
+# Only so that Cargo builds the second-release fixture's library (#97).
 climon2-second-release = { path = "../climon2-second-release" }
 climon2-test-term = { path = "../climon2-test-term" }
 nix = { version = "0.31", features = ["signal", "process", "user"] }

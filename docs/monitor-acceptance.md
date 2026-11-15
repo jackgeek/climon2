@@ -14,7 +14,8 @@ monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
 but no monitor loads them yet. The Library layer's
 [second-release fixture](../GLOSSARY.md#testing)
 ([#97](https://github.com/jackgeek/climon2/issues/97)) runs both releases'
-libraries in one process for LIB-01 and LIB-03. Headless
+libraries in one process, against sessions of each release's own daemon, for
+LIB-01 and LIB-03. Headless
 creation is implemented; its HDL-01 Contract cases and its Monitor-layer cases
 through the packaged CLI are mapped in the daemon and packaged-test READMEs,
 while the case that needs a running monitor waits for it. Resolving this
