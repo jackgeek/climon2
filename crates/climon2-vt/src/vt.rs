@@ -24,6 +24,42 @@ pub struct VtConfig {
     pub default_title: String,
 }
 
+/// A sequence the session daemon interprets before filtering, as the engine
+/// received it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Signal<'a> {
+    /// An OSC string: its body, between `ESC ]` and its terminator, and the
+    /// length of the whole sequence.
+    Osc { body: &'a [u8], length: usize },
+    /// `ESC c`, a full reset.
+    FullReset,
+}
+
+impl<'a> Signal<'a> {
+    fn of(token: &'a Token, clear: Clear) -> Option<Self> {
+        match (token.kind, clear) {
+            (Kind::Osc, _) => Some(Self::Osc {
+                body: osc_body(&token.bytes),
+                length: token.bytes.len(),
+            }),
+            (_, Clear::Reset) => Some(Self::FullReset),
+            _ => None,
+        }
+    }
+}
+
+/// An OSC token's body: after its introducer, which only C0 controls can
+/// precede, and before its BEL or ST terminator.
+fn osc_body(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|&byte| byte == b']')
+        .expect("an OSC token holds its introducer")
+        + 1;
+    let terminator = if bytes.ends_with(b"\x07") { 1 } else { 2 };
+    &bytes[start..bytes.len() - terminator]
+}
+
 /// The result of feeding PTY output.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Fed {
@@ -176,9 +212,25 @@ impl Vt {
     /// Feed PTY output through the live output policy. Every completed
     /// token updates the engine; a partial token waits for a later read.
     pub fn feed(&mut self, bytes: &[u8], now: Instant) -> Fed {
+        self.feed_observed(bytes, now, |_, _, _| {})
+    }
+
+    /// [`Vt::feed`], calling `observe` with each [`Signal`] in stream order,
+    /// once the engine executed it, so the terminal it is given shows the
+    /// stream up to that point. What `observe` adds to the replies reaches
+    /// the program in order with the engine's own.
+    pub fn feed_observed(
+        &mut self,
+        bytes: &[u8],
+        now: Instant,
+        mut observe: impl FnMut(&Self, Signal<'_>, &mut Vec<u8>),
+    ) -> Fed {
         let mut fed = Fed::default();
         for token in self.tokenizer.push(bytes) {
-            self.token(&token, now, &mut fed);
+            let clear = self.token(&token, now, &mut fed);
+            if let Some(signal) = Signal::of(&token, clear) {
+                observe(self, signal, &mut fed.replies);
+            }
         }
         fed.focus_enabled &= self.focus_reporting();
         fed
@@ -227,7 +279,9 @@ impl Vt {
         characters(self.engine.active())
     }
 
-    fn token(&mut self, token: &Token, now: Instant, fed: &mut Fed) {
+    /// Executes one token and applies its live output policy; returns the
+    /// history it cleared.
+    fn token(&mut self, token: &Token, now: Instant, fed: &mut Fed) -> Clear {
         fed.dropped += u32::from(token.kind == Kind::Oversized);
         let policy = classify(token);
         let title = self.engine.title().map(str::to_owned);
@@ -240,6 +294,7 @@ impl Vt {
             fed.live.extend(self.title());
             fed.titles.push(self.application_title().map(str::to_owned));
         }
+        policy.clear
     }
 
     fn execute(&mut self, bytes: &[u8], clear: Clear, replies: &mut Vec<u8>) {
