@@ -11,7 +11,7 @@ use climon2_core::{
     protocol::TerminalSize,
 };
 use climon2_platform::{logging::LogFile, runtime, terminal};
-use climon2_vt::{Geometry, Mandatory, Model};
+use climon2_vt::{Geometry, Mandatory, Model, Parser};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -93,9 +93,10 @@ fn admissible(config: MonitorConfig) -> Result<MonitorConfig, ConfigError> {
         .map(|()| config)
 }
 
-/// The mandatory allocation `climon2-vt` charges a blank model keeping
+/// The mandatory allocation `climon2-vt` charges a model keeping
 /// `history_rows` rows at the largest session geometry: the current model,
-/// and the first history chunk, which holds the recent page.
+/// and the first history chunk, which holds the recent page and is admitted
+/// at the first scroll; beside them the monitor's one shared parser.
 fn largest_mandatory_allocation(history_rows: u32) -> MandatoryAllocation {
     let largest = Geometry::LARGEST;
     let Mandatory {
@@ -107,6 +108,7 @@ fn largest_mandatory_allocation(history_rows: u32) -> MandatoryAllocation {
             cols: largest.cols(),
             rows: largest.rows(),
         },
+        parser: Parser::BYTES as u64,
         current_model: current_model as u64,
         recent_page: recent_page as u64,
     }

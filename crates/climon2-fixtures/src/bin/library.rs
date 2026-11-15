@@ -139,7 +139,8 @@ fn describe_load(
 
 /// Runs one scenario on the loaded library. A load the loader refused as a
 /// contained bootstrap failure is recoverable, so it loads once more; each
-/// refused attempt opens the report's bootstrap list.
+/// refused attempt opens the report's bootstrap list. The scenario's other
+/// `releases` are loaded through the same loader, after it.
 fn run_scenario(
     loader: &Loader,
     version: &VersionName,
@@ -150,12 +151,7 @@ fn run_scenario(
     let mut refused = Vec::new();
     loop {
         match loaded {
-            Ok(library) => {
-                let library = Library {
-                    bootstrap: library.bootstrap(),
-                };
-                return drive(&library, name, input, refused);
-            }
+            Ok(library) => return with_releases(loader, (version, library), name, input, refused),
             Err(error) if error.failure() == Failure::BootstrapFailure && refused.is_empty() => {
                 refused.push(refusal(&error));
                 loaded = loader.load(version);
@@ -165,9 +161,69 @@ fn run_scenario(
     }
 }
 
+type Load<'a> = (&'a VersionName, &'static climon2_platform::library::Library);
+
+/// The versions a scenario's `releases` names besides the host's own.
+fn other_versions(input: &Value) -> Vec<VersionName> {
+    input["releases"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|version| {
+            let version = version.as_str().expect("a version");
+            version.parse().expect("a version name")
+        })
+        .collect()
+}
+
+/// Loads the other `releases`, then runs the scenario across all of them.
+/// With any, the report adds whether a second load of each release shares
+/// its first, and the client library files the process has loaded.
+fn with_releases(
+    loader: &Loader,
+    load: Load,
+    name: &str,
+    input: Value,
+    refused: Vec<Value>,
+) -> Value {
+    let versions = other_versions(&input);
+    let mut loads = vec![load];
+    for version in &versions {
+        match loader.load(version) {
+            Ok(library) => loads.push((version, library)),
+            Err(error) => return refusal(&error),
+        }
+    }
+    let libraries: Vec<Library> = loads
+        .iter()
+        .map(|(_, library)| Library {
+            bootstrap: library.bootstrap(),
+        })
+        .collect();
+    let mut report = drive(&libraries[0], &libraries[1..], name, input, refused);
+    if versions.is_empty() {
+        return report;
+    }
+    for (version, first) in loads {
+        let again = loader.load(version);
+        report["releases"][version.as_str()]["shared"] =
+            json!(again.is_ok_and(|again| ptr::eq(again, first)));
+    }
+    report["images"] = json!(images());
+    report
+}
+
 /// Bootstraps revision 1, once more if the first bootstrap failed explicitly
-/// with `CM1_INTERNAL_ERROR` (a contained panic), then runs one scenario.
-fn drive(library: &Library, name: &str, input: Value, mut bootstrap: Vec<Value>) -> Value {
+/// with `CM1_INTERNAL_ERROR` (a contained panic), then runs one scenario
+/// with the tables of `others` beside the library's.
+fn drive(
+    library: &Library,
+    others: &[Library],
+    name: &str,
+    input: Value,
+    mut bootstrap: Vec<Value>,
+) -> Value {
     let description = loop {
         let (status, description, output) = request(library, native::REVISION);
         bootstrap.push(json!({ "status": status, "output": output }));
@@ -178,13 +234,18 @@ fn drive(library: &Library, name: &str, input: Value, mut bootstrap: Vec<Value>)
     assert!(!description.is_null(), "bootstrap failed: {bootstrap:?}");
     // SAFETY: success returns an immutable description that lives until exit.
     let description: &'static Description = unsafe { &*description };
+    let loaded: Vec<Loaded> = [Loaded::new(library, description)]
+        .into_iter()
+        .chain(others.iter().map(Loaded::bootstrapped))
+        .collect();
     let setup = scenarios::Setup {
-        api: abi::Api::new(&description.functions),
-        release: abi::text(description.release)
-            .as_str()
-            .expect("UTF-8 release text")
-            .to_owned(),
+        api: loaded[0].api,
+        release: loaded[0].release.clone(),
         input,
+        releases: loaded
+            .iter()
+            .map(|loaded| (loaded.release.clone(), loaded.api))
+            .collect(),
     };
     let mut report = match name {
         "lifecycle" => scenarios::lifecycle(&setup),
@@ -202,7 +263,57 @@ fn drive(library: &Library, name: &str, input: Value, mut bootstrap: Vec<Value>)
     } else {
         report = json!({ "cases": report, "bootstrap": bootstrap });
     }
+    if !others.is_empty() {
+        let releases: Map<String, Value> = loaded
+            .iter()
+            .map(|loaded| (loaded.release.clone(), loaded.report()))
+            .collect();
+        report["releases"] = Value::Object(releases);
+    }
     report
+}
+
+/// One loaded release: its bootstrap, its description and its
+/// instrumented table.
+struct Loaded {
+    bootstrap: Bootstrap,
+    description: &'static Description,
+    release: String,
+    api: abi::Api,
+}
+
+impl Loaded {
+    fn new(library: &Library, description: &'static Description) -> Self {
+        Self {
+            bootstrap: library.bootstrap,
+            description,
+            release: text(description.release)
+                .as_str()
+                .expect("UTF-8 release text")
+                .to_owned(),
+            api: abi::Api::new(&description.functions),
+        }
+    }
+
+    /// Another release, whose bootstrap must succeed at once.
+    fn bootstrapped(library: &Library) -> Self {
+        let (status, description, _) = request(library, native::REVISION);
+        assert_eq!(status, native::SUCCESS, "another release's bootstrap");
+        // SAFETY: success returns an immutable description that lives until exit.
+        Self::new(library, unsafe { &*description })
+    }
+
+    /// The images its bootstrap and description are in, its release text,
+    /// and its calls and objects.
+    fn report(&self) -> Value {
+        json!({
+            "image": image(self.bootstrap as *const c_void),
+            "description_image": image(ptr::from_ref(self.description).cast()),
+            "release": self.release,
+            "timeline": self.api.timeline.report(),
+            "ledger": self.api.ledger.report(),
+        })
+    }
 }
 
 struct Library {
