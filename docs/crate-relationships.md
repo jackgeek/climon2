@@ -43,6 +43,7 @@ flowchart TB
         e2e["climon2-e2e"]
         fixtures["climon2-fixtures"]
         xtask["xtask"]
+        second["climon2-second-release"]
     end
 
     cli -.->|"dev"| test_term
@@ -67,6 +68,11 @@ flowchart TB
     xtask --> install
     xtask --> platform
     xtask -.->|"dev"| fixtures
+    xtask -.->|"dev"| second
+    e2e -.->|"dev"| second
+    second --> core
+    second --> daemon
+    second --> platform
 
     monitor -.->|"planned"| discovery
 ```
@@ -107,6 +113,16 @@ planned to share between the CLI and the monitor. It consumes only `core` and
 records. The library-host fixture and xtask release checks use it; the monitor
 and client executable do not yet. Test-only loader fixtures consume the
 platform crate as dev-dependencies.
+
+**Current (#97):** `climon2-second-release` is the test-only
+[second-release fixture](../GLOSSARY.md#testing). Its library compiles
+`climon2-client`'s library source as a package of its own version, so it
+consumes what that source consumes, `core` and `platform`, and not
+`climon2-client` itself. Its daemon binary runs the `climon2-daemon` library
+behind a thin main with that version compiled in. `climon2-e2e` and `xtask`
+consume the package as dev-dependencies only so that Cargo builds its
+`cdylib`; no code links it. The developer accepted this package on
+2026-11-15 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
 
 **Planned:** the monitor will consume discovery continuously (#106) and load
 version-matched client libraries in-process through the shared loader, with one
