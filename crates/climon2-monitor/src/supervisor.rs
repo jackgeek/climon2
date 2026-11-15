@@ -608,6 +608,8 @@ mod tests {
         notification_fails: bool,
         /// Run fails at once, publishing nothing and no terminal evidence.
         run_fails: bool,
+        /// Every drain fails.
+        drain_fails: bool,
         /// Run ignores shutdown until the test lets it go.
         stalls: bool,
     }
@@ -873,6 +875,9 @@ mod tests {
 
     extern "C" fn drain(communication: *mut Communication, out: *mut Drained) -> Call {
         let fake = fake(communication);
+        if fake.script.drain_fails {
+            return failure(native::INTERNAL_ERROR, b"internal_error", b"drain failed");
+        }
         let mut state = fake.state();
         // SAFETY: the supervisor passes an output struct.
         let out = unsafe { &mut *out };
@@ -1105,6 +1110,22 @@ mod tests {
             },
         );
         assert!(why.contains("run failed"), "{why}");
+    }
+
+    /// Client supervisor (Fault, #106; LIB-05 (Monitor, Fault): the other
+    /// instance progresses): a failed drain ends that instance cleanly: its
+    /// row is Unavailable with drain's error, its handles are released and it
+    /// is destroyed, and its start slot goes to the next session.
+    #[test]
+    fn a_failed_drain_ends_its_client_cleanly_and_frees_its_start_slot() {
+        let why = a_failure_ends_cleanly_and_frees_its_start_slot(
+            5,
+            Script {
+                drain_fails: true,
+                ..Script::default()
+            },
+        );
+        assert_eq!(why, "cannot drain the client: internal_error: drain failed");
     }
 
     /// Client supervisor (Fault, #106; shutdown bound): an instance that ignores

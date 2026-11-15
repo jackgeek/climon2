@@ -1772,8 +1772,10 @@ fn limits_config(package: &Package, limits: serde_json::Value) {
 /// silent one only after the frozen hello deadline, and get no client. An
 /// inaccessible sessions directory shows incomplete discovery while every
 /// row and the live session's client stay, and a live session's metadata
-/// disappearing never removes its row or tears its client down. No metadata
-/// is ever deleted.
+/// disappearing never removes its row or tears its client down. A session
+/// proven gone (its socket missing, its daemon identity not running) that no
+/// client ever reached adds no row and gets no client (stale rows, owner
+/// decision on #106). No metadata is ever deleted.
 #[test]
 fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
     let package = Package::new();
@@ -1796,6 +1798,13 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
     let mut padded = fs::read(&oversized).unwrap();
     padded.resize(4097, b' ');
     fs::write(&oversized, &padded).unwrap();
+    let stale_id = "0d5c0000-0000-4000-8000-0000000000f4";
+    let stale = fake_metadata(
+        &package,
+        stale_id,
+        "2026-01-01T00:00:00.000Z",
+        &package.isolation.home().join("gone.sock"),
+    );
     let ear = Ear::default();
     let mismatched = FakeDaemon::start(
         &package,
@@ -1852,12 +1861,20 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
         .unwrap();
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, "║Unavailable Live");
+    // A complete pass has reported every batch, the stale session's included.
+    assert!(
+        !terminal.screen().contains("0000000000f4"),
+        "{}",
+        terminal.screen()
+    );
+    assert_eq!(library_logs(&package, stale_id), Vec::<PathBuf>::new());
     fs::rename(&parked, &live_metadata).unwrap();
     assert_eq!(library_logs(&package, &live).len(), 1);
     assert_eq!(heard(&ear, Heard::Client), []);
     for file in [
         &malformed,
         &oversized,
+        &stale,
         &mismatched.metadata,
         &silent.metadata,
     ] {
@@ -1868,6 +1885,7 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
     drop((mismatched, silent));
     fs::remove_file(&malformed).unwrap();
     fs::remove_file(&oversized).unwrap();
+    fs::remove_file(&stale).unwrap();
     finish_sessions(&package, "finish");
     package.assert_clean();
 }
