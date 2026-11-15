@@ -7,17 +7,27 @@ This also records the confirmed input/configuration amendments to
 [#59](https://github.com/jackgeek/climon2/issues/59). This document supplies no
 executable changes or evidence itself.
 
-**Implemented with packaged evidence ([#74](https://github.com/jackgeek/climon2/issues/74)):**
+**Implemented with packaged evidence ([#74](https://github.com/jackgeek/climon2/issues/74), [#105](https://github.com/jackgeek/climon2/issues/105)):**
 only the empty [monitor](../../GLOSSARY.md#sessions), which has no
 [sessions](../../GLOSSARY.md#sessions) to show. It takes its own alternate screen
 with one permanent top row, enables [host](../../GLOSSARY.md#sessions)
 bracketed-paste, mouse and focus reporting, and never changes the host title.
 Only the typed [client escape prefix](../../GLOSSARY.md#attachment-and-control)
-followed by x acts: pasted [bytes](TERMS.md#byte) are data, never complete a
-pending prefix and leave none pending. A host resize repaints the whole screen
-without blanking it or showing the cursor. Every exit writes the
+followed by x (exit) or ? (the modal
+[key introduction](../../GLOSSARY.md#attachment-and-control), also opened at
+startup while key hints are on and its suppression is unsaved) acts, and the
+open dialog takes the other typed keys, a doubled prefix as one literal prefix,
+acting only on Enter and Space: pasted [bytes](TERMS.md#byte) are data, never
+complete a pending prefix and leave none pending. A host resize repaints the
+whole screen without blanking it or showing the cursor. Every exit writes the
 [release](../../GLOSSARY.md#restoration-and-presentation) bytes to the host
 before any diagnostic.
+
+**Implemented with crate tests only ([#83](https://github.com/jackgeek/climon2/issues/83)):**
+`climon2-vt`'s read-only Rust views of a monitor's
+[virtual terminal](../../GLOSSARY.md#sessions), described
+[below](#ownership-representation-and-fidelity), which the monitor does not
+paint from yet.
 
 **Implemented with Contract evidence ([#87](https://github.com/jackgeek/climon2/issues/87)):**
 the [session daemon](../../GLOSSARY.md#sessions)'s side of
@@ -42,7 +52,8 @@ serialized at the effective session geometry for a fresh terminal of that
 size, and receives a new restoration at every new effective geometry before
 any byte at it.
 
-Everything else in this document remains agreed and unimplemented.
+Everything else in this document remains agreed and unimplemented, including
+Escape closing the dialog when Escape is not the prefix.
 
 The later [selector and attention-presentation decision](../monitor-selector.md)
 confirms the captionless double-bordered selector, always-focused search,
@@ -79,9 +90,10 @@ cross-release cell [schema](TERMS.md#schema).
 
 The monitor parses those bytes into its own per-[session](../../GLOSSARY.md#sessions)
 [virtual terminal](../../GLOSSARY.md#sessions), using `climon2-vt`, and Ratatui
-paints its read-only Rust views. These views of cells, modes, cursor, and history
-are a planned addition; current `climon2-vt` exposes no public cell views, and the
-monitor uses it only for its release bytes. The monitor runs as its own
+paints its read-only Rust views. `climon2-vt` provides these views of cells,
+modes, cursor, screens and history ([#83](https://github.com/jackgeek/climon2/issues/83)),
+but the monitor does not paint from them yet and uses the crate only for its
+release bytes. The monitor runs as its own
 `climon2-monitor` executable, beside the other executables of its release
 ([ADR 0004](../adr/0004-crate-layout-and-dependency-direction.md)); this contract
 chooses no workspace crate.

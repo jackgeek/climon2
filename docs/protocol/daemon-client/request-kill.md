@@ -68,17 +68,23 @@ The [session daemon](../../../GLOSSARY.md#sessions) validates a first-role
 Kill like Open: `unsupported_revision` unless revision 1, and
 `unsupported_capability` for an unknown or unadvertised required family. Each
 rejection has no effects, carries the command's result as `known_final` once
-the daemon knows it, and ends the stream. A Kill on a connection that already
+it is final (see [Command final](event-command-final.md#implemented-behavior)),
+and ends the stream. A Kill on a connection that already
 has a role, such as a registered
 [passive monitor connection](../../../GLOSSARY.md#attachment-and-control), is
 `invalid_state` and keeps that role.
 
 A valid standalone Kill gives its connection the Kill role, which is not an
 [attachment](../../../GLOSSARY.md#attachment-and-control), and commits the
-session's termination at once, as the private protocol's kill does: the
-command's terminal is hung up, new interactive work is refused, and after the
+session's termination at once, as the private protocol's kill does: new
+interactive work is refused, the command's terminal is hung up, and after the
 five-second [hang-up grace](../../../GLOSSARY.md#attachment-and-control) the
-daemon kills what remains of the command's terminal session and cleans up. A
+daemon kills what remains of the command's terminal session and cleans up.
+If the command already exited and its remaining output is still being
+drained, the hang-up waits for that drain: the output and then
+[Command final](event-command-final.md#implemented-behavior) reach the
+connections first (owner decision on
+[#88](https://github.com/jackgeek/climon2/issues/88), 2026-11-14). A
 Kill of either protocol sent while termination is committed joins it without
 restarting the grace. Every Kill is answered once the session has ended, at
 once if it already had:

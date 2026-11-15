@@ -85,17 +85,36 @@ pub fn default_filter() -> &'static str {
     }
 }
 
+/// A `CLIMON2_LOG` filter, parsed once, so a dispatcher never meets invalid
+/// grammar.
+pub struct Filter(EnvFilter);
+
+impl Filter {
+    pub fn parse(text: &str) -> io::Result<Self> {
+        EnvFilter::try_new(text)
+            .map(Self)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid CLIMON2_LOG filter"))
+    }
+}
+
+/// [`dispatch`] with `filter`, or the build's default filter.
 pub fn subscriber<W: Write + Send + 'static>(
     writer: CappedWriter<W>,
     filter: Option<&str>,
 ) -> io::Result<tracing::Dispatch> {
-    let filter = EnvFilter::try_new(filter.unwrap_or(default_filter()))
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid CLIMON2_LOG filter"))?;
+    Filter::parse(filter.unwrap_or(default_filter())).map(|filter| dispatch(writer, filter))
+}
+
+/// Plain-text, UTC-timestamped records that pass `filter`, written to `writer`.
+pub fn dispatch<W: Write + Send + 'static>(
+    writer: CappedWriter<W>,
+    filter: Filter,
+) -> tracing::Dispatch {
     let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(filter)
+        .with_env_filter(filter.0)
         .with_ansi(false)
         .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
         .with_writer(writer)
         .finish();
-    Ok(tracing::Dispatch::new(subscriber))
+    tracing::Dispatch::new(subscriber)
 }

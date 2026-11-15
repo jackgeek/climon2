@@ -1,16 +1,30 @@
 # Native client interface revision 1
 
 **Status: developer-confirmed specification for [#71](https://github.com/jackgeek/climon2/issues/71).
-Implemented only for the bootstrap and the immutable description
-([#75](https://github.com/jackgeek/climon2/issues/75)).** The shipped
-[client library](../../../GLOSSARY.md#sessions) (`libclimon2_client.dylib` on
-macOS, `libclimon2_client.so` on Linux)
+Implemented for the bootstrap and the immutable description
+([#75](https://github.com/jackgeek/climon2/issues/75)), for the instance
+lifecycle calls ([#85](https://github.com/jackgeek/climon2/issues/85)), and
+for the validation of the bootstrap and description before create by the
+shared loader ([#84](https://github.com/jackgeek/climon2/issues/84)).** The
+shipped [client library](../../../GLOSSARY.md#sessions)
+(`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux)
 returns revision 1's description and rejects other revisions as specified
 below. Its requirements are provisional bounded values
 until [#121](https://github.com/jackgeek/climon2/issues/121) records qualified
-ones, and every [function-table](../TERMS.md#function-table) call reports
-`CM1_UNSUPPORTED_OPERATION` until it is implemented. Everything else on this
-page is not implemented. The [C ABI](../TERMS.md#c-abi)
+ones. Its [function-table](../TERMS.md#function-table) calls create, run,
+destroy, drain, release_delivery, shutdown, release_communication,
+release_control, notification and snapshot follow the rules below, with these
+gaps: create does not read the session ID, and snapshot reports no
+shared-release allocation and undercounts instance allocation, because it does
+not yet count each instance's diagnostics dispatcher
+([#180](https://github.com/jackgeek/climon2/issues/180)). `submit`
+reports `CM1_UNSUPPORTED_OPERATION` until Open
+([#93](https://github.com/jackgeek/climon2/issues/93)). No instance can open a
+[daemon](../../../GLOSSARY.md#sessions) connection yet, so
+[Leave](../daemon-client/request-leave.md) is never required and the only
+records are the library's own diagnostics. Everything else on this page
+(requests, responses, daemon events, [Kill](../daemon-client/request-kill.md)
+and Leave) is not implemented. The [C ABI](../TERMS.md#c-abi)
 [header](client-v1.h) is authoritative for declarations, numeric tags and field
 order. This page owns their semantics. The [examples](examples.c) compile but
 do not link to a shipped library. [Declaration checks](check.py) are not runtime
@@ -37,7 +51,14 @@ independently of the negotiated table. `requested_revision=1` returns
 `CM1_SUCCESS` and a nonnull immutable `cm1_description` supporting precisely 1.
 Unsupported revisions return `CM1_UNSUPPORTED_REVISION` and null. Null output
 storage returns `CM1_INVALID_ARGUMENT`; containable bootstrap failure returns
-`CM1_INTERNAL_ERROR`. No other bootstrap results are permitted. Bootstrap opens
+`CM1_INTERNAL_ERROR` and null, which a loader reports as a recoverable failure,
+not as a malformed description: a later load may succeed. A
+`CM1_INTERNAL_ERROR` that leaves the output storage as the caller set it, or
+sets it, breaks this contract and is a malformed description, which is not
+recoverable: a caller must not rely on a retry (owner decision on
+[#84](https://github.com/jackgeek/climon2/issues/84)). A loader need not
+remember a refusal, so a retry repeats the load and its checks. No other bootstrap
+results are permitted. Bootstrap opens
 no [daemon](../../../GLOSSARY.md#sessions) connection and creates no instance.
 Description, table, [capability](../../../GLOSSARY.md#sessions) tokens and release
 text live until process exit; all eleven function pointers are nonnull.
@@ -193,7 +214,11 @@ aggregate accounting, before create. Pre-load qualification/reservation remains
 required by #69;
 bootstrap data is a post-load validation, not permission to load an unqualified
 release first. Requirements incompatible with admitted
-limits reject explicitly. Release resources count once and remain until exit.
+limits reject explicitly: admission owns their upper bounds. Before that, the
+loader checks only that the requirements are present: each one an instance
+needs is nonzero (local allocation, owner stack and instance descriptors, and
+a worker stack whenever workers are required), and `reserved` is zero.
+Release resources count once and remain until exit.
 Each platform's library reports that platform's qualified requirements. On
 Linux the [notification descriptor](../TERMS.md#pollable-notification-descriptor) is one `eventfd`, created close-on-exec and
 nonblocking; it stays readable until the library clears it and counts once in

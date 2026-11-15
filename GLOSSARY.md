@@ -36,6 +36,10 @@ _Avoid_: Dashboard, multiplexer, switcher
 A model of a session's screen, kept current from the session's output; the session daemon's is the source of truth, and a monitor's is a copy.
 _Avoid_: Screen buffer, emulator, scrollback
 
+**Read-only view**:
+What a monitor paints a session from: its virtual terminal copy's cells, cursor, modes and normal history, which painting cannot change.
+_Avoid_: Placeholder, snapshot, cell schema
+
 **Hello handshake**:
 The first exchange on every connection to a session daemon, in which the daemon identifies its session; frozen across all climon2 versions.
 _Avoid_: Ping, version check
@@ -88,6 +92,10 @@ _Avoid_: Dead session, orphan
 **Session metadata**:
 The per-session record in climon2 home that describes a session and how to reach its daemon.
 _Avoid_: Session file, PTY file
+
+**Discovery pass**:
+One enumeration of the session metadata in a climon2 home, probing each session and classifying every entry as live, uncertain, stale or invalid.
+_Avoid_: Scan, refresh, poll
 
 **Runtime directory**:
 The private, per-user directory holding the sockets that clients use to reach session daemons, one per climon2 home.
@@ -170,7 +178,11 @@ _Avoid_: Space-to-control, hotkey
 
 **Placeholder**:
 The screen a non-controlling client shows instead of session content, saying the session is being viewed elsewhere.
-_Avoid_: Viewer mode, read-only view
+_Avoid_: Viewer mode, read-only view (what a monitor paints session content from)
+
+**Key introduction**:
+The monitor's modal list of its key actions, spelled with the configured client escape prefix, shown at startup until the user declines it for that climon2 home, and on request as help.
+_Avoid_: Splash screen, onboarding, welcome screen
 
 ## Status and attention
 
@@ -245,6 +257,32 @@ _Avoid_: Monitor presentation, normalized output
 The bytes that return a terminal to the normal-shell baseline when an attachment's presentation ends.
 _Avoid_: Reset, cleanup
 
+## Monitor links
+
+**Monitor link**:
+A planned secured connection between a hub monitor and a relay on another machine, authenticated and encrypted by climon2 itself whatever carries it.
+_Avoid_: Tunnel, remote connection, bridge
+
+**Hub monitor**:
+A monitor that also presents and drives remote sessions through monitor links.
+_Avoid_: Master, primary monitor, server
+
+**Relay**:
+A program, separate from the monitor, that serves one machine's sessions to a hub monitor over a monitor link.
+_Avoid_: Slave, relay monitor, agent, proxy
+
+**Link invitation**:
+What a relay produces and a hub monitor consumes to establish a monitor link for the first time.
+_Avoid_: Connection string, token, pairing code
+
+**Remote session**:
+A session that a hub monitor reaches through a monitor link.
+_Avoid_: Relayed session, foreign session
+
+**Local session**:
+A session whose session daemon runs on the same machine as the monitor presenting it.
+_Avoid_: Native session, own session
+
 ## Protocol and plugin concepts
 
 **Session ID**:
@@ -316,6 +354,10 @@ _Avoid_: Test shell, dummy command
 A climon2-owned full-screen test program that exercises alternate screen, cursor queries, focus reporting, mouse, bracketed paste, and resize redraws.
 _Avoid_: Fake app, mock TUI
 
+**Client library stand-in**:
+A clearly labelled, test-only client library that is exact or carries one deliberate defect, and is never shipped; carrying a defect, it is a faulty library.
+_Avoid_: Mock library, fake library
+
 **Terminal oracle**:
 The test harness's emulated host, whose visible cells, cursor, modes, bells and status reports stand for what a user observes in their terminal.
 
@@ -330,3 +372,11 @@ _Avoid_: Sanity test, canary
 **Release gate**:
 A check that must pass before a version can be released.
 _Avoid_: Quality gate, CI check
+
+**Ticket gate**:
+`cargo xtask check`: the local qualification for one change, which mutates only the functions it adds or changes and measures mutation load for one round.
+_Avoid_: Fast gate, quick check
+
+**Full gate**:
+`cargo xtask check --full`: the local qualification run once before a feature branch merges to `main`, which mutates whole changed files and measures mutation load for five rounds.
+_Avoid_: Slow gate, complete check

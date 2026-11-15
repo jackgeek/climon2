@@ -32,7 +32,7 @@ use climon2_platform::{
     terminal::Signals,
 };
 use climon2_vt::{Geometry, Vt, VtConfig};
-use command::{Command, Drain, Read, classify};
+use command::{Command, Read, classify};
 use delivery::{Delivery, Out};
 use paste::PasteTracker;
 use std::{
@@ -67,7 +67,7 @@ struct Session<'a, C> {
     /// Revision-1 connections whose standalone Kill awaits its answer: the
     /// Kill's request ID.
     kills: BTreeMap<u64, Counter>,
-    /// The command's result, once the daemon knows it.
+    /// The command's result, once published as final.
     command_result: Option<CommandResult>,
     control: Control,
     vt: Vt,
@@ -319,21 +319,23 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             return Ok(());
         }
         let end = match self.pty.end_hangup() {
-            Ok(result) => {
-                self.publish(&result);
-                CommandEnd::Confirmed(result)
-            }
+            Ok(result) => CommandEnd::Confirmed(result),
             Err(_) => self.unconfirmed(),
         };
         self.end_command(end)
     }
 
-    /// The command's end, unconfirmed, with any result already known.
+    /// The command's end, unconfirmed, with any result already reaped.
     fn unconfirmed(&self) -> CommandEnd {
-        CommandEnd::Unconfirmed(self.command_result.clone())
+        CommandEnd::Unconfirmed(self.pty.result())
     }
 
+    /// Nothing more of the command's output is read once it ended, so a
+    /// known result is final.
     fn end_command(&mut self, command: CommandEnd) -> io::Result<()> {
+        if let Some(result) = command.known() {
+            self.publish(result);
+        }
         self.command = Command::Ended;
         self.react(|control| control.command_exited(command))
     }
@@ -358,11 +360,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             return self.fail("cannot observe the command");
         };
         if let Some(result) = status {
-            self.publish(&result);
-            self.command = Command::Draining {
-                result,
-                drain: Drain::new(now),
-            };
+            self.command = Command::draining(result, now);
         }
         Ok(())
     }
@@ -611,12 +609,18 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
-    /// The exit is reported once output drained, the initial attachment had
-    /// its chance and no grant awaits `Ready`.
+    /// The result is final once the command's output drained to the
+    /// connections. A termination that waited for the drain then hangs up;
+    /// otherwise the exit is reported once, in addition, the initial
+    /// attachment had its chance and no grant awaits `Ready`.
     fn report_exit(&mut self, now: Instant) -> io::Result<()> {
         let Some(result) = self.command.drained(now) else {
             return Ok(());
         };
+        self.publish(&result);
+        if self.command.hangs_up_when_drained() {
+            return self.hang_up(now);
+        }
         if self.awaiting(now) {
             return Ok(());
         }
@@ -781,15 +785,26 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
+    /// A command that already exited drains its output first, so a
+    /// termination never cuts that output short.
+    fn begin_shutdown(&mut self) -> io::Result<()> {
+        let now = Instant::now();
+        self.observe_command(now)?;
+        if self.command.hang_up_when_drained() {
+            return Ok(());
+        }
+        self.hang_up(now)
+    }
+
     /// The grace is a loop deadline, so probes, refusals and joining kills
     /// are served while the command session hangs up. A failed hang-up
     /// confirms nothing.
-    fn begin_shutdown(&mut self) -> io::Result<()> {
+    fn hang_up(&mut self, now: Instant) -> io::Result<()> {
         if self.pty.hang_up().is_err() {
             return self.end_command(self.unconfirmed());
         }
         self.command = Command::HangingUp {
-            until: Instant::now() + HANGUP_GRACE,
+            until: now + HANGUP_GRACE,
         };
         Ok(())
     }
