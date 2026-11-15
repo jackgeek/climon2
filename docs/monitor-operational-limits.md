@@ -91,7 +91,7 @@ An illustrative override is:
   "monitor": {
     "limits": {
       "memory": {
-        "total_bytes": 536870912,
+        "total_bytes": 603979776,
         "client_bytes": 67108864,
         "history_bytes_per_session": 16777216,
         "history_bytes_total": 268435456,
@@ -116,7 +116,7 @@ yet; the status note names the checks still to come. It does not modify daemon
 
 | Field | Default |
 |---|---:|
-| `memory.total_bytes` | 536870912 (512 MiB) |
+| `memory.total_bytes` | 603979776 (576 MiB) |
 | `memory.client_bytes` | 67108864 (64 MiB per client/session, including its monitor model) |
 | `memory.history_bytes_per_session` | 16777216 (16 MiB) |
 | `memory.history_bytes_total` | 268435456 (256 MiB) |
@@ -224,12 +224,14 @@ per-model cost is to meet PERF-01.
 [#166](https://github.com/jackgeek/climon2/issues/166) implements that in
 `climon2-vt`: one `Parser` per monitor, whose 2 MiB buffer the monitor
 counts once, and the first history chunk admitted only at the first scroll.
-At the default 512 MiB this holds 4,206, 870 and 110 models at 80x24, 200x60
-and 500x200 before they scroll, and 249, 96 and 31 once they hold their
-first chunk
-([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine));
-whether to raise `memory.total_bytes` or agree a PERF-01 disposition for the
-geometries that fall short is the owner's open decision. The monitor does not
+The owner then raised the default `memory.total_bytes` from 512 MiB to
+576 MiB and scoped PERF-01's 100 sessions to geometries up to 200x60
+(2026-11-15). At 576 MiB this holds 4,734, 979 and 124 models at 80x24,
+200x60 and 500x200 before they scroll, and 280, 109 and 35 once they hold
+their first chunk; 500x200 records that measured capacity instead of 100
+sessions
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)).
+The monitor does not
 yet use the shared parser
 ([#108](https://github.com/jackgeek/climon2/issues/108)), and its own
 budgets and pressure policies above remain unimplemented.
@@ -531,8 +533,11 @@ crash exposure and ordinary leave policy. Incomplete cleanup is never successful
 detach; protected history does not authorize unloading running code.
 
 Require reproducible CPU/memory, startup/load and sustained-display measurements
-for 1, 10 and 100 live sessions, one release and ten mixed releases where
-applicable, at 80x24 and 200x60, plus 500x200 boundary geometry.
+for 1, 10 and 100 live sessions at 80x24 and 200x60, one release and ten mixed
+releases where applicable, plus the 500x200 boundary geometry at 1 and 10
+sessions and its measured capacity, about 35 sessions with history and 124
+before any scroll at the default 576 MiB (owner, 2026-11-15,
+[#166](https://github.com/jackgeek/climon2/issues/166)).
 Cover passive idle, controlling background output, cold/warm loading, restoration/
 switching, selected sustained display, reconnect storms, continuous arrivals and
 stalled newer starts. Measure snapshot comparison/allocation and retained

@@ -152,7 +152,7 @@ fn defaults() -> Value {
             "bell": true,
             "limits": {
                 "memory": {
-                    "total_bytes": 536_870_912,
+                    "total_bytes": 603_979_776,
                     "client_bytes": 67_108_864,
                     "history_bytes_per_session": 16_777_216,
                     "history_bytes_total": 268_435_456,
@@ -546,7 +546,7 @@ fn accepted(settings: &[(&str, Value)]) {
     );
 }
 
-const TOTAL: u64 = 536_870_912;
+const TOTAL: u64 = 603_979_776;
 
 fn at(path: &str, value: u64) -> (&str, Value) {
     (path, json!(value))
@@ -559,19 +559,19 @@ fn cfg01_sub_budgets_fit_their_totals() {
     accepted(&[at("memory.client_bytes", TOTAL)]);
     assert!(
         refused(&[at("memory.client_bytes", TOTAL + 1)]).contains(
-            "monitor.limits.memory.client_bytes (536870913) may not exceed monitor.limits.memory.total_bytes (536870912)"
+            "monitor.limits.memory.client_bytes (603979777) may not exceed monitor.limits.memory.total_bytes (603979776)"
         )
     );
     accepted(&[at("memory.history_bytes_total", TOTAL)]);
     assert!(
         refused(&[at("memory.history_bytes_total", TOTAL + 1)]).contains(
-            "monitor.limits.memory.history_bytes_total (536870913) may not exceed monitor.limits.memory.total_bytes (536870912)"
+            "monitor.limits.memory.history_bytes_total (603979777) may not exceed monitor.limits.memory.total_bytes (603979776)"
         )
     );
     accepted(&[at("memory.queue_bytes_total", TOTAL)]);
     assert!(
         refused(&[at("memory.queue_bytes_total", TOTAL + 1)]).contains(
-            "monitor.limits.memory.queue_bytes_total (536870913) may not exceed monitor.limits.memory.total_bytes (536870912)"
+            "monitor.limits.memory.queue_bytes_total (603979777) may not exceed monitor.limits.memory.total_bytes (603979776)"
         )
     );
     let history_total = 268_435_456;
@@ -605,7 +605,7 @@ fn cfg01_reservations_fit_the_total() {
         let path = format!("resources.{reservation}");
         accepted(&[at(&path, TOTAL)]);
         assert!(refused(&[at(&path, TOTAL + 1)]).contains(&format!(
-            "monitor.limits.resources.{reservation} (536870913) may not exceed monitor.limits.memory.total_bytes (536870912)"
+            "monitor.limits.resources.{reservation} (603979777) may not exceed monitor.limits.memory.total_bytes (603979776)"
         )));
     }
 }
@@ -623,7 +623,7 @@ fn cfg01_other_monitor_byte_budgets_fit_the_total() {
     ] {
         accepted(&[at(budget, TOTAL)]);
         assert!(refused(&[at(budget, TOTAL + 1)]).contains(&format!(
-            "monitor.limits.{budget} (536870913) may not exceed monitor.limits.memory.total_bytes (536870912)"
+            "monitor.limits.{budget} (603979777) may not exceed monitor.limits.memory.total_bytes (603979776)"
         )));
     }
 }

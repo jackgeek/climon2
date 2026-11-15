@@ -225,15 +225,24 @@ twice what it holds after its first scroll, until the restoration is applied
 or the current model's history yields.
 
 A model keeping no history costs what the first column says however much it
-scrolls. With the parser counted once, the default 512 MiB therefore holds
-4,206, 870 and 110 models that have not scrolled (or keep no history), and
-249, 96 and 31 models that hold their first history chunk. PERF-01's 100
-sessions fit at every geometry before any scroll and at 80x24 after it;
-once their screens have scrolled, 200x60 falls short by 4 models and 500x200
-by 69. 100 such models need about 528 MiB at 200x60 and 1,620 MiB at 500x200
-(100 models plus the parser), before staging or any history beyond the first
-chunk. **Open (owner, #166):** raise `memory.total_bytes`, or agree a PERF-01
-disposition for those geometries, as recorded on #76.
+scrolls. With the parser counted once, the then default 512 MiB held 4,206,
+870 and 110 models that had not scrolled (or kept no history), and 249, 96
+and 31 that held their first history chunk: once their screens had scrolled,
+200x60 fell short of PERF-01's 100 sessions by 4 and 500x200 by 69.
+
+**Decided (owner, 2026-11-15, #166).** The default `memory.total_bytes` is
+raised from 512 MiB to 576 MiB, PERF-01's 100 sessions are scoped to
+geometries up to 200x60, and at 500x200 PERF-01 records the measured
+capacity instead. At 576 MiB, beside one parser, a monitor holds:
+
+| Geometry | Models before their first scroll | Models holding their first chunk |
+|---|---:|---:|
+| 80x24 | 4,734 | 280 |
+| 200x60 | 979 | 109 |
+| 500x200 | 124 | 35 |
+
+These counts cover the models alone, before staging, history beyond the
+first chunk or any other monitor budget; `tests/budget.rs` asserts them.
 
 ## Live output policy and query authority
 

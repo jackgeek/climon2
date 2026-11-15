@@ -53,7 +53,7 @@ struct Memory {
 impl Default for Memory {
     fn default() -> Self {
         Self {
-            total_bytes: 536_870_912,
+            total_bytes: 603_979_776,
             client_bytes: 67_108_864,
             history_bytes_per_session: 16_777_216,
             history_bytes_total: 268_435_456,

@@ -262,8 +262,12 @@ time as a measured operating-system guarantee.
 | LIM-06 | Saturate retry/start/notification/discovery work and freeze newer starts/consumers while processing active input/selector/exit. | Configured quanta/deadlines/jitter/caps bound work and backlog; indivisible work is bounded too. Fair independent progress, non-overlapping retries/discovery and explicit stalled-stream results hold. | Monitor, Fault, Measure |
 | PERF-01 | Run the declared workload matrix below with production candidate artifacts and equivalent standalone clients. | Report total and attributable costs, admission outcomes, sustained display/backlog and latency distributions; demonstrate configured allocation limits and disclose limitations, not presumed savings from fewer processes. | Measure |
 
-Run the #69 evidence points: 1, 10 and 100 live sessions; one release and ten
-mixed releases where applicable; 80x24 and 200x60 plus 500x200 boundary geometry.
+Run the #69 evidence points: 1, 10 and 100 live sessions at 80x24 and 200x60;
+one release and ten mixed releases where applicable. At the 500x200 boundary
+geometry, run 1 and 10 sessions and the measured capacity instead of 100
+(owner, 2026-11-15, [#166](https://github.com/jackgeek/climon2/issues/166)): at
+the default 576 MiB about 35 sessions with history, 124 before any scroll
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)).
 Cover passive idle, controlling background output, cold/warm loading,
 restoration/switching, selected sustained output, reconnect storms, continuous
 arrivals and stalled newer starts. Record snapshot comparison/allocation,

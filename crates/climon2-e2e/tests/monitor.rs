@@ -351,7 +351,7 @@ const EFFECTIVE: &str = r#"{
     "show_key_hints": true,
     "bell": false,
     "limits": {
-      "memory": {"total_bytes": 536870912, "client_bytes": 67108864, "history_bytes_per_session": 16777216, "history_bytes_total": 268435456, "queue_bytes_total": 67108864},
+      "memory": {"total_bytes": 603979776, "client_bytes": 67108864, "history_bytes_per_session": 16777216, "history_bytes_total": 268435456, "queue_bytes_total": 67108864},
       "history": {"max_rows": 200},
       "resources": {"stack_bytes": 2097152, "max_workers_per_client": 2, "descriptors_per_client": 8, "descriptors_per_load": 4, "descriptor_headroom": 64, "release_bytes": 67108864},
       "queues": {"request_bytes": 262144, "request_records": 64, "event_bytes": 1048576, "event_records": 1024, "progress_bytes": 65536, "progress_records": 32, "deliveries": 8, "operations": 16},

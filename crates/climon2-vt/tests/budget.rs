@@ -4,8 +4,8 @@
 
 use climon2_vt::{Geometry, Limits, Model, Parser};
 
-/// The default `memory.total_bytes`.
-const BUDGET: usize = 512 << 20;
+/// The default `memory.total_bytes` (576 MiB, owner decision on #166).
+const BUDGET: usize = 576 << 20;
 
 /// More than any of these models charges.
 const ROOMY: Limits = Limits {
@@ -61,8 +61,8 @@ fn cost(cols: u16, rows: u16) -> Cost {
 /// LIM-04 Contract and PERF-01 (sizing input): one model's charges at
 /// 80x24, 200x60 and 500x200, before and after its first scroll, with a
 /// scrolled restoration staged beside it and with 10,000 history rows, as
-/// ADR 0007 records them; and how many models the default budget holds
-/// beside one shared parser, before and after their first scroll.
+/// ADR 0007 records them; and how many models the default budget (576 MiB)
+/// holds beside one shared parser, before and after their first scroll.
 #[test]
 fn models_per_budget_are_those_adr_0007_records() {
     let measured: Vec<Cost> = [(80, 24), (200, 60), (500, 200)]
@@ -77,7 +77,7 @@ fn models_per_budget_are_those_adr_0007_records() {
     println!("{measured:#?}\n{counts:?}");
 
     assert_eq!(measured, RECORDED);
-    assert_eq!(counts, [(4206, 249), (870, 96), (110, 31)]);
+    assert_eq!(counts, [(4734, 280), (979, 109), (124, 35)]);
 }
 
 /// ADR 0007's table, in bytes: 0.12 / 2.05 / 4.09 / 19.35 MiB at 80x24,

@@ -163,7 +163,7 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
     "bell": true,                  // false: no host bell as a toast first draws
     "limits": {
       "memory": {
-        "total_bytes": 536870912,
+        "total_bytes": 603979776,
         "client_bytes": 67108864,
         "history_bytes_per_session": 16777216,
         "history_bytes_total": 268435456,
