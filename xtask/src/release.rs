@@ -1,4 +1,8 @@
-use std::{env, fs, io, path::Path, process::Command};
+use std::{
+    env, fs, io,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 const BINARIES: &[&str] = &[
     "climon2-cli",
@@ -14,6 +18,15 @@ pub(crate) const PACKAGES: &[(&str, &str)] = &[
     ("climon2-client", "climon2-client"),
     ("climon2-install", "climon2-install"),
 ];
+
+/// Where every production build goes: one directory kept between builds, so
+/// each build after the first is incremental, and apart from the test builds,
+/// so no test-hooks feature ever reaches it.
+pub(crate) fn production_directory(root: &Path) -> io::Result<PathBuf> {
+    let directory = root.join("target/production");
+    fs::create_dir_all(&directory)?;
+    Ok(directory)
+}
 
 pub(crate) fn build(
     root: &Path,
@@ -64,13 +77,10 @@ pub fn check(root: &Path) -> io::Result<()> {
             )));
         }
     }
-    fs::create_dir_all(root.join("target"))?;
-    let target = tempfile::Builder::new()
-        .prefix("release-check-")
-        .tempdir_in(root.join("target"))?;
+    let target = production_directory(root)?;
     for (package, name) in PACKAGES {
-        build(root, target.path(), package, None)?;
-        if has_marker(&fs::read(target.path().join("release").join(name))?) {
+        build(root, &target, package, None)?;
+        if has_marker(&fs::read(target.join("release").join(name))?) {
             return Err(io::Error::other(format!(
                 "release binary {name} contains test hooks"
             )));
