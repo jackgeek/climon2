@@ -264,18 +264,18 @@ fn a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata() {
 }
 
 /// CTL-03 (Contract, title case) and LIM-01 (Contract and Fault, the
-/// derived release-constant title bound at the limit and one past): the longest title a title sequence can carry arrives whole: 4,094
-/// UTF-8 bytes, because the existing 4,096-byte token body includes the
-/// sequence's `2;`. A longer one, at or one past the documented 4,096 bytes,
-/// is ignored, never truncated.
+/// derived release-constant title bound at the limit and one past): a
+/// title of the documented 4,096 UTF-8 bytes arrives whole, its sequence's
+/// `2;` not counted against it; one of 4,097 or 4,098 bytes is ignored,
+/// never truncated.
 #[test]
 fn an_oversized_title_is_ignored_never_truncated() {
     let session = Session::start("script");
     detached(&session);
     let (mut monitor, _) = monitor(&session, &["title-v1"]);
-    crate::script(&session, "title-bytes 4094");
-    assert_eq!(title_changed(&mut monitor), Some("é".repeat(2047)));
-    for bytes in [4095, 4096, 4097] {
+    crate::script(&session, "title-bytes 4096");
+    assert_eq!(title_changed(&mut monitor), Some("é".repeat(2048)));
+    for bytes in [4097, 4098] {
         crate::script(&session, &format!("title-bytes {bytes}"));
     }
     crate::script(&session, "title after");

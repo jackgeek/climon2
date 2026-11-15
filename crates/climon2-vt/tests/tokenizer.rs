@@ -213,6 +213,28 @@ fn bodies_up_to_the_cap_are_kept_and_longer_ones_are_dropped() {
     }
 }
 
+/// LIM-01 (derived release-constant title bound, at the limit and one
+/// past): an OSC 0 or 2 title may carry 4,096 bytes after its `0;` or `2;`,
+/// and one more drops it. Any other OSC's parameter counts against its body.
+#[test]
+fn a_title_may_carry_the_whole_body_after_its_selector() {
+    for selector in [&b"\x1b]0;"[..], b"\x1b]2;"] {
+        let kept = oversized(selector, 4096, b"\x07");
+        assert_eq!(kept.len(), 2 + 2 + 4096 + 1);
+        assert_eq!(tokens(&[&kept]), [(Kind::Osc, kept.clone())]);
+        let dropped = oversized(selector, 4097, b"\x07");
+        assert_eq!(
+            tokens(&[&dropped, b"a"]),
+            [token(Kind::Oversized, b""), text(b"a")]
+        );
+    }
+    let other = oversized(b"\x1b]1;", 4095, b"\x07");
+    assert_eq!(
+        tokens(&[&other, b"a"]),
+        [token(Kind::Oversized, b""), text(b"a")]
+    );
+}
+
 #[test]
 fn an_oversized_string_ended_by_cancel_or_escape_is_still_dropped() {
     let cancelled = oversized(b"\x1b]", MAX_BODY + 1, b"\x18");

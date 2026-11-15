@@ -410,13 +410,13 @@ fn a_revision1_controller_withholding_ready_is_lost_at_the_restoration_deadline(
 }
 
 /// LIM-01 (Contract, derived release-constant bounds): the most escaped
-/// title the 4,096-byte token bound lets through, 4,094 `"` that JSON
+/// title the 4,096-byte title bound lets through, 4,096 `"` that JSON
 /// doubles, reaches a monitor whole, as Title changed and in a later
 /// Open's Initial metadata, and each of those records fits the 16,384-byte
 /// metadata record bound.
 #[test]
 fn the_most_escaped_title_fits_a_metadata_record() {
-    let title = "\"".repeat(4094);
+    let title = "\"".repeat(4096);
     let session = Session::start("script");
     detached(&session);
     let (mut watching, _) = monitor(&session, &["title-v1"]);
