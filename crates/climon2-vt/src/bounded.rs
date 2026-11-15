@@ -10,7 +10,7 @@ use crate::{
     printed,
     render::cells,
     scroll::{Cursor, Region},
-    token::{Kind, Token, Tokenizer, incomplete_utf8},
+    token::{Kind, Token, Tokenizer, executed, incomplete_utf8, line_feed},
 };
 use alacritty_terminal::{
     Grid,
@@ -67,7 +67,13 @@ impl History {
 
     /// Whether the first chunk is still to be admitted.
     fn awaited(self) -> bool {
-        self.chunks == 0 && self.shown > 0
+        !self.begun() && self.shown > 0
+    }
+
+    /// Whether the first chunk has been admitted: only then can further
+    /// chunks be.
+    fn begun(self) -> bool {
+        self.chunks > 0
     }
 
     /// The engine's history limit in rows.
@@ -287,8 +293,8 @@ impl Bounded {
         room: &mut Room,
     ) -> Result<(), Rejected> {
         let first = self.awaiting() && self.could_scroll(kind, bytes, policy);
-        let page = if first { self.first_chunk() } else { 0 };
-        self.admit(self.growth(kind, bytes, policy.repeats), page, room)?;
+        let chunk = if first { self.first_chunk() } else { 0 };
+        self.admit(self.growth(kind, bytes, policy.repeats), chunk, room)?;
         if first {
             self.history = self.history.next();
             self.core.set_history(self.history.rows());
@@ -316,10 +322,7 @@ impl Bounded {
             let cols = usize::from(self.geometry.cols());
             return self.region.text_scrolls(bytes, cursor, cols);
         }
-        let feeds = bytes
-            .iter()
-            .filter(|byte| (0x0a..=0x0c).contains(*byte))
-            .count();
+        let feeds = bytes.iter().filter(|&&byte| line_feed(byte)).count();
         self.region
             .could_scroll(cursor.line, policy.scrolling, feeds + policy.repeats)
     }
@@ -349,7 +352,7 @@ impl Bounded {
     fn repeat(&mut self, parser: &mut Parser, bytes: &[u8], repeats: usize) {
         bytes
             .iter()
-            .filter(|byte| byte.is_ascii_control() && **byte != 0x1b)
+            .filter(|&&byte| executed(byte))
             .for_each(|control| self.core.advance(parser, slice::from_ref(control)));
         if let Some(character) = self.preceding {
             self.core.repeat(character, repeats);
@@ -368,12 +371,12 @@ impl Bounded {
         self.preceding = printed::last(text).or(self.preceding);
     }
 
-    /// Charge `growth`, and `page` for the first history chunk, if they
+    /// Charge `growth`, and `chunk` for the first history chunk, if they
     /// fit. When the running charge leaves no room, the active screen is
     /// measured first; then history yields, oldest chunk first: the current
     /// model's beside a staged restoration, then this instance's own.
-    fn admit(&mut self, growth: usize, page: usize, room: &mut Room) -> Result<(), Rejected> {
-        let needed = growth + page;
+    fn admit(&mut self, growth: usize, chunk: usize, room: &mut Room) -> Result<(), Rejected> {
+        let needed = growth + chunk;
         if !room.fits(self.charge() + needed) {
             self.measure();
         }
@@ -390,11 +393,7 @@ impl Bounded {
     /// pushes at most a row per byte and per repetition, or a screenful, so
     /// one long repeat or released run of controls can fill several chunks.
     fn grow(&mut self, reach: usize, room: &mut Room) {
-        let Some(history) = self
-            .core
-            .normal_history()
-            .filter(|_| self.history.chunks > 0)
-        else {
+        let Some(history) = self.core.normal_history().filter(|_| self.history.begun()) else {
             return;
         };
         let wanted = self

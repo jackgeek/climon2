@@ -91,6 +91,7 @@ fn repeat_counts_at_their_lower_boundaries() {
         (b"\xff\x1b[1b", ["\u{fffd}\u{fffd}", ""]),
         (b"\x1b[5b", ["", ""]),
         (b"a\x1f\x1b[1b", ["aa", ""]),
+        (b"a \x1b[1b", ["a", ""]),
         ("a\u{80}\x1b[1b".as_bytes(), ["aa", ""]),
         ("a\u{9f}\x1b[1b".as_bytes(), ["aa", ""]),
         ("a\u{a1}\x1b[1b".as_bytes(), ["a\u{a1}\u{a1}", ""]),

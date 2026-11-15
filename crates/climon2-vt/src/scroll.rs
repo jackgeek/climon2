@@ -4,7 +4,10 @@
 //! an upper bound: a token said to scroll may not, but one said not to never
 //! does.
 
-use crate::classify::Scrolling;
+use crate::{
+    classify::Scrolling,
+    token::{executed, line_feed},
+};
 
 /// The engine's scroll region, which it keeps private, mirrored from the
 /// sequences that set it: whether it starts at the top row, which alone
@@ -80,8 +83,8 @@ impl Region {
     /// bottom row ([`Region::piece`]): a line feed, or anything but a
     /// control printed in the last column, where a wrap can be pending.
     pub(crate) fn text_scrolls(self, text: &[u8], cursor: Cursor, cols: usize) -> bool {
-        let feeds = matches!(text, [0x0a..=0x0c]);
-        let control = matches!(text, [0x00..=0x1f]);
+        let feeds = matches!(text, &[byte] if line_feed(byte));
+        let control = matches!(text, &[byte] if executed(byte));
         let wraps = !control && cursor.column + 1 == cols;
         self.reached(cursor.line, 1) && (feeds || wraps)
     }
