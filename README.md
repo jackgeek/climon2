@@ -119,6 +119,15 @@ control returns to the most recently controlling client that is still attached.
   ends. If its command exits sooner, the exit is kept for that first client
   until then. A headless session has no such window.
 - When the command exits, every attached client exits with its status.
+- A monitor watching a session keeps it alive through succession. When the
+  controller leaves, by detaching or any other way, and no other client is
+  attached, control passes to the monitor that started watching most
+  recently, which becomes an attached client in the background, without
+  resizing the session or typing into it. The rules above then apply only
+  when no monitor is left watching. Watching alone is not attaching, so it
+  does not stop the five-second rule for a starting session, and a session
+  being killed passes control to no one. (The shipped monitor does not watch
+  sessions yet.)
 
 **Kill** one session with `c2 kill <session>` (same selector rules), whether
 or not clients are attached. It needs no terminal and prints nothing. The
@@ -163,7 +172,7 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
     "bell": true,                  // false: no host bell as a toast first draws
     "limits": {
       "memory": {
-        "total_bytes": 536870912,
+        "total_bytes": 603979776,
         "client_bytes": 67108864,
         "history_bytes_per_session": 16777216,
         "history_bytes_total": 268435456,
@@ -290,13 +299,25 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
     `progress_bytes`, that ordinary capacity and `drain_payload_bytes`;
   - `ui.client_quantum_ms` fits `ui.background_quantum_ms`, and
     `retry.initial_ms` fits `retry.cap_ms`.
+- The monitor also refuses limits too small for one session's terminal model
+  at the largest session size, 500x200 (`exec` does not check this):
+  `memory.client_bytes` must hold its current model and the history holding
+  its recent page, 16966087 bytes together, `memory.total_bytes` those and
+  the monitor's one shared parser, 19063239 bytes, and
+  `memory.history_bytes_total` and `history_bytes_per_session` that history,
+  12115200 bytes. The refusal names the first limit to raise. Limits that
+  only just pass admit such a session, but restoring it beside its current
+  model needs at least 33932174 bytes in a client's budget (36029326 in the
+  total, with the parser), and the monitor will restore it
+  whenever the session's size changes.
 
 `exec` validates the whole file before starting the session. `attach`
 validates only `client`; the monitor validates `client` and `monitor`, and
 refuses a null `escape_prefix`. `list` and `kill` do not read the file. Any
 error, including malformed JSONC, duplicate keys, wrong types, `null` for a
 setting that cannot be disabled, invalid keys, conflicting bindings,
-out-of-range values and limits that disagree, exits 125 before anything starts.
+out-of-range values, limits that disagree and, for the monitor, limits too
+small for its terminal model, exits 125 before anything starts.
 The file is read once per command; there is no environment override,
 auto-creation or live reload.
 
@@ -367,7 +388,9 @@ CREATED, VERSION, STATE, CLIENTS, COMMAND and ARGS. STATE is `starting`,
 report it. A headless session is never `starting`: it is `detached` whenever no
 client is attached. CLIENTS counts attached clients, or shows `-` when unknown. A
 monitor watching a session without attaching to it (a passive monitor
-connection) is not an attachment: it never counts in CLIENTS or changes STATE.
+connection) is not an attachment: it never counts in CLIENTS or changes STATE
+until it takes control or inherits it (see the leave policy), when it counts
+as an attached client.
 
 `c2 list --json` prints an array of session metadata objects. Each has a
 `state` key holding `{"lifecycle": …, "attachments": …, "controlled": …}`, or

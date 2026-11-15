@@ -2,7 +2,7 @@
 //! passive monitor connections, ordinary interactive attachments and
 //! standalone Kills, their requests, their control and terminal records and
 //! their core metadata.
-use super::Session;
+use super::{Session, delivery::Delivery};
 use crate::{
     connection::{Connection, frame_limit},
     control::{
@@ -33,8 +33,7 @@ const UNSUPPORTED_GEOMETRY: &str = "the geometry exceeds the supported terminal 
 const EMPTY_INPUT: &str = "Input carries no bytes";
 const TERMINATING: &str = "the session is terminating";
 const CLEANUP_INCOMPLETE: &str = "the session's termination or cleanup did not complete";
-/// Acquire by a passive monitor connection (#89), and Set viewing and
-/// Acknowledge (#91) are not served yet.
+/// Set viewing and Acknowledge (#91) are not served yet.
 const NOT_YET_SERVED: &str = "this daemon does not serve this request yet";
 
 /// What hello advertises: only the families this daemon implements.
@@ -58,9 +57,11 @@ pub(super) struct Opened {
 }
 
 enum Role {
-    /// A passive monitor connection: registered, never an attachment.
+    /// A passive monitor connection: registered, not an attachment until
+    /// its Acquire or a promotion converts it.
     Monitor,
-    /// An ordinary interactive attachment.
+    /// An attachment: an ordinary interactive one, or a converted passive
+    /// monitor connection.
     Attachment(Attachment),
 }
 
@@ -95,8 +96,9 @@ impl Role {
 }
 
 struct Attachment {
-    /// The Open that its admission or refusal answers.
-    open: Counter,
+    /// The interactive Open that its admission or refusal answers; none
+    /// for a converted passive monitor connection.
+    open: Option<Counter>,
     /// What it holds while it controls.
     held: Option<Held>,
 }
@@ -192,12 +194,14 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// A passive monitor connection: success and Initial metadata at once.
+    /// It may inherit control from now on.
     fn register(&mut self, id: u64, request_id: Counter, selected: BTreeSet<Family>) {
         let opened = Opened {
             selected,
             role: Role::Monitor,
         };
         self.opened.insert(id, opened);
+        self.control.register(ConnectionId(id));
         self.report_opened(id, request_id);
     }
 
@@ -216,7 +220,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             return Ok(());
         };
         let attachment = Attachment {
-            open: request_id,
+            open: Some(request_id),
             held: None,
         };
         let opened = Opened {
@@ -246,13 +250,30 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn open_request(&self, id: u64) -> Option<Counter> {
-        Some(self.opened.get(&id)?.role.attachment()?.open)
+        self.opened.get(&id)?.role.attachment()?.open
     }
 
     /// Whether the connection has a revision-1 role: an Open's or a
     /// standalone Kill's.
     pub(super) fn holds_role(&self, id: u64) -> bool {
         self.opened.contains_key(&id) || self.kills.contains_key(&id)
+    }
+
+    /// A passive monitor connection became an attachment, by its Acquire
+    /// or a promotion: no Open awaits an answer, and its output is
+    /// canonical, at the session geometry. The control state converts only
+    /// a registration whose connection is still open.
+    pub(super) fn convert(&mut self, id: u64) {
+        let Some(opened) = self.opened.get_mut(&id) else {
+            return;
+        };
+        let attachment = Attachment {
+            open: None,
+            held: None,
+        };
+        opened.role = Role::Attachment(attachment);
+        let delivery = Delivery::canonical(self.control.session_size());
+        self.deliveries.insert(id, delivery);
     }
 
     /// Success, then the atomic Initial metadata: the connection captures
@@ -284,20 +305,17 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
                 self.reject(id, request_id, OperationalCode::InvalidState, NOT_OPENED);
                 Ok(())
             }
-            Some(Kind::Monitor) => {
-                self.left(id, request_id, false);
-                Ok(())
-            }
-            Some(Kind::Attachment) => self.detach_attachment(id, request_id),
+            Some(kind) => self.depart(id, request_id, kind),
         }
     }
 
-    /// An attachment's Leave is an accepted detach: a controller's
-    /// presentation is released and control is handed back first.
-    fn detach_attachment(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
+    /// A passive monitor connection's registration ends, and an
+    /// attachment's Leave is an accepted detach: a controller's
+    /// presentation is released and control passes on first.
+    fn depart(&mut self, id: u64, request_id: Counter, kind: Kind) -> io::Result<()> {
         let effects = self.control.leave(ConnectionId(id));
         self.effects(effects)?;
-        self.left(id, request_id, true);
+        self.left(id, request_id, kind == Kind::Attachment);
         Ok(())
     }
 
@@ -310,21 +328,17 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.end_stream(id);
     }
 
-    /// Acquire takes control for a non-controlling attachment and is an
-    /// explicit no-op for the controller. A passive monitor connection
-    /// cannot acquire until #89 serves it, and a connection that opened
-    /// nothing, a standalone Kill's included, has nothing to convert.
+    /// Acquire takes control for a non-controlling attachment, converting
+    /// a passive monitor connection into one, and is an explicit no-op for
+    /// the controller. A connection that opened nothing, a standalone
+    /// Kill's included, has nothing to convert.
     fn acquire(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
         match self.kind(id) {
             None => {
                 self.reject(id, request_id, OperationalCode::InvalidState, NOT_OPENED);
                 Ok(())
             }
-            Some(Kind::Monitor) => {
-                self.reject_with(id, request_id, not_yet());
-                Ok(())
-            }
-            Some(Kind::Attachment) => self.take_control(id, request_id),
+            Some(_) => self.take_control(id, request_id),
         }
     }
 
@@ -699,6 +713,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn respond(&mut self, id: u64, request_id: Counter, outcome: Outcome) {
+        #[cfg(feature = "test-hooks")]
+        if self.overflows(id, &outcome) {
+            return self.mark_lost(id);
+        }
         self.send_wire(
             id,
             &Response {
@@ -707,6 +725,15 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             }
             .to_frame(),
         );
+    }
+
+    /// The `monitor-overflow` fault: a passive monitor connection's
+    /// rejection overflows its output queue.
+    #[cfg(feature = "test-hooks")]
+    fn overflows(&self, id: u64, outcome: &Outcome) -> bool {
+        matches!(outcome, Outcome::Rejected(_))
+            && self.kind(id) == Some(Kind::Monitor)
+            && crate::startup::selected_fault("monitor-overflow")
     }
 
     fn end_stream(&mut self, id: u64) {
@@ -878,8 +905,4 @@ fn refusal(code: OperationalCode) -> Error {
         code: code.into(),
         message: format!("request refused: {}", code.as_str()),
     }
-}
-
-fn not_yet() -> Error {
-    error(OperationalCode::InternalError, NOT_YET_SERVED)
 }

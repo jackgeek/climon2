@@ -220,7 +220,9 @@ name = "climon2-e2e"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-fixtures",
  "climon2-install",
+ "climon2-second-release",
  "climon2-test-term",
  "nix 0.31.3",
  "portable-pty",
@@ -233,6 +235,7 @@ name = "climon2-fixtures"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-platform",
  "climon2-test-term",
  "libc",
  "nix 0.31.3",
@@ -268,12 +271,24 @@ name = "climon2-platform"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-fixtures",
  "filetime",
  "libc",
  "signal-hook 0.3.18",
  "socket2",
  "tempfile",
  "time",
+ "tracing",
+]
+
+[[package]]
+name = "climon2-second-release"
+version = "0.0.97"
+dependencies = [
+ "climon2-core",
+ "climon2-daemon",
+ "climon2-platform",
+ "libc",
  "tracing",
 ]
 
@@ -300,6 +315,7 @@ name = "climon2-vt"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "unicode-width",
  "vt100",
 ]
 
@@ -1759,7 +1775,10 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-fixtures",
  "climon2-install",
+ "climon2-platform",
+ "climon2-second-release",
  "libc",
  "proc-macro2",
  "quote",

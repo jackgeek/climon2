@@ -150,10 +150,7 @@ fn resolve(id: u64, verdict: Verdict) -> Result<Settled, Fault> {
         carried,
         retry,
     } = verdict;
-    let answer = match carried {
-        None => Answer::None,
-        Some(carried) => termination(carried)?,
-    };
+    let answer = carried.map(termination).transpose()?;
     Ok(Settled {
         response: Response {
             id,

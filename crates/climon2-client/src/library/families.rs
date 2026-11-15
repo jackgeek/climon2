@@ -3,12 +3,17 @@
 //! require only these, and only these are ever selected. Support comes from
 //! the daemon's hello advertisement, never from a release.
 
-use climon2_core::wire::{Advertisement, Families, Family, Requested};
+use climon2_core::wire::{Advertisement, Families, Family, Mode, Requested};
 
-/// Core (Open, Leave, Response and Fatal error), passive monitor entry and
-/// titles. `focus-v1` joins with #94, `status-v1` with #95, and
+/// Core (roles, control, restoration and display), passive monitor entry,
+/// titles and application focus (#94). `status-v1` joins with #95, and
 /// `notification-v1` and `progress-v1` with #98.
-pub(super) const RELAYED: [Family; 3] = [Family::DaemonWireV1, Family::MonitorV1, Family::TitleV1];
+pub(super) const RELAYED: [Family; 4] = [
+    Family::DaemonWireV1,
+    Family::MonitorV1,
+    Family::TitleV1,
+    Family::FocusV1,
+];
 
 /// The relayed family `token` names, if any.
 pub(super) fn relayed(token: &str) -> Option<Family> {
@@ -23,20 +28,20 @@ fn advertised(advertisement: &Advertisement, token: &str) -> bool {
 /// A first role, with the families it requires.
 #[derive(Clone, Copy)]
 pub(super) enum Role<'a> {
-    /// A monitor Open: `monitor-v1`, whatever the caller lists, and every
-    /// required family.
-    Monitor(&'a Requested),
+    /// An Open: `monitor-v1` for monitor mode, whatever the caller lists,
+    /// and every required family.
+    Open(Mode, &'a Requested),
     /// A Kill: every required family; core support is implicit (#96).
     Kill(&'a Families),
 }
 
 /// Whether the daemon advertises everything `role` requires.
 pub(super) fn supports(advertisement: &Advertisement, role: Role) -> bool {
-    let (entry, required) = match role {
-        Role::Monitor(requested) => (Some(Family::MonitorV1), requested.required()),
-        Role::Kill(required) => (None, required),
+    let (monitor, required) = match role {
+        Role::Open(mode, requested) => (mode == Mode::Monitor, requested.required()),
+        Role::Kill(required) => (false, required),
     };
-    entry.is_none_or(|entry| advertisement.supports(entry))
+    (!monitor || advertisement.supports(Family::MonitorV1))
         && required
             .tokens()
             .iter()

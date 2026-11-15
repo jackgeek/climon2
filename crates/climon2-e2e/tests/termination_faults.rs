@@ -131,11 +131,6 @@ fn assert_cases(package: &Package, root: &Path, cases: &[Case]) -> Value {
     report
 }
 
-/// The fake daemon's Command final of `result`, with status null.
-fn command_final(result: Value) -> Value {
-    send(0x4c, json!({ "command_result": result, "status": null }))
-}
-
 fn exit(code: u64) -> Value {
     json!({ "kind": "exit", "code": code })
 }
@@ -144,32 +139,22 @@ fn signal(number: u64, name: Value) -> Value {
     json!({ "kind": "signal", "number": number, "name": name })
 }
 
-/// A fake daemon that opens with `title-v1` and reports the title `t`,
-/// then sends `then`.
-fn opened_then(then: Vec<Value>) -> Value {
-    let mut open = vec![opened(&SELECTED), initial(json!("t"))];
-    open.extend(then);
-    json!({ "open": open })
-}
-
-/// COM-06 Fault (exit differs from signal, final evidence survives
-/// disconnection, inconsistent repeats fail, and closure never invents
-/// completion or a successful Leave), with REC-01 Fault (a final outcome
-/// stops retry; transport loss without one calls for passive retry): after
-/// the Initial metadata, a Command final of exit zero, of exit 143 and of
-/// signal 15 with its name each arrive as one record of their own kind and
-/// value, status unavailable, and the daemon's close then stops the stream
-/// cleanly: stopped, no error, retry none, Leave not required (owner
-/// decision on #94). A second Command final, consistent or contradictory,
-/// and one after an Initial metadata that knew the result are
-/// `invalid_record`, after the first is delivered, with no retry; a
-/// Command final before the Initial metadata, or with a status no Open
-/// selected, is `invalid_record` and the result stays unknown, so passive
-/// retry. A connection lost inside a frame after a Command final keeps
-/// the final record and calls for no retry; one closed with no final
-/// evidence is a failure that calls for passive retry, never a completion;
-/// and a close that meets an unanswered Leave after the final leaves that
-/// Leave indeterminate, never confirmed.
+/// COM-06 Fault (exit differs from signal, inconsistent repeats fail, and
+/// closure never invents completion or a successful Leave), with REC-01
+/// Fault (a final outcome stops retry; transport loss without one calls
+/// for passive retry), beside #94's minimal-handling cases in
+/// `control_faults.rs` (signal with its name, a consistent second final,
+/// finals after a known result, early or with a status, a close inside a
+/// frame, a close meeting shutdown's Leave): after the Initial metadata, a
+/// Command final of exit zero and of exit 143 each arrive as one record of
+/// their kind and raw value, status unavailable, and the daemon's close
+/// then stops the stream cleanly: stopped, no error, retry none, Leave not
+/// required (owner decision on #94). A contradictory second Command final
+/// is `invalid_record` after the first is delivered, with no retry. A
+/// connection closed with no final evidence is a failure that calls for
+/// passive retry, never a completion; and a close that meets the caller's
+/// unanswered Leave after the final leaves that Leave indeterminate, never
+/// confirmed.
 #[test]
 fn installed_library_relays_each_command_final_once_and_closure_invents_nothing() {
     let package = Package::new();
@@ -189,102 +174,16 @@ fn installed_library_relays_each_command_final_once_and_closure_invents_nothing(
         error: None,
         kinds: &["hello", "open"],
     };
-    let repeated = |name, second: Value| Case {
-        name,
-        steps: submitted(
-            opened_then(vec![command_final(exit(0)), command_final(second)]),
-            json!({}),
-            &alone,
-        ),
-        records: vec![
-            Expect::Opened(1),
-            Expect::Metadata,
-            Expect::Final(native_command(EXIT, 0, None)),
-            Expect::Diagnostic(invalid),
-        ],
-        terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_NOT_REQUIRED),
-        error: Some(invalid),
-        kinds: &["hello", "open"],
-    };
-    let known = send(
-        0x41,
-        json!({
-            "title": { "available": true, "value": "t" },
-            "status": { "available": false, "value": null },
-            "progress": { "available": false, "value": null },
-            "command_result": exit(0),
-        }),
-    );
-    let completed = json!({
-        "state": "completed",
-        "changed_at": "2026-11-06T12:00:02.000Z",
-        "episode_id": null,
-    });
     let lost = (ORIGIN_TRANSPORT, "io_error");
     let cases = [
         final_case("exit-zero", exit(0), native_command(EXIT, 0, None)),
         final_case("exit-143", exit(143), native_command(EXIT, 143, None)),
-        final_case(
-            "signal-15",
-            signal(15, json!("SIGTERM")),
-            native_command(SIGNAL, 15, Some("SIGTERM")),
-        ),
-        repeated("repeated", exit(0)),
-        repeated("contradicted", signal(9, Value::Null)),
         Case {
-            name: "after-known",
-            steps: submitted(
-                json!({ "open": [opened(&SELECTED), known, command_final(exit(0))] }),
-                json!({}),
-                &alone,
-            ),
-            records: vec![
-                Expect::Opened(1),
-                Expect::Metadata,
-                Expect::Diagnostic(invalid),
-            ],
-            terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_NOT_REQUIRED),
-            error: Some(invalid),
-            kinds: &["hello", "open"],
-        },
-        Case {
-            name: "early",
-            steps: submitted(
-                json!({ "open": [opened(&SELECTED), command_final(exit(0))] }),
-                json!({}),
-                &alone,
-            ),
-            records: vec![Expect::Opened(1), Expect::Diagnostic(invalid)],
-            terminal: (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED),
-            error: Some(invalid),
-            kinds: &["hello", "open"],
-        },
-        Case {
-            name: "with-status",
-            steps: submitted(
-                opened_then(vec![send(
-                    0x4c,
-                    json!({ "command_result": exit(0), "status": completed }),
-                )]),
-                json!({}),
-                &alone,
-            ),
-            records: vec![
-                Expect::Opened(1),
-                Expect::Metadata,
-                Expect::Diagnostic(invalid),
-            ],
-            terminal: (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED),
-            error: Some(invalid),
-            kinds: &["hello", "open"],
-        },
-        Case {
-            name: "survives",
+            name: "contradicted",
             steps: submitted(
                 opened_then(vec![
-                    command_final(exit(2)),
-                    json!({ "raw": "0000000a4c7b" }),
-                    json!("close"),
+                    command_final(exit(0)),
+                    command_final(signal(9, Value::Null)),
                 ]),
                 json!({}),
                 &alone,
@@ -292,11 +191,11 @@ fn installed_library_relays_each_command_final_once_and_closure_invents_nothing(
             records: vec![
                 Expect::Opened(1),
                 Expect::Metadata,
-                Expect::Final(native_command(EXIT, 2, None)),
-                Expect::Diagnostic((ORIGIN_TRANSPORT, "truncated_frame")),
+                Expect::Final(native_command(EXIT, 0, None)),
+                Expect::Diagnostic(invalid),
             ],
             terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_NOT_REQUIRED),
-            error: Some((ORIGIN_TRANSPORT, "truncated_frame")),
+            error: Some(invalid),
             kinds: &["hello", "open"],
         },
         Case {

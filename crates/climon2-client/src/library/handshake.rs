@@ -1,6 +1,6 @@
 //! Before any role takes effect: the session metadata, the frozen hello and
 //! the daemon's revision-1 support must all agree with this instance's
-//! session, release and Open. Each refusal says whether retrying can help:
+//! session, release and first role. Each refusal says whether retrying can help:
 //! an unreachable or silent daemon can recover; another session, another
 //! release or missing support cannot.
 

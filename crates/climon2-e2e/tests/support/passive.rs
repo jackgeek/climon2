@@ -20,6 +20,8 @@ pub const UNSUPPORTED_OPERATION: u64 = 3;
 pub const INVALID_REQUEST_ID: u64 = 4;
 pub const FULL: u64 = 5;
 pub const CLOSED: u64 = 6;
+/// `CM1_RELEASE_MISMATCH`.
+pub const RELEASE_MISMATCH: u64 = 14;
 pub const ORIGIN_LIBRARY: u64 = 1;
 pub const ORIGIN_DAEMON: u64 = 2;
 pub const ORIGIN_TRANSPORT: u64 = 3;
@@ -319,6 +321,20 @@ pub fn assert_all_released(ledger: &Value) {
 /// The fake daemon's frame of `type` with a JSON `body`.
 pub fn send(code: u8, body: Value) -> Value {
     json!({ "send": { "type": code, "json": body } })
+}
+
+/// A fake daemon that opens with `title-v1`, reports the title `t`, then
+/// sends `after`.
+pub fn opened_then(after: Vec<Value>) -> Value {
+    let mut actions = vec![opened(&SELECTED), initial(json!("t"))];
+    actions.extend(after);
+    json!({ "open": actions })
+}
+
+/// A Command final of the wire `result`, with the null status of an
+/// unselected `status-v1`.
+pub fn command_final(result: Value) -> Value {
+    send(0x4c, json!({ "command_result": result, "status": null }))
 }
 
 /// A Response to the library's request `id` (`"$open"` or `"$leave"`).

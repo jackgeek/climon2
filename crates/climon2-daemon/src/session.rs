@@ -163,6 +163,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     // Incoming connections and frames.
 
     fn incoming(&mut self) -> io::Result<()> {
+        #[cfg(feature = "test-hooks")]
+        if crate::startup::held() {
+            return Ok(());
+        }
         self.accept()?;
         for id in self.connection_ids() {
             self.service(id)?;
@@ -380,7 +384,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.end_sync(now);
         self.start_restorations(now);
         self.deliver(now);
-        Ok(())
+        self.report_exit(now)
     }
 
     fn read_pty(&mut self, now: Instant) -> io::Result<()> {
@@ -546,8 +550,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn outgoing(&mut self, now: Instant) -> io::Result<()> {
         self.flush_connections()?;
         self.lose_marked()?;
-        self.deadlines(now)?;
-        self.report_exit(now)
+        self.deadlines(now)
     }
 
     fn flush_connections(&mut self) -> io::Result<()> {
@@ -606,11 +609,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// The result is final once the command's output drained to the
-    /// connections. A termination that waited for the drain then hangs up;
+    /// connections and nothing that output produced is still held back
+    /// from them. A termination that waited for the drain then hangs up;
     /// otherwise the exit is reported once, in addition, the initial
     /// attachment had its chance and no grant awaits `Ready`.
     fn report_exit(&mut self, now: Instant) -> io::Result<()> {
-        let Some(result) = self.command.drained(now) else {
+        let Some(result) = self.delivered(now) else {
             return Ok(());
         };
         self.publish(&result);
@@ -621,6 +625,21 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             return Ok(());
         }
         self.end_command(CommandEnd::Confirmed(result))
+    }
+
+    /// The command's result, once its output drained and nothing it
+    /// produced is still held back from a connection: no restoration is in
+    /// progress, with the live output behind it, and no synchronized update
+    /// holds a derived update or a grant's snapshot. Run after this pass's
+    /// restorations started, so a grant still waiting is held by an update.
+    /// Each hold ends within its own bounds: a restoration completes or its
+    /// stalled reader is lost, and the update's latch expires.
+    fn delivered(&self, now: Instant) -> Option<CommandResult> {
+        let held = self.vt.sync_pending(now) || self.deliveries.values().any(Delivery::restoring);
+        if held {
+            return None;
+        }
+        self.command.drained(now)
     }
 
     fn awaiting(&self, now: Instant) -> bool {
@@ -636,10 +655,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn awaiting_ready(&self) -> bool {
-        !self.pending_restorations.is_empty()
-            || self
-                .controller
-                .is_some_and(|id| !self.control.admits_input(ConnectionId(id)))
+        self.controller
+            .is_some_and(|id| !self.control.admits_input(ConnectionId(id)))
     }
 
     fn finished(&self, now: Instant) -> bool {
@@ -684,6 +701,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         match effect {
             Effect::Admit { conn } => self.admit(conn.0),
             Effect::Refuse { conn } => self.refuse(conn.0),
+            Effect::Convert { conn } => self.convert(conn.0),
             other => self.input_effect(other),
         }
     }
@@ -962,8 +980,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// Loses a connection from inside output routing; the state machine
-    /// hears of it after this iteration's output.
+    /// hears of it after this iteration's output, but a registration can
+    /// inherit control no more from now on.
     fn mark_lost(&mut self, id: u64) {
+        self.control.unregister(ConnectionId(id));
         self.pending_lost.insert(id);
         self.remove_connection(id);
     }

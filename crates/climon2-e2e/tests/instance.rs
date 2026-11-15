@@ -22,6 +22,7 @@ use std::{
 use support::{
     Package,
     library::{CHARGE, INSTANCE_DESCRIPTORS, archive, scenario},
+    passive::RELEASE_MISMATCH,
 };
 
 const SUCCESS: u64 = 0;
@@ -33,7 +34,6 @@ const UNSUPPORTED_LIMIT: u64 = 9;
 const RESOURCE_LIMIT: u64 = 10;
 const INTERNAL_ERROR: u64 = 11;
 const TIMEOUT: u64 = 13;
-const RELEASE_MISMATCH: u64 = 14;
 const ORIGIN_LIBRARY: u64 = 1;
 const DELIVERY: u64 = 1;
 const EMPTY: u64 = 2;
@@ -698,7 +698,8 @@ fn installed_library_create_rejects_invalid_settings_and_diagnostics_without_han
 /// described instance allocation and `max_workers` the described workers,
 /// each exactly at its bound, and `drain_payload_bytes` must hold a whole
 /// record of `metadata_record_bytes`, at that bound too (owner decision 4 on
-/// #93: no delivery ever holds one oversized record). With no descriptor
+/// #93: no delivery ever holds one oversized record), and a whole Display of
+/// `chunk_bytes`, at that bound too (#94). With no descriptor
 /// left for the notification descriptor and the waker, or for the log file
 /// after them, create fails with `CM1_RESOURCE_LIMIT`, no handles and no log
 /// file; one more descriptor is enough.
@@ -750,13 +751,29 @@ fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descri
         ),
         (
             "drain_payload_bytes below metadata_record_bytes",
-            limits(json!({ "metadata_record_bytes": 4096, "drain_payload_bytes": 4095 })),
+            limits(json!({ "metadata_record_bytes": 4096, "chunk_bytes": 1024,
+                           "drain_payload_bytes": 4095 })),
             UNSUPPORTED_LIMIT,
             "unsupported_limit",
         ),
         (
             "drain_payload_bytes at metadata_record_bytes",
-            limits(json!({ "metadata_record_bytes": 4096, "drain_payload_bytes": 4096 })),
+            limits(json!({ "metadata_record_bytes": 4096, "chunk_bytes": 1024,
+                           "drain_payload_bytes": 4096 })),
+            SUCCESS,
+            "",
+        ),
+        (
+            "drain_payload_bytes below chunk_bytes",
+            limits(json!({ "metadata_record_bytes": 1024, "chunk_bytes": 4096,
+                           "drain_payload_bytes": 4095 })),
+            UNSUPPORTED_LIMIT,
+            "unsupported_limit",
+        ),
+        (
+            "drain_payload_bytes at chunk_bytes",
+            limits(json!({ "metadata_record_bytes": 1024, "chunk_bytes": 4096,
+                           "drain_payload_bytes": 4096 })),
             SUCCESS,
             "",
         ),
@@ -805,7 +822,7 @@ fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descri
         }
     }
     let report = creates(&package, &root, &cases);
-    assert_eq!(report["cases"].as_array().unwrap().len(), 11 + 25);
+    assert_eq!(report["cases"].as_array().unwrap().len(), 13 + 25);
     assert!(!unopened.exists(), "a failed create leaves no log file");
     assert!(opened.exists());
     package.assert_clean();
@@ -1015,20 +1032,23 @@ fn assert_unaffected(report: &Value) {
 /// LIB-05 Fault: a panic injected at the bootstrap or at `create` returns an
 /// explicit `CM1_INTERNAL_ERROR` without unwinding (the host survives,
 /// nothing reaches its standard error), with cleared output and no handles;
-/// the retry succeeds, and no instance is affected.
+/// the retry succeeds, and no instance is affected. The shared loader makes
+/// the first bootstrap call: it refuses the load as a recoverable bootstrap
+/// failure only because the bootstrap cleared its output (an uncleared one is
+/// a malformed description, owner decision on #84), and the host's second
+/// load succeeds.
 #[test]
 fn installed_library_contains_a_panic_at_the_bootstrap_or_create() {
     let package = Package::new();
     let Some(report) = fault(&package, "bootstrap", json!({})) else {
         return;
     };
+    let (refused, retried) = twice(&report["bootstrap"]);
     assert_eq!(
-        report["bootstrap"],
-        json!([
-            { "status": INTERNAL_ERROR, "output": "null" },
-            { "status": SUCCESS, "output": "set" },
-        ])
+        refused["error"]["failure"], "BootstrapFailure",
+        "{report:#}"
     );
+    assert_eq!(retried, &json!({ "status": SUCCESS, "output": "set" }));
     assert_unaffected(&report);
     let report = fault(&package, "create", json!({})).unwrap();
     let (failed, retried) = twice(&report["create"]);

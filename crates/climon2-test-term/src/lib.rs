@@ -1,8 +1,8 @@
 //! Real-terminal testing at the process boundary (#21/#31).
 //!
 //! macOS and Linux share the terminal/session assertions. Process ownership uses
-//! macOS kernel process/image ids or Linux procfs pid/start ticks and an inherited
-//! test-owned descriptor. Neither trusts the environment marker alone, or requires
+//! macOS kernel process/image ids or Linux procfs pid/start ticks, plus an inherited
+//! test-owned descriptor on both. Neither trusts the environment marker alone, or requires
 //! an orphan's parent to survive until the next process-table sample.
 
 mod cell;

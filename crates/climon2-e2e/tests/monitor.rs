@@ -12,7 +12,7 @@ use nix::{
     sys::signal::{Signal, kill},
     unistd::Pid,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     env, fs,
     os::unix::fs::PermissionsExt,
@@ -291,6 +291,82 @@ fn installed_monitor_refuses_every_invalid_configuration_before_the_terminal_cha
     package.assert_clean();
 }
 
+/// One 500x200 session's mandatory allocation, as documented in
+/// docs/monitor-operational-limits.md: its 4,850,887-byte current model and
+/// the 12,115,200-byte history chunk that holds its recent page, and beside
+/// them, in the aggregate budget only, the monitor's one 2 MiB parser (#166).
+const MODEL_AND_PAGE: u64 = 16_966_087;
+const WITH_PARSER: u64 = 19_063_239;
+const PAGE: u64 = 12_115_200;
+
+/// Memory limits of `total` bytes, `client` bytes per client, `history`
+/// bytes of history in all and `per_session` bytes of each session's, with
+/// every other budget the total contains small enough to fit it.
+fn memory([total, client, history, per_session]: [u64; 4]) -> String {
+    json!({"monitor": {"limits": {
+        "memory": {
+            "total_bytes": total,
+            "client_bytes": client,
+            "history_bytes_total": history,
+            "history_bytes_per_session": per_session,
+            "queue_bytes_total": 1_048_576
+        },
+        "resources": {"release_bytes": 1_048_576}
+    }}})
+    .to_string()
+}
+
+/// CFG-01 (Monitor): limits that cannot hold one session's mandatory
+/// allocation at the largest session geometry, 500x200, beside the monitor's
+/// one parser, are refused like every other invalid configuration: one byte
+/// short of the total, a client's
+/// budget, the history total or a session's history budget, the monitor
+/// prints one diagnostic naming that limit and exits with the climon2 error
+/// code before any terminal change. At exactly those limits it opens, and
+/// prefix+x exits 0.
+#[test]
+fn installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model() {
+    let package = Package::new();
+    without_introduction(&package);
+    let config = config_file(&package);
+    for (limits, expected) in [
+        (
+            [WITH_PARSER - 1, MODEL_AND_PAGE, PAGE, PAGE],
+            "the parser and the current model and recent page of a 500x200 session (19063239) may not exceed monitor.limits.memory.total_bytes (19063238)",
+        ),
+        (
+            [WITH_PARSER, MODEL_AND_PAGE - 1, PAGE, PAGE],
+            "the current model and recent page of a 500x200 session (16966087) may not exceed monitor.limits.memory.client_bytes (16966086)",
+        ),
+        (
+            [WITH_PARSER, MODEL_AND_PAGE, PAGE - 1, PAGE - 1],
+            "the recent page of a 500x200 session (12115200) may not exceed monitor.limits.memory.history_bytes_total (12115199)",
+        ),
+        (
+            [WITH_PARSER, MODEL_AND_PAGE, PAGE, PAGE - 1],
+            "the recent page of a 500x200 session (12115200) may not exceed monitor.limits.memory.history_bytes_per_session (12115199)",
+        ),
+    ] {
+        let text = memory(limits);
+        fs::write(&config, &text).unwrap();
+        let mut terminal = outer(&package, "climon2 monitor");
+        let diagnostic = refusal(&mut terminal);
+        assert!(
+            diagnostic.starts_with(&format!(
+                "climon2: error: config.jsonc is invalid: {expected} (logs: "
+            )),
+            "{text}: {diagnostic:?}"
+        );
+        assert_released(&package, &mut terminal, 125);
+    }
+    fs::write(&config, memory([WITH_PARSER, MODEL_AND_PAGE, PAGE, PAGE])).unwrap();
+    let mut terminal = outer(&package, "climon2 monitor");
+    opened(&mut terminal);
+    terminal.send(b"\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    package.assert_clean();
+}
+
 /// CFG-01 (Monitor): `monitor.show_key_hints: false` removes the empty state's
 /// hint but no binding, so prefix+x still exits 0. Unknown and unrelated
 /// settings, an invalid `scrollback` among them, are ignored.
@@ -351,7 +427,7 @@ const EFFECTIVE: &str = r#"{
     "show_key_hints": true,
     "bell": false,
     "limits": {
-      "memory": {"total_bytes": 536870912, "client_bytes": 67108864, "history_bytes_per_session": 16777216, "history_bytes_total": 268435456, "queue_bytes_total": 67108864},
+      "memory": {"total_bytes": 603979776, "client_bytes": 67108864, "history_bytes_per_session": 16777216, "history_bytes_total": 268435456, "queue_bytes_total": 67108864},
       "history": {"max_rows": 200},
       "resources": {"stack_bytes": 2097152, "max_workers_per_client": 2, "descriptors_per_client": 8, "descriptors_per_load": 4, "descriptor_headroom": 64, "release_bytes": 67108864},
       "queues": {"request_bytes": 262144, "request_records": 64, "event_bytes": 1048576, "event_records": 1024, "progress_bytes": 65536, "progress_records": 32, "deliveries": 8, "operations": 16},
@@ -783,7 +859,9 @@ fn assert_diagnosed_after_release(terminal: &mut Terminal, diagnostic: &str) {
     let written = written(terminal);
     let entered = written.find("\x1b[?1049h").unwrap();
     let left = written.rfind("\x1b[?1049l").unwrap();
-    let reported = written.find(diagnostic).unwrap();
+    let reported = written
+        .find(diagnostic)
+        .unwrap_or_else(|| panic!("{diagnostic:?} missing from {written:?}"));
     assert!(entered < left && left < reported, "{written:?}");
     assert!(written.ends_with(")\r\n"), "{written:?}");
     assert_eq!(written.matches("climon2: error:").count(), 1, "{written:?}");
@@ -809,11 +887,26 @@ fn debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic() {
     package.assert_clean();
 }
 
+/// The monitor released the host before its one closed-terminal diagnostic,
+/// logged it and exited 125, leaving nothing behind.
+fn assert_closed_host_terminal(package: &Package, terminal: &mut Terminal) {
+    assert_diagnosed_after_release(terminal, "climon2: error: the host terminal closed (logs: ");
+    assert_released(package, terminal, 125);
+    let log = monitor_log(package);
+    assert!(
+        log.contains("monitor failed error=the host terminal closed"),
+        "{log}"
+    );
+    package.assert_clean();
+}
+
 /// EXT-03 (Monitor layer, empty monitor): when its host input hangs up, the
 /// monitor ends at once instead of spinning: it releases the host it still
 /// writes to, then reports the closed terminal, also in its general log, with
-/// the climon2 error code. Linux wakes readers before it finishes hanging a
-/// terminal up, so the monitor is stopped until the hang-up is complete.
+/// the climon2 error code. The terminal hangs up while the monitor waits for
+/// input, so the monitor may read either the end of input or, while Linux is
+/// still hanging the terminal up, EIO: the last close of its master can come
+/// later than this test's, from a child that another test is spawning.
 #[test]
 fn a_hung_up_host_input_releases_the_host_before_its_diagnostic() {
     let package = Package::new();
@@ -824,21 +917,37 @@ fn a_hung_up_host_input_releases_the_host_before_its_diagnostic() {
         &format!("climon2 monitor < {}", quote(input.path())),
     );
     terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
-    let monitor = monitor_process(&package).0;
-    stop(monitor);
     input.hang_up();
-    kill(Pid::from_raw(monitor), Signal::SIGCONT).unwrap();
-    assert_diagnosed_after_release(
-        &mut terminal,
-        "climon2: error: the host terminal closed (logs: ",
+    assert_closed_host_terminal(&package, &mut terminal);
+}
+
+/// EXT-03 (Monitor layer, empty monitor): host input that fails with EIO is
+/// the closed host terminal too, as Linux fails reads while it is still
+/// hanging a terminal up: the monitor releases the host before the same one
+/// diagnostic, also in its general log, with the climon2 error code. Here the
+/// monitor is a background job of the outer shell with SIGTTIN ignored, so
+/// its read of the typed newline fails with EIO; the shell then reads that
+/// newline once the monitor has restored termios, with echo off for that
+/// read alone and then exactly the termios the monitor left: macOS re-runs
+/// input that arrived in raw mode through its input processing at the next
+/// canonical read (`PENDIN`), which would echo the newline after the
+/// diagnostic, where Linux echoed nothing on arrival. Only the monitor writes
+/// errors to the host: older bash (macOS `/bin/bash` 3.2, Ubuntu 24.04's
+/// 5.2) reports the finished job (`[1]+  Exit 125 ...`) on its own stderr,
+/// which goes nowhere.
+#[test]
+fn host_input_failing_with_eio_releases_the_host_before_its_diagnostic() {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(
+        &package,
+        "trap '' TTIN TTOU; set -m; exec 3>&2 2>/dev/null; \
+         climon2 monitor 2>&3 3>&- & wait $!; s=$?; set +m; exec 3>&-; \
+         r=$(stty -g); stty -echo; IFS= read -r _; stty \"$r\"; (exit $s)",
     );
-    assert_released(&package, &mut terminal, 125);
-    let log = monitor_log(&package);
-    assert!(
-        log.contains("monitor failed error=the host terminal closed"),
-        "{log}"
-    );
-    package.assert_clean();
+    terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
+    terminal.send(b"\n").unwrap();
+    assert_closed_host_terminal(&package, &mut terminal);
 }
 
 /// Spec #73 Exit (diagnostics): the monitor writes content-free records to its

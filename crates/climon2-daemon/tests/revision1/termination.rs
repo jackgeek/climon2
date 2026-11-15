@@ -10,9 +10,9 @@ use crate::Session;
 use climon2_core::{
     protocol::{ClientMessage, HANGUP_GRACE, ServerMessage as PrivateMessage},
     wire::{
-        Acquire, AuthorityIds, Cleanup, CommandResult, Focus, Input, KnownResult, Leave, Mode,
-        Outcome, PartialCleanup, PartialTermination, Ready, Resize, Response, ServerMessage,
-        Success,
+        Acquire, AuthorityIds, Cleanup, CommandResult, Focus, GrantReason, Input, KnownResult,
+        Leave, Mode, Outcome, PartialCleanup, PartialTermination, Ready, Resize, Response,
+        ServerMessage, Success,
     },
 };
 use climon2_platform::process;
@@ -25,7 +25,7 @@ use std::{
 
 /// A standalone Kill's success: termination confirmed with `result` after
 /// complete daemon cleanup.
-fn terminated(request_id: u64, result: &CommandResult) -> ServerMessage {
+pub(super) fn terminated(request_id: u64, result: &CommandResult) -> ServerMessage {
     let termination = Success::Termination {
         command_result: result.clone(),
         cleanup: Cleanup::Complete,
@@ -447,46 +447,91 @@ fn the_end_of_the_commands_output_while_it_runs_is_no_final_result() {
 }
 
 /// Waits until the command `pid` exited while its parent, the daemon, has
-/// not reaped it yet.
+/// not reaped it yet. On macOS, a command's exit with output the daemon has
+/// not read waits for the daemon and then discards that output, so there it
+/// stages only an exit whose output the daemon already read.
 fn exited_unreaped(pid: u32) {
     let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let output = std::process::Command::new("/bin/ps")
-            .args(["-o", "stat=", "-p", &pid.to_string()])
-            .output()
-            .unwrap();
-        if String::from_utf8_lossy(&output.stdout)
-            .trim_start()
-            .starts_with('Z')
-        {
-            return;
-        }
+    while !reapable(pid) {
         assert!(Instant::now() < deadline, "the command never exited");
         thread::sleep(Duration::from_millis(5));
     }
 }
 
+/// Whether the command `pid` ended, so that its parent can reap it. A
+/// zombie main thread is not enough on Linux: the fixture runs on a thread
+/// of its own, and its exit can leave the main thread a zombie while that
+/// thread is still exiting, with the terminal still open and the command
+/// not yet reapable, so the daemon would still see it running. The command
+/// ended once its zombie main thread is its only thread.
+#[cfg(target_os = "linux")]
+fn reapable(pid: u32) -> bool {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    let lines: Vec<&str> = status.lines().collect();
+    lines.contains(&"State:\tZ (zombie)") && lines.contains(&"Threads:\t1")
+}
+
+/// Whether the command `pid` ended, as `ps` reports its state.
+#[cfg(target_os = "macos")]
+fn reapable(pid: u32) -> bool {
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .trim_start()
+        .starts_with('Z')
+}
+
 /// COM-06 (Contract: Command final means no more output follows): the
-/// command's last output reaches every opened connection before its Command
-/// final, even when the daemon learns of the exit before it reads that
-/// output. The daemon is stopped while the command sets a title, prints its
-/// last line and exits 3, so all three are waiting for it as it resumes.
-/// The ready controller receives every Display holding the last line, and
-/// a passive monitor that selected `title-v1` the new title, before their
-/// Command final.
+/// command sets a title, prints its last line and exits 3. The ready
+/// controller receives every Display holding the last line, and a passive
+/// monitor that selected `title-v1` the new title, before their Command
+/// final. On macOS the command's exit waits for the daemon to read that
+/// output; on Linux the daemon may reap the command first and drains it
+/// after the reap (see the Linux-only test below).
+#[test]
+fn command_final_follows_the_last_output_of_a_command_that_exits() {
+    let mut session = Session::start("script");
+    let mut attached = ready_attachment(&session, &[]);
+    let (mut watching, _) = monitor(&session, &["title-v1"]);
+    crate::issue(&session, "title done");
+    crate::issue(&session, "text last line");
+    crate::issue(&session, "exit 3");
+    let result = exited(3);
+    assert_eq!(title_changed(&mut watching), Some("done".into()));
+    assert_final_then_closed(&mut watching, &result);
+    assert_eq!(attached.next_after_display(), command_final(&result));
+    let before_final = attached.display.clone();
+    attached.session_ended();
+    assert_eq!(crate::count(&before_final, b"last line"), 1);
+    session.finish();
+}
+
+/// COM-06 (Contract: Command final means no more output follows), Linux:
+/// the command's last output reaches every opened connection before its
+/// Command final, even when the daemon learns of the exit before it reads
+/// that output. The daemon is stopped while the command sets a title,
+/// prints its last line and exits 3, so all three are waiting for it as it
+/// resumes. The ready controller receives every Display holding the last
+/// line, and a passive monitor that selected `title-v1` the new title,
+/// before their Command final. Linux only: Linux keeps a closed terminal's
+/// unread output readable, while the macOS kernel discards it when the
+/// command's last close of its terminal finds no reader within 0.6 s, so
+/// with the daemon stopped there is nothing left to deliver there.
+#[cfg(target_os = "linux")]
 #[test]
 fn command_final_follows_the_commands_last_output() {
     let mut session = Session::start("script");
     let mut attached = ready_attachment(&session, &[]);
     let (mut watching, _) = monitor(&session, &["title-v1"]);
     let command = fixture_pid(&session);
-    let daemon = i32::try_from(session.pid).unwrap();
-    assert_eq!(unsafe { libc::kill(daemon, libc::SIGSTOP) }, 0);
-    crate::issue(&session, "title done");
-    crate::issue(&session, "text last line");
-    crate::issue(&session, "exit 3");
-    exited_unreaped(command);
-    assert_eq!(unsafe { libc::kill(daemon, libc::SIGCONT) }, 0);
+    while_stopped(&session, || {
+        crate::issue(&session, "title done");
+        crate::issue(&session, "text last line");
+        crate::issue(&session, "exit 3");
+        exited_unreaped(command);
+    });
     let result = exited(3);
     assert_eq!(title_changed(&mut watching), Some("done".into()));
     assert_final_then_closed(&mut watching, &result);
@@ -505,26 +550,28 @@ fn command_final_follows_the_commands_last_output() {
 /// before it reads that output. The ready controller still receives every
 /// Display holding the last line, and a passive monitor that selected
 /// `title-v1` the new title, before their Command final with exit 3; the
-/// Kill then confirms that result.
+/// Kill then confirms that result. Linux only, for the reason
+/// `command_final_follows_the_commands_last_output` gives.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_kill_during_the_drain_lets_the_commands_last_output_through() {
     let mut session = Session::start("script");
     let mut attached = ready_attachment(&session, &[]);
     let (mut watching, _) = monitor(&session, &["title-v1"]);
     let command = fixture_pid(&session);
-    let daemon = i32::try_from(session.pid).unwrap();
-    assert_eq!(unsafe { libc::kill(daemon, libc::SIGSTOP) }, 0);
-    crate::issue(&session, "title done");
-    crate::issue(&session, "text last line");
-    crate::issue(&session, "exit 3");
-    exited_unreaped(command);
-    let mut killing = UnixStream::connect(&session.socket).unwrap();
-    killing
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .unwrap();
-    crate::send(&mut killing, ClientMessage::Hello { protocol: 1 });
-    request(&mut killing, &kill(1, 1, &[]));
-    assert_eq!(unsafe { libc::kill(daemon, libc::SIGCONT) }, 0);
+    let mut killing = while_stopped(&session, || {
+        crate::issue(&session, "title done");
+        crate::issue(&session, "text last line");
+        crate::issue(&session, "exit 3");
+        exited_unreaped(command);
+        let mut killing = UnixStream::connect(&session.socket).unwrap();
+        killing
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        crate::send(&mut killing, ClientMessage::Hello { protocol: 1 });
+        request(&mut killing, &kill(1, 1, &[]));
+        killing
+    });
     let result = exited(3);
     assert_eq!(title_changed(&mut watching), Some("done".into()));
     assert_final_then_closed(&mut watching, &result);
@@ -538,5 +585,198 @@ fn a_kill_during_the_drain_lets_the_commands_last_output_through() {
     ));
     assert_eq!(message(&mut killing), terminated(1, &result));
     assert_closed(&mut killing);
+    session.finish();
+}
+
+/// An instant earlier than that of any daemon pass that reads the
+/// command's output from now on. A pass reads with the instant it started,
+/// so a pass already under way could read later output with an earlier
+/// one. The daemon accepts a connection made after the returned instant,
+/// and sends its hello reply no sooner than the end of that pass's output
+/// step, so every pass that reads after the reply arrived started after
+/// the accept.
+fn passes_after(session: &Session) -> Instant {
+    let before = Instant::now();
+    drop(session.connect());
+    before
+}
+
+/// Stops the daemon process, runs `during` and lets it go on.
+fn while_stopped<T>(session: &Session, during: impl FnOnce() -> T) -> T {
+    let daemon = i32::try_from(session.pid).unwrap();
+    assert_eq!(unsafe { libc::kill(daemon, libc::SIGSTOP) }, 0);
+    let value = during();
+    assert_eq!(unsafe { libc::kill(daemon, libc::SIGCONT) }, 0);
+    value
+}
+
+/// A screen and history whose restoration takes many Display frames: 5,000
+/// rows of 90 cells in alternating colours, about 2.7 MB, then `tail-line`.
+/// A first attachment receives it all live, so the daemon has read it, and
+/// leaves. A passive monitor connection registers only after that Leave was
+/// answered, so the Leave promotes nobody and the session is detached: a
+/// registration alone never takes over a detached session. The command then
+/// exits 3 while the daemon is stopped, and a hello and an interactive Open
+/// at 91x37 are sent in one go, so the daemon grants the Open in the same
+/// pass in which it reaps the command and reads the end of its output,
+/// ending the drain. Returns the monitor connection, the Open's stream, its
+/// hello reply read, and an instant before the daemon resumed.
+fn opened_as_the_drain_ends(session: &Session) -> (UnixStream, UnixStream, Instant) {
+    let mut first = ready_attachment(session, &[]);
+    crate::issue(session, "colors 5000");
+    crate::issue(session, "text tail-line");
+    first.until_displayed(b"tail-line", 1);
+    first.leave();
+    let (watching, _) = monitor(session, &[]);
+    let command = fixture_pid(session);
+    let (mut stream, resumed) = while_stopped(session, || {
+        crate::issue(session, "exit 3");
+        exited_unreaped(command);
+        let mut stream = UnixStream::connect(&session.socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        crate::send(&mut stream, ClientMessage::Hello { protocol: 1 });
+        request(
+            &mut stream,
+            &open(1, &[], &[], Mode::Interactive(geometry(91, 37))),
+        );
+        (stream, Instant::now())
+    });
+    assert!(matches!(
+        crate::receive(&mut stream),
+        PrivateMessage::Hello(_)
+    ));
+    (watching, stream, resumed)
+}
+
+/// COM-06 (Contract: Command final means no more output follows) and
+/// COM-05 (Contract, interactive order): a restoration still in progress
+/// when the command's output drained delivers all of its Display, and its
+/// Restoration complete, before Command final. The restoration of a large
+/// screen and history begins in the pass that ends the drain
+/// ([`opened_as_the_drain_ends`]). The attachment receives the whole
+/// restoration, `tail-line` included, then Command final with exit 3 while
+/// it has not confirmed Ready, as does the passive monitor connection,
+/// which registered after the first attachment's Leave and so was never
+/// promoted. Ready then ends the session, a committed termination, which
+/// promotes nobody: the monitor's stream ends after its Command final.
+#[test]
+fn a_restoration_in_progress_when_the_drain_ends_completes_before_command_final() {
+    let mut session = Session::start("script");
+    let (mut watching, stream, _) = opened_as_the_drain_ends(&session);
+    let mut attached = Attached::opened(stream, geometry(91, 37));
+    assert_eq!(crate::count(&attached.display, b"tail-line"), 1);
+    let result = exited(3);
+    assert_eq!(attached.next_after_display(), command_final(&result));
+    attached.confirm_ready();
+    attached.session_ended();
+    assert_final_then_closed(&mut watching, &result);
+    session.finish();
+}
+
+/// A ready controller whose 600-column host is wider than the session's
+/// 500-column limit, so it is served a derived presentation.
+fn derived_controller(session: &Session) -> Attached {
+    let mut attached = Attached::open(session, geometry(600, 37), &[], geometry(500, 37));
+    attached.confirm_ready();
+    attached.until_displayed(b"fixture-ready", 1);
+    attached
+}
+
+/// The controller's next records are any Display, then Command final with
+/// exit 3 no sooner than the latch's 150 ms after `before` and within ten
+/// seconds; `held-frame` was displayed once before it. Then its control
+/// ends with the session.
+fn held_frame_then_final(mut attached: Attached, before: Instant) {
+    assert_eq!(attached.next_after_display(), command_final(&exited(3)));
+    let held = before.elapsed();
+    assert!(held >= Duration::from_millis(150), "{held:?}");
+    assert!(held < Duration::from_secs(10), "{held:?}");
+    assert_eq!(crate::count(&attached.display, b"held-frame"), 1);
+    attached.session_ended();
+}
+
+/// COM-06 (Contract: Command final means no more output follows): the
+/// update a controller under derived presentation is owed, held back by a
+/// synchronized update, reaches it before Command final, which waits for
+/// the update's latch to expire. The command begins a synchronized update
+/// it never ends, prints `held-frame` and exits 3, all from one script
+/// read, so the command's output usually drains well inside the latch. The
+/// [`derived_controller`] receives `held-frame` as Display before its
+/// Command final, no sooner than 150 ms after [`passes_after`]'s instant,
+/// before which the daemon could not have read the update's begin, and
+/// only then its release and Control revoked. The Linux-only test below
+/// ends the drain inside the latch every time.
+#[test]
+fn a_synchronized_update_open_at_exit_reaches_a_derived_controller_before_command_final() {
+    let mut session = Session::start("script");
+    let attached = derived_controller(&session);
+    let before = passes_after(&session);
+    crate::issue(&session, "sync\ntext held-frame\nexit 3");
+    held_frame_then_final(attached, before);
+    session.finish();
+}
+
+/// COM-06 (Contract: Command final means no more output follows), Linux:
+/// as above, but the drain always ends while the update is open. The
+/// daemon is stopped while the command begins the update, prints
+/// `held-frame` and exits 3, so the daemon reads all three, then the end of
+/// the output, as it resumes. Linux only: Linux keeps a closed terminal's
+/// unread output readable, while the macOS kernel discards it when no
+/// reader takes it within its close timeout (0.6 s), so the stopped daemon
+/// would never read the update.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_held_synchronized_update_reaches_a_derived_controller_before_command_final() {
+    let mut session = Session::start("script");
+    let attached = derived_controller(&session);
+    let command = fixture_pid(&session);
+    let before = passes_after(&session);
+    while_stopped(&session, || {
+        crate::issue(&session, "sync");
+        crate::issue(&session, "text held-frame");
+        crate::issue(&session, "exit 3");
+        exited_unreaped(command);
+    });
+    held_frame_then_final(attached, before);
+    session.finish();
+}
+
+/// COM-06 (Contract: Command final is still sent within the existing
+/// bounds), COM-05 (Contract: a promotion's grant precedes its restoration)
+/// and CTL-04 (Contract: the controller's loss promotes the newest
+/// registration): a restoration whose reader stalls holds Command final
+/// only until that reader is lost. The restoration of a large screen and
+/// history begins in the pass that ends the drain
+/// ([`opened_as_the_drain_ends`]), and its reader never reads. The
+/// restoration is larger than the restoration window and the socket's
+/// buffer together, so it cannot complete, and after five seconds without
+/// progress the daemon loses the attachment. No attachment remains, so the
+/// passive monitor connection is promoted: Control granted (`successor`)
+/// at the session's 91x37 under period 3 and restoration 3, after the
+/// first attachment's and the stalled one's, then its restoration of the
+/// same screen, `tail-line` included, through Restoration complete. Only
+/// then, no sooner than five seconds after the daemon resumed, comes
+/// Command final with exit 3. The command exited by itself, so the session
+/// goes on until its new controller confirms Ready, then releases its
+/// presentation, revokes control (`session_ending`) and ends its stream.
+#[test]
+fn a_stalled_restoration_holds_command_final_only_until_its_reader_is_lost() {
+    let mut session = Session::start("script");
+    let (watching, stalled, resumed) = opened_as_the_drain_ends(&session);
+    let mut promoted = Attached::passive(watching);
+    promoted.granted(GrantReason::Successor, geometry(91, 37));
+    let promotion = AuthorityIds {
+        period: counter(3),
+        restoration_id: counter(3),
+    };
+    assert_eq!(promoted.authority(), promotion);
+    assert_eq!(crate::count(&promoted.display, b"tail-line"), 1);
+    assert_eq!(promoted.next_after_display(), command_final(&exited(3)));
+    assert!(resumed.elapsed() >= Duration::from_secs(5));
+    promoted.confirm_ready();
+    promoted.session_ended();
+    drop(stalled);
     session.finish();
 }

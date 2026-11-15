@@ -4,19 +4,28 @@
 //! sequence. Every wait is bounded, every call is on the timeline with its
 //! thread, and every library object is in the ownership ledger.
 //!
-//! `climon2-library-host <library> script <json>`, where the JSON has
-//! `root`, `steps` and, optionally, `"sigpipe": "default"`: the host then
+//! `climon2-library-host <home> <version> script <json>`, where the JSON has
+//! `root`, `steps` and, optionally, `releases`, the other versions the host
+//! loads through the same loader (#97), and `"sigpipe": "default"`: the host then
 //! lets `SIGPIPE` terminate it, as in a C embedder that never ignored it,
 //! where Rust hosts otherwise ignore it. A step is an object with `do` and an optional
 //! `instance` (default `"a"`):
 //! - `create`, with `startup` overrides and an optional fake `peer` script
-//!   (see `peer`), on the instance's own owner thread;
+//!   (see `peer`), on the instance's own owner thread, through the table of
+//!   its `release` (default: the release the host was asked for; see
+//!   `releases` below), which every later step of the instance uses;
 //! - `submit`, with a `request` (see `requests`) in caller memory scrambled
-//!   and unmapped as soon as `submit` returns, or a null one;
+//!   and unmapped as soon as `submit` returns, or a null one; in it, the
+//!   strings `"$period"` and `"$restoration"` are the instance's latest
+//!   authority drained so far (from Control granted, Restoration begin, or
+//!   an Acquire or Ready result), and `"$stale_period"` and
+//!   `"$stale_restoration"` the one before it (#94);
 //! - `run`, on the owner thread; `wait_run` for its report;
-//! - `drain`, `until` `{"records": n}`, `{"tag": t}` or `"terminal"`
-//!   (default: once), releasing each delivery unless `keep`, and stopping
-//!   at the first failed drain;
+//! - `drain`, `until` `{"records": n}`, `{"tag": t}`, `{"response": id}`,
+//!   `{"display": hex}` (the Display bytes drained in this step contain
+//!   them), `{"all": [until, ...]}` or `"terminal"` (default: once),
+//!   releasing each delivery unless `keep`, and stopping at the first failed
+//!   drain or at terminal evidence, after which nothing more can come;
 //! - `observe` and `release` the deliveries kept so far;
 //! - `snapshot`, `notification`, `shutdown`; `await_snapshot` until its
 //!   `gauge` reaches `value`;
@@ -54,12 +63,16 @@ use std::{
 };
 
 struct Instance {
+    /// The table of the release the instance was created through.
+    api: Api,
     owner: Option<Owner>,
     handles: Option<Handles>,
     run: Option<Receiver<(Value, Value)>>,
     report: Option<Value>,
     kept: Vec<Drain>,
     peer: Option<Peer>,
+    /// Each distinct `[period, restoration_id]` drained, in order.
+    authorities: Vec<[u64; 2]>,
 }
 
 struct World<'a> {
@@ -120,8 +133,8 @@ impl World<'_> {
             "probe" => return hello_state(Path::new(step["socket"].as_str().expect("a socket"))),
             _ => {}
         }
-        let api = self.setup.api;
         let instance = self.instances.get_mut(&name).expect("a created instance");
+        let api = instance.api;
         match action {
             "submit" => submit(api, instance, &step["request"]),
             "run" => {
@@ -148,13 +161,14 @@ impl World<'_> {
     }
 
     fn create(&mut self, name: &str, step: &Value) -> Value {
+        let setup = self.setup.of(step["release"].as_str());
         let mut overrides = match &step["startup"] {
             Value::Null => json!({}),
             startup => startup.clone(),
         };
         let peer = step.get("peer").map(|script| {
             let root = Path::new(self.setup.input["root"].as_str().expect("a root"));
-            Peer::start(root, name, &self.setup.release, script)
+            Peer::start(root, name, &setup.release, script)
         });
         if let Some(peer) = &peer {
             let path = json!({ "bytes": peer.metadata.to_str().expect("a UTF-8 path") });
@@ -162,16 +176,18 @@ impl World<'_> {
             overrides = startup::merged(&fake, &overrides);
         }
         let owner = Owner::spawn(&format!("owner-{name}"));
-        let (report, handles) = create(self.setup, &owner, &overrides);
+        let (report, handles) = create(&setup, &owner, &overrides);
         self.instances.insert(
             name.to_owned(),
             Instance {
+                api: setup.api,
                 owner: Some(owner),
                 handles,
                 run: None,
                 report: None,
                 kept: Vec::new(),
                 peer,
+                authorities: Vec::new(),
             },
         );
         report
@@ -201,11 +217,80 @@ fn submit(api: Api, instance: &Instance, request: &Value) -> Value {
     let built = if request.is_null() {
         std::ptr::null()
     } else {
-        requests::build(&mut arena, request)
+        requests::build(&mut arena, &substituted(instance, request))
     };
     let call = timed(|| api.submit(handles(instance), built));
     arena.scramble_and_unmap();
     call
+}
+
+/// `request` with the instance's drained authorities in place of
+/// `"$period"`, `"$restoration"`, `"$stale_period"` and
+/// `"$stale_restoration"`.
+fn substituted(instance: &Instance, request: &Value) -> Value {
+    let back = |by: usize| {
+        let count = instance.authorities.len();
+        let index = count.checked_sub(by).unwrap_or_else(|| {
+            panic!(
+                "{by} drained authorities needed: {:?}",
+                instance.authorities
+            )
+        });
+        instance.authorities[index]
+    };
+    match request {
+        Value::String(text) => match text.as_str() {
+            "$period" => json!(back(1)[0]),
+            "$restoration" => json!(back(1)[1]),
+            "$stale_period" => json!(back(2)[0]),
+            "$stale_restoration" => json!(back(2)[1]),
+            _ => request.clone(),
+        },
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| substituted(instance, item))
+                .collect(),
+        ),
+        Value::Object(members) => Value::Object(
+            members
+                .iter()
+                .map(|(key, member)| (key.clone(), substituted(instance, member)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// The authority a drained record gives its role, if any.
+fn authority(record: &Value) -> Option<[u64; 2]> {
+    let tag = record["tag"].as_u64()? as u32;
+    let source = match tag {
+        native::GRANTED | native::RESTORATION_BEGIN => &record["presentation"],
+        native::RESPONSE => &record["response"]["result"],
+        _ => return None,
+    };
+    Some([
+        source["period"].as_u64()?,
+        source["restoration_id"].as_u64()?,
+    ])
+}
+
+fn track(instance: &mut Instance, records: &[Value]) {
+    for found in records.iter().filter_map(authority) {
+        if instance.authorities.last() != Some(&found) {
+            instance.authorities.push(found);
+        }
+    }
+}
+
+/// The Display bytes among `records`, as hex.
+fn displayed(records: &[Value]) -> String {
+    records
+        .iter()
+        .filter(|record| record["tag"] == native::DISPLAY)
+        .filter_map(|record| record["presentation"]["bytes"].as_str())
+        .collect()
 }
 
 fn wait_run(instance: &mut Instance) -> Value {
@@ -222,29 +307,47 @@ fn met(until: &Value, drains: &[Value], records: &[Value], terminal: bool) -> bo
     if until == "terminal" {
         return terminal;
     }
+    if let Some(all) = until["all"].as_array() {
+        return all
+            .iter()
+            .all(|until| met(until, drains, records, terminal));
+    }
     if let Some(count) = until["records"].as_u64() {
         return records.len() as u64 >= count;
     }
     if let Some(tag) = until["tag"].as_u64() {
         return records.iter().any(|record| record["tag"] == tag);
     }
+    if let Some(id) = until["response"].as_u64() {
+        return records
+            .iter()
+            .any(|record| record["response"]["request_id"] == id);
+    }
+    if let Some(hex) = until["display"].as_str() {
+        return displayed(records).contains(hex);
+    }
     !drains.is_empty()
 }
 
-/// Drains until `until` is met, waiting on the descriptor while nothing is
-/// ready, bounded; each delivery is released unless `keep`.
+/// Drains until `until` is met or the stream ends, waiting on the
+/// descriptor while nothing is ready, bounded; each delivery is released
+/// unless `keep`.
 fn drain(api: Api, instance: &mut Instance, step: &Value) -> Value {
     let handles = handles(instance);
     let descriptor = api.notification(handles).1;
     let keep = step["keep"].as_bool().unwrap_or(false);
     let (mut drains, mut records, mut terminal) = (Vec::new(), Vec::new(), false);
     let deadline = probe::deadline();
-    while !met(&step["until"], &drains, &records, terminal) && Instant::now() < deadline {
+    while !terminal
+        && !met(&step["until"], &drains, &records, terminal)
+        && Instant::now() < deadline
+    {
         let started = Instant::now();
         let (call, drained) = api.drain(handles);
         let elapsed = started.elapsed().as_micros() as u64;
         let ok = call["code"] == native::SUCCESS;
         if let Some(found) = drained.observed["records"].as_array() {
+            track(instance, found);
             records.extend(found.iter().cloned());
         }
         terminal |= drained.kind == native::TERMINAL;

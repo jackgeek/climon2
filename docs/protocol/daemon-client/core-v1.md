@@ -3,8 +3,9 @@
 **Status: developer-agreed specification in [#67](https://github.com/jackgeek/climon2/issues/67), partly implemented.**
 This is the maintained contract, not evidence that any release conforms.
 The [#63 terminal contract](../terminal-integration.md) adds optional core
-[Focus](request-focus.md) and canonical monitor-mode presentation below;
-these amendments are also agreed, and Focus is implemented.
+[Focus](request-focus.md) and
+[canonical presentation](../../../GLOSSARY.md#restoration-and-presentation) of monitor-mode connections below;
+these amendments are also agreed, and the session daemon implements both.
 The [private protocol](post-hello.md) is not this revision;
 [session daemons](../../../GLOSSARY.md#sessions) now speak both, and the
 first [frame](../TERMS.md#frame) after [hello](../../../GLOSSARY.md#sessions)
@@ -24,29 +25,34 @@ The [session daemon](../../../GLOSSARY.md#sessions) implements this revision
 for [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
 ([#86](https://github.com/jackgeek/climon2/issues/86)), ordinary
 interactive [attachments](../../../GLOSSARY.md#attachment-and-control)
-([#87](https://github.com/jackgeek/climon2/issues/87)) and standalone
+([#87](https://github.com/jackgeek/climon2/issues/87)), standalone
 [Kill](../../../GLOSSARY.md#attachment-and-control)
-([#88](https://github.com/jackgeek/climon2/issues/88)): the
+([#88](https://github.com/jackgeek/climon2/issues/88)) and monitors that
+acquire and inherit control
+([#89](https://github.com/jackgeek/climon2/issues/89)): the
 [hello advertisement](hello-reply.md#revision-1-advertisement), framing and
 validation with their connection-fatal codes, Open in both modes, Leave,
-Input, Resize, Ready, Acquire between attachments, Focus, Kill, Response,
+Input, Resize, Ready, Acquire, Focus, Kill, Response,
 Fatal error, Initial metadata (the title and a known command result; status
 and progress reported unavailable), Title changed, Control granted and
 revoked, Restoration begin and complete, Display, Geometry and
 [Command final](event-command-final.md#implemented-behavior) without status,
 with the private protocol's takeover,
 [hand-back](../../../GLOSSARY.md#attachment-and-control) and
-[leave policy](../../../GLOSSARY.md#attachment-and-control). Until it serves them, it
+[leave policy](../../../GLOSSARY.md#attachment-and-control), the
+[promotion](../../../GLOSSARY.md#attachment-and-control) of passive registrations
+and the [canonical presentation](../../../GLOSSARY.md#restoration-and-presentation)
+of monitor-mode connections. Until it serves them, it
 rejects the other
-requests without effects, as each request's page describes. Acquire by a
-passive monitor connection, Set viewing, Acknowledge, the status,
-notification and progress messages, promotion of passive registrations,
-canonical monitor-mode presentation and bounded delivery remain
-unimplemented. The
+requests without effects, as each request's page describes. Set viewing,
+Acknowledge, the status, notification and progress messages and bounded
+delivery remain unimplemented. The
 [client library](../../../GLOSSARY.md#sessions) speaks this revision for
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
+for control and display ([#94](https://github.com/jackgeek/climon2/issues/94)),
 with Command final, and for standalone Kill
-([#96](https://github.com/jackgeek/climon2/issues/96)); no other [client](../../../GLOSSARY.md#sessions) does yet. The
+([#96](https://github.com/jackgeek/climon2/issues/96)); no other
+[client](../../../GLOSSARY.md#sessions) does yet. The
 [daemon's contract tests](../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
 are the evidence for the implemented parts.
 
@@ -290,8 +296,11 @@ Monitor-mode Display/restoration is always serialized at effective session
 geometry, including promotion/background grants, not host/requested geometry.
 The existing Grant/Restoration begin/Geometry fields suffice with this new
 [canonical policy](../terminal-integration.md#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1);
-no presentation-size field is added. Ordinary interactive direct/derived/
-native-history behavior is unchanged.
+no presentation-size field is added. Every change of the effective geometry is
+followed by a Restoration begin at that geometry before any Display at it, so
+a monitor model is never reflowed in place (developer decision on
+[#76](https://github.com/jackgeek/climon2/issues/76), 2026-11-13). Ordinary
+interactive direct/derived/native-history behavior is unchanged.
 Applied model readiness permits Ready and resize progress without selection or
 paint; selected application input additionally waits for a coherent painted
 current target. Focus validates current authority and readiness, but focus-out
@@ -309,7 +318,12 @@ revives terminal activity/attention. Command final follows the command's
 terminal output: once a connection receives it, no more of the command's
 output follows on that connection, and a termination that comes after the
 command exited waits for its output to drain (owner decisions on
-[#88](https://github.com/jackgeek/climon2/issues/88), 2026-11-14).
+[#88](https://github.com/jackgeek/climon2/issues/88), 2026-11-14). It also
+waits until no restoration is in progress and no
+[synchronized update](../TERMS.md#synchronized-update) holds output back, so
+those Displays precede it too
+([#203](https://github.com/jackgeek/climon2/issues/203)); a grant after
+Command final still replays the screen in its restoration.
 
 ### Implemented authority checks
 
@@ -481,14 +495,21 @@ Input header failures, stale authority and readiness, arbitrary bytes, paste
 closure, query authority, inert titles, Focus, and takeover, hand-back and
 leave-policy parity. They also cover exit versus signal in Command final,
 Command final after the command's last output, also when a Kill arrives
-before that output drained,
+before that output drained, after a restoration in progress and a held
+synchronized update, and still sent once a stalled reader is lost,
 known results in Initial metadata and first-role rejections, no final
 without evidence (an unconfirmed hang-up, or the end of the command's output
 while it runs), and standalone Kill: its answer after termination and
 cleanup, Kills of both protocols joining one
 [hang-up grace](../../../GLOSSARY.md#attachment-and-control), its success
 after a session failure, and its partial result after a failed cleanup or
-an unconfirmed termination; the rest remains future.
+an unconfirmed termination. For monitors they cover Acquire by a
+registration, of a starting session too and after the Command final,
+succession (hand-back before the newest registration's promotion, leave
+policy only after it, in headless sessions too), Leave, a committed Kill and
+a registration's queue overflow racing a promotion, and canonical
+restorations at the effective geometry, with a Restoration begin after every
+geometry change; the rest remains future.
 Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent

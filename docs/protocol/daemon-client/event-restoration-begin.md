@@ -1,8 +1,9 @@
 # Restoration begin — `0x48`
 
-**Status: agreed and implemented for interactive attachments**
-([#87](https://github.com/jackgeek/climon2/issues/87)); canonical
-monitor-mode serialization arrives with [#89](https://github.com/jackgeek/climon2/issues/89), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** for interactive attachments
+([#87](https://github.com/jackgeek/climon2/issues/87)) and, with canonical
+serialization, for monitor-mode connections
+([#89](https://github.com/jackgeek/climon2/issues/89)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) begins a distinct
 [restoration](../../../GLOSSARY.md#restoration-and-presentation) for the
 controlling [client](../../../GLOSSARY.md#sessions).
@@ -25,7 +26,12 @@ begin; a later restoration may occur in the same period, such as after resize.
 New begin invalidates previous/incomplete
 [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts). Identities are not reused.
 For monitor-mode connections geometry is the effective serialization size,
-including passive promotion/background grants, not the outer host. Build a new
+including passive [promotion](../../../GLOSSARY.md#attachment-and-control)/background
+grants, not the outer host, and a later restoration is not optional: every
+change of the effective geometry is followed by a Restoration begin at that
+geometry before any [Display](event-display.md) at it, so a monitor model is
+never reflowed in place (developer decision on
+[#76](https://github.com/jackgeek/climon2/issues/76), 2026-11-13). Build a new
 model/history separately; completion/application replaces both transactionally,
 never union/dedup. Partial/superseded models never become current. The
 [terminal contract](../terminal-integration.md) retains a coherent transition
@@ -57,8 +63,27 @@ replacement restoration keeps the
 [control period](../../../GLOSSARY.md#attachment-and-control) and gets a new
 [restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts), and
 the superseded restoration gets no completion. The geometry is the session
-geometry. The restoration bytes are those of an ordinary attach, serialized
-for the attachment's host with
+geometry. For an interactive attachment the restoration bytes are those of
+an ordinary attach, serialized for the attachment's host with
 [Direct](../../../GLOSSARY.md#restoration-and-presentation) or
 [Derived presentation](../../../GLOSSARY.md#restoration-and-presentation), and the
 daemon takes their snapshot once any synchronized update ends.
+
+For a monitor-mode connection, once its Acquire or a promotion made it an
+attachment, every restoration has
+[canonical presentation](../../../GLOSSARY.md#restoration-and-presentation):
+the session serialized at the session geometry for a fresh terminal of
+exactly that size, whatever host size any client reported. It resets the
+modes that history rows rely on, writes any
+[truncation notice](../../../GLOSSARY.md#restoration-and-presentation) and the
+[retained history](../../../GLOSSARY.md#restoration-and-presentation) from the top of the fresh screen, scrolls off exactly the
+lines it wrote, then sets the screen, cursor, modes and title; no host
+content is preserved. Parsed into a fresh model of that geometry, it leaves
+exactly the session's retained history and screen. Its snapshot likewise
+waits for any synchronized update to end. A host change that keeps the
+session geometry keeps the
+current restoration, before readiness too. Once the connection is ready, a
+[Resize](request-resize.md) that changes the effective geometry is followed,
+when it applies, by [Geometry](event-geometry.md) and at once by a replacement
+Restoration begin at that geometry, within the same period, before any
+Display at it; readiness then needs a new [Ready](request-ready.md).

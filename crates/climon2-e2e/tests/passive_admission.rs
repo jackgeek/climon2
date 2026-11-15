@@ -36,10 +36,7 @@ fn rejections() -> Vec<(Value, (u64, &'static str))> {
             json!({ "tag": "open", "request_id": 0, "open": { "mode": 1 } }),
             (INVALID_REQUEST_ID, "invalid_request_id"),
         ),
-        (
-            monitor(json!({ "mode": 2, "geometry": [80, 24] })),
-            unsupported,
-        ),
+        (monitor(json!({ "mode": 2, "geometry": [80, 0] })), invalid),
         (monitor(json!({ "mode": 0 })), invalid),
         (monitor(json!({ "mode": 3 })), invalid),
         (monitor(json!({ "mode": 1, "geometry": [80, 0] })), invalid),
@@ -84,7 +81,9 @@ fn rejections() -> Vec<(Value, (u64, &'static str))> {
         (killing(json!(["title-v1", "title-v1"])), invalid),
         (killing(json!(["status-v1"])), unrelayed),
     ];
-    for tag in [2, 3, 4, 5, 6, 7, 10] {
+    // Set viewing and Acknowledge; the control requests' own rejections
+    // are in `control_faults.rs` (#94), Kill's above (#96).
+    for tag in [6, 7] {
         rejected.push((json!({ "tag": tag, "request_id": 7 }), unsupported));
     }
     rejected
@@ -362,7 +361,8 @@ fn installed_library_batches_records_within_drain_payload_bytes() {
         actions.push(json!({ "wait": go.to_str().unwrap() }));
         actions.extend(titles.iter().map(|title| title_changed(json!(title))));
         let peer = json!({ "open": actions, "leave": [leave_answer("ok", false, Value::Null)] });
-        let limits = json!({ "drain_payload_bytes": ceiling, "metadata_record_bytes": 199 });
+        let limits = json!({ "drain_payload_bytes": ceiling, "metadata_record_bytes": 199,
+                             "chunk_bytes": 199 });
         steps.extend([
             json!({ "do": "create", "instance": name, "peer": peer, "startup": { "limits": limits } }),
             json!({ "do": "submit", "instance": name, "request": open(1, &REQUIRED, &["title-v1"]) }),
