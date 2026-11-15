@@ -44,12 +44,10 @@ impl KeyIntroduction {
         self.open
     }
 
-    /// A typed key, which the key introduction owns while it is open: Enter
-    /// continues, and Space reverses the saved choice.
+    /// A typed key while the key introduction is open, the only time the
+    /// monitor gives it one: Enter continues, and Space reverses the saved
+    /// choice.
     pub(crate) fn key(&mut self, byte: u8) {
-        if !self.open {
-            return;
-        }
         match byte {
             ENTER => self.open = false,
             SPACE => self.preference.reverse(),
