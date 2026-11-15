@@ -5,6 +5,7 @@ use crate::{
     bounded::{Bounded, Room},
     cost,
     geometry::Geometry,
+    view::View,
 };
 
 /// The allocation a model may hold and the history rows it may keep.
@@ -179,12 +180,17 @@ impl Model {
     /// The current model's normal-screen history, oldest row first, while
     /// the normal screen is active.
     pub fn history(&self) -> Vec<String> {
-        self.current.history()
+        self.view().history_text()
     }
 
     /// The current model's active screen, one string per row: each
     /// character with its combining marks, trailing blanks trimmed.
     pub fn screen(&self) -> Vec<String> {
-        self.current.screen()
+        self.view().screen_text()
+    }
+
+    /// What the current model shows, for painting.
+    pub fn view(&self) -> View<'_> {
+        self.current.view()
     }
 }

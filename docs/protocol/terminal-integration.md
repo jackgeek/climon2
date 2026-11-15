@@ -23,6 +23,12 @@ whole screen without blanking it or showing the cursor. Every exit writes the
 [release](../../GLOSSARY.md#restoration-and-presentation) bytes to the host
 before any diagnostic.
 
+**Implemented with crate tests only ([#83](https://github.com/jackgeek/climon2/issues/83)):**
+`climon2-vt`'s read-only Rust views of a monitor's
+[virtual terminal](../../GLOSSARY.md#sessions), described
+[below](#ownership-representation-and-fidelity), which the monitor does not
+paint from yet.
+
 **Implemented with Contract evidence ([#87](https://github.com/jackgeek/climon2/issues/87)):**
 the [session daemon](../../GLOSSARY.md#sessions)'s side of
 [application focus](#host-focus-and-application-focus), served as
@@ -71,11 +77,12 @@ cross-release cell [schema](TERMS.md#schema).
 
 The monitor parses those bytes into its own per-[session](../../GLOSSARY.md#sessions)
 [virtual terminal](../../GLOSSARY.md#sessions), using `climon2-vt`, and Ratatui
-paints its read-only Rust views. These views of cells, modes, cursor, and history
-are a planned addition; current `climon2-vt` exposes no public cell views, and the
-monitor uses it only for its release bytes and, before the host terminal changes,
-to check that its configured limits hold one session's mandatory model
-allocation ([#167](https://github.com/jackgeek/climon2/issues/167)). The monitor runs as its own
+paints its read-only Rust views. `climon2-vt` provides these views of cells,
+modes, cursor, screens and history ([#83](https://github.com/jackgeek/climon2/issues/83)),
+but the monitor does not paint from them yet and uses the crate only for its
+release bytes and, before the host terminal changes, to check that its
+configured limits hold one session's mandatory model allocation
+([#167](https://github.com/jackgeek/climon2/issues/167)). The monitor runs as its own
 `climon2-monitor` executable, beside the other executables of its release
 ([ADR 0004](../adr/0004-crate-layout-and-dependency-direction.md)); this contract
 chooses no workspace crate.

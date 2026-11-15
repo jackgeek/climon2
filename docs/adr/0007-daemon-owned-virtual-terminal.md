@@ -85,8 +85,9 @@ The model keeps to its limit this way:
   the next one fits (a token pushes at most a row per byte and per
   repetition, or a screenful, so one long repeat or released run of line
   feeds can fill several). Beyond the chunks that fit, the engine discards
-  its oldest rows instead, and the update is still accepted; no truncation
-  state reports this yet. Storage left after a token clears history is
+  its oldest rows instead, and the update is still accepted; the history view
+  reports the truncation ([below](#read-only-views-for-painting)). Storage
+  left after a token clears history is
   dropped at once, so measuring sees every mark still held. The model shows
   at most `history_rows`.
 - **History yields before anything is rejected.** History is discarded
@@ -173,6 +174,32 @@ screen first scrolls, then re-measure and, if 500x200 still falls short, raise
 `memory.total_bytes` or agree a PERF-01 disposition
 ([#166](https://github.com/jackgeek/climon2/issues/166)).
 
+### Read-only views for painting
+
+**Implemented (#83):** `Model::view()` lends the monitor climon2-owned, read-only
+views of the current model for one frame: each cell's character with its
+combining marks and width, its colours and rendition; the cursor; the active
+screen, normal or 1049 alternate; the modes the input router and painter
+honour; and the normal screen's history with its truncation state. They are
+Rust types, not a cross-release cell schema. A test in
+`xtask/tests/vt_interface.rs` parses the crate's sources and fails if a
+public item or a trait impl of a public type names an engine type, by path,
+through a `use` or re-export, or through a crate type alias; items a macro
+generates are not checked.
+
+The model records truncation until the history is cleared: rows beyond
+`history_rows`, and rows that yielding or `Model::shorten_history()` drops,
+are known exactly, and output the admitted chunks had room for loses no row,
+even when it fills them exactly. Once `history_rows` caps the history's
+growth or the bound refuses it, though, the engine replaces the oldest row of
+a full history for each row pushed without reporting it. **Decided (owner,
+2026-11-13, #83):** such a history reports truncation as soon as output that
+could push a row out leaves it full, even before a row is lost. Exact
+counting, which would need counting headroom like the daemon's
+([below](#restoration-three-phases-produced-incrementally)), is decided with
+[#112](https://github.com/jackgeek/climon2/issues/112), whose anchored
+viewport (TRM-05) may need it.
+
 ## Live output policy and query authority
 
 A front filter that mirrors vte 0.15.0's state machine splits PTY output into complete tokens (text never split inside a UTF-8 sequence; partial tokens held across reads up to a 4096-byte body, oversized tokens dropped from engine and output). Every token updates the engine; one policy decides what reaches the controller's host:
@@ -213,9 +240,9 @@ core screen mirroring or a native library in a browser. The [agreed #63 terminal
 ordered exact daemon terminal bytes, reparsed into monitor-owned `climon2-vt`
 models and painted by Ratatui. This deliberately reopens the rejected
 client-side-emulator option for the monitor role, not ordinary clients or query
-authority. Planned read-only Rust cell/mode/cursor/history views keep engine
-types private; current `climon2-vt` has no public cells, and the monitor, the
-one other consumer allowed by ADR 0004, uses it only for the documented
+authority. The [read-only views](#read-only-views-for-painting) keep engine
+types private; the monitor, the one other consumer allowed by ADR 0004, does
+not paint from them yet and uses the crate only for the documented
 normal-shell baseline and, at startup, a model's mandatory allocation, to check
 that its limits hold one session's model (#167).
 No native cross-release cell schema or new workspace crate is selected.
