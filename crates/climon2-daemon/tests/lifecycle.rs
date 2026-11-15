@@ -368,6 +368,9 @@ fn command_tail(command: &mut Command, fd: u32, home: &Path, mode: &str, missing
         command.arg(home.join("missing-command"));
     } else if mode == "cannot-run" {
         command.arg(home.join("not-executable"));
+    } else if mode == "silent" {
+        // Not the libtest fixture, which prints its harness lines: nothing at all.
+        command.args(["sleep", "120"]);
     } else if mode == "job-control" {
         command.args(["bash", "--norc", "--noprofile", "-i"]);
     } else if mode == "literal" {

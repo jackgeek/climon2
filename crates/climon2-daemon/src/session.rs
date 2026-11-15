@@ -151,7 +151,7 @@ fn sample(vt: &Vt) -> Sample {
         screen: Screen {
             cols: geometry.cols(),
             rows: geometry.rows(),
-            characters: vt.viewport(),
+            characters: vt.viewport_characters(),
         },
         title: vt.application_title().map(str::to_owned),
     }
@@ -176,12 +176,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// One turn: the status clock is read once at its start, so the turn's
     /// input comes before its timer and sample work.
     fn tick(&mut self, now: Instant) -> io::Result<bool> {
+        self.clock.turn_starting()?;
         self.moment = self.clock.now();
         self.socket_freshness.refresh(now)?;
         self.incoming()?;
         self.pump(now)?;
         self.outgoing(now)?;
-        self.clock.settled();
+        self.clock.turn_ended()?;
         Ok(self.finished(now))
     }
 
@@ -310,7 +311,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             return;
         }
         self.pty_writes.input(id, bytes);
-        self.user_input();
+        self.user_input(bytes);
     }
 
     fn protocol_failure(&mut self, id: u64, failure: Failure) -> io::Result<()> {

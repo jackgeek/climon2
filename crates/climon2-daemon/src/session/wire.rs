@@ -9,6 +9,7 @@ use crate::{
         self, Authority, Authorized, CleanupResult, CommandEnd, ConnectionId, Needs, Period,
         Restoration, SessionEnd,
     },
+    status,
 };
 use climon2_core::{
     protocol::TerminalSize,
@@ -32,6 +33,7 @@ const UNSUPPORTED_CAPABILITY: &str = "a required capability is not supported";
 const FOCUS_NOT_SELECTED: &str = "focus-v1 was not selected";
 const STATUS_NOT_SELECTED: &str = "status-v1 was not selected";
 const NOT_VIEWING: &str = "the latest reported viewing is not true";
+const EPISODES_EXHAUSTED: &str = "the session's attention episode identifiers are exhausted";
 const UNSUPPORTED_GEOMETRY: &str = "the geometry exceeds the supported terminal size";
 const EMPTY_INPUT: &str = "Input carries no bytes";
 const TERMINATING: &str = "the session is terminating";
@@ -159,8 +161,14 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         match request {
             Request::SetViewing(viewing) => self.set_viewing(id, viewing),
             Request::Acknowledge(acknowledge) => self.acknowledge(id, acknowledge),
-            // Every other request was dispatched earlier in the chain.
-            _ => {}
+            Request::Open(_)
+            | Request::Leave(_)
+            | Request::Acquire(_)
+            | Request::Ready(_)
+            | Request::Kill(_)
+            | Request::Input(_)
+            | Request::Resize(_)
+            | Request::Focus(_) => unreachable!("dispatched earlier in the chain"),
         }
     }
 
@@ -359,7 +367,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             return self.reject_with(id, input.request_id, error);
         };
         self.pty_writes.input(id, &input.payload);
-        self.user_input();
+        self.user_input(&input.payload);
         let accepted = Success::InputAccepted { accepted_bytes };
         self.respond(id, input.request_id, Outcome::Ok(accepted));
     }
@@ -489,6 +497,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             let code = OperationalCode::NotViewing;
             return self.reject(id, request.request_id, code, NOT_VIEWING);
         }
+        if self.status.exhausted() {
+            let code = OperationalCode::ResourceLimit;
+            return self.reject(id, request.request_id, code, EPISODES_EXHAUSTED);
+        }
         let changed = self.status.acknowledge(&self.moment);
         let acknowledged = Success::Acknowledgement {
             changed: changed.is_some(),
@@ -510,7 +522,11 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// Accepted user-originated input from the ready controller: activity
     /// and attention learn of it before its acceptance is answered.
-    pub(super) fn user_input(&mut self) {
+    /// Bytes holding only focus reports are not user input.
+    pub(super) fn user_input(&mut self, bytes: &[u8]) {
+        if !status::user_originated(bytes) {
+            return;
+        }
         let changed = self.status.input(&self.moment);
         self.report_status(changed);
     }

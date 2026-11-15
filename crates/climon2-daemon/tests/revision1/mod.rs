@@ -226,6 +226,38 @@ fn advance(session: &Session, ms: u64) {
     let staged = path.with_extension("tmp");
     fs::write(&staged, &value).unwrap();
     fs::rename(&staged, &path).unwrap();
+    await_clock(&path, &value, ms);
+}
+
+/// Holds the daemon at the start of its next turn, through the controllable
+/// clock's `.hold` file, and waits, bounded, until the daemon says it is
+/// held there: nothing it receives meanwhile is served.
+fn hold(session: &Session) {
+    let path = clock_file(session);
+    let held = path.with_extension("held");
+    let _ = fs::remove_file(&held);
+    fs::write(path.with_extension("hold"), b"").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !held.exists() {
+        assert!(Instant::now() < deadline, "the daemon was never held");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Sets the clock `ms` after [`T0`] while the daemon is held, then releases
+/// it: its next turn reads that time and serves everything received while
+/// held. Waits, bounded, until that turn has ended.
+fn release_at(session: &Session, ms: u64) {
+    let value = (T0 + ms).to_string();
+    let path = clock_file(session);
+    let staged = path.with_extension("tmp");
+    fs::write(&staged, &value).unwrap();
+    fs::rename(&staged, &path).unwrap();
+    fs::remove_file(path.with_extension("hold")).unwrap();
+    await_clock(&path, &value, ms);
+}
+
+fn await_clock(path: &std::path::Path, value: &str, ms: u64) {
     let acknowledged = path.with_extension("ack");
     let deadline = Instant::now() + Duration::from_secs(20);
     while fs::read_to_string(&acknowledged).unwrap_or_default() != value {

@@ -7,9 +7,9 @@
 //! at most 1,500 ms after the last, clamped to an armed agent deadline.
 use super::{
     advance, assert_closed, assert_rejected, clocked, clocked_with, command_final,
-    command_final_at, counter, exited,
+    command_final_at, counter, exited, hold,
     interactive::{Attached, geometry, ready_attachment, rejected},
-    message, open, peer, request, send, status, status_changed,
+    message, open, peer, release_at, request, send, status, status_changed,
 };
 use crate::Session;
 use climon2_core::wire::{
@@ -670,11 +670,14 @@ fn set_viewing_and_acknowledge_check_authority_readiness_and_viewing() {
 
 /// LIM-05 (Contract and Fault, episode case, through the `test-hooks`
 /// `CLIMON2_DAEMON_FIRST_EPISODE` near-exhaustion hook): the last episode
-/// identifier, 18446744073709551615, is issued and acknowledged; a later
-/// request that would need another changes nothing rather than wrap or
-/// reuse one, while activity goes on and is reported.
+/// identifier, 18446744073709551615, is issued and acknowledged. A later
+/// request that would need another cannot advance the session-wide episode
+/// domain: it starts no episode rather than wrap or reuse one, and from
+/// then on the affected work, Acknowledge, is rejected with
+/// `resource_limit`, before and after Input clears attention, while
+/// activity goes on and is reported.
 #[test]
-fn attention_episodes_never_wrap() {
+fn exhausted_attention_episodes_are_reported_and_never_wrap() {
     let session = clocked_with("script", |command| {
         command.env("CLIMON2_DAEMON_FIRST_EPISODE", LAST_EPISODE.to_string());
     });
@@ -694,13 +697,16 @@ fn attention_episodes_never_wrap() {
     acknowledged(&mut attached, &acknowledged_status);
     watcher.changed(&acknowledged_status);
 
+    assert_eq!(acknowledge(&mut attached), acknowledgement(false));
     shown(&session, &mut attached, "more");
     advance(&session, 13_000);
     advance(&session, 23_000);
     all_quiet(&mut attached, &mut [&mut watcher]);
+    rejected(acknowledge(&mut attached), "resource_limit");
     let running = status(Running, 23_000, None);
     typed(&mut attached, b"x", Some(&running));
     watcher.changed(&running);
+    rejected(acknowledge(&mut attached), "resource_limit");
     advance(&session, 25_000);
     all_changed(
         &mut attached,
@@ -721,4 +727,128 @@ fn attention_episodes_never_wrap() {
         &status(Idle, 36_500, None),
     );
     completed(session, &mut attached, &mut [&mut watcher], 36_500);
+}
+
+/// STA-01 and STA-02 (Contract, initial silence, controllable clock): a
+/// command that prints nothing from startup is never agent work, so no
+/// deadline passes and nothing is reported at any sample through 15,000 ms,
+/// well past the ten-second inactivity deadline; a later monitor still
+/// receives idle and cleared since initialization.
+#[test]
+fn a_session_silent_from_startup_stays_idle_and_cleared() {
+    let session = clocked_with("silent", |command| {
+        *command = crate::replace_option(command, "--lifetime", "headless");
+    });
+    let (mut watcher, initial) = Watcher::open(&session);
+    assert_eq!(initial, status(Idle, 0, None));
+    for ms in (500..=15_000).step_by(500) {
+        advance(&session, ms);
+        watcher.quiet();
+    }
+    let (later, initial) = Watcher::open(&session);
+    assert_eq!(initial, status(Idle, 0, None));
+    drop((watcher, later));
+    crate::kill(session);
+}
+
+/// STA-01 (Contract, same-turn dispatch, through the `test-hooks` turn
+/// barrier): the daemon is held at the start of a turn while an Input
+/// arrives and the clock reaches the end of the user window; in that turn
+/// the Input is served before the window's expiry is considered, so it
+/// re-arms the window: no idle and no second running are reported, and
+/// idle follows two seconds after that Input, not one millisecond earlier.
+#[test]
+fn input_comes_before_a_timer_due_in_the_same_turn() {
+    let session = clocked("script");
+    let (mut attached, mut watcher) = watched(&session);
+    let running = status(Running, 0, None);
+    typed(&mut attached, b"a", Some(&running));
+    watcher.changed(&running);
+    hold(&session);
+    let request_id = attached.next();
+    let input = Input {
+        request_id,
+        authority: attached.authority(),
+        payload: b"b".to_vec(),
+    };
+    send(&mut attached.stream, &input.to_frame());
+    release_at(&session, 2_000);
+    let accepted_bytes = NonZeroU32::new(1).unwrap();
+    assert_eq!(
+        attached.response(),
+        Outcome::Ok(Success::InputAccepted { accepted_bytes })
+    );
+    watcher.quiet();
+    advance(&session, 3_999);
+    all_quiet(&mut attached, &mut [&mut watcher]);
+    advance(&session, 4_000);
+    all_changed(
+        &mut attached,
+        &mut [&mut watcher],
+        &status(Idle, 4_000, None),
+    );
+    completed(session, &mut attached, &mut [&mut watcher], 4_000);
+}
+
+/// The private attachment's Output until it holds `needle`.
+fn private_output_until(stream: &mut UnixStream, needle: &[u8]) -> Vec<u8> {
+    let mut output = Vec::new();
+    while crate::count(&output, needle) == 0 {
+        match crate::receive(stream) {
+            climon2_core::protocol::ServerMessage::Output(bytes) => output.extend(bytes),
+            other => panic!("expected Output holding {needle:?}, got {other:?}"),
+        }
+    }
+    output
+}
+
+/// STA-08 (Contract and Fault, private-protocol client): the private client
+/// forwards what its terminal sends as Input. While attention is pending,
+/// focus reports (`ESC [ I`, `ESC [ O`, alone or repeated), which its
+/// terminal sends once the application turns focus reporting on, are not
+/// user input and leave attention pending, though they reach the
+/// application. Terminal-query replies never arrive: the application's
+/// queries never reach the client, only the daemon answers them. Typed
+/// bytes do clear attention.
+#[test]
+fn focus_reports_and_terminal_queries_never_clear_attention() {
+    let mut session = clocked("script");
+    let mut private = session.attach();
+    session.wait_marker(&mut private);
+    let (mut watcher, _) = Watcher::open(&session);
+    crate::script(&session, "title busy");
+    assert_eq!(
+        super::title_changed(&mut watcher.stream).as_deref(),
+        Some("busy")
+    );
+    advance(&session, 1_500);
+    watcher.changed(&status(Running, 1_500, None));
+    advance(&session, 11_500);
+    watcher.changed(&status(NeedsAttention, 11_500, Some(1)));
+
+    crate::script(&session, r"print \e[?1004h\e[c\e[6n\e[38;5;9m");
+    let output = private_output_until(&mut private, b"\x1b[38;5;9m");
+    assert_eq!(crate::count(&output, b"\x1b[?1004h"), 1, "{output:?}");
+    assert_eq!(crate::count(&output, b"\x1b[c"), 0, "{output:?}");
+    assert_eq!(crate::count(&output, b"\x1b[6n"), 0, "{output:?}");
+    for report in [&b"\x1b[I"[..], b"\x1b[O\x1b[I\x1b[O"] {
+        crate::send(
+            &mut private,
+            climon2_core::protocol::ClientMessage::Input(report.to_vec()),
+        );
+        drop(session.connect());
+        watcher.quiet();
+    }
+    crate::send(
+        &mut private,
+        climon2_core::protocol::ClientMessage::Input(b"x".to_vec()),
+    );
+    watcher.changed(&status(Running, 11_500, None));
+    crate::issue(&session, "exit");
+    assert_eq!(
+        crate::until_terminal(&mut private).1,
+        climon2_core::protocol::ServerMessage::Exit { code: 0 }
+    );
+    watcher.ended(&exited(0), 11_500);
+    session.finish();
 }

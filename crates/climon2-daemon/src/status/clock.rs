@@ -2,14 +2,24 @@
 //! use the real clock; test builds can substitute a controllable one.
 use super::{Now, Random};
 use climon2_core::wire::{Counter, Utc};
-use std::time::{Instant, SystemTime};
+use std::{
+    io,
+    time::{Instant, SystemTime},
+};
 
 /// The clock a daemon turn reads once, at its start.
 pub trait Clock {
+    /// A turn is about to start.
+    fn turn_starting(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
     fn now(&mut self) -> Now;
 
     /// The turn that read the clock ended: its effects are queued.
-    fn settled(&mut self) {}
+    fn turn_ended(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Monotonic time since the daemon's initialization, and the system's UTC.
@@ -71,29 +81,40 @@ pub fn first_episode() -> Counter {
 mod hooked {
     use super::{Clock, Now};
     use climon2_core::wire::Utc;
-    use std::{ffi::OsString, fs, path::PathBuf, time::Duration};
+    use std::{
+        ffi::OsString,
+        fs, io,
+        path::{Path, PathBuf},
+        time::Duration,
+    };
 
     /// A clock the test sets: the file holds milliseconds, both the
     /// monotonic reading and the UTC time since the Unix epoch. Each turn
     /// reads it; an unreadable value keeps the previous reading. Once a
     /// turn that read a new value ends, the value is written to the file's
     /// `.ack` sibling, so the test knows that turn's effects are queued.
+    /// While a `.hold` sibling exists the next turn does not start, and a
+    /// `.held` sibling says so: whatever arrives meanwhile is served in the
+    /// same turn, at the clock the test sets before removing `.hold`.
     pub struct HookedClock {
         path: PathBuf,
-        acknowledged: PathBuf,
         millis: u64,
-        settled: Option<u64>,
+        acknowledged: Option<u64>,
+    }
+
+    /// `path` with `suffix` appended to its file name.
+    fn sibling(path: &Path, suffix: &str) -> PathBuf {
+        let mut name = OsString::from(path);
+        name.push(suffix);
+        name.into()
     }
 
     impl HookedClock {
         pub fn new(path: PathBuf) -> Self {
-            let mut acknowledged = OsString::from(&path);
-            acknowledged.push(".ack");
             Self {
                 path,
-                acknowledged: acknowledged.into(),
                 millis: u64::default(),
-                settled: None,
+                acknowledged: None,
             }
         }
 
@@ -104,6 +125,14 @@ mod hooked {
     }
 
     impl Clock for HookedClock {
+        fn turn_starting(&mut self) -> io::Result<()> {
+            while sibling(&self.path, ".hold").try_exists()? {
+                fs::write(sibling(&self.path, ".held"), b"")?;
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(())
+        }
+
         fn now(&mut self) -> Now {
             self.millis = self.read().unwrap_or(self.millis);
             Now {
@@ -112,11 +141,12 @@ mod hooked {
             }
         }
 
-        fn settled(&mut self) {
-            if self.settled != Some(self.millis) {
-                let _ = fs::write(&self.acknowledged, self.millis.to_string());
-                self.settled = Some(self.millis);
+        fn turn_ended(&mut self) -> io::Result<()> {
+            if self.acknowledged != Some(self.millis) {
+                fs::write(sibling(&self.path, ".ack"), self.millis.to_string())?;
+                self.acknowledged = Some(self.millis);
             }
+            Ok(())
         }
     }
 }

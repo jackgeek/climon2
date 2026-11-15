@@ -30,6 +30,22 @@ use std::time::Duration;
 pub const USER_WINDOW: Duration = Duration::from_millis(2_000);
 /// Agent inactivity before attention is requested; hardcoded, never a setting.
 pub const INACTIVITY: Duration = Duration::from_millis(10_000);
+const FOCUS_IN: &[u8] = b"\x1b[I";
+const FOCUS_OUT: &[u8] = b"\x1b[O";
+
+/// Whether accepted Input bytes are user-originated. Focus reports, which a
+/// host terminal sends on its own once the application enables focus
+/// reporting, are not: bytes that hold only focus reports never count.
+pub fn user_originated(mut bytes: &[u8]) -> bool {
+    while let Some(rest) = bytes
+        .strip_prefix(FOCUS_IN)
+        .or_else(|| bytes.strip_prefix(FOCUS_OUT))
+    {
+        bytes = rest;
+    }
+    !bytes.is_empty()
+}
+
 /// Each sampling delay is a fresh random draw from 500 to 1,500 ms.
 const SAMPLE_DELAY_MIN_MS: u64 = 500;
 const SAMPLE_DELAY_CHOICES: u64 = 1_001;
@@ -239,6 +255,8 @@ pub struct Detector<R> {
     phase: Phase,
     reported: Reported,
     episodes: Episodes,
+    /// A request needed an episode after the last one was issued.
+    exhausted: bool,
     random: R,
 }
 
@@ -264,6 +282,7 @@ impl<R: Random> Detector<R> {
             episodes: Episodes {
                 next: Some(first_episode),
             },
+            exhausted: false,
             random,
         }
     }
@@ -317,9 +336,9 @@ impl<R: Random> Detector<R> {
     }
 
     /// An attention request: a new episode unless one is pending, which
-    /// it joins. With the episode identifiers exhausted, attention stays as
-    /// it was rather than reuse one.
-    pub fn request_attention(&mut self) {
+    /// it joins. With the episode identifiers exhausted, none is wrapped or
+    /// reused: the domain is marked exhausted, and attention stays as it was.
+    pub(crate) fn request_attention(&mut self) {
         let Phase::Live(live) = &mut self.phase else {
             return;
         };
@@ -328,8 +347,20 @@ impl<R: Random> Detector<R> {
         }
         match self.episodes.issue() {
             Some(episode) => live.attention = Attention::Pending(episode),
-            None => tracing::warn!("attention episode identifiers exhausted"),
+            None => {
+                tracing::error!(
+                    code = "resource_limit",
+                    "attention episode identifiers exhausted"
+                );
+                self.exhausted = true;
+            }
         }
+    }
+
+    /// Whether a request found the session's episode identifiers exhausted:
+    /// attention work that needs one can no longer proceed.
+    pub fn exhausted(&self) -> bool {
+        self.exhausted
     }
 
     /// Reports the effective status once the event ran to completion,
@@ -679,8 +710,9 @@ mod tests {
     }
 
     /// LIM-05 (pure, episodes): episode identifiers are never wrapped or
-    /// reused. The last one is issued; then a request that would need another
-    /// leaves attention as it was, and activity goes on.
+    /// reused. The last one is issued without exhausting the domain; then a
+    /// request that would need another marks it exhausted and leaves
+    /// attention as it was, and activity goes on.
     #[test]
     fn exhausted_episode_identifiers_are_never_wrapped() {
         let mut detector = detector_from(&[0], u64::MAX);
@@ -693,11 +725,34 @@ mod tests {
             detector.acknowledge(&at(10_600)),
             acknowledged(10_600, u64::MAX)
         );
+        assert!(!detector.exhausted());
         assert_eq!(poll(&mut detector, 11_000, screen("b")), None);
         assert_eq!(poll(&mut detector, 21_000, screen("b")), None);
+        assert!(detector.exhausted());
         assert_eq!(detector.input(&at(21_100)), running(21_100));
         assert_eq!(poll(&mut detector, 23_100, screen("c")), idle(23_100));
         assert_eq!(poll(&mut detector, 23_600, screen("d")), running(23_600));
         assert_eq!(poll(&mut detector, 33_600, screen("d")), idle(33_600));
+    }
+
+    /// STA-08 (pure, focus reports): Input holding only focus reports, one
+    /// or several, in or out, is not user-originated; any other byte, before,
+    /// between or after them, is, and so is a partial report.
+    #[test]
+    fn only_focus_reports_are_not_user_input() {
+        for bytes in [&b"\x1b[I"[..], b"\x1b[O", b"\x1b[I\x1b[O\x1b[I", b""] {
+            assert!(!super::user_originated(bytes), "{bytes:?}");
+        }
+        for bytes in [
+            &b"x"[..],
+            b"\x1b[Ix",
+            b"x\x1b[O",
+            b"\x1b[I \x1b[O",
+            b"\x1b[",
+            b"\x1b[A",
+            b"\x1b",
+        ] {
+            assert!(super::user_originated(bytes), "{bytes:?}");
+        }
     }
 }
