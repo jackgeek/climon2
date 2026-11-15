@@ -193,8 +193,11 @@ not sandbox trusted native code.
 its own version folder, `<executable home>/<version>/`, through the shared
 loader, whatever `current`, the working directory or search paths name, and
 submits one Kill through the C ABI; the library sends it over daemon wire
-revision 1. A missing, other-release or faulty library fails the kill before
-any connection. Ordinary attach still uses the private post-hello protocol
+revision 1. The library instance writes its diagnostics to a log file of its
+own in the session-log directory, beside the client's,
+`<climon2 home>/logs/<session-id>/library-<UTC second>-<pid>.log`, since
+spec #73 places each instance's library log in its session's log. A missing,
+other-release or faulty library fails the kill before any connection. Ordinary attach still uses the private post-hello protocol
 and will load the same library for its operations.
 
 **Current (#84):** one validated loader for client libraries is part of

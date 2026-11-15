@@ -9,7 +9,6 @@
 
 use climon2_core::{
     VersionName,
-    diagnostics::default_filter,
     layout::{ExecutableLayout, VersionBinary},
     native::{self, Call, Communication, Control, Created, Drained as Out, Instance, RunReport},
 };
@@ -83,10 +82,14 @@ pub(crate) struct Startup {
     pub(crate) home: PathBuf,
     pub(crate) runtime: PathBuf,
     pub(crate) settings: native::Settings,
+    /// The library's own log file, created new.
+    pub(crate) log: PathBuf,
+    /// A `CLIMON2_LOG` filter for that log.
+    pub(crate) filter: String,
 }
 
 impl Startup {
-    /// The native startup, borrowing these inputs; no library file log.
+    /// The native startup, borrowing these inputs.
     fn native(&self) -> native::Startup {
         native::Startup {
             session_id: native::Guid {
@@ -100,11 +103,11 @@ impl Startup {
             settings: self.settings,
             diagnostics: native::Diagnostics {
                 log_path: native::OptionalPath {
-                    present: 0,
+                    present: 1,
                     reserved: 0,
-                    value: path(Path::new("")),
+                    value: path(&self.log),
                 },
-                filter: bytes(default_filter().as_bytes()),
+                filter: bytes(self.filter.as_bytes()),
             },
             limits: LIMITS,
         }
@@ -128,6 +131,8 @@ fn path(path: &Path) -> native::Path {
 
 /// A library error, copied before the next call can reuse its text.
 pub(crate) struct NativeError {
+    /// Who failed: the library, the daemon or the connection's bytes.
+    pub(crate) origin: u32,
     pub(crate) code: String,
     pub(crate) message: String,
 }
@@ -139,6 +144,7 @@ impl NativeError {
     pub(crate) unsafe fn copy(error: &native::Error) -> Self {
         // SAFETY (both): guaranteed by the caller.
         Self {
+            origin: error.origin,
             code: unsafe { text(error.code) },
             message: unsafe { text(error.message) },
         }

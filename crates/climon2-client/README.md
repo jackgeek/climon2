@@ -16,8 +16,12 @@ Every invocation writes its own session log,
 `<home>/logs/<session-id>/client-<UTC YYYYMMDDTHHMMSSZ>-<pid>.log`, created
 `0600` with `create_new` and `O_NOFOLLOW`. No client truncates, deletes, shares
 or reopens another client's log, so concurrent and later clients of one session
-never collide; a collision would be an ordinary I/O failure. Failures after the
-log exists carry the ` (logs: <session-log directory>)` suffix.
+never collide; a collision would be an ordinary I/O failure. In kill mode the
+client library instance writes its own diagnostics beside it, in
+`<home>/logs/<session-id>/library-<UTC YYYYMMDDTHHMMSSZ>-<pid>.log` (the
+client's pid), which the library creates the same way, under the client's
+`CLIMON2_LOG` filter or the default. Failures after the log exists carry the
+` (logs: <session-log directory>)` suffix, the directory holding both.
 
 The operation comes from the `CLIMON2_CLIENT_STARTUP` startup envelope (core
 `startup_envelope`, at most 4096 bytes), which the CLI sets: `attach` with the
@@ -43,18 +47,26 @@ fails with status 125 and the loader's diagnostic before any connection.
 
 The executable then creates one instance on an owner thread of its own
 (generation 1, the session's metadata, home and socket directory, no client
-keys, no library log file, the fixed limits below), submits one Kill (public
+keys, its own log file and the client's filter, the fixed limits below),
+submits one Kill (public
 ID 1, requiring nothing beyond core support) and drains until the instance's
 stream ends. The library sends the Kill on its own hello-validated connection
 over daemon wire revision 1 and gives it one definitive outcome. A confirmed
-termination returns 0 whatever the command's status. A refusal, a partial or
-lost answer, or any other failure is status 125 with the library's diagnostic
-(the daemon's own message for a daemon error). A Kill refused before it was
-sent is one of these: a hello the daemon leaves unanswered fails at the frozen
-two-second hello deadline with `the session daemon did not answer in time`.
-Only a Kill sent and then outliving `kill_ms`, or one never answered, reports
-`termination of session <id> was not confirmed`, the CLI's message for its own
-ten-second bound. HUP/TERM/INT while waiting return
+termination returns 0 whatever the command's status. Every failure is status
+125 with the diagnostic kill gave before #100 (owner decision on #100):
+- a Kill sent and then outliving `kill_ms`, or never answered:
+  `termination of session <id> was not confirmed`, the CLI's message for its
+  own ten-second bound;
+- a hello the daemon leaves unanswered, which fails at the frozen two-second
+  hello deadline and never sends the Kill: `session <id> did not respond`;
+- a connection that cannot be made, closes (also inside a frame) or fails,
+  during the hello or after the Kill (the library's transport `io_error` or
+  `truncated_frame`): `lost connection to session <id>`;
+- anything else, such as a refusal or a partial termination: the library's
+  message, which for a daemon error, even one coded `io_error`, is the
+  daemon's own.
+
+HUP/TERM/INT while waiting return
 128+signal at once, without waiting for the Kill's answer; the daemon finishes
 a committed termination anyway. Otherwise the executable releases its handles,
 and the owner thread destroys the instance and is joined. The CLI still bounds
@@ -528,8 +540,9 @@ writes by hand from the wire reference:
 | LIB-01 executable case and COM-01 Fault (Kill parity): a confirmed termination (exit 143, complete cleanup) is silent status 0, through the library beside the executable; one Kill, wire ID 1, revision 1, requiring nothing | `confirmed_termination_is_silent_success_whatever_the_command_status` |
 | LIB-01 executable case: stand-ins describing this release in the folder `current` names, the working directory, `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` are never loaded | `the_library_beside_the_executable_is_used_whatever_current_cwd_and_search_paths` |
 | LIB-02 executable case: a missing library, another release's, one without a bootstrap and one with an incomplete function table, and an executable outside a version folder, fail with 125 and the loader's diagnostic before anything connects | `a_missing_wrong_release_or_faulty_library_fails_before_any_connection` |
-| COM-01 Fault (Kill parity) and COM-03 Fault, executable case: a refusal, a partial termination, a lost answer and a Kill outliving `kill_ms` fail with 125 and their diagnostic; the Kill is never sent again | `a_refused_partial_lost_or_unconfirmed_kill_is_a_failed_kill` |
-| COM-01 and COM-03 Fault, executable case: a hello the daemon accepts but never answers fails at the two-second hello deadline, not `kill_ms`, with the library's diagnostic, and the Kill is never sent | `a_silent_hello_fails_at_the_hello_deadline_without_sending_the_kill` |
+| COM-01 Fault (Kill parity) and COM-03 Fault, executable case: a refusal (also one coded `io_error`) and a partial termination give the daemon's message, a connection closed during the hello or after the Kill `lost connection to session <id>`, a Kill outliving `kill_ms` the CLI's unconfirmed message, each with 125; the Kill is never sent again | `a_refused_partial_lost_or_unconfirmed_kill_is_a_failed_kill` |
+| COM-01 and COM-03 Fault, executable case: a hello the daemon accepts but never answers fails at the two-second hello deadline, not `kill_ms`, with `session <id> did not respond`, and the Kill is never sent | `a_silent_hello_fails_at_the_hello_deadline_without_sending_the_kill` |
+| The library's diagnostics land in its own `library-<second>-<pid>.log` beside the client's session log, under the client's `CLIMON2_LOG` filter (its creation record by default, none under `warn`) | `the_library_logs_into_its_own_file_beside_the_clients_session_log` |
 | COM-01 Fault, executable case: a daemon of this release without daemon wire revision 1 is refused before any request | `kill_needs_daemon_wire_revision_1_and_never_sends_a_request_without_it` |
 | COM-01 Fault (Kill parity), executable case: SIGTERM while waiting is status 143 at once, silently | `a_signal_while_waiting_for_confirmation_is_the_signal_status` |
 | Attach mode (private protocol) refuses a session without `attach` | `a_kill_capable_session_without_attach_refuses_attach_mode` |

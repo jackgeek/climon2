@@ -101,7 +101,12 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> 
         .dispatch(filter.as_deref())
         .map_err(|error| failure(error, logs))?;
     tracing::dispatcher::with_default(&dispatch, || {
-        supervised(&metadata, &path, operation)
+        let session = kill::Session {
+            metadata: &path,
+            log: log.path(),
+            filter: filter.as_deref(),
+        };
+        supervised(&metadata, &session, operation)
             .map_err(|error| session_failure(error, &metadata, logs))
     })
 }
@@ -137,22 +142,22 @@ fn read_metadata(path: &Path) -> io::Result<SessionMetadata> {
 /// Panics are logged without their payload and reported as one generic failure.
 fn supervised(
     metadata: &SessionMetadata,
-    path: &Path,
+    session: &kill::Session,
     operation: StartupEnvelope,
 ) -> io::Result<u32> {
     std::panic::set_hook(Box::new(|_| tracing::error!("client panic")));
     std::panic::catch_unwind(|| match operation {
         StartupEnvelope::Attach(settings) => attach(metadata, settings),
-        StartupEnvelope::Kill => kill(metadata, path),
+        StartupEnvelope::Kill => kill(metadata, session),
     })
     .unwrap_or_else(|_| Err(io::Error::other("client panicked")))
 }
 
 /// Kill mode, through this release's client library: success only on
 /// confirmed termination; a termination signal wins over any outcome.
-fn kill(metadata: &SessionMetadata, path: &Path) -> io::Result<u32> {
+fn kill(metadata: &SessionMetadata, session: &kill::Session) -> io::Result<u32> {
     let signals = terminal::Signals::client()?;
-    let result = kill::run(metadata, path, &home()?, &signals);
+    let result = kill::run(metadata, session, &home()?, &signals);
     if let Some(signal) = signals.termination_signal() {
         return Ok(128 + signal);
     }

@@ -259,9 +259,9 @@ fn failed(child: Child) -> String {
 }
 
 /// LIB-01 executable case and COM-01 Fault (Kill parity): a confirmed
-/// termination, answered with the command's exit 143 and complete cleanup, is silent success, status 0
-/// whatever the command's status, through the library beside the
-/// executable; the Kill is sent once.
+/// termination, answered with the command's exit 143 and complete cleanup,
+/// is silent success, status 0 whatever the command's status, through the
+/// library beside the executable; the Kill is sent once.
 #[test]
 fn confirmed_termination_is_silent_success_whatever_the_command_status() {
     let peer = Peer::new();
@@ -277,19 +277,66 @@ fn confirmed_termination_is_silent_success_whatever_the_command_status() {
     assert_eq!(receive(&mut stream), None, "the Kill was sent again");
 }
 
+/// The client library's diagnostics go to a log file of its own in the
+/// session-log directory, beside the client's own log and named like it,
+/// `library-<UTC second>-<pid>.log`, under the client's `CLIMON2_LOG`
+/// filter: its info record of the instance's creation is there by default
+/// and filtered out under `warn`.
+#[test]
+fn the_library_logs_into_its_own_file_beside_the_clients_session_log() {
+    let peer = Peer::new();
+    for (filter, created) in [(None, true), (Some("warn"), false)] {
+        let mut command = peer.command();
+        if let Some(filter) = filter {
+            command.env("CLIMON2_LOG", filter);
+        }
+        let child = command.spawn().unwrap();
+        let pid = child.id();
+        let mut stream = peer.kill_request();
+        answer(
+            &mut stream,
+            "ok",
+            termination(exit(0), "complete"),
+            Value::Null,
+        );
+        assert_eq!(finish(child), (0, String::new(), String::new()));
+        let logs = peer.home.path().join("logs").join(ID);
+        let log = |role: &str| {
+            let suffix = format!("-{pid}.log");
+            let names: Vec<_> = fs::read_dir(&logs)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .filter(|name| name.starts_with(role) && name.ends_with(&suffix))
+                .collect();
+            assert_eq!(names.len(), 1, "{role}: {names:?}");
+            fs::read_to_string(logs.join(&names[0])).unwrap()
+        };
+        assert!(log("client-").contains("role=client"));
+        let library = log("library-");
+        assert_eq!(
+            library.contains("client instance created"),
+            created,
+            "{filter:?}: {library}"
+        );
+    }
+}
+
 /// COM-01 Fault (Kill parity) and COM-03 Fault (lost and timed-out answers,
-/// never replayed), executable case: a daemon's refusal, a partial
-/// termination, a lost answer and an answer that never comes within the ten-second `kill_ms` each fail the kill with
-/// status 125 and one diagnostic: the daemon's own message, the library's
-/// for the lost connection, and the CLI's for the unconfirmed termination.
-/// The Kill is never sent again.
+/// never replayed), executable case: a daemon's refusal (even one coded
+/// `io_error`), a partial termination, a connection lost during the hello or
+/// after the Kill, and an answer that never comes within the ten-second
+/// `kill_ms` each fail the kill with status 125 and the diagnostic kill gave
+/// before #100: the daemon's own message, `lost connection to session <id>`
+/// and the CLI's unconfirmed termination. The Kill is never sent again.
 #[test]
 fn a_refused_partial_lost_or_unconfirmed_kill_is_a_failed_kill() {
     let peer = Peer::new();
     let refusal = json!({ "code": "invalid_state", "message": "session refused" });
+    let failure = json!({ "code": "io_error", "message": "session write failed" });
     let partial = json!({ "code": "cleanup_failed", "message": "cleanup failed" });
     for (outcome, result, error, expected) in [
         ("rejected", Value::Null, refusal, "session refused"),
+        ("rejected", Value::Null, failure, "session write failed"),
         (
             "failed",
             termination(exit(143), "incomplete"),
@@ -304,9 +351,16 @@ fn a_refused_partial_lost_or_unconfirmed_kill_is_a_failed_kill() {
         assert_eq!(receive(&mut stream), None, "the Kill was sent again");
     }
 
+    let lost = format!("lost connection to session {ID}");
+    let child = peer.client();
+    let mut stream = peer.accept();
+    assert!(read_frame(&mut stream).is_ok());
+    drop(stream);
+    assert_eq!(failed(child), lost);
+
     let child = peer.client();
     drop(peer.kill_request());
-    assert_eq!(failed(child), "the session daemon closed the connection");
+    assert_eq!(failed(child), lost);
 
     // `kill_ms` starts after the client does.
     let started = Instant::now();
@@ -322,8 +376,9 @@ fn a_refused_partial_lost_or_unconfirmed_kill_is_a_failed_kill() {
 
 /// COM-01 and COM-03 Fault, executable case: a daemon that accepts but never
 /// answers the hello fails the kill at the frozen two-second hello deadline,
-/// not `kill_ms`, with the library's diagnostic. The Kill was refused before
-/// it was sent, so this is never reported as an unconfirmed termination.
+/// not `kill_ms`, with kill's diagnostic from before #100. The Kill was
+/// refused before it was sent, so this is never reported as an unconfirmed
+/// termination.
 #[test]
 fn a_silent_hello_fails_at_the_hello_deadline_without_sending_the_kill() {
     let peer = Peer::new();
@@ -331,7 +386,7 @@ fn a_silent_hello_fails_at_the_hello_deadline_without_sending_the_kill() {
     let child = peer.client();
     let mut stream = peer.accept();
     let accepted = Instant::now();
-    assert_eq!(failed(child), "the session daemon did not answer in time");
+    assert_eq!(failed(child), format!("session {ID} did not respond"));
     assert!(started.elapsed() >= Duration::from_secs(2));
     assert!(
         accepted.elapsed() < Duration::from_secs(9),

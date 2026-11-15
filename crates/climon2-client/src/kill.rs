@@ -2,30 +2,53 @@
 //! one Kill through its own release's client library, which sends it on an
 //! auxiliary hello-validated connection over daemon wire revision 1, and
 //! waits for the definitive outcome. Success is a confirmed termination
-//! alone, whatever the command's status.
+//! alone, whatever the command's status; a failure reads as it did before
+//! #100.
 
 use crate::embedded::{Embedded, NativeError, Startup, Stream, own_library};
-use climon2_core::{SessionId, metadata::SessionMetadata, native};
-use climon2_platform::terminal::Signals;
-use std::{io, path::Path, ptr};
+use climon2_core::{SessionId, diagnostics::default_filter, metadata::SessionMetadata, native};
+use climon2_platform::{logging::library_log_name, terminal::Signals};
+use std::{io, path::Path, ptr, time::SystemTime};
 
 /// How long one wait for the library lasts before signals are checked again.
 const POLL_MS: i32 = 25;
 
-/// The Kill's answer: confirmed, or the library's error, which is absent
-/// when the Kill was sent and outlived `kill_ms`.
-type Answer = Result<(), Option<NativeError>>;
+/// The Kill's answer: confirmed, or why not.
+type Answer = Result<(), Failure>;
 
-/// Kills the session `metadata` (read from `path`) describes. A library that
-/// is missing, of another release or faulty fails before any connection;
-/// HUP, TERM or INT while waiting end it at once as `Interrupted`.
+/// Why a Kill did not succeed, as kill mode reported it before #100.
+enum Failure {
+    /// Sent, then unanswered for `kill_ms`, or never answered at all.
+    Unconfirmed,
+    /// Refused unsent: the hello went unanswered within its deadline.
+    Silent,
+    /// The session daemon's connection could not be made, closed or failed.
+    Lost,
+    /// Any other error, with its message: the daemon's own for a daemon
+    /// error.
+    Error(String),
+}
+
+/// What kill mode tells the library about the session besides its metadata.
+pub(crate) struct Session<'a> {
+    /// Where the metadata was read.
+    pub(crate) metadata: &'a Path,
+    /// The client's own session log, beside which the library writes its own.
+    pub(crate) log: &'a Path,
+    /// The client's `CLIMON2_LOG` filter, if one was given.
+    pub(crate) filter: Option<&'a str>,
+}
+
+/// Kills the session `metadata` describes. A library that is missing, of
+/// another release or faulty fails before any connection; HUP, TERM or INT
+/// while waiting end it at once as `Interrupted`.
 pub(crate) fn run(
     metadata: &SessionMetadata,
-    path: &Path,
+    session: &Session,
     home: &Path,
     signals: &Signals,
 ) -> io::Result<u32> {
-    let instance = start(metadata, path, home)?;
+    let instance = start(metadata, session, home)?;
     let answer = answer(&instance, signals)?;
     instance.finish();
     verdict(answer, &metadata.session_id)
@@ -33,16 +56,19 @@ pub(crate) fn run(
 
 /// An instance of this release's library for the session, with the Kill
 /// submitted.
-fn start(metadata: &SessionMetadata, path: &Path, home: &Path) -> io::Result<Embedded> {
+fn start(metadata: &SessionMetadata, session: &Session, home: &Path) -> io::Result<Embedded> {
     let (library, release) = own_library()?;
     let socket = Path::new(metadata.socket_path.as_str());
+    let log = library_log_name(SystemTime::now(), std::process::id())?;
     let startup = Startup {
         session: metadata.session_id.bytes(),
         release,
-        metadata: path.to_owned(),
+        metadata: session.metadata.to_owned(),
         home: home.to_owned(),
         runtime: socket.parent().unwrap_or(socket).to_owned(),
         settings: native::Settings::default(),
+        log: session.log.with_file_name(log),
+        filter: session.filter.unwrap_or(default_filter()).to_owned(),
     };
     let instance = Embedded::start(library, startup)?;
     instance.submit(&request()).map(|()| instance)
@@ -90,9 +116,7 @@ fn answered(record: &native::Record) -> Option<Answer> {
 }
 
 /// The library answers OK only for a termination with the command's result
-/// and complete daemon cleanup. A Kill sent and left unanswered for
-/// `kill_ms` is indeterminate `timeout`; one refused before it was sent, as
-/// on a silent hello, is rejected with its own error.
+/// and complete daemon cleanup.
 ///
 /// # Safety
 ///
@@ -100,23 +124,45 @@ fn answered(record: &native::Record) -> Option<Answer> {
 unsafe fn outcome(response: &native::Response) -> Answer {
     // SAFETY: guaranteed by the caller.
     let error = || unsafe { NativeError::copy(&response.error) };
-    match response.outcome {
-        native::OK => Ok(()),
-        native::INDETERMINATE => Err(Some(error()).filter(|error| error.code != "timeout")),
-        _ => Err(Some(error())),
+    (response.outcome == native::OK)
+        .then_some(())
+        .ok_or_else(|| failure(response.outcome, error()))
+}
+
+/// A Kill sent and left unanswered for `kill_ms` is indeterminate `timeout`;
+/// one refused unsent on a silent hello is a rejected `timeout`. Both are the
+/// library's, and closure or I/O failure is the connection's: the daemon's
+/// own errors, which may also be `io_error`, keep their message.
+fn failure(outcome: u32, error: NativeError) -> Failure {
+    match (outcome, error.origin, error.code.as_str()) {
+        (native::INDETERMINATE, native::ORIGIN_LIBRARY, "timeout") => Failure::Unconfirmed,
+        (_, native::ORIGIN_LIBRARY, "timeout") => Failure::Silent,
+        (_, native::ORIGIN_TRANSPORT, "io_error" | "truncated_frame") => Failure::Lost,
+        _ => Failure::Error(error.message),
     }
 }
 
-/// Status 0 for a confirmed termination. Otherwise the library's
-/// diagnostic, except that a Kill outliving `kill_ms`, the CLI's own
-/// ten-second bound, or one never answered, is reported as the CLI reports
-/// its bound.
+/// Status 0 for a confirmed termination, otherwise the failure's diagnostic.
 fn verdict(answer: Option<Answer>, session: &SessionId) -> io::Result<u32> {
-    match answer {
-        Some(Ok(())) => Ok(0),
-        Some(Err(Some(error))) => Err(io::Error::other(error.message)),
-        _ => Err(io::Error::other(format!(
-            "termination of session {session} was not confirmed"
-        ))),
+    answer
+        .unwrap_or(Err(Failure::Unconfirmed))
+        .map(|()| 0)
+        .map_err(|failure| failure.diagnostic(session))
+}
+
+impl Failure {
+    /// Kill's diagnostic from before #100. A Kill outliving `kill_ms`, the
+    /// CLI's own ten-second bound, reads as the CLI reports its bound; a lost
+    /// connection is `UnexpectedEof`, which the client reports as
+    /// `lost connection to session <id>` in either mode.
+    fn diagnostic(self, session: &SessionId) -> io::Error {
+        match self {
+            Self::Unconfirmed => io::Error::other(format!(
+                "termination of session {session} was not confirmed"
+            )),
+            Self::Silent => io::Error::other(format!("session {session} did not respond")),
+            Self::Lost => io::ErrorKind::UnexpectedEof.into(),
+            Self::Error(message) => io::Error::other(message),
+        }
     }
 }
