@@ -475,8 +475,10 @@ revision-1 connections, as daemon policy rather than wire values
 
 - It serves at most 64 connections at once, of either protocol, passive
   monitor connections included; a further connection is closed unanswered.
-- Each connection's output queue holds at most 16 MiB of encoded frames,
-  each counted with its four-byte prefix, so its records are bounded too.
+- Each connection's output queue holds at most 16 MiB, charging each
+  queued frame's allocation, four-byte prefix included, and its place in
+  the queue until the frame is written whole, so its records are bounded
+  too (owner decision on #90).
   Output that would exceed it fails that connection explicitly: the daemon
   closes the stream at once, without a Fatal error, rather than drop or
   coalesce a record. A peer reading more slowly than it receives therefore
@@ -491,11 +493,11 @@ revision-1 connections, as daemon policy rather than wire values
 
 Frames never exceed the advertised 1,048,576 bytes in either direction: a
 request's prefix that declares more is `frame_too_large`, and the daemon
-sends no larger frame. Display carries at most 65,535 bytes, a title at
-most 4,094 bytes (the existing 4,096-byte token body includes the
-sequence's `2;`; a longer title sequence is ignored, never truncated), so
-every metadata record stays within 16,384 bytes even when JSON escapes each
-title byte.
+sends no larger frame. Display carries at most 65,535 bytes and a title
+at most 4,096 [UTF-8](../TERMS.md#unicode-and-utf-8) bytes (the
+sequence's `0;` or `2;` does not count; a longer title sequence is
+ignored, never truncated), so every metadata record stays within 16,384
+bytes even when JSON escapes each title byte.
 
 Counters never wrap. A request may carry the last
 [request ID](../TERMS.md#request-id), 18446744073709551615; no later
