@@ -20,6 +20,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// COM-06 (Contract, known-final result) and COM-05 (Contract, Initial metadata
+/// case).
 /// #20 over revision 1, an early exit: the command prints its last bytes
 /// and exits 43 before anything attaches, as passive Opens' Initial
 /// metadata shows once the daemon knows it. An interactive Open made after
@@ -83,6 +85,8 @@ fn result_known(session: &Session, result: &CommandResult) {
     }
 }
 
+/// COM-06 (Contract) and CTL-05 (Contract: Ready under the current
+/// restoration).
 /// #20 over revision 1: an exit after the controller's restoration reaches
 /// it as its last bytes, then its Command final, while it still withholds
 /// Ready, but the session lives on: its Ready is still answered as the
@@ -100,6 +104,7 @@ fn the_session_ends_only_after_its_controller_confirms_ready() {
     session.finish();
 }
 
+/// COM-06 (Contract: Command final follows the command's last output).
 /// #20/#19 over revision 1: once the command's session leader exits 23, the
 /// final drain ends at the end of its output or at its one-second cap,
 /// whether a descendant holding the terminal stays idle or keeps writing.
@@ -237,6 +242,7 @@ fn fixture_pid(session: &Session) -> u32 {
     pid.parse().unwrap()
 }
 
+/// COM-03 (Contract, Kill cases).
 /// Section 6.2 over revision 1, unfinished token: the command's pending
 /// `ESC [` does not hold a restoration, which completes, so the attachment
 /// confirms Ready and leaves. A standalone Kill then ends the command,
@@ -251,6 +257,7 @@ fn an_unfinished_token_still_restores_and_a_kill_confirms_the_result() {
     super::end_by_kill(session);
 }
 
+/// COM-03 (Contract, Kill cases).
 /// Section 3.3 over revision 1: hanging up closes the command's terminal
 /// without typing into it. A standalone Kill commits the termination while
 /// ptrace records every write the daemon makes to the terminal's master
@@ -296,6 +303,7 @@ fn hanging_up_types_nothing_into_the_command_terminal() {
     session.finish();
 }
 
+/// COM-03 (Contract, Kill cases) and INP-03 (Contract: an open paste).
 /// Section 1.5 over revision 1: a Kill while the controller's application
 /// paste is open queues the paste's closing bytes, which can no longer
 /// reach the hung-up terminal; termination still completes, and the Kill
@@ -311,6 +319,7 @@ fn a_kill_with_an_open_application_paste_still_terminates() {
     session.finish();
 }
 
+/// COM-06 (Fault, through the `pty-write` test hook).
 /// Section 6.2 over revision 1, authoritative failure: when the
 /// controller's accepted Input cannot be written to the command's terminal,
 /// the session fails. It hangs the command up, which SIGHUP ends, reports
@@ -330,6 +339,7 @@ fn a_pty_write_failure_releases_then_ends_control_with_the_session() {
     session.finish();
 }
 
+/// COM-03 (Contract, Kill cases) and COM-06 (Contract, known-final result).
 /// Kill after an unreported exit, over revision 1: the command exits 43
 /// before anything attaches, as passive Opens' Initial metadata shows once
 /// the daemon knows it. A standalone Kill then still ends the session and
@@ -344,6 +354,7 @@ fn a_kill_after_the_command_exited_confirms_its_result() {
     session.finish();
 }
 
+/// Daemon lifecycle (#103), job-control cleanup; no matrix row.
 /// #19/#27 over revision 1: on the command's natural exit, the shell's
 /// HUP-ignoring background job, orphaned in the command's terminal session
 /// once the shell (and so the terminal) is gone, is killed once the final
@@ -367,6 +378,7 @@ fn natural_exit_kills_jobs_left_in_the_command_session() {
     assert!(gone, "background job survived natural exit");
 }
 
+/// Daemon lifecycle (#103), job-control cleanup; no matrix row.
 /// #19/#27 (owner decision) over revision 1: the loss of the final
 /// controller hangs up, waits the real grace, then kills every process
 /// still in the command's terminal session, across job-control process

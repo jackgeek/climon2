@@ -91,7 +91,7 @@ limits/deadlines/policy. The
 [agreed lifecycle contract](../../monitor-lifecycle.md) owns recovery,
 concurrent truthful shutdown, run-local selector removal and
 [headless-session](../../../GLOSSARY.md#sessions) zero-client lifetime. Only the
-headless lifetime is implemented, on the current private protocol; none of these
+headless lifetime is implemented, for attachments of either protocol; none of these
 amendments changes a wire schema. Native declarations are agreed in #71; the
 [acceptance matrix](../../monitor-acceptance.md) is agreed in #62,
 not executed conformance evidence.

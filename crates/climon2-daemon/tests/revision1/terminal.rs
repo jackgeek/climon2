@@ -23,6 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// CTL-05 (Contract: input only after the complete restoration is confirmed).
 /// Section 6.2 over revision 1: an attachment to an application waiting in
 /// its alternate screen receives a restoration that already holds the
 /// screen and its modes (alternate screen, mouse, bracketed paste and
@@ -58,6 +59,7 @@ fn a_waiting_alternate_screen_is_restored_before_input_is_admitted() {
     session.finish();
 }
 
+/// COM-03 (Contract, Leave).
 /// Section 6.2 release ordering over revision 1: Leave releases the
 /// attachment's presentation exactly, then reports the detached
 /// attachment; the session outlives the Leave, advertises it, and a new
@@ -102,6 +104,7 @@ fn host() -> vt100::Parser {
     vt100::Parser::new(size(37), size(91), 0)
 }
 
+/// COM-03 (Contract, Acquire) and CTL-05 (Contract: a revoked controller).
 /// Section 6.2 over revision 1: a newer interactive Open takes control. The
 /// old controller's release leaves the alternate screen it entered, once,
 /// before its Control revoked (`takeover`), and its host's cursor is no
@@ -151,6 +154,8 @@ fn takeover_releases_the_alternate_screen_and_the_exit_leaves_it() {
     session.finish();
 }
 
+/// CTL-05 (Contract: only the controller's input and size apply) and CTL-04
+/// (Contract: hand-back).
 /// Section 1.5/1.6 over revision 1: the controller's size drives the PTY.
 /// A newer Open takes control at its own 80x24; the revoked attachment's
 /// Input and Resize are `not_controller` and reach nothing. Its Acquire
@@ -192,6 +197,7 @@ fn the_controller_drives_the_size_and_a_hand_back_restores_the_remaining_size() 
     );
 }
 
+/// INP-03 (Contract) and CTL-05 (Fault, through the `pty-write-partial` hook).
 /// Section 1.5 paste cleanup over revision 1, through the
 /// `pty-write-partial` test hook: a paste cut short by a takeover is closed
 /// with exactly its end marker, written whole across one-byte PTY writes,
@@ -226,6 +232,7 @@ fn a_revoked_paste_is_closed_whole_across_one_byte_writes() {
     assert!((1..400).contains(&payload.len()), "{}", payload.len());
 }
 
+/// TRM-02 (Contract: the daemon answers session queries).
 /// Section 3.3 one PTY writer over revision 1, through the
 /// `pty-write-partial` test hook: the daemon's reply to a terminal query
 /// that the application makes while the controller's input is being written
@@ -255,6 +262,7 @@ fn a_terminal_reply_never_interleaves_with_input_being_written() {
     );
 }
 
+/// CTL-05 (Contract: superseded restoration) and COM-05 (Contract).
 /// Section 6.2 replacement restoration over revision 1: a Resize before
 /// Ready replaces the restoration within its period, at the new size. The
 /// replacement first leaves the alternate screen the first restoration
@@ -285,6 +293,7 @@ fn a_resize_before_ready_replaces_the_restoration_and_leaves_the_alternate_scree
     session.finish();
 }
 
+/// COM-05 (Contract: Geometry follows a Resize's acceptance).
 /// Section 6.2 resize burst over revision 1: three Resize requests of a
 /// ready controller in one write are each accepted, and the session reports
 /// one Geometry, at the last size: the command's terminal is resized once,
@@ -345,6 +354,7 @@ fn restoration_through(session: &Session, clients: &mut Vec<Attached>, marker: &
     }
 }
 
+/// LIM-03 (Contract: retained history).
 /// Section 6.2 retention with an unfinished restoration, over revision 1:
 /// scrolling while the controller has not confirmed its restoration still
 /// honours `max_rows`, so a takeover's restoration has no history for 0 and
@@ -369,6 +379,7 @@ fn retention_with_an_unconfirmed_restoration_keeps_only_the_newest_rows() {
     }
 }
 
+/// LIM-03 (Contract: evicted history).
 /// Section 6.2 identical-row eviction over revision 1: identical rows still
 /// evict history and leave the discard notice once; clearing the history
 /// clears the notice too, so a later restoration has none.
@@ -389,6 +400,7 @@ fn identical_rows_evict_and_cleared_history_has_no_stale_notice() {
     end_by_kill(session);
 }
 
+/// COM-05 (Contract: a grant is never held by synchronized updates).
 /// Section 6.2 sync latch over revision 1: an application that begins a
 /// synchronized update every 20 ms and never ends one does not hold a
 /// grant: the interactive Open is granted and its restoration completes
@@ -403,6 +415,7 @@ fn repeated_sync_begins_do_not_hold_a_grant() {
     session.finish();
 }
 
+/// COM-05 (Contract: synchronized updates hold output back).
 /// Section 6.2 sync latch over revision 1: an open synchronized update is
 /// held back from the ready controller until its 150 ms latch expires, then
 /// released once, with its begin once, each of three times.
@@ -426,6 +439,8 @@ fn an_open_synchronized_update_is_not_released_before_its_deadline() {
     end_by_kill(session);
 }
 
+/// LIM-01 (Contract: one connection's backlog stalls nothing else) and COM-04
+/// (Contract).
 /// #20 over revision 1, saturation: an 8 MiB burst of output to a ready
 /// controller that is not reading yet arrives exactly, in Display chunks
 /// of at most 65,535 bytes, followed by the release, within 15 s, which a

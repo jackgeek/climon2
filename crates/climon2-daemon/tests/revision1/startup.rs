@@ -20,6 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// COM-06 (Contract: Command final is the last record).
 /// #15/#19/#26 over revision 1: the real binary publishes private (0600)
 /// session metadata naming its PID, start time and release in a private
 /// sessions directory, then serves a revision-1 controller on the real PTY.
@@ -51,6 +52,7 @@ fn readiness_publishes_session_metadata_and_command_final_is_last() {
     session.finish();
 }
 
+/// Daemon lifecycle (#103), startup; no matrix row.
 /// #18/#35 over revision 1: a home and executable path longer than 103
 /// bytes and a session socket of exactly 103 bytes start the session
 /// without enlarging the helper's startup socket, which is gone once the
@@ -73,6 +75,7 @@ fn long_paths_and_a_maximum_length_session_socket_serve_a_controller() {
     session.finish();
 }
 
+/// Daemon lifecycle (#103), startup; no matrix row.
 /// #19 over revision 1: SIGHUP, SIGINT and SIGPIPE sent to the daemon are
 /// ignored, not treated as departures: the daemon still answers a hello,
 /// and its controller's input still reaches the command, which reports its
@@ -101,6 +104,8 @@ fn assert_closed_without_hello(stream: &mut UnixStream) {
     assert_ne!(bytes.get(4), Some(&0x01), "a hello reply: {bytes:?}");
 }
 
+/// DSC-04 (Contract: the frozen two-second hello deadline with bounded probes)
+/// and COM-03 (Contract: an interactive Open takes control).
 /// #20/#27 over revision 1: probes and a hello that never finishes never
 /// hold the session's revision-1 controller. Eight probes are answered
 /// while a hello trickles a byte every 50 ms, and a second interactive
@@ -135,6 +140,8 @@ fn probes_and_an_unfinished_hello_never_hold_a_revision1_controller() {
     session.finish();
 }
 
+/// DSC-04 and COM-02 (Contract: framing failures before hello, connection
+/// effects).
 /// #20 over revision 1: traffic that never completes a hello closes only
 /// its own connection. A revision-1 Open or Kill sent instead of a hello, a
 /// hello whose JSON is malformed, and a first frame of zero length or over
@@ -165,6 +172,7 @@ fn traffic_instead_of_a_hello_closes_only_its_connection() {
     session.finish();
 }
 
+/// Daemon lifecycle (#103), startup; no matrix row.
 /// #15/#29 over revision 1: the helper restores an absent, empty or
 /// non-UTF-8 SHELL and the exact literal OS arguments, cwd and inherited
 /// environment, an explicit logging filter applies, and the daemon log holds
