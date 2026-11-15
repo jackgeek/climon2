@@ -20,7 +20,7 @@ use std::{
     fs,
     num::NonZeroU16,
     os::unix::net::UnixStream,
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -387,26 +387,25 @@ fn in_one_pass(hold: &Path, queue: impl FnOnce()) {
     fs::remove_file(hold).unwrap();
 }
 
-/// CTL-04 (Fault, through the `monitor-overflow` and `CLIMON2_DAEMON_HOLD`
-/// test hooks: a registration lost to its own queue's overflow racing a
-/// promotion). The daemon reads, in one pass, a registration's request
-/// whose Response overflows its output queue, then the final attachment's
-/// Leave. The departing registration is removed before succession, so the
-/// Leave promotes nobody: the registration's stream just ends, the
-/// attachment leaves as an accepted detach, and the session stays
-/// detached rather than ending at the lost registration's departure.
-#[test]
-fn a_registration_lost_to_an_overflow_is_never_promoted() {
+/// A session of the `lines` fixture under the `rejection-overflow` and
+/// `CLIMON2_DAEMON_HOLD` test hooks, and the path that holds its input.
+fn overflowing() -> (Session, PathBuf) {
     let mut hold = None;
-    let mut session = Session::configured("lines", |command, home| {
-        command.env("CLIMON2_DAEMON_FAULT", "monitor-overflow");
+    let session = Session::configured("lines", |command, home| {
+        command.env("CLIMON2_DAEMON_FAULT", "rejection-overflow");
         hold = Some(home.join("hold"));
         command.env("CLIMON2_DAEMON_HOLD", home.join("hold"));
     });
-    let mut watching = Attached::registered(&session);
-    let mut controller = ready_attachment(&session, &[]);
-    in_one_pass(&hold.unwrap(), || {
-        watching.send(|request_id| {
+    (session, hold.unwrap())
+}
+
+/// The daemon reads, in one pass, a repeated Open on `lost`, whose
+/// rejection overflows its output queue, then the controller's Leave. The
+/// controller leaves as an accepted detach, and `lost`'s stream just ends:
+/// nothing, no grant either, reaches it after the overflow.
+fn lost_then_left(hold: &Path, lost: &mut Attached, controller: &mut Attached) {
+    in_one_pass(hold, || {
+        lost.send(|request_id| {
             let mut again = open(1, &[], &[], Mode::Monitor);
             again.request_id = request_id;
             again.to_frame()
@@ -418,12 +417,16 @@ fn a_registration_lost_to_an_overflow_is_never_promoted() {
     };
     assert_eq!(controller.response(), Outcome::Ok(left));
     controller.closed();
-    watching.closed();
+    lost.closed();
+}
+
+/// The session advertises itself detached, and a later attachment still
+/// reaches its command, which then exits.
+fn stays_detached(mut session: Session) {
     assert_eq!(
         crate::advertised_state(&session),
         (Lifecycle::Detached, 0, false)
     );
-
     let mut last = session.attach();
     session.wait_marker(&mut last);
     crate::send(&mut last, ClientMessage::Input(b"end\n".to_vec()));
@@ -432,6 +435,23 @@ fn a_registration_lost_to_an_overflow_is_never_promoted() {
         PrivateMessage::Exit { code: 0 }
     );
     session.finish();
+}
+
+/// CTL-04 (Fault, through the `rejection-overflow` and `CLIMON2_DAEMON_HOLD`
+/// test hooks: a registration lost to its own queue's overflow racing a
+/// promotion). The daemon reads, in one pass, a registration's request
+/// whose Response overflows its output queue, then the final attachment's
+/// Leave. The departing registration is removed before succession, so the
+/// Leave promotes nobody: the registration's stream just ends, the
+/// attachment leaves as an accepted detach, and the session stays
+/// detached rather than ending at the lost registration's departure.
+#[test]
+fn a_registration_lost_to_an_overflow_is_never_promoted() {
+    let (session, hold) = overflowing();
+    let mut watching = Attached::registered(&session);
+    let mut controller = ready_attachment(&session, &[]);
+    lost_then_left(&hold, &mut watching, &mut controller);
+    stays_detached(session);
 }
 
 /// CTL-04 (Fault, a promotion racing a committed Kill) and COM-03
