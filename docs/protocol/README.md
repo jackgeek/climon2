@@ -23,8 +23,8 @@ and daemon wire pages assign exact agreed schemas, separately from implementatio
 |---|---|---|
 | [Client](../../GLOSSARY.md#sessions) to session daemon: [hello handshake](../../GLOSSARY.md#sessions) | Implemented and frozen | [Request](daemon-client/hello-request.md) and [reply](daemon-client/hello-reply.md). |
 | Client to session daemon: after hello | Private protocol implemented for attach and kill; wire revision 1 agreed and partly implemented beside it: session daemons serve passive monitor connections and interactive attachments, chosen by the first frame after hello | [Decision boundary](daemon-client/post-hello.md), [complete wire rules](daemon-client/core-v1.md). |
-| Monitor to [client library](../../GLOSSARY.md#sessions) | Complete native revision-1 specification agreed. The library implements its [compatibility check](monitor-client/request-hello.md) bootstrap and description ([#75](https://github.com/jackgeek/climon2/issues/75)) and the instance lifecycle of its [function table](TERMS.md#function-table) ([#85](https://github.com/jackgeek/climon2/issues/85)); `submit` reports `CM1_UNSUPPORTED_OPERATION` until Open ([#93](https://github.com/jackgeek/climon2/issues/93)). The monitor side is not implemented. | [Library embedding](library-embedding.md), [native contract/header/examples](monitor-client/core-v1.md), and [shared communication contract](#shared-in-process-communication-contract). |
-| [Client executable](../../GLOSSARY.md#sessions) to same-release library | Same-release loading agreed, not implemented | [Library embedding](library-embedding.md). |
+| Monitor to [client library](../../GLOSSARY.md#sessions) | Complete native revision-1 specification agreed. The library implements its [compatibility check](monitor-client/request-hello.md) bootstrap and description ([#75](https://github.com/jackgeek/climon2/issues/75)) and the instance lifecycle of its [function table](TERMS.md#function-table) ([#85](https://github.com/jackgeek/climon2/issues/85)); `submit` reports `CM1_UNSUPPORTED_OPERATION` until Open ([#93](https://github.com/jackgeek/climon2/issues/93)). The shared loader that finds, opens and validates libraries is implemented ([#84](https://github.com/jackgeek/climon2/issues/84)); the rest of the monitor side is not. | [Library embedding](library-embedding.md), [native contract/header/examples](monitor-client/core-v1.md), and [shared communication contract](#shared-in-process-communication-contract). |
+| [Client executable](../../GLOSSARY.md#sessions) to same-release library | Same-release loading agreed; the shared loader is implemented, but the client executable does not use it yet | [Library embedding](library-embedding.md). |
 | Monitor to [host](../../GLOSSARY.md#sessions) | Program-status advertising and toast bell agreed, not implemented | [Reports and bell](#monitor-to-host-status-and-bell). |
 
 Current local runtime communication is implemented on macOS and x86_64
@@ -36,7 +36,9 @@ unimplemented on both systems: each release ships its client library with its
 bootstrap, description and local instance lifecycle implemented
 ([#75](https://github.com/jackgeek/climon2/issues/75),
 [#85](https://github.com/jackgeek/climon2/issues/85)), but no instance can open
-a connection yet and no monitor loads it. The [Linux decision](https://github.com/jackgeek/climon2/issues/125)
+a connection yet and no monitor loads it. The shared loader
+([#84](https://github.com/jackgeek/climon2/issues/84)) loads and validates it
+for test tooling only. The [Linux decision](https://github.com/jackgeek/climon2/issues/125)
 agreed Linux in-process loading in the
 [embedding design](library-embedding.md#artifact-and-dependency-lookup): the
 monitor and its client library ship on both systems in the same release.
