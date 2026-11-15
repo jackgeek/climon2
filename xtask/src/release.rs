@@ -15,6 +15,15 @@ pub(crate) const PACKAGES: &[(&str, &str)] = &[
     ("climon2-monitor", "climon2-monitor"),
 ];
 
+/// Where every production build goes: one directory kept between builds, so
+/// each build after the first is incremental, and apart from the test builds,
+/// so no test-hooks feature ever reaches it.
+pub(crate) fn production_directory(root: &Path) -> io::Result<PathBuf> {
+    let directory = root.join("target/production");
+    fs::create_dir_all(&directory)?;
+    Ok(directory)
+}
+
 pub(crate) fn build(
     root: &Path,
     directory: &Path,
@@ -65,14 +74,11 @@ pub fn check(root: &Path) -> io::Result<()> {
             )));
         }
     }
-    fs::create_dir_all(root.join("target"))?;
-    let target = tempfile::Builder::new()
-        .prefix("release-check-")
-        .tempdir_in(root.join("target"))?;
+    let target = production_directory(root)?;
     for (package, _) in PACKAGES {
-        build(root, target.path(), package, None)?;
+        build(root, &target, package, None)?;
     }
-    let release = target.path().join("release");
+    let release = target.join("release");
     for name in shipped_names() {
         if has_marker(&fs::read(release.join(&name))?) {
             return Err(io::Error::other(format!(
@@ -80,8 +86,11 @@ pub fn check(root: &Path) -> io::Result<()> {
             )));
         }
     }
+    let scratch = tempfile::Builder::new()
+        .prefix("release-check-")
+        .tempdir_in(root.join("target"))?;
     let home =
-        ExecutableHome::new(&target.path().join("executable home")).map_err(io::Error::other)?;
+        ExecutableHome::new(&scratch.path().join("executable home")).map_err(io::Error::other)?;
     let version = env!("CARGO_PKG_VERSION")
         .parse()
         .map_err(io::Error::other)?;
