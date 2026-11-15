@@ -210,15 +210,33 @@ The daemon keeps the command's result as its wait status gives it
 (`core::wire::CommandResult`): a normal exit's raw status, or a signal's
 number, never folded together; only the private protocol's `Exit` and
 `Terminated` fold a signal into 128 plus its number. It publishes the result
-once, when it first knows it: when it reaps a command that exited by itself,
-or when it confirms the end of a hang-up. Every passive monitor connection
-and interactive attachment then receives Command final, with a null status
-while `status-v1` is not served; the controller may still receive the
-command's last output after it, then its release and Control revoked
-(`session_ending`). Later Opens get the result in their Initial metadata
+once, when it is final, so that no more of the command's output follows
+Command final: for a command that exited by itself, when the PTY drain after
+the reap ends (end of output, `PTY_DRAIN_IDLE` 100 ms without output, or
+`PTY_DRAIN_CAP` 1 s after the reap), at the end of an output pass that
+delivered the drained output, once nothing it produced is held back from a
+connection, and before the exit report waits for `Ready` or the initial
+attachment. Held back means a restoration in progress (its frames, then the
+live backlog behind it) or a pending synchronized update (which holds a
+derived update and every grant's snapshot); each ends within its own bound,
+by completing or by the loss of a reader without progress for 5 s, and by
+the 150 ms latch (#203). A grant after Command final still replays the
+screen. A termination (`Kill`, final unexpected departure, authoritative
+failure such as a failed PTY read, or initial deadline) that begins after the
+reap does not cut that drain short: `begin_shutdown` first observes the
+command, and if it has exited the hang-up waits until the drain ends and
+Command final is published (owner decision on #88, 2026-11-14). A failed
+read during the drain counts as idle, so the drain goes on and ends as usual.
+After a hang-up of a running command, which stops PTY reads, the result is
+published when the end of the command is learned at the end of the grace
+(`HANGUP_GRACE`), with any result already reaped. Every passive monitor connection and interactive
+attachment then receives Command final, with a null status while
+`status-v1` is not served; the controller receives the command's last output
+before it, then its release and Control revoked (`session_ending`). Later Opens get the result in their Initial metadata
 and no Command final, and later first-role rejections carry it as
-`known_final`. A hang-up the daemon cannot confirm publishes nothing, and
-the private protocol then reports 125 as before.
+`known_final`. A hang-up the daemon cannot confirm publishes the result
+only if the command was already reaped, and nothing otherwise; the private
+protocol then reports 125 as before.
 
 A valid standalone Kill takes the Kill role (never an attachment) and
 commits termination through the same control as the private `Kill`, so
@@ -284,7 +302,8 @@ a final unexpected departure. It therefore ends only on command completion,
 handle without writing to it, then runs a real five-second hang-up grace as a loop
 deadline: probes see `terminating`, attaches are refused, repeated kills join
 without restarting it, and the grace is not shortened if the command exits
-meanwhile. Pending PTY writes and resizes are dropped after hang-up. When the
+meanwhile. A command already reaped first finishes its PTY drain, so the
+hang-up and its grace begin when the drain ends. Pending PTY writes and resizes are dropped after hang-up. When the
 grace ends, the daemon SIGKILLs every process still in the command's terminal
 session (all job-control process groups, per the #19/#27 owner decision) and
 reaps the command. Only after metadata and socket removal does each attachment
@@ -435,15 +454,15 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | COM-03 (Contract, Kill cases): a standalone Kill is answered only after the real hang-up grace, with its session metadata and socket removed and the command gone; standalone and private kills sent during the grace join it without restarting it; a Kill's connection rejects a later Open or Kill, Leave and Acquire (`invalid_state`), Input, Resize and Ready (`not_attached`) and Focus (`unsupported_capability`); a Kill succeeds after a session failure once termination is confirmed, and fails with a partial result, keeping the result it knew, when its termination or cleanup did not complete | `a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_join_it`, `a_session_ending_without_final_evidence_sends_no_command_final`, `a_failed_kill_keeps_the_result_the_daemon_knew`, `a_failed_cleanup_fails_the_kill_but_keeps_the_confirmed_result`, `a_kill_succeeds_after_a_session_failure_once_termination_is_confirmed` |
 | COM-04 (Contract): binary Input and Display carry `00 ff 41`, NUL and invalid UTF-8 unchanged, across Input requests and Display chunks | `binary_input_and_display_pass_unchanged` |
 | COM-05 (Contract, Initial metadata case): Initial metadata is captured atomically and title changes follow it gap-free, including around a burst; it carries a command result already known, and no Command final follows it | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata`, `a_known_result_reaches_later_opens_and_rejected_first_roles` |
-| COM-05 (Contract, interactive order): Response, Initial metadata, grant, Restoration begin, matching Display chunks and Restoration complete arrive in order under fragmented and coalesced I/O; a large restoration is produced as it drains; Geometry follows a Resize's acceptance | `interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order`, `ready_needs_the_complete_current_restoration`, `a_ready_controllers_resize_reports_the_actual_geometry_after_its_acceptance` |
+| COM-05 (Contract, interactive order): Response, Initial metadata, grant, Restoration begin, matching Display chunks and Restoration complete arrive in order under fragmented and coalesced I/O; a large restoration is produced as it drains, and completes before Command final when the command's output drained during it, as does the restoration of a monitor promoted after the drain; Geometry follows a Resize's acceptance | `interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order`, `a_restoration_in_progress_when_the_drain_ends_completes_before_command_final`, `a_stalled_restoration_holds_command_final_only_until_its_reader_is_lost`, `ready_needs_the_complete_current_restoration`, `a_ready_controllers_resize_reports_the_actual_geometry_after_its_acceptance` |
 | COM-05 (Contract, monitor-mode geometry): once a monitor-mode controller is ready, each applied Resize that changes the effective geometry is followed by Geometry, then a Restoration begin at that geometry before any Display at it, then a canonical restoration needing a new Ready; a host change that keeps the geometry is followed by nothing, before readiness too | `monitor_mode_restorations_are_canonical_at_the_effective_geometry_whatever_the_host` |
-| COM-06 (Contract): exit zero, an arbitrary nonzero exit (143) and a signal (15, and 9 after a kill) each reach every opened connection as exactly one Command final, exit kept apart from signal, while the private protocol keeps `Exit` 0, 143 and 143 and `Terminated` 137; a known result reaches later Opens' Initial metadata and rejected first roles' `known_final`, and is never published twice | `command_final_reports_each_exit_and_signal_once`, `a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_join_it`, `a_known_result_reaches_later_opens_and_rejected_first_roles` |
+| COM-06 (Contract): exit zero, an arbitrary nonzero exit (143) and a signal (15, and 9 after a kill) each reach every opened connection as exactly one Command final, after every Display and Title changed of the command's last output even when the daemon reaps the command before reading it or a Kill arrives before that output drained, after a restoration in progress (its Restoration complete included) and any open synchronized update, which holds a derived controller's update, and still once a stalled restoration's reader is lost, after the restoration of the monitor that loss promotes (`successor`), which then confirms Ready to end the session, exit kept apart from signal, while the private protocol keeps `Exit` 0, 143 and 143 and `Terminated` 137; a known result reaches later Opens' Initial metadata and rejected first roles' `known_final`, and is never published twice | `command_final_reports_each_exit_and_signal_once`, `command_final_follows_the_last_output_of_a_command_that_exits`, `command_final_follows_the_commands_last_output` (Linux), `a_kill_during_the_drain_lets_the_commands_last_output_through` (Linux), `a_restoration_in_progress_when_the_drain_ends_completes_before_command_final`, `a_synchronized_update_open_at_exit_reaches_a_derived_controller_before_command_final`, `a_held_synchronized_update_reaches_a_derived_controller_before_command_final` (Linux), `a_stalled_restoration_holds_command_final_only_until_its_reader_is_lost`, `a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_join_it`, `a_known_result_reaches_later_opens_and_rejected_first_roles` |
 | COM-06 (Fault, test hooks and fixture): a session ending without final evidence (`end-hangup`) sends no Command final, its standalone Kill fails with no result and the private kill keeps `Terminated` 125; the end of the command's output while it runs publishes nothing; a Kill keeps the result the daemon knew when the final kill (`end-hangup`) or the cleanup (`cleanup`, private `Error`) fails; a session failure (`pty-write`) still lets a Kill succeed | `a_session_ending_without_final_evidence_sends_no_command_final`, `the_end_of_the_commands_output_while_it_runs_is_no_final_result`, `a_failed_kill_keeps_the_result_the_daemon_knew`, `a_failed_cleanup_fails_the_kill_but_keeps_the_confirmed_result`, `a_kill_succeeds_after_a_session_failure_once_termination_is_confirmed` |
 | CTL-01 (Contract): a passive registration never acquires control, of a detached session or one controlled elsewhere, and is not an attachment: hello `state` and so `list` are unchanged; core metadata flows before control; only its own Acquire takes control, at the session's geometry, with no input | `a_passive_registration_never_acquires_control_and_is_not_an_attachment`, `a_monitor_registers_and_leaves_during_committed_termination`, `a_registration_takes_control_only_by_its_own_acquire` |
 | CTL-01 (Contract, starting sessions): a registration's Acquire of a starting session makes it the first attachment, in control at the session's geometry; watching alone is not attaching, so a session only watched still ends at its five-second initial deadline, and the registration gets the Command final | `a_registration_acquires_a_starting_session`, `watching_does_not_stop_the_initial_attach_rule` |
 | CTL-01 and COM-06 (Contract, Acquire after the Command final): until the output drained and the controller confirmed Ready, a registration that received the Command final still acquires; the previous controller gets its Command final, then Control revoked (`takeover`), and nobody gets a second Command final | `a_registration_acquires_after_the_command_final_until_the_session_ends` |
 | CTL-03 (Contract, title case): titles reach monitors by value, in order and whatever the control, a promoted monitor's background control included; unset, empty, a value and unavailable stay distinct; an oversized title is ignored, never truncated | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_monitor_without_title_v1_receives_nothing_for_titles`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata`, `an_oversized_title_is_ignored_never_truncated`, `titles_reach_an_attachment_as_inert_text` |
-| CTL-04 (Contract): a departing controller, by Leave or by loss, hands control back to the most recently controlling remaining attachment first, otherwise the newest registration is promoted (`successor`) at the session's geometry, with no resize or input; the leave policy applies only after succession, so a registered monitor keeps the session alive; the promotion's restoration is canonical at the effective geometry, while an ordinary attachment on an oversized host keeps its Derived restoration | `departures_hand_control_back_first_then_promote_the_newest_registration`, `monitor_mode_restorations_are_canonical_at_the_effective_geometry_whatever_the_host` |
+| CTL-04 (Contract): a departing controller, by Leave or by loss, hands control back to the most recently controlling remaining attachment first, otherwise the newest registration is promoted (`successor`) at the session's geometry, with no resize or input; the leave policy applies only after succession, so a registered monitor keeps the session alive; the promotion's restoration is canonical at the effective geometry, while an ordinary attachment on an oversized host keeps its Derived restoration; a loss after the command exited still promotes, and its restoration precedes Command final | `departures_hand_control_back_first_then_promote_the_newest_registration`, `monitor_mode_restorations_are_canonical_at_the_effective_geometry_whatever_the_host`, `a_stalled_restoration_holds_command_final_only_until_its_reader_is_lost` |
 | CTL-04 (Fault, races): a Leave read after a promotion detaches the promoted attachment (`attachment_detached: true`), and one read first removes the registration, which is then never promoted; a committed Kill overrides succession, and a registration promoted before the Kill ends with the session as an attachment | `leave_racing_a_promotion_removes_the_registration_or_the_attachment_atomically`, `a_committed_kill_overrides_succession`, `a_registration_promoted_before_a_kill_ends_as_an_attachment` |
 | CTL-04 (Fault, `monitor-overflow` and `CLIMON2_DAEMON_HOLD` hooks): a registration lost to its own output queue's overflow, read in the same pass as the final attachment's Leave, is removed before succession and never promoted; the session stays detached | `a_registration_lost_to_an_overflow_is_never_promoted` |
 | CTL-05 (Contract and Fault, stale authority from a raw peer): Input, Resize and Ready under an earlier period or a superseded restoration are `stale_period` or `stale_restoration`; Ready needs the complete current restoration; late authority never re-enables input | `stale_and_superseded_authority_is_rejected_and_never_re_enables_input`, `ready_needs_the_complete_current_restoration` |
@@ -458,7 +477,24 @@ with it a whole mutation run).
 
 On macOS, session-leader exit may revoke the PTY immediately, so the final
 drain fixture permits EOF/EIO before the idle/cap clocks expire; it does not
-claim those clocks necessarily expire in that OS scenario.
+claim those clocks necessarily expire in that OS scenario. The command's last
+close of its terminal waits for the daemon to read the queued output, but the
+macOS kernel discards that output when no reader takes it within its close
+timeout (0.6 s), and the session leader's exit then revokes the terminal. So
+on macOS the daemon reads the command's output before it can reap the
+command, and the tests that stop the daemon across the exit to reap first
+(`command_final_follows_the_commands_last_output`,
+`a_kill_during_the_drain_lets_the_commands_last_output_through`,
+`a_held_synchronized_update_reaches_a_derived_controller_before_command_final`)
+run on Linux only, where a closed terminal's unread output stays readable;
+`command_final_follows_the_last_output_of_a_command_that_exits` and
+`a_synchronized_update_open_at_exit_reaches_a_derived_controller_before_command_final`
+cover the same orders on both. The restoration tests that stop the daemon
+across the exit
+(`a_restoration_in_progress_when_the_drain_ends_completes_before_command_final`,
+`a_stalled_restoration_holds_command_final_only_until_its_reader_is_lost`)
+run on both: the daemon has read all of the command's output before they
+stop it, so nothing is left to discard.
 
 With `test-hooks` only, `CLIMON2_DAEMON_FAULT=panic|never-ready` injects named
 pre-command startup faults. Their test checks capped panic capture, real
@@ -468,7 +504,7 @@ session failure: the controller receives its release bytes, then `Error`.
 `CLIMON2_DAEMON_FAULT=pty-write-partial` makes every PTY write take at most one
 byte after a 5 ms pause, forcing the partial writes the ordering tests need.
 `CLIMON2_DAEMON_FAULT=end-hangup` makes the end of every hang-up fail, as one
-the daemon cannot confirm: no Command final unless the result was known
+the daemon cannot confirm: no Command final unless the command was reaped
 before, and a failed standalone Kill. `CLIMON2_DAEMON_FAULT=cleanup` makes the
 in-loop removal of the session metadata and socket fail (the daemon's final
 cleanup still removes them): a failed standalone Kill that keeps its

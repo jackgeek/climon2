@@ -26,23 +26,27 @@ for [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
 ([#86](https://github.com/jackgeek/climon2/issues/86)), ordinary
 interactive [attachments](../../../GLOSSARY.md#attachment-and-control)
 ([#87](https://github.com/jackgeek/climon2/issues/87)), standalone
-[Kill](../../../GLOSSARY.md#attachment-and-control) and
-[Command final](event-command-final.md) ([#88](https://github.com/jackgeek/climon2/issues/88)),
-and monitors that acquire and inherit control
+[Kill](../../../GLOSSARY.md#attachment-and-control)
+([#88](https://github.com/jackgeek/climon2/issues/88)) and monitors that
+acquire and inherit control
 ([#89](https://github.com/jackgeek/climon2/issues/89)): the
 [hello advertisement](hello-reply.md#revision-1-advertisement), framing and
 validation with their connection-fatal codes, Open in both modes, Leave,
-Input, Resize, Ready, Acquire, Focus, Kill, Response, Fatal error, Initial
-metadata (title and known command result; status and progress reported
-unavailable), Title changed, Control granted and revoked, Restoration begin
-and complete, Display, Geometry, and Command final without status. This keeps
-the private protocol's takeover, [hand-back](../../../GLOSSARY.md#attachment-and-control)
-and [leave policy](../../../GLOSSARY.md#attachment-and-control), the
-[promotion](../../../GLOSSARY.md#attachment-and-control) of passive registrations,
-and the [canonical presentation](../terminal-integration.md#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1)
-of monitor-mode connections. Until it serves them, it rejects Set viewing,
-Acknowledge, status, notification and progress requests without effects, as
-each request's page describes; bounded delivery remains unimplemented. The
+Input, Resize, Ready, Acquire, Focus, Kill, Response,
+Fatal error, Initial metadata (the title and a known command result; status
+and progress reported unavailable), Title changed, Control granted and
+revoked, Restoration begin and complete, Display, Geometry and
+[Command final](event-command-final.md#implemented-behavior) without status,
+with the private protocol's takeover,
+[hand-back](../../../GLOSSARY.md#attachment-and-control) and
+[leave policy](../../../GLOSSARY.md#attachment-and-control), the
+[promotion](../../../GLOSSARY.md#attachment-and-control) of passive registrations
+and the [canonical presentation](../../../GLOSSARY.md#restoration-and-presentation)
+of monitor-mode connections. Until it serves them, it
+rejects the other
+requests without effects, as each request's page describes. Set viewing,
+Acknowledge, the status, notification and progress messages and bounded
+delivery remain unimplemented. The
 [client library](../../../GLOSSARY.md#sessions) speaks this revision for
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93))
 and for control and display ([#94](https://github.com/jackgeek/climon2/issues/94));
@@ -308,7 +312,16 @@ exit-versus-signal kind; there is one final result per session and no second
 final counter. Inconsistent repeated results cannot authorize another toast.
 When terminal status and result are both present, completed requires normal
 exit zero and failed requires nonzero exit or signal. No later event
-revives terminal activity/attention.
+revives terminal activity/attention. Command final follows the command's
+terminal output: once a connection receives it, no more of the command's
+output follows on that connection, and a termination that comes after the
+command exited waits for its output to drain (owner decisions on
+[#88](https://github.com/jackgeek/climon2/issues/88), 2026-11-14). It also
+waits until no restoration is in progress and no
+[synchronized update](../TERMS.md#synchronized-update) holds output back, so
+those Displays precede it too
+([#203](https://github.com/jackgeek/climon2/issues/203)); a grant after
+Command final still replays the screen in its restoration.
 
 ### Implemented authority checks
 
@@ -320,7 +333,7 @@ unmet condition without effects; the stream goes on:
    `unsupported_capability`.
 2. The connection has a role, otherwise `invalid_state`.
 3. It is an attachment, otherwise `not_attached`: neither a passive monitor
-   connection nor a standalone Kill connection is one.
+   connection nor a standalone Kill's connection is one.
 4. The session is not in committed termination, otherwise
    `session_terminating`.
 5. It is the [controller](../../../GLOSSARY.md#attachment-and-control),
@@ -479,6 +492,9 @@ for interactive attachments the record order under partial I/O, binary
 Input header failures, stale authority and readiness, arbitrary bytes, paste
 closure, query authority, inert titles, Focus, and takeover, hand-back and
 leave-policy parity. They also cover exit versus signal in Command final,
+Command final after the command's last output, also when a Kill arrives
+before that output drained, after a restoration in progress and a held
+synchronized update, and still sent once a stalled reader is lost,
 known results in Initial metadata and first-role rejections, no final
 without evidence (an unconfirmed hang-up, or the end of the command's output
 while it runs), and standalone Kill: its answer after termination and
