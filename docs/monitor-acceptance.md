@@ -12,7 +12,11 @@ local instance lifecycle
 ([#85](https://github.com/jackgeek/climon2/issues/85)), passive monitor
 connections ([#93](https://github.com/jackgeek/climon2/issues/93)) and control
 and display ([#94](https://github.com/jackgeek/climon2/issues/94)), but no
-monitor loads them yet. Headless
+monitor loads them yet. The Library layer's
+[second-release fixture](../GLOSSARY.md#testing)
+([#97](https://github.com/jackgeek/climon2/issues/97)) runs both releases'
+libraries in one process, against sessions of each release's own daemon, for
+LIB-01 and LIB-03. Headless
 creation is implemented; its HDL-01 Contract cases and its Monitor-layer cases
 through the packaged CLI are mapped in the daemon and packaged-test READMEs,
 while the case that needs a running monitor waits for it. Resolving this
@@ -264,8 +268,12 @@ time as a measured operating-system guarantee.
 | LIM-06 | Saturate retry/start/notification/discovery work and freeze newer starts/consumers while processing active input/selector/exit. | Configured quanta/deadlines/jitter/caps bound work and backlog; indivisible work is bounded too. Fair independent progress, non-overlapping retries/discovery and explicit stalled-stream results hold. | Monitor, Fault, Measure |
 | PERF-01 | Run the declared workload matrix below with production candidate artifacts and equivalent standalone clients. | Report total and attributable costs, admission outcomes, sustained display/backlog and latency distributions; demonstrate configured allocation limits and disclose limitations, not presumed savings from fewer processes. | Measure |
 
-Run the #69 evidence points: 1, 10 and 100 live sessions; one release and ten
-mixed releases where applicable; 80x24 and 200x60 plus 500x200 boundary geometry.
+Run the #69 evidence points: 1, 10 and 100 live sessions at 80x24 and 200x60;
+one release and ten mixed releases where applicable. At the 500x200 boundary
+geometry, run 1 and 10 sessions and the measured capacity instead of 100
+(owner, 2026-11-15, [#166](https://github.com/jackgeek/climon2/issues/166)): at
+the default 576 MiB about 35 sessions with history, 124 before any scroll
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)).
 Cover passive idle, controlling background output, cold/warm loading,
 restoration/switching, selected sustained output, reconnect storms, continuous
 arrivals and stalled newer starts. Record snapshot comparison/allocation,
@@ -330,8 +338,9 @@ The following are reusable starting points, not monitor acceptance evidence:
 | [Native documentation checks](protocol/monitor-client/check.py), lines 14-94 | C declaration/example compilation for both target layouts, reference reachability and relative links. No linked production library or runtime call evidence. |
 
 Genuinely missing release evidence includes the actual monitor and packaged
-public-library test path; independently packaged mixed-release/private-dependency
-fixtures; ABI lifetime/descriptor/allocator and fault/stall instrumentation;
+public-library test path; independently packaged private-dependency fixtures
+(the mixed-release fixture exists at the Library layer, #97, and releases
+have no private dependencies); ABI lifetime/descriptor/allocator and fault/stall instrumentation;
 monitor-integrated continuous-output/overlay/readiness/recovery/routing scenarios;
 deterministic clock/scheduling and numerical exhaustion cases; and reproducible
 monitor resource/startup/display qualification. Reuse existing fixture capabilities

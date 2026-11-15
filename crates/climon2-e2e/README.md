@@ -127,6 +127,23 @@ whose application (the fixture's `raw` and `echo-until` actions) writes
 back every input byte unchanged, and against the fake peer for holds,
 losses, mismatches and records out of authority.
 
+`tests/mixed.rs` (#97) runs two releases in one host process. Each test
+installs, in its own executable home and with the real installer, the
+[second-release fixture](../../GLOSSARY.md#testing) as release 0.0.97 in a
+sibling version folder: this build's other executables with the test-only
+`climon2-second-release` crate's library and session daemon. The library is
+the client library source built with its own release identity and without
+test hooks. The daemon is the daemon library behind a thin main that serves
+only 0.0.97 and gives its session's command `CLIMON2_SECOND_RELEASE_DAEMON`;
+each test session turns that into its title, so a library relays over
+`title-v1` which release's daemon it is connected to. Each release's CLI
+starts headless sessions served by its own folder's daemon. The host loads
+both releases' libraries through the shared loader (`script` input
+`releases`; each `create` step names its `release`) and runs instances of
+both at the same time. Releases ship no private dependencies, so
+release-relative private-dependency resolution (LIB-01) is not exercised.
+The Fault case returns early in archive mode.
+
 ## Session continuity scenarios
 
 Detach and reattach, takeover and hand-back, the placeholder, kill, listing
@@ -253,6 +270,15 @@ before it.
 | COM-03 Library and Fault, backpressure: a Display waiting for `event_bytes` room stops `operation_ms`; `delivery_stall_ms` fails the connection `delivery_stalled`, retry passive, the held-back Ready unanswered | `installed_library_fails_a_stalled_delivery_without_timing_out_its_commands` (`control_faults.rs`) |
 | COM-03 Library and Fault: once waiting records are queued no stall deadline remains, and a Ready times out at `operation_ms` | `installed_library_times_commands_out_again_once_waiting_records_are_queued` (`control_faults.rs`) |
 
+### Library layer: mixed releases (`tests/mixed.rs`, #97)
+
+| Scenario | Named test |
+|---|---|
+| LIB-01 Library (exact-version lookup and one shared load; private-dependency resolution not exercised, releases ship none): both releases installed; with `current`, the working directory, `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` naming the other release, one process loads each by its exact version folder, in both orders; two instances of each register passively with a session of their own release at the same time, relay the title only their own release's daemon produces, and leave; a second load of each release shares the first, and exactly the two files are loaded once each | `mixed_releases_load_by_exact_version_and_run_side_by_side_whatever_current_cwd_and_search_paths` |
+| LIB-01 Library (exact-release pairing): the second-release fixture's daemon, with its release compiled in, starts no session for a CLI of another release (folder 0.0.98) | `second_release_daemon_serves_only_its_compiled_in_release` |
+| LIB-03 Library, identity separation: beside registered instances of both releases, a create expecting the other release fails `CM1_RELEASE_MISMATCH` without handles, and an Open of the other release's session, served by the other release's daemon, is refused `release_mismatch`, permanently, before any role | `mixed_release_instances_keep_their_own_release_identity_side_by_side` |
+| LIB-03 Fault, fault containment: `panic:receive`, once per hooked image, cannot reach the second-release fixture's instance, which opens and receives its Initial metadata before the hooked release's instance is submitted; that instance then fails (`internal_error`) and the second-release fixture's instance leaves | `a_fault_in_one_release_never_reaches_the_other_releases_instances` |
+
 ### Session continuity (plan section 6.1)
 
 | Scenario | Named packaged test (`tests/continuity.rs` unless noted) |
@@ -296,7 +322,7 @@ earlier run would, so they open on the empty state.
 | INP-01 configured prefix hint and exit 0, null take-control key accepted; once read, Ctrl+C and the default prefix+x are not exits (SIGTERM then gives 143) | `installed_monitor_hints_and_exits_with_the_configured_prefix` |
 | INP-01 null escape prefix and invalid keys refused before terminal changes | `installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys` |
 | CFG-01 unreadable and malformed JSONC, null, wrong type, duplicate, overflow, out-of-range and inconsistent settings: one diagnostic, 125, no terminal change | `installed_monitor_refuses_every_invalid_configuration_before_the_terminal_changes` |
-| CFG-01 limits one byte short of one 500x200 session's documented current model and recent page (total, then client budget) or recent page (history total, then per-session history budget): one diagnostic naming that limit, 125, no terminal change; at those limits the monitor opens and prefix+x exits 0 (#167) | `installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model` |
+| CFG-01 limits one byte short of the monitor's parser and one 500x200 session's documented current model and recent page (total), of the model and page (client budget) or recent page (history total, then per-session history budget): one diagnostic naming that limit, 125, no terminal change; at those limits the monitor opens and prefix+x exits 0 (#167) | `installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model` |
 | CFG-01 `monitor.show_key_hints` false hides the empty state's hint, prefix+x still exits; unknown and unrelated settings ignored | `installed_monitor_without_key_hints_shows_none_and_still_exits` |
 | CFG-01 no live reload: after an edit, a repaint keeps the started settings and the edited prefix, once read, does not exit (SIGTERM then gives 143) | `editing_the_configuration_while_the_monitor_runs_changes_nothing` |
 | CFG-01 every effective setting in the monitor's general log | `installed_monitor_logs_its_effective_configuration` |
