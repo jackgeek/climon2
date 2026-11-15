@@ -292,9 +292,11 @@ fn installed_monitor_refuses_every_invalid_configuration_before_the_terminal_cha
 }
 
 /// One 500x200 session's mandatory allocation, as documented in
-/// docs/monitor-operational-limits.md: its 6,948,039-byte current model and
-/// the 12,115,200-byte history chunk that holds its recent page.
-const MODEL_AND_PAGE: u64 = 19_063_239;
+/// docs/monitor-operational-limits.md: its 4,850,887-byte current model and
+/// the 12,115,200-byte history chunk that holds its recent page, and beside
+/// them, in the aggregate budget only, the monitor's one 2 MiB parser (#166).
+const MODEL_AND_PAGE: u64 = 16_966_087;
+const WITH_PARSER: u64 = 19_063_239;
 const PAGE: u64 = 12_115_200;
 
 /// Memory limits of `total` bytes, `client` bytes per client, `history`
@@ -315,8 +317,9 @@ fn memory([total, client, history, per_session]: [u64; 4]) -> String {
 }
 
 /// CFG-01 (Monitor): limits that cannot hold one session's mandatory
-/// allocation at the largest session geometry, 500x200, are refused like
-/// every other invalid configuration: one byte short of the total, a client's
+/// allocation at the largest session geometry, 500x200, beside the monitor's
+/// one parser, are refused like every other invalid configuration: one byte
+/// short of the total, a client's
 /// budget, the history total or a session's history budget, the monitor
 /// prints one diagnostic naming that limit and exits with the climon2 error
 /// code before any terminal change. At exactly those limits it opens, and
@@ -328,19 +331,19 @@ fn installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model()
     let config = config_file(&package);
     for (limits, expected) in [
         (
-            [MODEL_AND_PAGE - 1, MODEL_AND_PAGE - 1, PAGE, PAGE],
-            "the current model and recent page of a 500x200 session (19063239) may not exceed monitor.limits.memory.total_bytes (19063238)",
+            [WITH_PARSER - 1, MODEL_AND_PAGE, PAGE, PAGE],
+            "the parser and the current model and recent page of a 500x200 session (19063239) may not exceed monitor.limits.memory.total_bytes (19063238)",
         ),
         (
-            [MODEL_AND_PAGE, MODEL_AND_PAGE - 1, PAGE, PAGE],
-            "the current model and recent page of a 500x200 session (19063239) may not exceed monitor.limits.memory.client_bytes (19063238)",
+            [WITH_PARSER, MODEL_AND_PAGE - 1, PAGE, PAGE],
+            "the current model and recent page of a 500x200 session (16966087) may not exceed monitor.limits.memory.client_bytes (16966086)",
         ),
         (
-            [MODEL_AND_PAGE, MODEL_AND_PAGE, PAGE - 1, PAGE - 1],
+            [WITH_PARSER, MODEL_AND_PAGE, PAGE - 1, PAGE - 1],
             "the recent page of a 500x200 session (12115200) may not exceed monitor.limits.memory.history_bytes_total (12115199)",
         ),
         (
-            [MODEL_AND_PAGE, MODEL_AND_PAGE, PAGE, PAGE - 1],
+            [WITH_PARSER, MODEL_AND_PAGE, PAGE, PAGE - 1],
             "the recent page of a 500x200 session (12115200) may not exceed monitor.limits.memory.history_bytes_per_session (12115199)",
         ),
     ] {
@@ -356,11 +359,7 @@ fn installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model()
         );
         assert_released(&package, &mut terminal, 125);
     }
-    fs::write(
-        &config,
-        memory([MODEL_AND_PAGE, MODEL_AND_PAGE, PAGE, PAGE]),
-    )
-    .unwrap();
+    fs::write(&config, memory([WITH_PARSER, MODEL_AND_PAGE, PAGE, PAGE])).unwrap();
     let mut terminal = outer(&package, "climon2 monitor");
     opened(&mut terminal);
     terminal.send(b"\x1dx").unwrap();
@@ -428,7 +427,7 @@ const EFFECTIVE: &str = r#"{
     "show_key_hints": true,
     "bell": false,
     "limits": {
-      "memory": {"total_bytes": 536870912, "client_bytes": 67108864, "history_bytes_per_session": 16777216, "history_bytes_total": 268435456, "queue_bytes_total": 67108864},
+      "memory": {"total_bytes": 603979776, "client_bytes": 67108864, "history_bytes_per_session": 16777216, "history_bytes_total": 268435456, "queue_bytes_total": 67108864},
       "history": {"max_rows": 200},
       "resources": {"stack_bytes": 2097152, "max_workers_per_client": 2, "descriptors_per_client": 8, "descriptors_per_load": 4, "descriptor_headroom": 64, "release_bytes": 67108864},
       "queues": {"request_bytes": 262144, "request_records": 64, "event_bytes": 1048576, "event_records": 1024, "progress_bytes": 65536, "progress_records": 32, "deliveries": 8, "operations": 16},

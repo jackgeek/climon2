@@ -4,12 +4,29 @@
 //! another run of the model.
 
 use climon2_vt::{
-    Geometry, Limits, Model, Rejected,
+    Geometry, Limits, Model, Parser, Rejected,
     view::{
         Ansi, Cell, Colour, Content, Cursor, CursorShape, Glyph, History, Modes, MouseEncoding,
         MouseReporting, Rendition, Rows, Screen, Underline, View,
     },
 };
+
+thread_local! {
+    /// The one parser every model in a test thread shares, as a monitor's
+    /// models share one (#166).
+    static PARSER: std::cell::RefCell<Parser> = std::cell::RefCell::new(Parser::new());
+}
+
+trait FeedShared {
+    /// [`Model::feed`] through the thread's shared parser.
+    fn feed_shared(&mut self, bytes: &[u8]) -> Result<(), Rejected>;
+}
+
+impl FeedShared for Model {
+    fn feed_shared(&mut self, bytes: &[u8]) -> Result<(), Rejected> {
+        PARSER.with(|parser| self.feed(&mut parser.borrow_mut(), bytes))
+    }
+}
 
 /// Room for everything these tests print.
 const ROOMY: usize = 1 << 30;
@@ -28,15 +45,6 @@ fn limits(bytes: usize, history_rows: usize) -> Limits {
     }
 }
 
-/// The bytes a model of `at` keeping `history_rows` needs before any
-/// output.
-fn mandatory(at: Geometry, history_rows: usize) -> usize {
-    match Model::new(at, limits(0, history_rows)) {
-        Ok(_) => panic!("a model needs some bytes"),
-        Err(Rejected { needed, .. }) => needed,
-    }
-}
-
 fn model(cols: u16, rows: u16) -> Model {
     Model::new(geometry(cols, rows), limits(ROOMY, HISTORY)).unwrap()
 }
@@ -44,7 +52,7 @@ fn model(cols: u16, rows: u16) -> Model {
 /// A model of `cols` x `rows` that has been fed `bytes`.
 fn fed(cols: u16, rows: u16, bytes: &str) -> Model {
     let mut model = model(cols, rows);
-    model.feed(bytes.as_bytes()).unwrap();
+    model.feed_shared(bytes.as_bytes()).unwrap();
     model
 }
 
@@ -436,7 +444,7 @@ fn the_cursor_has_the_visibility_shape_and_blink_the_application_selected() {
 #[test]
 fn the_alternate_screen_replaces_the_normal_screen_until_it_is_left() {
     let mut model = model(4, 2);
-    model.feed(b"one\r\ntwo\r\nab\x1b[?1049h").unwrap();
+    model.feed_shared(b"one\r\ntwo\r\nab\x1b[?1049h").unwrap();
 
     let view = model.view();
     let Screen::Alternate { rows } = view.screen() else {
@@ -452,10 +460,10 @@ fn the_alternate_screen_replaces_the_normal_screen_until_it_is_left() {
         }
     );
 
-    model.feed(b"\x1b[Hxy\r\nzw\r\nv").unwrap();
+    model.feed_shared(b"\x1b[Hxy\r\nzw\r\nv").unwrap();
     assert_eq!(screen(&model.view()), [row("zw", 4), row("v", 4)]);
 
-    model.feed(b"\x1b[?1049l").unwrap();
+    model.feed_shared(b"\x1b[?1049l").unwrap();
     let view = model.view();
     let Screen::Normal { rows, .. } = view.screen() else {
         panic!("the normal screen is active");
@@ -705,12 +713,12 @@ fn cleared_history_starts_again_with_nothing_discarded() {
         let mut model = fed(8, 2, &text);
         assert!(normal_history(&model.view()).truncated);
 
-        model.feed(clear.as_bytes()).unwrap();
+        model.feed_shared(clear.as_bytes()).unwrap();
         let history = normal_history(&model.view());
         assert!(history.rows.is_empty(), "{clear:?}");
         assert!(!history.truncated, "{clear:?}");
 
-        model.feed(b"\r\n\r\n\r\n").unwrap();
+        model.feed_shared(b"\r\n\r\n\r\n").unwrap();
         let history = normal_history(&model.view());
         assert_eq!(cells(history.rows), later, "{clear:?}");
         assert!(!history.truncated, "{clear:?}");
@@ -728,7 +736,7 @@ fn history_the_bound_stops_growing_is_truncated() {
     let (text, cells_of) = lines(0..1003, 8);
     let fed_within = |bytes| {
         let mut model = Model::new(at, limits(bytes, 2000)).unwrap();
-        model.feed(text.as_bytes()).unwrap();
+        model.feed_shared(text.as_bytes()).unwrap();
         model
     };
     let bound = fed_within(ROOMY).footprint();
@@ -754,7 +762,7 @@ fn shortened_history_is_truncated_only_when_rows_are_discarded() {
     let shortened = |scrolled: usize| {
         let (text, cells_of) = lines(0..scrolled + 2, 80);
         let mut model = Model::new(at, limits(ROOMY, 10_000)).unwrap();
-        model.feed(text.as_bytes()).unwrap();
+        model.feed_shared(text.as_bytes()).unwrap();
         assert!(model.shorten_history(), "{scrolled} rows");
         (model, cells_of)
     };
@@ -771,32 +779,36 @@ fn shortened_history_is_truncated_only_when_rows_are_discarded() {
     assert!(history.truncated);
 
     let (more, _) = lines(1502..1600, 80);
-    model.feed(format!("\r\n{more}").as_bytes()).unwrap();
+    model.feed_shared(format!("\r\n{more}").as_bytes()).unwrap();
     let history = normal_history(&model.view());
     assert_eq!(cells(history.rows), cells_of[500..1598]);
     assert!(history.truncated);
 }
 
 /// LIM-03, TRM-05 (crate cases): a restoration replaces history whole.
-/// Staging one beside a model takes room from that model's history first:
-/// within the bound every row stays and nothing is discarded; one byte
-/// below it the oldest chunk's rows go and the history says so. Applying the
-/// restoration replaces the model and its truncated history with the
-/// restored ones, complete.
+/// Staging one beside a model, and restoring into it until its first
+/// scroll admits its own first history chunk (#166), takes room from that
+/// model's history first: within the bound every row stays and nothing is
+/// discarded; one byte below it the oldest chunk's rows go and the history
+/// says so. Applying the restoration replaces the model and its truncated
+/// history with the restored ones, complete.
 #[test]
 fn a_restoration_replaces_a_truncated_history_whole() {
     let at = geometry(80, 24);
     let (text, cells_of) = lines(0..1524, 80);
     let current = |limit| {
         let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
-        model.feed(text.as_bytes()).unwrap();
+        model.feed_shared(text.as_bytes()).unwrap();
         model
     };
-    let bound = current(ROOMY).footprint() + mandatory(at, 10_000);
+    let staged = Model::mandatory(at, 10_000);
+    let bound = current(ROOMY).footprint() + staged.current_model + staged.recent_page;
+    let (restored, restored_cells) = lines(2000..2030, 80);
 
     for (limit, kept, truncated) in [(bound, 0..1500, false), (bound - 1, 500..1500, true)] {
         let mut model = current(limit);
         model.stage(at).unwrap();
+        model.feed_shared(restored.as_bytes()).unwrap();
         let history = normal_history(&model.view());
         assert_eq!(cells(history.rows), cells_of[kept], "limit {limit}");
         assert_eq!(history.truncated, truncated, "limit {limit}");
@@ -804,14 +816,13 @@ fn a_restoration_replaces_a_truncated_history_whole() {
 
     let mut model = current(bound - 1);
     model.stage(at).unwrap();
-    let (restored, cells_of) = lines(2000..2030, 80);
-    model.feed(restored.as_bytes()).unwrap();
+    model.feed_shared(restored.as_bytes()).unwrap();
     assert!(model.apply());
     let view = model.view();
     let history = normal_history(&view);
-    assert_eq!(cells(history.rows), cells_of[..6]);
+    assert_eq!(cells(history.rows), restored_cells[..6]);
     assert!(!history.truncated);
-    assert_eq!(screen(&view), cells_of[6..]);
+    assert_eq!(screen(&view), restored_cells[6..]);
 }
 
 /// TRM-05, LIM-03 (crate cases): history behind the alternate screen. The
@@ -825,8 +836,8 @@ fn the_alternate_screen_shows_no_history_until_it_is_left() {
     let marks = format!("\x1b[?1049h\x1b[H{}", "a\u{301}".repeat(30));
     let fed_within = |limit| {
         let mut model = Model::new(at, limits(limit, 10_000)).unwrap();
-        model.feed(text.as_bytes()).unwrap();
-        model.feed(marks.as_bytes()).unwrap();
+        model.feed_shared(text.as_bytes()).unwrap();
+        model.feed_shared(marks.as_bytes()).unwrap();
         model
     };
     let bound = fed_within(ROOMY).footprint();
@@ -835,7 +846,7 @@ fn the_alternate_screen_shows_no_history_until_it_is_left() {
         let mut model = fed_within(limit);
         assert!(matches!(model.view().screen(), Screen::Alternate { .. }));
 
-        model.feed(b"\x1b[?1049l").unwrap();
+        model.feed_shared(b"\x1b[?1049l").unwrap();
         let view = model.view();
         let history = normal_history(&view);
         assert_eq!(cells(history.rows), cells_of[kept], "limit {limit}");
@@ -858,7 +869,9 @@ fn scrolled_line_by_line(
     let mut model = Model::new(geometry(cols, rows), limits(ROOMY, history_rows)).unwrap();
     for number in 0..total {
         let end = if number + 1 < total { "\r\n" } else { "" };
-        model.feed(format!("row{number}{end}").as_bytes()).unwrap();
+        model
+            .feed_shared(format!("row{number}{end}").as_bytes())
+            .unwrap();
     }
     (model, lines(0..total, usize::from(cols)).1)
 }
@@ -881,12 +894,12 @@ fn output_filling_the_admitted_history_exactly_discards_nothing() {
         let mut expected = cells_of.clone();
         expected.resize(1000, row("", 80));
 
-        model.feed(output.as_bytes()).unwrap();
+        model.feed_shared(output.as_bytes()).unwrap();
         let history = normal_history(&model.view());
         assert_eq!(cells(history.rows), expected, "{output:?}");
         assert!(!history.truncated, "{output:?}");
 
-        model.feed(b"\r\n").unwrap();
+        model.feed_shared(b"\r\n").unwrap();
         let history = normal_history(&model.view());
         assert_eq!(history.rows.len(), 1001, "{output:?}");
         assert!(!history.truncated, "{output:?}");
@@ -908,10 +921,10 @@ fn a_history_full_at_its_limit_reports_truncation_once_output_could_push_a_row_o
         !history.truncated
     };
 
-    model.feed(b"\x1b[24S").unwrap();
+    model.feed_shared(b"\x1b[24S").unwrap();
     assert!(complete(&model));
-    model.feed(b"\x1b[?1049h\x1b[?1049l").unwrap();
+    model.feed_shared(b"\x1b[?1049h\x1b[?1049l").unwrap();
     assert!(complete(&model));
-    model.feed(b"x").unwrap();
+    model.feed_shared(b"x").unwrap();
     assert!(!complete(&model));
 }
