@@ -381,7 +381,7 @@ impl Response {
     fn bytes(&self) -> u64 {
         let answer = match &self.answer {
             Some(Answer::Opened { selected, .. }) => TOKEN * selected.families().count() as u64,
-            Some(Answer::Ending(ending)) => ending.command().map_or(0, Command::bytes),
+            Some(Answer::Ending(ending)) => ending.command().into_iter().map(Command::bytes).sum(),
             _ => 0,
         };
         answer + self.outcome.fault().map_or(0, Fault::bytes)
