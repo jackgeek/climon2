@@ -347,7 +347,7 @@ A clearly labelled, test-only client library that is exact or carries one delibe
 _Avoid_: Mock library, fake library
 
 **Second-release fixture**:
-A clearly labelled, test-only second release, installed beside the release under test in a sibling version folder: the same client library source built with its own release identity and without test hooks, so that a call crossing releases shows. It is never shipped.
+A clearly labelled, test-only second release, installed beside the release under test in a sibling version folder: the client library source built with its own release identity and without test hooks, and a session daemon with its release compiled in and a private behaviour of its own, so that a call or a connection crossing releases shows. It is never shipped.
 _Avoid_: Fake release, old version
 
 **Terminal oracle**:

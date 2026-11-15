@@ -1,5 +1,6 @@
-//! Test-only fixture, never shipped (#97): the client library of a second,
-//! independently packaged release. It compiles `climon2-client`'s library
+//! Test-only fixture, never shipped (#97): the client library of the
+//! [second-release fixture](../../../GLOSSARY.md#testing), an independently
+//! packaged release. It compiles `climon2-client`'s library
 //! source unchanged, so it exports only `climon2_client_get_interface` and
 //! implements native revision 1 like any release, but its release identity
 //! is this package's version, not the workspace's. It is built without the

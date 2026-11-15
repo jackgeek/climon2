@@ -18,7 +18,7 @@ const PACKAGES: &[&str] = &[
     "climon2-second-release",
     "xtask",
 ];
-/// The test-only second release is built as its own version, the release
+/// The second-release fixture is built as its own version, the release
 /// identity it describes (owner decision on #97, 2026-11-15; ADR 0004).
 const SECOND_RELEASE: (&str, &str) = ("climon2-second-release", "0.0.97");
 
@@ -154,7 +154,7 @@ fn every_binary_package_has_an_integration_test() {
     }
 }
 
-/// #23/#24: one workspace version, but for the second release's own (#97);
+/// #23/#24: one workspace version, but for the second-release fixture's own (#97);
 /// none of these packages is published to crates.io.
 #[test]
 fn packages_share_one_version_and_are_not_publishable() {

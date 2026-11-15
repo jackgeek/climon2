@@ -220,6 +220,7 @@ name = "climon2-e2e"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-fixtures",
  "climon2-install",
  "climon2-second-release",
  "climon2-test-term",
@@ -285,6 +286,7 @@ name = "climon2-second-release"
 version = "0.0.97"
 dependencies = [
  "climon2-core",
+ "climon2-daemon",
  "climon2-platform",
  "libc",
  "tracing",
