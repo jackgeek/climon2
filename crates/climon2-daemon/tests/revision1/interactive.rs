@@ -59,7 +59,7 @@ impl Attached {
         Self::opened(stream, granted)
     }
 
-    fn opened(stream: UnixStream, granted: Geometry) -> Self {
+    pub(super) fn opened(stream: UnixStream, granted: Geometry) -> Self {
         let mut attached = Self::opened_begun(stream, granted);
         attached.completed();
         attached
