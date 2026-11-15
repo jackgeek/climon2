@@ -178,6 +178,13 @@ struct Handles {
 // SAFETY: the communication and control handles are thread-safe (core-v1).
 unsafe impl Send for Handles {}
 
+/// Whether more can arrive from an instance's stream.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stream {
+    Open,
+    Ended,
+}
+
 /// One running instance of the executable's own library.
 pub(crate) struct Embedded {
     functions: Functions,
@@ -216,18 +223,18 @@ impl Embedded {
 
     /// One turn: drains once, visiting a delivery's records before it is
     /// released, or, with nothing to drain, waits until the instance
-    /// signals work or `milliseconds` pass. True once the instance's stream
-    /// has ended: nothing more will arrive.
+    /// signals work or `milliseconds` pass. The stream is ended once
+    /// nothing more will arrive.
     pub(crate) fn turn(
         &self,
         visit: &mut dyn FnMut(&native::Record),
         milliseconds: i32,
-    ) -> io::Result<bool> {
+    ) -> io::Result<Stream> {
         let out = self.drain()?;
         match out.kind {
-            native::DELIVERY => self.deliver(&out, visit).map(|()| false),
-            native::TERMINAL => Ok(true),
-            _ => self.wait(milliseconds).map(|()| false),
+            native::DELIVERY => self.deliver(&out, visit).map(|()| Stream::Open),
+            native::TERMINAL => Ok(Stream::Ended),
+            _ => self.wait(milliseconds).map(|()| Stream::Open),
         }
     }
 

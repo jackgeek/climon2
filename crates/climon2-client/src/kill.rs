@@ -4,7 +4,7 @@
 //! waits for the definitive outcome. Success is a confirmed termination
 //! alone, whatever the command's status.
 
-use crate::embedded::{Embedded, NativeError, Startup, own_library};
+use crate::embedded::{Embedded, NativeError, Startup, Stream, own_library};
 use climon2_core::{SessionId, metadata::SessionMetadata, native};
 use climon2_platform::terminal::Signals;
 use std::{io, path::Path, ptr};
@@ -67,11 +67,11 @@ fn request() -> native::Request {
 /// Drains until the instance's stream ends, keeping the Kill's answer.
 fn answer(instance: &Embedded, signals: &Signals) -> io::Result<Option<Answer>> {
     let mut answer = None;
-    let mut ended = false;
-    while !ended {
+    let mut stream = Stream::Open;
+    while stream == Stream::Open {
         interrupted(signals)?;
         let mut keep = |record: &native::Record| answer = answered(record).or(answer.take());
-        ended = instance.turn(&mut keep, POLL_MS)?;
+        stream = instance.turn(&mut keep, POLL_MS)?;
     }
     Ok(answer)
 }
