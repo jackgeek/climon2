@@ -218,7 +218,9 @@ main that serves only 0.0.97 and gives its session's command
 `CLIMON2_SECOND_RELEASE_DAEMON`. The mixed-release Library-layer tests package
 both with this build's other executables as a 0.0.97 release and install it
 with the real installer in a sibling version folder, so that folder's CLI
-starts 0.0.97 sessions served by the fixture's daemon. One library host loads
+starts 0.0.97 sessions served by the fixture's daemon, and its client
+executable, this build's, kills them through that folder's 0.0.97 library
+(#100). One library host loads
 both releases' libraries through the shared loader, and each release's
 instances open passive monitor connections to their own release's daemons.
 xtask's tests run the release checks on the library as 0.0.97's. Neither is

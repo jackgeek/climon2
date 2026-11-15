@@ -258,8 +258,8 @@ fn failed(child: Child) -> String {
         .to_owned()
 }
 
-/// LIB-01 executable case: a confirmed termination, answered with the
-/// command's exit 143 and complete cleanup, is silent success, status 0
+/// LIB-01 executable case and COM-01 Fault (Kill parity): a confirmed
+/// termination, answered with the command's exit 143 and complete cleanup, is silent success, status 0
 /// whatever the command's status, through the library beside the
 /// executable; the Kill is sent once.
 #[test]
@@ -277,8 +277,9 @@ fn confirmed_termination_is_silent_success_whatever_the_command_status() {
     assert_eq!(receive(&mut stream), None, "the Kill was sent again");
 }
 
-/// A daemon's refusal, a partial termination, a lost answer and an answer
-/// that never comes within the ten-second `kill_ms` each fail the kill with
+/// COM-01 Fault (Kill parity) and COM-03 Fault (lost and timed-out answers,
+/// never replayed), executable case: a daemon's refusal, a partial
+/// termination, a lost answer and an answer that never comes within the ten-second `kill_ms` each fail the kill with
 /// status 125 and one diagnostic: the daemon's own message, the library's
 /// for the lost connection, and the CLI's for the unconfirmed termination.
 /// The Kill is never sent again.
@@ -347,8 +348,9 @@ fn a_silent_hello_fails_at_the_hello_deadline_without_sending_the_kill() {
     assert_eq!(receive(&mut stream), None, "the Kill was sent");
 }
 
-/// Kill needs daemon wire revision 1: a session whose hello does not
-/// advertise it is refused with the library's diagnostic, and no request is
+/// COM-01 Fault, executable case (required support, never inferred from
+/// release identity): Kill needs daemon wire revision 1, so a session of
+/// this release whose hello does not advertise it is refused with the library's diagnostic, and no request is
 /// ever sent.
 #[test]
 fn kill_needs_daemon_wire_revision_1_and_never_sends_a_request_without_it() {
@@ -389,7 +391,7 @@ fn a_kill_capable_session_without_attach_refuses_attach_mode() {
     let frame = climon2_core::protocol::Frame::new(1, serde_json::to_vec(&body).unwrap()).unwrap();
     write_frame(&mut stream, &frame).unwrap();
     assert!(read_frame(&mut stream).is_err());
-    assert_eq!(terminal.wait_exit(Duration::from_secs(5)).unwrap(), 125);
+    assert_eq!(terminal.wait_exit(BOUND).unwrap(), 125);
     assert!(
         terminal
             .screen()
@@ -399,8 +401,8 @@ fn a_kill_capable_session_without_attach_refuses_attach_mode() {
     );
 }
 
-/// HUP, TERM or INT while waiting for the Kill's answer returns 128+signal
-/// silently, without waiting for `kill_ms`.
+/// COM-01 Fault (Kill parity), executable case: HUP, TERM or INT while
+/// waiting for the Kill's answer returns 128+signal silently, without waiting for `kill_ms`.
 #[test]
 fn a_signal_while_waiting_for_confirmation_is_the_signal_status() {
     let peer = Peer::new();
