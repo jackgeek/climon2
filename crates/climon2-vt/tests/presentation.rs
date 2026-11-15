@@ -69,6 +69,20 @@ fn leaving_the_alternate_screen_in_live_output_needs_no_release_of_it() {
     assert_eq!(presentation.end_sync(), b"");
 }
 
+/// Plan section 1.7.1: a session whose first output enters the alternate
+/// screen never moved its normal cursor, so the release returns the host to
+/// the normal screen's first cell, written 1-based.
+#[test]
+fn a_session_that_starts_on_the_alternate_screen_releases_at_the_first_cell() {
+    let mut vt = vt(20, 6, 0);
+    let mut presentation = Presentation::new(20, 6);
+    commit(&mut vt, &mut presentation, b"\x1b[?1049h\x1b[4;9HX");
+    assert_eq!(
+        presentation.release(),
+        [release(true), b"\x1b[1;1H".to_vec()].concat()
+    );
+}
+
 #[test]
 fn direct_release_preserves_the_normal_cursor_without_restoring_application_modes() {
     for source in [
