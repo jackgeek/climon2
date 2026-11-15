@@ -1597,7 +1597,8 @@ fn the_first_history_chunk_is_admitted_on_the_first_scroll() {
 /// LIM-03 Contract: within a scroll region that starts at the top row, the
 /// first chunk is admitted when the region's bottom row first scrolls; an
 /// invalid region (top not above bottom) changes nothing, a bottom past the
-/// screen is the screen's, and a full reset restores the whole screen.
+/// screen is the screen's, and a full reset or DECCOLM (`CSI ? 3 h` or
+/// `l`, alone or in a list of modes) restores the whole screen.
 #[test]
 fn the_first_chunk_follows_the_scroll_region() {
     let feeds = |lines| "\n".repeat(lines);
@@ -1612,8 +1613,26 @@ fn the_first_chunk_follows_the_scroll_region() {
         "\x1b[1;10r\x1b[r",
         "\x1b[1;10r\x1b[1;0r",
         "\x1b[2;10r\x1b[0r",
+        "\x1b[2;10r\x1b[?3h",
+        "\x1b[2;10r\x1b[?3l",
+        "\x1b[2;10r\x1b[?1;3l",
     ] {
         assert_first_scroll(format!("{region}top{}", feeds(23)), "\n", &["top"]);
+    }
+}
+
+/// LIM-03 Contract (#246 review): DECCOLM resets the scroll region the
+/// engine scrolls, so after `CSI 2;4 r` and `CSI ? 3 h` the rows a 10x4
+/// screen scrolls reach history.
+#[test]
+fn column_mode_resets_the_scroll_region() {
+    for mode in ["\x1b[?3h", "\x1b[?3l"] {
+        let mut model = Model::new(geometry(10, 4), limits(ROOMY, HISTORY)).unwrap();
+        model
+            .feed_shared(format!("\x1b[2;4r{mode}1\r\n2\r\n3\r\n4\r\n5").as_bytes())
+            .unwrap();
+        assert_eq!(model.history(), ["1"], "{mode:?}");
+        assert_eq!(model.screen(), ["2", "3", "4", "5"], "{mode:?}");
     }
 }
 

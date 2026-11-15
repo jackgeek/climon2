@@ -37,7 +37,8 @@ pub(crate) enum Scrolling {
     /// `CSI 2 J` (ED 2): the normal screen's rows scroll into history.
     ClearScreen,
     /// `CSI t ; b r` (DECSTBM): the 1-based top row, and the bottom row
-    /// when one is given.
+    /// when one is given. DECCOLM (`CSI ? 3 h` or `l`) resets the region
+    /// as `CSI r` does.
     Region {
         top: usize,
         bottom: Option<usize>,
@@ -99,6 +100,9 @@ const STRIPPED_CSI: &[(u8, Option<u8>)] = &[
 /// host on a screen the engine never shows.
 const UNSUPPORTED_SCREENS: &[u16] = &[47, 1047];
 const SYNC_MODE: u16 = 2026;
+/// DECCOLM: the engine sets no column count, but setting or resetting it
+/// resets the scroll region to the whole screen.
+const COLUMN_MODE: u16 = 3;
 
 pub(crate) fn classify(token: &Token) -> Policy {
     match token.kind {
@@ -212,6 +216,13 @@ fn given(dispatch: &Dispatch, index: usize) -> Option<usize> {
 }
 
 fn csi_scrolling(dispatch: &Dispatch) -> Scrolling {
+    let column_mode = private_mode(dispatch).filter(|_| dispatch.params.contains(&COLUMN_MODE));
+    if column_mode.is_some() {
+        return Scrolling::Region {
+            top: 1,
+            bottom: None,
+        };
+    }
     match dispatch.action {
         _ if !dispatch.is(dispatch.action, b"") => Scrolling::Nothing,
         b'S' => Scrolling::Up,
