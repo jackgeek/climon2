@@ -31,7 +31,9 @@ enum Warmth {
     Cold,
     /// Created outside any instance.
     Warm,
-    /// Its instance's, since the thread is.
+    /// Its instance's, since the thread is. Only hooked builds start
+    /// instance threads.
+    #[cfg(any(test, feature = "test-hooks"))]
     Adopted,
 }
 
@@ -73,14 +75,15 @@ fn record() {
 }
 
 /// This thread belongs to the instance it works for: nothing is warmed.
+#[cfg(any(test, feature = "test-hooks"))]
 pub(super) fn adopt() {
     WARMTH.set(Warmth::Adopted);
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::allocation::Account;
     use super::{adopt, process, record, thread};
-    use crate::library::allocation::Account;
 
     /// What formatting a record on a new thread charges an instance, after
     /// the thread is warmed or adopted as an instance's, as a call's work on

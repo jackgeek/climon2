@@ -128,6 +128,23 @@ the library sent, so a replay or an early Open shows. Ordering uses trigger
 files and observable completion, never sleeps; every peer wait is bounded and
 an expired wait is recorded.
 
+`tests/mixed.rs` (#97) runs two releases in one host process. Each test
+installs, in its own executable home and with the real installer, the
+[second-release fixture](../../GLOSSARY.md#testing) as release 0.0.97 in a
+sibling version folder: this build's other executables with the test-only
+`climon2-second-release` crate's library and session daemon. The library is
+the client library source built with its own release identity and without
+test hooks. The daemon is the daemon library behind a thin main that serves
+only 0.0.97 and gives its session's command `CLIMON2_SECOND_RELEASE_DAEMON`;
+each test session turns that into its title, so a library relays over
+`title-v1` which release's daemon it is connected to. Each release's CLI
+starts headless sessions served by its own folder's daemon. The host loads
+both releases' libraries through the shared loader (`script` input
+`releases`; each `create` step names its `release`) and runs instances of
+both at the same time. Releases ship no private dependencies, so
+release-relative private-dependency resolution (LIB-01) is not exercised.
+The Fault case returns early in archive mode.
+
 ## Session continuity scenarios
 
 Detach and reattach, takeover and hand-back, the placeholder, kill, listing
@@ -230,6 +247,15 @@ no worker that could stall. Open
 | LIB-04 Fault: deliveries stop before `drain_payload_bytes`, which always holds a whole record | `installed_library_batches_records_within_drain_payload_bytes` (`passive_admission.rs`) |
 | COM-02 and LIB-04 Fault: frames split bytewise or coalesced; daemon records wait while the event queue is full, never dropped or overrunning it | `installed_library_holds_daemon_records_while_the_event_queue_is_full` (`passive_admission.rs`) |
 | LIB-04 Fault: each record charged its header twice (the `cm1_record` and the library's copy) and the bytes it owns once | `installed_library_charges_each_record_its_header_and_the_bytes_it_owns` (`passive_admission.rs`) |
+
+### Library layer: mixed releases (`tests/mixed.rs`, #97)
+
+| Scenario | Named test |
+|---|---|
+| LIB-01 Library (exact-version lookup and one shared load; private-dependency resolution not exercised, releases ship none): both releases installed; with `current`, the working directory, `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` naming the other release, one process loads each by its exact version folder, in both orders; two instances of each register passively with a session of their own release at the same time, relay the title only their own release's daemon produces, and leave; a second load of each release shares the first, and exactly the two files are loaded once each | `mixed_releases_load_by_exact_version_and_run_side_by_side_whatever_current_cwd_and_search_paths` |
+| LIB-01 Library (exact-release pairing): the second-release fixture's daemon, with its release compiled in, starts no session for a CLI of another release (folder 0.0.98) | `second_release_daemon_serves_only_its_compiled_in_release` |
+| LIB-03 Library, identity separation: beside registered instances of both releases, a create expecting the other release fails `CM1_RELEASE_MISMATCH` without handles, and an Open of the other release's session, served by the other release's daemon, is refused `release_mismatch`, permanently, before any role | `mixed_release_instances_keep_their_own_release_identity_side_by_side` |
+| LIB-03 Fault, fault containment: `panic:receive`, once per hooked image, cannot reach the second-release fixture's instance, which opens and receives its Initial metadata before the hooked release's instance is submitted; that instance then fails (`internal_error`) and the second-release fixture's instance leaves | `a_fault_in_one_release_never_reaches_the_other_releases_instances` |
 
 ### Session continuity (plan section 6.1)
 

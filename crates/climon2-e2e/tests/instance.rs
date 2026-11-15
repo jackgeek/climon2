@@ -22,6 +22,7 @@ use std::{
 use support::{
     Package,
     library::{CHARGE, INSTANCE_DESCRIPTORS, archive, scenario},
+    passive::RELEASE_MISMATCH,
 };
 
 const SUCCESS: u64 = 0;
@@ -33,7 +34,6 @@ const UNSUPPORTED_LIMIT: u64 = 9;
 const RESOURCE_LIMIT: u64 = 10;
 const INTERNAL_ERROR: u64 = 11;
 const TIMEOUT: u64 = 13;
-const RELEASE_MISMATCH: u64 = 14;
 const ORIGIN_LIBRARY: u64 = 1;
 const DELIVERY: u64 = 1;
 const EMPTY: u64 = 2;
