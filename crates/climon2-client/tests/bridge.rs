@@ -2113,6 +2113,70 @@ fn cpu_time(pid: u32) -> Duration {
     Duration::from_secs_f64((user + system) as f64 / ticks as f64)
 }
 
+/// The fixed `cm1_limits` table the client README publishes, field by field
+/// in its row order.
+fn published_limits() -> Vec<(String, u64)> {
+    let readme = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+    let table = readme
+        .split("| Field | Value |\n|---|---|\n")
+        .nth(1)
+        .expect("the fixed limits table");
+    let rows = table.lines().take_while(|line| line.starts_with('|'));
+    rows.flat_map(|row| {
+        let cells: Vec<_> = row.split('|').map(str::trim).collect();
+        let names = cells[1].split(" / ").map(|name| name.trim_matches('`'));
+        let values = cells[2].split(" / ").map(|value| value.replace(',', ""));
+        names
+            .zip(values)
+            .map(|(name, value)| (name.to_owned(), value.parse().unwrap()))
+            .collect::<Vec<_>>()
+    })
+    .collect()
+}
+
+/// Derived scenario (spec #73, Client executable: fixed limits table): the
+/// executable passes exactly the `cm1_limits` table its README publishes. A stand-in library beside it
+/// records the limits its create receives, in the header's field order, and
+/// refuses, so the attach fails before any connection with that refusal.
+#[test]
+fn attach_passes_exactly_the_published_limits_table() {
+    let (home, metadata, listener) = setup();
+    let folder = installed_client(home.path());
+    let library = folder
+        .parent()
+        .unwrap()
+        .join(client_library_path().file_name().unwrap());
+    let recorded = home.path().join("limits");
+    let record = format!("-DRECORD_STARTUP=\"{}\"", recorded.display());
+    climon2_fixtures::stand_in::compile(&library, VERSION, &[&record]).unwrap();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let (bytes, error) = pty.finish(125);
+    assert!(bytes.is_empty());
+    assert!(
+        error.contains("cannot start the client library: the stand-in recorded its startup"),
+        "{error}"
+    );
+    let limits: Vec<(String, u64)> = fs::read_to_string(recorded)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let (name, value) = line.split_once(' ').unwrap();
+            (name.to_owned(), value.parse().unwrap())
+        })
+        .collect();
+    let mut published = published_limits();
+    published.sort();
+    let mut passed = limits.clone();
+    passed.sort();
+    assert_eq!(passed, published);
+    assert_eq!(limits.len(), 27, "{limits:?}");
+    listener.set_nonblocking(true).unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
 /// COM-01 Monitor parity case: a command that ended before this first
 /// attachment is known from the Initial metadata; the client still shows its
 /// final screen, confirms it Ready, and ends with its status when the session
