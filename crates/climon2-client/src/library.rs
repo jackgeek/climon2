@@ -1,36 +1,42 @@
 //! The client library's frozen C ABI (native revision 1): the exported
-//! bootstrap, the immutable description it returns, and the function table's
-//! instance lifecycle (#85).
+//! bootstrap, the immutable description it returns, the function table's
+//! instance lifecycle (#85) and passive monitor connections (#93).
 //!
 //! Only `climon2_client_get_interface` is exported; Rust layouts, unwinding and
 //! allocators never cross it. Every entry contains panics and reports them as
 //! an explicit `CM1_INTERNAL_ERROR`; the library's own panic hook is silent, so
-//! nothing reaches the standard streams. `submit` is not implemented yet (Open
-//! arrives in #93): it fails with `CM1_UNSUPPORTED_OPERATION`.
+//! nothing reaches the standard streams.
 
 use climon2_core::native::{
     self, Bytes, Call, Communication, Control, Created, Delivery, Description, Drained, Instance,
     Interface, Metrics, Request, Requirements, RunReport, Startup, Tokens,
 };
-use failure::{Failure, INVALID_ARGUMENT, PANIC, UNSUPPORTED_OPERATION};
+use failure::{Failure, INVALID_ARGUMENT, PANIC};
 use instance::{Object, Shared};
 use std::{
     panic::{self, AssertUnwindSafe},
     ptr,
-    sync::{Arc, Once},
+    sync::{Arc, LazyLock, Once},
 };
 
+mod connection;
 mod failure;
+mod families;
+mod handshake;
 #[cfg(feature = "test-hooks")]
 mod hooks;
 mod instance;
+mod link;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[path = "library/linux.rs"]
 mod platform;
 #[cfg(target_os = "macos")]
 #[path = "library/macos.rs"]
 mod platform;
+mod records;
+mod request;
 mod startup;
+mod stream;
 
 /// The release identity: the version folder name, compiled in.
 const RELEASE: &str = env!("CARGO_PKG_VERSION");
@@ -51,37 +57,42 @@ const REQUIREMENTS: Requirements = Requirements {
     reserved: 0,
 };
 
-struct Immutable(Description);
+struct Immutable<T>(T);
 
-// SAFETY: the description is immutable and points only to static data.
-unsafe impl Sync for Immutable {}
+// SAFETY: the value is immutable and points only to static data.
+unsafe impl<T> Sync for Immutable<T> {}
+// SAFETY: as above.
+unsafe impl<T> Send for Immutable<T> {}
 
-static DESCRIPTION: Immutable = Immutable(Description {
-    revision: native::REVISION,
-    reserved: 0,
-    release: Bytes {
-        data: RELEASE.as_ptr(),
-        length: RELEASE.len() as u64,
-    },
-    // No connection can be opened yet (#93), so no capability is advertised.
-    capabilities: Tokens {
-        data: ptr::null(),
-        count: 0,
-    },
-    requirements: REQUIREMENTS,
-    functions: Interface {
-        create: Some(create),
-        run: Some(run),
-        destroy: Some(destroy),
-        submit: Some(submit),
-        drain: Some(drain),
-        release_delivery: Some(release_delivery),
-        shutdown: Some(shutdown),
-        release_communication: Some(release_communication),
-        release_control: Some(release_control),
-        notification: Some(notification),
-        snapshot: Some(snapshot),
-    },
+/// The families this release relays, as the description lists them.
+static CAPABILITIES: LazyLock<Immutable<[Bytes; 3]>> =
+    LazyLock::new(|| Immutable(families::RELAYED.map(|family| failure::bytes(family.token()))));
+
+/// Built once, then immutable until process exit.
+static DESCRIPTION: LazyLock<Immutable<Description>> = LazyLock::new(|| {
+    Immutable(Description {
+        revision: native::REVISION,
+        reserved: 0,
+        release: failure::bytes(RELEASE),
+        capabilities: Tokens {
+            data: CAPABILITIES.0.as_ptr(),
+            count: CAPABILITIES.0.len() as u64,
+        },
+        requirements: REQUIREMENTS,
+        functions: Interface {
+            create: Some(create),
+            run: Some(run),
+            destroy: Some(destroy),
+            submit: Some(submit),
+            drain: Some(drain),
+            release_delivery: Some(release_delivery),
+            shutdown: Some(shutdown),
+            release_communication: Some(release_communication),
+            release_control: Some(release_control),
+            notification: Some(notification),
+            snapshot: Some(snapshot),
+        },
+    })
 });
 
 /// A null handle or output pointer: the one invalid native address the library
@@ -179,7 +190,7 @@ unsafe fn query<T>(
     communication: *mut Communication,
     output: *mut T,
     call: &'static str,
-    work: impl FnOnce(&Arc<Shared>) -> T,
+    work: impl FnOnce(&Arc<Shared>) -> Result<T, Failure>,
 ) -> Call {
     contained(|| {
         // SAFETY: the caller supplies null or valid pointers.
@@ -189,7 +200,7 @@ unsafe fn query<T>(
         ) else {
             return Err(NULL);
         };
-        *output = handle.shared.guard(call, || Ok(work(&handle.shared)))?;
+        *output = handle.shared.guard(call, || work(&handle.shared))?;
         Ok(())
     })
 }
@@ -272,14 +283,22 @@ unsafe extern "C" fn destroy(instance: *mut Instance) -> Call {
     })
 }
 
-/// Open arrives in #93; until then no request is accepted.
-unsafe extern "C" fn submit(_: *mut Communication, _: *const Request) -> Call {
+/// # Safety
+///
+/// `communication` must be null or this library's live handle; `request`
+/// null or a valid request whose active member's buffers cover their lengths.
+unsafe extern "C" fn submit(communication: *mut Communication, request: *const Request) -> Call {
     contained(|| {
-        hook("submit");
-        Err(Failure::new(
-            UNSUPPORTED_OPERATION,
-            "this client library cannot submit requests yet",
-        ))
+        // SAFETY: the caller supplies null or valid pointers.
+        let (Some(handle), Some(request)) = (
+            unsafe { communication.cast::<instance::Communication>().as_ref() },
+            unsafe { request.as_ref() },
+        ) else {
+            return Err(NULL);
+        };
+        handle
+            .shared
+            .guard("submit", || handle.shared.submit(request))
     })
 }
 
@@ -363,7 +382,7 @@ unsafe extern "C" fn notification(communication: *mut Communication, descriptor:
     // SAFETY: guaranteed by the caller.
     unsafe {
         query(communication, descriptor, "notification", |shared| {
-            shared.descriptor()
+            Ok(shared.descriptor())
         })
     }
 }
@@ -377,7 +396,7 @@ unsafe extern "C" fn snapshot(communication: *mut Communication, metrics: *mut M
     unsafe { clear(metrics) };
     unsafe {
         query(communication, metrics, "snapshot", |shared| {
-            shared.snapshot()
+            Ok(shared.snapshot())
         })
     }
 }

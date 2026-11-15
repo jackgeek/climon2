@@ -65,6 +65,24 @@ validated_string!(
     validate_guid
 );
 validated_string!(VersionName, validate_version);
+
+impl SessionId {
+    /// The session ID whose 16 bytes are `bytes`, in canonical textual order
+    /// (`00 11 .. ff` is `00112233-4455-6677-8899-aabbccddeeff`), as the native
+    /// C ABI carries it.
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(uuid::Uuid::from_bytes(bytes).hyphenated().to_string())
+    }
+}
+
+impl Guid {
+    /// The 16 bytes of this GUID, in canonical textual order.
+    pub fn bytes(&self) -> [u8; 16] {
+        uuid::Uuid::parse_str(&self.0)
+            .expect("a Guid is validated canonical text")
+            .into_bytes()
+    }
+}
 validated_string!(Timestamp, validate_timestamp);
 validated_string!(MetadataPath, validate_metadata_path);
 

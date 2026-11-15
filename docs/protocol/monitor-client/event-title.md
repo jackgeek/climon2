@@ -1,6 +1,9 @@
 # Title state and changes
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification. The
+[client library](../../../GLOSSARY.md#sessions) relays `title-v1` for
+[passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
+([#93](https://github.com/jackgeek/climon2/issues/93)).**
 The [session daemon](../../../GLOSSARY.md#sessions) supplies title metadata
 through its [client](../../../GLOSSARY.md#sessions) to the
 [monitor](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),

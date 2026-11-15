@@ -8,7 +8,10 @@ only `climon2_client_get_interface`
 created, run, cleaned up and destroyed on their owner threads, and shut down,
 drained and released from any thread, as described below, with every panic
 contained and no process-global state changed
-([#85](https://github.com/jackgeek/climon2/issues/85)). The one shared loader
+([#85](https://github.com/jackgeek/climon2/issues/85)). An instance opens a
+passive monitor connection to its session's daemon on its owner thread,
+never raising `SIGPIPE` in the process
+([#93](https://github.com/jackgeek/climon2/issues/93)). The one shared loader
 that the [monitor](../../GLOSSARY.md#sessions) and the
 [client executable](../../GLOSSARY.md#sessions) will both use is implemented
 ([#84](https://github.com/jackgeek/climon2/issues/84)): it performs the
