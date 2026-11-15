@@ -102,7 +102,7 @@ deliberately excluded from this workspace-only diagram.
 artifact of `climon2-client`, not another crate. The `#[repr(C)]` declarations
 of its native interface live in `climon2-core`, so the client library, the
 client executable and the monitor can share them without new edges; today the
-library, the client executable (#100), the library host fixture and xtask's
+library, the client executable (#100, #101), the library host fixture and xtask's
 release checks consume them.
 
 **Current (#77):** `climon2-discovery` holds the session discovery that
@@ -113,10 +113,9 @@ planned to share between the CLI and the monitor. It consumes only `core` and
 **Current (#84):** the one validated loader for client libraries lives in
 `climon2-platform`, as [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)
 records. The library-host fixture, xtask release checks and the client
-executable's kill mode (#100) use it; the monitor does not yet. Test-only
+executable, for attach and kill (#100, #101), use it; the monitor does not yet. Test-only
 loader fixtures consume the platform crate as dev-dependencies, and the
-client's kill tests consume `climon2-fixtures` for the faulty-library
-stand-in.
+client's tests consume `climon2-fixtures` for the client library stand-in.
 
 **Current (#97):** `climon2-second-release` is the test-only
 [second-release fixture](../GLOSSARY.md#testing). Its library compiles
