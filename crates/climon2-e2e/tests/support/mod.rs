@@ -1,6 +1,9 @@
 /// Only the Library-layer suites use it.
 #[allow(dead_code)]
 pub mod library;
+/// Only the passive-connection suites use it (#93).
+#[allow(dead_code)]
+pub mod passive;
 
 use climon2_install::{Payload, install};
 use climon2_test_term::{Isolation, Modes, Terminal, bin_path, process_command};
@@ -427,8 +430,9 @@ pub fn type_until(terminal: &mut Terminal, command: &str, output: &str) {
 
 /// Explicit detach: [`DETACH`] sent exactly once, then status 0 and the
 /// reattach hint on stderr. The client must already have confirmed its
-/// restoration, or it discards the keys: a just-attached client proves it
-/// with [`type_until`] first.
+/// restoration, or it discards the keys: a client just attached or granted
+/// control proves that first, by the session's answer to a harmless command
+/// ([`type_until`]) or to an acknowledgement file.
 #[allow(dead_code)]
 pub fn detach(terminal: &mut Terminal, id: &str) {
     terminal.wait_for_input_ready(TIMEOUT).unwrap();

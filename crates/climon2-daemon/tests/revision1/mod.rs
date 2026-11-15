@@ -4,18 +4,21 @@
 //! tests; expectations are written out by hand from the wire reference.
 mod interactive;
 mod passive;
+mod termination;
 
 use super::Session;
 use climon2_core::{
     hello::Lifecycle,
     protocol::ClientMessage,
     wire::{
-        self, Available, ControlRecord, Counter, Families, FatalError, Frame, FrameLimit, Leave,
-        Mode, Open, Outcome, Requested, Response, ServerMessage, Success,
+        self, Available, CommandFinal, CommandResult, ControlRecord, Counter, Families, FatalError,
+        Frame, FrameLimit, Kill, Leave, Mode, Open, Outcome, Requested, Response, ServerMessage,
+        Success,
     },
 };
 use std::{
     io::Write,
+    num::NonZeroU32,
     os::unix::net::UnixStream,
     time::{Duration, Instant},
 };
@@ -66,6 +69,15 @@ fn counter(value: u64) -> Counter {
 
 fn families(tokens: &[&str]) -> Families {
     Families::new(tokens.iter().map(|token| (*token).to_owned()).collect()).unwrap()
+}
+
+/// A standalone Kill request.
+fn kill(request_id: u64, revision: u32, required: &[&str]) -> Kill {
+    Kill {
+        request_id: counter(request_id),
+        revision,
+        required_capabilities: families(required),
+    }
 }
 
 fn open(request_id: u64, required: &[&str], optional: &[&str], mode: Mode) -> Open {
@@ -129,6 +141,17 @@ fn leave(stream: &mut UnixStream, request_id: u64) {
 /// The next record is the rejection of `request_id` with `code`, carrying no
 /// result.
 fn assert_rejected(stream: &mut UnixStream, request_id: u64, code: &str) {
+    assert_rejected_knowing(stream, request_id, code, None);
+}
+
+/// The next record is the rejection of `request_id` with `code`, carrying
+/// `known_final`.
+fn assert_rejected_knowing(
+    stream: &mut UnixStream,
+    request_id: u64,
+    code: &str,
+    known_final: Option<&CommandResult>,
+) {
     let (answered, rejection) = match message(stream) {
         ServerMessage::Response(Response {
             request_id: answered,
@@ -138,7 +161,30 @@ fn assert_rejected(stream: &mut UnixStream, request_id: u64, code: &str) {
     };
     assert_eq!(answered, counter(request_id));
     assert_eq!(rejection.error.code.as_str(), code);
-    assert_eq!(rejection.known_final, None);
+    assert_eq!(rejection.known_final.as_ref(), known_final);
+}
+
+fn exited(code: u32) -> CommandResult {
+    CommandResult::Exit { code }
+}
+
+fn signalled(number: u32) -> CommandResult {
+    let number = NonZeroU32::new(number).unwrap();
+    CommandResult::Signal { number, name: None }
+}
+
+/// The Command final of `result`. Its status is null: no connection can
+/// select `status-v1` yet.
+fn command_final(result: &CommandResult) -> ServerMessage {
+    ServerMessage::CommandFinal(CommandFinal::new(result.clone(), None).unwrap())
+}
+
+/// The next record is the Command final of `result`, and the stream then
+/// ends with nothing more: a passive monitor connection's, or a revoked
+/// attachment's.
+fn assert_final_then_closed(stream: &mut UnixStream, result: &CommandResult) {
+    assert_eq!(message(stream), command_final(result));
+    assert_closed(stream);
 }
 
 /// The next record is a Fatal error with `code`, and the stream then ends.
@@ -179,10 +225,15 @@ fn committed_kill(session: &Session) -> UnixStream {
         .set_read_timeout(Some(Duration::from_secs(20)))
         .unwrap();
     crate::send(&mut killer, ClientMessage::Kill);
+    terminating(session);
+    killer
+}
+
+/// Waits until the hello `state` reports the session terminating.
+fn terminating(session: &Session) {
     let deadline = Instant::now() + Duration::from_secs(20);
     while crate::advertised_state(session).0 != Lifecycle::Terminating {
-        assert!(Instant::now() < deadline, "the kill never committed");
+        assert!(Instant::now() < deadline, "termination never committed");
         std::thread::sleep(Duration::from_millis(5));
     }
-    killer
 }

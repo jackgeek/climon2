@@ -16,10 +16,11 @@ mod restore;
 mod sync;
 mod title;
 pub mod token;
+pub mod view;
 mod vt;
 
 pub use geometry::Geometry;
-pub use model::{Limits, Model, Rejected};
+pub use model::{Limits, Mandatory, Model, Rejected};
 pub use presentation::{Mode, Presentation};
 pub use restore::{Chunk, Restoration};
 pub use vt::{Fed, Vt, VtConfig};

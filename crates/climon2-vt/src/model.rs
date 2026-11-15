@@ -5,6 +5,7 @@ use crate::{
     bounded::{Bounded, Room},
     cost,
     geometry::Geometry,
+    view::View,
 };
 
 /// The allocation a model may hold and the history rows it may keep.
@@ -25,6 +26,24 @@ pub struct Rejected {
     pub needed: usize,
     /// The limit that refused it.
     pub limit: usize,
+}
+
+/// What a blank model holds and may grow to before any output, by part.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mandatory {
+    /// The current model alone: the engine for its geometry, vte's buffer
+    /// and the reserve.
+    pub current_model: usize,
+    /// The first history chunk, which holds the protected newest page; none
+    /// for a model that keeps no history.
+    pub recent_page: usize,
+}
+
+impl Mandatory {
+    /// Both parts: what [`Model::new`] admits a blank model with.
+    pub(crate) fn total(self) -> usize {
+        self.current_model + self.recent_page
+    }
 }
 
 /// One session's terminal model: the current model the monitor paints and,
@@ -53,6 +72,14 @@ impl Model {
             staged: None,
             rejected: None,
         })
+    }
+
+    /// The mandatory allocation `Model::new` admits a blank model with, by
+    /// part: the current model at `geometry` and, when it keeps any of
+    /// `history_rows`, the first history chunk, which holds the protected
+    /// newest page.
+    pub fn mandatory(geometry: Geometry, history_rows: usize) -> Mandatory {
+        Bounded::mandatory(geometry, history_rows)
     }
 
     /// Begin a restoration at `geometry`: a blank model to stage it into,
@@ -153,12 +180,17 @@ impl Model {
     /// The current model's normal-screen history, oldest row first, while
     /// the normal screen is active.
     pub fn history(&self) -> Vec<String> {
-        self.current.history()
+        self.view().history_text()
     }
 
     /// The current model's active screen, one string per row: each
     /// character with its combining marks, trailing blanks trimmed.
     pub fn screen(&self) -> Vec<String> {
-        self.current.screen()
+        self.view().screen_text()
+    }
+
+    /// What the current model shows, for painting.
+    pub fn view(&self) -> View<'_> {
+        self.current.view()
     }
 }

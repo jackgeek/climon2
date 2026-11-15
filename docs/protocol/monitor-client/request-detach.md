@@ -1,6 +1,13 @@
 # Leave / detach
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification. The
+[client library](../../../GLOSSARY.md#sessions) implements Leave of a
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) and
+shutdown's own Leave ([#93](https://github.com/jackgeek/climon2/issues/93)), as
+its [implemented behavior](core-v1.md#implemented-behavior) details; detaching
+an attachment arrives with interactive roles
+([#94](https://github.com/jackgeek/climon2/issues/94)). The caller is not
+implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) asks its
 [client](../../../GLOSSARY.md#sessions) to leave a daemon connection, deliberately
 [detaching](../../../GLOSSARY.md#attachment-and-control) any attachment.

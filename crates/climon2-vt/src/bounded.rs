@@ -6,19 +6,12 @@ use crate::{
     cost,
     engine::Core,
     geometry::{Geometry, STEP},
-    model::Rejected,
+    model::{Mandatory, Rejected},
     render::cells,
     token::{Kind, Token, Tokenizer},
+    view::{UNSET, View},
 };
-use alacritty_terminal::{
-    Grid,
-    event::VoidListener,
-    grid::Dimensions,
-    term::cell::{Cell, Flags},
-};
-use std::iter::once;
-
-const SPACERS: Flags = Flags::WIDE_CHAR_SPACER.union(Flags::LEADING_WIDE_CHAR_SPACER);
+use alacritty_terminal::{Grid, event::VoidListener, grid::Dimensions, term::cell::Cell};
 
 pub(crate) struct Bounded {
     core: Core<VoidListener>,
@@ -41,6 +34,9 @@ struct History {
     /// The most chunks the engine has held: its row vector keeps the
     /// capacity they took.
     peak: usize,
+    /// Rows have been discarded, or may have been, since the history was
+    /// last cleared.
+    truncated: bool,
 }
 
 impl History {
@@ -52,7 +48,24 @@ impl History {
             shown,
             chunks: first,
             peak: first,
+            truncated: false,
         }
+    }
+
+    /// Whether this history is truncated after a token that left `held`
+    /// rows, having first cleared the history if `cleared`: a cleared history
+    /// has discarded nothing, and rows beyond those shown are discarded.
+    /// A full history discards its oldest row for each row pushed into it
+    /// without the engine reporting it, so a token that could push more rows
+    /// than the admitted chunks had room for (`overrun`) and left them full
+    /// may have discarded rows.
+    fn truncated_after(self, held: usize, cleared: bool, overrun: bool) -> bool {
+        (self.truncated && !cleared) || self.lost(held, overrun)
+    }
+
+    /// Rows the engine may have discarded from a history that holds `held`.
+    fn lost(self, held: usize, overrun: bool) -> bool {
+        held > self.shown || (overrun && held == self.rows())
     }
 
     /// The engine's history limit in rows.
@@ -175,23 +188,26 @@ impl<'a> Room<'a> {
         geometry: Geometry,
         history_rows: usize,
     ) -> Result<Bounded, Rejected> {
-        self.fit(Bounded::mandatory(geometry, history_rows))?;
+        self.fit(Bounded::mandatory(geometry, history_rows).total())?;
         Ok(Bounded::new(geometry, history_rows))
     }
 }
 
 impl Bounded {
-    /// What a fresh instance holds and may grow to before any output: the
-    /// engine, both screens and the first chunk of history, which holds the
-    /// protected newest page.
-    pub(crate) fn mandatory(geometry: Geometry, history_rows: usize) -> usize {
-        cost::fixed(geometry) + History::new(history_rows).cost(geometry)
+    /// What a fresh instance holds and may grow to before any output, by
+    /// part: the engine and both screens, and the first chunk of history,
+    /// which holds the protected newest page.
+    pub(crate) fn mandatory(geometry: Geometry, history_rows: usize) -> Mandatory {
+        Mandatory {
+            current_model: cost::fixed(geometry),
+            recent_page: History::new(history_rows).cost(geometry),
+        }
     }
 
     pub(crate) fn new(geometry: Geometry, history_rows: usize) -> Self {
         let history = History::new(history_rows);
         Self {
-            core: Core::new(geometry, history.rows(), VoidListener),
+            core: Core::new(geometry, history.rows(), VoidListener, UNSET),
             tokenizer: Tokenizer::new(),
             geometry,
             history,
@@ -231,9 +247,9 @@ impl Bounded {
         let policy = classify(&token);
         let bytes = policy.forwarded(&token);
         self.admit(self.growth(token.kind, bytes, policy.repeats), room)?;
-        self.grow(bytes.len() + policy.repeats, room);
+        let overrun = self.grow(bytes.len() + policy.repeats, room);
         self.core.advance(bytes);
-        self.settle(policy.clear);
+        self.settle(policy.clear, overrun);
         Ok(())
     }
 
@@ -257,13 +273,15 @@ impl Bounded {
     /// them the engine discards its oldest row for each new one. A token
     /// pushes at most a row per byte and per repetition, or a screenful, so
     /// one long repeat or released run of controls can fill several chunks.
-    fn grow(&mut self, reach: usize, room: &mut Room) {
+    /// True when the token could push more rows than the admitted chunks
+    /// then hold, because `history_rows` capped them or the bound refused
+    /// one; the alternate screen pushes none.
+    fn grow(&mut self, reach: usize, room: &mut Room) -> bool {
         let Some(history) = self.core.normal_history() else {
-            return;
+            return false;
         };
-        let wanted = self
-            .history
-            .wanted(history + reach.max(usize::from(self.geometry.rows())));
+        let reached = history + reach.max(usize::from(self.geometry.rows()));
+        let wanted = self.history.wanted(reached);
         let mut grown = self.history;
         while grown.chunks < wanted && room.fit(self.charge_with(grown.next())).is_ok() {
             grown = grown.next();
@@ -272,6 +290,7 @@ impl Bounded {
             self.history = grown;
             self.core.set_history(grown.rows());
         }
+        reached > grown.rows()
     }
 
     /// Discard the oldest history chunk, on either screen: the engine drops
@@ -282,17 +301,25 @@ impl Bounded {
         let Some(history) = self.history.shorter() else {
             return false;
         };
+        let (normal, dropped) = self.core.lower_history(history.rows(), held);
+        *self.extras.of(Screen::Normal) = normal;
         self.history = history;
-        *self.extras.of(Screen::Normal) = self.core.lower_history(history.rows(), held);
+        self.history.truncated |= dropped;
         true
     }
 
     /// After a token clears history the engine keeps its storage rows, cell
     /// data and all, beyond the history it shows; drop them at once, so
-    /// measuring sees every row that holds cell data.
-    fn settle(&mut self, clear: Clear) {
-        if clear != Clear::Nothing {
+    /// measuring sees every row that holds cell data. Then recount whether
+    /// the normal screen's history is truncated, while it is the active
+    /// screen, after a token that may have `overrun` its admitted chunks.
+    fn settle(&mut self, clear: Clear, overrun: bool) {
+        let cleared = clear != Clear::Nothing;
+        if cleared {
             self.core.truncate();
+        }
+        if let Some(held) = self.core.normal_history() {
+            self.history.truncated = self.history.truncated_after(held, cleared, overrun);
         }
     }
 
@@ -324,27 +351,9 @@ impl Bounded {
         self.geometry
     }
 
-    /// The normal screen's newest history rows the model shows, as text,
-    /// oldest first; empty while the alternate screen is active.
-    pub(crate) fn history(&self) -> Vec<String> {
-        let grid = self.core.active();
-        let shown = self
-            .core
-            .normal_history()
-            .unwrap_or(0)
-            .min(self.history.shown);
-        (1..=shown)
-            .rev()
-            .map(|age| text(cells(grid, -(age as i32))))
-            .collect()
-    }
-
-    /// The active screen's rows as text.
-    pub(crate) fn screen(&self) -> Vec<String> {
-        let grid = self.core.active();
-        (0..self.geometry.rows())
-            .map(|line| text(cells(grid, i32::from(line))))
-            .collect()
+    /// What this instance shows, for painting.
+    pub(crate) fn view(&self) -> View<'_> {
+        View::new(&self.core, self.history.shown, self.history.truncated)
     }
 }
 
@@ -355,15 +364,4 @@ fn held(grid: &Grid<Cell>) -> usize {
         .flat_map(|line| cells(grid, line))
         .map(cost::cell)
         .sum()
-}
-
-/// A row's characters with each one's combining marks; spacers are skipped
-/// and trailing blanks trimmed.
-fn text(cells: &[Cell]) -> String {
-    let text: String = cells
-        .iter()
-        .filter(|cell| !cell.flags.intersects(SPACERS))
-        .flat_map(|cell| once(cell.c).chain(cell.zerowidth().unwrap_or_default().iter().copied()))
-        .collect();
-    text.trim_end().to_owned()
 }

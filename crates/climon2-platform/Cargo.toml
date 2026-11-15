@@ -17,5 +17,6 @@ tracing = "0.1.44"
 workspace = true
 
 [dev-dependencies]
+climon2-fixtures = { path = "../climon2-fixtures" }
 filetime = "0.2.29"
 tempfile = "3.27.0"
