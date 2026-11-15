@@ -65,6 +65,7 @@ else. During committed termination Acquire is `session_terminating`.
 On a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control)
 Acquire is rejected without effects with `internal_error`, the interim code
 until #89 converts a registration into an attachment: no control is
-acquired and the registration stays. Before any Open there is nothing to
-convert, so Acquire is `invalid_state`, like an early
-[Leave](request-leave.md). A rejection never ends the stream.
+acquired and the registration stays. Before any Open, or on a standalone
+[Kill](request-kill.md#implemented-behavior)'s connection, there is nothing
+to convert, so Acquire is `invalid_state`, like [Leave](request-leave.md)
+there. A rejection never ends the stream.

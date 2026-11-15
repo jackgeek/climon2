@@ -1,5 +1,8 @@
 use super::{ConnectionId, Effect};
-use climon2_core::wire::OperationalCode;
+use climon2_core::{
+    exit::{CLIMON2_ERROR, ExitStatus},
+    wire::{CommandResult, OperationalCode},
+};
 
 /// Attachments still present while the session terminates.
 #[derive(Debug, Default)]
@@ -43,49 +46,119 @@ impl Members {
         effects
     }
 
-    fn deliver(self, outcome: Outcome) -> impl Iterator<Item = Effect> {
+    fn deliver(self, end: &SessionEnd) -> impl Iterator<Item = Effect> {
+        let result = end.private_result();
         let presenting = self
             .presenting
             .into_iter()
-            .flat_map(move |conn| [Effect::Release { conn }, outcome.to_attachment(conn)]);
+            .flat_map(move |conn| [Effect::Release { conn }, to_attachment(conn, result)]);
         let released = self
             .released
             .into_iter()
-            .map(move |conn| outcome.to_attachment(conn));
+            .map(move |conn| to_attachment(conn, result));
         presenting.chain(released)
     }
 }
 
+/// An attachment's result in the private protocol: `Exit`, or `Error`.
+fn to_attachment(conn: ConnectionId, result: PrivateResult) -> Effect {
+    match result {
+        PrivateResult::Status(code) => Effect::DeliverExit { conn, code },
+        PrivateResult::Error => Effect::DeliverError { conn },
+    }
+}
+
+/// How the daemon learned that the command ended.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommandEnd {
+    /// The command ended with this result, and nothing of its terminal
+    /// session remains.
+    Confirmed(CommandResult),
+    /// The daemon could not confirm the end: its hang-up, or the kill of
+    /// what remained of the command's terminal session, failed. The result
+    /// it knew already, from reaping the command earlier, if any.
+    Unconfirmed(Option<CommandResult>),
+}
+
+impl CommandEnd {
+    /// The command's result, whether or not its end was confirmed.
+    pub fn known(&self) -> Option<&CommandResult> {
+        match self {
+            Self::Confirmed(result) => Some(result),
+            Self::Unconfirmed(result) => result.as_ref(),
+        }
+    }
+
+    /// The private protocol reports climon2's own status for an end it
+    /// could not confirm, whatever it knew.
+    fn private_status(&self) -> u32 {
+        match self {
+            Self::Confirmed(result) => private_status(result),
+            Self::Unconfirmed(_) => CLIMON2_ERROR,
+        }
+    }
+}
+
+/// How the daemon's cleanup of the session went: removing its session
+/// metadata and socket.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Outcome {
-    Exited(u32),
+pub enum CleanupResult {
+    Complete,
     Failed,
 }
 
-impl Outcome {
-    fn to_attachment(self, conn: ConnectionId) -> Effect {
-        match self {
-            Self::Exited(code) => Effect::DeliverExit { conn, code },
-            Self::Failed => Effect::DeliverError { conn },
-        }
-    }
+/// What the private protocol reports when the session ends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PrivateResult {
+    /// `Exit` to an attachment, `Terminated` to a kill requester.
+    Status(u32),
+    /// `Error`, describing the failure.
+    Error,
+}
 
-    fn to_killer(self, conn: ConnectionId) -> Effect {
-        match self {
-            Self::Exited(code) => Effect::ConfirmKill { conn, code },
-            Self::Failed => Effect::DeliverError { conn },
+/// How a session ended, as every result it delivers reports it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionEnd {
+    pub command: CommandEnd,
+    /// An authoritative failure ended the session.
+    pub failed: bool,
+    pub cleanup: CleanupResult,
+}
+
+impl SessionEnd {
+    /// The private protocol's report: the command's status, with a signal
+    /// folded into 128 plus its number, or climon2's own when the command's
+    /// end was not confirmed; an error after a failure of the session or of
+    /// its cleanup.
+    pub fn private_result(&self) -> PrivateResult {
+        if self.failed || self.cleanup == CleanupResult::Failed {
+            return PrivateResult::Error;
         }
+        PrivateResult::Status(self.command.private_status())
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Core's exit mapping, which the private protocol keeps.
+fn private_status(result: &CommandResult) -> u32 {
+    let status = match result {
+        CommandResult::Exit { code } => ExitStatus::Command(*code),
+        CommandResult::Signal { number, .. } => ExitStatus::Signal(*number),
+    };
+    status.code().unwrap_or(CLIMON2_ERROR)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum Ending {
     /// The PTY is hung up; the command has not exited yet.
     AwaitingCommand {
         failed: bool,
     },
-    CleaningUp(Outcome),
-    Finished(Outcome),
+    /// The command ended; the daemon is cleaning up.
+    CleaningUp {
+        command: CommandEnd,
+        failed: bool,
+    },
+    Finished(SessionEnd),
 }
 
 /// A session that refuses attachments and input until it finishes.
@@ -105,11 +178,14 @@ impl Shutdown {
         }
     }
 
-    pub fn exited(members: Members, code: u32) -> Self {
+    pub fn exited(members: Members, command: CommandEnd) -> Self {
         Self {
             members,
             killers: Vec::new(),
-            ending: Ending::CleaningUp(Outcome::Exited(code)),
+            ending: Ending::CleaningUp {
+                command,
+                failed: false,
+            },
         }
     }
 
@@ -138,59 +214,58 @@ impl Shutdown {
 
     /// Repeated kills join the shutdown already under way.
     pub fn kill(&mut self, conn: ConnectionId) -> Vec<Effect> {
-        match self.ending {
-            Ending::Finished(outcome) => vec![outcome.to_killer(conn)],
-            _ => {
-                self.killers.push(conn);
-                Vec::new()
-            }
+        if let Ending::Finished(end) = &self.ending {
+            let end = end.clone();
+            return vec![Effect::ConfirmKill { conn, end }];
         }
+        self.killers.push(conn);
+        Vec::new()
     }
 
-    pub fn command_exited(&mut self, code: u32) -> Vec<Effect> {
-        match self.ending {
-            Ending::AwaitingCommand { failed } => {
-                self.ending = Ending::CleaningUp(outcome(failed, code));
-                vec![Effect::Cleanup]
-            }
-            _ => Vec::new(),
-        }
+    /// The command ended, as the daemon learned it.
+    pub fn command_exited(&mut self, command: CommandEnd) -> Vec<Effect> {
+        let Ending::AwaitingCommand { failed } = self.ending else {
+            return Vec::new();
+        };
+        self.ending = Ending::CleaningUp { command, failed };
+        vec![Effect::Cleanup]
     }
 
     pub fn cleanup_finished(&mut self) -> Vec<Effect> {
-        match self.ending {
-            Ending::CleaningUp(outcome) => self.finish(outcome),
-            _ => Vec::new(),
-        }
+        self.finish(CleanupResult::Complete)
     }
 
+    /// A failure while cleaning up leaves the cleanup incomplete.
     pub fn authoritative_failure(&mut self) -> Vec<Effect> {
         match self.ending {
             Ending::AwaitingCommand { .. } => {
                 self.ending = Ending::AwaitingCommand { failed: true };
                 Vec::new()
             }
-            Ending::CleaningUp(_) => self.finish(Outcome::Failed),
+            Ending::CleaningUp { .. } => self.finish(CleanupResult::Failed),
             Ending::Finished(_) => Vec::new(),
         }
     }
 
     /// Releases before every result; a kill is confirmed only after cleanup.
-    fn finish(&mut self, outcome: Outcome) -> Vec<Effect> {
-        self.ending = Ending::Finished(outcome);
+    fn finish(&mut self, cleanup: CleanupResult) -> Vec<Effect> {
+        let Ending::CleaningUp { command, failed } = &self.ending else {
+            return Vec::new();
+        };
+        let end = SessionEnd {
+            command: command.clone(),
+            failed: *failed,
+            cleanup,
+        };
+        self.ending = Ending::Finished(end.clone());
         let killers = std::mem::take(&mut self.killers).into_iter();
         std::mem::take(&mut self.members)
-            .deliver(outcome)
-            .chain(killers.map(|conn| outcome.to_killer(conn)))
+            .deliver(&end)
+            .chain(killers.map(|conn| Effect::ConfirmKill {
+                conn,
+                end: end.clone(),
+            }))
             .chain([Effect::Finish])
             .collect()
-    }
-}
-
-fn outcome(failed: bool, code: u32) -> Outcome {
-    if failed {
-        Outcome::Failed
-    } else {
-        Outcome::Exited(code)
     }
 }
