@@ -103,7 +103,9 @@ The model keeps to its limit this way:
   engine sees it, from the cursor, the scroll region and the token's vte
   parse. The engine keeps the region private, so the model mirrors it from
   DECSTBM (as the engine applies it: ignored unless top is above bottom,
-  clamped to the screen) and `ESC c`. Only a region that starts at the top
+  clamped to the screen), `ESC c` and DECCOLM (`CSI ? 3 h` or `l`, which
+  the engine applies as a region reset), the only ways a model's engine
+  changes it. Only a region that starts at the top
   row pushes rows into history. A token could scroll if its line feeds
   (including index, next line and those executed inside a sequence) and
   repeated characters could leave that region's bottom row, or it is
@@ -207,14 +209,20 @@ first 1000-row chunk; the default `memory.total_bytes` (512 MiB) held 126,
 decided (2026-11-13) to share one vte parser per monitor and admit the first
 history chunk only when the normal screen first scrolls, then re-measure
 ([#166](https://github.com/jackgeek/climon2/issues/166)). Re-measured on
-#166 (`Model::footprint()`, whose charges the allocator tests above bound),
-one parser of 2 MiB per monitor plus, per model:
+#166 (`Model::footprint()`, whose charges the allocator tests above bound;
+`crates/climon2-vt/tests/budget.rs` asserts this table and prints it anew
+when a charge changes), one parser of 2 MiB per monitor plus, per model:
 
-| Geometry | Before its first scroll | After it (first chunk) | Staged blank beside it | 10,000 history rows |
+| Geometry | Before its first scroll | After it (first chunk) | A scrolled restoration staged beside it | 10,000 history rows |
 |---|---:|---:|---:|---:|
-| 80x24 | 0.12 MiB | 2.05 MiB | 2.17 MiB | 19.35 MiB |
-| 200x60 | 0.59 MiB | 5.26 MiB | 5.85 MiB | 47.28 MiB |
-| 500x200 | 4.63 MiB | 16.18 MiB | 20.81 MiB | 120.00 MiB |
+| 80x24 | 0.12 MiB | 2.05 MiB | 4.09 MiB | 19.35 MiB |
+| 200x60 | 0.59 MiB | 5.26 MiB | 10.52 MiB | 47.28 MiB |
+| 500x200 | 4.63 MiB | 16.18 MiB | 32.36 MiB | 120.00 MiB |
+
+A restoration staged after a geometry change carries history, so it scrolls
+and admits its own first chunk: staging a model that has scrolled costs
+twice what it holds after its first scroll, until the restoration is applied
+or the current model's history yields.
 
 A model keeping no history costs what the first column says however much it
 scrolls. With the parser counted once, the default 512 MiB therefore holds
