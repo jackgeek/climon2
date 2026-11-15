@@ -265,7 +265,8 @@ fn response(response: &native::Response) -> Value {
                 "restoration_id": authority.restoration_id,
             })
         }
-        native::FOCUS_RESULT => {
+        native::ACKNOWLEDGEMENT => json!({ "changed": unsafe { response.result.changed } }),
+        native::FOCUS_RESULT | native::VIEWING_RESULT => {
             let flag = unsafe { response.result.flag };
             json!({
                 "changed": flag.changed,
@@ -346,23 +347,43 @@ fn presentation(record: &Record) -> Option<Value> {
     })
 }
 
+/// A status: its state, episode and exact change time, as text when it
+/// is ASCII and as hex otherwise.
+fn status(status: &native::Status) -> Value {
+    let time = &status.changed_at.bytes;
+    let changed_at = if time.is_ascii() {
+        json!(String::from_utf8_lossy(time))
+    } else {
+        json!({ "hex": hex(time) })
+    };
+    json!({
+        "state": status.state,
+        "episode_present": status.episode_present,
+        "episode_id": status.episode_id,
+        "changed_at": changed_at,
+    })
+}
+
+/// An available status's value, or availability alone.
+fn available_status(available: &native::AvailableStatus) -> Value {
+    let mut value = json!({ "available": available.available, "reserved": available.reserved });
+    if available.available != 0 {
+        value["value"] = status(&available.value);
+    }
+    value
+}
+
 fn finished(finished: &native::Final) -> Value {
     json!({
         "command_result": command(&finished.command_result),
-        "status": {
-            "available": finished.status.available,
-            "reserved": finished.status.reserved,
-        },
+        "status": available_status(&finished.status),
     })
 }
 
 fn metadata(metadata: &native::Metadata) -> Value {
     json!({
         "title": title(&metadata.title),
-        "status": {
-            "available": metadata.status.available,
-            "reserved": metadata.status.reserved,
-        },
+        "status": available_status(&metadata.status),
         "progress": {
             "available": metadata.progress.available,
             "reserved": metadata.progress.reserved,
@@ -393,6 +414,7 @@ pub fn record(record: &Record) -> Value {
         native::RESPONSE => value["response"] = response(unsafe { &record.data.response }),
         native::INITIAL_METADATA => value["metadata"] = metadata(unsafe { &record.data.metadata }),
         native::TITLE => value["title"] = title(unsafe { &record.data.title }),
+        native::STATUS => value["status"] = status(unsafe { &record.data.status }),
         native::FINAL => value["final"] = finished(unsafe { &record.data.r#final }),
         _ => {
             if let Some(presented) = presentation(record) {

@@ -30,7 +30,11 @@
 //! - `snapshot`, `notification`, `shutdown`; `await_snapshot` until its
 //!   `gauge` reaches `value`;
 //! - `touch` a `path`; `probe` a `socket`'s hello `state`; `signal` a
-//!   real daemon's `pid` to `stop` or `continue`;
+//!   real daemon's `pid` to `stop` or `continue`; `clock`: set a real
+//!   daemon's controllable status clock (`CLIMON2_DAEMON_CLOCK`) at `path`
+//!   to `value` milliseconds and wait, up to 30 s, until the daemon writes the
+//!   value to its `.ack` sibling, once the turn that read it has queued its
+//!   records (#95);
 //! - `await_peer` until it received `frames` frames;
 //! - `finish`: run's report, drains to terminal evidence, handle releases,
 //!   destroy and join.
@@ -129,6 +133,7 @@ impl World<'_> {
             "create" => return self.create(&name, step),
             "touch" => return touch(step),
             "signal" => return signal(step),
+            "clock" => return clock(step),
             "probe" => return hello_state(Path::new(step["socket"].as_str().expect("a socket"))),
             _ => {}
         }
@@ -418,6 +423,26 @@ fn signal(step: &Value) -> Value {
     let sent = unsafe { libc::kill(pid, signal) } == 0;
     assert!(sent, "signal {pid}: {}", std::io::Error::last_os_error());
     json!("signalled")
+}
+
+/// Sets the controllable clock and waits for the daemon's acknowledgement:
+/// whether it came.
+fn clock(step: &Value) -> Value {
+    let path = step["path"].as_str().expect("a clock path");
+    let value = step["value"].as_u64().expect("milliseconds").to_string();
+    let staged = format!("{path}.staged");
+    fs::write(&staged, &value).expect("the clock value is written");
+    fs::rename(&staged, path).expect("the clock value is published");
+    let acknowledged = format!("{path}.ack");
+    // A daemon turn under the gate's parallel load can take seconds.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fs::read_to_string(&acknowledged).unwrap_or_default() != value {
+        if Instant::now() >= deadline {
+            return json!(false);
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    json!(true)
 }
 
 fn await_peer(instance: &Instance, step: &Value) -> Value {

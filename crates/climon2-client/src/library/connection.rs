@@ -13,7 +13,7 @@ use super::{
     instance::{Descriptor, Next, Shared, Taken},
     link::{self, Link, TIMEOUT},
     records::{Event, Response},
-    request::{Act, Command, Held, Open, Operation, Submitted},
+    request::{Act, Command, Open, Operation, Submitted},
     stream::{Departure, Effect, Stream},
 };
 use climon2_core::{
@@ -41,9 +41,9 @@ const STALLED: Fault = Fault::library(
     "delivery_stalled",
     "no record waiting for event room was queued within delivery_stall_ms",
 );
-const UNFOCUSED: Fault = Fault::library(
+const UNSELECTED: Fault = Fault::library(
     "unsupported_capability",
-    "focus-v1 is not selected on this connection",
+    "the family this request needs is not selected on this connection",
 );
 
 /// Runs the connection until its stream ends, and returns the Leave
@@ -170,12 +170,13 @@ impl<'a> Driver<'a> {
             .find_map(|(refused, fault)| refused.then_some(fault))
     }
 
-    /// A command goes on the role unless refused; Focus needs `focus-v1`.
+    /// A command goes on the role unless refused; Focus needs `focus-v1`,
+    /// Set viewing and Acknowledge `status-v1` (#95).
     fn command(&mut self, id: u64, command: Command) {
-        let unfocused = matches!(command.act, Act::Held(_, Held::Focus(_))) && !self.stream.focus();
+        let unselected = !self.stream.supports(&command.act);
         let refusal = self
             .refusal(command.generation)
-            .or(unfocused.then_some(UNFOCUSED));
+            .or(unselected.then_some(UNSELECTED));
         match refusal {
             Some(fault) => self.reject(id, fault),
             None => self.send_command(id, command.act),

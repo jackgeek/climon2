@@ -66,7 +66,7 @@ fn rejections() -> Vec<(Value, (u64, &'static str))> {
             invalid,
         ),
         (
-            lists(json!(["monitor-v1", "status-v1"]), json!([])),
+            lists(json!(["monitor-v1", "progress-v1"]), json!([])),
             unrelayed,
         ),
         (lists(json!(["x-later-v9"]), json!([])), unrelayed),
@@ -75,11 +75,13 @@ fn rejections() -> Vec<(Value, (u64, &'static str))> {
             invalid,
         ),
     ];
-    // Set viewing, Acknowledge and Kill; the control requests' own
-    // rejections are in `control_faults.rs` (#94).
-    for tag in [6, 7, 9] {
-        rejected.push((json!({ "tag": tag, "request_id": 7 }), unsupported));
+    // Set viewing and Acknowledge naming no authority (#95); their other
+    // rejections are in `status_faults.rs`, and the control requests' in
+    // `control_faults.rs` (#94). Kill is not performed yet.
+    for tag in [6, 7] {
+        rejected.push((json!({ "tag": tag, "request_id": 7 }), invalid));
     }
+    rejected.push((json!({ "tag": 9, "request_id": 7 }), unsupported));
     rejected
 }
 

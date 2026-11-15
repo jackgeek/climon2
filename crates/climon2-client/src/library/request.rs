@@ -1,7 +1,8 @@
 //! `cm1_request`, validated and copied once, at `submit`: what the instance
 //! queues is its own copy, never a caller buffer. Only the active argument
 //! member is read; inactive storage is ignored. Authority and geometry are
-//! parsed into core's wire types here, once (#94).
+//! parsed into core's wire types here, once (#94), as are Set viewing and
+//! Acknowledge (#95).
 
 use super::{
     failure::{
@@ -69,8 +70,26 @@ pub(super) enum Act {
 pub(super) enum Held {
     Input(Box<[u8]>),
     Resize(Geometry),
+    /// A state the request sets to 0 or 1.
+    Toggle(Toggle, bool),
+    /// A confirmation with no argument of its own.
+    Confirm(Confirm),
+}
+
+/// The requests that set a 0/1 state: application focus (`focus-v1`) and
+/// viewing (`status-v1`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Toggle {
+    Focus,
+    Viewing,
+}
+
+/// The requests that name only the authority: Ready, and Acknowledge
+/// (`status-v1`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Confirm {
     Ready,
-    Focus(bool),
+    Acknowledge,
 }
 
 fn invalid(message: &'static str) -> Failure {
@@ -129,13 +148,15 @@ fn header(request: &native::Request) -> Result<u64, Failure> {
 type Parser = unsafe fn(&native::Request, Capacity) -> Result<(Operation, u64), Failure>;
 
 /// Every request this release performs, by tag.
-const PARSERS: [(u32, Parser); 7] = [
+const PARSERS: [(u32, Parser); 9] = [
     (native::OPEN, open_request),
     (native::LEAVE, leave),
     (native::ACQUIRE, acquire),
     (native::INPUT, input),
     (native::RESIZE, resize),
     (native::READY, ready),
+    (native::VIEWING, viewing),
+    (native::ACKNOWLEDGE, acknowledge),
     (native::FOCUS, focus),
 ];
 
@@ -207,8 +228,25 @@ fn authority(authority: native::Authority) -> Result<(u64, AuthorityIds), Failur
 /// The tag names `authority`.
 unsafe fn ready(request: &native::Request, _: Capacity) -> Result<(Operation, u64), Failure> {
     // SAFETY: guaranteed by the caller.
-    let (generation, ids) = authority(unsafe { request.args.authority })?;
-    Ok(command(generation, Act::Held(ids, Held::Ready), REQUEST))
+    confirmed(unsafe { request.args.authority }, Confirm::Ready)
+}
+
+/// # Safety
+///
+/// The tag names `authority`.
+unsafe fn acknowledge(request: &native::Request, _: Capacity) -> Result<(Operation, u64), Failure> {
+    // SAFETY: guaranteed by the caller.
+    confirmed(unsafe { request.args.authority }, Confirm::Acknowledge)
+}
+
+/// A confirmation under `authority`.
+fn confirmed(named: native::Authority, confirm: Confirm) -> Result<(Operation, u64), Failure> {
+    let (generation, ids) = authority(named)?;
+    Ok(command(
+        generation,
+        Act::Held(ids, Held::Confirm(confirm)),
+        REQUEST,
+    ))
 }
 
 /// Positive columns and rows.
@@ -233,22 +271,33 @@ unsafe fn resize(request: &native::Request, _: Capacity) -> Result<(Operation, u
     ))
 }
 
-/// Only 0 and 1, with every reserved byte zero.
-///
 /// # Safety
 ///
 /// The tag names `flag`.
 unsafe fn focus(request: &native::Request, _: Capacity) -> Result<(Operation, u64), Failure> {
     // SAFETY: guaranteed by the caller.
-    let flag = unsafe { request.args.flag };
+    toggled(unsafe { request.args.flag }, Toggle::Focus)
+}
+
+/// # Safety
+///
+/// The tag names `flag`.
+unsafe fn viewing(request: &native::Request, _: Capacity) -> Result<(Operation, u64), Failure> {
+    // SAFETY: guaranteed by the caller.
+    toggled(unsafe { request.args.flag }, Toggle::Viewing)
+}
+
+/// A 0/1 state under `flag`'s authority: only 0 and 1, with every reserved
+/// byte zero.
+fn toggled(flag: native::Flag, toggle: Toggle) -> Result<(Operation, u64), Failure> {
     let (generation, ids) = authority(flag.authority)?;
     require(
         flag.value <= 1 && flag.reserved == [0; 7],
-        invalid("focus is 0 or 1, with reserved bytes zero"),
+        invalid("a flag is 0 or 1, with reserved bytes zero"),
     )?;
     Ok(command(
         generation,
-        Act::Held(ids, Held::Focus(flag.value == 1)),
+        Act::Held(ids, Held::Toggle(toggle, flag.value == 1)),
         REQUEST,
     ))
 }

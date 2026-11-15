@@ -104,18 +104,28 @@ pub struct Session {
 
 impl Session {
     pub fn start(package: &Package, root: &Path) -> Self {
-        Self::running(package, root, &["echo-until", "END"])
+        Self::running(package, root, &["echo-until", "END"], None)
     }
 
     /// A session whose application only waits for the `end` file after
     /// `ECHO-READY`, whoever controls it.
     pub fn idle(package: &Package, root: &Path) -> Self {
-        Self::running(package, root, &[])
+        Self::running(package, root, &[], None)
     }
 
-    fn running(package: &Package, root: &Path, then: &[&str]) -> Self {
+    /// An idle session whose daemon's status clock is the test hook
+    /// `CLIMON2_DAEMON_CLOCK`, set to `clock`'s milliseconds before start
+    /// (#95).
+    pub fn clocked(package: &Package, root: &Path, clock: &Path) -> Self {
+        Self::running(package, root, &[], Some(clock))
+    }
+
+    fn running(package: &Package, root: &Path, then: &[&str], clock: Option<&Path>) -> Self {
         let end = root.join("end");
         let mut command = package.command("climon2");
+        if let Some(clock) = clock {
+            command.env("CLIMON2_DAEMON_CLOCK", clock);
+        }
         command.args(["exec", "climon2-fixture", "raw", "print", "\x1b[?1004h"]);
         command.args(["print", "ECHO-READY"]);
         command.args(then);

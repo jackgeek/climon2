@@ -188,7 +188,7 @@ impl Plan {
 /// a zero period, no bytes or more than `chunk_bytes`, Resize to zero
 /// columns, Ready with a zero restoration, Resize whose authority names
 /// generation zero, Focus of 2 or with a reserved
-/// byte set); Set viewing remains `unsupported_operation`; Input of
+/// byte set); Kill remains `unsupported_operation`; Input of
 /// `chunk_bytes` whose charge exceeds `request_bytes` by one is
 /// `queue_full`, while Input charging exactly `request_bytes` is accepted. The accepted requests are then
 /// cancelled by shutdown, and nothing reaches the daemon.
@@ -223,8 +223,7 @@ fn installed_library_rejects_malformed_control_requests_locally() {
             .map(|request| json!({ "do": "submit", "request": request, "as": "malformed" })),
     );
     steps.extend([
-        json!({ "do": "submit", "request": { "tag": 6, "request_id": 1,
-                "authority": [1, 2, 2] }, "as": "viewing" }),
+        json!({ "do": "submit", "request": { "tag": 9, "request_id": 1 }, "as": "kill" }),
         json!({ "do": "submit", "request": {
             "tag": "input", "request_id": 1, "authority": [1, 2, 2],
             "bytes": { "hex": "4142434445" } }, "as": "over" }),
@@ -245,7 +244,7 @@ fn installed_library_rejects_malformed_control_requests_locally() {
         assert_failure(step(&report, index), INVALID_ARGUMENT, "invalid_argument");
     }
     assert_failure(
-        labelled(&report, &steps, "viewing"),
+        labelled(&report, &steps, "kill"),
         UNSUPPORTED_OPERATION,
         "unsupported_operation",
     );
