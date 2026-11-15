@@ -15,8 +15,13 @@ rejects native instance limits it cannot honour, bounds worker cleanup by
 connections it also enforces its request and event queues, outstanding
 operations and their outcome reserves, deliveries, drain ceilings,
 `wire_frame_bytes`, `metadata_record_bytes`, `title_bytes`, `start_ms` and
-`leave_ms` ([#93](https://github.com/jackgeek/climon2/issues/93)); nothing
-else enforces the limits yet.** This resolves
+`leave_ms` ([#93](https://github.com/jackgeek/climon2/issues/93)). The
+session daemon keeps revision-1 connections within its own existing bounds,
+emits frames, titles and metadata records within the derived release
+constants, and never wraps request IDs, control periods or restoration IDs
+([#90](https://github.com/jackgeek/climon2/issues/90), see the
+[wire reference](protocol/daemon-client/core-v1.md#implemented-bounds));
+nothing else enforces the limits yet.** This resolves
 [Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69).
 It supplies requirements and evidence, not executable code or a benchmark suite.
 

@@ -744,11 +744,12 @@ fn a_held_synchronized_update_reaches_a_derived_controller_before_command_final(
 }
 
 /// COM-06 (Contract: Command final is still sent within the existing
-/// bounds), COM-05 (Contract: a promotion's grant precedes its restoration)
-/// and CTL-04 (Contract: the controller's loss promotes the newest
-/// registration): a restoration whose reader stalls holds Command final
-/// only until that reader is lost. The restoration of a large screen and
-/// history begins in the pass that ends the drain
+/// bounds), COM-05 (Contract: a promotion's grant precedes its restoration),
+/// CTL-04 (Contract: the controller's loss promotes the newest
+/// registration) and LIM-01 (Contract: the five seconds without progress
+/// bound a revision-1 reader): a restoration whose reader stalls holds
+/// Command final only until that reader is lost. The restoration of a
+/// large screen and history begins in the pass that ends the drain
 /// ([`opened_as_the_drain_ends`]), and its reader never reads. The
 /// restoration is larger than the restoration window and the socket's
 /// buffer together, so it cannot complete, and after five seconds without

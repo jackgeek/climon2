@@ -263,8 +263,8 @@ fn a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata() {
     end_script(session);
 }
 
-/// CTL-03 (Contract, title case) and the derived release-constant title
-/// bound: the longest title a title sequence can carry arrives whole: 4,094
+/// CTL-03 (Contract, title case) and LIM-01 (Contract and Fault, the
+/// derived release-constant title bound at the limit and one past): the longest title a title sequence can carry arrives whole: 4,094
 /// UTF-8 bytes, because the existing 4,096-byte token body includes the
 /// sequence's `2;`. A longer one, at or one past the documented 4,096 bytes,
 /// is ignored, never truncated.
@@ -530,7 +530,8 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
     end_controlled(session, controlling);
 }
 
-/// COM-02 (Contract, oversized frames): a request frame exactly at the
+/// COM-02 (Contract, oversized frames) and LIM-01 (Contract, the frame
+/// bound at the limit and one past): a request frame exactly at the
 /// advertised 1,048,576-byte limit is served; on a revision-1 stream one byte
 /// more is `frame_too_large`, decided from its prefix before any body
 /// arrives.
