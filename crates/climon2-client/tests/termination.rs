@@ -319,6 +319,34 @@ fn a_refused_partial_lost_or_unconfirmed_kill_is_a_failed_kill() {
     assert_eq!(receive(&mut stream), None, "the Kill was sent again");
 }
 
+/// COM-01 and COM-03 Fault, executable case: a daemon that accepts but never
+/// answers the hello fails the kill at the frozen two-second hello deadline,
+/// not `kill_ms`, with the library's diagnostic. The Kill was refused before
+/// it was sent, so this is never reported as an unconfirmed termination.
+#[test]
+fn a_silent_hello_fails_at_the_hello_deadline_without_sending_the_kill() {
+    let peer = Peer::new();
+    let started = Instant::now();
+    let child = peer.client();
+    let mut stream = peer.accept();
+    let accepted = Instant::now();
+    assert_eq!(failed(child), "the session daemon did not answer in time");
+    assert!(started.elapsed() >= Duration::from_secs(2));
+    assert!(
+        accepted.elapsed() < Duration::from_secs(9),
+        "waited for kill_ms"
+    );
+    assert_eq!(
+        read_frame(&mut stream)
+            .ok()
+            .map(|frame| ClientMessage::from_frame(frame).unwrap()),
+        Some(ClientMessage::Hello {
+            protocol: PROTOCOL_VERSION
+        })
+    );
+    assert_eq!(receive(&mut stream), None, "the Kill was sent");
+}
+
 /// Kill needs daemon wire revision 1: a session whose hello does not
 /// advertise it is refused with the library's diagnostic, and no request is
 /// ever sent.

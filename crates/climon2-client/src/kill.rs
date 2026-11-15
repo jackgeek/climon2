@@ -12,8 +12,9 @@ use std::{io, path::Path, ptr};
 /// How long one wait for the library lasts before signals are checked again.
 const POLL_MS: i32 = 25;
 
-/// The Kill's answer: confirmed, or the library's error.
-type Answer = Result<(), NativeError>;
+/// The Kill's answer: confirmed, or the library's error, which is absent
+/// when the Kill was sent and outlived `kill_ms`.
+type Answer = Result<(), Option<NativeError>>;
 
 /// Kills the session `metadata` (read from `path`) describes. A library that
 /// is missing, of another release or faulty fails before any connection;
@@ -81,18 +82,29 @@ fn interrupted(signals: &Signals) -> io::Result<()> {
         .map_or(Ok(()), |_| Err(io::ErrorKind::Interrupted.into()))
 }
 
-/// The Kill's Response, the only one a Kill-only instance delivers. The
-/// library answers OK only for a termination with the command's result and
-/// complete daemon cleanup.
+/// The Kill's Response, the only one a Kill-only instance delivers.
 fn answered(record: &native::Record) -> Option<Answer> {
     // SAFETY: a Response record's active member is its response, and its
     // error buffers live as long as the record.
-    (record.tag == native::RESPONSE).then(|| unsafe {
-        let response = &record.data.response;
-        (response.outcome == native::OK)
-            .then_some(())
-            .ok_or_else(|| NativeError::copy(&response.error))
-    })
+    (record.tag == native::RESPONSE).then(|| unsafe { outcome(&record.data.response) })
+}
+
+/// The library answers OK only for a termination with the command's result
+/// and complete daemon cleanup. A Kill sent and left unanswered for
+/// `kill_ms` is indeterminate `timeout`; one refused before it was sent, as
+/// on a silent hello, is rejected with its own error.
+///
+/// # Safety
+///
+/// `response`'s error buffers are valid.
+unsafe fn outcome(response: &native::Response) -> Answer {
+    // SAFETY: guaranteed by the caller.
+    let error = || unsafe { NativeError::copy(&response.error) };
+    match response.outcome {
+        native::OK => Ok(()),
+        native::INDETERMINATE => Err(Some(error()).filter(|error| error.code != "timeout")),
+        _ => Err(Some(error())),
+    }
 }
 
 /// Status 0 for a confirmed termination. Otherwise the library's
@@ -102,7 +114,7 @@ fn answered(record: &native::Record) -> Option<Answer> {
 fn verdict(answer: Option<Answer>, session: &SessionId) -> io::Result<u32> {
     match answer {
         Some(Ok(())) => Ok(0),
-        Some(Err(error)) if error.code != "timeout" => Err(io::Error::other(error.message)),
+        Some(Err(Some(error))) => Err(io::Error::other(error.message)),
         _ => Err(io::Error::other(format!(
             "termination of session {session} was not confirmed"
         ))),

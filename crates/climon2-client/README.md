@@ -49,9 +49,12 @@ stream ends. The library sends the Kill on its own hello-validated connection
 over daemon wire revision 1 and gives it one definitive outcome. A confirmed
 termination returns 0 whatever the command's status. A refusal, a partial or
 lost answer, or any other failure is status 125 with the library's diagnostic
-(the daemon's own message for a daemon error); a Kill outliving `kill_ms`, or
-never answered, reports `termination of session <id> was not confirmed`, the
-CLI's message for its own ten-second bound. HUP/TERM/INT while waiting return
+(the daemon's own message for a daemon error). A Kill refused before it was
+sent is one of these: a hello the daemon leaves unanswered fails at the frozen
+two-second hello deadline with `the session daemon did not answer in time`.
+Only a Kill sent and then outliving `kill_ms`, or one never answered, reports
+`termination of session <id> was not confirmed`, the CLI's message for its own
+ten-second bound. HUP/TERM/INT while waiting return
 128+signal at once, without waiting for the Kill's answer; the daemon finishes
 a committed termination anyway. Otherwise the executable releases its handles,
 and the owner thread destroys the instance and is joined. The CLI still bounds
@@ -526,6 +529,7 @@ writes by hand from the wire reference:
 | LIB-01 executable case: stand-ins describing this release in the folder `current` names, the working directory, `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` are never loaded | `the_library_beside_the_executable_is_used_whatever_current_cwd_and_search_paths` |
 | LIB-02 executable case: a missing library, another release's, one without a bootstrap and one with an incomplete function table, and an executable outside a version folder, fail with 125 and the loader's diagnostic before anything connects | `a_missing_wrong_release_or_faulty_library_fails_before_any_connection` |
 | A refusal, a partial termination, a lost answer and a Kill outliving `kill_ms` fail with 125 and their diagnostic; the Kill is never sent again | `a_refused_partial_lost_or_unconfirmed_kill_is_a_failed_kill` |
+| COM-01 and COM-03 Fault, executable case: a hello the daemon accepts but never answers fails at the two-second hello deadline, not `kill_ms`, with the library's diagnostic, and the Kill is never sent | `a_silent_hello_fails_at_the_hello_deadline_without_sending_the_kill` |
 | A daemon without daemon wire revision 1 is refused before any request | `kill_needs_daemon_wire_revision_1_and_never_sends_a_request_without_it` |
 | SIGTERM while waiting is status 143 at once, silently | `a_signal_while_waiting_for_confirmation_is_the_signal_status` |
 | Attach mode (private protocol) refuses a session without `attach` | `a_kill_capable_session_without_attach_refuses_attach_mode` |
