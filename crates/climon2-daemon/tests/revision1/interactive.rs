@@ -130,7 +130,7 @@ impl Attached {
     }
 
     /// Control granted, then the beginning of its restoration.
-    fn grant(&mut self, reason: GrantReason, geometry: Geometry) {
+    pub(super) fn grant(&mut self, reason: GrantReason, geometry: Geometry) {
         let ServerMessage::ControlGranted(granted) = message(&mut self.stream) else {
             panic!("expected Control granted");
         };

@@ -454,6 +454,93 @@ fn a_registration_lost_to_an_overflow_is_never_promoted() {
     stays_detached(session);
 }
 
+/// CTL-04 (Fault, through the `rejection-overflow` and `CLIMON2_DAEMON_HOLD`
+/// test hooks: an attachment lost to its own queue's overflow racing a
+/// hand-back). The daemon reads, in one pass, a non-controlling
+/// attachment's request whose Response overflows its output queue, then
+/// the controller's Leave. The lost attachment departs first, so the Leave
+/// hands control back to nobody: the lost attachment receives no grant,
+/// and the ordinary session follows its leave policy as if the lost
+/// attachment had left before the controller. It stays detached after the
+/// final explicit detach rather than ending at the lost attachment's
+/// departure.
+#[test]
+fn an_attachment_lost_to_an_overflow_never_inherits_control() {
+    let (session, hold) = overflowing();
+    let mut lost = ready_attachment(&session, &[]);
+    let mut controller = Attached::open(&session, geometry(91, 37), &[], geometry(91, 37));
+    lost.revoked(RevocationReason::Takeover);
+    controller.confirm_ready();
+    lost_then_left(&hold, &mut lost, &mut controller);
+    stays_detached(session);
+}
+
+/// CTL-04 (Fault, through the `rejection-overflow` and `CLIMON2_DAEMON_HOLD`
+/// test hooks: an attachment lost to its own queue's overflow racing a
+/// promotion). With a registration behind it, a non-controlling
+/// monitor-mode attachment lost to its queue's overflow in the pass that
+/// reads the controller's Leave departs first: the registration is the
+/// next candidate and is promoted (`successor`) under the very next
+/// control period, 4, so no period went to the lost attachment, which
+/// receives no grant.
+#[test]
+fn an_attachment_lost_to_an_overflow_yields_to_the_next_registration() {
+    let (mut session, hold) = overflowing();
+    let mut lost = Attached::registered(&session);
+    let mut controller = ready_attachment(&session, &[]);
+    lost.acquire(geometry(91, 37));
+    controller.revoked(RevocationReason::Takeover);
+    controller.acquire(geometry(91, 37));
+    lost.revoked(RevocationReason::Takeover);
+    controller.confirm_ready();
+    let mut successor = Attached::registered(&session);
+    lost_then_left(&hold, &mut lost, &mut controller);
+    successor.granted(GrantReason::Successor, geometry(91, 37));
+    assert_eq!(successor.authority().period, counter(4));
+    assert_eq!(
+        crate::advertised_state(&session),
+        (Lifecycle::Attached, 1, true)
+    );
+    successor.confirm_ready();
+    successor.typed(b"inherited\n");
+    crate::wait_line(&session, "inherited 91x37");
+    drop(successor);
+    session.finish();
+    assert_eq!(recorded(&session), "inherited 91x37\n");
+}
+
+/// CTL-04 (Fault, through the `rejection-overflow` and `CLIMON2_DAEMON_HOLD`
+/// test hooks: a controller lost to its own queue's overflow racing a
+/// registration's Leave). The daemon reads, in one pass, the final
+/// controller's request whose Response overflows its output queue, then a
+/// registration's Leave. The loss promotes the registration before its
+/// Leave is read, so the registration leaves as an attachment: its grant
+/// (`successor`) comes first, then `left` with `attachment_detached: true`,
+/// and the session stays detached after that explicit detach.
+#[test]
+fn a_controller_lost_to_an_overflow_promotes_before_a_later_leave() {
+    let (session, hold) = overflowing();
+    let mut lost = ready_attachment(&session, &[]);
+    let mut watching = Attached::registered(&session);
+    in_one_pass(&hold, || {
+        lost.send(|request_id| {
+            let mut again = open(1, &[], &[], Mode::Monitor);
+            again.request_id = request_id;
+            again.to_frame()
+        });
+        watching.send(|request_id| Leave { request_id }.to_frame());
+    });
+    lost.closed();
+    watching.grant(GrantReason::Successor, geometry(91, 37));
+    assert_eq!(watching.authority().period, counter(2));
+    let left = Success::Left {
+        attachment_detached: true,
+    };
+    assert_eq!(watching.response(), Outcome::Ok(left));
+    watching.closed();
+    stays_detached(session);
+}
+
 /// CTL-04 (Fault, a promotion racing a committed Kill) and COM-03
 /// (Contract, committed termination): committed termination overrides
 /// succession. Once a standalone Kill has committed the session's
