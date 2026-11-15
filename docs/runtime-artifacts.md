@@ -142,8 +142,9 @@ the monitor's rendering; today it draws only the permanent top row and the empty
 state, and the rest of its terminal integration is agreed, unimplemented.
 The [agreed terminal contract](protocol/terminal-integration.md), not implemented,
 selects exact ordered terminal bytes/control/restoration through existing
-in-process record queues and monitor-owned `climon2-vt` models, with planned
-read-only Rust views for Ratatui. Session bytes never go directly to the host;
+in-process record queues and monitor-owned `climon2-vt` models, with read-only
+Rust views for Ratatui, which `climon2-vt` provides (#83) but the monitor does
+not use yet. Session bytes never go directly to the host;
 daemon query authority stays unique. Monitor-mode daemon presentation uses
 effective session geometry, not host/requested dimensions, including background
 promotion. Optional core Focus is not a plugin/artifact addition. No new dynamic
@@ -177,8 +178,12 @@ bound admission, queues, client threads/workers/descriptors and retained shared
 release resources. Resource-blocked rows remain visible; history pressure
 preserves a recent page. Unsafe growth/cleanup is explicit failure, not client
 eviction or unloading. Allocation-aware terminal qualification reopens the
-narrow unbounded-engine assumption; it chooses no new executable/library or
-consumption arrow, and does not sandbox trusted native code.
+narrow unbounded-engine assumption; `climon2-vt`'s allocation-bounded `Model`
+(#76) provides it for the monitor's planned per-session models, which the
+monitor does not keep yet: at startup it reads only their mandatory
+allocation, to check that its limits hold one session's model (#167). It
+chooses no new executable/library or consumption arrow, and does not sandbox
+trusted native code.
 
 The client executable will also load its same-release library for ordinary
 operations.
@@ -233,10 +238,11 @@ No new artifact or consumption arrow is added. Monitor-client communication is
 an agreed specification, not implemented.
 [Daemon wire revision 1](protocol/daemon-client/core-v1.md) is agreed and
 partly implemented: session daemons serve
-[passive monitor connections](../GLOSSARY.md#attachment-and-control) and
-interactive [attachments](../GLOSSARY.md#attachment-and-control) over it,
-beside the private protocol, but no climon2 executable or library consumes it
-yet, so no arrow changes.
+[passive monitor connections](../GLOSSARY.md#attachment-and-control),
+interactive [attachments](../GLOSSARY.md#attachment-and-control) and
+standalone [Kill](../GLOSSARY.md#attachment-and-control) over it, with the
+command's final result, beside the private protocol, but no climon2
+executable or library consumes it yet, so no arrow changes.
 
 The planned wire core is independent of the current private Unix socket carrier.
 The main/downstream monitor consumes source-monitor sessions over

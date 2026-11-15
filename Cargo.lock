@@ -315,6 +315,7 @@ name = "climon2-vt"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "unicode-width",
  "vt100",
 ]
 

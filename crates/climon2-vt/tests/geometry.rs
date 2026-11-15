@@ -16,6 +16,10 @@ fn host_sizes_outside_the_supported_range_are_clamped() {
     assert_eq!(size(1, 1), Some((2, 1)));
     assert_eq!(size(501, 201), Some((500, 200)));
     assert_eq!(size(u16::MAX, u16::MAX), Some((500, 200)));
+    assert_eq!(
+        Geometry::for_host(u16::MAX, u16::MAX),
+        Some(Geometry::LARGEST)
+    );
 }
 
 #[test]

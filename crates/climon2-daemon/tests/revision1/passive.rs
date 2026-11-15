@@ -1,8 +1,8 @@
 //! Passive monitor connections (#86): monitor Open, core metadata, Leave and
 //! validation, beside the private protocol that still serves attach and kill.
 use super::{
-    assert_closed, assert_fatal, assert_rejected, counter, encoded, families, frame, leave,
-    message, monitor, open, peer, raw_frame, request, send, title_changed,
+    assert_closed, assert_fatal, assert_rejected, counter, encoded, frame, kill, leave, message,
+    monitor, open, peer, raw_frame, request, send, title_changed,
 };
 use crate::{ID, Session};
 use climon2_core::{
@@ -10,8 +10,8 @@ use climon2_core::{
     protocol::{self, ClientMessage, ServerMessage as PrivateMessage, TerminalSize},
     wire::{
         Acknowledge, Acquire, AuthorityIds, Available, ControlRecord, FatalError, Focus, Frame,
-        Geometry, Input, Kill, Leave, Mode, Outcome, Ready, Resize, Response, ServerMessage,
-        SetViewing, Success,
+        Geometry, Input, Leave, Mode, Outcome, Ready, Resize, Response, ServerMessage, SetViewing,
+        Success,
     },
 };
 use std::{
@@ -269,15 +269,6 @@ fn an_oversized_title_is_ignored_never_truncated() {
     assert_eq!(title_changed(&mut monitor).as_deref(), Some("after"));
     leave(&mut monitor, 2);
     end_script(session);
-}
-
-/// A standalone Kill request.
-fn kill(request_id: u64, revision: u32, required: &[&str]) -> Kill {
-    Kill {
-        request_id: counter(request_id),
-        revision,
-        required_capabilities: families(required),
-    }
 }
 
 /// COM-03 (Contract, passive cases): each passive request gets its
@@ -585,24 +576,6 @@ fn coalesced_and_fragmented_revision1_frames_are_each_answered_in_order() {
     opened(&frame(&mut fragmented), "1");
     assert_eq!(body(&frame(&mut fragmented), 0x41), NO_TITLE);
     leave(&mut fragmented, 2);
-    end_controlled(session, controlling);
-}
-
-/// Interim until #88: this daemon advertises `daemon-wire-v1` but does not
-/// serve standalone Kill yet. It is rejected without effects
-/// (`internal_error`) and ends its stream; the session goes on with its one
-/// controller, not terminating.
-#[test]
-fn standalone_kill_is_refused_until_it_is_served() {
-    let (session, controlling) = controlled();
-    let mut killer = peer(&session);
-    request(&mut killer, &kill(1, 1, &["daemon-wire-v1"]));
-    assert_rejected(&mut killer, 1, "internal_error");
-    assert_closed(&mut killer);
-    assert_eq!(
-        crate::advertised_state(&session),
-        (Lifecycle::Attached, 1, true)
-    );
     end_controlled(session, controlling);
 }
 

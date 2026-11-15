@@ -27,6 +27,15 @@ help (#105). It discovers no sessions and loads no client libraries yet.
    `client.escape_prefix`, and the `monitor` section (`show_key_hints`, `bell`
    and `monitor.limits` with the ranges and rules the README lists). Nothing
    reads the file again, so editing it changes nothing until the next start.
+   Its limits must then hold one session's mandatory allocation at the
+   largest geometry a session can have, `climon2-vt`'s `Geometry::LARGEST`
+   (500x200), by the parts its `Model::mandatory` charges a blank model
+   keeping `history.max_rows` (#167): `memory.total_bytes`, then
+   `client_bytes`, the current model and the history chunk holding its recent
+   page together, and `history_bytes_total`, then `history_bytes_per_session`,
+   that chunk (`Limits::hold`). That admits the largest session but not a
+   restoration staged beside it, at least 38,126,478 bytes at 500x200, which
+   follows every monitor-mode geometry change (#89).
 5. The key introduction's preference is read from
    `<climon2 home>/monitor-preferences.json` (`HomeLayout::monitor_preferences`,
    schema `climon2_core::preferences`). A missing file saves nothing; an
@@ -100,7 +109,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
 - A failed wait for host input, other than one a signal interrupts, and the
   end of host input (a hung-up host terminal) end the monitor through the exit
   path below with status 125: `cannot wait for host input: …` or
-  `the host terminal closed`.
+  `the host terminal closed`. A read failing with EIO is the end of host input
+  too: Linux fails reads with it while it is still hanging a terminal up.
 
 ## Exit
 
@@ -136,6 +146,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | INP-01 (Monitor): configured prefix hint and exit; null take-control key accepted; once read, Ctrl+C and the default prefix+x are not exits | `installed_monitor_hints_and_exits_with_the_configured_prefix` (e2e) |
 | INP-01 (Monitor): null escape prefix and invalid keys refused before terminal changes | `installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys` (e2e) |
 | CFG-01 (Monitor): unreadable and malformed JSONC, null, wrong type, duplicate, overflow, out-of-range and inconsistent settings each refused with one diagnostic and 125 before terminal changes | `installed_monitor_refuses_every_invalid_configuration_before_the_terminal_changes` (e2e) |
+| CFG-01 (Monitor): limits one byte short of one 500x200 session's current model and recent page (total, then client budget) or of its recent page (history total, then per-session history budget) each refused with one diagnostic naming that limit and 125 before terminal changes; at those limits the monitor opens and prefix+x exits 0 (#167) | `installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model` (e2e) |
 | CFG-01 (Monitor): `show_key_hints` false hides the empty state's hint, prefix+x still exits; unknown and unrelated settings ignored | `installed_monitor_without_key_hints_shows_none_and_still_exits` (e2e) |
 | CFG-01 (Monitor): no live reload: after an edit, a repaint keeps the started settings and the edited prefix does not act | `editing_the_configuration_while_the_monitor_runs_changes_nothing` (e2e) |
 | CFG-01 (Monitor): every effective setting reported in the general log | `installed_monitor_logs_its_effective_configuration` (e2e) |
@@ -145,7 +156,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | Spec #73 entry: a missing monitor names the version | `missing_installed_monitor_fails_naming_its_version` (e2e) |
 | Spec #73 startup: the executable home is resolved as the CLI does | `a_monitor_outside_a_version_folder_refuses_to_start` (e2e); core `issue74_monitor_resolves_the_same_layout_as_the_cli` |
 | EXT-03 (Monitor, empty monitor): SIGINT, SIGTERM and SIGHUP exit 130, 143 and 129 with baseline and exact termios | `signals_release_the_host_with_signal_style_status` (e2e) |
-| EXT-03 (Monitor, empty monitor): hung-up host input releases the host before its one diagnostic, logged, 125 | `a_hung_up_host_input_releases_the_host_before_its_diagnostic` (e2e) |
+| EXT-03 (Monitor, empty monitor): hung-up host input, read as its end or as EIO, releases the host before its one diagnostic, logged, 125 | `a_hung_up_host_input_releases_the_host_before_its_diagnostic`, `host_input_failing_with_eio_releases_the_host_before_its_diagnostic` (e2e); unit `only_eio_ends_host_input` |
 | EXT-03 (Fault, empty monitor): a render failure, or a failed wait for host input, releases the host before its one diagnostic, 125 | `debug_hook_render_failure_restores_the_host_before_its_diagnostic`, `debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic` (e2e) |
 | Spec #73 host terminal; TRM-04 (Monitor, empty monitor): SIGWINCH repaints without leftovers, erasing or showing the cursor | `resizing_the_host_redraws_the_monitor_at_the_new_size` (e2e) |
 | Spec #73 exit: content-free general log | `installed_monitor_logs_content_free_records_to_its_general_log` (e2e) |
