@@ -3,7 +3,12 @@
 //! (#180): it is shared-release allocation, which is not tracked yet.
 //!
 //! At bootstrap, a diagnostics dispatcher of the library's own, writing
-//! nowhere, creates tracing's process-wide dispatcher list. Before a caller's
+//! nowhere, creates tracing's process-wide dispatcher list, and one span
+//! entered through it takes the process-wide locks of the span registry's
+//! thread-ID allocators (`thread_local`'s and `sharded-slab`'s) for the first
+//! time: on macOS a `std::sync::Mutex` allocates its pthread mutex when it is
+//! first locked (on Linux a futex mutex allocates nothing), so whichever
+//! instance took them first would be charged for both. Before a caller's
 //! thread first works for an instance, it is warmed: the formatting buffer
 //! each thread keeps for records is created. A thread an instance owns is
 //! adopted instead: its thread-wide state is the instance's. (The standard
@@ -37,7 +42,11 @@ thread_local! {
 /// At bootstrap: the process-wide state, and the bootstrapping thread's.
 pub(super) fn process() {
     if let Ok(filter) = Filter::parse(&format!("{TARGET}=trace")) {
-        DIAGNOSTICS.get_or_init(|| dispatch(CappedWriter::new(io::sink()), filter));
+        let diagnostics =
+            DIAGNOSTICS.get_or_init(|| dispatch(CappedWriter::new(io::sink()), filter));
+        tracing::dispatcher::with_default(diagnostics, || {
+            tracing::trace_span!(target: TARGET, "bootstrap").in_scope(|| {});
+        });
     }
     #[cfg(feature = "test-hooks")]
     super::hooks::prepare();

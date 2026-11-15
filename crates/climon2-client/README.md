@@ -212,7 +212,10 @@ signal handlers or standard streams.
 - Process- and thread-wide dependency state is never an instance's
   (`src/library/warm.rs`). Bootstrap creates tracing's process-wide
   dispatcher list through a dispatcher of the library's own that writes
-  nowhere (and, with `test-hooks`, reserves the injected-panic list). Before a
+  nowhere, and enters one span through it, which takes the span registry's
+  process-wide thread-ID locks first (on macOS a `std::sync::Mutex` allocates
+  its pthread mutex when first locked); with `test-hooks`, it also reserves
+  the injected-panic list. Before a
   caller's thread first works for an instance, it is warmed outside any
   charge: the record-formatting buffer the thread keeps is created.
 - `#[global_allocator]` replaces the allocator of every artifact that links
