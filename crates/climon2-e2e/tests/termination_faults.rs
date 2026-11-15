@@ -907,7 +907,7 @@ fn installed_library_refuses_a_partial_termination_on_any_other_request() {
             steps: submitted(
                 json!({ "open": [partial("$open")] }),
                 json!({}),
-                &[alone.clone()],
+                std::slice::from_ref(&alone),
             ),
             records: vec![Expect::Diagnostic(invalid)],
             terminal: (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED),
