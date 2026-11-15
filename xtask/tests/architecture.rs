@@ -18,8 +18,8 @@ const PACKAGES: &[&str] = &[
     "climon2-second-release",
     "xtask",
 ];
-/// The test-only second release (#97) is built as its own version, the
-/// release identity it describes.
+/// The test-only second release is built as its own version, the release
+/// identity it describes (owner decision on #97, 2026-11-15; ADR 0004).
 const SECOND_RELEASE: (&str, &str) = ("climon2-second-release", "0.0.97");
 
 #[derive(Clone, Deserialize)]

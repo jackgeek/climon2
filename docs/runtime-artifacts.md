@@ -203,7 +203,8 @@ the installed daemon started by that folder's CLI, serves 0.0.97 sessions.
 One library host loads both releases through the shared loader, and each
 release's instances open passive monitor connections to their own release's
 daemons. xtask's tests run the release checks on it as 0.0.97's library. It
-is never shipped.
+is never shipped. The developer accepted this fixture on 2026-11-15
+([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
 
 **Current (#74):** every version folder ships the `climon2-monitor` executable,
 on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 mon`, or their `climon2`

@@ -118,7 +118,8 @@ platform crate as dev-dependencies.
 library source as a package of its own version, so it consumes what that
 source consumes, `core` and `platform`, and not `climon2-client` itself.
 `climon2-e2e` and `xtask` consume it as dev-dependencies only so that Cargo
-builds its `cdylib`; no code links it.
+builds its `cdylib`; no code links it. The developer accepted this package on
+2026-11-15 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
 
 **Planned:** the monitor will consume discovery continuously (#106) and load
 version-matched client libraries in-process through the shared loader, with one
