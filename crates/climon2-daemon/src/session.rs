@@ -176,14 +176,27 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// One turn: the status clock is read once at its start, so the turn's
     /// input comes before its timer and sample work.
     fn tick(&mut self, now: Instant) -> io::Result<bool> {
+        self.start_turn()?;
+        self.turn(now)?;
+        self.clock.turn_ended()?;
+        Ok(self.finished(now))
+    }
+
+    /// Waits while a test-hooks turn barrier holds the daemon, then reads
+    /// the status clock for the whole turn.
+    fn start_turn(&mut self) -> io::Result<()> {
         self.clock.turn_starting()?;
         self.moment = self.clock.now();
+        Ok(())
+    }
+
+    /// The turn's work: input first, then the command's output, timers and
+    /// samples, then delivery.
+    fn turn(&mut self, now: Instant) -> io::Result<()> {
         self.socket_freshness.refresh(now)?;
         self.incoming()?;
         self.pump(now)?;
-        self.outgoing(now)?;
-        self.clock.turn_ended()?;
-        Ok(self.finished(now))
+        self.outgoing(now)
     }
 
     fn pump(&mut self, now: Instant) -> io::Result<()> {
