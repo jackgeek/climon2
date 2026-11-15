@@ -136,7 +136,9 @@ fn root(report: &[u8]) -> Option<Report> {
 }
 
 /// A report's well-formed pairs, the last of a repeated key winning.
-struct Fields<'a>(Vec<(&'a [u8], &'a [u8])>);
+struct Fields<'a> {
+    pairs: Vec<(&'a [u8], &'a [u8])>,
+}
 
 impl<'a> Fields<'a> {
     /// `None` when a key breaks its length limit, which discards the
@@ -147,11 +149,11 @@ impl<'a> Fields<'a> {
             .filter_map(pair)
             .collect();
         let keys_within = pairs.iter().all(|(key, _)| key.len() <= MAX_KEY);
-        keys_within.then_some(Self(pairs))
+        keys_within.then_some(Self { pairs })
     }
 
     fn get(&self, key: &[u8]) -> Option<&'a [u8]> {
-        self.0
+        self.pairs
             .iter()
             .rev()
             .find(|(name, _)| *name == key)
