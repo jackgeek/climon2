@@ -11,9 +11,6 @@ use alacritty_terminal::{
 use std::str::Utf8Chunk;
 use unicode_width::UnicodeWidthChar;
 
-/// vte's synchronized-update buffer, allocated whole by `Processor::new`.
-const PROCESSOR: usize = 2 * 1024 * 1024;
-
 /// Room for what is held only briefly or is too small to track: the front
 /// filter's partial token and the tokens one slice completes (at most about
 /// 15 KiB measured, for a 4096-byte control string held across one-byte
@@ -34,9 +31,10 @@ fn terminal(geometry: Geometry) -> usize {
     2 * screen + cols + rows * size_of::<LineDamageBounds>() + SEMANTIC_ESCAPE_CHARS.len()
 }
 
-/// Everything a fresh model instance holds before any output.
+/// Everything a fresh model instance holds before any output; the parser it
+/// is fed by is the monitor's, counted once ([`crate::Parser::BYTES`]).
 pub(crate) fn fixed(geometry: Geometry) -> usize {
-    PROCESSOR + RESERVE + terminal(geometry)
+    RESERVE + terminal(geometry)
 }
 
 /// Normal-screen history storage for a history limit of `chunks` whole

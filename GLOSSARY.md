@@ -283,6 +283,16 @@ _Avoid_: Relayed session, foreign session
 A session whose session daemon runs on the same machine as the monitor presenting it.
 _Avoid_: Native session, own session
 
+## Web monitor
+
+**Web monitor**:
+A planned monitor without a terminal interface of its own, run by `c2 web`, that presents sessions to the user's browsers.
+_Avoid_: Web server, web daemon, web client
+
+**Web view**:
+The browser side of a web monitor, where the user sees and drives sessions.
+_Avoid_: Web client, frontend, web UI
+
 ## Protocol and plugin concepts
 
 **Session ID**:
@@ -357,6 +367,10 @@ _Avoid_: Fake app, mock TUI
 **Client library stand-in**:
 A clearly labelled, test-only client library that is exact or carries one deliberate defect, and is never shipped; carrying a defect, it is a faulty library.
 _Avoid_: Mock library, fake library
+
+**Second-release fixture**:
+A clearly labelled, test-only second release, installed beside the release under test in a sibling version folder: the client library source built with its own release identity and without test hooks, and a session daemon with its release compiled in and a private behaviour of its own, so that a call or a connection crossing releases shows. It is never shipped.
+_Avoid_: Fake release, old version
 
 **Terminal oracle**:
 The test harness's emulated host, whose visible cells, cursor, modes, bells and status reports stand for what a user observes in their terminal.
