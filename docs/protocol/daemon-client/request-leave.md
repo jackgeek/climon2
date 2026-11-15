@@ -65,9 +65,10 @@ the [session daemon](../../../GLOSSARY.md#sessions) removes the registration
 in the same step that queues the success Response
 `{"kind":"left","attachment_detached":false}`, then closes the stream once that
 Response is written; requests sent after Leave are not served, and no core
-metadata follows it. Leave before any Open is `invalid_state` and the stream
-goes on. A peer may half-close after sending Leave and still read its
-Response.
+metadata follows it. Leave on a connection that opened nothing, before any
+Open or on a standalone [Kill](request-kill.md#implemented-behavior)'s
+connection, is `invalid_state` and the stream goes on. A peer may half-close
+after sending Leave and still read its Response.
 
 An interactive attachment's Leave is an accepted detach. A controller first
 receives the [release](../../../GLOSSARY.md#restoration-and-presentation) of its

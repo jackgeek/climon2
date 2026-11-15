@@ -1,19 +1,20 @@
-//! Library layer (#75): the installed client library (`libclimon2_client.dylib`
-//! on macOS, `libclimon2_client.so` on Linux), loaded by the
-//! `climon2-library-host` fixture through `dlopen(RTLD_NOW | RTLD_LOCAL)`,
-//! `dlsym` and the frozen revision-1 C ABI, never through Rust calls, static
-//! linking or a mock table. In archive mode this is the exact release
-//! archive's library.
+//! Library layer (#75, #84): the installed client library
+//! (`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux),
+//! loaded by the `climon2-library-host` fixture through the shared validated
+//! loader (`climon2_platform::library`), which opens it with
+//! `dlopen(RTLD_NOW | RTLD_LOCAL)`, and observed through the frozen
+//! revision-1 C ABI, never through Rust calls, static linking or a mock
+//! table. In archive mode this is the exact release archive's library.
 
 #[allow(dead_code)]
 mod support;
 
-use climon2_test_term::copy_executable;
+use climon2_test_term::{copy_executable, output_within};
 use serde_json::{Value, json};
-use std::{fs, path::Path};
+use std::{fs, path::Path, process::Command};
 use support::{
-    LIBRARY, Package,
-    library::{host, installed_library, observe},
+    LIBRARY, Package, TIMEOUT,
+    library::{VERSION, home, host, library, observe},
 };
 
 const SUCCESS: u64 = 0;
@@ -34,22 +35,27 @@ fn version_folder(library: &Path) -> &str {
         .unwrap()
 }
 
-/// LIB-01 Library case (absolute exact-release load): the installed library,
-/// loaded by absolute path with eager local resolution, returns revision 1's
+/// LIB-01 Library case (absolute exact-release load; same-release instances
+/// share one load): the loader accepts the installed library, loaded by
+/// absolute path with eager local resolution, which returns revision 1's
 /// immutable description. Its release text is exactly the version folder name,
 /// it advertises no capability this build does not implement, its
-/// requirements are present and bounded, and a second bootstrap returns the
-/// same description.
+/// requirements are present and within the default reservations, and a
+/// second bootstrap returns the same description. A second load of the version shares the first, and the
+/// process has loaded that one client library file.
 #[test]
 fn installed_library_describes_revision_one_with_its_version_identity() {
     let package = Package::new();
-    let library = installed_library(&package);
-    let report = observe(host(&library, package.isolation.home()));
+    let home = home(&package);
+    let library = library(&home, VERSION);
+    let report = observe(host(&home, VERSION, package.isolation.home()));
     assert_eq!(report["status"], SUCCESS, "{report:#}");
     assert_eq!(report["output"], "set");
     assert_eq!(report["image"], library.to_str().unwrap());
     assert_eq!(report["description_image"], library.to_str().unwrap());
     assert_eq!(report["stable"], true);
+    assert_eq!(report["shared"], true);
+    assert_eq!(report["images"], json!([library]));
     let description = &report["description"];
     assert_eq!(description["revision"], 1);
     assert_eq!(description["reserved"], 0);
@@ -58,16 +64,17 @@ fn installed_library_describes_revision_one_with_its_version_identity() {
         description["capabilities"],
         json!({ "null": true, "count": 0, "tokens": [] })
     );
-    assert_bounded(&description["requirements"]);
+    assert_within_default_reservations(&description["requirements"]);
     package.assert_clean();
 }
 
-/// Present and bounded: every requirement fits the default `monitor.limits`
-/// reservations (docs/monitor-operational-limits.md), so a default-configured
-/// monitor admits the release without raising a reservation. Resources every
+/// Present, and within the default reservations: every requirement fits the
+/// default `monitor.limits` reservations
+/// (docs/monitor-operational-limits.md), so a default-configured monitor
+/// admits the release without raising a reservation. Resources every
 /// instance needs (owner stack, local allocation, notification descriptor)
 /// are nonzero; workers need stacks.
-fn assert_bounded(requirements: &Value) {
+fn assert_within_default_reservations(requirements: &Value) {
     let field = |name: &str| requirements[name].as_u64().unwrap();
     assert!(field("release_bytes") <= 64 * MIB, "{requirements}");
     assert!(
@@ -98,8 +105,7 @@ fn assert_bounded(requirements: &Value) {
 #[test]
 fn installed_library_rejects_other_revisions_without_a_description() {
     let package = Package::new();
-    let library = installed_library(&package);
-    let report = observe(host(&library, package.isolation.home()));
+    let report = observe(host(&home(&package), VERSION, package.isolation.home()));
     for revision in [0u64, 2, u32::MAX.into()] {
         assert!(
             report["other_revisions"]
@@ -127,8 +133,7 @@ fn installed_library_rejects_other_revisions_without_a_description() {
 #[test]
 fn installed_library_table_rejects_null_arguments_and_cannot_submit_yet() {
     let package = Package::new();
-    let library = installed_library(&package);
-    let report = observe(host(&library, package.isolation.home()));
+    let report = observe(host(&home(&package), VERSION, package.isolation.home()));
     let functions = &report["description"]["functions"];
     let entries = functions["entries"].as_object().unwrap();
     let names = [
@@ -179,29 +184,27 @@ fn installed_library_table_rejects_null_arguments_and_cannot_submit_yet() {
 /// LIB-01 Library case: `current` names another version folder, and valid
 /// copies of the library sit there, in the working directory and on
 /// `LD_LIBRARY_PATH` (Linux) and `DYLD_FALLBACK_LIBRARY_PATH` (macOS).
-/// Loading by absolute version path still maps the requested file. That is
-/// the system loader's lookup, which the library relies on but cannot change,
-/// so only a loader or host change fails it; the Linux release checks reject
-/// the library properties through which a lookup could bind another release.
-/// The library's own part is its identity: it answers from its own image with
-/// its own folder's release, not the one `current` names, and the copy in the
-/// other version folder reports its compiled-in release, not one derived from
-/// its location.
+/// Loading by absolute version path still maps the requested file, and only
+/// that one: the system loader's lookup, which the library relies on but
+/// cannot change, so only a loader or host change fails it; the Linux release
+/// checks reject the library properties through which a lookup could bind
+/// another release. The library's own part is its identity: it answers from
+/// its own image with its own folder's release, not the one `current` names.
 #[test]
 fn installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths() {
     let package = Package::private();
-    let library = installed_library(&package);
-    let home = package.executable_home();
-    let misplaced = home.join("0.0.1").join(LIBRARY);
-    let private = home.parent().unwrap();
+    let home = home(&package);
+    let library = library(&home, VERSION);
+    let misplaced = self::library(&home, "0.0.1");
+    let private = home.path().parent().unwrap();
     let directory = private.join("working directory");
     let search = private.join("search path");
     for decoy in [&misplaced, &directory.join(LIBRARY), &search.join(LIBRARY)] {
         fs::create_dir_all(decoy.parent().unwrap()).unwrap();
         copy_executable(&library, decoy);
     }
-    fs::write(home.join("current"), "0.0.1\n").unwrap();
-    let mut ambient = host(&library, &directory);
+    fs::write(home.path().join("current"), "0.0.1\n").unwrap();
+    let mut ambient = host(&home, VERSION, &directory);
     ambient
         .env("DYLD_FALLBACK_LIBRARY_PATH", &search)
         .env("LD_LIBRARY_PATH", &search);
@@ -210,10 +213,173 @@ fn installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_sea
     assert_eq!(report["image"], library.to_str().unwrap());
     assert_eq!(report["description_image"], library.to_str().unwrap());
     assert_eq!(report["description"]["release"], version_folder(&library));
-    let misplaced = misplaced.canonicalize().unwrap();
-    let report = observe(host(&misplaced, &directory));
-    assert_eq!(report["image"], misplaced.to_str().unwrap());
-    assert_eq!(version_folder(&misplaced), "0.0.1");
-    assert_eq!(report["description"]["release"], version_folder(&library));
+    assert_eq!(report["images"], json!([library]));
+    package.assert_clean();
+}
+
+/// LIB-02 Library case (wrong release; missing library; no substituted
+/// release): `current` names 0.0.1, whose folder holds a copy of the
+/// installed library, which describes its own compiled-in release, not
+/// 0.0.1. Loading 0.0.1 is refused as the wrong release, naming the release
+/// the copy describes, and that refused copy stays loaded; the installed
+/// library of the release it describes is not loaded instead. A version
+/// folder without a library is refused as a missing library, and nothing is
+/// loaded.
+#[test]
+fn installed_library_of_another_release_or_none_is_refused_without_substitution() {
+    let package = Package::private();
+    let home = home(&package);
+    let library = library(&home, VERSION);
+    let misplaced = self::library(&home, "0.0.1");
+    fs::create_dir(misplaced.parent().unwrap()).unwrap();
+    copy_executable(&library, &misplaced);
+    let missing = self::library(&home, "0.0.2");
+    fs::create_dir(missing.parent().unwrap()).unwrap();
+    fs::write(home.path().join("current"), "0.0.1\n").unwrap();
+    let report = observe(host(&home, "0.0.1", package.isolation.home()));
+    assert_eq!(report["error"]["failure"], "WrongRelease", "{report:#}");
+    let message = report["error"]["message"].as_str().unwrap();
+    let described = format!("release \"{}\", not 0.0.1", version_folder(&library));
+    assert!(message.contains(&described), "{message}");
+    assert_eq!(report["images"], json!([misplaced]));
+    let report = observe(host(&home, "0.0.2", package.isolation.home()));
+    assert_eq!(report["error"]["failure"], "MissingLibrary", "{report:#}");
+    let message = report["error"]["message"].as_str().unwrap();
+    assert!(message.contains(missing.to_str().unwrap()), "{message}");
+    assert_eq!(report["images"], json!([]));
+    package.assert_clean();
+}
+
+/// A private directory beside the build's other test scratch.
+fn scratch() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("library-")
+        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .unwrap()
+}
+
+/// LIB-01 Library case on Linux (the user's loader environment, library
+/// embedding): `LD_PRELOAD` and `LD_AUDIT` name an audit library that accepts
+/// every interface version, `LD_LIBRARY_PATH` names a directory and
+/// `GLIBC_TUNABLES` sets a malloc tunable. The installed library still loads
+/// from its absolute version path, and the four variables are exactly as they
+/// were: the loader neither clears them nor refuses to load because they are
+/// set.
+#[cfg(target_os = "linux")]
+#[test]
+fn installed_library_loads_under_the_users_loader_environment() {
+    let package = Package::new();
+    let home = home(&package);
+    let library = library(&home, VERSION);
+    let scratch = scratch();
+    let directory = scratch.path().canonicalize().unwrap();
+    let source = directory.join("audit.c");
+    fs::write(
+        &source,
+        "unsigned la_version(unsigned version) { return version; }\n",
+    )
+    .unwrap();
+    let audit = directory.join("libclimon2_audit.so");
+    let output = output_within(
+        Command::new("cc")
+            .args(["-shared", "-fPIC", "-o"])
+            .arg(&audit)
+            .arg(&source),
+        TIMEOUT,
+    );
+    assert!(output.status.success(), "{output:?}");
+    let audit = audit.to_str().unwrap();
+    let variables = [
+        ("LD_PRELOAD", audit),
+        ("LD_AUDIT", audit),
+        ("LD_LIBRARY_PATH", directory.to_str().unwrap()),
+        ("GLIBC_TUNABLES", "glibc.malloc.tcache_count=7"),
+    ];
+    let mut host = host(&home, VERSION, &directory);
+    host.envs(variables);
+    let report = observe(host);
+    assert_eq!(report["status"], SUCCESS, "{report:#}");
+    assert_eq!(report["images"], json!([library]));
+    for (name, value) in variables {
+        assert_eq!(report["environment"][name], value, "{name}");
+    }
+    package.assert_clean();
+}
+
+/// LIB-01 Library case on macOS (exact lookup prevails over
+/// `DYLD_LIBRARY_PATH`; owner decision on #84): dyld looks for the library's
+/// file name in every `DYLD_LIBRARY_PATH` directory before it opens an
+/// absolute path, so a copy of the library there is what it loads. The loader
+/// finds with `dladdr` that the loaded image is not the requested file and
+/// refuses the substitute, naming it; the substitute it opened stays loaded.
+#[cfg(target_os = "macos")]
+#[test]
+fn installed_library_substituted_through_dyld_library_path_is_refused() {
+    let package = Package::new();
+    let home = home(&package);
+    let library = library(&home, VERSION);
+    let scratch = scratch();
+    let search = scratch.path().canonicalize().unwrap();
+    let decoy = search.join(LIBRARY);
+    copy_executable(&library, &decoy);
+    let mut substituted = host(&home, VERSION, &search);
+    substituted.env("DYLD_LIBRARY_PATH", &search);
+    let report = observe(substituted);
+    assert_eq!(report["error"]["failure"], "SubstitutedImage", "{report:#}");
+    let message = report["error"]["message"].as_str().unwrap();
+    assert!(message.contains(library.to_str().unwrap()), "{message}");
+    assert!(message.contains(decoy.to_str().unwrap()), "{message}");
+    assert_eq!(report["images"], json!([decoy]));
+    package.assert_clean();
+}
+
+/// LIB-01 Fault case on macOS (an adversarial decoy without the bootstrap;
+/// owner decision on #84): when the file dyld loaded through `DYLD_LIBRARY_PATH`
+/// lacks `climon2_client_get_interface`, `dladdr` cannot name it, so the
+/// refusal lists every loaded image with the library's file name, the main
+/// executable included. The host runs as a copy named like the library
+/// outside the search path, so the refusal names that copy first, then the
+/// decoy, in dyld's load order.
+#[cfg(target_os = "macos")]
+#[test]
+fn substitute_without_a_bootstrap_is_refused_naming_every_loaded_image_of_its_name() {
+    use climon2_test_term::bin_path;
+    use support::library::host_at;
+    let package = Package::new();
+    let home = home(&package);
+    let library = library(&home, VERSION);
+    let scratch = scratch();
+    let scratch = scratch.path().canonicalize().unwrap();
+    let search = scratch.join("search");
+    let hosts = scratch.join("host");
+    fs::create_dir(&search).unwrap();
+    fs::create_dir(&hosts).unwrap();
+    let source = scratch.join("decoy.c");
+    fs::write(&source, "int climon2_decoy_without_a_bootstrap;\n").unwrap();
+    let decoy = search.join(LIBRARY);
+    let output = output_within(
+        Command::new("cc")
+            .arg("-dynamiclib")
+            .arg("-o")
+            .arg(&decoy)
+            .arg(&source),
+        TIMEOUT,
+    );
+    assert!(output.status.success(), "{output:?}");
+    let named_host = hosts.join(LIBRARY);
+    copy_executable(&bin_path("climon2-library-host"), &named_host);
+    let mut substituted = host_at(&named_host, &home, VERSION, &scratch);
+    substituted.env("DYLD_LIBRARY_PATH", &search);
+    let report = observe(substituted);
+    assert_eq!(report["error"]["failure"], "SubstitutedImage", "{report:#}");
+    let message = report["error"]["message"].as_str().unwrap();
+    assert!(message.contains(library.to_str().unwrap()), "{message}");
+    let expected = format!(
+        "loaded a file of the same name ({}, {}) instead",
+        named_host.display(),
+        decoy.display()
+    );
+    assert!(message.contains(&expected), "{message}");
+    assert_eq!(report["images"], json!([named_host, decoy]));
     package.assert_clean();
 }

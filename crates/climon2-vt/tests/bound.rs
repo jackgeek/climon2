@@ -4,7 +4,7 @@
 //! thread holds, so a model that grew past its limit, or charged less than it
 //! held, fails here whatever the model believes about itself.
 
-use climon2_vt::{Geometry, Limits, Model, Parser, Rejected};
+use climon2_vt::{Geometry, Limits, Mandatory, Model, Parser, Rejected};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::{Cell, RefCell},
@@ -135,6 +135,60 @@ fn a_model_is_admitted_at_its_mandatory_bytes_and_rejected_one_below() {
     let model = Model::new(at, limits(mandatory, 10_000)).unwrap();
     assert!(meter.peak() <= model.footprint());
     assert_eq!(model.footprint(), mandatory);
+}
+
+/// LIM-03 Contract and CFG-01 Contract: `Model::mandatory` gives what a
+/// model must be able to hold by part, written here from ADR 0007's charges:
+/// the current model (the 32 KiB reserve, both screens, tab stops, line
+/// damage and the semantic escape characters; the monitor's shared parser is
+/// counted apart) and, when it keeps history, the first 1000-row history
+/// chunk, which holds the protected newest page (#166). `Model::new` admits
+/// a blank model at the current model and refuses it one byte below; the
+/// first scroll is admitted at the sum and rejected one byte below it, and
+/// neither allocates more than was admitted.
+#[test]
+fn a_models_mandatory_allocation_is_its_current_model_and_recent_page() {
+    for (cols, rows, history_rows, current_model, recent_page) in [
+        (80, 24, NO_HISTORY, 127_139, 0),
+        (80, 24, 10_000, 127_139, 2_018_304),
+        (500, 200, NO_HISTORY, 4_850_887, 0),
+        (500, 200, 10_000, 4_850_887, 12_115_200),
+    ] {
+        let at = geometry(cols, rows);
+        assert_eq!(
+            Model::mandatory(at, history_rows),
+            Mandatory {
+                current_model,
+                recent_page
+            }
+        );
+        assert_eq!(
+            Model::new(at, limits(current_model - 1, history_rows)).err(),
+            Some(Rejected {
+                needed: current_model,
+                limit: current_model - 1
+            })
+        );
+        let scroll = vec![b'\n'; usize::from(rows)];
+        let total = current_model + recent_page;
+        let meter = Meter::watch();
+        let mut model = Model::new(at, limits(total, history_rows)).unwrap();
+        assert_eq!(model.footprint(), current_model);
+        model.feed_shared(&scroll).unwrap();
+        assert!(meter.peak() <= total, "{} > {total}", meter.peak());
+        assert_eq!(model.footprint(), total);
+
+        if recent_page > 0 {
+            let mut model = Model::new(at, limits(total - 1, history_rows)).unwrap();
+            assert_eq!(
+                model.feed_shared(&scroll),
+                Err(Rejected {
+                    needed: total,
+                    limit: total - 1
+                })
+            );
+        }
+    }
 }
 
 const ROOMY: usize = 64 * 1024 * 1024;

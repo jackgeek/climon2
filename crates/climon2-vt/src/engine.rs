@@ -51,11 +51,12 @@ impl Dimensions for Size {
     }
 }
 
-fn config(history: usize) -> Config {
+fn config(history: usize, unset: CursorStyle) -> Config {
     Config {
         scrolling_history: history,
         kitty_keyboard: false,
         osc52: Osc52::Disabled,
+        default_cursor_style: unset,
         ..Config::default()
     }
 }
@@ -87,12 +88,16 @@ impl Default for Parser {
 /// model both run it, fed by a parser it is given.
 pub(crate) struct Core<L> {
     term: Term<L>,
+    /// The cursor style the engine reports while the application has set
+    /// none.
+    unset: CursorStyle,
 }
 
 impl<L: EventListener> Core<L> {
-    pub(crate) fn new(geometry: Geometry, history: usize, listener: L) -> Self {
+    pub(crate) fn new(geometry: Geometry, history: usize, listener: L, unset: CursorStyle) -> Self {
         Self {
-            term: Term::new(config(history), &Size(geometry), listener),
+            term: Term::new(config(history, unset), &Size(geometry), listener),
+            unset,
         }
     }
 
@@ -108,11 +113,19 @@ impl<L: EventListener> Core<L> {
     /// Change the normal screen's history capacity, dropping its oldest rows
     /// beyond it.
     pub(crate) fn set_history(&mut self, rows: usize) {
-        self.term.set_options(config(rows));
+        self.term.set_options(config(rows, self.unset));
     }
 
     pub(crate) fn alternate(&self) -> bool {
         self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    pub(crate) fn mode(&self) -> TermMode {
+        *self.term.mode()
+    }
+
+    pub(crate) fn cursor_style(&self) -> CursorStyle {
+        self.term.cursor_style()
     }
 
     /// History rows the normal screen holds, when it is the active screen.
@@ -131,21 +144,23 @@ impl<L: EventListener> Core<L> {
     }
 
     /// Lower the normal screen's history limit to `rows`, releasing at once
-    /// the rows it drops and their cell data, then read the normal screen.
+    /// the rows it drops and their cell data, then read the normal screen;
+    /// true with what was read when rows were dropped.
     pub(crate) fn lower_history<R>(
         &mut self,
         rows: usize,
         read: impl FnOnce(&Grid<Cell>) -> R,
-    ) -> R {
+    ) -> (R, bool) {
         self.on_normal(|core| {
             let held = core.term.grid().history_size();
             core.set_history(rows);
             // Truncating when no row was dropped would let the engine's next
             // growth add a whole chunk of storage beyond the lower limit.
-            if held.min(rows) < held {
+            let dropped = held.min(rows) < held;
+            if dropped {
                 core.truncate();
             }
-            read(core.active())
+            (read(core.active()), dropped)
         })
     }
 
@@ -200,7 +215,7 @@ impl Engine {
         let listener = Listener::default();
         let events = listener.0.clone();
         Self {
-            core: Core::new(geometry, history, listener),
+            core: Core::new(geometry, history, listener, CursorStyle::default()),
             parser: Parser::new(),
             events,
             signals: Signals::default(),
@@ -259,7 +274,7 @@ impl Engine {
     }
 
     pub(crate) fn mode(&self) -> TermMode {
-        *self.core.term.mode()
+        self.core.mode()
     }
 
     /// Change the normal screen's history capacity, dropping its oldest rows
@@ -284,7 +299,7 @@ impl Engine {
     }
 
     pub(crate) fn cursor_style(&self) -> CursorStyle {
-        self.core.term.cursor_style()
+        self.core.cursor_style()
     }
 
     pub(crate) fn active(&self) -> &Grid<Cell> {

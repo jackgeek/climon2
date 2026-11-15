@@ -3,12 +3,17 @@
 The default macOS and GNU/Linux packaged acceptance tier (#38), using the public installer,
 the PATH launcher, real sibling binaries and `climon2-test-term` PTYs.
 There are no nested Cargo builds, ignored packaged tests, test retries, or shortened
-production deadlines. A client discards keys typed during its restoration and
-nothing on the screen marks its end, so typed input is ordered by observed output:
+production deadlines. A client discards keys typed during a restoration, which every
+grant starts (a new attachment, take control or hand-back), and nothing on the screen
+marks its end, so typed input is ordered by observed output:
 before input that must reach the session, `type_until` retypes a harmless command
 until its output (or echo) appears, and the input itself is then sent exactly once.
 That orders the input; it does not retry an assertion. Where typing would only end
 the command, the command instead waits for an acknowledgement file the test creates.
+A command that cannot answer a harmless key, because it records every byte or any key
+ends it, answers an acknowledgement file with output instead: created only once the
+client shows restored output, the file's answer is live output, which a client writes
+only after its restoration.
 Each scenario has an isolated HOME and climon2 home;
 normal completion checks owned processes, session metadata and runtime sockets.
 Logs intentionally survive until the isolated home is dropped.
@@ -70,17 +75,22 @@ no compatibility evidence was fabricated.
 `tests/library.rs` loads the installed client library,
 `<executable home>/<version>/libclimon2_client.dylib` on macOS or
 `libclimon2_client.so` on Linux, through the test-only `climon2-library-host`
-fixture, which uses only `dlopen` (`RTLD_NOW | RTLD_LOCAL`), `dlsym` of
-`climon2_client_get_interface` and the returned function table, never Rust
-calls, static linking or a mock table. The host prints its observations as
-JSON; the tests decide what is correct. Each host run is bounded; one that
-outlives its deadline is killed, reaped and failed. In archive mode the same
-tests load the exact archive's library, so the CI archive jobs exercise both
-macOS architectures' slices and the Linux library. The exported symbol set is
-a release check (`xtask`), not a Library-layer test.
+fixture. Given an executable home and a version, the host loads through the
+shared validated loader (`climon2_platform::library`, #84), which opens the
+library with `dlopen` (`RTLD_NOW | RTLD_LOCAL`), and then calls only the
+bootstrap and the returned function table, never Rust calls, static linking or
+a mock table. The host prints its observations as JSON, including the loader's
+refusal, whether a second load shared the first, every loaded file named like
+the client library, and its environment; the tests decide what is correct.
+Each host run is bounded; one that outlives its deadline is killed, reaped and
+failed. In archive mode the same tests load the exact archive's library, so
+the CI archive jobs exercise both macOS architectures' slices and the Linux
+library. The exported symbol set is a release check (`xtask`), not a
+Library-layer test; the loader's Fault-layer cases are `climon2-platform`'s,
+except the macOS decoy found through `DYLD_LIBRARY_PATH` without the bootstrap.
 
 `tests/instance.rs` (#85) drives client instances through the same host's
-scenarios (`climon2-library-host <library> <scenario> <json>`), from the
+scenarios (`climon2-library-host <home> <version> <scenario> <json>`), from the
 threads the contract names: an owner thread creates, runs and destroys each
 instance while the test's main thread shuts it down, drains and releases. The
 host is the Library layer's instrumented host: caller startup memory is one
@@ -129,12 +139,16 @@ sessions in `tests/headless.rs`.
 | #19/#25 client panic after exec, diagnostic/log suffix, actual daemon leave policy | `debug_hook_client_panic_after_exec_logs_and_uses_daemon_leave_policy` |
 | #25/#39 actual release default INFO-or-above | smoke's `assert_archive_default_levels` in archive mode |
 
-### Library layer (`tests/library.rs`, #75)
+### Library layer (`tests/library.rs`, #75, #84)
 
 | Scenario | Named test |
 |---|---|
-| LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; bounded requirements; no unimplemented capability | `installed_library_describes_revision_one_with_its_version_identity` |
-| LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths (`LD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`), the absolute path maps the requested file (the system loader's lookup, which no library change can alter); the library answers from its own image with its own folder's release, not `current`'s, and a misplaced copy reports its compiled-in release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
+| LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; requirements present and within the default `monitor.limits` reservations; no unimplemented capability; a second load of the version shares the first, and only that file is loaded | `installed_library_describes_revision_one_with_its_version_identity` |
+| LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths (`LD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`), the absolute path maps the requested file and only it (the system loader's lookup, which no library change can alter); the library answers from its own image with its own folder's release, not `current`'s | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
+| LIB-02 Library: a version folder holding a copy that describes another release is refused as the wrong release, naming the compiled-in release; the copy stays loaded and the release it describes is not substituted; a folder without a library is a missing library and nothing loads | `installed_library_of_another_release_or_none_is_refused_without_substitution` |
+| LIB-01 Library, Linux: with `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` set, the library loads and all four stay as they were | `installed_library_loads_under_the_users_loader_environment` |
+| LIB-01 Library, macOS (#84 owner decision): a copy found through `DYLD_LIBRARY_PATH` is refused as a substituted image, naming both files, and stays loaded | `installed_library_substituted_through_dyld_library_path_is_refused` |
+| LIB-01 Fault, macOS (#84 owner decision): an adversarial decoy without the bootstrap is refused, listing every loaded image of the library's file name in load order, the main executable included | `substitute_without_a_bootstrap_is_refused_naming_every_loaded_image_of_its_name` |
 | LIB-02 Library: unsupported revisions rejected with a null description; null output storage | `installed_library_rejects_other_revisions_without_a_description` |
 | DOC-01: all eleven table entries reject null handles and outputs by the frozen call rules; `submit` stays unsupported | `installed_library_table_rejects_null_arguments_and_cannot_submit_yet` |
 
@@ -204,6 +218,7 @@ earlier run would, so they open on the empty state.
 | INP-01 configured prefix hint and exit 0, null take-control key accepted; once read, Ctrl+C and the default prefix+x are not exits (SIGTERM then gives 143) | `installed_monitor_hints_and_exits_with_the_configured_prefix` |
 | INP-01 null escape prefix and invalid keys refused before terminal changes | `installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys` |
 | CFG-01 unreadable and malformed JSONC, null, wrong type, duplicate, overflow, out-of-range and inconsistent settings: one diagnostic, 125, no terminal change | `installed_monitor_refuses_every_invalid_configuration_before_the_terminal_changes` |
+| CFG-01 limits one byte short of the monitor's parser and one 500x200 session's documented current model and recent page (total), of the model and page (client budget) or recent page (history total, then per-session history budget): one diagnostic naming that limit, 125, no terminal change; at those limits the monitor opens and prefix+x exits 0 (#167) | `installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model` |
 | CFG-01 `monitor.show_key_hints` false hides the empty state's hint, prefix+x still exits; unknown and unrelated settings ignored | `installed_monitor_without_key_hints_shows_none_and_still_exits` |
 | CFG-01 no live reload: after an edit, a repaint keeps the started settings and the edited prefix, once read, does not exit (SIGTERM then gives 143) | `editing_the_configuration_while_the_monitor_runs_changes_nothing` |
 | CFG-01 every effective setting in the monitor's general log | `installed_monitor_logs_its_effective_configuration` |
@@ -213,7 +228,7 @@ earlier run would, so they open on the empty state.
 | Spec #73 entry: missing monitor fails with 125 naming the version | `missing_installed_monitor_fails_naming_its_version` |
 | Spec #73 startup: no executable home outside a version folder | `a_monitor_outside_a_version_folder_refuses_to_start` |
 | EXT-03 (Monitor, empty monitor) SIGINT/SIGTERM/SIGHUP give 130/143/129 | `signals_release_the_host_with_signal_style_status` |
-| EXT-03 (Monitor, empty monitor) hung-up host input releases the host before its one diagnostic, logged, 125 | `a_hung_up_host_input_releases_the_host_before_its_diagnostic` |
+| EXT-03 (Monitor, empty monitor) hung-up host input, read as its end or as EIO, releases the host before its one diagnostic, logged, 125 | `a_hung_up_host_input_releases_the_host_before_its_diagnostic`, `host_input_failing_with_eio_releases_the_host_before_its_diagnostic` |
 | EXT-03 (Fault, empty monitor) render failure or failed wait for host input releases the host before its one diagnostic, 125 | `debug_hook_render_failure_restores_the_host_before_its_diagnostic`, `debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic` |
 | Spec #73 host terminal; TRM-04 (empty monitor): SIGWINCH repaints exactly at the new size without erasing or showing the cursor | `resizing_the_host_redraws_the_monitor_at_the_new_size` |
 | Spec #73 exit: content-free monitor general log | `installed_monitor_logs_content_free_records_to_its_general_log` |

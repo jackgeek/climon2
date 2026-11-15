@@ -3,8 +3,9 @@
 **Status: agreed future specification, not implemented behavior, except that
 the monitor and `exec` validate the `monitor.limits` configuration and the
 monitor reports its effective values
-([#82](https://github.com/jackgeek/climon2/issues/82)). That validation does
-not yet check that the mandatory current model and recent page fit
+([#82](https://github.com/jackgeek/climon2/issues/82)). At startup the monitor
+alone also refuses limits that cannot hold one session's mandatory current
+model and recent page
 ([#167](https://github.com/jackgeek/climon2/issues/167)). Operating-system
 limits are left to admission
 ([#120](https://github.com/jackgeek/climon2/issues/120)). The client library
@@ -61,6 +62,33 @@ Counts must fit the interface and applicable operating-system limits.
 Changing a setting never makes an allocation-aware engine unnecessary.
 These are ceilings, not instructions to preallocate every client's maximum.
 
+The monitor checks the mandatory current model and recent page at startup,
+before the host terminal changes, for one [session](../GLOSSARY.md#sessions)
+at the largest supported geometry, 500x200, as `climon2-vt` charges a
+terminal model there
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)):
+the current model (the 32 KiB reserve and both screens, 4,850,887 bytes) and
+the first 1000-row history chunk, which holds its recent page and is admitted
+at the first scroll (12,115,200 bytes), beside the monitor's one shared vte
+parser (2,097,152 bytes,
+[#166](https://github.com/jackgeek/climon2/issues/166)). `memory.total_bytes`
+must hold all three, 19,063,239 bytes; `memory.client_bytes` the model and
+page, 16,966,087 bytes, since the parser is the monitor's, not a client's;
+`memory.history_bytes_total`, then `history_bytes_per_session`, must hold
+the page. Each total is checked before the budgets it contains, so a refusal
+names the limit to raise, with both byte counts. `exec` does not make this
+check: only the monitor has terminal models.
+
+The check guarantees admission, not restoration. A restoration is staged in a
+second model beside the current one, whose first history chunk never yields
+to it, and a restoration carries history, so it admits its own first chunk:
+staging one at 500x200 needs room for both models, at least 33,932,174 bytes
+in a client's budget and, with the parser, 36,029,326 in the total (ADR
+0007's 32.36 MiB per staged pair), more once the current model's history has
+grown. Limits below that admit the largest session but cannot stage its
+restoration, which follows every monitor-mode geometry change
+([#89](https://github.com/jackgeek/climon2/issues/89)).
+
 Report effective configured values, qualified reservations and exhaustion
 diagnostics explicitly. Classification and peer visibility are:
 
@@ -108,9 +136,9 @@ An illustrative override is:
 }
 ```
 
-The monitor and `exec` validate this configuration, but no limit is enforced
-yet; the status note names the checks still to come. It does not modify daemon
-`scrollback.max_rows`.
+The monitor and `exec` validate this configuration, the monitor alone also
+against its terminal models' mandatory allocation (above), but no limit is
+enforced yet. It does not modify daemon `scrollback.max_rows`.
 
 ## Memory, history and admission
 
@@ -231,10 +259,14 @@ The owner then raised the default `memory.total_bytes` from 512 MiB to
 their first chunk; 500x200 records that measured capacity instead of 100
 sessions
 ([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)).
-The monitor does not
-yet use the shared parser
-([#108](https://github.com/jackgeek/climon2/issues/108)), and its own
-budgets and pressure policies above remain unimplemented.
+#83's read-only history view labels truncation: rows beyond the row ceiling
+or released under pressure, and, as the owner decided, a full history that
+output could have overrun once growth was capped or refused, because the
+engine does not report the rows it discards there
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#read-only-views-for-painting)).
+The monitor does not yet keep models or use the shared parser
+([#108](https://github.com/jackgeek/climon2/issues/108)), and its own budgets
+and pressure policies above remain unimplemented.
 
 ## Queues and transfers
 

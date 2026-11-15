@@ -92,8 +92,9 @@ fn windows_absolute(value: &str) -> bool {
     })
 }
 
-/// A lowercase canonical hyphenated GUID.
-fn validate_guid(value: &str) -> Result<(), ContractError> {
+/// A lowercase canonical hyphenated GUID: the one rule for session IDs, wire
+/// GUIDs and the Linux boot ID in session metadata.
+pub(crate) fn validate_guid(value: &str) -> Result<(), ContractError> {
     let guid = uuid::Uuid::parse_str(value).map_err(|_| ContractError("invalid GUID".into()))?;
     if guid.hyphenated().to_string() != value {
         return Err(ContractError(

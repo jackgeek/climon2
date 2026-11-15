@@ -8,7 +8,7 @@ use crate::{
     keys::{ClientSettings, ControlKey, SettingsError},
     layout::HomeLayout,
 };
-pub use limits::Limits;
+pub use limits::{Limits, MandatoryAllocation};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{DeserializeOwned, Error as _},

@@ -199,6 +199,13 @@ not their length prefixes.
 JSON with `//` and `/* */` comments and trailing commas. Comments separate tokens
 but never join them. It is used for local startup configuration, not daemon wire bodies.
 
+## Mach-O and slices
+
+Mach-O is the binary format of macOS executables and libraries. A universal
+file holds one Mach-O slice per architecture, and the
+[dynamic loader](#dynamic-loader) uses the slice for the running process's
+architecture.
+
 ## MiB
 
 A mebibyte: 1,048,576 bytes. This unit is distinct from a decimal megabyte.
@@ -303,6 +310,13 @@ soname as one library.
 
 Stdin, stdout, and stderr are a process's standard input, output, and diagnostic
 streams.
+
+## Synchronized update
+
+A span of terminal output that an application brackets with the
+synchronized-output mode (DEC private mode 2026) so the terminal shows it as
+one coherent frame: output inside the span is held until the application ends
+it.
 
 ## Toast
 
