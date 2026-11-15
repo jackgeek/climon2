@@ -17,12 +17,15 @@ attachment, and relays control and display
 [Kill](../../GLOSSARY.md#attachment-and-control) on an auxiliary connection
 of its own ([#96](https://github.com/jackgeek/climon2/issues/96)). The one
 shared loader that the [monitor](../../GLOSSARY.md#sessions) and the
-[client executable](../../GLOSSARY.md#sessions) will both use is implemented
+[client executable](../../GLOSSARY.md#sessions) both use is implemented
 ([#84](https://github.com/jackgeek/climon2/issues/84)): it performs the
 [lookup](#artifact-and-dependency-lookup), the load-failure classification and
-the description validation below, and keeps every handle it opens. Only test
-tooling uses it so far; loading by the monitor and the client executable is
-not implemented. The
+the description validation below, and keeps every handle it opens. The client
+executable's kill mode loads its own version folder's library through it and
+submits Kill through the function table
+([#100](https://github.com/jackgeek/climon2/issues/100)); test tooling uses it
+too. Loading by the monitor, and by the client executable for ordinary attach,
+is not implemented. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
 requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)
 adds x86-64 GNU/Linux. [Native revision 1](monitor-client/core-v1.md), confirmed in
@@ -70,7 +73,9 @@ from the [install layout](../../GLOSSARY.md#installation). The library file is
 GNU/Linux; the version folder, not the file name, carries the release. Never
 substitute `current`, another installed release, or a library found through a
 search path. The [client executable](../../GLOSSARY.md#sessions) loads the same
-filename beside itself and verifies its own exact release.
+filename beside itself and verifies its own exact release: its executable home
+and release are those of the version folder it runs from, so the library must
+describe that folder's release ([#100](https://github.com/jackgeek/climon2/issues/100)).
 
 On macOS, [dyld](TERMS.md#dynamic-loader) searches each `DYLD_LIBRARY_PATH`
 directory for the library file's name before it opens an absolute path, so
