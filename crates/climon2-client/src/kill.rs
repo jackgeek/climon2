@@ -4,7 +4,10 @@
 //! waits for the definitive outcome. Success is a confirmed termination
 //! alone, whatever the command's status.
 
-use crate::embedded::{Embedded, NativeError, Startup, own_library};
+use crate::{
+    embedded::{Embedded, NativeError, session_instance},
+    polling::interrupted,
+};
 use climon2_core::{SessionId, metadata::SessionMetadata, native};
 use climon2_platform::terminal::Signals;
 use std::{io, path::Path, ptr};
@@ -33,18 +36,10 @@ pub(crate) fn run(
 /// An instance of this release's library for the session, with the Kill
 /// submitted.
 fn start(metadata: &SessionMetadata, path: &Path, home: &Path) -> io::Result<Embedded> {
-    let (library, release) = own_library()?;
-    let socket = Path::new(metadata.socket_path.as_str());
-    let startup = Startup {
-        session: metadata.session_id.bytes(),
-        release,
-        metadata: path.to_owned(),
-        home: home.to_owned(),
-        runtime: socket.parent().unwrap_or(socket).to_owned(),
-        settings: native::Settings::default(),
-    };
-    let instance = Embedded::start(library, startup)?;
-    instance.submit(&request()).map(|()| instance)
+    let instance = session_instance(metadata, path, home)?;
+    // The first request of a fresh instance always finds room.
+    instance.submit(&request())?;
+    Ok(instance)
 }
 
 /// The only request: public ID 1, a Kill of the instance's session that
@@ -73,12 +68,6 @@ fn answer(instance: &Embedded, signals: &Signals) -> io::Result<Option<Answer>> 
         ended = instance.turn(&mut keep, POLL_MS)?;
     }
     Ok(answer)
-}
-
-fn interrupted(signals: &Signals) -> io::Result<()> {
-    signals
-        .termination_signal()
-        .map_or(Ok(()), |_| Err(io::ErrorKind::Interrupted.into()))
 }
 
 /// The Kill's Response, the only one a Kill-only instance delivers. The

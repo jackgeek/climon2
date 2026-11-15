@@ -11,6 +11,7 @@ use climon2_core::{
     VersionName,
     diagnostics::default_filter,
     layout::{ExecutableLayout, VersionBinary},
+    metadata::SessionMetadata,
     native::{self, Call, Communication, Control, Created, Drained as Out, Instance, RunReport},
 };
 use climon2_platform::library::{Functions, Library, Loader};
@@ -61,17 +62,38 @@ pub(crate) const LIMITS: native::Limits = native::Limits {
 
 /// The only instance an executable creates is its first connection
 /// generation.
-const GENERATION: u64 = 1;
+pub(crate) const GENERATION: u64 = 1;
 
 /// The library in this executable's own version folder, which must describe
 /// that folder's release, and the release. `current`, the working directory
 /// and search paths never choose it.
-pub(crate) fn own_library() -> io::Result<(&'static Library, VersionName)> {
+fn own_library() -> io::Result<(&'static Library, VersionName)> {
     let executable = std::env::current_exe().and_then(|path| path.canonicalize())?;
     let layout = ExecutableLayout::from_binary_path(&executable, VersionBinary::Client)
         .map_err(|error| io::Error::other(format!("cannot locate the client library: {error}")))?;
     let library = Loader::new(layout.home()).load(layout.version());
     Ok((library.map_err(io::Error::other)?, layout.version().clone()))
+}
+
+/// An instance of this release's library for the session `metadata` (read
+/// from `path`) describes, under `home`. The library never interprets
+/// Input, so the instance gets no keys: the executable routes them.
+pub(crate) fn session_instance(
+    metadata: &SessionMetadata,
+    path: &Path,
+    home: &Path,
+) -> io::Result<Embedded> {
+    let (library, release) = own_library()?;
+    let socket = Path::new(metadata.socket_path.as_str());
+    let startup = Startup {
+        session: metadata.session_id.bytes(),
+        release,
+        metadata: path.to_owned(),
+        home: home.to_owned(),
+        runtime: socket.parent().unwrap_or(socket).to_owned(),
+        settings: native::Settings::default(),
+    };
+    Embedded::start(library, startup)
 }
 
 /// An instance's startup inputs, owned until `create` has copied them.
@@ -128,6 +150,7 @@ fn path(path: &Path) -> native::Path {
 
 /// A library error, copied before the next call can reuse its text.
 pub(crate) struct NativeError {
+    pub(crate) origin: u32,
     pub(crate) code: String,
     pub(crate) message: String,
 }
@@ -139,6 +162,7 @@ impl NativeError {
     pub(crate) unsafe fn copy(error: &native::Error) -> Self {
         // SAFETY (both): guaranteed by the caller.
         Self {
+            origin: error.origin,
             code: unsafe { text(error.code) },
             message: unsafe { text(error.message) },
         }
@@ -167,6 +191,44 @@ fn check(call: Call) -> Result<(), NativeError> {
 
 fn failure(error: NativeError) -> io::Error {
     io::Error::other(error.message)
+}
+
+/// What a submission came to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Admission {
+    Accepted,
+    /// No room now: the same request may be offered again later.
+    Full,
+    /// The stream has ended: nothing more is accepted.
+    Closed,
+}
+
+/// What one drain found.
+pub(crate) enum Drained {
+    Delivered,
+    Empty,
+    Ended(Ended),
+}
+
+/// The end of an instance's stream: whether a Leave detached its
+/// attachment, and the failure that ended it, if one did.
+pub(crate) struct Ended {
+    pub(crate) detached: bool,
+    pub(crate) failure: Option<NativeError>,
+}
+
+impl Ended {
+    /// # Safety
+    ///
+    /// `terminal` is evidence the library published, with valid buffers.
+    unsafe fn copy(terminal: &native::Terminal) -> Self {
+        let failed = terminal.client_outcome == native::CLIENT_FAILED;
+        Self {
+            detached: terminal.attachment_detached == 1,
+            // SAFETY: guaranteed by the caller.
+            failure: failed.then(|| unsafe { NativeError::copy(&terminal.error) }),
+        }
+    }
 }
 
 /// The handles the owner thread hands the executable.
@@ -208,10 +270,22 @@ impl Embedded {
         })
     }
 
-    pub(crate) fn submit(&self, request: &native::Request) -> io::Result<()> {
+    /// Offers a request: accepted, or refused for now because the queues
+    /// are full, or for good because the stream has closed.
+    pub(crate) fn submit(&self, request: &native::Request) -> io::Result<Admission> {
         // SAFETY: a live communication handle and a valid request.
-        check(unsafe { (self.functions.submit)(self.handles.communication, request) })
-            .map_err(failure)
+        let call = unsafe { (self.functions.submit)(self.handles.communication, request) };
+        match call.code {
+            native::FULL => Ok(Admission::Full),
+            native::CLOSED => Ok(Admission::Closed),
+            _ => check(call).map(|()| Admission::Accepted).map_err(failure),
+        }
+    }
+
+    /// The borrowed descriptor that is readable while there is something
+    /// to drain.
+    pub(crate) fn descriptor(&self) -> i32 {
+        self.notification
     }
 
     /// One turn: drains once, visiting a delivery's records before it is
@@ -223,11 +297,23 @@ impl Embedded {
         visit: &mut dyn FnMut(&native::Record),
         milliseconds: i32,
     ) -> io::Result<bool> {
+        match self.drain_once(visit)? {
+            Drained::Delivered => Ok(false),
+            Drained::Ended(_) => Ok(true),
+            Drained::Empty => self.wait(milliseconds).map(|()| false),
+        }
+    }
+
+    /// Drains once without waiting: a delivery, whose records `visit` sees
+    /// before it is released, nothing, or the end of the stream with its
+    /// terminal evidence.
+    pub(crate) fn drain_once(&self, visit: &mut dyn FnMut(&native::Record)) -> io::Result<Drained> {
         let out = self.drain()?;
         match out.kind {
-            native::DELIVERY => self.deliver(&out, visit).map(|()| false),
-            native::TERMINAL => Ok(true),
-            _ => self.wait(milliseconds).map(|()| false),
+            native::DELIVERY => self.deliver(&out, visit).map(|()| Drained::Delivered),
+            // SAFETY: a terminal drain's evidence lives until destroy.
+            native::TERMINAL => Ok(Drained::Ended(unsafe { Ended::copy(&*out.terminal) })),
+            _ => Ok(Drained::Empty),
         }
     }
 
@@ -248,13 +334,15 @@ impl Embedded {
         check(unsafe { (self.functions.release_delivery)(out.delivery) }).map_err(failure)
     }
 
-    fn wait(&self, milliseconds: i32) -> io::Result<()> {
+    /// Waits until the instance has something to drain or `milliseconds`
+    /// pass.
+    pub(crate) fn wait(&self, milliseconds: i32) -> io::Result<()> {
         let mut descriptor = [libc::pollfd {
             fd: self.notification,
             events: libc::POLLIN,
             revents: Default::default(),
         }];
-        crate::transport::poll(&mut descriptor, milliseconds)
+        crate::polling::poll(&mut descriptor, milliseconds)
     }
 
     /// After the stream's end: releases both handles, lets the owner thread

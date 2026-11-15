@@ -7,7 +7,7 @@
 //! folder, and answers as a revision-1 peer whose frames are written here by
 //! hand from the wire reference, never by the code under test.
 
-use climon2_core::protocol::{ClientMessage, PROTOCOL_VERSION, read_frame, write_frame};
+use climon2_core::protocol::{ClientMessage, PROTOCOL_VERSION, read_frame};
 use climon2_fixtures::stand_in;
 use climon2_test_term::{client_library_path, copy_executable, process_command};
 use serde_json::{Value, json};
@@ -334,40 +334,6 @@ fn kill_needs_daemon_wire_revision_1_and_never_sends_a_request_without_it() {
     assert_eq!(
         failed(child),
         "the session daemon does not advertise daemon wire revision 1"
-    );
-}
-
-/// Attach mode still speaks the private protocol: a session advertising
-/// kill but not attach is refused before any request.
-#[test]
-fn a_kill_capable_session_without_attach_refuses_attach_mode() {
-    let peer = Peer::new();
-    let isolation = climon2_test_term::Isolation::new();
-    let mut command = isolation.command(env!("CARGO_BIN_EXE_climon2-client"));
-    command.args(["attach", "--metadata"]);
-    command.arg(&peer.metadata);
-    command.env("CLIMON2_HOME", peer.home.path());
-    command.env(
-        "CLIMON2_CLIENT_STARTUP",
-        r#"{"schema":1,"operation":"attach","settings":{"escape_prefix":29,"take_control_key":20}}"#,
-    );
-    let mut terminal = climon2_test_term::Terminal::spawn(command, 24, 120).unwrap();
-    let mut stream = peer.accept();
-    assert!(read_frame(&mut stream).is_ok());
-    let body = json!({
-        "session_id": ID, "climon2_version": VERSION, "protocol": 1,
-        "capabilities": ["kill", "client-startup-v1"],
-    });
-    let frame = climon2_core::protocol::Frame::new(1, serde_json::to_vec(&body).unwrap()).unwrap();
-    write_frame(&mut stream, &frame).unwrap();
-    assert!(read_frame(&mut stream).is_err());
-    assert_eq!(terminal.wait_exit(Duration::from_secs(5)).unwrap(), 125);
-    assert!(
-        terminal
-            .screen()
-            .contains("climon2: error: session does not support attach"),
-        "{}",
-        terminal.screen()
     );
 }
 
