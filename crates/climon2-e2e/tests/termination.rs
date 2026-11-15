@@ -11,7 +11,12 @@
 mod support;
 
 use serde_json::{Value, json};
-use support::{Package, TIMEOUT, control::Session, passive::*};
+use support::{
+    Package, TIMEOUT,
+    control::Session,
+    library::{archive, scenario},
+    passive::*,
+};
 
 /// The Response and Initial metadata of a passive Open `id` of a session
 /// whose result is not known yet.
@@ -74,9 +79,12 @@ fn installed_library_relays_each_real_command_final_apart_from_signals() {
 /// role), COM-06 Library (one final result, the same in the Kill's answer
 /// and the Command final) and REC-01 Library (a definitive outcome calls
 /// for no retry): instance A opens a passive monitor connection to a real
-/// session whose command waits forever, then submits a Kill alongside it;
-/// a Kill-only instance K, which never opens, submits one too, joining the
-/// same termination. After the hang-up grace, each Kill is answered OK
+/// session whose command waits forever, with two Kills queued behind its
+/// Open. Once the Initial metadata arrives the first Kill is sent on its
+/// own connection, and the second, while the first is pending, is
+/// rejected `invalid_state` at once, never sent. A Kill-only instance K,
+/// which never opens, submits one too, joining the same termination.
+/// After the hang-up grace, each sent Kill is answered OK
 /// with the command's result, SIGHUP (signal 1, unnamed), and complete
 /// cleanup, and by then the session's metadata and socket are gone. A's
 /// passive stream delivers exactly one Command final of that result and
@@ -93,10 +101,10 @@ fn installed_library_kills_a_real_session_only_after_termination_and_cleanup() {
         { "do": "create", "instance": "a", "startup": session.startup(&package, 1) },
         { "do": "create", "instance": "k", "startup": session.startup(&package, 2) },
         { "do": "submit", "instance": "a", "request": open(1, &REQUIRED, &["title-v1"]) },
+        { "do": "submit", "instance": "a", "request": kill(2, &[]) },
+        { "do": "submit", "instance": "a", "request": kill(3, &[]) },
         { "do": "run", "instance": "a" },
         { "do": "drain", "instance": "a", "until": { "tag": INITIAL_METADATA } },
-        { "do": "touch", "path": session.end_path() },
-        { "do": "submit", "instance": "a", "request": kill(2, &[]) },
         { "do": "submit", "instance": "k", "request": kill(1, &["daemon-wire-v1"]) },
         { "do": "run", "instance": "k" },
         { "do": "finish", "instance": "k" },
@@ -116,21 +124,22 @@ fn installed_library_kills_a_real_session_only_after_termination_and_cleanup() {
     assert_terminal(terminal, 2, clean, None);
     assert!(session.cleaned_up());
 
-    let mut records = step(&report, 4)["records"].as_array().unwrap().clone();
+    let mut records = step(&report, 6)["records"].as_array().unwrap().clone();
     let (later, terminal) = finished(step(&report, 10));
     records.extend(later);
-    assert_eq!(records.len(), 4, "{records:#?}");
+    assert_eq!(records.len(), 5, "{records:#?}");
     assert_opened(&records, 1, 1);
+    assert_rejected(&records[2], 1, 3, ORIGIN_LIBRARY, "invalid_state");
     // The Kill's answer and the Command final come over two connections,
     // in either order.
-    let answer = records[2..]
+    let answer = records[3..]
         .iter()
         .find(|record| record["tag"] == RESPONSE)
         .unwrap();
     let response = assert_response(answer, 1, 2, OK);
     assert_eq!(response["result_tag"], TERMINATION, "{response:#}");
     assert_eq!(response["result"], confirmed, "{response:#}");
-    let finals: Vec<_> = records[2..]
+    let finals: Vec<_> = records[3..]
         .iter()
         .filter(|record| record["tag"] == FINAL)
         .collect();
@@ -195,5 +204,124 @@ fn installed_library_recovers_only_through_a_fresh_instance_after_join() {
     session.end();
     let mut session = session;
     session.terminal.wait_exit(TIMEOUT).unwrap();
+    package.assert_clean();
+}
+
+/// COM-03 Kill and DEL-02 Library (a Kill that cannot reach the daemon is
+/// rejected, never sent, and leaves the opened role alone) and REC-01
+/// Library: instance A opens a passive role on a real session, then the
+/// session daemon is stopped. A's Kill, its hello unanswered within
+/// `kill_ms`, is rejected `timeout`, before it is sent, and nothing else is
+/// delivered: no diagnostic, the role still open. Once the daemon resumes,
+/// A's shutdown sends the role's Leave, which the daemon confirms: stopped,
+/// no error, retry none. The session was never terminated: its command
+/// still runs until the test ends it, and it exits 0.
+#[test]
+fn installed_library_keeps_a_real_role_when_its_kill_cannot_reach_the_daemon() {
+    let package = Package::new();
+    let root = root(&package);
+    let mut session = Session::idle(&package, &root);
+    let mut startup = session.startup(&package, 1);
+    startup["limits"] = json!({ "kill_ms": 1000 });
+    let steps = json!([
+        { "do": "create", "startup": startup },
+        { "do": "submit", "request": open(1, &REQUIRED, &["title-v1"]) },
+        { "do": "run" },
+        { "do": "drain", "until": { "tag": INITIAL_METADATA } },
+        { "do": "signal", "pid": session.pid, "signal": "stop" },
+        { "do": "submit", "request": kill(2, &[]) },
+        { "do": "drain", "until": { "response": 2 } },
+        { "do": "signal", "pid": session.pid, "signal": "continue" },
+        { "do": "shutdown" },
+        { "do": "finish" },
+    ]);
+    let report = script(&package, &root, steps);
+    let opened = step(&report, 3)["records"].as_array().unwrap();
+    assert_eq!(opened.len(), 2, "{opened:#?}");
+    assert_opened(opened, 1, 1);
+    let killed = step(&report, 6)["records"].as_array().unwrap();
+    assert_eq!(killed.len(), 1, "{killed:#?}");
+    assert_rejected(&killed[0], 1, 2, ORIGIN_LIBRARY, "timeout");
+    let (later, terminal) = finished(step(&report, 9));
+    assert!(later.is_empty(), "{later:#?}");
+    assert_left(terminal, 1);
+    assert_all_released(&report["ledger"]);
+    session.end();
+    assert_eq!(session.terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    package.assert_clean();
+}
+
+/// REC-01 Library (recoverable failures call for passive retry; a
+/// configuration the session cannot honour is permanent): instance A's
+/// passive role on a real session loses its transport when the session
+/// daemon is killed: the stream fails with transport `io_error`, retry
+/// passive, its Leave not required, and no result or Leave is invented.
+/// Instance B, whose startup names another session beside that session's
+/// real metadata, is refused before any role: its Open is rejected
+/// `invalid_configuration`, for good. With the hooked library's
+/// `panic:receive`, instance C's connection panics at the first frame it
+/// receives, the Open's Response: the panic is contained and fails the
+/// stream with library `internal_error`, retry passive, the Open
+/// unanswered. Skipped against an exact release archive, whose library
+/// has no hooks.
+#[test]
+fn installed_library_classifies_real_failures_for_retry() {
+    let package = Package::new();
+    let root = root(&package);
+    let mut session = Session::idle(&package, &root);
+    let mut another = session.startup(&package, 2);
+    another["session_id"] = json!("0123456789abcdef0123456789abcdef");
+    let steps = json!([
+        { "do": "create", "instance": "b", "startup": another },
+        { "do": "submit", "instance": "b", "request": open(1, &REQUIRED, &[]) },
+        { "do": "run", "instance": "b" },
+        { "do": "finish", "instance": "b" },
+        { "do": "create", "instance": "a", "startup": session.startup(&package, 1) },
+        { "do": "submit", "instance": "a", "request": open(1, &REQUIRED, &["title-v1"]) },
+        { "do": "run", "instance": "a" },
+        { "do": "drain", "instance": "a", "until": { "tag": INITIAL_METADATA } },
+        { "do": "signal", "pid": session.pid, "signal": "kill" },
+        { "do": "finish", "instance": "a" },
+    ]);
+    let report = script(&package, &root, steps);
+    let (refused, terminal) = finished(step(&report, 3));
+    assert_eq!(refused.len(), 2, "{refused:#?}");
+    assert_rejected(&refused[0], 2, 1, ORIGIN_LIBRARY, "invalid_configuration");
+    assert_diagnostic(&refused[1], 2, ORIGIN_LIBRARY, "invalid_configuration");
+    let permanent = (CLIENT_FAILED, RETRY_PERMANENT, LEAVE_NOT_REQUIRED);
+    let error = Some((ORIGIN_LIBRARY, "invalid_configuration"));
+    assert_terminal(terminal, 2, permanent, error);
+    let opened = step(&report, 7)["records"].as_array().unwrap();
+    assert_eq!(opened.len(), 2, "{opened:#?}");
+    assert_opened(opened, 1, 1);
+    let (lost, terminal) = finished(step(&report, 9));
+    assert_eq!(lost.len(), 1, "{lost:#?}");
+    assert_diagnostic(&lost[0], 1, ORIGIN_TRANSPORT, "io_error");
+    let passive = (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED);
+    assert_terminal(terminal, 1, passive, Some((ORIGIN_TRANSPORT, "io_error")));
+    assert_all_released(&report["ledger"]);
+    assert_eq!(session.terminal.wait_exit(TIMEOUT).unwrap(), 125);
+    assert!(package.list().is_empty());
+
+    if !archive() {
+        let session = Session::idle(&package, &root);
+        let steps = json!([
+            { "do": "create", "instance": "c", "startup": session.startup(&package, 3) },
+            { "do": "submit", "instance": "c", "request": open(1, &REQUIRED, &[]) },
+            { "do": "run", "instance": "c" },
+            { "do": "finish", "instance": "c" },
+        ]);
+        let input = json!({ "root": root.to_str().unwrap(), "steps": steps });
+        let report = scenario(&package, "script", &input, Some("panic:receive"));
+        let (panicked, terminal) = finished(step(&report, 3));
+        assert_eq!(panicked.len(), 1, "{panicked:#?}");
+        assert_diagnostic(&panicked[0], 3, ORIGIN_LIBRARY, "internal_error");
+        let error = Some((ORIGIN_LIBRARY, "internal_error"));
+        assert_terminal(terminal, 3, passive, error);
+        assert_all_released(&report["ledger"]);
+        session.end();
+        let mut session = session;
+        assert_eq!(session.terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    }
     package.assert_clean();
 }
