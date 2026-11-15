@@ -448,6 +448,7 @@ fn the_end_of_the_commands_output_while_it_runs_is_no_final_result() {
 
 /// Waits until the command `pid` exited while its parent, the daemon, has
 /// not reaped it yet.
+#[cfg(target_os = "linux")]
 fn exited_unreaped(pid: u32) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -467,13 +468,42 @@ fn exited_unreaped(pid: u32) {
 }
 
 /// COM-06 (Contract: Command final means no more output follows): the
-/// command's last output reaches every opened connection before its Command
-/// final, even when the daemon learns of the exit before it reads that
-/// output. The daemon is stopped while the command sets a title, prints its
-/// last line and exits 3, so all three are waiting for it as it resumes.
-/// The ready controller receives every Display holding the last line, and
-/// a passive monitor that selected `title-v1` the new title, before their
-/// Command final.
+/// command sets a title, prints its last line and exits 3. The ready
+/// controller receives every Display holding the last line, and a passive
+/// monitor that selected `title-v1` the new title, before their Command
+/// final. On macOS the command's exit waits for the daemon to read that
+/// output; on Linux the daemon may reap the command first and drains it
+/// after the reap (see the Linux-only test below).
+#[test]
+fn command_final_follows_the_last_output_of_a_command_that_exits() {
+    let mut session = Session::start("script");
+    let mut attached = ready_attachment(&session, &[]);
+    let (mut watching, _) = monitor(&session, &["title-v1"]);
+    crate::issue(&session, "title done");
+    crate::issue(&session, "text last line");
+    crate::issue(&session, "exit 3");
+    let result = exited(3);
+    assert_eq!(title_changed(&mut watching), Some("done".into()));
+    assert_final_then_closed(&mut watching, &result);
+    assert_eq!(attached.next_after_display(), command_final(&result));
+    let before_final = attached.display.clone();
+    attached.session_ended();
+    assert_eq!(crate::count(&before_final, b"last line"), 1);
+    session.finish();
+}
+
+/// COM-06 (Contract: Command final means no more output follows), Linux:
+/// the command's last output reaches every opened connection before its
+/// Command final, even when the daemon learns of the exit before it reads
+/// that output. The daemon is stopped while the command sets a title,
+/// prints its last line and exits 3, so all three are waiting for it as it
+/// resumes. The ready controller receives every Display holding the last
+/// line, and a passive monitor that selected `title-v1` the new title,
+/// before their Command final. Linux only: Linux keeps a closed terminal's
+/// unread output readable, while the macOS kernel discards it when the
+/// command's last close of its terminal finds no reader within 0.6 s, so
+/// with the daemon stopped there is nothing left to deliver there.
+#[cfg(target_os = "linux")]
 #[test]
 fn command_final_follows_the_commands_last_output() {
     let mut session = Session::start("script");
@@ -505,7 +535,9 @@ fn command_final_follows_the_commands_last_output() {
 /// before it reads that output. The ready controller still receives every
 /// Display holding the last line, and a passive monitor that selected
 /// `title-v1` the new title, before their Command final with exit 3; the
-/// Kill then confirms that result.
+/// Kill then confirms that result. Linux only, for the reason
+/// `command_final_follows_the_commands_last_output` gives.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_kill_during_the_drain_lets_the_commands_last_output_through() {
     let mut session = Session::start("script");
