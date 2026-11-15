@@ -84,7 +84,15 @@ If the command already exited and its remaining output is still being
 drained, the hang-up waits for that drain: the output and then
 [Command final](event-command-final.md#implemented-behavior) reach the
 connections first (owner decision on
-[#88](https://github.com/jackgeek/climon2/issues/88), 2026-11-14). A
+[#88](https://github.com/jackgeek/climon2/issues/88), 2026-11-14). It also
+waits, as Command final does, while a
+[restoration](../../../GLOSSARY.md#restoration-and-presentation) is in
+progress or a [synchronized update](../TERMS.md#synchronized-update) is open
+([#203](https://github.com/jackgeek/climon2/issues/203)). The update ends
+when the application ends it or its 150 ms latch expires. Once termination
+is committed, the restoration deadline for a missing
+[Ready](request-ready.md) no longer applies, so a restoration ends only when
+it completes or its reader is lost after 5 s without progress. A
 Kill of either protocol sent while termination is committed joins it without
 restarting the grace. Every Kill is answered once the session has ended, at
 once if it already had:

@@ -59,7 +59,7 @@ impl Attached {
         Self::opened(stream, granted)
     }
 
-    fn opened(stream: UnixStream, granted: Geometry) -> Self {
+    pub(super) fn opened(stream: UnixStream, granted: Geometry) -> Self {
         let mut attached = Self::opened_begun(stream, granted);
         attached.completed();
         attached
@@ -187,7 +187,7 @@ impl Attached {
     }
 
     /// Reads Display until the bytes received hold `needle` `times` times.
-    fn until_displayed(&mut self, needle: &[u8], times: usize) {
+    pub(super) fn until_displayed(&mut self, needle: &[u8], times: usize) {
         while crate::count(&self.display, needle) < times {
             match message(&mut self.stream) {
                 ServerMessage::Display(display) => self.displayed(display),
@@ -247,7 +247,7 @@ impl Attached {
     }
 
     /// Confirms readiness for the first time under this authority.
-    fn confirm_ready(&mut self) {
+    pub(super) fn confirm_ready(&mut self) {
         let authority = self.authority();
         let ready = Success::Ready(AuthorityResult {
             changed: true,
@@ -372,7 +372,7 @@ impl Attached {
 
     /// Leaves as an accepted detach: its Response reports an attachment
     /// detached, and the stream then ends.
-    fn leave(&mut self) {
+    pub(super) fn leave(&mut self) {
         let request_id = self.next();
         request(&mut self.stream, &Leave { request_id });
         let left = Success::Left {
