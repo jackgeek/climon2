@@ -13,9 +13,15 @@ mod support;
 
 use serde_json::{Value, json};
 use std::path::Path;
-use support::{Package, library::INSTANCE_DESCRIPTORS, passive::*};
+use support::{
+    Package,
+    control::{drained, labelled},
+    library::INSTANCE_DESCRIPTORS,
+    passive::*,
+};
 
 /// What one record of a case must be.
+#[derive(Clone)]
 enum Expect {
     /// A Response to the Open `id`: it succeeded.
     Opened(u64),
@@ -31,6 +37,7 @@ enum Expect {
 }
 
 /// A Response's active result.
+#[derive(Clone)]
 enum Answered {
     Nothing,
     KnownFinal(Value),
@@ -607,5 +614,248 @@ fn installed_library_reports_each_kill_outcome_truthfully_and_never_replays_it()
         let peer = &report["peers"][name];
         assert_eq!(peer["finished"], true, "{name}: {peer:#}");
     }
+    package.assert_clean();
+}
+
+/// A Kill on an instance whose passive role is open: the fake daemon's
+/// script for the Kill's auxiliary connection, the instance's startup
+/// overrides and Kills, the Responses they get after the Open's Response
+/// and Initial metadata, what the role's daemon sends once the Kills are
+/// answered, the records that follow, and how the role ends.
+struct Alongside {
+    name: &'static str,
+    auxiliary: Value,
+    startup: Value,
+    kills: Vec<Value>,
+    answers: Vec<Expect>,
+    then: Vec<Value>,
+    rest: Vec<Expect>,
+    terminal: (u64, u64, u64),
+    error: Option<(u64, &'static str)>,
+    auxiliary_kinds: &'static [&'static str],
+}
+
+/// COM-03 Kill and DEL-02 Fault (a Kill's failure on an opened role is
+/// reported truthfully and never replayed; at most one is pending), COM-06
+/// Fault (partial and known-final Kill results) and REC-01 Fault (retry
+/// follows the role's own end, unless the Kill made the result known): an
+/// instance opens a passive role on the fake daemon, with Kills queued
+/// behind its Open, so each executes once the Initial metadata arrives, on
+/// a second connection to the same daemon. Whatever the Kill's fate, it
+/// only answers its request: no diagnostic, and the role reads on. A lost
+/// answer (`io_error`) and one later than `kill_ms` (`timeout`) are
+/// indeterminate; a failed Kill carries its partial termination (exit 143,
+/// cleanup incomplete); a rejected one its known final result (signal 9);
+/// a Kill requiring a family the daemon does not advertise, or whose
+/// hello is lost, is rejected before it is sent; a second Kill while one
+/// is pending is `invalid_state` at once. Then the role's own daemon sends
+/// a Command final and closes, a clean stop with retry none; or it closes
+/// with no final evidence, which fails the role with `io_error`, calling
+/// for passive retry unless the Kill's partial termination already made
+/// the command's result known. The auxiliary connection carries one hello
+/// and at most one Kill, never another.
+#[test]
+fn installed_library_keeps_an_opened_role_through_each_kill_failure() {
+    let package = Package::new();
+    let root = root(&package);
+    let daemon = |code: &'static str| (ORIGIN_DAEMON, code);
+    let library = |code: &'static str| (ORIGIN_LIBRARY, code);
+    let transport = |code: &'static str| (ORIGIN_TRANSPORT, code);
+    let ended = vec![command_final(exit(0)), json!("close")];
+    let clean = (CLIENT_STOPPED, RETRY_NONE, LEAVE_NOT_REQUIRED);
+    let lost = (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED);
+    let fast = json!({ "limits": { "kill_ms": 300 } });
+    let cases = [
+        Alongside {
+            name: "lost",
+            auxiliary: killed(vec![json!("close")]),
+            startup: json!({}),
+            kills: vec![kill(2, &[])],
+            answers: vec![Expect::Answer(
+                2,
+                INDETERMINATE,
+                Some(transport("io_error")),
+                Answered::Nothing,
+            )],
+            then: ended.clone(),
+            rest: vec![Expect::Final(native_command(EXIT, 0, None))],
+            terminal: clean,
+            error: None,
+            auxiliary_kinds: &["hello", "kill"],
+        },
+        Alongside {
+            name: "late",
+            auxiliary: killed(vec![json!("hold")]),
+            startup: fast.clone(),
+            kills: vec![kill(2, &[])],
+            answers: vec![Expect::Answer(
+                2,
+                INDETERMINATE,
+                Some(library("timeout")),
+                Answered::Nothing,
+            )],
+            then: vec![json!("close")],
+            rest: vec![Expect::Diagnostic(transport("io_error"))],
+            terminal: lost,
+            error: Some(transport("io_error")),
+            auxiliary_kinds: &["hello", "kill"],
+        },
+        Alongside {
+            name: "partial",
+            auxiliary: killed(vec![kill_answer(
+                "failed",
+                json!({ "kind": "termination", "command_result": exit(143), "cleanup": "incomplete" }),
+                daemon_error("cleanup_failed"),
+            )]),
+            startup: json!({}),
+            kills: vec![kill(2, &[])],
+            answers: vec![Expect::Answer(
+                2,
+                FAILED,
+                Some(daemon("cleanup_failed")),
+                Answered::Termination(termination(
+                    Some(&native_command(EXIT, 143, None)),
+                    CLEANUP_INCOMPLETE,
+                )),
+            )],
+            then: vec![json!("close")],
+            rest: vec![Expect::Diagnostic(transport("io_error"))],
+            terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_NOT_REQUIRED),
+            error: Some(transport("io_error")),
+            auxiliary_kinds: &["hello", "kill"],
+        },
+        Alongside {
+            name: "known-final",
+            auxiliary: killed(vec![kill_answer(
+                "rejected",
+                json!({ "kind": "known_final", "command_result": signal(9, Value::Null) }),
+                daemon_error("unsupported_capability"),
+            )]),
+            startup: json!({}),
+            kills: vec![kill(2, &[])],
+            answers: vec![Expect::Answer(
+                2,
+                REJECTED,
+                Some(daemon("unsupported_capability")),
+                Answered::KnownFinal(native_command(SIGNAL, 9, None)),
+            )],
+            then: vec![command_final(signal(9, Value::Null)), json!("close")],
+            rest: vec![Expect::Final(native_command(SIGNAL, 9, None))],
+            terminal: clean,
+            error: None,
+            auxiliary_kinds: &["hello", "kill"],
+        },
+        Alongside {
+            name: "unsupported",
+            auxiliary: json!({ "hello": { "json": {
+                "capabilities": ["daemon-wire-v1", "monitor-v1"],
+            } } }),
+            startup: json!({}),
+            kills: vec![kill(2, &["title-v1"])],
+            answers: vec![Expect::Answer(
+                2,
+                REJECTED,
+                Some(library("unsupported_capability")),
+                Answered::Nothing,
+            )],
+            then: ended.clone(),
+            rest: vec![Expect::Final(native_command(EXIT, 0, None))],
+            terminal: clean,
+            error: None,
+            auxiliary_kinds: &["hello"],
+        },
+        Alongside {
+            name: "unhelloed",
+            auxiliary: json!({ "hello": "close" }),
+            startup: json!({}),
+            kills: vec![kill(2, &[])],
+            answers: vec![Expect::Answer(
+                2,
+                REJECTED,
+                Some(transport("io_error")),
+                Answered::Nothing,
+            )],
+            then: vec![json!("close")],
+            rest: vec![Expect::Diagnostic(transport("io_error"))],
+            terminal: lost,
+            error: Some(transport("io_error")),
+            auxiliary_kinds: &["hello"],
+        },
+        Alongside {
+            name: "second",
+            auxiliary: killed(vec![json!("hold")]),
+            startup: fast,
+            kills: vec![kill(2, &[]), kill(3, &[])],
+            answers: vec![
+                Expect::Answer(
+                    3,
+                    REJECTED,
+                    Some(library("invalid_state")),
+                    Answered::Nothing,
+                ),
+                Expect::Answer(
+                    2,
+                    INDETERMINATE,
+                    Some(library("timeout")),
+                    Answered::Nothing,
+                ),
+            ],
+            then: ended,
+            rest: vec![Expect::Final(native_command(EXIT, 0, None))],
+            terminal: clean,
+            error: None,
+            auxiliary_kinds: &["hello", "kill"],
+        },
+    ];
+    let mut steps = Vec::new();
+    for case in &cases {
+        let go = root.join(format!("{}-go", case.name));
+        let go = go.to_str().unwrap();
+        let mut role = vec![
+            opened(&SELECTED),
+            initial(json!("t")),
+            json!({ "wait": go }),
+        ];
+        role.extend(case.then.iter().cloned());
+        let peer = json!({ "open": role, "auxiliary": case.auxiliary });
+        let mut requests = vec![open(1, &REQUIRED, &["title-v1"])];
+        requests.extend(case.kills.iter().cloned());
+        let answered: Vec<_> = case
+            .kills
+            .iter()
+            .map(|kill| json!({ "response": kill["request_id"] }))
+            .collect();
+        let mut own = submitted(peer, case.startup.clone(), &requests);
+        own.extend([
+            json!({ "do": "drain", "until": { "all": answered }, "as": "killed" }),
+            json!({ "do": "touch", "path": go }),
+            json!({ "do": "wait_run" }),
+            json!({ "do": "finish", "as": "finished" }),
+        ]);
+        steps.extend(own.into_iter().map(|mut step| {
+            step["instance"] = json!(case.name);
+            if let Some(label) = step["as"].as_str() {
+                step["as"] = json!(format!("{}-{label}", case.name));
+            }
+            step
+        }));
+    }
+    let report = script(&package, &root, json!(steps));
+    for case in &cases {
+        let name = case.name;
+        let mut expected = vec![Expect::Opened(1), Expect::Metadata];
+        expected.extend(case.answers.iter().cloned());
+        let killed = drained(&report, &steps, &format!("{name}-killed"));
+        assert_records(name, &killed, &expected);
+        let finish = labelled(&report, &steps, &format!("{name}-finished"));
+        let (rest, terminal) = finished(finish);
+        assert_records(name, &rest, &case.rest);
+        assert_terminal(terminal, 1, case.terminal, case.error);
+        let peer = &report["peers"][name];
+        assert_eq!(kinds(peer), ["hello", "open"], "{name}: {peer:#}");
+        let auxiliary = &peer["auxiliary"];
+        assert_eq!(kinds(auxiliary), case.auxiliary_kinds, "{name}: {peer:#}");
+    }
+    assert_all_released(&report["ledger"]);
     package.assert_clean();
 }
