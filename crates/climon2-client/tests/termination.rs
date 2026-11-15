@@ -307,14 +307,15 @@ fn a_refused_partial_lost_or_unconfirmed_kill_is_a_failed_kill() {
     drop(peer.kill_request());
     assert_eq!(failed(child), "the session daemon closed the connection");
 
+    // `kill_ms` starts after the client does.
+    let started = Instant::now();
     let child = peer.client();
     let mut stream = peer.kill_request();
-    let sent = Instant::now();
     assert_eq!(
         failed(child),
         format!("termination of session {ID} was not confirmed")
     );
-    assert!(sent.elapsed() >= Duration::from_millis(9_900));
+    assert!(started.elapsed() >= Duration::from_secs(10));
     assert_eq!(receive(&mut stream), None, "the Kill was sent again");
 }
 
