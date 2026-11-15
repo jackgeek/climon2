@@ -3,8 +3,11 @@
 //! type; once every group is read, each setting is checked against its range,
 //! and then the groups against each other. Every refusal names the settings it
 //! concerns. `Limits` exists only after both checks, and nothing outside this
-//! module can change it; its values are only reported so far.
-use super::{Range, object};
+//! module can change it. The monitor reads its history rows, and checks that it
+//! holds one session's [`MandatoryAllocation`]; its values are otherwise only
+//! reported so far.
+use super::{ConfigError, Range, object};
+use crate::protocol::TerminalSize;
 use serde::{Deserialize, Serialize};
 
 /// A positive budget or ceiling, held in a `u64`.
@@ -53,7 +56,7 @@ struct Memory {
 impl Default for Memory {
     fn default() -> Self {
         Self {
-            total_bytes: 536_870_912,
+            total_bytes: 603_979_776,
             client_bytes: 67_108_864,
             history_bytes_per_session: 16_777_216,
             history_bytes_total: 268_435_456,
@@ -460,10 +463,11 @@ impl TryFrom<Groups> for Limits {
     }
 }
 
-/// A setting's full name and its value, for its errors.
+/// A setting's full name, or what else a rule compares, and its value, for
+/// its errors.
 #[derive(Clone, Copy)]
-struct Named {
-    name: &'static str,
+struct Named<'a> {
+    name: &'a str,
     value: u64,
 }
 
@@ -499,6 +503,11 @@ fn below(lesser: Named, greater: Named) -> Option<String> {
             lesser.name, lesser.value, greater.name, greater.value
         )
     })
+}
+
+/// The refusal of the first of `rules` broken, in their order.
+fn first_broken<const N: usize>(rules: [Option<String>; N]) -> Option<String> {
+    rules.into_iter().flatten().next()
 }
 
 impl Groups {
@@ -628,7 +637,7 @@ impl Groups {
         let chunk = named!(transfer.chunk_bytes);
         let delivery = named!(transfer.drain_payload_bytes);
         let record = named!(payload.metadata_record_bytes);
-        [
+        first_broken([
             at_most(client, total),
             at_most(history, total),
             at_most(queued, total),
@@ -661,9 +670,64 @@ impl Groups {
                 named!(ui.background_quantum_ms),
             ),
             at_most(named!(retry.initial_ms), named!(retry.cap_ms)),
-        ]
-        .into_iter()
-        .flatten()
-        .next()
+        ])
+    }
+}
+
+/// One session's mandatory allocation, as the monitor's terminal model of it
+/// is charged: the current model, and the history holding its recent page,
+/// beside the parser the monitor shares among all its models. The monitor
+/// cannot admit a session its limits cannot hold this for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MandatoryAllocation {
+    /// The session geometry the bytes are charged at.
+    pub size: TerminalSize,
+    /// Bytes of the monitor's one parser, which every session's model shares
+    /// and the aggregate budget holds once.
+    pub parser: u64,
+    /// Bytes of the current model alone.
+    pub current_model: u64,
+    /// Bytes of the history that holds the recent page.
+    pub recent_page: u64,
+}
+
+impl Limits {
+    /// The most rows of local history a session's terminal model keeps.
+    pub fn history_rows(&self) -> u32 {
+        self.0.history.max_rows
+    }
+
+    /// Refuses limits that cannot hold one session's `mandatory` allocation:
+    /// the total must hold the parser and the session's current model and
+    /// recent page together, then the client budget the model and page, the
+    /// history total, then the per-session history budget, the page. Each
+    /// total comes before the budgets it contains, so a refusal names the
+    /// limit to raise.
+    pub fn hold(&self, mandatory: MandatoryAllocation) -> Result<(), ConfigError> {
+        let memory = &self.0.memory;
+        let TerminalSize { cols, rows } = mandatory.size;
+        let session = format!("a {cols}x{rows} session");
+        let model_and_page = format!("the current model and recent page of {session}");
+        let with_parser = format!("the parser and {model_and_page}");
+        let recent_page = format!("the recent page of {session}");
+        let model_and_page = Named {
+            name: &model_and_page,
+            value: mandatory.current_model + mandatory.recent_page,
+        };
+        let with_parser = Named {
+            name: &with_parser,
+            value: mandatory.parser + model_and_page.value,
+        };
+        let recent_page = Named {
+            name: &recent_page,
+            value: mandatory.recent_page,
+        };
+        first_broken([
+            at_most(with_parser, named!(memory.total_bytes)),
+            at_most(model_and_page, named!(memory.client_bytes)),
+            at_most(recent_page, named!(memory.history_bytes_total)),
+            at_most(recent_page, named!(memory.history_bytes_per_session)),
+        ])
+        .map_or(Ok(()), |detail| Err(ConfigError::Invalid(detail)))
     }
 }

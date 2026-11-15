@@ -23,6 +23,11 @@ whole screen without blanking it or showing the cursor. Every exit writes the
 [release](../../GLOSSARY.md#restoration-and-presentation) bytes to the host
 before any diagnostic.
 
+**Implemented with crate tests only ([#83](https://github.com/jackgeek/climon2/issues/83)):**
+`climon2-vt`'s read-only Rust views of a monitor's
+[virtual terminal](../../GLOSSARY.md#sessions), described
+[below](#ownership-representation-and-fidelity).
+
 **Implemented with Contract evidence ([#87](https://github.com/jackgeek/climon2/issues/87)):**
 the [session daemon](../../GLOSSARY.md#sessions)'s side of
 [application focus](#host-focus-and-application-focus), served as
@@ -45,11 +50,6 @@ session's current [geometry](TERMS.md#geometry), receives
 serialized at the effective session geometry for a fresh terminal of that
 size, and receives a new restoration at every new effective geometry before
 any byte at it.
-
-**Implemented with crate tests only ([#83](https://github.com/jackgeek/climon2/issues/83)):**
-`climon2-vt`'s read-only Rust views of a monitor's
-[virtual terminal](../../GLOSSARY.md#sessions), described
-[below](#ownership-representation-and-fidelity).
 
 **Implemented with packaged evidence ([#108](https://github.com/jackgeek/climon2/issues/108)):** selection
 and painting. Enter in the selector on a connected row not known to be final
@@ -132,7 +132,10 @@ The monitor parses those bytes into its own per-[session](../../GLOSSARY.md#sess
 paints its read-only Rust views. `climon2-vt` provides these views of cells,
 modes, cursor, screens and history ([#83](https://github.com/jackgeek/climon2/issues/83)),
 and the monitor paints its selected session from them
-([#108](https://github.com/jackgeek/climon2/issues/108)). The monitor runs as its own
+([#108](https://github.com/jackgeek/climon2/issues/108)). It also uses the crate
+for its release bytes and, before the host terminal changes, to check that its
+configured limits hold one session's mandatory model allocation
+([#167](https://github.com/jackgeek/climon2/issues/167)). The monitor runs as its own
 `climon2-monitor` executable, beside the other executables of its release
 ([ADR 0004](../adr/0004-crate-layout-and-dependency-direction.md)); this contract
 chooses no workspace crate.
