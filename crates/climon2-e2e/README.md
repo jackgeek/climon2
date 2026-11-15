@@ -3,12 +3,17 @@
 The default macOS and GNU/Linux packaged acceptance tier (#38), using the public installer,
 the PATH launcher, real sibling binaries and `climon2-test-term` PTYs.
 There are no nested Cargo builds, ignored packaged tests, test retries, or shortened
-production deadlines. A client discards keys typed during its restoration and
-nothing on the screen marks its end, so typed input is ordered by observed output:
+production deadlines. A client discards keys typed during a restoration, which every
+grant starts (a new attachment, take control or hand-back), and nothing on the screen
+marks its end, so typed input is ordered by observed output:
 before input that must reach the session, `type_until` retypes a harmless command
 until its output (or echo) appears, and the input itself is then sent exactly once.
 That orders the input; it does not retry an assertion. Where typing would only end
 the command, the command instead waits for an acknowledgement file the test creates.
+A command that cannot answer a harmless key, because it records every byte or any key
+ends it, answers an acknowledgement file with output instead: created only once the
+client shows restored output, the file's answer is live output, which a client writes
+only after its restoration.
 Each scenario has an isolated HOME and climon2 home;
 normal completion checks owned processes, session metadata and runtime sockets.
 Logs intentionally survive until the isolated home is dropped.
@@ -222,7 +227,7 @@ earlier run would, so they open on the empty state.
 | Spec #73 entry: missing monitor fails with 125 naming the version | `missing_installed_monitor_fails_naming_its_version` |
 | Spec #73 startup: no executable home outside a version folder | `a_monitor_outside_a_version_folder_refuses_to_start` |
 | EXT-03 (Monitor, empty monitor) SIGINT/SIGTERM/SIGHUP give 130/143/129 | `signals_release_the_host_with_signal_style_status` |
-| EXT-03 (Monitor, empty monitor) hung-up host input releases the host before its one diagnostic, logged, 125 | `a_hung_up_host_input_releases_the_host_before_its_diagnostic` |
+| EXT-03 (Monitor, empty monitor) hung-up host input, read as its end or as EIO, releases the host before its one diagnostic, logged, 125 | `a_hung_up_host_input_releases_the_host_before_its_diagnostic`, `host_input_failing_with_eio_releases_the_host_before_its_diagnostic` |
 | EXT-03 (Fault, empty monitor) render failure or failed wait for host input releases the host before its one diagnostic, 125 | `debug_hook_render_failure_restores_the_host_before_its_diagnostic`, `debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic` |
 | Spec #73 host terminal; TRM-04 (empty monitor): SIGWINCH repaints exactly at the new size without erasing or showing the cursor | `resizing_the_host_redraws_the_monitor_at_the_new_size` |
 | Spec #73 exit: content-free monitor general log | `installed_monitor_logs_content_free_records_to_its_general_log` |
