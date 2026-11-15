@@ -63,6 +63,18 @@ impl Arena {
         self.place(bytes, align_of::<T>()).cast()
     }
 
+    /// `values` in caller memory, or null for none.
+    pub fn slice<T>(&mut self, values: &[T]) -> *const T {
+        if values.is_empty() {
+            return ptr::null();
+        }
+        // SAFETY: the values are plain data viewed as their bytes.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), size_of_val(values))
+        };
+        self.place(bytes, align_of::<T>()).cast()
+    }
+
     pub fn bytes(&mut self, spec: &Value) -> Bytes {
         if let Some(length) = spec.get("null") {
             return Bytes {

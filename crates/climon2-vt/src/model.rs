@@ -28,6 +28,24 @@ pub struct Rejected {
     pub limit: usize,
 }
 
+/// What a blank model holds and may grow to before any output, by part.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mandatory {
+    /// The current model alone: the engine for its geometry, vte's buffer
+    /// and the reserve.
+    pub current_model: usize,
+    /// The first history chunk, which holds the protected newest page; none
+    /// for a model that keeps no history.
+    pub recent_page: usize,
+}
+
+impl Mandatory {
+    /// Both parts: what [`Model::new`] admits a blank model with.
+    pub(crate) fn total(self) -> usize {
+        self.current_model + self.recent_page
+    }
+}
+
 /// One session's terminal model: the current model the monitor paints and,
 /// while a restoration is in progress, the separate model it is staged into.
 /// After a rejection the current model is read-only, keeping its last safe
@@ -54,6 +72,14 @@ impl Model {
             staged: None,
             rejected: None,
         })
+    }
+
+    /// The mandatory allocation `Model::new` admits a blank model with, by
+    /// part: the current model at `geometry` and, when it keeps any of
+    /// `history_rows`, the first history chunk, which holds the protected
+    /// newest page.
+    pub fn mandatory(geometry: Geometry, history_rows: usize) -> Mandatory {
+        Bounded::mandatory(geometry, history_rows)
     }
 
     /// Begin a restoration at `geometry`: a blank model to stage it into,

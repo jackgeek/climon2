@@ -46,8 +46,10 @@ passive monitor connection, output-driven status detection (OSC 7501 and
 OSC 133, [#92](https://github.com/jackgeek/climon2/issues/92)), the
 notification and progress messages, promotion of passive registrations,
 canonical monitor-mode presentation and bounded delivery remain
-unimplemented, and no
-[client](../../../GLOSSARY.md#sessions) speaks this revision yet. The
+unimplemented. The
+[client library](../../../GLOSSARY.md#sessions) speaks this revision for
+passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93));
+no other [client](../../../GLOSSARY.md#sessions) does yet. The
 [daemon's contract tests](../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
 are the evidence for the implemented parts.
 
@@ -310,7 +312,12 @@ revives terminal activity/attention. Command final follows the command's
 terminal output: once a connection receives it, no more of the command's
 output follows on that connection, and a termination that comes after the
 command exited waits for its output to drain (owner decisions on
-[#88](https://github.com/jackgeek/climon2/issues/88), 2026-11-14).
+[#88](https://github.com/jackgeek/climon2/issues/88), 2026-11-14). It also
+waits until no restoration is in progress and no
+[synchronized update](../TERMS.md#synchronized-update) holds output back, so
+those Displays precede it too
+([#203](https://github.com/jackgeek/climon2/issues/203)); a grant after
+Command final still replays the screen in its restoration.
 
 ### Implemented authority checks
 
@@ -490,7 +497,8 @@ Input header failures, stale authority and readiness, arbitrary bytes, paste
 closure, query authority, inert titles, Focus, and takeover, hand-back and
 leave-policy parity. They also cover exit versus signal in Command final,
 Command final after the command's last output, also when a Kill arrives
-before that output drained,
+before that output drained, after a restoration in progress and a held
+synchronized update, and still sent once a stalled reader is lost,
 known results in Initial metadata and first-role rejections, no final
 without evidence (an unconfirmed hang-up, or the end of the command's output
 while it runs), and standalone Kill: its answer after termination and

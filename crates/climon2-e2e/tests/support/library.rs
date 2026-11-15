@@ -11,6 +11,21 @@ use std::{
     process::Command,
 };
 
+/// `sizeof(cm1_record)` on every supported target.
+pub const RECORD: u64 = size_of::<climon2_core::native::Record>() as u64;
+/// What one record costs the event allowance before the bytes it owns: its
+/// `cm1_record` and the library's own copy of it, each charged
+/// `sizeof(cm1_record)` (owner decision 4 on #93: both copies a delivered
+/// record holds).
+pub const CHARGE: u64 = 2 * RECORD;
+/// The descriptors one instance holds before any connection: its
+/// notification descriptor and its waker, an `eventfd` each on Linux and a
+/// pipe's two ends each on macOS.
+#[cfg(target_os = "linux")]
+pub const INSTANCE_DESCRIPTORS: u64 = 2;
+#[cfg(target_os = "macos")]
+pub const INSTANCE_DESCRIPTORS: u64 = 4;
+
 /// This build's version, whose library the package installs.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
