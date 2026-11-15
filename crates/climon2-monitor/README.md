@@ -30,6 +30,17 @@ automatically yet (#107).
    `client.escape_prefix`, and the `monitor` section (`show_key_hints`, `bell`
    and `monitor.limits` with the ranges and rules the README lists). Nothing
    reads the file again, so editing it changes nothing until the next start.
+   Its limits must then hold one session's mandatory allocation at the
+   largest geometry a session can have, `climon2-vt`'s `Geometry::LARGEST`
+   (500x200), by the parts its `Model::mandatory` charges a blank model
+   keeping `history.max_rows` (#167): `memory.total_bytes` the monitor's one
+   shared parser (`Parser::BYTES`, #166), the current model and the history
+   chunk holding its recent page together, then `client_bytes` the model and
+   chunk, and `history_bytes_total`, then `history_bytes_per_session`, that
+   chunk (`Limits::hold`). That admits the largest session but not a
+   restoration staged beside it, at least 33,932,174 bytes in a client's
+   budget (36,029,326 in the total) at 500x200, which follows every
+   monitor-mode geometry change (#89).
 5. The key introduction's preference is read from
    `<climon2 home>/monitor-preferences.json` (`HomeLayout::monitor_preferences`,
    schema `climon2_core::preferences`). A missing file saves nothing; an
@@ -148,7 +159,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
 - A failed wait for host input, other than one a signal interrupts, and the
   end of host input (a hung-up host terminal) end the monitor through the exit
   path below with status 125: `cannot wait for host input: …` or
-  `the host terminal closed`.
+  `the host terminal closed`. A read failing with EIO is the end of host input
+  too: Linux fails reads with it while it is still hanging a terminal up.
 
 ## Sessions (#106)
 
@@ -218,10 +230,11 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   without splitting a wide character; the highlighted row is reversed and
   kept in view. It opens on the first row; prefix+s while open does nothing.
   Up and Down (`ESC [ A`/`B` or `ESC O A`/`B`) move the highlight without
-  wrapping, and a bare Escape closes it when the next key arrives (the
-  router has no timer); a cursor key split across reads anywhere never
-  closes it, and the key after the Escape is routed once it has closed
-  (#109, INP-02). Opening it never resizes an application or
+  wrapping; while nothing is highlighted (it opened with no rows, or the
+  highlighted row was dropped), either highlights the first row. A bare
+  Escape closes it when the next key arrives (the router has no timer); a
+  cursor key split across reads anywhere never closes it, and the key after
+  the Escape is routed once it has closed (#109, INP-02). Opening it never resizes an application or
   acquires anything. Enter (a typed CR) on a connected row not known to be
   final selects that session, closes the selector and acquires it (below);
   on any other row it does nothing yet. While rows exist, nothing is
@@ -360,6 +373,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | INP-01 (Monitor): configured prefix hint and exit; null take-control key accepted; once read, Ctrl+C and the default prefix+x are not exits | `installed_monitor_hints_and_exits_with_the_configured_prefix` (e2e) |
 | INP-01 (Monitor): null escape prefix and invalid keys refused before terminal changes | `installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys` (e2e) |
 | CFG-01 (Monitor): unreadable and malformed JSONC, null, wrong type, duplicate, overflow, out-of-range and inconsistent settings each refused with one diagnostic and 125 before terminal changes | `installed_monitor_refuses_every_invalid_configuration_before_the_terminal_changes` (e2e) |
+| CFG-01 (Monitor): limits one byte short of the monitor's parser and one 500x200 session's current model and recent page (total), of the model and page (client budget) or of its recent page (history total, then per-session history budget) each refused with one diagnostic naming that limit and 125 before terminal changes; at those limits the monitor opens and prefix+x exits 0 (#167) | `installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model` (e2e) |
 | CFG-01 (Monitor): `show_key_hints` false hides the empty state's hint, prefix+x still exits; unknown and unrelated settings ignored | `installed_monitor_without_key_hints_shows_none_and_still_exits` (e2e) |
 | CFG-01 (Monitor): no live reload: after an edit, a repaint keeps the started settings and the edited prefix does not act | `editing_the_configuration_while_the_monitor_runs_changes_nothing` (e2e) |
 | CFG-01 (Monitor): every effective setting reported in the general log | `installed_monitor_logs_its_effective_configuration` (e2e) |
@@ -369,16 +383,16 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | Spec #73 entry: a missing monitor names the version | `missing_installed_monitor_fails_naming_its_version` (e2e) |
 | Spec #73 startup: the executable home is resolved as the CLI does | `a_monitor_outside_a_version_folder_refuses_to_start` (e2e); core `issue74_monitor_resolves_the_same_layout_as_the_cli` |
 | EXT-03 (Monitor, empty monitor): SIGINT, SIGTERM and SIGHUP exit 130, 143 and 129 with baseline and exact termios | `signals_release_the_host_with_signal_style_status` (e2e) |
-| EXT-03 (Monitor, empty monitor): hung-up host input releases the host before its one diagnostic, logged, 125 | `a_hung_up_host_input_releases_the_host_before_its_diagnostic` (e2e) |
+| EXT-03 (Monitor, empty monitor): hung-up host input, read as its end or as EIO, releases the host before its one diagnostic, logged, 125 | `a_hung_up_host_input_releases_the_host_before_its_diagnostic`, `host_input_failing_with_eio_releases_the_host_before_its_diagnostic` (e2e); unit `only_eio_ends_host_input` |
 | EXT-03 (Fault, empty monitor): a render failure, or a failed wait for host input, releases the host before its one diagnostic, 125 | `debug_hook_render_failure_restores_the_host_before_its_diagnostic`, `debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic` (e2e) |
 | Spec #73 host terminal; TRM-04 (Monitor, empty monitor): SIGWINCH repaints without leftovers, erasing or showing the cursor | `resizing_the_host_redraws_the_monitor_at_the_new_size` (e2e) |
 | Spec #73 exit: content-free general log | `installed_monitor_logs_content_free_records_to_its_general_log` (e2e) |
 | DSC-03 (Monitor), CTL-01 (Monitor), COM-01 (Monitor), LIB-01 (Monitor, Linux maps), HDL-01 (Monitor rows): sessions created after an empty start appear unasked, one passive client and library log each, reused across passes; never attached or controlled; Unavailable without `status-v1`; titles and command fallback; exactly the version's `libclimon2_client.so` | `sessions_appear_as_they_are_created_each_with_one_passive_client` (e2e) |
-| DSC-04 (Monitor, Fault): malformed and oversized metadata, mismatched hello, silent probe, inaccessible discovery, uncertain disappearance; no metadata deleted, no client torn down | `uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients` (e2e) |
+| DSC-04 (Monitor, Fault): malformed and oversized metadata, mismatched hello, silent probe, inaccessible discovery, uncertain disappearance; no metadata deleted, no client torn down; a stale session nobody knew adds no row and gets no client (owner decision on #106) | `uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients` (e2e) |
 | DSC-01 (Monitor, start order): bounded starts newest created first, ascending ID ties, each after the previous one failed, as the fake daemons heard them | `clients_start_one_at_a_time_newest_first_with_ascending_id_ties` (e2e) |
 | DSC-03 (Monitor, cadence): immediate first pass, each later pass a second after the previous one ended, no overlap, the selector opened during a pass | `discovery_passes_start_a_second_after_the_previous_one_ends_without_overlap` (e2e) |
-| Client supervisor (Fault): a failed notification lookup, or a run failing without terminal evidence, ends that instance cleanly (deliveries and handles released, destroyed) and frees its start slot | `a_failed_notification_lookup_ends_its_client_cleanly_and_frees_its_start_slot`, `a_failed_run_without_terminal_evidence_ends_its_client_cleanly_and_frees_its_start_slot` (`src/supervisor/tests`) |
-| Client supervisor (Fault): exit is bounded by `deadlines.shutdown_ms` and never destroys an instance with unreleased handles; a refused release is loaded once and its sessions are Unavailable | `exit_is_bounded_and_never_destroys_an_instance_with_unreleased_handles`, `a_refused_release_is_loaded_once_and_its_sessions_are_unavailable` (`src/supervisor/tests`) |
+| Client supervisor (Fault), LIB-05 (Monitor, Fault): a failed notification lookup, a run failing without terminal evidence, or a failed drain ends that instance cleanly (deliveries and handles released, destroyed) and frees its start slot | `a_failed_notification_lookup_ends_its_client_cleanly_and_frees_its_start_slot`, `a_failed_run_without_terminal_evidence_ends_its_client_cleanly_and_frees_its_start_slot`, `a_failed_drain_ends_its_client_cleanly_and_frees_its_start_slot` (`src/supervisor.rs`) |
+| Client supervisor (Fault): exit is bounded by `deadlines.shutdown_ms` and never destroys an instance with unreleased handles; a refused release is loaded once and its sessions are Unavailable | `exit_is_bounded_and_never_destroys_an_instance_with_unreleased_handles`, `a_refused_release_is_loaded_once_and_its_sessions_are_unavailable` (`src/supervisor.rs`) |
 | Own-session scenario (confirmed 2026-11-08), DSC-06 (Monitor), HDL-01 (Monitor rows), CTL-01 (controlled elsewhere), TRM-06 (wide labels), SEL-01 (cell-safe clipping) | `the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear` (e2e) |
 | SEL-01 (Monitor, basic cases): border, columns, highlight, Up/Down without wrap, Escape, no application resize or acquisition | `the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing` (e2e) |
 | DSC-01/DSC-03 (pure registry supplement): one client request per live session, newest-first order | `live_sessions_need_one_client_each_and_list_newest_first` (`src/registry.rs`) |
@@ -407,7 +421,8 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | Top row (owner decision 2026-11-14, pure supplement): fixed slots for status, control and hint whatever the control word; the error clipped first, never squeezing out the label | `status_and_control_keep_their_slots_whatever_the_control`, `an_error_is_clipped_first_and_never_squeezes_out_the_label` (`src/screen.rs`) |
 | TRM-01 (pure supplement): the cursor only inside the host; a wide character the edge would cut left blank; each rendition reaches its cell; DECSCUSR for every shape | `the_cursor_shows_only_inside_the_host`, `a_wide_character_the_host_edge_would_cut_is_left_blank`, `each_rendition_reaches_its_cell`, `each_cursor_shape_has_its_decscusr` (`src/screen.rs`) |
 | Spec #73 Enter (pure supplement): only connected rows not known to be final are acquirable; Enter chooses the highlighted row | `only_connected_rows_not_known_to_be_final_are_acquirable` (`src/registry.rs`), `enter_chooses_the_highlighted_row` (`src/selector.rs`) |
-| Client supervisor (#108): control and display records reach the terminal as delivered; Acquire, Ready and Resize submitted in order and answered as themselves; a request refused at submit is not pending and consumes no ID; the pending ledger is bounded | `control_and_display_records_reach_the_terminal_as_delivered`, `requests_are_submitted_in_order_and_answered_as_themselves`, `a_request_refused_at_submit_is_not_pending_and_consumes_no_id`, `the_pending_ledger_is_bounded_by_the_requests_the_library_may_hold` (`src/supervisor/tests`) |
+| Client supervisor (#108): control and display records reach the terminal as delivered; Acquire, Ready and Resize submitted in order and answered as themselves; a request refused at submit is not pending and consumes no ID; the pending ledger is bounded | `control_and_display_records_reach_the_terminal_as_delivered`, `requests_are_submitted_in_order_and_answered_as_themselves`, `a_request_refused_at_submit_is_not_pending_and_consumes_no_id`, `the_pending_ledger_is_bounded_by_the_requests_the_library_may_hold` (`src/supervisor.rs`) |
+| SEL-01, DSC-05 (pure supplement): rows found after an empty open, or losing the highlighted row, leave nothing highlighted until Up or Down highlights the first row | `with_nothing_highlighted_up_or_down_highlights_the_first_row` (`src/selector.rs`) |
 | HLP-01 (Monitor): at every start with hints on and nothing saved, the introduction lists the actual prefix with x, s and ? and an unchecked box; Enter continues, closing saves nothing, prefix+x exits from it | `the_key_introduction_opens_at_every_start_until_dont_show_again_is_saved` (e2e) |
 | HLP-01 (Monitor): hints off or the choice saved keep it closed; prefix+? opens it regardless, showing the saved choice; prefix+? while open is a no-op; a later version's file with unknown fields is honoured | `the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say` (e2e) |
 | HLP-01 (Monitor): Space saves and reverses the choice per climon2 home, exact version 1 bytes, mode 0600 under umask 000, by rename (a hard link keeps the old bytes), nothing left behind, a file already under the temporary name replaced; restarts and another home | `dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible` (e2e) |
@@ -421,13 +436,13 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | INP-01, INP-02, TRM-02 (Monitor), COM-04 (Monitor, typed), EXT-03 (Monitor, Ctrl+C): typed bytes reach the selected session exactly, binary, invalid UTF-8 and Ctrl+C included; one literal prefix for a doubled one, both bytes for d, h, r, J and the take-control key, nothing for prefix+j, replies and reports; identical when split into ten reads; cursor and keypad keys follow the application's modes and the host keypad follows it | `typed_bytes_reach_the_selected_session_exactly_however_reads_split` (e2e) |
 | INP-01 (Monitor, live and too-small screens), spec #73 Routing: prefix+? and prefix+s from a live session, their keys never reach it; on a too-small host input is discarded, never buffered, prefix+s still opens the selector and prefix+x still exits | `global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffered` (e2e) |
 | INP-02, HLP-02 (Monitor, Escape; owner decisions on #105, #106 and #109): a cursor key split right after its Escape or after its introducer never closes the selector or key introduction; a lone Escape closes it when the next key arrives, which reaches the session; Escape then a key in one read closes the selector or key introduction and the key reaches the session, painted first | `split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both` (e2e), `only_closing_the_last_modal_reveals_the_canvas` (`src/lib.rs`) |
-| Spec #73 exit (owner decision on #109): keys read with prefix+x reach the session before shutdown; a stuck session holds exit at most the operation deadline (plus the shutdown deadline) | `typed_bytes_reach_the_selected_session_exactly_however_reads_split`, `a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline` (e2e); `stopping_waits_for_accepted_input_at_most_the_operation_deadline` (`src/supervisor/tests`) |
+| Spec #73 exit (owner decision on #109): keys read with prefix+x reach the session before shutdown; a stuck session holds exit at most the operation deadline (plus the shutdown deadline) | `typed_bytes_reach_the_selected_session_exactly_however_reads_split`, `a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline` (e2e); `stopping_waits_for_accepted_input_at_most_the_operation_deadline` (`src/supervisor.rs`) |
 | COM-03 (Monitor, queue full), COM-04 (Monitor, chunks): a refused chunk is shown with the bytes not sent, earlier input accepted; only accepted input arrives | `a_full_input_queue_is_shown_and_only_accepted_input_arrives` (e2e) |
 | INP-01 (pure input-router supplement): the global actions with default and custom prefixes; a doubled prefix; unknown suffixes; a lone prefix waits | `the_prefix_and_lowercase_s_x_j_or_question_mark_are_the_global_actions`, `a_doubled_prefix_is_one_literal_prefix`, `an_unknown_suffix_is_the_prefix_and_that_key`, `a_lone_prefix_waits_indefinitely` (`src/router.rs`) |
 | INP-02 (pure input-router supplement): every split routes identically, and sends an application the same bytes even with a released Escape; a split cursor key is never an Escape; Escape and a key; a lone Escape waits for the next byte, and one bound for an application is released at once, once, never as or after a prefix; Ctrl+[ as the prefix; broken and overlong (64 and 65 bytes) sequences; cursor and keypad encodings | `every_split_of_the_reads_routes_identically`, `a_split_cursor_key_is_never_an_escape`, `escape_and_a_key_in_one_read_are_escape_then_that_key`, `a_lone_escape_waits_for_the_next_byte`, `a_lone_escape_for_an_application_is_released_at_once`, `an_application_receives_the_same_bytes_for_every_split`, `with_escape_as_the_prefix_bare_escape_waits_and_alt_keys_are_actions`, `a_broken_sequence_is_its_bytes`, `an_overlong_sequence_is_discarded`, `cursor_keys_follow_the_application_cursor_mode`, `keypad_keys_follow_the_application_keypad_mode` (`src/router.rs`); `the_host_keypad_mode_is_written_when_it_changes` (`src/screen.rs`) |
 | TRM-02, INP-03, INP-05 (pure input-router supplement): replies, mouse and focus reports and pastes are never keys and never complete a pending prefix; a paste discards one | `replies_reports_and_pastes_are_never_keys`, `a_paste_discards_a_pending_prefix_and_leaves_none` (`src/router.rs`) |
 | COM-04, EXT-03 (pure input-router supplement): typed bytes reach an application exactly | `typed_bytes_reach_the_application_exactly` (`src/router.rs`) |
-| COM-03, COM-04 (pure supplement): chunks of at most `chunk_bytes`; the first refusal carries every unsent byte and consumes no request ID; a refusal is shown | `input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte` (`src/supervisor/tests`), `refused_input_shows_what_was_not_sent` (`src/terminal.rs`) |
+| COM-03, COM-04 (pure supplement): chunks of at most `chunk_bytes`; the first refusal carries every unsent byte and consumes no request ID; a refusal is shown | `input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte` (`src/supervisor.rs`), `refused_input_shows_what_was_not_sent` (`src/terminal.rs`) |
 | #74 risk proof: plain and hooked sibling binaries without nested builds | `cargo_builds_the_plain_or_hooked_monitor_binary_for_its_tests` (`tests/build.rs`, plain and hooked runs); fixtures `workspace_binaries_contain_test_hooks`; xtask `release_check_builds_unhooked_binaries_in_a_private_target` |
 | #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`; Linux `linux_packaging_rejects_a_non_x86_64_or_hooked_monitor`; macOS `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
 

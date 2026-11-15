@@ -364,7 +364,7 @@ fn decscusr(shape: CursorShape, blinking: bool) -> u8 {
 mod tests {
     use super::*;
     use crate::terminal::Control;
-    use climon2_vt::{Geometry, Limits, Model};
+    use climon2_vt::{Geometry, Limits, Model, Parser};
 
     /// INP-02 (pure supplement): the host keypad's mode is written only when
     /// it changes.
@@ -489,7 +489,7 @@ mod tests {
             history_rows: 100,
         };
         let mut model = Model::new(Geometry::for_host(cols, rows).unwrap(), limits).unwrap();
-        model.feed(bytes).unwrap();
+        model.feed(&mut Parser::new(), bytes).unwrap();
         model
     }
 

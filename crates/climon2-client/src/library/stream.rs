@@ -229,11 +229,21 @@ impl Departure {
 
     /// Only a confirmed departure can have detached an attachment.
     fn answered(outcome: &Outcome, detached: bool) -> Self {
-        let leave = evidence(outcome);
+        let leave = Self::leave_of(outcome);
         Self {
             leave,
             detached: detached && leave == native::LEAVE_CONFIRMED,
             fault: outcome.fault().cloned(),
+        }
+    }
+
+    /// The Leave evidence code a Leave response's outcome proves.
+    fn leave_of(outcome: &Outcome) -> u32 {
+        match outcome {
+            Outcome::Ok => native::LEAVE_CONFIRMED,
+            Outcome::Rejected(_) => native::LEAVE_REJECTED,
+            Outcome::Failed(_) => native::LEAVE_FAILED,
+            Outcome::Indeterminate(_) => native::LEAVE_INDETERMINATE,
         }
     }
 
@@ -253,16 +263,6 @@ impl Departure {
     /// Whether the registration certainly remains: a rejected Leave.
     pub(super) fn kept(&self) -> bool {
         self.leave == native::LEAVE_REJECTED
-    }
-}
-
-/// The Leave evidence a Leave's outcome gives.
-fn evidence(outcome: &Outcome) -> u32 {
-    match outcome {
-        Outcome::Ok => native::LEAVE_CONFIRMED,
-        Outcome::Rejected(_) => native::LEAVE_REJECTED,
-        Outcome::Failed(_) => native::LEAVE_FAILED,
-        Outcome::Indeterminate(_) => native::LEAVE_INDETERMINATE,
     }
 }
 

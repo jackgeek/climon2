@@ -1,23 +1,27 @@
-//! Library-layer test host (#75, #85): loads one client library by absolute
-//! path through the frozen C ABI and prints what it observed as one JSON
+//! Library-layer test host (#75, #84, #85): loads one version's client
+//! library from a climon2 executable home through the shared validated loader
+//! (`climon2_platform::library`) and prints what it observed as one JSON
 //! object.
 //!
-//! It uses only `dlopen(RTLD_NOW | RTLD_LOCAL)`, `dlsym` of the bootstrap and
-//! the returned function table; never a Rust call into the library. It reports
-//! observations, not verdicts: tests decide what is correct. The library is
-//! never unloaded, as the embedding contract requires.
+//! It never makes a Rust call into the library: only the bootstrap the loader
+//! resolved and the returned function table. It reports observations, not
+//! verdicts: tests decide what is correct. Nothing is unloaded, as the
+//! embedding contract requires.
 //!
-//! `climon2-library-host <library>` describes the library, and
-//! `climon2-library-host <library> <scenario> <json>` drives instances through
-//! one scenario (`lifecycle`, `create`, `fault`, `workers`, `independence`,
-//! `ambient`, `race` or `script`) with the instrumentation every
-//! Library-layer test shares: caller startup and request memory the library
-//! can neither keep nor free (`startup`, `requests`), an ownership ledger and
-//! a timeline of every call and its thread (`abi`), descriptor and
+//! `climon2-library-host <home> <version>` reports the loader's refusal, or
+//! what the library shows through the frozen C ABI, its bootstrap and
+//! function table, and whether a second load of the version shared the
+//! first; then the client library files the process has loaded, and its
+//! environment.
+//! `climon2-library-host <home> <version> <scenario> <json>` drives instances
+//! through one scenario (`lifecycle`, `create`, `fault`, `workers`,
+//! `independence`, `ambient`, `race` or `script`) with the instrumentation
+//! every Library-layer test shares: caller startup and request memory the
+//! library can neither keep nor free (`startup`, `requests`), an ownership
+//! ledger and a timeline of every call and its thread (`abi`), descriptor and
 //! process-state probes (`probe`), and a fake daemon peer (`peer`), the
 //! adversarial fixture `script` scenarios can connect to instead of a real
-//! session daemon. The `climon2-library-host <executable home> <version>`
-//! form exercises the shared validated loader before describing the library.
+//! session daemon.
 
 #[path = "library/abi.rs"]
 mod abi;
@@ -44,14 +48,14 @@ use climon2_core::{
     layout::{ExecutableHome, client_library_name},
     native::{self, Bootstrap, Description, Interface, Tokens},
 };
-use climon2_platform::library::Loader;
+use climon2_platform::library::{Failure, LoadError, Loader};
 use serde_json::{Map, Value, json};
 use std::{
     collections::BTreeMap,
-    ffi::{CStr, CString, OsString, c_void},
+    ffi::{CStr, OsString, c_void},
     mem::MaybeUninit,
     os::unix::ffi::OsStrExt,
-    path::{Path, PathBuf},
+    path::PathBuf,
     ptr::{self, NonNull},
 };
 
@@ -59,77 +63,266 @@ const UNTOUCHED_DESCRIPTOR: i32 = 0x5a5a_5a5a;
 const OTHER_REVISIONS: [u32; 3] = [0, 2, u32::MAX];
 
 fn main() {
-    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    let report = if arguments.len() == 2
-        && arguments[1]
-            .to_str()
-            .and_then(|version| version.parse::<VersionName>().ok())
-            .is_some()
-    {
-        let home = PathBuf::from(&arguments[0]);
-        let version = arguments[1].to_str().expect("validated UTF-8 version");
-        load_version(&home, version)
-    } else {
-        let Some(path) = arguments.first() else {
-            eprintln!(
-                "usage: climon2-library-host <absolute library path> [<scenario> <json>]\n       climon2-library-host <absolute executable home> <version>"
-            );
-            std::process::exit(2);
-        };
-        let scenario = arguments.get(1).map(|scenario| {
-            let input = arguments.get(2).expect("a scenario's JSON input");
-            let input = serde_json::from_slice(input.as_bytes()).expect("JSON input");
-            (scenario.to_string_lossy().into_owned(), input)
-        });
-        match (
-            load(&CString::new(path.as_bytes()).expect("path without NUL")),
-            scenario,
-        ) {
-            (Ok(library), Some((name, input))) => drive(&library, &name, input),
-            (Ok(library), None) => observe(library),
-            (Err(error), _) => json!({ "error": error }),
-        }
+    let (home, version, requested) = arguments().unwrap_or_else(|| {
+        eprintln!(
+            "usage: climon2-library-host <absolute executable home> <version> [<scenario> <json>]"
+        );
+        std::process::exit(2);
+    });
+    let loader = Loader::new(home);
+    let report = match (loader.load(&version), requested) {
+        (loaded, Some((name, input))) => run_scenario(&loader, &version, loaded, &name, input),
+        (loaded, None) => describe_load(&loader, &version, loaded),
     };
     println!("{report}");
 }
 
-/// Loads one version through the same validated loader used by embedders.
-fn load_version(home: &Path, version: &str) -> Value {
-    let home = ExecutableHome::new(home).expect("absolute executable home");
-    let version = version.parse::<VersionName>().expect("validated version");
-    let loader = Loader::new(home);
-    match loader.load(&version) {
-        Ok(library) => {
-            let mut report = observe(Library {
-                bootstrap: library.bootstrap(),
-            });
-            report["shared"] = json!(
-                loader
-                    .load(&version)
-                    .is_ok_and(|again| std::ptr::eq(again, library))
-            );
-            report["images"] = json!(client_library_images());
-            report["environment"] = json!(
-                std::env::vars_os()
-                    .map(|(name, value)| (lossy(name), lossy(value)))
-                    .collect::<BTreeMap<_, _>>()
-            );
-            report
+type Scenario = (String, Value);
+
+fn arguments() -> Option<(ExecutableHome, VersionName, Option<Scenario>)> {
+    let mut arguments = std::env::args_os().skip(1);
+    let home = ExecutableHome::new(&PathBuf::from(arguments.next()?)).ok()?;
+    let version = arguments.next()?.to_str()?.parse().ok()?;
+    let scenario = match arguments.next() {
+        Some(scenario) => {
+            let input = serde_json::from_slice(arguments.next()?.as_bytes()).ok()?;
+            Some((lossy(scenario), input))
         }
-        Err(error) => json!({
-            "error": {
-                "failure": format!("{:?}", error.failure()),
-                "message": error.to_string(),
-            },
-        }),
-    }
+        None => None,
+    };
+    arguments
+        .next()
+        .is_none()
+        .then_some((home, version, scenario))
 }
 
 fn lossy(text: OsString) -> String {
     text.to_string_lossy().into_owned()
 }
 
-fn client_library_images() -> Vec<String> {
+/// The loader's refusal: its failure kind and message.
+fn refusal(error: &LoadError) -> Value {
+    json!({
+        "error": { "failure": format!("{:?}", error.failure()), "message": error.to_string() },
+    })
+}
+
+/// What the loader answered for `version`, and for a second load of it; then
+/// the client library files the process has loaded, and its environment.
+fn describe_load(
+    loader: &Loader,
+    version: &VersionName,
+    loaded: Result<
+        &'static climon2_platform::library::Library,
+        climon2_platform::library::LoadError,
+    >,
+) -> Value {
+    let mut report = match loaded {
+        Ok(library) => {
+            let mut report = observe(Library {
+                bootstrap: library.bootstrap(),
+            });
+            let again = loader.load(version);
+            report["shared"] = json!(again.is_ok_and(|again| ptr::eq(again, library)));
+            report
+        }
+        Err(error) => refusal(&error),
+    };
+    report["images"] = json!(images());
+    report["environment"] = json!(
+        std::env::vars_os()
+            .map(|(name, value)| (lossy(name), lossy(value)))
+            .collect::<BTreeMap<_, _>>()
+    );
+    report
+}
+
+/// Runs one scenario on the loaded library. A load the loader refused as a
+/// contained bootstrap failure is recoverable, so it loads once more; each
+/// refused attempt opens the report's bootstrap list. The scenario's other
+/// `releases` are loaded through the same loader, after it.
+fn run_scenario(
+    loader: &Loader,
+    version: &VersionName,
+    mut loaded: Result<&'static climon2_platform::library::Library, LoadError>,
+    name: &str,
+    input: Value,
+) -> Value {
+    let mut refused = Vec::new();
+    loop {
+        match loaded {
+            Ok(library) => return with_releases(loader, (version, library), name, input, refused),
+            Err(error) if error.failure() == Failure::BootstrapFailure && refused.is_empty() => {
+                refused.push(refusal(&error));
+                loaded = loader.load(version);
+            }
+            Err(error) => return refusal(&error),
+        }
+    }
+}
+
+type Load<'a> = (&'a VersionName, &'static climon2_platform::library::Library);
+
+/// The versions a scenario's `releases` names besides the host's own.
+fn other_versions(input: &Value) -> Vec<VersionName> {
+    input["releases"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|version| {
+            let version = version.as_str().expect("a version");
+            version.parse().expect("a version name")
+        })
+        .collect()
+}
+
+/// Loads the other `releases`, then runs the scenario across all of them.
+/// With any, the report adds whether a second load of each release shares
+/// its first, and the client library files the process has loaded.
+fn with_releases(
+    loader: &Loader,
+    load: Load,
+    name: &str,
+    input: Value,
+    refused: Vec<Value>,
+) -> Value {
+    let versions = other_versions(&input);
+    let mut loads = vec![load];
+    for version in &versions {
+        match loader.load(version) {
+            Ok(library) => loads.push((version, library)),
+            Err(error) => return refusal(&error),
+        }
+    }
+    let libraries: Vec<Library> = loads
+        .iter()
+        .map(|(_, library)| Library {
+            bootstrap: library.bootstrap(),
+        })
+        .collect();
+    let mut report = drive(&libraries[0], &libraries[1..], name, input, refused);
+    if versions.is_empty() {
+        return report;
+    }
+    for (version, first) in loads {
+        let again = loader.load(version);
+        report["releases"][version.as_str()]["shared"] =
+            json!(again.is_ok_and(|again| ptr::eq(again, first)));
+    }
+    report["images"] = json!(images());
+    report
+}
+
+/// Bootstraps revision 1, once more if the first bootstrap failed explicitly
+/// with `CM1_INTERNAL_ERROR` (a contained panic), then runs one scenario
+/// with the tables of `others` beside the library's.
+fn drive(
+    library: &Library,
+    others: &[Library],
+    name: &str,
+    input: Value,
+    mut bootstrap: Vec<Value>,
+) -> Value {
+    let description = loop {
+        let (status, description, output) = request(library, native::REVISION);
+        bootstrap.push(json!({ "status": status, "output": output }));
+        if status != native::INTERNAL_ERROR || bootstrap.len() > 1 {
+            break description;
+        }
+    };
+    assert!(!description.is_null(), "bootstrap failed: {bootstrap:?}");
+    // SAFETY: success returns an immutable description that lives until exit.
+    let description: &'static Description = unsafe { &*description };
+    let loaded: Vec<Loaded> = [Loaded::new(library, description)]
+        .into_iter()
+        .chain(others.iter().map(Loaded::bootstrapped))
+        .collect();
+    let setup = scenarios::Setup {
+        api: loaded[0].api,
+        release: loaded[0].release.clone(),
+        input,
+        releases: loaded
+            .iter()
+            .map(|loaded| (loaded.release.clone(), loaded.api))
+            .collect(),
+    };
+    let mut report = match name {
+        "lifecycle" => scenarios::lifecycle(&setup),
+        "create" => scenarios::creates(&setup),
+        "fault" => faults::fault(&setup),
+        "workers" => faults::workers(&setup),
+        "independence" => isolation::independence(&setup),
+        "ambient" => isolation::ambient(&setup),
+        "race" => isolation::race(&setup),
+        "script" => script::script(&setup),
+        _ => panic!("unknown scenario {name}"),
+    };
+    if let Some(object) = report.as_object_mut() {
+        object.insert("bootstrap".into(), Value::Array(bootstrap));
+    } else {
+        report = json!({ "cases": report, "bootstrap": bootstrap });
+    }
+    if !others.is_empty() {
+        let releases: Map<String, Value> = loaded
+            .iter()
+            .map(|loaded| (loaded.release.clone(), loaded.report()))
+            .collect();
+        report["releases"] = Value::Object(releases);
+    }
+    report
+}
+
+/// One loaded release: its bootstrap, its description and its
+/// instrumented table.
+struct Loaded {
+    bootstrap: Bootstrap,
+    description: &'static Description,
+    release: String,
+    api: abi::Api,
+}
+
+impl Loaded {
+    fn new(library: &Library, description: &'static Description) -> Self {
+        Self {
+            bootstrap: library.bootstrap,
+            description,
+            release: text(description.release)
+                .as_str()
+                .expect("UTF-8 release text")
+                .to_owned(),
+            api: abi::Api::new(&description.functions),
+        }
+    }
+
+    /// Another release, whose bootstrap must succeed at once.
+    fn bootstrapped(library: &Library) -> Self {
+        let (status, description, _) = request(library, native::REVISION);
+        assert_eq!(status, native::SUCCESS, "another release's bootstrap");
+        // SAFETY: success returns an immutable description that lives until exit.
+        Self::new(library, unsafe { &*description })
+    }
+
+    /// The images its bootstrap and description are in, its release text,
+    /// and its calls and objects.
+    fn report(&self) -> Value {
+        json!({
+            "image": image(self.bootstrap as *const c_void),
+            "description_image": image(ptr::from_ref(self.description).cast()),
+            "release": self.release,
+            "timeline": self.api.timeline.report(),
+            "ledger": self.api.ledger.report(),
+        })
+    }
+}
+
+struct Library {
+    bootstrap: Bootstrap,
+}
+
+/// Every loaded image named like a client library, by the path it was
+/// loaded from.
+fn images() -> Vec<String> {
     let name = format!("/{}", client_library_name());
     loaded_images()
         .into_iter()
@@ -184,79 +377,6 @@ fn loaded_images() -> Vec<String> {
                 .into_owned()
         })
         .collect()
-}
-
-/// Bootstraps revision 1, once more if the first bootstrap failed explicitly
-/// with `CM1_INTERNAL_ERROR` (a contained panic), then runs one scenario.
-fn drive(library: &Library, name: &str, input: Value) -> Value {
-    let mut bootstrap = Vec::new();
-    let description = loop {
-        let (status, description, output) = request(library, native::REVISION);
-        bootstrap.push(json!({ "status": status, "output": output }));
-        if status != native::INTERNAL_ERROR || bootstrap.len() > 1 {
-            break description;
-        }
-    };
-    assert!(!description.is_null(), "bootstrap failed: {bootstrap:?}");
-    // SAFETY: success returns an immutable description that lives until exit.
-    let description: &'static Description = unsafe { &*description };
-    let setup = scenarios::Setup {
-        api: abi::Api::new(&description.functions),
-        release: abi::text(description.release)
-            .as_str()
-            .expect("UTF-8 release text")
-            .to_owned(),
-        input,
-    };
-    let mut report = match name {
-        "lifecycle" => scenarios::lifecycle(&setup),
-        "create" => scenarios::creates(&setup),
-        "fault" => faults::fault(&setup),
-        "workers" => faults::workers(&setup),
-        "independence" => isolation::independence(&setup),
-        "ambient" => isolation::ambient(&setup),
-        "race" => isolation::race(&setup),
-        "script" => script::script(&setup),
-        _ => panic!("unknown scenario {name}"),
-    };
-    if let Some(object) = report.as_object_mut() {
-        object.insert("bootstrap".into(), Value::Array(bootstrap));
-    } else {
-        report = json!({ "cases": report, "bootstrap": bootstrap });
-    }
-    report
-}
-
-struct Library {
-    bootstrap: Bootstrap,
-}
-
-fn dlerror() -> String {
-    // SAFETY: dlerror returns null or a NUL-terminated message owned by the loader.
-    let message = unsafe { libc::dlerror() };
-    if message.is_null() {
-        return "unknown loader error".into();
-    }
-    // SAFETY: nonnull dlerror results are NUL-terminated strings.
-    unsafe { CStr::from_ptr(message) }
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn load(path: &CStr) -> Result<Library, String> {
-    // SAFETY: path is NUL-terminated; the handle is deliberately never closed.
-    let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-    if handle.is_null() {
-        return Err(dlerror());
-    }
-    // SAFETY: handle is a live dlopen handle and the name is NUL-terminated.
-    let symbol = unsafe { libc::dlsym(handle, native::BOOTSTRAP.as_ptr()) };
-    if symbol.is_null() {
-        return Err(dlerror());
-    }
-    // SAFETY: the frozen bootstrap symbol has the `Bootstrap` signature.
-    let bootstrap = unsafe { std::mem::transmute::<*mut c_void, Bootstrap>(symbol) };
-    Ok(Library { bootstrap })
 }
 
 /// The file of the loaded image that contains `address`.

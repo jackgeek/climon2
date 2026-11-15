@@ -11,6 +11,8 @@ on:
       - "!LICENSE"
       - "docs/protocol/**/*.md"
   pull_request:
+    # ready_for_review re-runs checks when a draft integration PR is marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "**"
       - "!**/*.md"
@@ -25,6 +27,10 @@ on:
 permissions:
   contents: read
 
+# macOS test jobs run only while the repository variable CLIMON2_MACOS_TESTS is
+# "on" (Settings > Secrets and variables > Actions > Variables). Off, checks run
+# on Linux and Windows, and macOS only builds its release artifact.
+
 # A newer push to the same pull request supersedes its in-progress checks.
 # Main pushes and release calls get a group of their own and are never cancelled.
 concurrency:
@@ -37,7 +43,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, macos-15-intel, ubuntu-24.04]
+        runner: ${{ fromJSON(vars.CLIMON2_MACOS_TESTS == 'on' && '["macos-15", "macos-15-intel", "ubuntu-24.04"]' || '["ubuntu-24.04"]') }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +58,9 @@ jobs:
           test "$(uname -m)" = "$expected"
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.runner }}
       - name: Install universal payload targets for install tests
         if: runner.os == 'macOS' && runner.arch == 'ARM64'
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
@@ -81,6 +90,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
       - name: Test neutral contracts
         run: cargo test --locked -p climon2-core
       - name: Test Unix launcher
@@ -88,6 +100,15 @@ jobs:
         run: cargo test --locked -p climon2-launcher
   quality:
     name: macOS-only CRAP and mutation
+    # A draft feature/* -> main integration PR re-qualifies every macOS change
+    # since main on each update, though each ticket PR already qualified its
+    # own. Run it once the integration PR is marked ready, and on every update after.
+    if: >-
+      vars.CLIMON2_MACOS_TESTS == 'on'
+      && !(github.event_name == 'pull_request'
+        && github.event.pull_request.draft
+        && github.base_ref == 'main'
+        && startsWith(github.head_ref, 'feature/'))
     runs-on: macos-15
     env:
       CARGO_TARGET_DIR: target/quality-run
@@ -122,6 +143,12 @@ jobs:
         with:
           path: .metrics
           key: quality-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('xtask/src/quality.rs', 'tools/quality-requirements.txt') }}
+      # The pinned cargo-llvm-cov (LLVM_COV in xtask/src/quality.rs) takes a
+      # minute or more to build; setup-quality installs it only when missing.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-llvm-cov
+          key: llvm-cov-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('xtask/src/quality.rs') }}
       - name: Set up pinned quality tools
         run: cargo xtask setup-quality
       - name: Qualify only macOS-exclusive source (shared and Linux run locally)
@@ -148,6 +175,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dist-${{ matrix.platform }}
       - name: Require native architecture and install target slices
         run: |
           if [[ "$RUNNER_OS" == Linux ]]; then
@@ -172,13 +202,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: macos-15
-            platform: macos-universal
-          - runner: macos-15-intel
-            platform: macos-universal
-          - runner: ubuntu-24.04
-            platform: linux-x86_64-gnu
+        include: >-
+          ${{ fromJSON(vars.CLIMON2_MACOS_TESTS == 'on' && '[{"runner": "macos-15", "platform": "macos-universal"}, {"runner": "macos-15-intel", "platform": "macos-universal"}, {"runner": "ubuntu-24.04", "platform": "linux-x86_64-gnu"}]' || '[{"runner": "ubuntu-24.04", "platform": "linux-x86_64-gnu"}]') }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -256,6 +281,9 @@ jobs:
           else
             echo "First $PLATFORM release: no previous platform archive exists; no synthetic compatibility fixture."
           fi
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: archive-${{ matrix.runner }}
       - name: Build test harnesses and debug siblings without substituting archive binaries
         run: cargo test --workspace --locked --no-run
       - name: Test this exact archive including smoke, vim and less

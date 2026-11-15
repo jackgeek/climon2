@@ -248,10 +248,11 @@ fn bootstrap_without_a_revision_one_description_is_refused() {
 }
 
 /// LIB-02 Fault (contained bootstrap failure): a bootstrap that answers
-/// revision 1 with `CM1_INTERNAL_ERROR`, a contained failure the bootstrap
-/// contract allows, is refused as a bootstrap failure, not a malformed
-/// description. It is recoverable: the loader does not remember the refusal,
-/// so when the failure has passed, the next load of the version succeeds.
+/// revision 1 with `CM1_INTERNAL_ERROR` and clears the output it was given, a
+/// contained failure the bootstrap contract allows, is refused as a bootstrap
+/// failure, not a malformed description. It is recoverable: the loader does
+/// not remember the refusal, so when the failure has passed, the next load of
+/// the version succeeds.
 #[test]
 fn contained_bootstrap_failure_is_refused_and_recoverable() {
     let home = Home::new();
@@ -264,6 +265,31 @@ fn contained_bootstrap_failure_is_refused_and_recoverable() {
     assert!(error.to_string().contains("CM1_INTERNAL_ERROR"), "{error}");
     let library = loader.load(&version("0.1.0")).unwrap();
     assert_eq!(library.requirements().workers, 2);
+}
+
+/// LIB-02 Fault (contained bootstrap failure; malformed description; owner
+/// decision on #84): a bootstrap that answers revision 1 with
+/// `CM1_INTERNAL_ERROR` but leaves the output it was given as it found it
+/// breaks the bootstrap contract, so it is refused as a malformed
+/// description, not as a recoverable bootstrap failure. The opened handle
+/// stays loaded.
+#[test]
+fn contained_bootstrap_failure_that_leaves_its_output_is_a_malformed_description() {
+    let home = Home::new();
+    let library = home.stand_in(
+        "0.1.0",
+        "0.1.0",
+        &["-DFAIL_FIRST_BOOTSTRAP", "-DUNCLEARED_FAILURE"],
+    );
+    let error = home.refusal("0.1.0");
+    assert_eq!(error.failure(), Failure::MalformedDescription, "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("CM1_INTERNAL_ERROR) without clearing its output"),
+        "{error}"
+    );
+    assert!(loaded(&library));
 }
 
 /// LIB-02 Fault (wrong release; malformed description), at the release

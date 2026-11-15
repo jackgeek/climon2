@@ -52,4 +52,8 @@ as the attachment drains it, while less than 1 [MiB](../TERMS.md#mib) waits in i
 sends Restoration complete after the last of its
 [Display](event-display.md) chunks. Live output that arrived meanwhile
 follows as Display of the same authority. [Ready](request-ready.md) is
-accepted only after Restoration complete was sent.
+accepted only after Restoration complete was sent. When the command's
+output drained while a restoration was in progress,
+[Command final](event-command-final.md#implemented-behavior) waits for its
+Restoration complete and the live output behind it
+([#203](https://github.com/jackgeek/climon2/issues/203)).

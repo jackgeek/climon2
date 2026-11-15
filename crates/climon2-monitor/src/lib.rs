@@ -23,7 +23,7 @@ mod terminal;
 
 use climon2_core::{SessionId, protocol::TerminalSize};
 use climon2_discovery::{Batch, Incomplete, Outcome, Progress};
-use climon2_vt::Limits;
+use climon2_vt::{Limits, Parser};
 use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
 use introduction::KeyIntroduction;
@@ -156,6 +156,9 @@ struct Monitor {
     terminals: BTreeMap<SessionId, Terminal>,
     /// What bounds each terminal's model.
     model: Limits,
+    /// The one vte parser every terminal's model is fed through (#166),
+    /// counted once beside their footprints at startup.
+    parser: Parser,
 }
 
 impl Monitor {
@@ -187,6 +190,7 @@ impl Monitor {
                 bytes: usize::try_from(model.bytes).unwrap_or(usize::MAX),
                 history_rows: model.history_rows as usize,
             },
+            parser: Parser::new(),
         };
         monitor.show(true).map(|()| monitor)
     }
@@ -266,10 +270,7 @@ impl Monitor {
 
     /// `id`'s terminal, created the first time it is needed.
     fn terminal(&mut self, id: &SessionId) -> &mut Terminal {
-        let model = self.model;
-        self.terminals
-            .entry(id.clone())
-            .or_insert_with(|| Terminal::new(model))
+        terminal(&mut self.terminals, self.model, id)
     }
 
     /// Submits `request` through `id`'s client, if there is one.
@@ -310,7 +311,8 @@ impl Monitor {
     /// submitting the Ready that follows an applied restoration, then
     /// keeps the selected controller's size.
     fn present(&mut self, id: &SessionId, presentation: Presentation) {
-        let ready = self.terminal(id).present(presentation);
+        let ready =
+            terminal(&mut self.terminals, self.model, id).present(&mut self.parser, presentation);
         self.request(id, ready);
         self.resize();
     }
@@ -513,6 +515,18 @@ fn ending(event: &ClientEvent) -> Option<Presentation> {
         ClientEvent::Ended | ClientEvent::Unavailable(_) => Some(Presentation::Ended),
         _ => None,
     }
+}
+
+/// `id`'s terminal in `terminals`, created with `model` the first time it
+/// is needed.
+fn terminal<'a>(
+    terminals: &'a mut BTreeMap<SessionId, Terminal>,
+    model: Limits,
+    id: &SessionId,
+) -> &'a mut Terminal {
+    terminals
+        .entry(id.clone())
+        .or_insert_with(|| Terminal::new(model))
 }
 
 /// The selected row as the top row shows it: its label, its status (or

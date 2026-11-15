@@ -41,9 +41,9 @@ impl KeyIntroduction {
         self.open
     }
 
-    /// A typed key, which the key introduction owns while it is open: Enter
-    /// continues, a bare Escape (never the prefix's) closes, and Space
-    /// reverses the saved choice.
+    /// A typed key while the key introduction is open, the only time the
+    /// monitor gives it one: Enter continues, a bare Escape (never the
+    /// prefix's) closes, and Space reverses the saved choice.
     pub(crate) fn key(&mut self, key: &Key) {
         match key {
             Key::Escape => self.open = false,

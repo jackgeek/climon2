@@ -277,6 +277,31 @@ mod tests {
         assert_eq!(view(&selector), (" ║ a    ║ ".to_owned(), vec![2]));
     }
 
+    /// SEL-01 basic cases and DSC-05 (pure supplement; selector document,
+    /// "Status/title/discovery changes apply while the selector is open"):
+    /// rows found after an empty open, or losing the highlighted row, leave
+    /// nothing highlighted until Up or Down highlights the first row.
+    #[test]
+    fn with_nothing_highlighted_up_or_down_highlights_the_first_row() {
+        let shown = |selector: &Selector, rows: &[View]| {
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 10, 6));
+            selector.render(rows, buffer.area, &mut buffer);
+            highlighted(&buffer)
+        };
+        let found = rows(&[("", "a"), ("", "b"), ("", "c")]);
+        let mut selector = Selector::default();
+        selector.open(&[]);
+        assert_eq!(shown(&selector, &found), Vec::<u16>::new());
+        typed(&mut selector, &[DOWN], &found);
+        assert_eq!(shown(&selector, &found), [2]);
+
+        typed(&mut selector, &[DOWN], &found);
+        let without_b = [found[0].clone(), found[2].clone()];
+        assert_eq!(shown(&selector, &without_b), Vec::<u16>::new());
+        typed(&mut selector, &[UP], &without_b);
+        assert_eq!(shown(&selector, &without_b), [2]);
+    }
+
     /// SEL-01 basic cases (pure supplement): prefix+s while the selector is
     /// open changes nothing: the highlight stays where it was moved.
     #[test]

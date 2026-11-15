@@ -6,7 +6,7 @@
 //! selected controller) are its outputs. The model never answers queries
 //! and nothing here writes to the host.
 use climon2_core::protocol::TerminalSize;
-use climon2_vt::{Geometry, Limits, Model, Rejected, view::View};
+use climon2_vt::{Geometry, Limits, Model, Parser, Rejected, view::View};
 
 /// A control period's authority: the connection generation, period and
 /// restoration ID the daemon judges each request by.
@@ -168,11 +168,16 @@ impl Terminal {
         Request::Acquire
     }
 
-    /// Applies one report; returns Ready once a restoration is applied.
-    pub(crate) fn present(&mut self, presentation: Presentation) -> Option<Request> {
+    /// Applies one report, feeding Display through the monitor's one shared
+    /// `parser` (#166); returns Ready once a restoration is applied.
+    pub(crate) fn present(
+        &mut self,
+        parser: &mut Parser,
+        presentation: Presentation,
+    ) -> Option<Request> {
         match presentation {
             Presentation::Complete => return self.complete(),
-            Presentation::Display(bytes) => self.display(&bytes),
+            Presentation::Display(bytes) => self.display(parser, &bytes),
             Presentation::Answered(request, answer) => self.answered(request, answer),
             other => self.control_changed(other),
         }
@@ -221,7 +226,7 @@ impl Terminal {
         Ok(self.model.as_mut().expect("the model was just created"))
     }
 
-    fn display(&mut self, bytes: &[u8]) {
+    fn display(&mut self, parser: &mut Parser, bytes: &[u8]) {
         let Some(held) = self.held.as_mut().filter(|_| self.finished.is_none()) else {
             return;
         };
@@ -232,7 +237,7 @@ impl Terminal {
             held.phase = Phase::Stale;
         }
         if held.phase != Phase::Stale {
-            let fed = model.feed(bytes);
+            let fed = model.feed(parser, bytes);
             self.rejected(fed);
         }
     }
@@ -436,14 +441,15 @@ mod tests {
     /// A terminal granted period 2 at 10x3 that applied restoration 3
     /// holding `text`; Ready for it has been returned.
     fn restored(text: &[u8]) -> Terminal {
+        let mut parser = Parser::new();
         let mut terminal = Terminal::new(LIMITS);
         let held = authority(2, 3);
         assert_eq!(terminal.acquire(), Request::Acquire);
-        terminal.present(Presentation::Granted(held, geometry(10, 3)));
-        terminal.present(Presentation::Begin(held, geometry(10, 3)));
-        terminal.present(Presentation::Display(text.to_vec()));
+        terminal.present(&mut parser, Presentation::Granted(held, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Begin(held, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Display(text.to_vec()));
         assert_eq!(
-            terminal.present(Presentation::Complete),
+            terminal.present(&mut parser, Presentation::Complete),
             Some(Request::Ready(held))
         );
         terminal
@@ -454,23 +460,24 @@ mod tests {
     /// frame, in either order, and each of the three alone is not enough.
     #[test]
     fn ready_applied_and_painted_stay_distinct_and_input_needs_all_three() {
+        let mut parser = Parser::new();
         let mut terminal = Terminal::new(LIMITS);
         let held = authority(2, 3);
         terminal.acquire();
         assert_eq!(terminal.control(), Control::Acquiring);
-        terminal.present(Presentation::Granted(held, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Granted(held, geometry(10, 3)));
         assert_eq!(terminal.control(), Control::Restoring);
-        terminal.present(Presentation::Begin(held, geometry(10, 3)));
-        terminal.present(Presentation::Display(b"hi".to_vec()));
+        terminal.present(&mut parser, Presentation::Begin(held, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Display(b"hi".to_vec()));
         terminal.painted(true);
         assert_eq!(terminal.input(), None);
         assert_eq!(
-            terminal.present(Presentation::Complete),
+            terminal.present(&mut parser, Presentation::Complete),
             Some(Request::Ready(held))
         );
         assert_eq!(terminal.input(), None, "applied alone");
         let ready = Presentation::Answered(Request::Ready(held), Ok(()));
-        terminal.present(ready.clone());
+        terminal.present(&mut parser, ready.clone());
         assert_eq!(terminal.input(), None, "applied and ready, not painted");
         terminal.painted(true);
         assert_eq!(terminal.input(), Some(held));
@@ -483,7 +490,7 @@ mod tests {
             None,
             "applied and painted, not ready"
         );
-        painted_first.present(ready);
+        painted_first.present(&mut parser, ready);
         assert_eq!(painted_first.input(), Some(held));
     }
 
@@ -492,27 +499,31 @@ mod tests {
     /// sends no Ready.
     #[test]
     fn only_ready_accepted_for_the_applied_restoration_opens_input() {
+        let mut parser = Parser::new();
         let held = authority(2, 3);
         let mut refused = restored(b"x");
         refused.painted(true);
-        refused.present(Presentation::Answered(
-            Request::Ready(held),
-            Err("stale".into()),
-        ));
+        refused.present(
+            &mut parser,
+            Presentation::Answered(Request::Ready(held), Err("stale".into())),
+        );
         assert_eq!(refused.input(), None);
         assert_eq!(refused.error(), Some("stale"));
         let mut other = restored(b"x");
         other.painted(true);
-        other.present(Presentation::Answered(
-            Request::Ready(authority(2, 4)),
-            Ok(()),
-        ));
+        other.present(
+            &mut parser,
+            Presentation::Answered(Request::Ready(authority(2, 4)), Ok(())),
+        );
         assert_eq!(other.input(), None);
         let mut granted = Terminal::new(LIMITS);
-        granted.present(Presentation::Granted(held, geometry(10, 3)));
-        assert_eq!(granted.present(Presentation::Complete), None);
+        granted.present(&mut parser, Presentation::Granted(held, geometry(10, 3)));
+        assert_eq!(granted.present(&mut parser, Presentation::Complete), None);
         let mut idle = Terminal::new(LIMITS);
-        idle.present(Presentation::Answered(Request::Ready(held), Ok(())));
+        idle.present(
+            &mut parser,
+            Presentation::Answered(Request::Ready(held), Ok(())),
+        );
         assert_eq!(idle.input(), None);
     }
 
@@ -522,21 +533,25 @@ mod tests {
     /// current, and a new beginning closes input until its own Ready.
     #[test]
     fn a_restoration_replaces_the_model_whole_only_once_applied() {
+        let mut parser = Parser::new();
         let mut terminal = restored(b"old\r\nrows");
         let ready = authority(2, 3);
-        terminal.present(Presentation::Answered(Request::Ready(ready), Ok(())));
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(Request::Ready(ready), Ok(())),
+        );
         terminal.painted(true);
         let newer = authority(2, 4);
-        terminal.present(Presentation::Begin(newer, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Begin(newer, geometry(10, 3)));
         assert_eq!(terminal.input(), None);
-        terminal.present(Presentation::Display(b"superseded".to_vec()));
+        terminal.present(&mut parser, Presentation::Display(b"superseded".to_vec()));
         assert_eq!(screen(&terminal).unwrap(), ["old", "rows", ""]);
         let newest = authority(2, 5);
-        terminal.present(Presentation::Begin(newest, geometry(10, 3)));
-        terminal.present(Presentation::Display(b"new".to_vec()));
+        terminal.present(&mut parser, Presentation::Begin(newest, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Display(b"new".to_vec()));
         assert_eq!(screen(&terminal).unwrap(), ["old", "rows", ""]);
         assert_eq!(
-            terminal.present(Presentation::Complete),
+            terminal.present(&mut parser, Presentation::Complete),
             Some(Request::Ready(newest))
         );
         assert_eq!(screen(&terminal).unwrap(), ["new", "", ""]);
@@ -549,28 +564,32 @@ mod tests {
     /// geometry, live bytes apply.
     #[test]
     fn a_display_at_a_geometry_the_model_lacks_marks_it_stale_until_restored() {
+        let mut parser = Parser::new();
         let held = authority(2, 3);
         let mut terminal = restored(b"kept");
-        terminal.present(Presentation::Answered(Request::Ready(held), Ok(())));
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(Request::Ready(held), Ok(())),
+        );
         terminal.painted(true);
-        terminal.present(Presentation::Geometry(geometry(10, 3)));
-        terminal.present(Presentation::Display(b"!".to_vec()));
+        terminal.present(&mut parser, Presentation::Geometry(geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Display(b"!".to_vec()));
         assert_eq!(screen(&terminal).unwrap(), ["kept!", "", ""]);
         assert_eq!(terminal.input(), Some(held));
-        terminal.present(Presentation::Geometry(geometry(12, 3)));
-        terminal.present(Presentation::Display(b"lost".to_vec()));
-        terminal.present(Presentation::Geometry(geometry(10, 3)));
-        terminal.present(Presentation::Display(b"also".to_vec()));
+        terminal.present(&mut parser, Presentation::Geometry(geometry(12, 3)));
+        terminal.present(&mut parser, Presentation::Display(b"lost".to_vec()));
+        terminal.present(&mut parser, Presentation::Geometry(geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Display(b"also".to_vec()));
         assert_eq!(screen(&terminal).unwrap(), ["kept!", "", ""]);
         assert_eq!(terminal.input(), None);
         assert_eq!(terminal.control(), Control::Restoring);
-        terminal.present(Presentation::Complete);
+        terminal.present(&mut parser, Presentation::Complete);
         assert_eq!(screen(&terminal).unwrap(), ["kept!", "", ""]);
         let next = authority(2, 4);
-        terminal.present(Presentation::Begin(next, geometry(12, 3)));
-        terminal.present(Presentation::Display(b"fresh".to_vec()));
+        terminal.present(&mut parser, Presentation::Begin(next, geometry(12, 3)));
+        terminal.present(&mut parser, Presentation::Display(b"fresh".to_vec()));
         assert_eq!(
-            terminal.present(Presentation::Complete),
+            terminal.present(&mut parser, Presentation::Complete),
             Some(Request::Ready(next))
         );
         assert_eq!(screen(&terminal).unwrap(), ["fresh", "", ""]);
@@ -581,22 +600,23 @@ mod tests {
     /// grant shows nothing until its own restoration is applied.
     #[test]
     fn a_cache_from_an_earlier_period_is_never_shown() {
+        let mut parser = Parser::new();
         for end in [Presentation::Revoked, Presentation::Ended] {
             let mut terminal = restored(b"cached");
             assert!(terminal.view().is_some());
-            terminal.present(end);
+            terminal.present(&mut parser, end);
             assert!(terminal.view().is_none());
             assert_eq!(terminal.control(), Control::NotControlling);
-            terminal.present(Presentation::Display(b"x".to_vec()));
-            assert_eq!(terminal.present(Presentation::Complete), None);
+            terminal.present(&mut parser, Presentation::Display(b"x".to_vec()));
+            assert_eq!(terminal.present(&mut parser, Presentation::Complete), None);
             terminal.acquire();
             let again = authority(5, 6);
-            terminal.present(Presentation::Granted(again, geometry(10, 3)));
-            terminal.present(Presentation::Begin(again, geometry(10, 3)));
+            terminal.present(&mut parser, Presentation::Granted(again, geometry(10, 3)));
+            terminal.present(&mut parser, Presentation::Begin(again, geometry(10, 3)));
             assert!(terminal.view().is_none());
-            terminal.present(Presentation::Display(b"live".to_vec()));
+            terminal.present(&mut parser, Presentation::Display(b"live".to_vec()));
             assert_eq!(
-                terminal.present(Presentation::Complete),
+                terminal.present(&mut parser, Presentation::Complete),
                 Some(Request::Ready(again))
             );
             assert_eq!(screen(&terminal).unwrap(), ["live", "", ""]);
@@ -609,26 +629,39 @@ mod tests {
     /// frozen view still shows after revocation.
     #[test]
     fn the_view_freezes_at_the_command_final() {
+        let mut parser = Parser::new();
         let held = authority(2, 3);
         let mut terminal = restored(b"done");
-        terminal.present(Presentation::Answered(Request::Ready(held), Ok(())));
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(Request::Ready(held), Ok(())),
+        );
         terminal.painted(true);
-        terminal.present(Presentation::Final);
+        terminal.present(&mut parser, Presentation::Final);
         assert_eq!(terminal.input(), None);
         assert_eq!(terminal.control(), Control::Ended);
-        terminal.present(Presentation::Display(b"\x1b[2Jreleased".to_vec()));
-        terminal.present(Presentation::Begin(authority(2, 4), geometry(10, 3)));
-        assert_eq!(terminal.present(Presentation::Complete), None);
-        terminal.present(Presentation::Revoked);
-        terminal.present(Presentation::Final);
+        terminal.present(
+            &mut parser,
+            Presentation::Display(b"\x1b[2Jreleased".to_vec()),
+        );
+        terminal.present(
+            &mut parser,
+            Presentation::Begin(authority(2, 4), geometry(10, 3)),
+        );
+        assert_eq!(terminal.present(&mut parser, Presentation::Complete), None);
+        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.present(&mut parser, Presentation::Final);
         assert_eq!(screen(&terminal).unwrap(), ["done", "", ""]);
         assert_eq!(terminal.control(), Control::Ended);
 
         let mut staged = restored(b"seen");
-        staged.present(Presentation::Begin(authority(2, 4), geometry(10, 3)));
-        staged.present(Presentation::Display(b"unseen".to_vec()));
-        staged.present(Presentation::Final);
-        assert_eq!(staged.present(Presentation::Complete), None);
+        staged.present(
+            &mut parser,
+            Presentation::Begin(authority(2, 4), geometry(10, 3)),
+        );
+        staged.present(&mut parser, Presentation::Display(b"unseen".to_vec()));
+        staged.present(&mut parser, Presentation::Final);
+        assert_eq!(staged.present(&mut parser, Presentation::Complete), None);
         assert_eq!(screen(&staged).unwrap(), ["seen", "", ""]);
     }
 
@@ -639,31 +672,32 @@ mod tests {
     /// a blank model made up for the staging is shown.
     #[test]
     fn a_command_final_without_a_live_model_shows_no_view() {
+        let mut parser = Parser::new();
         let mut revoked = restored(b"cached");
-        revoked.present(Presentation::Revoked);
-        revoked.present(Presentation::Final);
+        revoked.present(&mut parser, Presentation::Revoked);
+        revoked.present(&mut parser, Presentation::Final);
         assert!(revoked.view().is_none());
         assert_eq!(revoked.control(), Control::Ended);
 
         let mut first = Terminal::new(LIMITS);
         let held = authority(2, 3);
         first.acquire();
-        first.present(Presentation::Granted(held, geometry(10, 3)));
-        first.present(Presentation::Begin(held, geometry(10, 3)));
-        first.present(Presentation::Display(b"partial".to_vec()));
-        first.present(Presentation::Final);
-        assert_eq!(first.present(Presentation::Complete), None);
+        first.present(&mut parser, Presentation::Granted(held, geometry(10, 3)));
+        first.present(&mut parser, Presentation::Begin(held, geometry(10, 3)));
+        first.present(&mut parser, Presentation::Display(b"partial".to_vec()));
+        first.present(&mut parser, Presentation::Final);
+        assert_eq!(first.present(&mut parser, Presentation::Complete), None);
         assert!(first.view().is_none());
 
         let mut again = restored(b"cached");
-        again.present(Presentation::Revoked);
+        again.present(&mut parser, Presentation::Revoked);
         again.acquire();
         let next = authority(4, 5);
-        again.present(Presentation::Granted(next, geometry(10, 3)));
-        again.present(Presentation::Begin(next, geometry(10, 3)));
-        again.present(Presentation::Display(b"partial".to_vec()));
-        again.present(Presentation::Final);
-        again.present(Presentation::Revoked);
+        again.present(&mut parser, Presentation::Granted(next, geometry(10, 3)));
+        again.present(&mut parser, Presentation::Begin(next, geometry(10, 3)));
+        again.present(&mut parser, Presentation::Display(b"partial".to_vec()));
+        again.present(&mut parser, Presentation::Final);
+        again.present(&mut parser, Presentation::Revoked);
         assert!(again.view().is_none());
     }
 
@@ -673,9 +707,13 @@ mod tests {
     /// a frame shows it again.
     #[test]
     fn a_frame_that_stops_showing_the_restoration_closes_input() {
+        let mut parser = Parser::new();
         let held = authority(2, 3);
         let mut terminal = restored(b"x");
-        terminal.present(Presentation::Answered(Request::Ready(held), Ok(())));
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(Request::Ready(held), Ok(())),
+        );
         terminal.painted(true);
         assert_eq!(terminal.input(), Some(held));
         terminal.painted(false);
@@ -690,24 +728,32 @@ mod tests {
     /// not; Restoring before that, whatever the frame shows.
     #[test]
     fn the_control_label_ignores_whether_the_canvas_shows() {
+        let mut parser = Parser::new();
         let held = authority(2, 3);
         let mut terminal = restored(b"x");
         terminal.painted(true);
         assert_eq!(terminal.control(), Control::Restoring, "Ready unanswered");
-        terminal.present(Presentation::Answered(Request::Ready(held), Ok(())));
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(Request::Ready(held), Ok(())),
+        );
         for shown in [false, true, false] {
             terminal.painted(shown);
             assert_eq!(terminal.control(), Control::Controlling, "shown {shown}");
         }
-        terminal.present(Presentation::Begin(authority(2, 4), geometry(10, 3)));
+        terminal.present(
+            &mut parser,
+            Presentation::Begin(authority(2, 4), geometry(10, 3)),
+        );
         assert_eq!(terminal.control(), Control::Restoring);
     }
 
     /// CTL-05 (pure supplement): a finished session is sent no Resize.
     #[test]
     fn a_finished_session_is_sent_no_resize() {
+        let mut parser = Parser::new();
         let mut terminal = restored(b"x");
-        terminal.present(Presentation::Final);
+        terminal.present(&mut parser, Presentation::Final);
         assert_eq!(terminal.resize(TerminalSize { cols: 80, rows: 23 }), None);
     }
 
@@ -715,11 +761,12 @@ mod tests {
     /// under the held authority, and never without control.
     #[test]
     fn resize_follows_every_grant_and_each_new_desire_only_while_controlling() {
+        let mut parser = Parser::new();
         let desire = TerminalSize { cols: 80, rows: 23 };
         let mut terminal = Terminal::new(LIMITS);
         assert_eq!(terminal.resize(desire), None);
         let first = authority(2, 3);
-        terminal.present(Presentation::Granted(first, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Granted(first, geometry(10, 3)));
         assert_eq!(
             terminal.resize(desire),
             Some(Request::Resize(first, desire))
@@ -728,9 +775,9 @@ mod tests {
         let wider = TerminalSize { cols: 81, rows: 23 };
         assert_eq!(terminal.resize(wider), Some(Request::Resize(first, wider)));
         let second = authority(4, 5);
-        terminal.present(Presentation::Granted(second, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Granted(second, geometry(10, 3)));
         assert_eq!(terminal.resize(wider), Some(Request::Resize(second, wider)));
-        terminal.present(Presentation::Revoked);
+        terminal.present(&mut parser, Presentation::Revoked);
         assert_eq!(terminal.resize(desire), None);
     }
 
@@ -738,26 +785,36 @@ mod tests {
     /// shown as the error until the next selection or applied restoration.
     #[test]
     fn acquiring_ends_at_the_grant_or_the_answer_and_errors_are_shown() {
+        let mut parser = Parser::new();
         let mut refused = Terminal::new(LIMITS);
         refused.acquire();
-        refused.present(Presentation::Answered(
-            Request::Acquire,
-            Err("unsupported".into()),
-        ));
+        refused.present(
+            &mut parser,
+            Presentation::Answered(Request::Acquire, Err("unsupported".into())),
+        );
         assert_eq!(refused.control(), Control::NotControlling);
         assert_eq!(refused.error(), Some("unsupported"));
         refused.acquire();
         assert_eq!(refused.error(), None);
-        refused.present(Presentation::Answered(Request::Acquire, Ok(())));
+        refused.present(
+            &mut parser,
+            Presentation::Answered(Request::Acquire, Ok(())),
+        );
         assert_eq!(refused.control(), Control::NotControlling);
         let mut resized = restored(b"x");
-        resized.present(Presentation::Answered(
-            Request::Resize(authority(2, 3), TerminalSize { cols: 5, rows: 5 }),
-            Err("geometry".into()),
-        ));
+        resized.present(
+            &mut parser,
+            Presentation::Answered(
+                Request::Resize(authority(2, 3), TerminalSize { cols: 5, rows: 5 }),
+                Err("geometry".into()),
+            ),
+        );
         assert_eq!(resized.error(), Some("geometry"));
-        resized.present(Presentation::Begin(authority(2, 4), geometry(10, 3)));
-        resized.present(Presentation::Complete);
+        resized.present(
+            &mut parser,
+            Presentation::Begin(authority(2, 4), geometry(10, 3)),
+        );
+        resized.present(&mut parser, Presentation::Complete);
         assert_eq!(resized.error(), None);
     }
 
@@ -767,29 +824,33 @@ mod tests {
     /// current authority is shown and not resent.
     #[test]
     fn work_refused_under_a_superseded_restoration_is_not_an_error_and_resize_is_resent() {
+        let mut parser = Parser::new();
         let old = authority(2, 3);
         let desire = TerminalSize { cols: 90, rows: 34 };
         let mut terminal = restored(b"x");
         assert_eq!(terminal.resize(desire), Some(Request::Resize(old, desire)));
         let new = authority(2, 4);
-        terminal.present(Presentation::Begin(new, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Begin(new, geometry(10, 3)));
         assert_eq!(terminal.resize(desire), None);
         for refused in [Request::Ready(old), Request::Resize(old, desire)] {
-            terminal.present(Presentation::Answered(refused, Err("stale".into())));
+            terminal.present(
+                &mut parser,
+                Presentation::Answered(refused, Err("stale".into())),
+            );
         }
         assert_eq!(terminal.error(), None);
         assert_eq!(terminal.resize(desire), Some(Request::Resize(new, desire)));
-        terminal.present(Presentation::Answered(
-            Request::Resize(new, desire),
-            Err("invalid".into()),
-        ));
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(Request::Resize(new, desire), Err("invalid".into())),
+        );
         assert_eq!(terminal.error(), Some("invalid"));
         assert_eq!(terminal.resize(desire), None);
-        terminal.present(Presentation::Revoked);
-        terminal.present(Presentation::Answered(
-            Request::Resize(new, desire),
-            Err("late".into()),
-        ));
+        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(Request::Resize(new, desire), Err("late".into())),
+        );
         assert_eq!(terminal.error(), Some("invalid"));
     }
 
@@ -799,21 +860,28 @@ mod tests {
     /// refused under a superseded authority is not an error.
     #[test]
     fn refused_input_shows_what_was_not_sent() {
+        let mut parser = Parser::new();
         let mut terminal = restored(b"x");
-        terminal.present(Presentation::Answered(
-            Request::Input(authority(2, 2), b"old".to_vec()),
-            Err("stale".into()),
-        ));
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(
+                Request::Input(authority(2, 2), b"old".to_vec()),
+                Err("stale".into()),
+            ),
+        );
         assert_eq!(terminal.error(), None);
-        terminal.present(Presentation::Answered(
-            Request::Input(authority(2, 3), b"abc".to_vec()),
-            Ok(()),
-        ));
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(Request::Input(authority(2, 3), b"abc".to_vec()), Ok(())),
+        );
         assert_eq!(terminal.error(), None);
-        terminal.present(Presentation::Answered(
-            Request::Input(authority(2, 3), b"def".to_vec()),
-            Err("full: the request does not fit".into()),
-        ));
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(
+                Request::Input(authority(2, 3), b"def".to_vec()),
+                Err("full: the request does not fit".into()),
+            ),
+        );
         assert_eq!(
             terminal.error(),
             Some(
@@ -850,21 +918,22 @@ mod tests {
     /// limit refuses.
     #[test]
     fn a_restoration_over_the_model_limit_is_an_error_without_ready() {
+        let mut parser = Parser::new();
         let tight = Limits {
             bytes: 1,
             history_rows: 1000,
         };
         let held = authority(2, 3);
         let mut terminal = Terminal::new(tight);
-        terminal.present(Presentation::Granted(held, geometry(10, 3)));
-        terminal.present(Presentation::Begin(held, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Granted(held, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Begin(held, geometry(10, 3)));
         assert!(
             terminal
                 .error()
                 .unwrap()
                 .starts_with("terminal model over its limit")
         );
-        assert_eq!(terminal.present(Presentation::Complete), None);
+        assert_eq!(terminal.present(&mut parser, Presentation::Complete), None);
         assert!(terminal.view().is_none());
     }
 }

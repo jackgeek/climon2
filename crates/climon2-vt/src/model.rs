@@ -4,6 +4,7 @@
 use crate::{
     bounded::{Bounded, Room},
     cost,
+    engine::Parser,
     geometry::Geometry,
     view::View,
 };
@@ -26,6 +27,20 @@ pub struct Rejected {
     pub needed: usize,
     /// The limit that refused it.
     pub limit: usize,
+}
+
+/// What a model must be able to hold, by part. The monitor's one shared
+/// [`crate::Parser`] is not part of it: it counts that once
+/// ([`crate::Parser::BYTES`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mandatory {
+    /// The current model alone, which [`Model::new`] admits a blank model
+    /// with: the engine for its geometry and the reserve.
+    pub current_model: usize,
+    /// The first history chunk, which holds the protected newest page and is
+    /// admitted when the normal screen first scrolls; none for a model that
+    /// keeps no history.
+    pub recent_page: usize,
 }
 
 /// One session's terminal model: the current model the monitor paints and,
@@ -54,6 +69,14 @@ impl Model {
             staged: None,
             rejected: None,
         })
+    }
+
+    /// What a model at `geometry` must be able to hold, by part: the current
+    /// model, which `Model::new` admits, and, when it keeps any of
+    /// `history_rows`, the first history chunk, which holds the protected
+    /// newest page and is admitted at the first scroll.
+    pub fn mandatory(geometry: Geometry, history_rows: usize) -> Mandatory {
+        Bounded::mandatory(geometry, history_rows)
     }
 
     /// Begin a restoration at `geometry`: a blank model to stage it into,
@@ -104,16 +127,17 @@ impl Model {
     /// protected newest page. Output that would still exceed the limit is
     /// rejected before it reaches the engine; the model keeps the page its
     /// accepted output produced and refuses everything after.
-    pub fn feed(&mut self, bytes: &[u8]) -> Result<(), Rejected> {
+    pub fn feed(&mut self, parser: &mut Parser, bytes: &[u8]) -> Result<(), Rejected> {
         match self.staged.as_mut() {
             Some(staged) => {
                 let fed = staged.feed(
+                    parser,
                     bytes,
                     &mut Room::beside(&mut self.current, self.limits.bytes),
                 );
                 self.restored(fed)
             }
-            None => self.live(bytes),
+            None => self.live(parser, bytes),
         }
     }
 
@@ -126,13 +150,13 @@ impl Model {
         fed
     }
 
-    fn live(&mut self, bytes: &[u8]) -> Result<(), Rejected> {
+    fn live(&mut self, parser: &mut Parser, bytes: &[u8]) -> Result<(), Rejected> {
         if let Some(rejected) = self.rejected {
             return Err(rejected);
         }
         let fed = self
             .current
-            .feed(bytes, &mut Room::alone(self.limits.bytes));
+            .feed(parser, bytes, &mut Room::alone(self.limits.bytes));
         self.rejected = fed.err();
         fed
     }

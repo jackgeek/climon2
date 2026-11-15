@@ -7,7 +7,8 @@ the Set viewing and Acknowledge results arrive with their operations.
 The daemon's only `failed` outcome is a [Kill](request-kill.md#implemented-behavior)
 whose termination or cleanup did not complete, and it sends no
 `indeterminate` outcome. A rejected first role carries `known_final` once the
-daemon knows the command's result.
+command's result is final, as
+[Command final](event-command-final.md#implemented-behavior) describes.
 The [session daemon](../../../GLOSSARY.md#sessions) answers a
 [client](../../../GLOSSARY.md#sessions) request.
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
