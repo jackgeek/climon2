@@ -110,6 +110,24 @@ impl Utc {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The time `millis` milliseconds after the Unix epoch, or `None` past
+    /// the last four-digit year.
+    pub fn from_unix_millis(millis: u64) -> Option<Self> {
+        let nanos = i128::from(millis) * 1_000_000;
+        let at = time::OffsetDateTime::from_unix_timestamp_nanos(nanos).ok()?;
+        let text = format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+            at.year(),
+            u8::from(at.month()),
+            at.day(),
+            at.hour(),
+            at.minute(),
+            at.second(),
+            at.millisecond(),
+        );
+        text.parse().ok()
+    }
 }
 
 impl FromStr for Utc {
