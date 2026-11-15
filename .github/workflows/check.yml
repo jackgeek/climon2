@@ -7,6 +7,8 @@ on:
       - "**/*.md"
       - LICENSE
   pull_request:
+    # ready_for_review re-runs checks when a draft integration PR is marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - "**/*.md"
       - LICENSE
@@ -82,6 +84,14 @@ jobs:
         run: cargo test --locked -p climon2-launcher
   quality:
     name: macOS-only CRAP and mutation
+    # A draft feature/* -> main integration PR re-qualifies every macOS change
+    # since main on each update, though each ticket PR already qualified its
+    # own. Run it once the integration PR is marked ready, and on every update after.
+    if: >-
+      !(github.event_name == 'pull_request'
+        && github.event.pull_request.draft
+        && github.base_ref == 'main'
+        && startsWith(github.head_ref, 'feature/'))
     runs-on: macos-15
     env:
       CARGO_TARGET_DIR: target/quality-run
@@ -112,6 +122,12 @@ jobs:
         with:
           path: .metrics
           key: quality-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('xtask/src/quality.rs', 'tools/quality-requirements.txt') }}
+      # The pinned cargo-llvm-cov (LLVM_COV in xtask/src/quality.rs) takes a
+      # minute or more to build; setup-quality installs it only when missing.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-llvm-cov
+          key: llvm-cov-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('xtask/src/quality.rs') }}
       - name: Set up pinned quality tools
         run: cargo xtask setup-quality
       - name: Qualify only macOS-exclusive source (shared and Linux run locally)
