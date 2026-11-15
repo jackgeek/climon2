@@ -535,11 +535,13 @@ fn native_source_os(path: &Path) -> Option<&'static str> {
         Some("crates/climon2-platform/src/process/linux.rs")
         | Some("crates/climon2-platform/src/peer/linux.rs")
         | Some("crates/climon2-platform/src/runtime/linux.rs")
+        | Some("crates/climon2-platform/src/library/linux.rs")
         | Some("crates/climon2-install/src/platform/linux.rs")
         | Some("crates/climon2-client/src/library/linux.rs") => Some("linux"),
         Some("crates/climon2-platform/src/process/macos.rs")
         | Some("crates/climon2-platform/src/peer/macos.rs")
         | Some("crates/climon2-platform/src/runtime/macos.rs")
+        | Some("crates/climon2-platform/src/library/macos.rs")
         | Some("crates/climon2-install/src/platform/macos.rs")
         | Some("crates/climon2-client/src/library/macos.rs") => Some("macos"),
         _ => None,
@@ -1890,6 +1892,14 @@ No selected line holds a mutation site; nothing to mutate.
             ),
             (
                 "crates/climon2-platform/src/runtime/macos.rs",
+                cfg!(target_os = "macos"),
+            ),
+            (
+                "crates/climon2-platform/src/library/linux.rs",
+                cfg!(target_os = "linux"),
+            ),
+            (
+                "crates/climon2-platform/src/library/macos.rs",
                 cfg!(target_os = "macos"),
             ),
             (
