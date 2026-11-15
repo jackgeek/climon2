@@ -640,7 +640,9 @@ this section.
   and cleanup `CM1_CLEANUP_COMPLETE`; a rejection carries `CM1_KNOWN_FINAL`
   when the daemon sent one; a failed or indeterminate answer carries its
   partial `CM1_TERMINATION`, an optional command result and cleanup
-  incomplete or unknown. A lost answer, one later than `kill_ms`
+  incomplete or unknown. A partial termination belongs only to a Kill: on
+  an Open, Leave or command's Response it is `invalid_record`, and that
+  request stays unanswered. A lost answer, one later than `kill_ms`
   (`timeout`), a Fatal error, an uncorrelated or mismatched Response and
   any other record are `CM1_INDETERMINATE` with that error. The library
   then closes the connection and never sends the Kill again. On an
@@ -661,7 +663,8 @@ this section.
   Kill answer, whose outcome only a fresh passive instance may learn. Leave
   is not required when no
   Leave was attempted, since closing the connection ends a passive
-  registration, and indeterminate when one was lost or late. Every
+  registration, and indeterminate when one was lost, late or answered
+  against the wire's rules. Every
   connection, a Kill's included, is closed before terminal evidence is
   published.
 - **Signals.** Sending never raises `SIGPIPE` in the embedding process.

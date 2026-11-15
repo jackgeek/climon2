@@ -568,9 +568,15 @@ impl Stream {
         self.selected.is_some() && !self.synchronized
     }
 
+    /// A request's answer. It stays unanswered when its answer breaks the
+    /// wire's rules: a Leave whose answer is invalid is unconfirmed, never
+    /// not required (#96).
     fn respond(&mut self, response: wire::Response) -> Result<Effect, Fault> {
-        let sent = self.answered(response.request_id)?;
-        self.resolve(sent, Verdict::from(response.outcome))
+        let index = self.answered(response.request_id)?;
+        let sent = self.pending[index].sent.clone();
+        let effect = self.resolve(sent, Verdict::from(response.outcome))?;
+        self.pending.remove(index);
+        Ok(effect)
     }
 
     fn resolve(&mut self, sent: Sent, verdict: Verdict) -> Result<Effect, Fault> {
@@ -581,14 +587,13 @@ impl Stream {
         }
     }
 
-    fn answered(&mut self, request_id: Counter) -> Result<Sent, Fault> {
+    /// Where the unanswered request a response names waits.
+    fn answered(&self, request_id: Counter) -> Result<usize, Fault> {
         require(!self.awaiting_metadata(), UNEXPECTED)?;
-        let index = self
-            .pending
+        self.pending
             .iter()
             .position(|pending| pending.wire == request_id.get())
-            .ok_or(UNCORRELATED)?;
-        Ok(self.pending.remove(index).sent)
+            .ok_or(UNCORRELATED)
     }
 
     fn opened(&mut self, id: u64, sent: &Requested, verdict: Verdict) -> Result<Effect, Fault> {

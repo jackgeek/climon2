@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 use support::{
     Package,
-    control::{drained, labelled},
+    control::{acquire, drained, labelled},
     library::INSTANCE_DESCRIPTORS,
     passive::*,
 };
@@ -258,13 +258,15 @@ fn killed(answer: Vec<Value>) -> Value {
 /// REC-01 Fault (retry from terminal evidence): a Kill-only instance needs
 /// no Open. Its Kill, requiring nothing more, is sent once as the first
 /// role of its own connection, wire ID 1, revision 1, and the run ends after
-/// its result. A confirmed termination is answered OK with the command
+/// its result; a daemon advertising only `daemon-wire-v1` (no
+/// `monitor-v1`) serves it. A confirmed termination is answered OK with the command
 /// result and complete cleanup: stopped, no error, retry none. A rejection
 /// that knows the result carries it (retry none); a failed or
 /// indeterminate Kill carries its partial termination, a known command
 /// result stopping retry and an unknown one leaving passive retry; a
 /// daemon lacking the revision is permanent. A lost answer, a Kill
-/// outliving `kill_ms`, a mismatched or uncorrelated answer and a daemon
+/// outliving `kill_ms`, a mismatched or uncorrelated answer, a record
+/// other than an answer and a daemon
 /// Fatal are each indeterminate, with passive retry, and the Kill is never
 /// sent again. A Kill requiring a family the daemon does not advertise, or
 /// whose frame exceeds the daemon's request ceiling, is rejected before it
@@ -323,7 +325,14 @@ fn installed_library_reports_each_kill_outcome_truthfully_and_never_replays_it()
     let cases = [
         Case {
             name: "confirmed",
-            steps: submitted(killed(vec![confirmed.clone()]), json!({}), &alone),
+            steps: submitted(
+                json!({
+                    "hello": { "json": { "capabilities": ["daemon-wire-v1"] } },
+                    "kill": [confirmed.clone()],
+                }),
+                json!({}),
+                &alone,
+            ),
             records: vec![ok],
             terminal: (CLIENT_STOPPED, RETRY_NONE, LEAVE_NOT_REQUIRED),
             error: None,
@@ -466,6 +475,12 @@ fn installed_library_reports_each_kill_outcome_truthfully_and_never_replays_it()
             killed(vec![send(0x4d, daemon_error("internal_error"))]),
             json!({}),
             daemon("internal_error"),
+        ),
+        indeterminate(
+            "unexpected",
+            killed(vec![title_changed(json!("t"))]),
+            json!({}),
+            transport("invalid_record"),
         ),
         Case {
             name: "unsupported",
@@ -857,5 +872,73 @@ fn installed_library_keeps_an_opened_role_through_each_kill_failure() {
         assert_eq!(kinds(auxiliary), case.auxiliary_kinds, "{name}: {peer:#}");
     }
     assert_all_released(&report["ledger"]);
+    package.assert_clean();
+}
+
+/// COM-06 and COM-03 Fault (a partial Kill result belongs to a Kill
+/// only): a failed Open, Leave or Acquire whose Response carries a
+/// partial termination (exit 143, cleanup incomplete) fails the
+/// connection with transport `invalid_record`, and the request stays
+/// unanswered. The Open's refusal leaves the result unknown, so passive
+/// retry; the Leave, once sent, calls for none and stays indeterminate;
+/// the Acquire leaves passive retry.
+#[test]
+fn installed_library_refuses_a_partial_termination_on_any_other_request() {
+    let package = Package::new();
+    let root = root(&package);
+    let invalid = (ORIGIN_TRANSPORT, "invalid_record");
+    let partial = |id: &str| {
+        response(
+            id,
+            "failed",
+            json!({ "kind": "termination", "command_result": exit(143), "cleanup": "incomplete" }),
+            daemon_error("internal_error"),
+        )
+    };
+    let opened = |kind: &str| {
+        let mut peer = opened_then(vec![]);
+        peer[kind] = json!([partial(&format!("${kind}"))]);
+        peer
+    };
+    let alone = open(1, &REQUIRED, &["title-v1"]);
+    let cases = [
+        Case {
+            name: "open",
+            steps: submitted(
+                json!({ "open": [partial("$open")] }),
+                json!({}),
+                &[alone.clone()],
+            ),
+            records: vec![Expect::Diagnostic(invalid)],
+            terminal: (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED),
+            error: Some(invalid),
+            kinds: &["hello", "open"],
+        },
+        Case {
+            name: "leave",
+            steps: submitted(opened("leave"), json!({}), &[alone.clone(), leave(2, 1)]),
+            records: vec![
+                Expect::Opened(1),
+                Expect::Metadata,
+                Expect::Diagnostic(invalid),
+            ],
+            terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_INDETERMINATE),
+            error: Some(invalid),
+            kinds: &["hello", "open", "leave"],
+        },
+        Case {
+            name: "acquire",
+            steps: submitted(opened("acquire"), json!({}), &[alone, acquire(2, 1)]),
+            records: vec![
+                Expect::Opened(1),
+                Expect::Metadata,
+                Expect::Diagnostic(invalid),
+            ],
+            terminal: (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED),
+            error: Some(invalid),
+            kinds: &["hello", "open", "acquire"],
+        },
+    ];
+    assert_cases(&package, &root, &cases);
     package.assert_clean();
 }
