@@ -91,17 +91,27 @@ directly to its host.
 (ADR 0007, LIM-03). It never answers queries and never resizes or reflows in
 place.
 
+- `Parser::new()` is vte's parser, one per monitor, shared by all of its
+  models (#166). It allocates vte's 2 MiB synchronized-update buffer,
+  `Parser::BYTES`, which the monitor counts once beside its models'
+  footprints. A model takes only complete tokens from it, so nothing one
+  model was fed reaches another: each model repeats its own preceding
+  character for `CSI n b` (the controls vte executes in the sequence, then
+  the character), and a UTF-8 sequence cut off by an escape prints its
+  replacement character in its own model.
 - `Model::new(geometry, Limits { bytes, history_rows })` admits a blank model
-  only if its mandatory allocation fits `bytes`: the engine for that geometry,
-  vte's 2 MiB synchronized-update buffer, a 32 KiB reserve for what the front
-  filter and the engine hold briefly, and, when it keeps history, the first
-  1000-row chunk, which holds the protected newest page. Otherwise it returns
-  `Rejected { needed, limit }`. `Model::mandatory(geometry, history_rows)` is
-  that allocation by part, `Mandatory { current_model, recent_page }`: at
-  500x200, a 6,948,039-byte current model and a 12,115,200-byte first chunk
-  (none without history). The monitor checks its limits against it at
-  startup (#167).
-- `Model::feed(bytes)` applies terminal bytes token by token. Only what the
+  only if its mandatory allocation fits `bytes`: the engine for that geometry
+  and a 32 KiB reserve for what the front filter and the engine hold
+  briefly. Otherwise it returns `Rejected { needed, limit }`. A model that
+  keeps history admits its first 1000-row chunk, which holds the protected
+  newest page, only when its normal screen first scrolls (below).
+  `Model::mandatory(geometry, history_rows)` is what a model must be able to
+  hold, by part, `Mandatory { current_model, recent_page }`: at 500x200, a
+  4,850,887-byte current model, which `Model::new` admits, and a
+  12,115,200-byte first chunk, admitted at the first scroll (none without
+  history). The monitor checks its limits against them, with `Parser::BYTES`
+  once in the aggregate budget, at startup (#167, #166).
+- `Model::feed(&mut parser, bytes)` applies terminal bytes token by token. Only what the
   live output policy forwards to a Direct controller reaches the engine; a
   stripped token leaves only the C0 controls vte executes in it. Each token's
   worst-case growth is charged, from the policy's own vte parse, before the
@@ -113,7 +123,20 @@ place.
   restoration is staged, then the updated model's own. A token that still
   does not fit is rejected with the rest of the update, and the model refuses
   output until a staged restoration is applied.
-- History grows in the engine's 1000-row chunks. Before a token that could
+- History grows in the engine's 1000-row chunks. The first is admitted
+  before the first token that could push a normal-screen row into history,
+  judged before the token from the cursor, the scroll region (mirrored from
+  DECSTBM, `ESC c` and DECCOLM, since the engine keeps it private) and vte's parse of
+  the token: a line feed, index or next line leaving the bottom row of a
+  region that starts at the top row, a character printed in the last column
+  of that row, a repeat or line feeds inside a sequence that could reach it,
+  `CSI S` in such a region, `CSI M` on the top row, and `CSI 2 J`. While the
+  chunk waits, text is fed in pieces that cannot reach that bottom row, then
+  a character at a time on it. If the first chunk does not fit once history
+  beside a staged restoration has yielded, the token is rejected like any
+  other, keeping the page. The judgement is an upper bound: the chunk can be
+  admitted a token early (a character printed in the last column that does
+  not wrap), never late. Before a token that could
   fill the current limit, every chunk it could fill is admitted while the
   next one fits (a token pushes at most a row per byte and per repetition, or
   a screenful, so one long repeat or released run of line feeds can fill
@@ -186,8 +209,9 @@ only, so items a macro generates are not checked.
   (beside a staged restoration too), or by `Model::shorten_history()`.
   Shortening is exact: a chunk admitted ahead of rows that never came yields
   without truncating. Output the admitted chunks had room for discards
-  nothing, even when it fills them exactly. Applying a restoration replaces
-  the history and its state whole.
+  nothing, even when it fills them exactly, and a model whose first chunk
+  awaits its first scroll has pushed no row (#166). Applying a restoration
+  replaces the history and its state whole.
 
 ## Scenario-to-test mapping
 
@@ -198,7 +222,11 @@ monitor's evidence.
 | Scenario | Test (`tests/bound.rs` unless another file is named) |
 |---|---|
 | LIM-03 Contract: mandatory model admitted at its bytes, rejected one below | `a_model_is_admitted_at_its_mandatory_bytes_and_rejected_one_below` |
-| LIM-03 Contract and CFG-01 Contract: `Model::mandatory` gives the current model and the first history chunk as written by hand from ADR 0007's charges, at 80x24 and 500x200, with and without history; `Model::new` admits their sum, refuses one byte below it, and building allocates no more (counting allocator) | `a_models_mandatory_allocation_is_its_current_model_and_recent_page` |
+| LIM-03 Contract: a model keeping history needs no history chunk before it scrolls; the first chunk is admitted on the normal screen's first scroll (23 line feeds from the top of 24 rows and the 24th, in one token or several), at the bound and rejected one byte below with the page kept; it follows the scroll region (invalid, defaulted, clamped, reset by `ESC c`, `CSI r` or DECCOLM), never comes from rows scrolled below the top row or the alternate screen, and comes from scrolling sequences (SU, DL on the top row, ED 2, IND, NEL, line feeds inside a sequence) and from printing or repeating on the bottom row once a character could wrap (#166) | `a_model_keeping_history_needs_no_chunk_before_it_scrolls`, `the_first_history_chunk_is_admitted_on_the_first_scroll`, `the_first_chunk_follows_the_scroll_region`, `column_mode_resets_the_scroll_region`, `scrolling_away_from_the_top_row_admits_no_chunk`, `scrolling_sequences_admit_the_first_chunk`, `printing_admits_the_first_chunk_once_it_could_wrap`, `the_alternate_screen_admits_no_chunk` |
+| LIM-04 Contract: one parser serves a monitor's models and counts once: it allocates exactly vte's 2 MiB buffer, and models sharing it hold no more than their footprints; each model receives only its own tokens (a partial escape, a UTF-8 sequence cut off by an escape) and repeats only its own preceding character (#166) | `one_parser_serves_every_model_and_counts_once`; `tests/parser.rs`: `each_model_receives_only_its_own_tokens`, `each_model_repeats_its_own_preceding_character` |
+| LIM-04 Contract and PERF-01 (sizing input): one model's charges at 80x24, 200x60 and 500x200 before and after its first scroll, with a scrolled restoration staged beside it and with 10,000 history rows, and the models the default 576 MiB holds beside one parser, as ADR 0007 records them (#166) | `tests/budget.rs`: `models_per_budget_are_those_adr_0007_records` |
+| TRM-01 (crate case): a model expands `CSI n b` itself: counts absent, 0, 1, 2, 65,535 and one past it, controls inside the sequence, after C0 and C1 controls and invalid bytes, after a wide character, at the right margin, and after a restoration (#166) | `tests/parser.rs`: `repeat_counts_at_their_lower_boundaries`, `repeat_counts_at_the_maximum_and_one_past_it`, `repeats_after_a_wide_character_and_at_the_right_margin`, `a_restoration_repeats_only_what_it_printed` |
+| LIM-03 Contract and CFG-01 Contract: `Model::mandatory` gives the current model and the first history chunk as written by hand from ADR 0007's charges, at 80x24 and 500x200, with and without history; `Model::new` admits the current model and refuses one byte below it, the first scroll is admitted at their sum and rejected one byte below it, and neither allocates more (counting allocator) | `a_models_mandatory_allocation_is_its_current_model_and_recent_page` |
 | LIM-03 Contract: plain text grows nothing beyond held cells | `plain_text_fills_held_cells_without_growth` |
 | LIM-03 Contract: history chunk at the bound, oldest row discarded one past it | `history_grows_at_the_bound_and_discards_its_oldest_row_one_byte_past_it` |
 | LIM-03 Contract: history grows only before output that could fill it, by every chunk one token could fill (a long repeat, released line feeds: at the bound and one past it), never past its configured rows, and is not shown over the alternate screen | `history_grows_only_before_output_that_could_fill_it`, `one_token_admits_every_history_chunk_it_could_fill`, `history_never_grows_past_its_configured_rows`, `the_alternate_screen_shows_no_history` |
@@ -230,7 +258,7 @@ monitor's evidence.
 | TRM-01 (crate case): cursor position, visibility, shape (the host's default for no DECSCUSR, Ps 0 or RIS) and blink; the 1049 alternate screen, entered cleared and left with the normal screen and cursor restored | `tests/view.rs`: `the_cursor_is_where_the_application_moved_it`, `the_cursor_has_the_visibility_shape_and_blink_the_application_selected`, `the_alternate_screen_replaces_the_normal_screen_until_it_is_left` |
 | INP-02, INP-03, INP-05, FOC-01 (crate cases): cursor-key and keypad, bracketed-paste, mouse reporting and encoding, and focus-reporting modes, set and reset | `tests/view.rs`: `cursor_key_and_keypad_modes_follow_decckm_and_deckpam`, `bracketed_paste_follows_mode_2004`, `mouse_reporting_and_encoding_follow_their_modes`, `focus_reporting_follows_mode_1004` |
 | TRM-05 (crate case): normal history rows as cells; alternate scroll mode; no history over the alternate screen; cleared history starting again complete | `tests/view.rs`: `rows_scrolled_off_the_normal_screen_are_its_history`, `alternate_scroll_follows_mode_1007`, `the_alternate_screen_shows_no_history_until_it_is_left`, `cleared_history_starts_again_with_nothing_discarded` |
-| TRM-05, LIM-03 (crate cases): explicit history truncation at the row limit and one past it, when the allocation bound refuses growth (at the bound and one byte below), when shortening discards rows and not when it discards none, while the alternate screen is active, and replaced whole by an applied restoration; none when output exactly fills the admitted chunks (SU, ED 2, line feeds); a history full at its limit reporting it once output could push a row out (owner decision) | `tests/view.rs`: `history_is_truncated_one_row_past_its_limit`, `history_the_bound_stops_growing_is_truncated`, `shortened_history_is_truncated_only_when_rows_are_discarded`, `the_alternate_screen_shows_no_history_until_it_is_left`, `a_restoration_replaces_a_truncated_history_whole`, `output_filling_the_admitted_history_exactly_discards_nothing`, `a_history_full_at_its_limit_reports_truncation_once_output_could_push_a_row_out` |
+| TRM-05, LIM-03 (crate cases): explicit history truncation at the row limit and one past it, when the allocation bound refuses growth (at the bound and one byte below), when shortening discards rows and not when it discards none, while the alternate screen is active, and replaced whole by an applied restoration, whose first scroll took room from that history (#166); none when output exactly fills the admitted chunks (SU, ED 2, line feeds); a history full at its limit reporting it once output could push a row out (owner decision) | `tests/view.rs`: `history_is_truncated_one_row_past_its_limit`, `history_the_bound_stops_growing_is_truncated`, `shortened_history_is_truncated_only_when_rows_are_discarded`, `the_alternate_screen_shows_no_history_until_it_is_left`, `a_restoration_replaces_a_truncated_history_whole`, `output_filling_the_admitted_history_exactly_discards_nothing`, `a_history_full_at_its_limit_reports_truncation_once_output_could_push_a_row_out` |
 | ADR 0007 (#83): no engine type in the public interface, the views included | `xtask/tests/vt_interface.rs`: `the_virtual_terminal_interface_names_no_engine_type` |
 
 ## Limitations

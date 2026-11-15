@@ -289,7 +289,7 @@ impl Tokenizer {
             .held
             .iter()
             .copied()
-            .filter(|held| (0x00..=0x1F).contains(held) && *held != ESC)
+            .filter(|&held| executed(held))
             .collect();
         if !controls.is_empty() {
             out.push(Token {
@@ -366,8 +366,19 @@ impl Tokenizer {
     }
 }
 
+/// A C0 control vte executes wherever it sits, in text or inside a
+/// sequence; ESC instead begins a sequence.
+pub(crate) fn executed(byte: u8) -> bool {
+    byte < 0x20 && byte != ESC
+}
+
+/// LF, VT or FF, each of which vte executes as a line feed.
+pub(crate) fn line_feed(byte: u8) -> bool {
+    matches!(byte, 0x0a..=0x0c)
+}
+
 /// Length of an unfinished but so far valid UTF-8 sequence ending the text.
-fn incomplete_utf8(text: &[u8]) -> usize {
+pub(crate) fn incomplete_utf8(text: &[u8]) -> usize {
     (text.len().saturating_sub(3)..text.len())
         .find(|&start| is_incomplete(&text[start..]))
         .map_or(0, |start| text.len() - start)

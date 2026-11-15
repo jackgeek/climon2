@@ -56,7 +56,7 @@ struct Memory {
 impl Default for Memory {
     fn default() -> Self {
         Self {
-            total_bytes: 536_870_912,
+            total_bytes: 603_979_776,
             client_bytes: 67_108_864,
             history_bytes_per_session: 16_777_216,
             history_bytes_total: 268_435_456,
@@ -562,13 +562,16 @@ impl Groups {
 }
 
 /// One session's mandatory allocation, as the monitor's terminal model of it
-/// is charged before any output: the current model, and the history holding
-/// its recent page. The monitor cannot admit a session its limits cannot
-/// hold this for.
+/// is charged: the current model, and the history holding its recent page,
+/// beside the parser the monitor shares among all its models. The monitor
+/// cannot admit a session its limits cannot hold this for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MandatoryAllocation {
     /// The session geometry the bytes are charged at.
     pub size: TerminalSize,
+    /// Bytes of the monitor's one parser, which every session's model shares
+    /// and the aggregate budget holds once.
+    pub parser: u64,
     /// Bytes of the current model alone.
     pub current_model: u64,
     /// Bytes of the history that holds the recent page.
@@ -582,26 +585,32 @@ impl Limits {
     }
 
     /// Refuses limits that cannot hold one session's `mandatory` allocation:
-    /// the total, then the client budget, must each hold its current model and
-    /// recent page together, and the history total, then the per-session
-    /// history budget, the page. Each total comes before the budgets it
-    /// contains, so a refusal names the limit to raise.
+    /// the total must hold the parser and the session's current model and
+    /// recent page together, then the client budget the model and page, the
+    /// history total, then the per-session history budget, the page. Each
+    /// total comes before the budgets it contains, so a refusal names the
+    /// limit to raise.
     pub fn hold(&self, mandatory: MandatoryAllocation) -> Result<(), ConfigError> {
         let memory = &self.0.memory;
         let TerminalSize { cols, rows } = mandatory.size;
         let session = format!("a {cols}x{rows} session");
         let model_and_page = format!("the current model and recent page of {session}");
+        let with_parser = format!("the parser and {model_and_page}");
         let recent_page = format!("the recent page of {session}");
         let model_and_page = Named {
             name: &model_and_page,
             value: mandatory.current_model + mandatory.recent_page,
+        };
+        let with_parser = Named {
+            name: &with_parser,
+            value: mandatory.parser + model_and_page.value,
         };
         let recent_page = Named {
             name: &recent_page,
             value: mandatory.recent_page,
         };
         first_broken([
-            at_most(model_and_page, named!(memory.total_bytes)),
+            at_most(with_parser, named!(memory.total_bytes)),
             at_most(model_and_page, named!(memory.client_bytes)),
             at_most(recent_page, named!(memory.history_bytes_total)),
             at_most(recent_page, named!(memory.history_bytes_per_session)),

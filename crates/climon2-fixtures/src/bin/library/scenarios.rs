@@ -10,6 +10,7 @@ use super::{
 use climon2_core::native;
 use serde_json::{Map, Value, json};
 use std::{
+    collections::BTreeMap,
     ptr,
     sync::mpsc::{Receiver, Sender, channel},
     thread::{self, JoinHandle},
@@ -80,13 +81,26 @@ pub fn wait<T>(received: &Receiver<T>) -> T {
 
 /// The configuration a scenario reads: `root` for paths and overrides of the
 /// default startup.
+#[derive(Clone)]
 pub struct Setup {
     pub api: Api,
     pub release: String,
     pub input: Value,
+    /// The table of every loaded release, this one's included, by release.
+    pub releases: BTreeMap<String, Api>,
 }
 
 impl Setup {
+    /// This setup for `release`'s table, or as it is without one.
+    pub fn of(&self, release: Option<&str>) -> Self {
+        let mut setup = self.clone();
+        if let Some(release) = release {
+            setup.api = *self.releases.get(release).expect("a loaded release");
+            setup.release = release.to_owned();
+        }
+        setup
+    }
+
     /// The startup `overrides` describe, in fresh caller memory.
     pub fn startup(&self, overrides: &Value) -> (Arena, *const native::Startup) {
         let root = self.input["root"].as_str().expect("the scenario's root");

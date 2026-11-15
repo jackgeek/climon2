@@ -218,13 +218,14 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     with the code that enforces it. `hold(MandatoryAllocation { size,
     current_model, recent_page })` refuses, as `ConfigError::Invalid`, limits
     that cannot hold one session's mandatory allocation, which the monitor
-    charges with `climon2-vt` since core cannot (#167): `memory.total_bytes`,
-    then `client_bytes`, must hold the current model and recent page
-    together, and `history_bytes_total`, then `history_bytes_per_session`, the
-    page. Each total comes before the budgets it contains, so a refusal names
-    the limit to raise, with the session size and both values. Holding it
-    admits the largest session, not a restoration staged beside it (at least
-    38,126,478 bytes at 500x200). `exec` does not apply it. Operating-system
+    charges with `climon2-vt` since core cannot (#167): `memory.total_bytes`
+    must hold the monitor's one shared parser and the current model and
+    recent page together (#166), then `client_bytes` the model and page, and
+    `history_bytes_total`, then `history_bytes_per_session`, the page. Each
+    total comes before the budgets it contains, so a refusal names the limit
+    to raise, with the session size and both values. Holding it admits the
+    largest session, not a restoration staged beside it (at least 33,932,174
+    bytes in a client's budget, 36,029,326 in the total, at 500x200). `exec` does not apply it. Operating-system
     limits are left to admission (#120).
 - `preferences::MonitorPreferences` (spec #73 Introduction preference): the
   schema of `monitor-preferences.json` (`FILE_NAME`), which keeps the key
@@ -283,7 +284,7 @@ Integration tests call only these public boundaries:
 | #74 `monitor`/`mon` take no arguments (INP-01 derived refusal) | `issue74_monitor_and_mon_take_no_arguments` |
 | CFG-01 (Contract): missing file, objects and fields mean every documented default; `show_key_hints` and `bell` are independent booleans; every setting's range at its limit and one past it, overflow of its native type included, a range refusal naming its setting; null, wrong types and duplicates at every level; unknown and unrelated settings ignored; the cross-field rules at their limit and one past, the daemon's assembly limits in no monitor total; one read of the home's file | `cfg01_missing_objects_and_fields_mean_every_documented_default`, `cfg01_hints_and_bell_are_independent_booleans`, `cfg01_every_setting_accepts_the_lower_limit_of_its_range`, `cfg01_every_setting_accepts_the_upper_limit_of_its_range`, `cfg01_one_past_every_range_is_rejected`, `cfg01_null_is_an_error_for_every_known_setting`, `cfg01_wrong_types_are_errors`, `cfg01_duplicate_known_fields_are_errors`, `cfg01_unknown_and_unrelated_settings_are_ignored`, `cfg01_sub_budgets_fit_their_totals`, `cfg01_reservations_fit_the_total`, `cfg01_other_monitor_byte_budgets_fit_the_total`, `cfg01_toasts_fit_the_aggregate_queue_budget`, `cfg01_daemon_owned_assembly_limits_are_outside_the_total`, `cfg01_client_queues_fit_the_queue_and_client_budgets`, `cfg01_progress_reserves_leave_room_in_their_event_allowances`, `cfg01_the_largest_chunk_fits_usable_capacity`, `cfg01_the_largest_record_fits_usable_capacity`, `cfg01_quanta_and_retry_delays_are_ordered`, `cfg01_the_snapshot_is_one_read_of_the_home_configuration` |
 | CFG-01 (Contract, exec and attach cases): exec validates the `monitor` section, attach ignores it, and neither refuses a null escape prefix | `cfg01_exec_validates_the_monitor_section_and_attach_ignores_it` |
-| CFG-01 (Contract, mandatory model and recent page, #167): the total, then a client's budget, hold one 500x200 session's documented current model and recent page together, and the history total, then a session's history budget, the page: each accepted at its limit and refused one byte short, each total named before the budgets it contains | `cfg01_the_total_holds_the_largest_current_model_and_recent_page`, `cfg01_the_client_budget_holds_the_largest_current_model_and_recent_page`, `cfg01_the_history_total_holds_the_largest_recent_page`, `cfg01_the_history_budget_holds_the_largest_recent_page` |
+| CFG-01 (Contract, mandatory model and recent page, #167, #166): the total holds the monitor's one parser and one 500x200 session's documented current model and recent page together, then a client's budget the model and page, and the history total, then a session's history budget, the page: each accepted at its limit and refused one byte short, each total named before the budgets it contains | `cfg01_the_total_holds_the_parser_and_the_largest_current_model_and_recent_page`, `cfg01_the_client_budget_holds_the_largest_current_model_and_recent_page`, `cfg01_the_history_total_holds_the_largest_recent_page`, `cfg01_the_history_budget_holds_the_largest_recent_page` |
 | HLP-01 (Contract; derived scenario: the preference file's versioning and malformed files): a saved choice is one line of version 1; a version 1 file holds the choice; later versions, up to the largest, are read ignoring unknown fields, one past it malformed; every malformed shape refused with its reason | `hlp01_a_saved_choice_is_one_line_of_version_1_json`, `hlp01_a_version_1_file_holds_the_dont_show_again_choice`, `hlp01_later_versions_are_read_ignoring_unknown_fields`, `hlp01_malformed_files_are_refused_with_their_reason` |
 | INP-01 (Contract): the monitor shares the client bindings and their rules, refuses a null escape prefix and accepts a null take-control key | `inp01_the_monitor_needs_an_escape_prefix_but_not_a_take_control_key` |
 | CFG-01 (Docs): the README spells out every client and monitor default and keeps the Escape/Alt warning above `escape_prefix` | `cfg01_the_readme_documents_every_default_and_the_escape_warning` |
