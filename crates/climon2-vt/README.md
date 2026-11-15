@@ -48,6 +48,17 @@ directly to its host.
   4,094 bytes. `focus_enabled` says a token of this feed turned focus
   reporting (mode 1004) on and it is still on, however the tokens were split
   across reads.
+- `Vt::feed_observed(bytes, now, observe) -> Fed`: `Vt::feed`, calling
+  `observe(&vt, signal, &mut replies)` for each `Signal` in stream order once
+  the engine executed it, so `vt` shows the terminal as of that point: every
+  OSC string (`Signal::Osc { body, length }`, the body between `ESC ]` and its
+  BEL or ST terminator, real or implied by CAN, SUB or an interrupting
+  escape, and the whole sequence's length) and every full reset
+  (`Signal::FullReset`, `ESC c`). Oversized and split sequences are observed
+  as the engine receives them: never, and once complete. What `observe`
+  appends to `replies` reaches the program in order with the engine's own
+  replies. The session daemon interprets OSC 7501 and OSC 133 this way
+  (#92); the strings stay stripped from `live`.
 - `Vt::application_title()`: the application's current title, `None` while
   unset; the session daemon reports it as inert core metadata.
 - `Vt::viewport_characters()`: the active screen's characters, every cell of each line
@@ -224,6 +235,7 @@ monitor's evidence.
 | LIM-03 Fault: the reserve covers brief holdings with no history: 4096 held controls released at once (as one token), the largest held bodies, resets, tinted templates | `a_cancelled_sequence_releasing_held_controls_stays_within_the_limit`, `the_reserve_covers_what_is_held_briefly`, `tests/tokenizer.rs`: `controls_held_by_an_abandoned_sequence_are_one_text_token` |
 | CTL-03 (crate case): application title changes are reported by value, in order and one per change; unset, empty and a value stay distinct; an oversized title is ignored | `tests/live.rs`: `application_title_changes_are_reported_in_order_by_value` |
 | STA-02 (crate case): the sampled viewport is the active screen's characters only; styles, cursor-only movement, identical redraws and a screen switch with identical characters leave it unchanged, while a changed character, a combining mark and a resize change it | `tests/viewport.rs`: `the_viewport_is_the_active_screens_characters_only` |
+| STA-03, STA-04 and STA-05 (crate case): every OSC string and full reset is observed once, in stream order, after the engine executed it, with the viewport and title as of that point, its body and whole length for BEL, ST, CAN-implied and interrupt-implied terminators; the observer's answers reach the program in order with the engine's; split sequences are observed once complete, oversized ones and look-alike text never; observed strings never reach live output | `tests/signals.rs`: `osc_strings_and_full_resets_are_observed_in_stream_order`, `split_oversized_and_textual_sequences_are_observed_as_the_engine_sees_them` |
 | FOC-01 (crate case): the application's focus reporting mode (1004) is reported, and each feed says whether it newly enabled the mode, however its tokens were split across reads | `tests/live.rs`: `focus_reporting_reports_the_mode_and_each_feed_that_newly_enabled_it` |
 | TRM-02 (crate case): a C0 control between `ESC` and an introducer never lets a filtered sequence reach the host; each token keeps the kind vte dispatches (#152) | `tests/live.rs`: `a_control_after_esc_reaches_the_host_without_the_filtered_sequence`; `tests/tokenizer.rs`: `vte_dispatches_each_token_as_its_kind` |
 | TRM-01 (crate case): wide and combining characters, a wide character wrapping at the right margin; colours (the 16 ANSI colours, palette, direct, underline colour, defaults) and rendition; a tab's cells blank, in the text views too | `tests/view.rs`: `wide_and_combining_characters_fill_the_cells_they_cover`, `cells_keep_the_colours_sgr_selected`, `sgr_selects_each_of_the_sixteen_ansi_colours`, `cells_keep_the_rendition_sgr_selected`, `a_tab_leaves_the_cells_it_passes_blank` |
