@@ -127,6 +127,15 @@ whose application (the fixture's `raw` and `echo-until` actions) writes
 back every input byte unchanged, and against the fake peer for holds,
 losses, mismatches and records out of authority.
 
+`tests/status.rs` and `tests/status_faults.rs` (#95) drive status, Set
+viewing and Acknowledge the same way. `status.rs` starts its real sessions
+with the daemon's controllable status clock (`CLIMON2_DAEMON_CLOCK`, a test
+hook): the host's `clock` step sets it and waits for the daemon to
+acknowledge the turn that read it, so each status change happens at an
+exact, hand-computed time. Release archives have no hooks, so those cases
+return early in archive mode. The passive suites leave `status-v1` out of
+their Opens, because a real daemon reports status on its own clock.
+
 `tests/mixed.rs` (#97) runs two releases in one host process. Each test
 installs, in its own executable home and with the real installer, the
 [second-release fixture](../../GLOSSARY.md#testing) as release 0.0.97 in a
@@ -269,6 +278,16 @@ before it.
 | COM-03 Library and Fault, Command final (minimal, #94): `CM1_FINAL` exit or signal with its name, status unavailable, the close a clean stop with retry none (inside a frame still `truncated_frame`; meeting a Leave, indeterminate); second, after a known result (agreeing or contradicting), early or with a status `invalid_record` | `installed_library_relays_one_command_final_after_the_initial_metadata` (`control_faults.rs`) |
 | COM-03 Library and Fault, backpressure: a Display waiting for `event_bytes` room stops `operation_ms`; `delivery_stall_ms` fails the connection `delivery_stalled`, retry passive, the held-back Ready unanswered | `installed_library_fails_a_stalled_delivery_without_timing_out_its_commands` (`control_faults.rs`) |
 | COM-03 Library and Fault: once waiting records are queued no stall deadline remains, and a Ready times out at `operation_ms` | `installed_library_times_commands_out_again_once_waiting_records_are_queued` (`control_faults.rs`) |
+
+### Library layer: status, viewing and acknowledgement (`tests/status*.rs`, #95)
+
+| Scenario | Named test |
+|---|---|
+| STA-07 Library (idle at the daemon's start in every Initial metadata, running at the first sample, needs_attention episode 1 ten seconds later; a fresh instance's Initial metadata keeps that episode and time; the final status only with Command final, completed, no Status after it), CTL-03 Library status case (the same status reaches a passive registration, an attachment revoked by takeover and a background controller) and STA-08 Library (viewing false from a background controller before Ready) | `installed_library_relays_status_to_every_role_and_keeps_its_identity_across_instances` (`status.rs`) |
+| STA-08 Library: viewing true and Acknowledge `not_ready` before Ready, viewing false accepted during restoration; `not_viewing` until viewing true; viewing changed then unchanged; explicit no-change Acknowledge; Status acknowledged (same episode and time) before the changed success, then no change; viewing false leaves the status; `not_controller` after takeover; a new period starts not viewing; accepted Input clears acknowledged attention, its Status first. COM-03 Library: `stale_generation` locally | `installed_library_sets_viewing_and_acknowledges_attention_through_a_real_daemon` (`status.rs`) |
+| COM-03 Library and Fault (viewing and acknowledgement cases): malformed requests `invalid_argument`, Kill `unsupported_operation`, queued requests `cancelled` by shutdown; STA-08 Fault: `unsupported_capability` without `status-v1` and `stale_generation`, none sent | `installed_library_rejects_viewing_and_acknowledgement_it_cannot_send` (`status_faults.rs`) |
+| STA-08 Library and Fault and COM-03 Library and Fault: wire bodies sent once; viewing and acknowledgement results mapped, no-change explicit, Status before a changed acknowledgement; daemon rejections (`stale_period`, `stale_restoration`, `not_ready`, `not_viewing`) kept; contradicting or mismatched results `invalid_record`; held answers `timeout` (indeterminate), closed connections no fabricated Response, nothing replayed | `installed_library_maps_viewing_and_acknowledgement_answers_without_replay` (`status_faults.rs`) |
+| STA-07 Library and Fault, CTL-03 Fault: every state, episode and exact time mapped, the final status in `CM1_FINAL` (completed, failed) and in a knowing Initial metadata, a status record charged its record alone; early, unselected or post-final Status, availability against the selection, final status without the result or working status with it, Command final without status, final state or stray episode `invalid_record` | `installed_library_relays_status_records_by_the_reference_rules` (`status_faults.rs`) |
 
 ### Library layer: mixed releases (`tests/mixed.rs`, #97)
 

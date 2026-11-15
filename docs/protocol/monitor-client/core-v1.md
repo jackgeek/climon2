@@ -5,7 +5,8 @@ Implemented for the bootstrap and the immutable description
 ([#75](https://github.com/jackgeek/climon2/issues/75)), the instance
 lifecycle calls ([#85](https://github.com/jackgeek/climon2/issues/85)),
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
-control and display ([#94](https://github.com/jackgeek/climon2/issues/94))
+control and display ([#94](https://github.com/jackgeek/climon2/issues/94)),
+status, viewing and acknowledgement ([#95](https://github.com/jackgeek/climon2/issues/95))
 and the validation of the bootstrap and description before create by the
 shared loader ([#84](https://github.com/jackgeek/climon2/issues/84)).** The
 shipped [client library](../../../GLOSSARY.md#sessions)
@@ -19,18 +20,19 @@ and undercounts instance allocation, because it does not yet count each
 instance's diagnostics dispatcher
 ([#180](https://github.com/jackgeek/climon2/issues/180)). `submit` accepts
 `CM1_OPEN` in both modes, `CM1_LEAVE`, `CM1_ACQUIRE`, `CM1_INPUT`,
-`CM1_RESIZE`, `CM1_READY` and `CM1_FOCUS`; Set viewing, Acknowledge and Kill
-report `CM1_UNSUPPORTED_OPERATION`. An instance opens a
+`CM1_RESIZE`, `CM1_READY`, `CM1_VIEWING`, `CM1_ACKNOWLEDGE` and
+`CM1_FOCUS`; Kill reports `CM1_UNSUPPORTED_OPERATION`. An instance opens a
 [passive monitor connection](../../../GLOSSARY.md#attachment-and-control) or an
 interactive attachment to its [session daemon](../../../GLOSSARY.md#sessions)
 over [daemon wire revision 1](../daemon-client/core-v1.md), delivers
-Response, Initial metadata, Title, Control granted and revoked, Restoration
-begin and complete, Display, Geometry and diagnostic records, and attempts
-[Leave](../daemon-client/request-leave.md) once on shutdown.
+Response, Initial metadata, Title, Status, Control granted and revoked,
+Restoration begin and complete, Display, Geometry, Final and diagnostic
+records, and attempts [Leave](../daemon-client/request-leave.md) once on
+shutdown.
 [Implemented behavior](#implemented-behavior) records the choices this page
-leaves open. [Kill](../daemon-client/request-kill.md), viewing,
-acknowledgement and the status, notification, progress and final records are
-not implemented. The [C ABI](../TERMS.md#c-abi)
+leaves open. [Kill](../daemon-client/request-kill.md) and the notification and
+progress records are not implemented, and the Final record has only the
+handling [implemented behavior](#implemented-behavior) describes. The [C ABI](../TERMS.md#c-abi)
 [header](client-v1.h) is authoritative for declarations, numeric tags and field
 order. This page owns their semantics. The [examples](examples.c) compile but
 do not link to a shipped library. [Declaration checks](check.py) are not runtime
@@ -489,16 +491,16 @@ public-interface timeline, not a runtime test or a release prerequisite for plug
 
 The Library-layer tests for
 [passive connections](../../../crates/climon2-e2e/README.md#library-layer-passive-monitor-connections-testspassivers-93)
-([#93](https://github.com/jackgeek/climon2/issues/93)) and for
+([#93](https://github.com/jackgeek/climon2/issues/93)), for
 [control and display](../../../crates/climon2-e2e/README.md#library-layer-control-and-display-testscontrolrs-94)
-([#94](https://github.com/jackgeek/climon2/issues/94)) are the evidence for
-this section.
+([#94](https://github.com/jackgeek/climon2/issues/94)) and for
+[status, viewing and acknowledgement](../../../crates/climon2-e2e/README.md#library-layer-status-viewing-and-acknowledgement-testsstatusrs-95)
+([#95](https://github.com/jackgeek/climon2/issues/95)) are the evidence for this section.
 
 - **Description.** `capabilities` lists exactly the families the library
-  relays: `daemon-wire-v1`, `monitor-v1`, `title-v1` and `focus-v1`.
-  `status-v1` joins with [#95](https://github.com/jackgeek/climon2/issues/95),
-  and `notification-v1` and `progress-v1` with
-  [#98](https://github.com/jackgeek/climon2/issues/98).
+  relays: `daemon-wire-v1`, `monitor-v1`, `title-v1`, `status-v1`
+  ([#95](https://github.com/jackgeek/climon2/issues/95)) and `focus-v1`. `notification-v1` and `progress-v1` join
+  with [#98](https://github.com/jackgeek/climon2/issues/98).
   A required family outside the description is `CM1_UNSUPPORTED_OPERATION`
   with `unsupported_capability`; an optional one is not requested.
 - **Admission.** `submit` checks the tag (`CM1_OPEN` to `CM1_FOCUS`), reserved
@@ -551,14 +553,36 @@ this section.
   refusal and the stream ends. The Open sent names the required families and
   the optional ones both sides support; the daemon's selection must contain
   every required family and nothing unrequested (`invalid_record`).
-- **Commands.** Acquire, Input, Resize, Ready and Focus wait, like Leave,
-  for the Initial metadata. Another generation is `stale_generation`, no
-  role or a Leave under way `invalid_state`, Focus without `focus-v1`
-  selected `unsupported_capability`, and a frame over the daemon's request
-  ceiling `unsupported_limit`: each rejected without being sent. The daemon
-  judges the period and restoration. A success must carry its own result,
-  and Input's every byte; a command's rejection carries no known final
-  result (`invalid_record` otherwise).
+- **Commands.** Acquire, Input, Resize, Ready, Set viewing, Acknowledge and
+  Focus wait, like Leave, for the Initial metadata. Another generation is
+  `stale_generation`, no role or a Leave under way `invalid_state`, Focus
+  without `focus-v1` selected, and Set viewing or Acknowledge without
+  `status-v1` selected ([#95](https://github.com/jackgeek/climon2/issues/95)), `unsupported_capability`, and a frame
+  over the daemon's request ceiling `unsupported_limit`: each rejected
+  without being sent. Set viewing's flag is 0 or 1 with reserved bytes zero
+  (`invalid_argument` at `submit`). The daemon
+  judges the period and restoration, and for Set viewing and Acknowledge
+  readiness and the latest viewing (`not_ready`, `not_viewing`, copied with
+  daemon origin). A success must carry its own result, Input's every byte
+  and Set viewing's the viewing it asked for; a command's rejection carries
+  no known final result (`invalid_record` otherwise). Set viewing's success
+  is `CM1_VIEWING_RESULT` with changed, the viewing now and zero
+  `accepted_bytes`; Acknowledge's is `CM1_ACKNOWLEDGEMENT` with changed,
+  zero when nothing was pending.
+- **Status** ([#95](https://github.com/jackgeek/climon2/issues/95)). With `status-v1` selected, the Initial metadata's
+  status is available and every Status changed after it is delivered as
+  `CM1_STATUS`, each with the daemon's state, episode (present exactly for
+  needs_attention and acknowledged) and stored change time, copied exactly,
+  whatever the control: passive, background or revoked. Without it the
+  status is unavailable, never a fabricated idle or cleared value. An
+  available Initial metadata status must be final exactly when the command
+  result is known. A Status changed before the Initial metadata, without
+  `status-v1` selected, or once the final result is known, and an Initial
+  metadata whose status availability differs from the selection or
+  disagrees with the result, fail the connection with transport
+  `invalid_record`, as does a status the shared codec refuses (a final
+  state in Status changed, or an episode outside attention). A status
+  record owns no buffer: it is charged its record alone.
 - **Presentation.** Control granted, revoked, Restoration begin and
   complete, Display and Geometry follow the Initial metadata and name the
   authority the role holds: a grant only when none is held; a revocation,
@@ -578,7 +602,9 @@ this section.
   ([owner decision on #94](https://github.com/jackgeek/climon2/issues/94)):
   after an Initial metadata that did not know the result, a Command final is
   delivered as `CM1_FINAL` with its exit code or signal (and signal name, if
-  sent) and status unavailable. It calls for no retry, and the connection
+  sent) and, exactly when `status-v1` is selected, its final status
+  (completed for exit 0, failed otherwise; [#95](https://github.com/jackgeek/climon2/issues/95)), otherwise status
+  unavailable. It calls for no retry, and the connection
   reads on: the last output, the release Display, Control revoked
   `session_ending` and the close follow. The daemon closing the connection
   between frames then stops the stream cleanly: client outcome stopped, no
@@ -589,7 +615,8 @@ this section.
   an Initial metadata that already knew the result stops cleanly the same
   way. A second Command final, one
   after an Initial metadata that knew the result, one before the Initial
-  metadata and one with a status are `invalid_record`. A finished
+  metadata and one whose status is present when `status-v1` is not selected,
+  or absent when it is, are `invalid_record`. A finished
   session's view freezes at the Command final: later Displays are only its
   last output and the release. Exit and signal detail tests, repeat
   semantics and evidence that survives disconnection belong to

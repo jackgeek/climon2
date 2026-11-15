@@ -1,6 +1,7 @@
 # Acknowledge attention — `0x36`
 
-**Status: agreed and implemented** ([#91](https://github.com/jackgeek/climon2/issues/91)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** ([#91](https://github.com/jackgeek/climon2/issues/91));
+the [client library](../../../GLOSSARY.md#sessions) sends it ([#95](https://github.com/jackgeek/climon2/issues/95)). Owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) asks the
 [session daemon](../../../GLOSSARY.md#sessions) to acknowledge current pending
 [attention](../../../GLOSSARY.md#status-and-attention).
