@@ -368,8 +368,9 @@ fn installed_library_selects_only_families_both_sides_support() {
 /// prefix), a stream ending inside a frame (`truncated_frame`), a response
 /// for no request (`invalid_request_id`) or with another operation's result,
 /// a title before the Open's response or before the Initial metadata, an
-/// Initial metadata reporting a family nobody selected, or a title when
-/// `title-v1` is not selected (`invalid_record`) each fail the connection:
+/// Initial metadata reporting a family nobody selected, a title when
+/// `title-v1` is not selected, or a Status changed when `status-v1` is not
+/// (`invalid_record`) each fail the connection:
 /// a transport diagnostic, then failed terminal evidence with passive retry,
 /// the connection closed and no Leave needed. A title one byte over
 /// `title_bytes`, or a record one byte over `metadata_record_bytes`, fails
@@ -523,6 +524,20 @@ fn installed_library_fails_the_connection_on_traffic_revision_one_forbids() {
                 json!({ "open": [opened(&REQUIRED), initial_unavailable(), title_changed(json!("x"))] }),
                 json!({}),
                 &untitled,
+            ),
+            transport("invalid_record"),
+            2,
+        ),
+        (
+            case(
+                "status-changed",
+                opened_then(vec![send(
+                    0x43,
+                    json!({ "status": {
+                        "state": "idle", "changed_at": "2026-11-13T00:00:00.000Z", "episode_id": null } }),
+                )]),
+                json!({}),
+                &request,
             ),
             transport("invalid_record"),
             2,
