@@ -10,68 +10,8 @@
 #[allow(dead_code)]
 mod support;
 
-use climon2_test_term::Terminal;
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
-use support::{Package, TIMEOUT, passive::*};
-
-/// A session daemon of the installed release: `climon2 exec` of the generic
-/// fixture, which prints `READY`, waits for the file `go`, then follows
-/// `then`, attached to its own private-protocol client.
-struct Session {
-    terminal: Terminal,
-    id: String,
-    pid: u32,
-    metadata: PathBuf,
-    socket: PathBuf,
-    go: PathBuf,
-}
-
-impl Session {
-    fn start(package: &Package, root: &Path, then: &[&str]) -> Self {
-        let go = root.join("go");
-        let mut command = package.command("climon2");
-        command.args(["exec", "climon2-fixture", "print", "READY", "await-file"]);
-        command.arg(&go);
-        command.args(then);
-        let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
-        terminal.wait_for_text("READY", TIMEOUT).unwrap();
-        let metadata = package.metadata();
-        let id = metadata.session_id.to_string();
-        Self {
-            terminal,
-            metadata: package
-                .isolation
-                .climon2_home()
-                .join("sessions")
-                .join(format!("{id}.pty")),
-            socket: PathBuf::from(metadata.socket_path.as_str()),
-            pid: metadata.daemon_pid,
-            id,
-            go,
-        }
-    }
-
-    /// Startup overrides naming this session, with `limits`.
-    fn startup(&self, package: &Package, generation: u64, limits: Value) -> Value {
-        let path = |path: &Path| json!({ "bytes": path.to_str().unwrap() });
-        json!({
-            "session_id": self.id.replace('-', ""),
-            "generation": generation,
-            "metadata_path": path(&self.metadata),
-            "home_path": path(&package.isolation.climon2_home()),
-            "runtime_path": path(self.socket.parent().unwrap()),
-            "limits": limits,
-        })
-    }
-
-    fn go(&self) -> &str {
-        self.go.to_str().unwrap()
-    }
-}
+use support::{Package, TIMEOUT, control::Session, passive::*};
 
 /// The Response and Initial metadata of a passive Open `id` of a session
 /// whose result is not known yet.
@@ -105,13 +45,13 @@ fn installed_library_relays_each_real_command_final_apart_from_signals() {
     for (generation, (then, command)) in (1..).zip(cases) {
         let package = Package::new();
         let root = root(&package);
-        let mut session = Session::start(&package, &root, then);
+        let mut session = Session::ending(&package, &root, then);
         let steps = json!([
-            { "do": "create", "startup": session.startup(&package, generation, json!({})) },
+            { "do": "create", "startup": session.startup(&package, generation) },
             { "do": "submit", "request": open(1, &REQUIRED, &["title-v1"]) },
             { "do": "run" },
             { "do": "drain", "until": { "tag": INITIAL_METADATA } },
-            { "do": "touch", "path": session.go() },
+            { "do": "touch", "path": session.end_path() },
             { "do": "finish" },
         ]);
         let report = script(&package, &root, steps);
@@ -148,14 +88,14 @@ fn installed_library_kills_a_real_session_only_after_termination_and_cleanup() {
     let package = Package::new();
     let root = root(&package);
     let never = root.join("never").to_str().unwrap().to_owned();
-    let mut session = Session::start(&package, &root, &["await-file", &never]);
+    let mut session = Session::ending(&package, &root, &["await-file", &never]);
     let steps = json!([
-        { "do": "create", "instance": "a", "startup": session.startup(&package, 1, json!({})) },
-        { "do": "create", "instance": "k", "startup": session.startup(&package, 2, json!({})) },
+        { "do": "create", "instance": "a", "startup": session.startup(&package, 1) },
+        { "do": "create", "instance": "k", "startup": session.startup(&package, 2) },
         { "do": "submit", "instance": "a", "request": open(1, &REQUIRED, &["title-v1"]) },
         { "do": "run", "instance": "a" },
         { "do": "drain", "instance": "a", "until": { "tag": INITIAL_METADATA } },
-        { "do": "touch", "path": session.go() },
+        { "do": "touch", "path": session.end_path() },
         { "do": "submit", "instance": "a", "request": kill(2, &[]) },
         { "do": "submit", "instance": "k", "request": kill(1, &["daemon-wire-v1"]) },
         { "do": "run", "instance": "k" },
@@ -174,7 +114,7 @@ fn installed_library_kills_a_real_session_only_after_termination_and_cleanup() {
     assert_eq!(response["result"], confirmed, "{response:#}");
     assert_eq!(response["error"], no_error(), "{response:#}");
     assert_terminal(terminal, 2, clean, None);
-    assert!(!session.metadata.exists() && !session.socket.exists());
+    assert!(session.cleaned_up());
 
     let mut records = step(&report, 4)["records"].as_array().unwrap().clone();
     let (later, terminal) = finished(step(&report, 10));
@@ -216,18 +156,19 @@ fn installed_library_kills_a_real_session_only_after_termination_and_cleanup() {
 fn installed_library_recovers_only_through_a_fresh_instance_after_join() {
     let package = Package::new();
     let root = root(&package);
-    let session = Session::start(&package, &root, &["exit", "0"]);
-    let limits = json!({ "start_ms": 1000 });
+    let session = Session::ending(&package, &root, &["exit", "0"]);
+    let mut stalled = session.startup(&package, 1);
+    stalled["limits"] = json!({ "start_ms": 1000 });
     let steps = json!([
         { "do": "signal", "pid": session.pid, "signal": "stop" },
-        { "do": "create", "instance": "a", "startup": session.startup(&package, 1, limits) },
+        { "do": "create", "instance": "a", "startup": stalled },
         { "do": "submit", "instance": "a", "request": open(1, &REQUIRED, &[]) },
         { "do": "run", "instance": "a" },
         { "do": "drain", "instance": "a", "until": "terminal" },
         { "do": "destroy", "instance": "a" },
         { "do": "signal", "pid": session.pid, "signal": "continue" },
         { "do": "finish", "instance": "a" },
-        { "do": "create", "instance": "b", "startup": session.startup(&package, 2, json!({})) },
+        { "do": "create", "instance": "b", "startup": session.startup(&package, 2) },
         { "do": "submit", "instance": "b", "request": open(1, &REQUIRED, &[]) },
         { "do": "run", "instance": "b" },
         { "do": "drain", "instance": "b", "until": { "tag": INITIAL_METADATA } },
@@ -251,7 +192,7 @@ fn installed_library_recovers_only_through_a_fresh_instance_after_join() {
     assert!(later.is_empty(), "{later:#?}");
     assert_left(terminal, 2);
     assert_all_released(&report["ledger"]);
-    fs::write(&session.go, b"").unwrap();
+    session.end();
     let mut session = session;
     session.terminal.wait_exit(TIMEOUT).unwrap();
     package.assert_clean();
