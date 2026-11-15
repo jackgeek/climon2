@@ -104,8 +104,8 @@ jobs:
         run: |
           test "$(uname -m)" = arm64
           brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
-      # Coverage runs every workspace test, including xtask's install tests,
-      # which build the universal payload.
+      # Qualifying changed macOS-only source runs every workspace test under
+      # coverage, including xtask's install tests, which build both slices.
       - name: Install universal payload targets for install tests
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: ./.github/actions/controlled-bash
