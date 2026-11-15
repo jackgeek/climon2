@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 climon2-cli = { path = "../climon2-cli", features = ["test-hooks"] }
 climon2-client = { path = "../climon2-client", features = ["test-hooks"] }
+climon2-core = { path = "../climon2-core" }
 climon2-daemon = { path = "../climon2-daemon", features = ["test-hooks"] }
 climon2-install = { path = "../climon2-install", features = ["test-hooks"] }
 climon2-monitor = { path = "../climon2-monitor", features = ["test-hooks"] }
