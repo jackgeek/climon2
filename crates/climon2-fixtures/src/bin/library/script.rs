@@ -19,7 +19,8 @@
 //! - `run`, on the owner thread; `wait_run` for its report;
 //! - `drain`, `until` `{"records": n}`, `{"tag": t}` or `"terminal"`
 //!   (default: once), releasing each delivery unless `keep`, and stopping
-//!   at the first failed drain;
+//!   at the first failed drain or at terminal evidence, after which nothing
+//!   more can come;
 //! - `observe` and `release` the deliveries kept so far;
 //! - `snapshot`, `notification`, `shutdown`; `await_snapshot` until its
 //!   `gauge` reaches `value`;
@@ -233,15 +234,19 @@ fn met(until: &Value, drains: &[Value], records: &[Value], terminal: bool) -> bo
     !drains.is_empty()
 }
 
-/// Drains until `until` is met, waiting on the descriptor while nothing is
-/// ready, bounded; each delivery is released unless `keep`.
+/// Drains until `until` is met or the stream ends, waiting on the
+/// descriptor while nothing is ready, bounded; each delivery is released
+/// unless `keep`.
 fn drain(api: Api, instance: &mut Instance, step: &Value) -> Value {
     let handles = handles(instance);
     let descriptor = api.notification(handles).1;
     let keep = step["keep"].as_bool().unwrap_or(false);
     let (mut drains, mut records, mut terminal) = (Vec::new(), Vec::new(), false);
     let deadline = probe::deadline();
-    while !met(&step["until"], &drains, &records, terminal) && Instant::now() < deadline {
+    while !terminal
+        && !met(&step["until"], &drains, &records, terminal)
+        && Instant::now() < deadline
+    {
         let started = Instant::now();
         let (call, drained) = api.drain(handles);
         let elapsed = started.elapsed().as_micros() as u64;
