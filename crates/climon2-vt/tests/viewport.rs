@@ -12,10 +12,10 @@ use support::*;
 #[test]
 fn the_viewport_is_the_active_screens_characters_only() {
     let mut vt = vt(5, 2, 10);
-    assert_eq!(vt.viewport(), "     \n     ");
+    assert_eq!(vt.viewport_characters(), "     \n     ");
     feed(&mut vt, b"ab");
     let written = "ab   \n     ";
-    assert_eq!(vt.viewport(), written);
+    assert_eq!(vt.viewport_characters(), written);
     let unchanged: [&[u8]; 5] = [
         b"\x1b[H\x1b[1;31;44mab\x1b[0m",
         b"\x1b[2;4H",
@@ -25,18 +25,18 @@ fn the_viewport_is_the_active_screens_characters_only() {
     ];
     for bytes in unchanged {
         feed(&mut vt, bytes);
-        assert_eq!(vt.viewport(), written, "{bytes:?}");
+        assert_eq!(vt.viewport_characters(), written, "{bytes:?}");
     }
     feed(&mut vt, b"\x1b[Hac");
-    assert_eq!(vt.viewport(), "ac   \n     ");
+    assert_eq!(vt.viewport_characters(), "ac   \n     ");
     feed(&mut vt, "\x1b[1;3He\u{301}".as_bytes());
-    assert_eq!(vt.viewport(), "ace\u{301}  \n     ");
+    assert_eq!(vt.viewport_characters(), "ace\u{301}  \n     ");
     feed(&mut vt, b"\x1b[2;1H\r\n\r\nzz");
     assert_eq!(
-        vt.viewport(),
+        vt.viewport_characters(),
         "     \nzz   ",
         "scrolled history is not shown"
     );
     vt.resize(Geometry::for_host(3, 1).unwrap());
-    assert_eq!(vt.viewport(), "zz ");
+    assert_eq!(vt.viewport_characters(), "zz ");
 }

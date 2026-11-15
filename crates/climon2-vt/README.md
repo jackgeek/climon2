@@ -45,7 +45,7 @@ the monitor never forwards parser replies or session bytes directly to its host.
   across reads.
 - `Vt::application_title()`: the application's current title, `None` while
   unset; the session daemon reports it as inert core metadata.
-- `Vt::viewport()`: the active screen's characters, every cell of each line
+- `Vt::viewport_characters()`: the active screen's characters, every cell of each line
   (a cell's character, then its zero-width characters) with lines separated
   by a line feed. Rendition, the cursor, history and which screen is active
   are not part of it, so the session daemon's activity samples compare what

@@ -223,7 +223,7 @@ impl Vt {
     /// line by line and including blanks: what the session daemon samples
     /// to notice activity. Rendition, the cursor, history and which screen
     /// is active are not part of it.
-    pub fn viewport(&self) -> String {
+    pub fn viewport_characters(&self) -> String {
         characters(self.engine.active())
     }
 
