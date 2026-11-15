@@ -1620,7 +1620,9 @@ fn the_first_history_chunk_is_admitted_on_the_first_scroll() {
     assert_first_scroll(top_then(23), "\n", &["top"]);
     assert_first_scroll("", &top_then(24), &["top"]);
     let mut one_row = Model::new(geometry(80, 24), limits(ROOMY, 1)).unwrap();
-    one_row.feed_shared(top_then(24).as_bytes()).unwrap();
+    one_row.feed_shared(top_then(23).as_bytes()).unwrap();
+    assert_eq!(one_row.footprint(), mandatory(geometry(80, 24)));
+    one_row.feed_shared(b"\n").unwrap();
     assert_eq!(one_row.history(), ["top"]);
     for _ in 0..23 {
         assert_first_scroll("top", &"\n".repeat(22), &[]);
