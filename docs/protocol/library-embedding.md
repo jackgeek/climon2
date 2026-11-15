@@ -11,10 +11,13 @@ contained and no process-global state changed
 ([#85](https://github.com/jackgeek/climon2/issues/85)). An instance opens a
 passive monitor connection to its session's daemon on its owner thread,
 never raising `SIGPIPE` in the process
-([#93](https://github.com/jackgeek/climon2/issues/93)). The shared validated
-loader ([#84](https://github.com/jackgeek/climon2/issues/84)) is implemented.
-The [monitor](../../GLOSSARY.md#sessions) uses it
-([#106](https://github.com/jackgeek/climon2/issues/106)): it loads each
+([#93](https://github.com/jackgeek/climon2/issues/93)). The one shared loader
+that the [monitor](../../GLOSSARY.md#sessions) and the
+[client executable](../../GLOSSARY.md#sessions) will both use is implemented
+([#84](https://github.com/jackgeek/climon2/issues/84)): it performs the
+[lookup](#artifact-and-dependency-lookup), the load-failure classification and
+the description validation below, and keeps every handle it opens. The monitor
+uses it ([#106](https://github.com/jackgeek/climon2/issues/106)): it loads each
 session's exact-release library once per release on a worker thread, creates,
 runs and destroys each passive client's instance on that instance's own owner
 thread, submits monitor-mode Open, polls the borrowed notification
@@ -116,7 +119,12 @@ Classify Linux load failures from the loader's own checks, never from
 header that is not x86-64 is an incompatible architecture. A `dlopen` failure
 after both checks pass is a missing dependency, reported with the `dlerror()`
 text only for diagnosis. A missing `climon2_client_get_interface` is a missing
-symbol. macOS classifies the same way, except that a file without a
+symbol. A `CM1_INTERNAL_ERROR` from the bootstrap is a recoverable bootstrap
+failure only when it cleared the output storage, which the loader initializes
+to a value the bootstrap cannot return; otherwise it is a malformed description
+([bootstrap rules](monitor-client/core-v1.md#representation-and-compatibility);
+owner decision on [#84](https://github.com/jackgeek/climon2/issues/84)).
+macOS classifies the same way, except that a file without a
 [Mach-O slice](TERMS.md#mach-o-and-slices) dyld would load into the running
 process is an incompatible architecture. A file the loader cannot open at all,
 missing or unreadable, counts as a missing library, and an ELF header it

@@ -306,6 +306,7 @@ name = "climon2-vt"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "unicode-width",
  "vt100",
 ]
 
@@ -1769,8 +1770,11 @@ dependencies = [
  "climon2-install",
  "climon2-platform",
  "libc",
+ "proc-macro2",
+ "quote",
  "serde",
  "serde_json",
+ "syn 2.0.119",
  "tempfile",
 ]
 

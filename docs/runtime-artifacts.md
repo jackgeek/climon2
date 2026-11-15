@@ -35,8 +35,8 @@ flowchart TB
         daemon -->|"runs on session PTY"| command
         cli -->|"monitor / mon: execs own version"| monitor
         monitor -->|"hello probes for discovery"| daemon
-        monitor -->|"loads session-version library through shared loader; one owner thread per live session's passive client"| library
-        client -.->|"loads same-release library through shared loader; versioned C interface planned"| library
+        monitor -->|"loads session-version library through the shared loader; one owner thread per live session's passive client"| library
+        client -.->|"loads same-release library through the shared loader; versioned C interface planned"| library
         library -->|"daemon wire revision 1: passive monitor connections"| daemon
         library -.->|"daemon wire revision 1: control and display; planned"| daemon
         monitor -.->|"consumes forwarded sessions over TCP/IP; future"| source_monitor
@@ -53,7 +53,7 @@ flowchart TB
         tui_fixture["climon2-tui-fixture"]
         library_host["climon2-library-host"]
         library_stand_in[["Client library stand-in<br/>test-only C dylib / .so; faulty library"]]
-        owned_exec["climon2-test-owned<br/>Linux test ownership exec adapter"]
+        owned_exec["climon2-test-owned<br/>test ownership exec adapter"]
         terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
         xtask -->|"runs builds and tests"| cargo
@@ -66,11 +66,11 @@ flowchart TB
         tests -->|"uses directly or as a session command"| terminal_fixture
         tests -->|"uses directly or as a session command"| tui_fixture
         tests -->|"runs as the Library-layer host"| library_host
-        library_host -->|"loads through the shared loader and calls through the C ABI"| library
+        library_host -->|"loads through the shared loader; calls through the C ABI"| library
         library_host -->|"hello probes for a session's state"| daemon
         library -->|"daemon wire revision 1 to the host's fake daemon peer"| library_host
-        tests -->|"loads the test stand-in through the shared loader"| library_stand_in
-        tests -->|"execs registered terminal roots through; Linux only"| owned_exec
+        tests -->|"loads through the shared loader in release-check and Fault-layer tests"| library_stand_in
+        tests -->|"execs registered terminal roots through"| owned_exec
         owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
 
@@ -89,15 +89,15 @@ Installation relationships are outside this consumption diagram.
 
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
 
-On Linux, `climon2-test-term` builds `climon2-test-owned` as test tooling, never
-as a release payload. It opens one test-owned file descriptor before execing
-the requested terminal root. Forked descendants inherit that descriptor across
-environment clearing and reparenting, so procfs leak checks do not depend on
-catching short-lived parents. Process identity, sampled ancestry, session
-membership and environment markers remain additional ownership evidence.
-Commands that explicitly close inherited descriptors cannot retain this
-additional evidence. macOS keeps its kernel process/image ancestry tracking
-and does not use this adapter.
+`climon2-test-term` builds `climon2-test-owned` as test tooling on Linux and
+macOS, never as a release payload. It opens one test-owned file descriptor
+before execing the requested terminal root. Forked descendants inherit that
+descriptor across environment clearing, new sessions and reparenting, so leak
+checks (procfs on Linux, `libproc` on macOS) do not depend on a sample catching
+short-lived parents. Process identity, sampled ancestry (macOS kernel
+process/image ids), session membership and environment markers remain
+additional ownership evidence. Commands that explicitly close inherited
+descriptors keep only that additional evidence.
 
 **Current (#75, #85, #93):** every release builds and ships the client library in
 its version folder: `libclimon2_client.dylib` (universal arm64/x86_64) on macOS
@@ -116,12 +116,9 @@ session daemons' hello state. The Linux library links the GCC
 unwinder statically, because no unwinding leaves it, so it needs only glibc's
 libraries and has no soname, RPATH or RUNPATH, as the
 [Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for
-release isolation; release checks enforce each rule. The monitor loads it (#106), and so do the
-test tooling, the library host fixture and xtask's release checks; the client
-executable's loading remains planned. xtask's release-check tests compile
-the C stand-in `xtask/tests/fixtures/client-library.c` into a test-only library,
-exact or with one defect, and load it through the same release checks as the
-real library; it is never shipped. Cargo's ordinary
+release isolation; release checks enforce each rule. The monitor loads it
+(#106), and so does test tooling: the library host fixture and xtask's release
+checks; the client executable's loading remains planned. Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`,
 `climon2-discovery` and `climon2-vt`, are not separately loaded dynamic
 libraries; the CLI's and the monitor's hello probes for discovery come from
@@ -142,8 +139,9 @@ body and the basic [selector](../GLOSSARY.md#attachment-and-control).
 the monitor's terminal integration is agreed, unimplemented.
 The [agreed terminal contract](protocol/terminal-integration.md), not implemented,
 selects exact ordered terminal bytes/control/restoration through existing
-in-process record queues and monitor-owned `climon2-vt` models, with planned
-read-only Rust views for Ratatui. Session bytes never go directly to the host;
+in-process record queues and monitor-owned `climon2-vt` models, with read-only
+Rust views for Ratatui, which `climon2-vt` provides (#83) but the monitor does
+not use yet. Session bytes never go directly to the host;
 daemon query authority stays unique. Monitor-mode daemon presentation uses
 effective session geometry, not host/requested dimensions, including background
 promotion. Optional core Focus is not a plugin/artifact addition. No new dynamic
@@ -177,8 +175,12 @@ bound admission, queues, client threads/workers/descriptors and retained shared
 release resources. Resource-blocked rows remain visible; history pressure
 preserves a recent page. Unsafe growth/cleanup is explicit failure, not client
 eviction or unloading. Allocation-aware terminal qualification reopens the
-narrow unbounded-engine assumption; it chooses no new executable/library or
-consumption arrow, and does not sandbox trusted native code.
+narrow unbounded-engine assumption; `climon2-vt`'s allocation-bounded `Model`
+(#76) provides it for the monitor's planned per-session models, which the
+monitor does not keep yet: at startup it reads only their mandatory
+allocation, to check that its limits hold one session's model (#167). It
+chooses no new executable/library or consumption arrow, and does not sandbox
+trusted native code.
 
 The client executable will also load its same-release library for ordinary
 operations.
@@ -217,10 +219,11 @@ No new artifact or consumption arrow is added. Monitor-client communication is
 an agreed specification, not implemented.
 [Daemon wire revision 1](protocol/daemon-client/core-v1.md) is agreed and
 partly implemented: session daemons serve
-[passive monitor connections](../GLOSSARY.md#attachment-and-control) and
-interactive [attachments](../GLOSSARY.md#attachment-and-control) over it,
-beside the private protocol, but no climon2 executable or library consumes it
-yet, so no arrow changes.
+[passive monitor connections](../GLOSSARY.md#attachment-and-control),
+interactive [attachments](../GLOSSARY.md#attachment-and-control) and
+standalone [Kill](../GLOSSARY.md#attachment-and-control) over it, with the
+command's final result, beside the private protocol, but no climon2
+executable or library consumes it yet, so no arrow changes.
 
 The planned wire core is independent of the current private Unix socket carrier.
 The main/downstream monitor consumes source-monitor sessions over

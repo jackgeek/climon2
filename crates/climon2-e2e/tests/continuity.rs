@@ -78,6 +78,45 @@ fn prompt_after(terminal: &mut Terminal, marker: &str) {
     terminal.wait_for_input_ready(TIMEOUT).unwrap();
 }
 
+/// Proves the client of `terminal`, just attached or just granted control, is
+/// past its restoration: types a harmless `printf` at the shell's prompt until
+/// the session answers `READY-<label>` (see [`type_until`]), then waits for the
+/// prompt after it. `label` must be new to the session, so that no restored
+/// output can answer for it.
+fn prove_readiness(terminal: &mut Terminal, label: &str) {
+    let answer = format!("READY-{label}");
+    type_until(
+        terminal,
+        &format!("printf 'READY-%s\\n' {label}\n"),
+        &answer,
+    );
+    prompt_after(terminal, &answer);
+}
+
+/// Runs in the background of a script that cannot answer typed input
+/// harmlessly: answers each acknowledgement file `$1.ack-<label>` the test
+/// creates with `ACK-<label>`, for [`acknowledge`].
+const ACKNOWLEDGER: &str = r#"while :; do
+  for ack in "$1".ack-*; do
+    [ -e "$ack" ] && rm "$ack" && printf 'ACK-%s ' "${ack##*.ack-}"
+  done
+  sleep 0.05
+done &
+"#;
+
+/// Proves the client of `terminal`, just attached or just granted control, is
+/// past its restoration without typing, once `terminal` shows restored output:
+/// creates the acknowledgement file `<base>.ack-<label>` for the session's
+/// [`ACKNOWLEDGER`] and waits for its `ACK-<label>`. Printed after that
+/// restored output, the answer is live output, which a client writes only
+/// after its restoration. `label` must be new to the session.
+fn acknowledge(terminal: &mut Terminal, base: &Path, label: &str) {
+    fs::write(format!("{}.ack-{label}", base.display()), "").unwrap();
+    terminal
+        .wait_for_text(&format!("ACK-{label}"), TIMEOUT)
+        .unwrap();
+}
+
 /// Runs a foreground command that never reads the terminal, so a kill ends the
 /// shell with the hang-up signal rather than a prompt read failure (see
 /// `RECORDER`).
@@ -264,6 +303,7 @@ fn installed_session_detaches_and_reattaches_on_an_occupied_host() {
     let exec = format!("exec {} --noprofile --norc -i", quote(&bash));
     let mut first = occupied(&package, &bash, &exec);
     prompt(&mut first);
+    prove_readiness(&mut first, "first");
     first
         .send("for i in $(seq 1 60); do echo history-$i; done\n")
         .unwrap();
@@ -299,6 +339,7 @@ fn installed_session_detaches_and_reattaches_on_an_occupied_host() {
         ["OUTER-SENTINEL-1", "OUTER-SENTINEL-2", "OUTER-SENTINEL-3"],
         "outer content stays in the host's scrollback"
     );
+    prove_readiness(&mut second, "second");
     second.send("echo typed-$((2+3))\n").unwrap();
     second.wait_for_text("typed-5", TIMEOUT).unwrap();
     detach(&mut second, &id);
@@ -307,6 +348,7 @@ fn installed_session_detaches_and_reattaches_on_an_occupied_host() {
     let mut third = climon2(&package, &["attach", &id], ROWS, COLS);
     third.wait_for_text("typed-5", TIMEOUT).unwrap();
     prompt(&mut third);
+    prove_readiness(&mut third, "third");
     third.send("exit 7\n").unwrap();
     assert_eq!(third.wait_exit(TIMEOUT).unwrap(), 7);
     drop(third);
@@ -328,9 +370,10 @@ fn installed_alternate_screen_is_reattached_and_quitting_shows_normal_content() 
         &package,
         &bash,
         "alternate.sh",
-        "printf '\\e[?1049h\\e[H\\e[2JALT-DISPLAY'\nIFS= read -rsn1 _\nprintf '\\e[?1049l'\necho after-alt\n",
+        "printf '\\e[?1049h\\e[H\\e[2JALT-DISPLAY'\nuntil [ -e ~/quit ]; do sleep 0.05; done\nprintf '\\e[?1049l'\necho after-alt\n",
     );
     let mut first = exec_bash(&package, &bash);
+    prove_readiness(&mut first, "first");
     first
         .send("for i in $(seq 1 50); do echo hist-$i; done; echo NORMAL-$((1+1))\n")
         .unwrap();
@@ -346,7 +389,10 @@ fn installed_alternate_screen_is_reattached_and_quitting_shows_normal_content() 
     second.wait_for_input_ready(TIMEOUT).unwrap();
     assert!(second.modes().alternate_screen);
     assert!(!second.screen().contains("NORMAL-2"));
-    second.send("q").unwrap();
+    // Quitting only ends the application: an acknowledgement file, not a key.
+    // Caused after the restored ALT-DISPLAY, what follows is live output, so it
+    // also shows the client is past its restoration before `exit 4` is typed.
+    fs::write(package.isolation.home().join("quit"), "").unwrap();
     second.wait_for_text("after-alt", TIMEOUT).unwrap();
     prompt(&mut second);
     assert!(!second.modes().alternate_screen);
@@ -375,13 +421,14 @@ fn installed_clients_share_a_session_with_exactly_one_controller() {
     a.wait_for_text(PLACEHOLDER, TIMEOUT).unwrap();
     a.wait_for_text("Press Ctrl+T to take control", TIMEOUT)
         .unwrap();
+    prove_readiness(&mut b, "b");
     b.send("stty size\n").unwrap();
     b.wait_for_text("40 100", TIMEOUT).unwrap();
 
     a.send(TAKE_CONTROL).unwrap();
     b.wait_for_text(PLACEHOLDER, TIMEOUT).unwrap();
     a.wait_for_text("40 100", TIMEOUT).unwrap();
-    a.wait_for_input_ready(TIMEOUT).unwrap();
+    prove_readiness(&mut a, "a");
     b.send("echo B-STALE\n").unwrap();
     a.send("stty size; echo A-$((6*7))\n").unwrap();
     a.wait_for_text("A-42", TIMEOUT).unwrap();
@@ -395,6 +442,7 @@ fn installed_clients_share_a_session_with_exactly_one_controller() {
     let mut c = climon2(&package, &["attach", &id], ROWS, COLS);
     prompt(&mut c);
     a.wait_for_text(PLACEHOLDER, TIMEOUT).unwrap();
+    prove_readiness(&mut c, "c");
     c.send("exit 5\n").unwrap();
     assert_eq!(c.wait_exit(TIMEOUT).unwrap(), 5);
     assert_eq!(a.wait_exit(TIMEOUT).unwrap(), 5);
@@ -415,6 +463,7 @@ fn installed_kill_ends_detached_and_attached_sessions() {
     let package = Package::new();
     let mut first = exec_bash(&package, &bash);
     let id = session_id(&package);
+    prove_readiness(&mut first, "first");
     detach(&mut first, &id);
     drop(first);
     let mut kill = climon2(&package, &["kill", &id], ROWS, COLS);
@@ -439,10 +488,12 @@ fn installed_kill_ends_detached_and_attached_sessions() {
     let id = session_id(&package);
     let mut b = climon2(&package, &["attach", &id], ROWS, COLS);
     prompt(&mut b);
+    prove_readiness(&mut b, "b");
     detach(&mut b, &id);
     drop(b);
     let mut c = climon2(&package, &["attach", &id[..8]], ROWS, COLS);
     prompt(&mut c);
+    prove_readiness(&mut c, "c");
     hold_without_reading(&mut c);
     let mut kill = climon2(&package, &["kill", &id[..8]], ROWS, COLS);
     assert_eq!(kill.wait_exit(TIMEOUT).unwrap(), 0);
@@ -464,6 +515,7 @@ fn installed_self_attach_is_refused_without_disturbing_the_session() {
     };
     let package = Package::new();
     let mut terminal = exec_bash(&package, &bash);
+    prove_readiness(&mut terminal, "first");
     terminal
         .send("climon2 attach \"$CLIMON2_SESSION_ID\"; echo SELF-STATUS=$?\n")
         .unwrap();
@@ -528,6 +580,7 @@ fn installed_config_rebinds_the_client_keys() {
     let mut b = climon2(&package, &["attach", &id], ROWS, COLS);
     prompt(&mut b);
     a.wait_for_text(PLACEHOLDER, TIMEOUT).unwrap();
+    prove_readiness(&mut b, "b");
     a.send(TAKE_CONTROL).unwrap();
     b.send("echo B-CONTROLS-$((1+1))\n").unwrap();
     b.wait_for_text("B-CONTROLS-2", TIMEOUT).unwrap();
@@ -543,6 +596,8 @@ fn installed_config_rebinds_the_client_keys() {
     b.wait_for_bytes(format!("detached from session {id}").as_bytes(), TIMEOUT)
         .unwrap();
     drop(b);
+    // b's departure handed control back to a, which restores again.
+    prove_readiness(&mut a, "a");
     a.send("\x01d").unwrap();
     assert_eq!(a.wait_exit(TIMEOUT).unwrap(), 0);
     drop(a);
@@ -554,6 +609,7 @@ fn installed_config_rebinds_the_client_keys() {
 
 fn retention_session(package: &Package, bash: &Path) -> Terminal {
     let mut first = exec_bash(package, bash);
+    prove_readiness(&mut first, "first");
     first
         .send("clear; for i in $(seq 1 40); do echo row-$i; done\n")
         .unwrap();
@@ -591,6 +647,7 @@ fn installed_scrollback_max_rows_bounds_restored_history() {
     let all = lines(&small);
     let notice = all.iter().position(|line| line == NOTICE).unwrap();
     assert_eq!(all[notice + 1], format!("row-{}", first_shown - 5));
+    prove_readiness(&mut small, "second");
     small.send("exit 0\n").unwrap();
     assert_eq!(small.wait_exit(TIMEOUT).unwrap(), 0);
     drop(small);
@@ -602,6 +659,7 @@ fn installed_scrollback_max_rows_bounds_restored_history() {
     let mut none = retention_session(&package, &bash);
     assert_eq!(numbered(&none, "row-"), on_screen, "{:?}", lines(&none));
     assert!(!lines(&none).iter().any(|line| line == NOTICE));
+    prove_readiness(&mut none, "second");
     none.send("exit 0\n").unwrap();
     assert_eq!(none.wait_exit(TIMEOUT).unwrap(), 0);
     drop(none);
@@ -643,6 +701,7 @@ fn installed_session_answers_queries_without_the_host() {
     let mut first = Terminal::spawn_with(command, ROWS, COLS, silent).unwrap();
     prompt(&mut first);
     let id = session_id(&package);
+    prove_readiness(&mut first, "first");
 
     let attached = home.join("attached");
     first.send("~/query.sh ~/attached ATTACHED-DONE\n").unwrap();
@@ -664,6 +723,7 @@ fn installed_session_answers_queries_without_the_host() {
 
     let mut second = climon2_with(&package, &["attach", &id], ROWS, COLS, silent);
     prompt_after(&mut second, "\nDETACHED-DONE");
+    prove_readiness(&mut second, "second");
     second
         .send(concat!(
             "printf '\\e[?6n\\e]11;?\\a\\e[14t\\e]52;c;aGVsbG8=\\a\\e]52;c;?\\a'; ",
@@ -699,6 +759,7 @@ fn installed_titles_are_encoded_and_links_are_plain_text() {
     let mut first = exec_bash(&package, &bash);
     let default = format!("climon2 exec {} --noprofile --norc -i", bash.display());
     assert_eq!(first.title().as_deref(), Some(default.as_str()));
+    prove_readiness(&mut first, "first");
     first
         .send(concat!(
             "printf '\\e]2;A\\xc2\\x85B\\a\\e]8;;http://x/\\x01y\\aLINK-TEXT\\e]8;;\\a\\n'; ",
@@ -724,17 +785,20 @@ fn installed_titles_are_encoded_and_links_are_plain_text() {
         second.screen()
     );
     assert!(!contains(&second.received(), b"\x1b]8;"));
+    prove_readiness(&mut second, "second");
     second.send("exit 0\n").unwrap();
     assert_eq!(second.wait_exit(TIMEOUT).unwrap(), 0);
     drop(second);
 
     let mut third = exec_bash(&package, &bash);
     let id = session_id(&package);
+    prove_readiness(&mut third, "third");
     detach(&mut third, &id);
     drop(third);
     let mut fourth = climon2(&package, &["attach", &id], ROWS, COLS);
     prompt(&mut fourth);
     assert_eq!(fourth.title().as_deref(), Some(default.as_str()));
+    prove_readiness(&mut fourth, "fourth");
     fourth.send("exit 0\n").unwrap();
     assert_eq!(fourth.wait_exit(TIMEOUT).unwrap(), 0);
     drop(fourth);
@@ -756,6 +820,7 @@ fn installed_detached_session_absorbs_a_large_write() {
     };
     let package = Package::new();
     let mut first = exec_bash(&package, &bash);
+    prove_readiness(&mut first, "first");
     first
         .send(concat!(
             "until [ -e ~/go ]; do sleep 0.05; done; ",
@@ -773,6 +838,7 @@ fn installed_detached_session_absorbs_a_large_write() {
 
     let mut second = climon2(&package, &["attach", &id], ROWS, COLS);
     prompt_after(&mut second, "WRITTEN-8");
+    prove_readiness(&mut second, "second");
     second.send("echo LIVE-$((5*5))\n").unwrap();
     prompt_after(&mut second, "LIVE-25");
     second.send("exit 0\n").unwrap();
@@ -783,7 +849,8 @@ fn installed_detached_session_absorbs_a_large_write() {
 
 /// A TUI that sets mouse reporting, focus, bracketed paste, a hidden cursor,
 /// application keys and the alternate screen, then exits on any key without
-/// undoing any of them.
+/// undoing any of them. Any key ends it, so an [`ACKNOWLEDGER`] runs beside
+/// it, answering the acknowledgement files named after `$1`.
 /// Ends after one key; if its terminal closes first, it waits for the hang-up
 /// signal like `RECORDER`. `dd` reads the key because `read -s`/`-n` install
 /// bash's terminating-signal handlers, which can consume that signal.
@@ -801,36 +868,42 @@ fn installed_client_releases_the_host_on_every_ending() {
         return;
     };
     let package = Package::new();
-    let tui = script(&package, &bash, "tui.sh", TUI);
-    let exec = format!("climon2 exec {}", quote(&tui));
+    let home = package.isolation.home().to_owned();
+    let tui = script(&package, &bash, "tui.sh", &[ACKNOWLEDGER, TUI].concat());
+    let exec = |base: &Path| format!("climon2 exec {} {}", quote(&tui), quote(base));
     let ready = |terminal: &mut Terminal| {
         terminal.wait_for_text("TUI-READY", TIMEOUT).unwrap();
         terminal.wait_for_input_ready(TIMEOUT).unwrap();
         assert!(terminal.modes().alternate_screen && terminal.modes().mouse);
     };
 
-    let mut detached = outer(&package, &bash, &exec, ROWS, COLS);
+    let base = home.join("detached");
+    let mut detached = outer(&package, &bash, &exec(&base), ROWS, COLS);
     ready(&mut detached);
     let id = session_id(&package);
+    acknowledge(&mut detached, &base, "detached");
     detached.send(DETACH).unwrap();
     assert_released(&package, &mut detached, 0);
     drop(detached);
     kill_session(&package, &id);
 
-    let mut natural = outer(&package, &bash, &exec, ROWS, COLS);
+    let base = home.join("natural");
+    let mut natural = outer(&package, &bash, &exec(&base), ROWS, COLS);
     ready(&mut natural);
+    acknowledge(&mut natural, &base, "natural");
     natural.send("q").unwrap();
     assert_released(&package, &mut natural, 0);
     drop(natural);
 
-    let mut killed = outer(&package, &bash, &exec, ROWS, COLS);
+    let mut killed = outer(&package, &bash, &exec(&home.join("killed")), ROWS, COLS);
     ready(&mut killed);
     let id = session_id(&package);
     kill_session(&package, &id);
     assert_released(&package, &mut killed, 129);
     drop(killed);
 
-    let mut observer = outer(&package, &bash, &exec, ROWS, COLS);
+    let base = home.join("observer");
+    let mut observer = outer(&package, &bash, &exec(&base), ROWS, COLS);
     ready(&mut observer);
     let id = session_id(&package);
     let mut controller = climon2(&package, &["attach", &id], ROWS, COLS);
@@ -839,6 +912,7 @@ fn installed_client_releases_the_host_on_every_ending() {
     observer.send(DETACH).unwrap();
     assert_released(&package, &mut observer, 0);
     drop(observer);
+    acknowledge(&mut controller, &base, "controller");
     controller.send("q").unwrap();
     assert_eq!(controller.wait_exit(TIMEOUT).unwrap(), 0);
     assert_eq!(controller.modes(), Modes::BASELINE);
@@ -846,7 +920,8 @@ fn installed_client_releases_the_host_on_every_ending() {
     package.assert_clean();
 }
 
-/// Records every input byte in `$1` with bracketed paste enabled.
+/// Records every input byte in `$1` with bracketed paste enabled. A typed
+/// probe would be recorded too, so an [`ACKNOWLEDGER`] runs beside it.
 /// Linux wakes a terminal reader before it signals the session leader when a
 /// killed session's terminal closes, so a leader still reading the terminal
 /// can end with its own status (ADR 0003). The shell therefore leaves reading
@@ -858,7 +933,12 @@ exec sleep 1000
 "#;
 
 fn recorder(package: &Package, bash: &Path, name: &str) -> (Terminal, PathBuf) {
-    let script = script(package, bash, "recorder.sh", RECORDER);
+    let script = script(
+        package,
+        bash,
+        "recorder.sh",
+        &[ACKNOWLEDGER, RECORDER].concat(),
+    );
     let path = package.isolation.home().join(name);
     let mut terminal = climon2(
         package,
@@ -915,11 +995,13 @@ fn installed_interrupted_paste_is_closed_once_without_stale_payload() {
 
     let (mut a, rec) = recorder(&package, &bash, "takeover");
     let id = session_id(&package);
+    acknowledge(&mut a, &rec, "a");
     a.send(PASTE_START).unwrap();
     wait_contents(&rec, |bytes| bytes.ends_with(b"first"));
     let mut b = attach_recorder(&package, &id);
     a.wait_for_text(PLACEHOLDER, TIMEOUT).unwrap();
     a.send(format!("{PASTE_REST}A-STALE")).unwrap();
+    acknowledge(&mut b, &rec, "b");
     b.send("B-AFTER").unwrap();
     assert_eq!(
         wait_contents(&rec, |bytes| bytes.ends_with(b"B-AFTER")),
@@ -940,6 +1022,7 @@ fn installed_interrupted_paste_is_closed_once_without_stale_payload() {
     let id = session_id(&package);
     let mut a = attach_recorder(&package, &id);
     assert!(is_client(a.pid()), "the launcher becomes the client");
+    acknowledge(&mut a, &rec, "a");
     a.send(PASTE_START).unwrap();
     wait_contents(&rec, |bytes| bytes.ends_with(b"first"));
     nix::sys::signal::kill(
@@ -948,6 +1031,7 @@ fn installed_interrupted_paste_is_closed_once_without_stale_payload() {
     )
     .unwrap();
     wait_controlling(&mut b);
+    acknowledge(&mut b, &rec, "b");
     b.send("B-AFTER").unwrap();
     assert_eq!(
         wait_contents(&rec, |bytes| bytes.ends_with(b"B-AFTER")),
@@ -959,13 +1043,17 @@ fn installed_interrupted_paste_is_closed_once_without_stale_payload() {
 
     let (mut a, rec) = recorder(&package, &bash, "readiness");
     let id = session_id(&package);
+    acknowledge(&mut a, &rec, "a");
     a.send(PASTE_START).unwrap();
     wait_contents(&rec, |bytes| bytes.ends_with(b"first"));
     let mut b = attach_recorder(&package, &id);
     a.wait_for_text(PLACEHOLDER, TIMEOUT).unwrap();
+    acknowledge(&mut b, &rec, "b");
     detach(&mut b, &id);
     drop(b);
     wait_controlling(&mut a);
+    // a's paste is still open: a typed probe would be stale payload.
+    acknowledge(&mut a, &rec, "a-handed-back");
     a.send(format!("{PASTE_REST}A-AFTER")).unwrap();
     assert_eq!(
         wait_contents(&rec, |bytes| bytes.ends_with(b"A-AFTER")),
@@ -992,6 +1080,7 @@ fn installed_large_restoration_is_complete_and_ordered() {
     let package = Package::new();
     configure(&package, r#"{"scrollback": {"max_rows": 100000}}"#);
     let mut first = exec_bash(&package, &bash);
+    prove_readiness(&mut first, "first");
     first
         .send(format!(
             "echo $((6*7))-producer-ready; until [ -e ~/go ]; do sleep 0.05; done; \
@@ -1040,17 +1129,20 @@ fn installed_large_restoration_is_complete_and_ordered() {
         produced.first()
     );
     assert_eq!(numbered(&second, "live-"), (1..=LIVE).collect::<Vec<_>>());
+    // `live` was created as the client started, so LIVE-4 may be restored output.
+    prove_readiness(&mut second, "second");
     second.send("exit 0\n").unwrap();
     assert_eq!(second.wait_exit(TIMEOUT).unwrap(), 0);
     drop(second);
     package.assert_clean();
 }
 
-/// Releases a script waiting with `WAITING` once the client is ready.
-fn after_readiness(terminal: &mut Terminal) {
+/// Releases a script waiting with `WAITING` for the acknowledgement file `~/go`.
+/// The test creates it only once `terminal` shows `WAITING`, so everything the
+/// script draws next reaches the client as live output, after its restoration.
+fn release_waiting(package: &Package, terminal: &mut Terminal) {
     terminal.wait_for_text("WAITING", TIMEOUT).unwrap();
-    terminal.wait_for_input_ready(TIMEOUT).unwrap();
-    terminal.send("g").unwrap();
+    fs::write(package.isolation.home().join("go"), "").unwrap();
 }
 
 /// Section 6.1.14: a 24x501 host shows a 24x500 session that wraps at its own
@@ -1065,10 +1157,10 @@ fn installed_wide_host_presents_the_session_rectangle() {
         &package,
         &bash,
         "wide.sh",
-        "stty raw -echo\nprintf WAITING; IFS= read -rsn1 _\nprintf '\\e[H\\e[2J'; printf '%500s' '' | tr ' ' a; printf b\nprintf '\\e[5;999HX\\e[12;1HWIDE-DONE'\nIFS= read -rsn1 _\n",
+        "stty raw -echo\nprintf WAITING; until [ -e ~/go ]; do sleep 0.05; done\nprintf '\\e[H\\e[2J'; printf '%500s' '' | tr ' ' a; printf b\nprintf '\\e[5;999HX\\e[12;1HWIDE-DONE'\nIFS= read -rsn1 _\n",
     );
     let mut terminal = climon2(&package, &["exec", wide.to_str().unwrap()], 24, 501);
-    after_readiness(&mut terminal);
+    release_waiting(&package, &mut terminal);
     terminal.wait_for_text("WIDE-DONE", TIMEOUT).unwrap();
     let first = terminal.row(0);
     assert_eq!(first.chars().filter(|&c| c == 'a').count(), 500);
@@ -1099,10 +1191,10 @@ fn installed_tall_host_scrolls_the_session_rectangle() {
         &package,
         &bash,
         "tall.sh",
-        "stty raw -echo\nprintf WAITING; IFS= read -rsn1 _\nprintf '\\e[H\\e[2JTOP-ROW\\e[200;1HBOTTOM\\nNEXT-TEXT\\e[300;20HY'\nIFS= read -rsn1 _\n",
+        "stty raw -echo\nprintf WAITING; until [ -e ~/go ]; do sleep 0.05; done\nprintf '\\e[H\\e[2JTOP-ROW\\e[200;1HBOTTOM\\nNEXT-TEXT\\e[300;20HY'\nIFS= read -rsn1 _\n",
     );
     let mut terminal = climon2(&package, &["exec", tall.to_str().unwrap()], 201, 80);
-    after_readiness(&mut terminal);
+    release_waiting(&package, &mut terminal);
     terminal.wait_for_text("NEXT-TEXT", TIMEOUT).unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains("TOP-ROW"))

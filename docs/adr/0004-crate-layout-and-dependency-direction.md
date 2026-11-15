@@ -32,7 +32,7 @@ The workspace has one package per shipped binary. The CLI, daemon and client nev
 | `climon2-client` (bin `climon2-client`, cdylib `libclimon2_client.dylib` or `.so`) | shipped lib + thin main + cdylib | `core`, `platform` |
 | `climon2-install` (bin `climon2-install`, shipped as `install`) | shipped lib + thin main | `core`; contains seam 8 |
 | `climon2-monitor` (bin `climon2-monitor`) | shipped lib + thin main | `core`, `platform`, `vt`, `discovery`. Ratatui is a dependency of this package only. It never links the client or daemon packages: client libraries are reached by path at runtime |
-| `climon2-vt` | shipped lib | crates.io only (the pinned `alacritty_terminal`, ADR 0007); platform-neutral, no `cfg(target_os)`; only the daemon and the monitor may depend on it |
+| `climon2-vt` | shipped lib | crates.io only (the pinned `alacritty_terminal`, ADR 0007, and `unicode-width`, the engine's own width table, which monitor-model charges use to measure characters as the engine does); platform-neutral, no `cfg(target_os)`; only the daemon and the monitor may depend on it |
 | `climon2-test-term`, `climon2-fixtures`, `climon2-e2e`, `xtask` | test-only, `publish = false` | anything |
 
 Shipped crates may use test-only crates only as dev-dependencies. A workspace test reads `cargo metadata` to enforce these edges, and also checks that every package that owns a binary has at least one integration test.
