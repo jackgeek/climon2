@@ -216,20 +216,42 @@ fn given(dispatch: &Dispatch, index: usize) -> Option<usize> {
 }
 
 fn csi_scrolling(dispatch: &Dispatch) -> Scrolling {
-    let column_mode = private_mode(dispatch).filter(|_| dispatch.params.contains(&COLUMN_MODE));
-    if column_mode.is_some() {
-        return Scrolling::Region {
-            top: 1,
-            bottom: None,
-        };
+    if dispatch.is(dispatch.action, b"") {
+        plain_scrolling(dispatch)
+    } else {
+        column_mode_reset(dispatch)
     }
+}
+
+/// Scrolling by a CSI sequence without intermediates.
+fn plain_scrolling(dispatch: &Dispatch) -> Scrolling {
     match dispatch.action {
-        _ if !dispatch.is(dispatch.action, b"") => Scrolling::Nothing,
         b'S' => Scrolling::Up,
         b'M' => Scrolling::DeleteLines,
-        b'J' if given(dispatch, 0) == Some(2) => Scrolling::ClearScreen,
+        b'J' => erase(dispatch),
         b'r' => region(dispatch),
         _ => Scrolling::Nothing,
+    }
+}
+
+/// ED: only erasing the whole screen (`CSI 2 J`) scrolls.
+fn erase(dispatch: &Dispatch) -> Scrolling {
+    if given(dispatch, 0) == Some(2) {
+        Scrolling::ClearScreen
+    } else {
+        Scrolling::Nothing
+    }
+}
+
+/// DECCOLM, set or reset, also resets the scroll region to the whole screen.
+fn column_mode_reset(dispatch: &Dispatch) -> Scrolling {
+    if private_mode(dispatch).is_some() && dispatch.params.contains(&COLUMN_MODE) {
+        Scrolling::Region {
+            top: 1,
+            bottom: None,
+        }
+    } else {
+        Scrolling::Nothing
     }
 }
 

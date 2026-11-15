@@ -68,14 +68,19 @@ impl Region {
     /// whatever the region; scrolling up does so for a region at the top
     /// row, and deleting lines when the cursor is on that row.
     pub(crate) fn could_scroll(self, line: usize, scrolling: Scrolling, feeds: usize) -> bool {
-        let anywhere = match scrolling {
+        let feeds = feeds + usize::from(scrolling == Scrolling::LineFeed);
+        self.scrolls_wherever_reached(line, scrolling) || self.reached(line, feeds)
+    }
+
+    /// Whether `scrolling` pushes rows into history from `line` however far
+    /// the region's bottom row is.
+    fn scrolls_wherever_reached(self, line: usize, scrolling: Scrolling) -> bool {
+        match scrolling {
             Scrolling::ClearScreen => true,
             Scrolling::Up => self.top,
             Scrolling::DeleteLines => self.top && line == 0,
             _ => false,
-        };
-        let feeds = feeds + usize::from(scrolling == Scrolling::LineFeed);
-        anywhere || self.reached(line, feeds)
+        }
     }
 
     /// Whether text could push rows into history at `cursor`, on a screen
