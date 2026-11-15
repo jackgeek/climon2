@@ -151,7 +151,9 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
 - `layout::HomeLayout::resolve`: only an absent override defaults to
   `<user-home>/.climon2`. Explicit empty/relative overrides fail.
   `root`, `config`, `monitor_preferences`, `sessions`, `metadata`,
-  `session_logs`, `general_logs` return paths.
+  `session_logs`, `general_logs` return paths. `HomeLayout::at` is the layout
+  of a home an invocation already resolved, such as its canonical home, used
+  as it is (#155); `resolve` ends in it.
 - `layout::ExecutableLayout::from_cli_path`: accepts a caller-canonicalized
   absolute CLI path with a validated SemVer parent; `from_binary_path` does the
   same for any `VersionBinary`, so the monitor resolves its executable home
@@ -256,6 +258,12 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
 - `exit::{ExitStatus,LaunchFailure}::code`: neutral platform-exit input,
   preserving raw command u32 codes, checked `128+signal`, and classifications
   for own failure 125, usage 2, launch 127/126 and terminal gone 129.
+- `failure::Failure`: how the CLI, the client executable and the monitor fail
+  (#155): an exit `code`, a `message` and the `logs` that recorded it. Each
+  re-exports it as its `Error`; its thin main prints `climon2: error: ` and
+  the failure. The diagnostic is one line, control characters escaped, then
+  ` (logs: <path>)` once `logged`; the first logs named keep it. An
+  `io::Error` converts with the climon2 error code, 125.
 - `native`: the `#[repr(C)]` declarations of native client interface revision 1
   ([`client-v1.h`](../../docs/protocol/monitor-client/client-v1.h)), shared by
   the client library, the client executable and the monitor without new crate
@@ -277,6 +285,8 @@ Integration tests call only these public boundaries:
 | ADR 0005 / #26 frozen fields, future999 and one-way display | `adr0005_append_only_goldens_include_future999_and_unknown_fields`, `adr0005_frozen_fields_reject_missing_wrong_types_invalid_values_and_filename_mismatch`, `adr0005_metadata_requires_a_json_object_not_a_positional_array`, `adr0005_metadata_paths_are_absolute_cross_os_display_strings_not_native_paths`, `adr0005_display_is_lossy_only_and_never_used_as_runtime_argv` |
 | ADR 0005 optional Linux process identity is additive; #157 its `boot_id` accepts exactly the canonical GUIDs that session IDs and wire GUIDs accept (case, length, hyphen positions, hex digits, whitespace and the other GUID spellings) | `linux_process_identity_is_additive_and_rejects_malformed_boot_ids`, `adr0005_linux_boot_ids_accept_exactly_the_canonical_guids_session_ids_accept` |
 | #17/#18/#28 home, layout, hash and frozen invocation | `issue17_home_defaults_only_when_unset_and_never_accepts_empty_or_relative`, `adr0001_version_matched_client_has_exact_frozen_invocation`, `issue18_runtime_hash_is_sha256_of_exact_canonical_home_and_socket_is_bounded` |
+| #155 a resolved climon2 home is its own layout | `issue155_a_resolved_climon2_home_is_its_own_layout` |
+| #155 one failure type for the CLI, client executable and monitor: one-line diagnostic, the first logs named keep it, I/O failures carry the climon2 error code | `issue155_a_failure_reads_as_one_line_without_logs`, `issue155_a_logged_failure_names_its_logs_on_the_same_line`, `issue155_the_first_logs_to_record_a_failure_keep_it`, `issue155_an_io_failure_has_the_climon2_error_code` |
 | #74 monitor executable home and the CLI's own-version monitor | `issue74_monitor_resolves_the_same_layout_as_the_cli` |
 | #84 executable home: absolute and canonical by type; each version's client library in that version's folder | `issue84_executable_home_is_absolute_and_names_each_versions_client_library` |
 | #105 home layout: the monitor preference file at the climon2 home's root | `issue105_the_monitor_preference_file_is_in_the_climon2_home` |

@@ -4,6 +4,7 @@ pub mod cli;
 pub mod config;
 pub mod diagnostics;
 pub mod exit;
+pub mod failure;
 pub mod hello;
 mod identity;
 mod json;
