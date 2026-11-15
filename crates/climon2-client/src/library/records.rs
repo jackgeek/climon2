@@ -154,10 +154,17 @@ pub(super) enum Answer {
     Left {
         detached: bool,
     },
-    /// An initial role rejection's known command result.
-    KnownFinal(Command),
+    /// What the response knows of the command's end.
+    Ending(Ending),
     /// A command's result (#94).
     Done(Done),
+}
+
+/// What a response knows of the command's end.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Ending {
+    /// An initial role rejection's known command result.
+    KnownFinal(Command),
     /// What a Kill learned of termination: the command result, if known,
     /// and the daemon's cleanup, `CM1_CLEANUP_*` (#96).
     Termination {
@@ -166,17 +173,35 @@ pub(super) enum Answer {
     },
 }
 
-impl Answer {
-    /// Whether this result makes the command's final result known.
+impl Ending {
+    /// Whether it makes the command's final result known.
     pub(super) fn concludes(&self) -> bool {
-        matches!(
-            self,
-            Self::KnownFinal(_)
-                | Self::Termination {
-                    command: Some(_),
-                    ..
-                }
-        )
+        self.command().is_some()
+    }
+
+    fn command(&self) -> Option<&Command> {
+        match self {
+            Self::KnownFinal(command) => Some(command),
+            Self::Termination { command, .. } => command.as_ref(),
+        }
+    }
+
+    /// Writes its result tag and active result into `response`.
+    fn native(&self, response: &mut native::Response) {
+        match self {
+            Self::KnownFinal(command) => {
+                response.result_tag = native::KNOWN_FINAL;
+                response.result.known_final = command.native();
+            }
+            Self::Termination { command, cleanup } => {
+                response.result_tag = native::TERMINATION;
+                response.result.termination = native::Termination {
+                    command_result: optional(command.as_ref()),
+                    cleanup: *cleanup,
+                    reserved: 0,
+                };
+            }
+        }
     }
 }
 
@@ -356,13 +381,7 @@ impl Response {
     fn bytes(&self) -> u64 {
         let answer = match &self.answer {
             Some(Answer::Opened { selected, .. }) => TOKEN * selected.families().count() as u64,
-            Some(
-                Answer::KnownFinal(command)
-                | Answer::Termination {
-                    command: Some(command),
-                    ..
-                },
-            ) => command.bytes(),
+            Some(Answer::Ending(ending)) => ending.command().map_or(0, Command::bytes),
             _ => 0,
         };
         answer + self.outcome.fault().map_or(0, Fault::bytes)
@@ -601,19 +620,8 @@ impl Answer {
                 response.result_tag = native::LEFT;
                 response.result.attachment_detached = u8::from(*detached);
             }
-            Self::KnownFinal(command) => {
-                response.result_tag = native::KNOWN_FINAL;
-                response.result.known_final = command.native();
-            }
+            Self::Ending(ending) => ending.native(response),
             Self::Done(done) => done.native(response),
-            Self::Termination { command, cleanup } => {
-                response.result_tag = native::TERMINATION;
-                response.result.termination = native::Termination {
-                    command_result: optional(command.as_ref()),
-                    cleanup: *cleanup,
-                    reserved: 0,
-                };
-            }
         }
     }
 }

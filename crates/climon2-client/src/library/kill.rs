@@ -10,7 +10,7 @@ use super::{
     handshake::Peer,
     instance::Descriptor,
     link::{self, Link, TIMEOUT, fatal},
-    records::{Answer, Command, Response},
+    records::{Answer, Command, Ending, Response},
     stream::{Carried, MISMATCHED, UNCORRELATED, Verdict},
 };
 use climon2_core::{
@@ -131,15 +131,18 @@ impl<'a> Errand<'a> {
 /// Fatal error after which the Kill's effect is unknown.
 fn answer(id: u64, frame: &Frame) -> Result<Settled, Fault> {
     match ServerMessage::from_frame(frame).map_err(fatal)? {
-        ServerMessage::Response(response) => {
-            require(response.request_id.get() == WIRE_ID, UNCORRELATED)?;
-            resolve(id, Verdict::from(response.outcome))
-        }
+        ServerMessage::Response(response) => respond(id, response),
         ServerMessage::FatalError(wire::FatalError(error)) => {
             Ok(Settled::uncertain(id, Fault::daemon(&error)))
         }
         _ => Err(UNEXPECTED),
     }
+}
+
+/// The daemon's Response, which must answer the Kill's wire ID.
+fn respond(id: u64, response: wire::Response) -> Result<Settled, Fault> {
+    require(response.request_id.get() == WIRE_ID, UNCORRELATED)?;
+    resolve(id, Verdict::from(response.outcome))
 }
 
 /// A Kill's outcome with what it knows: a confirmed termination, a
@@ -162,18 +165,19 @@ fn resolve(id: u64, verdict: Verdict) -> Result<Settled, Fault> {
 }
 
 fn termination(carried: Carried) -> Result<Answer, Fault> {
-    match carried {
-        Carried::Success(Success::Termination { command_result, .. }) => Ok(Answer::Termination {
+    let ending = match carried {
+        Carried::Success(Success::Termination { command_result, .. }) => Ending::Termination {
             command: Some(Command::from(&command_result)),
             cleanup: native::CLEANUP_COMPLETE,
-        }),
-        Carried::KnownFinal(result) => Ok(Answer::KnownFinal(Command::from(&result))),
-        Carried::Termination(partial) => Ok(Answer::Termination {
+        },
+        Carried::KnownFinal(result) => Ending::KnownFinal(Command::from(&result)),
+        Carried::Termination(partial) => Ending::Termination {
             command: partial.command_result.as_ref().map(Command::from),
             cleanup: cleanup(partial.cleanup),
-        }),
-        Carried::Success(_) => Err(MISMATCHED),
-    }
+        },
+        Carried::Success(_) => return Err(MISMATCHED),
+    };
+    Ok(Answer::Ending(ending))
 }
 
 /// `CM1_CLEANUP_INCOMPLETE` or `CM1_CLEANUP_UNKNOWN`.

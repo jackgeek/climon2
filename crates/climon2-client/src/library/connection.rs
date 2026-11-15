@@ -155,8 +155,7 @@ impl<'a> Driver<'a> {
 
     fn execute(&mut self, request: Submitted) {
         match request.operation {
-            Operation::Open(open) if self.connection.is_none() => self.open(request.id, &open),
-            Operation::Open(_) => self.reject(request.id, INVALID_STATE),
+            Operation::Open(open) => self.first(request.id, &open),
             Operation::Leave(generation) => self.leave(request.id, generation),
             Operation::Command(command) => self.command(request.id, command),
             Operation::Kill(required) => self.kill(request.id, required),
@@ -209,7 +208,8 @@ impl<'a> Driver<'a> {
     fn settle(&mut self, settled: Settled) {
         let Settled { response, retry } = settled;
         let fault = response.outcome.fault().cloned();
-        let concludes = response.answer.as_ref().is_some_and(Answer::concludes);
+        let concludes =
+            matches!(&response.answer, Some(Answer::Ending(ending)) if ending.concludes());
         self.shared.conclude(concludes);
         self.taken.answer(response);
         if self.start.is_none() {
@@ -282,6 +282,14 @@ impl<'a> Driver<'a> {
         });
         if let Some(Err(fault)) = sent {
             self.broken(fault);
+        }
+    }
+
+    /// The instance's one Open; another is `invalid_state`.
+    fn first(&mut self, id: u64, open: &Open) {
+        match self.connection {
+            None => self.open(id, open),
+            Some(_) => self.reject(id, INVALID_STATE),
         }
     }
 

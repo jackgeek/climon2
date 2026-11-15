@@ -11,8 +11,8 @@ use super::{
     families::{self, Selection},
     link::fatal,
     records::{
-        Answer, Command, Done, Event, Initial, Metadata, Outcome, Presentation, Response, Screen,
-        Title,
+        Answer, Command, Done, Ending, Event, Initial, Metadata, Outcome, Presentation, Response,
+        Screen, Title,
     },
     request::{Act, Held},
 };
@@ -285,7 +285,9 @@ impl Effect {
         match self {
             Self::Record(Event::Metadata(Metadata::Initial(initial))) => initial.command.is_some(),
             Self::Record(Event::Metadata(Metadata::Final(_))) => true,
-            Self::Opened(response, _) => matches!(response.answer, Some(Answer::KnownFinal(_))),
+            Self::Opened(response, _) => {
+                matches!(response.answer, Some(Answer::Ending(Ending::KnownFinal(_))))
+            }
             _ => false,
         }
     }
@@ -617,7 +619,9 @@ impl Stream {
                 connection_id,
                 selected_capabilities,
             }) => self.selected(&connection_id, &selected_capabilities, sent),
-            Carried::KnownFinal(result) => Ok(Answer::KnownFinal(Command::from(&result))),
+            Carried::KnownFinal(result) => {
+                Ok(Answer::Ending(Ending::KnownFinal(Command::from(&result))))
+            }
             Carried::Success(_) | Carried::Termination(_) => Err(MISMATCHED),
         }
     }

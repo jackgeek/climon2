@@ -107,12 +107,18 @@ pub(super) fn connect(
     role: Role,
     deadline: Instant,
 ) -> Result<(Link, Peer), Failed> {
-    let socket = socket(expected)?;
-    let timeout = remaining(deadline).ok_or(Failed::passive(TIMEOUT))?;
-    let mut link = Link::connect(&socket, timeout).map_err(Failed::passive)?;
+    let mut link = reach(expected, deadline)?;
     let reply = exchange(&mut link, deadline)?;
     let peer = peer(&reply, expected, role)?;
     Ok((link, peer))
+}
+
+/// A connection to the socket the session's metadata names, before
+/// `deadline`.
+fn reach(expected: &Expected, deadline: Instant) -> Result<Link, Failed> {
+    let socket = socket(expected)?;
+    let timeout = remaining(deadline).ok_or(Failed::passive(TIMEOUT))?;
+    Link::connect(&socket, timeout).map_err(Failed::passive)
 }
 
 fn exchange(link: &mut Link, deadline: Instant) -> Result<Frame, Failed> {
