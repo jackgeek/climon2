@@ -1442,6 +1442,72 @@ fn installed_library_snapshot_counts_every_allocation_its_instance_holds() {
     package.assert_clean();
 }
 
+/// LIM-02 Library and LIB-03 Library (#180 with #93): a passive monitor
+/// connection's allocation is its instance's. Against a fake daemon peer that
+/// opens with `title-v1` and confirms shutdown's Leave, the `allocation`
+/// scenario's instances (`connect`) submit a monitor Open, run until its
+/// Response is ready to drain, shut down, wait for run and drain to terminal
+/// evidence, keeping every delivery. With logging on and off, once run has
+/// returned, the current allocation equals the host's own count of the
+/// library's heap while both records (the Response and the Initial metadata)
+/// are still delivered and unreleased, and the peak, which the connection's
+/// request, transport and records set while it was open, equals the most the
+/// host counted. A warm-up lifecycle, connected alike, runs on the same
+/// threads first.
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[test]
+fn installed_library_snapshot_counts_a_passive_connections_allocation() {
+    use support::passive::{REQUIRED, assert_left, kinds, leave_answer, open, passive_peer};
+    let package = Package::new();
+    let root = root(&package);
+    for log in [Some("connected"), None] {
+        let connect = json!({
+            "peer": passive_peer(json!([leave_answer("ok", false, Value::Null)])),
+            "open": open(1, &REQUIRED, &["title-v1"]),
+        });
+        let fields = json!({
+            "warm_up": accounted(&root, log.map(|name| format!("{name}-warm-up"))),
+            "measured": accounted(&root, log.map(str::to_owned)),
+            "connect": connect,
+        });
+        let report = scenario(&package, "allocation", &input(&root, fields), None);
+        for instance in ["warm_up", "measured"] {
+            let lifecycle = &report[instance];
+            assert_success(&lifecycle["create"]["call"]);
+            let end = &lifecycle["end"];
+            for call in [&end["submit"], &end["shutdown"], &end["run"][0]] {
+                assert_success(call);
+            }
+            assert_eq!(end["readable"], true, "{end}");
+            let drains = end["drains"].as_array().unwrap();
+            let last = &drains.last().unwrap()["drained"];
+            assert_eq!(last["kind"], TERMINAL, "{end}");
+            assert_left(&last["terminal"], 1);
+            let released = lifecycle["release_deliveries"].as_array().unwrap();
+            assert_eq!(released.len(), drains.len() - 1, "{lifecycle}");
+            released.iter().for_each(assert_success);
+            for step in ["release_communication", "release_control", "destroy"] {
+                assert_success(&lifecycle["release"][step]);
+            }
+            assert_eq!(kinds(&lifecycle["peer"]), ["hello", "open", "leave"]);
+        }
+        assert_eq!(report["joined"], true);
+        let ended = &report["measured"]["ended"];
+        assert_success(&ended["snapshot"][0]);
+        let (metrics, heap) = (&ended["snapshot"][1], &ended["heap"]);
+        assert_eq!(metrics["event_records"], 2, "{metrics}");
+        assert_eq!(
+            metrics["allocation_bytes"], heap["live"],
+            "{log:?}: {ended}"
+        );
+        assert_eq!(
+            metrics["peak_allocation_bytes"], heap["peak"],
+            "{log:?}: {ended}"
+        );
+    }
+    package.assert_clean();
+}
+
 /// LIB-03 Library (#180): instances share no allocation. While `a` is
 /// alive, `b` lives its whole life beside it, one call at a time (created,
 /// ended, released and destroyed), and `a`'s current and peak allocation are
