@@ -981,8 +981,10 @@ fn restoration(stream: &mut UnixStream) -> (u64, Vec<u8>) {
     (period, bytes)
 }
 
+/// Waits for a fixture's marker file. Fixtures write theirs after their own
+/// output, which a loaded host can take well over five seconds to produce.
 fn wait_file(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !path.exists() {
         assert!(
             Instant::now() < deadline,
