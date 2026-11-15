@@ -60,8 +60,14 @@ coalesced requests send nothing and keep the stored change time. An
 accepted Input's change precedes its [Response](response.md), as does an
 [Acknowledge](request-acknowledge.md)'s. The final transition goes only in
 [Command final](event-command-final.md#implemented-behavior). Episode
-identifiers start at 1; once the last counter value has been issued, a
-request that would need another leaves attention unchanged rather than wrap
-or reuse one. Output-driven detection (OSC 7501, OSC 133) arrives with
+identifiers start at 1 and never wrap or repeat. When a request needs one
+after the last [counter](core-v1.md#shared-types) value was issued, the
+session-wide episode domain cannot advance: the daemon reports
+`resource_limit`, as the
+[operational limits](../../monitor-operational-limits.md#counters-and-explicit-results)
+require, by rejecting every later [Acknowledge](request-acknowledge.md#implemented-behavior)
+with that code, and logs it. Accepted Input holding only focus reports
+(`ESC [ I`, `ESC [ O`), which a host terminal sends on its own, is not user
+input and clears nothing. Output-driven detection (OSC 7501, OSC 133) arrives with
 [#92](https://github.com/jackgeek/climon2/issues/92), and notification
 signals with [#98](https://github.com/jackgeek/climon2/issues/98).

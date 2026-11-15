@@ -20,9 +20,8 @@ One [JSON](../TERMS.md#json) [frame](../TERMS.md#frame), all fields required:
 
 ## Acceptance, order and failures
 
-Core support is required, and the session daemon also requires selected
-`status-v1` (owner decision on [#86](https://github.com/jackgeek/climon2/issues/86); see
-[implemented behavior](#implemented-behavior)). Validate current period/
+Requires selected `status-v1` (owner decision on
+[#86](https://github.com/jackgeek/climon2/issues/86)). Validate current period/
 [restoration](../../../GLOSSARY.md#restoration-and-presentation).
 True additionally requires [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts);
 false may clear viewing during restoration.

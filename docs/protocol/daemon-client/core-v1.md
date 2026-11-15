@@ -165,10 +165,10 @@ number.
 
 | Token | Promise |
 |---|---|
-| `daemon-wire-v1` | Common revision, interactive control, [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts)/[viewing](../../../GLOSSARY.md#status-and-attention), leave, final results and kill. |
+| `daemon-wire-v1` | Common revision, interactive control, [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts), leave, final results and kill. |
 | `monitor-v1` | Passive monitor entry, successor registration and promotion. |
 | `title-v1` | Current title and ordered changes. |
-| `status-v1` | Effective status/time/episodes and explicit attention acknowledgement, distinct from application Focus. |
+| `status-v1` | Effective status/time/episodes, per-attachment [viewing](../../../GLOSSARY.md#status-and-attention) reports and explicit attention acknowledgement, distinct from application Focus (owner decision on [#86](https://github.com/jackgeek/climon2/issues/86)). |
 | `notification-v1` | Normalized notification events; requires `status-v1`. |
 | `progress-v1` | Retained normalized progress and changes. |
 | `focus-v1` | Optional non-user core [application Focus](request-focus.md), with truthful state/forwarding outcomes; #63 amendment. |
@@ -340,6 +340,8 @@ unmet condition without effects; the stream goes on:
    Acknowledge need readiness. Otherwise `not_ready`.
 9. Acknowledge only: the latest viewing reported in the current control
    period is true, otherwise `not_viewing`.
+10. Acknowledge only: no attention request has found the session's episode
+    identifiers exhausted, otherwise `resource_limit`.
 
 Each request then checks its own arguments. Periods and restoration IDs are
 session-wide and only increase: every grant starts a new period with its

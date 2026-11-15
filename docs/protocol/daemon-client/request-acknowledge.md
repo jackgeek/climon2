@@ -56,7 +56,10 @@ the [implemented authority checks](core-v1.md#implemented-authority-checks):
 `status-v1` first (`unsupported_capability`, before any Open too), then
 role, attachment, committed termination, controller, period, restoration
 and readiness, and last the latest reported viewing of the current control
-period (`not_viewing`). Pending attention becomes `acknowledged` with the
+period (`not_viewing`). Once a request found the session's attention
+episode identifiers exhausted, Acknowledge is then rejected with
+`resource_limit`: that domain cannot advance, and the daemon stops this
+attention work rather than wrap or reuse an identifier. Pending attention becomes `acknowledged` with the
 same episode, and its [Status changed](event-status-changed.md) precedes
 `changed:true`. Nothing pending, attention already acknowledged or a final
 status is `changed:false`, with no record.

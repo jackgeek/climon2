@@ -188,7 +188,7 @@ clock reading, and its random source is injected. The loop reads the clock
 once at the start of each turn, so accepted input (revision-1 Input and
 private `Input` from the ready controller) comes before that turn's timer
 and sample work. After reading the PTY the loop polls the detector: a due
-sample copies the active viewport's characters (`Vt::viewport`), its size
+sample copies the active viewport's characters (`Vt::viewport_characters`), its size
 and the application title, never per output byte. The first baseline is
 taken before any command output. Each sampling delay is a fresh draw from
 500 to 1,500 ms, clamped to the hardcoded 10,000 ms agent deadline; changed
@@ -202,8 +202,12 @@ baseline. Focus, the daemon's terminal replies and paste cleanup are not
 input. Every effective change goes as Status changed to the `status-v1`
 connections, before an Input's or Acknowledge's Response; only effective
 changes replace the stored UTC change time. Episodes count from 1, coalesce
-while pending, survive acknowledgement and are never wrapped: once the last
-counter is issued, a further request changes nothing. The published result
+while pending, survive acknowledgement and are never wrapped: a request
+that needs one after the last counter starts no episode, is logged, and
+every later Acknowledge is `resource_limit`. Input holding only focus
+reports (`ESC [ I`, `ESC [ O`), which the private client forwards from its
+terminal once the application turns focus reporting on, is not user input;
+query replies never arrive, since the daemon alone answers queries. The published result
 gives the final status, carried by Command final, and stops observation.
 Set viewing records the controller's latest viewing for its control period;
 Acknowledge needs it true. Detection mode is heuristic only: #92 adds the
@@ -437,7 +441,8 @@ from the wire reference. The `script` fixture mode sets titles on command
 (`title`, `title-empty`, `title-bytes`, `titles`, `reset`), prints `text`,
 raw sequences (`print`, with `\e` for ESC) and fully coloured rows
 (`colors`), and ends with `exit`, `exit N` or `signal N`;
-the `focus-record` mode records its input and turns focus reporting on and
+the `silent` mode runs `sleep 120`, which prints nothing at all (the
+libtest fixture prints its harness lines); the `focus-record` mode records its input and turns focus reporting on and
 off on command; the `close-terminal` mode closes its terminal, so the daemon
 reads the end of its output, and runs on until `finish` appears, then exits
 3.
@@ -463,8 +468,11 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | STA-02 (Contract, controllable clock): restyled characters, cursor-only moves, identical redraws, an identical screen swap and a resize are no activity; a change at the deadline is checked first; a resize during agent work restarts it; the last sample is clamped to the deadline; uninterrupted silence reports nothing | `only_changed_characters_or_title_are_activity_at_controlled_deadlines` |
 | STA-07, DSC-01 and CTL-03 (Contract, status case): Initial metadata reports the stored status and time, idle since initialization, not the connection's time; status reaches monitors without control, the controller and a revoked attachment, and nothing reaches a connection without `status-v1` | `monitor_open_selects_supported_families_then_reports_initial_metadata`, `status_reaches_every_status_v1_connection_whatever_the_control`, `requests_coalesce_while_pending_and_re_arm_after_acknowledgement` |
 | STA-08 (Contract and Fault, raw peer): Set viewing and Acknowledge need `status-v1` first, then a role, attachment, no committed termination (`session_terminating`), control, the current period and restoration; viewing true and Acknowledge need readiness, viewing false does not; Acknowledge needs the latest viewing true, which revocation clears; nothing pending is `changed:false`; viewing, Focus and terminal-query replies never clear attention | `set_viewing_and_acknowledge_check_authority_readiness_and_viewing`, `requests_that_need_an_attachment_are_refused_and_the_stream_goes_on`, `requests_on_an_interactive_attachment_get_their_documented_results`, `committed_termination_rejects_new_interactive_work_and_leave_still_works` |
-| LIM-05 (Contract and Fault, episode case, `CLIMON2_DAEMON_FIRST_EPISODE`): the last episode identifier is issued and acknowledged, and a later request changes nothing rather than wrap | `attention_episodes_never_wrap` |
-| STA-01, STA-02, STA-07 and LIM-05 (pure, injected clock and random source): every transition and dispatch rule of both machines, initial silence and the sampling delay range | the 14 `status::tests` unit tests in `src/status.rs` |
+| LIM-05 (Contract and Fault, episode case, `CLIMON2_DAEMON_FIRST_EPISODE`): the last episode identifier is issued and acknowledged; a later request starts no episode rather than wrap, and Acknowledge is then `resource_limit` | `exhausted_attention_episodes_are_reported_and_never_wrap` |
+| STA-01 and STA-02 (Contract, initial silence): a command silent from startup (`silent`, `sleep 120`) reports nothing at any sample through 15,000 ms and stays idle and cleared | `a_session_silent_from_startup_stays_idle_and_cleared` |
+| STA-01 (Contract, same-turn dispatch, turn barrier): an Input received while the daemon is held and served in the turn whose clock ends the user window re-arms it first: no idle, then idle two seconds later | `input_comes_before_a_timer_due_in_the_same_turn` |
+| STA-08 (Contract and Fault, private client): focus reports forwarded as Input leave pending attention while reaching the application; the application's queries never reach the client, so no reply can; typed bytes clear it | `focus_reports_and_terminal_queries_never_clear_attention` |
+| STA-01, STA-02, STA-07 and LIM-05 (pure, injected clock and random source): every transition and dispatch rule of both machines, initial silence, the sampling delay range and focus-report input | the 15 `status::tests` unit tests in `src/status.rs` |
 | CTL-05 (Contract and Fault, stale authority from a raw peer): Input, Resize and Ready under an earlier period or a superseded restoration are `stale_period` or `stale_restoration`; Ready needs the complete current restoration; late authority never re-enables input | `stale_and_superseded_authority_is_rejected_and_never_re_enables_input`, `ready_needs_the_complete_current_restoration` |
 | INP-03 (Contract): bracketed-paste bytes reach the application exactly; an open application paste is closed when admission ends; a focus report never lands inside a paste that earlier Input requests carry | `bracketed_paste_is_exact_and_an_open_paste_is_closed_when_admission_ends`, `focus_reports_follow_the_input_accepted_before_them` |
 | TRM-02 (Contract): the daemon alone answers session queries; titles stay inert text and title-looking output stays text | `session_queries_are_answered_by_the_daemon_alone`, `titles_reach_an_attachment_as_inert_text` |
@@ -495,7 +503,11 @@ that clock; every other daemon deadline stays real): PATH holds
 milliseconds, read as both the monotonic reading and the UTC time since the
 Unix epoch, at the start of every turn, and once a turn that read a new
 value ends, the daemon writes the value to `PATH.ack`, so a test knows that
-turn's records are queued. `CLIMON2_DAEMON_FIRST_EPISODE=N` starts attention
+turn's records are queued. While `PATH.hold` exists the daemon does not
+start its next turn and writes `PATH.held`; whatever it receives meanwhile is
+served in the turn that follows, at the clock set before `PATH.hold` is
+removed. A failure to write these files is a session I/O failure.
+`CLIMON2_DAEMON_FIRST_EPISODE=N` starts attention
 episodes at counter N, to reach exhaustion.
 `CLIMON2_DAEMON_FAULT=end-hangup` makes the end of every hang-up fail, as one
 the daemon cannot confirm: no Command final unless the command was reaped
