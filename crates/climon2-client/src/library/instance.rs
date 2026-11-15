@@ -745,15 +745,22 @@ impl Drop for Counted {
     }
 }
 
-/// A worker that ends with its instance's stream, at once, or never.
+/// A worker that ends with its instance's stream or never, or one that
+/// briefly holds a block of `chunk_bytes`, so its own allocation shows in its
+/// instance's peak, and ends.
 #[cfg(feature = "test-hooks")]
 fn work(worker: Counted, kind: Worker) {
-    if kind != Worker::Joined {
-        worker.0.wait_for_stop();
-    }
-    if kind == Worker::Stalls {
-        loop {
-            thread::park();
+    match kind {
+        Worker::Ends => worker.0.wait_for_stop(),
+        Worker::Stalls => {
+            worker.0.wait_for_stop();
+            loop {
+                thread::park();
+            }
+        }
+        Worker::Joined => {
+            let block = Vec::<u8>::with_capacity(worker.0.limits.chunk_bytes as usize);
+            drop(std::hint::black_box(block));
         }
     }
 }

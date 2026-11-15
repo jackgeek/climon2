@@ -4,10 +4,11 @@
 //!
 //! At bootstrap, a diagnostics dispatcher of the library's own, writing
 //! nowhere, creates tracing's process-wide dispatcher list. Before a caller's
-//! thread first works for an instance, it is warmed: the standard library's
-//! handle for the thread, and the formatting buffer each thread keeps for
-//! records. A thread an instance owns is adopted instead: its thread-wide
-//! state is the instance's.
+//! thread first works for an instance, it is warmed: the formatting buffer
+//! each thread keeps for records is created. A thread an instance owns is
+//! adopted instead: its thread-wide state is the instance's. (The standard
+//! library's handle for a thread needs no warming: it never comes from this
+//! image's allocator.)
 
 use climon2_core::diagnostics::{CappedWriter, Filter, dispatch};
 use std::{cell::Cell, io, sync::OnceLock};
@@ -18,9 +19,19 @@ const TARGET: &str = "climon2_client_warm";
 
 static DIAGNOSTICS: OnceLock<Dispatch> = OnceLock::new();
 
+/// What a thread's own state is.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Warmth {
+    /// Not created yet.
+    Cold,
+    /// Created outside any instance.
+    Warm,
+    /// Its instance's, since the thread is.
+    Adopted,
+}
+
 thread_local! {
-    /// Whether this thread's state is created, or is its instance's.
-    static WARMED: Cell<bool> = const { Cell::new(false) };
+    static WARMTH: Cell<Warmth> = const { Cell::new(Warmth::Cold) };
 }
 
 /// At bootstrap: the process-wide state, and the bootstrapping thread's.
@@ -36,8 +47,8 @@ pub(super) fn process() {
 /// Warms this thread, once, if it works for an instance it does not belong
 /// to.
 pub(super) fn thread() {
-    if !WARMED.replace(true) {
-        drop(std::thread::current());
+    if WARMTH.get() == Warmth::Cold {
+        WARMTH.set(Warmth::Warm);
         record();
     }
 }
@@ -54,7 +65,7 @@ fn record() {
 
 /// This thread belongs to the instance it works for: nothing is warmed.
 pub(super) fn adopt() {
-    WARMED.set(true);
+    WARMTH.set(Warmth::Adopted);
 }
 
 #[cfg(test)]

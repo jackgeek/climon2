@@ -6,8 +6,9 @@
 //!   `climon2_client_get_interface`);
 //! - `worker` makes `run` start one worker that ends with its stream;
 //! - `stall-cleanup` makes `run` start one worker whose cleanup never ends;
-//! - `joined-worker` makes `run` start one worker that ends at once, and join
-//!   it before going on, so it never runs beside its instance's other work.
+//! - `joined-worker` makes `run` start one worker that briefly holds a block
+//!   of `chunk_bytes` and ends, and join it before going on, so it never runs
+//!   beside its instance's other work.
 
 use std::sync::Mutex;
 
@@ -57,7 +58,8 @@ pub(super) enum Worker {
     Ends,
     /// Never ends, so its cleanup stalls.
     Stalls,
-    /// Ends at once, and `run` joins it before it goes on.
+    /// Holds one block of `chunk_bytes` and ends, and `run` joins it before
+    /// it goes on.
     Joined,
 }
 

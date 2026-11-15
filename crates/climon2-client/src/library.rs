@@ -98,11 +98,10 @@ static PREPARED: Once = Once::new();
 
 /// What the library sets up once, at bootstrap, outside any instance. Its
 /// panics are contained and reported as results, so its own panic hook (this
-/// image's, not the host's) writes nothing. The allocator measures its
-/// ledgers, and process-wide dependency state is created uncharged.
+/// image's, not the host's) writes nothing. Process-wide dependency state is
+/// created uncharged.
 fn prepare() {
     panic::set_hook(Box::new(|_| {}));
-    allocation::prepare();
     warm::process();
 }
 

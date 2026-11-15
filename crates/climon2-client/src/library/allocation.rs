@@ -78,8 +78,8 @@ fn prefix(layout: Layout) -> usize {
 }
 
 /// The bytes one ledger's own block takes, which it holds itself: measured
-/// once, outside any instance, by charging one ledger's allocation to a
-/// probe ledger.
+/// once, by the first `open`, which runs outside any instance, by charging
+/// one ledger's allocation to a probe ledger.
 fn ledger_bytes() -> u64 {
     static BYTES: OnceLock<u64> = OnceLock::new();
     *BYTES.get_or_init(|| {
@@ -89,11 +89,6 @@ fn ledger_bytes() -> u64 {
         drop(measured);
         bytes
     })
-}
-
-/// Measures what this allocator needs to know before any instance exists.
-pub(super) fn prepare() {
-    ledger_bytes();
 }
 
 /// One instance's share of its ledger.

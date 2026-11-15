@@ -1295,6 +1295,14 @@ fn installed_library_charges_a_delivery_until_it_is_released() {
     package.assert_clean();
 }
 
+/// The default `chunk_bytes` limit, the block a `joined-worker` holds.
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+const CHUNK_BYTES: u64 = 65_536;
+/// At most one standard-library thread handle: an `Arc` of the thread's id,
+/// name and parker, 48 bytes on x86-64 GNU/Linux.
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+const THREAD_HANDLE: u64 = 64;
+
 /// The `allocation` scenario's startup for one instance: logging every record
 /// to `logs/<name>.log`, or not at all.
 #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
@@ -1326,10 +1334,12 @@ fn assert_ended_and_released(end: &Value, release: &Value, generation: u64) {
 /// LIM-02 Library and LIB-03 Library (#180): `snapshot` counts every
 /// allocation the instance holds, its diagnostics dispatcher included, with
 /// logging on and off, and with a worker of the library's own (the hooked
-/// library's `joined-worker` fault, which run joins at once, so the worker
-/// never allocates beside another thread; its handle, which the standard
-/// library allocates from the system allocator directly, is the one block no
-/// ledger can see, so that peak is only bounded). The oracle is the host's own count of the heap
+/// library's `joined-worker` fault: run joins it at once, so it never
+/// allocates beside another thread, and it holds a `chunk_bytes` block, which
+/// sets the peak; its thread handle, which the standard library allocates
+/// from the system allocator directly, is the one block no ledger sees, so
+/// those peaks differ by more than nothing and at most one handle). The
+/// oracle is the host's own count of the heap
 /// (x86-64 GNU/Linux only): it defines glibc's allocation entry points, which
 /// the loaded library binds to, and records every block the library image's
 /// code allocated until it is freed; glibc's own blocks are not the
@@ -1383,14 +1393,21 @@ fn installed_library_snapshot_counts_every_allocation_its_instance_holds() {
                 metrics["allocation_bytes"], heap["live"],
                 "{log:?} {fault:?} {checkpoint}: {observed}"
             );
-            let peak = (&metrics["peak_allocation_bytes"], &heap["peak"]);
+            let peak = |value: &Value| value.as_u64().unwrap();
+            let (ledger, oracle) = (peak(&metrics["peak_allocation_bytes"]), peak(&heap["peak"]));
             if fault.is_some() && checkpoint == "ended" {
+                // The worker's `chunk_bytes` block sets the peak, which so
+                // counts what the worker allocated.
+                let created = peak(&measured["created"]["snapshot"][1]["allocation_bytes"]);
+                assert!(ledger >= created + CHUNK_BYTES, "{observed}");
                 // The standard library allocates each thread's handle from
                 // the system allocator directly, bypassing every global
-                // allocator, so no ledger holds the worker's while it lives.
-                assert!(peak.0.as_u64() < peak.1.as_u64(), "{observed}");
+                // allocator, so no ledger holds the worker's: the peaks
+                // differ by that one handle, and by nothing else.
+                assert!(oracle > ledger, "{observed}");
+                assert!(oracle - ledger <= THREAD_HANDLE, "{observed}");
             } else {
-                assert_eq!(peak.0, peak.1, "{log:?} {fault:?} {checkpoint}: {observed}");
+                assert_eq!(ledger, oracle, "{log:?} {fault:?} {checkpoint}: {observed}");
             }
         }
         assert_eq!(report["joined"], true);
@@ -1448,20 +1465,24 @@ fn installed_library_instances_never_change_each_others_allocation() {
 
 /// LIB-03 Library (#180): what the process and each caller thread keep for
 /// any instance is no instance's. Instances `a` and `b` are created one after
-/// the other on the same owner thread, each ended and destroyed before the
-/// next, from startups that differ only in the home path's length: right
-/// after create, `b`'s current and peak allocation exceed `a`'s by exactly
-/// that many bytes, though `a` was the first instance in the process.
+/// the other, each ended and destroyed before the next, on the same owner
+/// thread and from the same main thread, so a dependency's per-thread
+/// storage, which it sizes by the thread's index, is sized alike for both.
+/// Their startups are equal but for the home path, 7 bytes longer for `b`,
+/// and the log path, of equal length: the home is the only copy an instance
+/// keeps whose size differs. Right after create, `b`'s current and peak
+/// allocation exceed `a`'s by exactly those 7 bytes, though `a` was the first
+/// instance in the process.
 #[test]
 fn installed_library_charges_successive_instances_only_for_their_own_differences() {
     let package = Package::new();
     let root = root(&package);
     let base = root.to_str().unwrap();
-    let startup = |home: &str| {
+    let startup = |home: &str, log: &str| {
         json!({
             "home_path": path(json!(format!("{base}/{home}"))),
             "diagnostics": {
-                "log_path": { "present": 1, "value": path(json!(format!("{base}/logs/{home}.log"))) },
+                "log_path": { "present": 1, "value": path(json!(format!("{base}/logs/{log}.log"))) },
                 "filter": "trace",
             },
         })
@@ -1470,7 +1491,10 @@ fn installed_library_charges_successive_instances_only_for_their_own_differences
     let report = scenario(
         &package,
         "successive",
-        &input(&root, json!({ "a": startup(a_home), "b": startup(b_home) })),
+        &input(
+            &root,
+            json!({ "a": startup(a_home, "a"), "b": startup(b_home, "b") }),
+        ),
         None,
     );
     let created = |name: &str| {

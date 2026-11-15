@@ -195,7 +195,7 @@ signal handlers or standard streams.
   so its structures, copied paths, deliveries, diagnostics dispatcher
   (subscriber, registry and filter) and any dependency's internal allocations
   are counted, prefix included, until freed on any thread. The ledger counts
-  its own block, measured once at bootstrap. A block resized while working
+  its own block, measured once by the first `create`, outside any charge. A block resized while working
   for its own instance stays charged; resized for another instance, or for
   none, it moves to the shared-release allocation, which is not tracked yet.
   Workers start through one helper that charges the whole thread, its
@@ -207,8 +207,7 @@ signal handlers or standard streams.
   dispatcher list through a dispatcher of the library's own that writes
   nowhere (and, with `test-hooks`, reserves the injected-panic list). Before a
   caller's thread first works for an instance, it is warmed outside any
-  charge: its standard-library handle and the record-formatting buffer the
-  thread keeps.
+  charge: the record-formatting buffer the thread keeps is created.
 - `#[global_allocator]` replaces the allocator of every artifact that links
   the crate: the library, the `climon2-client` executable and the package's
   own test binaries. Outside any instance nothing is charged; each block
@@ -224,8 +223,8 @@ With `test-hooks` only (`src/library/hooks.rs`), `CLIMON2_LIBRARY_FAULT`
 selects faults: `panic:<call>[,<call>...]` panics once at each named export's
 boundary (`bootstrap` names `climon2_client_get_interface`), `worker` makes
 `run` start a worker that ends with its stream, `stall-cleanup` one whose
-cleanup never ends, and `joined-worker` one that ends at once and that `run`
-joins before going on. Release builds have no workers yet: Open (#93) brings
+cleanup never ends, and `joined-worker` one that briefly holds a block of
+`chunk_bytes` and ends, and that `run` joins before going on. Release builds have no workers yet: Open (#93) brings
 the first.
 
 Loaders open the absolute `<executable home>/<version>/<library file>` with
@@ -270,7 +269,7 @@ private target directory and checks.
 | LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` (`instance.rs`) |
 | LIB-04 Library and Fault, Linux `eventfd`: the descriptor stays borrowed and counted once; in a scheduled race, polling sees the stream end while the handle is used before shutdown and after the end, and every call succeeds | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` (`instance.rs`) |
 | LIB-04 Fault (allocator pairing): a delivery stays charged until released through the library, which returns exactly what the drain charged | `installed_library_charges_a_delivery_until_it_is_released` (`instance.rs`) |
-| LIM-02 and LIB-03 Library, x86-64 GNU/Linux: `snapshot`'s current and peak allocation equal the host's own count of the library's heap, with logging on (its dispatcher included) and off, and with a joined worker (its peak bounded: the thread handle) | `installed_library_snapshot_counts_every_allocation_its_instance_holds` (`instance.rs`) |
+| LIM-02 and LIB-03 Library, x86-64 GNU/Linux: `snapshot`'s current and peak allocation equal the host's own count of the library's heap, with logging on (its dispatcher included) and off, and with a joined worker whose `chunk_bytes` block sets the peak (the peaks differ by at most the std thread handle) | `installed_library_snapshot_counts_every_allocation_its_instance_holds` (`instance.rs`) |
 | LIB-03 Library: a whole second instance's life leaves the first's current and peak allocation exactly unchanged | `installed_library_instances_never_change_each_others_allocation` (`instance.rs`) |
 | LIB-03 Library: successive instances on one owner thread differ by exactly their homes' length; nothing process- or thread-wide is charged to the first | `installed_library_charges_successive_instances_only_for_their_own_differences` (`instance.rs`) |
 | Allocator unit seam: a ledger holds its own block; a block resized for its own instance stays charged in one step, for another or none moves off | `a_new_ledger_holds_its_own_block`, `a_block_stays_charged_only_while_resized_for_its_own_instance` (`src/library/allocation.rs`) |
