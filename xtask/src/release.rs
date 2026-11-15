@@ -1,4 +1,4 @@
-use climon2_core::layout::client_library_name;
+use climon2_core::layout::{ExecutableHome, client_library_name};
 use std::{
     env, fs, io, iter,
     path::{Path, PathBuf},
@@ -80,10 +80,15 @@ pub fn check(root: &Path) -> io::Result<()> {
             )));
         }
     }
-    crate::library::verify(
-        &release.join(client_library_name()),
-        env!("CARGO_PKG_VERSION"),
-    )?;
+    let home =
+        ExecutableHome::new(&target.path().join("executable home")).map_err(io::Error::other)?;
+    let version = env!("CARGO_PKG_VERSION")
+        .parse()
+        .map_err(io::Error::other)?;
+    let library = home.client_library(&version);
+    fs::create_dir_all(library.parent().expect("a version folder"))?;
+    fs::copy(release.join(client_library_name()), library)?;
+    crate::library::verify(&home, &version)?;
     for ((name, path), before) in artifacts.iter().zip(snapshots) {
         if fs::read(path)? != before {
             return Err(io::Error::other(format!(

@@ -29,6 +29,9 @@ pub(crate) struct Policy {
     /// `Some(true)` for a synchronized-update begin, `Some(false)` for an end.
     pub(crate) sync: Option<bool>,
     pub(crate) clear: Clear,
+    /// How many more times the engine prints its preceding character
+    /// (`CSI n b`).
+    pub(crate) repeats: usize,
 }
 
 impl Policy {
@@ -37,6 +40,16 @@ impl Policy {
             live,
             sync: None,
             clear: Clear::Nothing,
+            repeats: 0,
+        }
+    }
+
+    /// The bytes the policy forwards to a host for `token`: the token
+    /// itself, or its replacement.
+    pub(crate) fn forwarded<'a>(&'a self, token: &'a Token) -> &'a [u8] {
+        match &self.live {
+            Live::Forward => &token.bytes,
+            Live::Replace(bytes) => bytes,
         }
     }
 }
@@ -147,9 +160,8 @@ fn escape(dispatch: &Dispatch) -> Policy {
         Clear::Nothing
     };
     Policy {
-        live,
-        sync: None,
         clear,
+        ..Policy::of(live)
     }
 }
 
@@ -158,7 +170,15 @@ fn csi(dispatch: &Dispatch) -> Policy {
         live: csi_live(dispatch),
         sync: sync(dispatch),
         clear: csi_clear(dispatch),
+        repeats: repeats(dispatch),
     }
+}
+
+/// vte prints its preceding character `n` times for `CSI n b`, once when `n`
+/// is absent or zero.
+fn repeats(dispatch: &Dispatch) -> usize {
+    let count = dispatch.params.first().filter(|_| dispatch.is(b'b', b""));
+    count.map_or(0, |&count| usize::from(count.max(1)))
 }
 
 fn csi_live(dispatch: &Dispatch) -> Live {

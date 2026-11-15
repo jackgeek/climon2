@@ -305,10 +305,11 @@ Sends never raise `SIGPIPE`: Linux sends with `MSG_NOSIGNAL`, macOS sets
 Loaders open the absolute `<executable home>/<version>/<library file>` with
 eager, local resolution (`RTLD_NOW | RTLD_LOCAL`); `current`, the working
 directory, `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` do not change
-which file loads. On macOS `DYLD_LIBRARY_PATH` can, which
+which file loads. On macOS `DYLD_LIBRARY_PATH` can, so the shared loader
+(#84) refuses an image loaded from any other file than the one requested, as
 [library embedding](../../docs/protocol/library-embedding.md#artifact-and-dependency-lookup)
-records as a decision for the shared loader (#84). The macOS library's install
-name is its build path; nothing links against it.
+specifies. The macOS library's install name is its build path; nothing links
+against it.
 
 On Linux the library target links the GCC unwinder (`gcc_eh`) statically, from
 the Linux-only `src/library/linux.rs`, because Rust's standard library would
@@ -333,7 +334,8 @@ private target directory and checks.
 | Scenario | Named test |
 |---|---|
 | LIB-01 Library: absolute exact-release load, one stable description | `installed_library_describes_revision_one_with_its_version_identity` (`climon2-e2e/tests/library.rs`) |
-| LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths, the absolute path maps the requested file (the loader's lookup, which no library change can alter); the library answers from its own image with its own release, and a misplaced copy reports its compiled-in release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` (`climon2-e2e`) |
+| LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths, the absolute path maps the requested file (the loader's lookup, which no library change can alter); the library answers from its own image with its own release | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` (`climon2-e2e`) |
+| LIB-02 Library: a misplaced copy describes its compiled-in release, so the shared loader refuses it as the wrong release | `installed_library_of_another_release_or_none_is_refused_without_substitution` (`climon2-e2e`) |
 | LIB-02 Library: unsupported revisions and null output storage | `installed_library_rejects_other_revisions_without_a_description` (`climon2-e2e`) |
 | DOC-01: null handles and outputs are rejected, `submit`'s null request included, and failed calls clear their outputs, by the frozen call rules | `installed_library_table_rejects_null_arguments` (`climon2-e2e`) |
 | LIB-03, LIB-04 and LIB-05 Library: create, run, shutdown, drain to terminal evidence, release, destroy and join; run and destroy on the wrong thread, a repeated run, destroy and handle release while busy; terminal evidence apart from the cleanup report | `installed_library_instance_runs_create_run_shutdown_drain_release_destroy_join` (`climon2-e2e/tests/instance.rs`) |
@@ -368,6 +370,7 @@ private target directory and checks.
 | #75 risk proof: `cargo test` builds the hooked library as a sibling artifact without nested builds (ELF on Linux, Mach-O on macOS); the plain library is the release build | `workspace_client_library_is_a_hooked_sibling_of_the_test_executables` (`climon2-fixtures/tests/hooks.rs`); plain: `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`) |
 | #75 packaging, Linux ([library embedding](../../docs/protocol/library-embedding.md#artifact-and-dependency-lookup)'s release-build rules): release checks reject a soname, RPATH, RUNPATH or a dependency beyond glibc | `release_checks_reject_a_soname_rpath_or_runpath`, `release_checks_reject_a_dependency_beyond_glibc` (`xtask/src/library.rs`) |
 | #75 packaging: release checks accept the exact library and reject a wrong architecture, another release's version or hook markers | `release_checks_accept_the_exact_library`, `release_checks_reject_a_wrong_architecture`, `release_checks_reject_a_wrong_version`, `release_checks_reject_test_hook_markers` (`xtask/src/library.rs`) |
+| #84 packaging: release checks load the library through the shared loader, so a description it refuses (an incomplete function table) fails them | `release_checks_reject_a_description_the_loader_refuses` (`xtask/src/library.rs`) |
 | Installed and packaged layouts carry the library | `fresh_install_publishes_complete_version_launcher_and_current` (`climon2-install`), `install_builds_production_artifacts_and_preserves_existing_versions` (`xtask/tests/install.rs`) |
 
 LIB-06 Library is not covered yet: without the fault hook this release starts
