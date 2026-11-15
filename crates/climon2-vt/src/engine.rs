@@ -7,7 +7,7 @@ use alacritty_terminal::{
     event::{Event, EventListener},
     grid::Dimensions,
     term::{Config, Osc52, TermMode, cell::Cell},
-    vte::ansi::{CursorStyle, Processor, Timeout},
+    vte::ansi::{CursorStyle, Handler, NamedPrivateMode, PrivateMode, Processor, Timeout},
 };
 use std::{cell::RefCell, mem, rc::Rc, time::Duration};
 
@@ -73,11 +73,20 @@ pub(crate) struct Core<L> {
 
 impl<L: EventListener> Core<L> {
     pub(crate) fn new(geometry: Geometry, history: usize, listener: L, unset: CursorStyle) -> Self {
-        Self {
+        let mut core = Self {
             term: Term::new(config(history, unset), &Size(geometry), listener),
             processor: Processor::new(),
             unset,
-        }
+        };
+        core.reset();
+        core
+    }
+
+    /// Start, or restart after RIS (`ESC c`), with alternate scroll off, as
+    /// xterm does; Alacritty's own engine turns it on (#179).
+    pub(crate) fn reset(&mut self) {
+        self.term
+            .unset_private_mode(PrivateMode::Named(NamedPrivateMode::AlternateScroll));
     }
 
     pub(crate) fn advance(&mut self, bytes: &[u8]) {
@@ -240,9 +249,11 @@ impl Engine {
         self.signals.bells
     }
 
-    /// `ESC c` clears the engine's title without an event.
-    pub(crate) fn reset_title(&mut self) {
+    /// After `ESC c`, which clears the engine's title without an event and
+    /// restarts its modes as Alacritty starts: restart them as xterm does.
+    pub(crate) fn reset(&mut self) {
         self.signals.title = None;
+        self.core.reset();
     }
 
     pub(crate) fn mode(&self) -> TermMode {

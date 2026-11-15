@@ -7,7 +7,7 @@ use support::*;
 const PROLOGUE: &str = "\x1b[?2026l\x1b[r\x1b[?6l\x1b[4l\x1b[20l\x1b[?7h\x1b[0m";
 const NOTICE: &str = "\x1b[0m[climon2: older session scrollback was discarded]\r\n";
 const NOTICE_TEXT: &str = "[climon2: older session scrollback was discarded]";
-const MODES: &str = "\x1b[?1l\x1b>\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1005l\x1b[?1004l\x1b[?25h\x1b[?1007h\x1b[0 q";
+const MODES: &str = "\x1b[?1l\x1b>\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1005l\x1b[?1004l\x1b[?1007l\x1b[?25h\x1b[0 q";
 const DIRECT_MODES: &str = "\x1b[?6l\x1b[4l\x1b[20l\x1b[?7h";
 
 fn row(text: &str) -> String {
@@ -444,6 +444,28 @@ fn modes_cursor_style_and_title_are_restored() {
     assert!(prefix.ends_with(modes), "{prefix:?}");
 }
 
+/// TRM-05 (crate case): a restoration sends alternate scroll as the
+/// application left it. The session's terminal starts with it off, as xterm
+/// does, so a restoration before the application set it resets it on the
+/// host; `CSI ? 1007 h` sets it, and RIS (`ESC c`) turns it off again (#179).
+#[test]
+fn a_restoration_sends_alternate_scroll_only_once_the_application_set_it() {
+    for (output, sent) in [
+        ("", "\x1b[?1004l\x1b[?1007l\x1b[?25h"),
+        ("\x1b[?1007h", "\x1b[?1004l\x1b[?25h\x1b[?1007h"),
+        ("\x1b[?1007h\x1b[?1007l", "\x1b[?1004l\x1b[?1007l\x1b[?25h"),
+        ("\x1b[?1007h\x1bc", "\x1b[?1004l\x1b[?1007l\x1b[?25h"),
+    ] {
+        let mut vt = vt(10, 3, 10);
+        feed(&mut vt, output.as_bytes());
+        let prefix = text(&restored(&mut vt));
+        assert!(
+            prefix.contains(&format!("{sent}\x1b[0 q")),
+            "{output:?} {prefix:?}"
+        );
+    }
+}
+
 #[test]
 fn cursor_style_codes_follow_shape_and_blinking() {
     for (style, code) in [
@@ -457,7 +479,7 @@ fn cursor_style_codes_follow_shape_and_blinking() {
         feed(&mut vt, style.as_bytes());
         let prefix = text(&restored(&mut vt));
         assert!(
-            prefix.contains(&format!("\x1b[?1007h\x1b[{code} q")),
+            prefix.contains(&format!("\x1b[?25h\x1b[{code} q")),
             "{style:?} {prefix:?}"
         );
     }

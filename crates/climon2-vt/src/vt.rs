@@ -239,7 +239,7 @@ impl Vt {
             self.step(step, clear, replies);
         }
         if clear == Clear::Reset {
-            self.engine.reset_title();
+            self.engine.reset();
         }
     }
 

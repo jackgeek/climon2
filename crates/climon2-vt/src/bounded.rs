@@ -313,10 +313,14 @@ impl Bounded {
     /// measuring sees every row that holds cell data. Then recount whether
     /// the normal screen's history is truncated, while it is the active
     /// screen, after a token that may have `overrun` its admitted chunks.
+    /// RIS also restarts the engine's modes as xterm starts.
     fn settle(&mut self, clear: Clear, overrun: bool) {
         let cleared = clear != Clear::Nothing;
         if cleared {
             self.core.truncate();
+        }
+        if clear == Clear::Reset {
+            self.core.reset();
         }
         if let Some(held) = self.core.normal_history() {
             self.history.truncated = self.history.truncated_after(held, cleared, overrun);
