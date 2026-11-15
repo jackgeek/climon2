@@ -6,9 +6,10 @@ serves ordinary attach and [kill](../../../GLOSSARY.md#attachment-and-control).
 [Daemon wire revision 1](core-v1.md), owned by
 [#67](https://github.com/jackgeek/climon2/issues/67), freezes a separate portable
 core contract; it is implemented for
-[passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
-and ordinary interactive
-[attachments](../../../GLOSSARY.md#attachment-and-control), and is added
+[passive monitor connections](../../../GLOSSARY.md#attachment-and-control),
+ordinary interactive
+[attachments](../../../GLOSSARY.md#attachment-and-control) and standalone
+[Kill](request-kill.md), with the command's final result, and is added
 beside the private protocol, which it is to replace before release. Both
 protocols share one session control: an attachment of either can take
 control from the other, and control is handed back across them.
