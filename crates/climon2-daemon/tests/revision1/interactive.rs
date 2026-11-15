@@ -266,6 +266,15 @@ impl Attached {
         assert_closed(&mut self.stream);
     }
 
+    /// The daemon lost the connection: its stream ends after any Display,
+    /// with no other record.
+    pub(super) fn lost(&mut self) {
+        while let Some(frame) = wire::read_frame(&mut self.stream, super::limit()).unwrap() {
+            let record = ServerMessage::from_frame(&frame).unwrap();
+            assert!(matches!(record, ServerMessage::Display(_)), "{record:?}");
+        }
+    }
+
     /// The title of the next record, which must be a Title changed.
     pub(super) fn title_changed(&mut self) -> Option<String> {
         super::title_changed(&mut self.stream)

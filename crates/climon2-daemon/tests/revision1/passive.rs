@@ -144,7 +144,7 @@ fn monitor_open_selects_supported_families_then_reports_initial_metadata() {
 
 /// Attaches and detaches through the private protocol, so the session has
 /// no attachment and outlives its initial-attachment deadline.
-fn detached(session: &Session) {
+pub(super) fn detached(session: &Session) {
     let mut client = session.attach();
     session.wait_marker(&mut client);
     crate::send(&mut client, ClientMessage::Detach);
@@ -155,7 +155,7 @@ fn detached(session: &Session) {
 }
 
 /// Ends a `script` fixture session through its command's own exit.
-fn end_script(mut session: Session) {
+pub(super) fn end_script(mut session: Session) {
     crate::issue(&session, "exit");
     session.finish();
 }

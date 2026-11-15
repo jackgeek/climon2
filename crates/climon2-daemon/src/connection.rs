@@ -422,3 +422,46 @@ impl Drop for Connection {
         let _ = self.stream.shutdown(Shutdown::Both);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SIXTEEN_MIB: usize = 16 * 1024 * 1024;
+
+    fn connection() -> (Connection, UnixStream) {
+        let (ours, peer) = UnixStream::pair().unwrap();
+        (Connection::new(ours).unwrap(), peer)
+    }
+
+    /// LIM-01 (queue bound, at the limit and one past): a connection's
+    /// output queue holds exactly 16 MiB; output that would take it one
+    /// byte past is refused and queues nothing.
+    #[test]
+    fn the_output_queue_holds_exactly_sixteen_mebibytes() {
+        let (mut full, _peer) = connection();
+        full.queue_bytes(vec![0; SIXTEEN_MIB - 1]).unwrap();
+        full.queue_bytes(vec![0; 1]).unwrap();
+        assert_eq!(full.queued_bytes(), SIXTEEN_MIB);
+        assert!(full.queue_bytes(vec![0; 1]).is_err());
+        assert_eq!(full.queued_bytes(), SIXTEEN_MIB);
+        let (mut empty, _peer) = connection();
+        assert!(empty.queue_bytes(vec![0; SIXTEEN_MIB + 1]).is_err());
+        assert_eq!(empty.queued_bytes(), 0);
+        assert!(empty.available());
+    }
+
+    /// LIM-01 (frame bound, at the limit and one past): a revision-1 frame
+    /// of 1,048,576 bytes, its type byte and body, is queued whole after
+    /// its four-byte prefix; one byte more is never sent.
+    #[test]
+    fn a_server_frame_over_the_limit_is_never_queued() {
+        let (mut connection, _peer) = connection();
+        let largest = wire::Frame::new(0x41, vec![b' '; 1_048_575]);
+        connection.queue_wire(&largest).unwrap();
+        assert_eq!(connection.queued_bytes(), 4 + 1_048_576);
+        let oversized = wire::Frame::new(0x41, vec![b' '; 1_048_576]);
+        assert!(connection.queue_wire(&oversized).is_err());
+        assert_eq!(connection.queued_bytes(), 4 + 1_048_576);
+    }
+}
