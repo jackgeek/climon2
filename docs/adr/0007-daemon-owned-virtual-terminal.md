@@ -243,7 +243,8 @@ client-side-emulator option for the monitor role, not ordinary clients or query
 authority. The [read-only views](#read-only-views-for-painting) keep engine
 types private; the monitor, the one other consumer allowed by ADR 0004, does
 not paint from them yet and uses the crate only for the documented
-normal-shell baseline.
+normal-shell baseline and, at startup, a model's mandatory allocation, to check
+that its limits hold one session's model (#167).
 No native cross-release cell schema or new workspace crate is selected.
 
 Monitor-mode display/restoration will use effective session geometry canonically,

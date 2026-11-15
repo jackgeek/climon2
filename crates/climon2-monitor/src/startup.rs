@@ -1,14 +1,17 @@
 //! Everything that can refuse the monitor, checked in order before the host
 //! terminal changes: terminals, the climon2 home and executable home, then the
-//! one configuration snapshot. The key introduction's preference is read last;
-//! it never refuses the monitor.
+//! one configuration snapshot, whose limits must hold one session's terminal
+//! model. The key introduction's preference is read last; it never refuses
+//! the monitor.
 use crate::{Error, preference::Preference};
 use climon2_core::{
     VersionName,
-    config::{ConfigSource, MonitorConfig},
+    config::{ConfigError, ConfigSource, MandatoryAllocation, MonitorConfig},
     layout::{ExecutableLayout, HomeLayout, VersionBinary},
+    protocol::TerminalSize,
 };
 use climon2_platform::{logging::LogFile, runtime, terminal};
+use climon2_vt::{Geometry, Mandatory, Model};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -67,10 +70,40 @@ fn installed_version() -> io::Result<VersionName> {
 }
 
 /// The one configuration snapshot: the client bindings, whose escape prefix
-/// the monitor needs to reach its actions, and the `monitor` section. Nothing
-/// reads the file again.
+/// the monitor needs to reach its actions, and the `monitor` section, whose
+/// limits must hold one session's terminal model. Nothing reads the file
+/// again.
 fn configuration(home: &HomeLayout) -> io::Result<MonitorConfig> {
     ConfigSource::read(home)
         .and_then(|source| source.monitor())
+        .and_then(admissible)
         .map_err(io::Error::other)
+}
+
+/// The snapshot, if its limits hold the mandatory allocation of one session
+/// at the largest geometry a session can have.
+fn admissible(config: MonitorConfig) -> Result<MonitorConfig, ConfigError> {
+    let limits = config.settings().limits;
+    limits
+        .hold(largest_mandatory_allocation(limits.history_rows()))
+        .map(|()| config)
+}
+
+/// The mandatory allocation `climon2-vt` charges a blank model keeping
+/// `history_rows` rows at the largest session geometry: the current model,
+/// and the first history chunk, which holds the recent page.
+fn largest_mandatory_allocation(history_rows: u32) -> MandatoryAllocation {
+    let largest = Geometry::LARGEST;
+    let Mandatory {
+        current_model,
+        recent_page,
+    } = Model::mandatory(largest, history_rows as usize);
+    MandatoryAllocation {
+        size: TerminalSize {
+            cols: largest.cols(),
+            rows: largest.rows(),
+        },
+        current_model: current_model as u64,
+        recent_page: recent_page as u64,
+    }
 }

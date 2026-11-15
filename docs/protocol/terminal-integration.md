@@ -80,7 +80,9 @@ The monitor parses those bytes into its own per-[session](../../GLOSSARY.md#sess
 paints its read-only Rust views. `climon2-vt` provides these views of cells,
 modes, cursor, screens and history ([#83](https://github.com/jackgeek/climon2/issues/83)),
 but the monitor does not paint from them yet and uses the crate only for its
-release bytes. The monitor runs as its own
+release bytes and, before the host terminal changes, to check that its
+configured limits hold one session's mandatory model allocation
+([#167](https://github.com/jackgeek/climon2/issues/167)). The monitor runs as its own
 `climon2-monitor` executable, beside the other executables of its release
 ([ADR 0004](../adr/0004-crate-layout-and-dependency-direction.md)); this contract
 chooses no workspace crate.
