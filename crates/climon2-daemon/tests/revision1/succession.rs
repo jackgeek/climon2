@@ -2,24 +2,24 @@
 //! connection, succession on a controller's departure, Leave and Kill racing
 //! a promotion, and the canonical presentation of monitor-mode connections.
 use super::{
-    assert_closed, assert_final_then_closed, assert_rejected, command_final, counter, exited,
-    interactive::{Attached, geometry, ready_attachment, rejected},
-    kill, leave, message, monitor, open, peer, request, signalled, terminating,
-    termination::terminated,
+    assert_final_then_closed, assert_killed, assert_rejected, command_final, committed_kill,
+    counter, exited,
+    interactive::{
+        Attached, detached, end_through_attachment, geometry, ready_attachment, rejected,
+    },
+    leave, monitor, open, peer, request, signalled,
 };
 use crate::Session;
 use climon2_core::{
     hello::Lifecycle,
-    protocol::{ClientMessage, ServerMessage as PrivateMessage},
     wire::{
-        Acquire, ActualGeometry, AuthorityResult, CommandResult, ControlRecord, GrantReason, Leave,
-        Mode, Outcome, RevocationReason, ServerMessage, Success,
+        Acquire, ActualGeometry, AuthorityResult, ControlRecord, GrantReason, Leave, Mode, Outcome,
+        RevocationReason, ServerMessage, Success,
     },
 };
 use std::{
     fs,
     num::NonZeroU16,
-    os::unix::net::UnixStream,
     path::Path,
     time::{Duration, Instant},
 };
@@ -27,21 +27,6 @@ use std::{
 /// The `lines` fixture's record: each line it read, with its terminal size.
 fn recorded(session: &Session) -> String {
     fs::read_to_string(session.directory.path().join("lines")).unwrap()
-}
-
-/// A standalone Kill whose termination the session has committed to.
-fn committed_standalone_kill(session: &Session) -> UnixStream {
-    let mut killer = peer(session);
-    request(&mut killer, &kill(1, 1, &[]));
-    terminating(session);
-    killer
-}
-
-/// The standalone Kill's success arrives once the session ended with
-/// `result`, then its stream ends.
-fn assert_killed(killer: &mut UnixStream, result: &CommandResult) {
-    assert_eq!(message(killer), terminated(1, result));
-    assert_closed(killer);
 }
 
 /// The lines a fixture command has printed once it is ready: the test
@@ -97,13 +82,7 @@ fn assert_canonical(bytes: &[u8], cols: u16, rows: u16, lines: &[String]) {
 #[test]
 fn a_registration_takes_control_only_by_its_own_acquire() {
     let mut session = Session::start("lines");
-    let mut first = session.attach();
-    session.wait_marker(&mut first);
-    crate::send(&mut first, ClientMessage::Detach);
-    assert_eq!(
-        crate::until_terminal(&mut first).1,
-        PrivateMessage::Detached
-    );
+    detached(&session);
     let mut unopened = peer(&session);
     request(
         &mut unopened,
@@ -154,14 +133,7 @@ fn a_registration_takes_control_only_by_its_own_acquire() {
         (Lifecycle::Detached, 0, false)
     );
 
-    let mut last = session.attach();
-    session.wait_marker(&mut last);
-    crate::send(&mut last, ClientMessage::Input(b"end\n".to_vec()));
-    assert_eq!(
-        crate::until_terminal(&mut last).1,
-        PrivateMessage::Exit { code: 0 }
-    );
-    session.finish();
+    end_through_attachment(&mut session, b"end\n", &exited(0));
     assert_eq!(recorded(&session), "first 91x37\nother 91x37\n");
 }
 
@@ -224,7 +196,9 @@ fn a_registration_acquires_after_the_command_final_until_the_session_ends() {
 /// final of the hung-up command, then its stream ends.
 #[test]
 fn watching_does_not_stop_the_initial_attach_rule() {
-    let mut session = Session::start("lines");
+    // The `paste` fixture sleeps rather than reading its terminal, so the
+    // hang-up ends it by SIGHUP, never by a failed read.
+    let mut session = Session::start("paste");
     let started = Instant::now();
     let (mut watching, _) = monitor(&session, &[]);
     assert_eq!(
@@ -361,14 +335,7 @@ fn a_headless_session_promotes_a_monitor_and_outlives_its_loss() {
     drop(watching);
     advertises(&session, (Lifecycle::Detached, 0, false));
 
-    let mut last = session.attach();
-    session.wait_marker(&mut last);
-    crate::send(&mut last, ClientMessage::Input(b"end\n".to_vec()));
-    assert_eq!(
-        crate::until_terminal(&mut last).1,
-        PrivateMessage::Exit { code: 0 }
-    );
-    session.finish();
+    end_through_attachment(&mut session, b"end\n", &exited(0));
     assert_eq!(recorded(&session), "inherited 91x37\n");
 }
 
@@ -424,14 +391,7 @@ fn a_registration_lost_to_an_overflow_is_never_promoted() {
         (Lifecycle::Detached, 0, false)
     );
 
-    let mut last = session.attach();
-    session.wait_marker(&mut last);
-    crate::send(&mut last, ClientMessage::Input(b"end\n".to_vec()));
-    assert_eq!(
-        crate::until_terminal(&mut last).1,
-        PrivateMessage::Exit { code: 0 }
-    );
-    session.finish();
+    end_through_attachment(&mut session, b"end\n", &exited(0));
 }
 
 /// CTL-04 (Fault, a promotion racing a committed Kill) and COM-03
@@ -445,7 +405,7 @@ fn a_committed_kill_overrides_succession() {
     let mut session = Session::start("ignore-hup");
     let mut controller = ready_attachment(&session, &[]);
     let mut watching = Attached::registered(&session);
-    let mut killer = committed_standalone_kill(&session);
+    let mut killer = committed_kill(&session);
     watching.send(|request_id| Acquire { request_id }.to_frame());
     rejected(watching.response(), "session_terminating");
     controller.leave();
@@ -468,7 +428,7 @@ fn a_registration_promoted_before_a_kill_ends_as_an_attachment() {
     controller.leave();
     watching.granted(GrantReason::Successor, geometry(91, 37));
     watching.confirm_ready();
-    let mut killer = committed_standalone_kill(&session);
+    let mut killer = committed_kill(&session);
     assert_eq!(
         crate::advertised_state(&session),
         (Lifecycle::Terminating, 1, true)
