@@ -4,9 +4,10 @@
 [client library](../../../GLOSSARY.md#sessions) delivers the
 [responses](../TERMS.md#response) of Open and Leave
 ([#93](https://github.com/jackgeek/climon2/issues/93)), known final results
-included, and of Kill with its termination result
-([#96](https://github.com/jackgeek/climon2/issues/96)); other operations'
-results arrive with those operations.**
+included, of Acquire, Input, Resize, Ready and Focus
+([#94](https://github.com/jackgeek/climon2/issues/94)), and of Kill with its
+termination result ([#96](https://github.com/jackgeek/climon2/issues/96));
+other operations' results arrive with those operations.**
 The [client](../../../GLOSSARY.md#sessions) delivers a correlated
 [response](../TERMS.md#response) to its caller. Use the [overview](../README.md),
 [glossary](../../../GLOSSARY.md) and [terms](../TERMS.md).
