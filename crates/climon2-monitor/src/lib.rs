@@ -282,12 +282,13 @@ impl Monitor {
     /// discovery and the supervisor reported meanwhile.
     fn step(&mut self, host: &mut Host) -> io::Result<Option<Ending>> {
         let event = host.next()?;
+        let read = matches!(event, Event::Input(_));
         let ending = self.handle(event)?;
         if ending.is_none() {
             self.collect();
             self.relieve();
             self.retarget();
-            self.frame()?;
+            self.frame(read)?;
         }
         Ok(ending)
     }
@@ -328,13 +329,15 @@ impl Monitor {
         }
     }
 
-    /// Each step's frame, once one is due (at most `ui.fps` a second,
-    /// #119): one not due is skipped, and a later step's paints the scene
-    /// as it is then. Frames an action needs at once (a revealed canvas
-    /// that the rest of a read may type into, a resize) are painted when
-    /// they happen and count toward the cadence.
-    fn frame(&mut self) -> io::Result<()> {
-        if self.frames.due(Instant::now()) {
+    /// Each step's frame: at once after a host read, so input, the
+    /// selector and exit respond without waiting, and otherwise once one is
+    /// due (at most `ui.fps` a second, #119): one not due is skipped, and a
+    /// later step's paints the scene as it is then. Frames an action needs
+    /// at once (a revealed canvas that the rest of a read may type into, a
+    /// resize) are painted when they happen. Every frame counts toward the
+    /// cadence, so output alone never paints faster than it.
+    fn frame(&mut self, read: bool) -> io::Result<()> {
+        if read || self.frames.due(Instant::now()) {
             return self.show();
         }
         Ok(())

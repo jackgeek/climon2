@@ -224,6 +224,9 @@ pub(crate) struct Terminal {
     /// Why the model refused an update since the monitor last asked: the
     /// session's client is dropped, its cache kept read-only (#119).
     rejection: Option<String>,
+    /// This connection's client was dropped for a refusal: what it still
+    /// delivers before its end is refused too, and drops nothing more.
+    dropped: bool,
 }
 
 impl Terminal {
@@ -243,6 +246,7 @@ impl Terminal {
             cut: None,
             cached: false,
             rejection: None,
+            dropped: false,
         }
     }
 
@@ -420,6 +424,9 @@ impl Terminal {
     /// Revocation, the end of the connection or the command's final result:
     /// control, if held, is over, and a staged restoration is abandoned. The
     /// first final result freezes the live model's view, if there is one.
+    /// The end of the connection also ends its errors: work refused as it
+    /// closed is the loss's symptom, and the row's diagnostic says why
+    /// (#116, #119).
     fn ended(&mut self, presentation: &Presentation) {
         if *presentation == Presentation::Final {
             let live = self.held.is_some_and(|held| held.live);
@@ -430,6 +437,8 @@ impl Terminal {
             let open = *presentation != Presentation::Ended;
             self.focusable &= open;
             self.viewable &= open;
+            self.error = self.error.take().filter(|_| open);
+            self.dropped &= open;
         }
         if let Some(model) = self.model.as_mut() {
             model.discard();
@@ -444,8 +453,11 @@ impl Terminal {
                 "terminal model over its limit: {} bytes needed, {} allowed",
                 rejected.needed, rejected.limit
             );
-            self.error = Some(why.clone());
-            self.rejection = Some(why);
+            if !self.dropped {
+                self.rejection = Some(why.clone());
+            }
+            self.dropped = true;
+            self.error = Some(why);
         }
     }
 
@@ -1107,6 +1119,25 @@ mod tests {
         assert_eq!(resized.error(), None);
     }
 
+    /// REC-02 (pure supplement): work refused as the connection closed is
+    /// shown while control lasts; a revocation keeps it, the end of the
+    /// connection drops it, leaving the row's diagnostic to say why.
+    #[test]
+    fn the_end_of_the_connection_ends_its_errors() {
+        let mut parser = Parser::new();
+        let mut terminal = restored(b"x");
+        let closed = "closed: the instance accepts no more requests";
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(Request::Viewing(authority(2, 3), true), Err(closed.into())),
+        );
+        assert_eq!(terminal.error(), Some(closed));
+        terminal.present(&mut parser, Presentation::Revoked);
+        assert_eq!(terminal.error(), Some(closed));
+        terminal.present(&mut parser, Presentation::Ended);
+        assert_eq!(terminal.error(), None);
+    }
+
     /// CTL-05 and TRM-04 (pure supplement): Ready or Resize refused under a
     /// restoration since superseded is not an error, and the refused desire
     /// is sent again under the current authority; one refused under the
@@ -1506,11 +1537,26 @@ mod tests {
         assert!(why.starts_with("terminal model over its limit: "), "{why}");
         assert_eq!(terminal.error(), Some(why.as_str()));
         assert_eq!(terminal.take_rejection(), None);
+        // What the dropped connection still delivers is refused, and drops
+        // its session's next client no more.
         terminal.present(&mut parser, Presentation::Display(b"\r\nlater".to_vec()));
+        assert_eq!(terminal.take_rejection(), None);
         terminal.present(&mut parser, Presentation::Ended);
         let cached = terminal.retained().expect("the cache is retained");
         assert_eq!(row_text(&cached, 0), "safee");
         assert_eq!(row_text(&cached, 1), "", "nothing after the refusal");
+        // The next connection's refusal, here of its restoration beside the
+        // full cache, drops its client again.
+        let held = authority(3, 4);
+        terminal.present(&mut parser, Presentation::Granted(held, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Begin(held, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Complete);
+        let marks = "\u{301}".repeat(10_000);
+        terminal.present(
+            &mut parser,
+            Presentation::Display(format!("e{marks}").into()),
+        );
+        assert!(terminal.take_rejection().is_some());
     }
 
     /// LIM-03 (pure supplement, bounded history): a terminal's footprint is

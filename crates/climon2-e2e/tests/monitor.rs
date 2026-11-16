@@ -3049,11 +3049,10 @@ fn async_updates_clear_the_highlight_and_enter_pins_the_highlighted_session() {
 /// initial selection, and Alpha then Gamma appear above it. A session lost
 /// while its row is highlighted (Gamma's daemon killed) turns Disconnected
 /// and moves below the connected rows, and the highlight moves with it.
-/// Enter there acquires nothing, neither that session (Enter on
-/// Disconnected rows is #116's) nor Alpha, which the loss moved into the
-/// highlighted row's old place: the selector stays open over Beta. Up twice
-/// then highlights Alpha, and Enter acquires exactly Alpha. No selector key
-/// reached a session.
+/// Enter there selects that session read-only, acquiring nothing (#116),
+/// never Alpha, which the loss moved into the highlighted row's old place.
+/// Reopened on Gamma, Up twice then highlights Alpha, and Enter acquires
+/// exactly Alpha. No selector key reached a session.
 #[test]
 fn enter_pins_the_highlighted_session_while_it_is_lost() {
     let package = Package::new();
@@ -3080,11 +3079,17 @@ fn enter_pins_the_highlighted_session_while_it_is_lost() {
         ("Disconnected", "Gamma"),
     ];
     boxed_as(&terminal, ROWS, &listing(&lost), &[7]);
-    // Up after Enter shows that Enter was read and left the selector open.
-    terminal.send("\r\x1b[A").unwrap();
-    boxed_as(&terminal, ROWS, &listing(&lost), &[6]);
-    top_row_is(&mut terminal, &controlled("Beta", RUNNING));
-    terminal.send("\x1b[A\r").unwrap();
+    terminal.send("\r").unwrap();
+    selector_closed(&terminal);
+    whole_frame_shows(&terminal, "Gamma read-only", |screen| {
+        screen.lines().next().is_some_and(|top| {
+            top.starts_with("Gamma")
+                && top.ends_with(&format!(" | {NOT_CONTROLLING} | {SESSIONS_HINT}"))
+        })
+    });
+    terminal.send("\x1ds").unwrap();
+    boxed_as(&terminal, ROWS, &listing(&lost), &[7]);
+    terminal.send("\x1b[A\x1b[A\r").unwrap();
     ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
     terminal.send("z").unwrap();
     received_by(&package, "Alpha", b"z");
@@ -6107,9 +6112,11 @@ fn killed_and_ended_sessions_stay_read_only_and_are_never_retried() {
 
     support::kill_session(&package, &ended);
     terminal.send("\x1ds").unwrap();
-    // The selector opens on its first row, the final one.
+    // The final row is listed first; the selector opens on Lost, selected,
+    // the row below it, and the read-only history shows beside its box.
     shows_row(&mut terminal, "║Failed (signal 1) Ended");
-    terminal.send("\r").unwrap();
+    highlight_at(&terminal, 6);
+    terminal.send("\x1b[A\r").unwrap();
     whole_frame_shows(&terminal, "Ended read-only", |screen| {
         let lines: Vec<_> = screen.lines().collect();
         if lines.is_empty() {
@@ -6303,22 +6310,27 @@ fn a_contained_panic_is_retried_on_its_own_row() {
 /// The memory limits that admit the largest session at exactly its
 /// mandatory allocation (#167): a session's model may hold 16,966,087
 /// bytes, its client budget less the library's share; quick, unjittered
-/// retries; and operations the fakes never answer waiting as long as a test
-/// may.
+/// retries; and operations the fakes never answer, and deliveries a loaded
+/// host applies slowly, waiting as long as a test may.
 fn tight_model(package: &Package) {
     limits_config(
         package,
         json!({
             "memory": {"client_bytes": MODEL_AND_PAGE},
             "retry": {"initial_ms": 300, "cap_ms": 300, "jitter_percent": 0},
-            "deadlines": {"operation_ms": 600_000},
+            "deadlines": {"operation_ms": 600_000, "delivery_stall_ms": 600_000},
         }),
     );
 }
 
 /// A Display of the restoration or output of period 1, restoration 1.
 fn display(bytes: &[u8]) -> Act {
-    let mut body = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1].to_vec();
+    display_of(1, bytes)
+}
+
+/// A Display of period 1's restoration `restoration`, or of its output.
+fn display_of(restoration: u8, bytes: &[u8]) -> Act {
+    let mut body = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, restoration].to_vec();
     body.extend(bytes);
     Act::Raw(0x49, body)
 }
@@ -6350,9 +6362,11 @@ fn restored_by_succession(title: &str, text: &[u8]) -> Vec<Act> {
 /// and REC-02 (Monitor: the recovery overlay and reconnect), against fake
 /// daemons: with the client budget at the largest session's mandatory
 /// allocation, Bloated's model may hold 16,966,087 bytes. Restored and
-/// selected, it receives a line, then more combining marks on one cell than
-/// that limit holds (1,280,000, 16 bytes each). The session becomes
-/// unavailable: its row keeps the accepted lines read-only under exactly
+/// selected, it receives a line, then a second restoration, staged beside
+/// the first, with more combining marks on one cell than that limit holds
+/// (1,280,000, 16 bytes each). The session becomes unavailable: its row
+/// keeps the lines its applied restoration and output left read-only, the
+/// refused restoration never shown, under exactly
 /// `Reconnecting...`, its top row's error slot says the model is over its
 /// 16,966,087-byte limit, and its client is retried passively in a new
 /// instance, which opens to the non-controller placeholder. The other
@@ -6368,10 +6382,14 @@ fn a_session_over_its_memory_limit_becomes_unavailable_read_only_and_is_retried(
     let mut first = restored_by_succession("Bloated", b"SAFE-LINE");
     first.push(Act::Await(home.join("bloat")));
     first.push(display(b"\r\nLIVE-LINE"));
+    first.push(Act::Send(
+        0x48,
+        json!({"period": "1", "restoration_id": "2", "geometry": {"cols": 120, "rows": 29}}),
+    ));
     let marks = "\u{301}".repeat(32_000);
-    first.push(display(format!("e{marks}").as_bytes()));
+    first.push(display_of(2, format!("e{marks}").as_bytes()));
     for _ in 1..40 {
-        first.push(display(marks.as_bytes()));
+        first.push(display_of(2, marks.as_bytes()));
     }
     let later = vec![
         opened_selecting(false, false),
@@ -6415,7 +6433,7 @@ fn a_session_over_its_memory_limit_becomes_unavailable_read_only_and_is_retried(
     fs::write(home.join("bloat"), b"").unwrap();
     let error = "Bloated | terminal model over its limit: ";
     let kept =
-        |lines: &[&str]| lines[1].trim_end() == "SAFE-LINE" && lines[2].starts_with("LIVE-LINEe");
+        |lines: &[&str]| lines[1].trim_end() == "SAFE-LINE" && lines[2].trim_end() == "LIVE-LINE";
     whole_frame_shows(&terminal, "the dropped session read-only", |screen| {
         let lines: Vec<_> = screen.lines().collect();
         lines.len() == usize::from(ROWS)
