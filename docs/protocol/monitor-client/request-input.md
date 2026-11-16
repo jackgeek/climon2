@@ -3,8 +3,10 @@
 **Status: agreed revision-1 specification, implemented by the
 [client library](../../../GLOSSARY.md#sessions)
 ([#94](https://github.com/jackgeek/climon2/issues/94)) as its
-[implemented behavior](core-v1.md#implemented-behavior) details; the caller is
-not implemented.**
+[implemented behavior](core-v1.md#implemented-behavior) details; the
+[monitor](../../../GLOSSARY.md#sessions) submits typed keys
+([#109](https://github.com/jackgeek/climon2/issues/109)), pastes and mouse
+reports ([#111](https://github.com/jackgeek/climon2/issues/111)).**
 The [monitor](../../../GLOSSARY.md#sessions) sends real user application
 [bytes](../TERMS.md#byte) through the [client](../../../GLOSSARY.md#sessions).
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

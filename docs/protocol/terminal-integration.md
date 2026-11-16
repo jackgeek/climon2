@@ -91,6 +91,27 @@ restoration now: selected, uncovered and with room) is tracked for the input
 router ([#109](https://github.com/jackgeek/climon2/issues/109)), which forwards
 nothing yet.
 
+**Implemented with packaged evidence ([#111](https://github.com/jackgeek/climon2/issues/111)):**
+[exact paste](#transparent-keyboard-and-exact-paste), mouse and focus for
+the selected session. A bracketed paste reaches the target that took input
+when it began, exactly, with the application's markers only while its
+bracketed-paste mode is on; a pending prefix before it becomes one literal
+prefix for that target, and none is left pending. A paste or gesture whose
+target stops taking input (a modal, a switch, a new control period or
+restoration, revocation or disconnect) is discarded through its end marker
+or release, and a pending prefix is discarded on such a change. A paste the
+client's input queue refuses partway shows `Paste truncated`; the rest is
+discarded and the application is sent the end marker (owner decision on
+#111). Mouse reports are hit-tested and translated below the top row, in
+the application's reporting mode and encoding; chrome and overlay events
+stay local, and each gesture keeps the target where it began. With
+`focus-v1`, [Focus](monitor-client/request-focus.md) follows selection,
+modal UI and host focus reports, once per change and once more for each
+newly ready restoration; without it the session's top row shows the
+limitation. A host that never reports focus is assumed focused, documented
+only (owner decision on #111). Selector clicks, wheel history and toasts
+remain unimplemented.
+
 Everything else in this document remains agreed and unimplemented, including
 Escape closing the dialog when Escape is not the prefix.
 

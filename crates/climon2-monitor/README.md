@@ -14,8 +14,8 @@ help (#105), session discovery, passive clients and the basic selector
 (#106), row statuses, final outcomes and status order (#107), selection,
 control and painting of the selected session (#108), the input router that
 sends typed keys to it (#109), and switching, revocation, taking control back
-and Enter on Starting and Unavailable rows (#110), and initial selection
-(#266). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
+and Enter on Starting and Unavailable rows (#110), initial selection
+(#266), and paste, mouse and focus (#111). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
 
 ## Startup, before the host terminal changes
 
@@ -105,16 +105,16 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   is sent, still encoded for the application's modes. Known limits of that
   release: a reply, report or paste marker split right after its Escape
   leaves that Escape with the application, and a keypad key split so cannot
-  become a numeric-mode key. Bracketed paste
-  (data until its end marker, which discards a pending prefix and leaves
-  none), SGR mouse reports, focus reports and host replies bypass shortcuts
-  and reach no application. The monitor's rule for host replies (confirmed
+  become a numeric-mode key. Bracketed pastes (data until their end
+  marker, which discards a pending prefix and leaves none), SGR mouse
+  reports, focus reports and host replies bypass shortcuts; pastes, mouse
+  and focus are routed as [below](#paste-mouse-and-focus-111), and host
+  replies reach no application. The monitor's rule for host replies (confirmed
   by the owner on #109): OSC, DCS, APC and PM strings; CSI sequences with a
   `?`, `>` or `=` marker, an intermediate byte, or a `c`, `n`, `t` or `y`
   final; and any control sequence longer than 64 bytes. CSI `R` stays a key
   (modified F3 sends it, and the monitor never asks the host for its cursor
-  position); pastes, mouse and focus reach
-  applications with #111. Prefix+s, x, j and ? (lowercase) are the global
+  position). Prefix+s, x, j and ? (lowercase) are the global
   actions from every screen, the selector and the too-small host; prefix+j
   is recognised and never forwarded, and its jump arrives with #114. A
   doubled prefix is one literal prefix, a prefix and any other key (`d`,
@@ -428,6 +428,76 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   completion, loss and failed acquisition, and input never goes to another
   session.
 
+## Paste, mouse and focus (#111)
+
+- **Paste** (`router.rs`, `supervisor/stream.rs`). The router passes a
+  bracketed paste on as data, read by read, holding back only bytes that
+  may begin its end marker until the next byte decides, so a paste is
+  exact however the host splits it. It goes to the target that took
+  application input when it began (the selected, controlling, ready,
+  painted session with no modal and room on the host), with the
+  application's own markers (`ESC [ 200 ~`, `ESC [ 201 ~`) only if the
+  application had bracketed paste on then, and otherwise as the payload
+  alone. A prefix pending when a paste begins reaches that target as one
+  literal prefix first; with no target taking input, or a modal open (it
+  owns the paste and discards it until #113's search), the prefix and the
+  paste are discarded. The supervisor submits a paste's parts as input in
+  chunks of at most `transfer.chunk_bytes`, its markers in chunks of their
+  own; once the library refuses one (owner decision
+  on #111), the top row's error slot says `Paste truncated`, the rest of
+  that paste is discarded, and an application that received any of its
+  start marker is owed the rest of it and the end marker: submitted after
+  every answer, when the library may have room again, and before any later
+  input to that session, until the library accepts it.
+- **Target changes.** A change of the selection, of whether a modal covers
+  the canvas, or of the selected session's control period or restoration
+  (a grant, a new restoration, revocation, the end of its client), seen
+  between two reads, discards a pending prefix. A paste or a mouse gesture
+  belongs to the target, and the authority, that took input when it began;
+  once that target stops taking input for any reason (those changes, a
+  too-small host), the rest of it is discarded through its end marker or
+  release, even if the target takes input again, and never goes to another
+  session, period or restoration. When control changes hands the daemon
+  itself ends a bracketed paste it saw begin; after a new restoration in
+  the same control period the application receives no end marker for a
+  paste cut short so.
+- **Mouse** (`mouse.rs`). SGR reports are hit-tested: a press inside the
+  selected session's canvas below the top row, within its geometry and the
+  host, begins a gesture the application owns; one anywhere else (the top
+  row, a margin, any report while a modal is open or nothing takes input)
+  begins a gesture the monitor keeps, and the selector does nothing with it
+  yet (#113). Every later report of a gesture, until its release, goes to
+  its owner, at the nearest application cell when it strays, or is
+  discarded, with the rest of the gesture, once its owner stops taking
+  input. Motion and the wheel outside a gesture go where they land. An
+  application receives an event translated one row up, only as its
+  reporting mode asks (1000 presses, releases and the wheel; 1002 also
+  motion with a button held; 1003 any motion) and in its encoding (SGR;
+  UTF-8, coordinates up to 2015; or single bytes, values up to 223, where a
+  release is button 3), and nothing it cannot encode. The host keeps
+  button-event tracking, so an application asking for any-motion tracking
+  receives motion only while a button is held. The wheel over an application
+  that does not report the mouse scrolls nothing yet (#112).
+- **Host focus.** The host's focus reports bypass keys and set whether the
+  host has focus, assumed until it reports otherwise. A host that never
+  reports focus cannot be detected: its focus is always assumed, and nothing
+  on screen says so (owner decision on #111). Viewing, which host focus
+  ends without dropping control, arrives with #114.
+- **Application focus.** A session is keyboard-focused while it is selected,
+  no modal covers it and the host has focus; every other session is not.
+  Before each frame, each ready controller (Ready accepted) whose client
+  opened with `focus-v1` is sent Focus for a desire it was not yet sent
+  under its current restoration: so opening the selector or the key
+  introduction, switching away and the host's focus out send focus out to
+  the session that had focus, closing them or the host's focus in send
+  focus in, and a newly ready restoration (a grant, a hand-back, a new
+  restoration) sends the current desire once, never an earlier one. The
+  daemon forwards a changed focus only while the application has focus
+  reporting on, and the current one once when it turns it on. A session
+  whose client or daemon lacks `focus-v1` is sent no Focus and stays usable;
+  while it is selected and connected, its top row's error slot says
+  `Application focus unsupported` when it has nothing else to say there.
+
 ## Exit
 
 Prefix+x exits 0; catchable SIGINT, SIGTERM and SIGHUP take the same path with
@@ -471,6 +541,8 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Selected without a connected client | `No terminal content is available.`, then the row status | `screen.rs` |
 | Row and top-row statuses (#107) | `Needs attention`, `Acknowledged`, `Running`, `Idle`, `Succeeded`, `Failed (exit <code>)`, `Failed (signal <number>)`, `Starting`, `Unavailable`, `Disconnected` | `registry.rs` |
 | Top-row control (#108) | `Acquiring`, `Restoring`, `Controlling`, `Not controlling`, `Ended` | `terminal.rs` |
+| Top row's error slot: a paste the input queue refused partway (#111, owner decision 2026-11-16) | `Paste truncated` | `terminal.rs` |
+| Top row's error slot: the selected session's client or daemon lacks `focus-v1` (#111; proposed wording) | `Application focus unsupported` | `screen.rs` |
 
 ## Specification mapping
 
@@ -570,17 +642,33 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | INP-02, HLP-02 (Monitor, Escape; owner decisions on #105, #106 and #109): a cursor key split right after its Escape or after its introducer never closes the selector or key introduction; a lone Escape closes it when the next key arrives, which reaches the session; Escape then a key in one read closes the selector or key introduction and the key reaches the session, painted first | `split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both` (e2e), `only_closing_the_last_modal_reveals_the_canvas` (`src/lib.rs`) |
 | Spec #73 exit (owner decision on #109): keys read with prefix+x reach the session before shutdown; a stuck session holds exit at most the operation deadline (plus the shutdown deadline) | `typed_bytes_reach_the_selected_session_exactly_however_reads_split`, `a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline` (e2e); `stopping_waits_for_accepted_input_at_most_the_operation_deadline` (`src/supervisor.rs`) |
 | COM-03 (Monitor, queue full), COM-04 (Monitor, chunks): a refused chunk is shown with the bytes not sent, earlier input accepted; only accepted input arrives | `a_full_input_queue_is_shown_and_only_accepted_input_arrives` (e2e) |
+| INP-03 (Monitor), COM-04 (Monitor, paste cases): pastes exact, binary, prefix commands, nested and broken markers included, with application markers only while it has bracketed paste on, off and on again; a pending prefix as one literal before the paste, none pending after it; markers split across reads | `pastes_reach_the_selected_session_exactly_with_markers_only_when_it_asks` (e2e) |
+| INP-03 (Monitor, Fault; owner decision on #111), COM-04 (Monitor, paste chunks): a paste refused partway shows `Paste truncated`, its later read is discarded, and the application gets the start marker, whole chunks and the end marker before the next key | `a_paste_refused_partway_is_truncated_and_its_application_gets_the_end_marker` (e2e) |
+| INP-04 (Monitor, Fault): revocation in the middle of a paste (the rest discarded even once ready again after a hand-back), revocation with a prefix pending (the take-control key then takes control), and a new restoration from a host resize in the middle of a paste | `a_target_change_discards_the_rest_of_a_paste_and_a_pending_prefix` (e2e) |
+| INP-05 (Monitor: application, chrome and selector cases), INP-04 (Monitor: a modal in the middle of a gesture): clicks, a drag onto the top row and the wheel translated; a gesture begun on the top row stays local; the selector opening mid-drag discards the rest; selector clicks reach no application; single-byte encoding; reporting off | `mouse_events_reach_the_application_translated_and_keep_their_gesture` (e2e) |
+| FOC-01 (Monitor: application focus): focus follows menus, host focus and switching, once per change, the current focus once when reporting is enabled | `application_focus_follows_selection_menus_and_host_focus_once_each` (e2e) |
+| FOC-02 (Monitor; owner decision on #111): a host that never reports focus leaves sessions usable with nothing shown; a session without `focus-v1` shows the limitation | `without_focus_support_the_session_shows_the_limitation` (e2e) |
 | INP-01 (pure input-router supplement): the global actions with default and custom prefixes; a doubled prefix; unknown suffixes; a lone prefix waits | `the_prefix_and_lowercase_s_x_j_or_question_mark_are_the_global_actions`, `a_doubled_prefix_is_one_literal_prefix`, `an_unknown_suffix_is_the_prefix_and_that_key`, `a_lone_prefix_waits_indefinitely` (`src/router.rs`) |
 | INP-02 (pure input-router supplement): every split routes identically, and sends an application the same bytes even with a released Escape; a split cursor key is never an Escape; Escape and a key; a lone Escape waits for the next byte, and one bound for an application is released at once, once, never as or after a prefix; Ctrl+[ as the prefix; broken and overlong (64 and 65 bytes) sequences; cursor and keypad encodings | `every_split_of_the_reads_routes_identically`, `a_split_cursor_key_is_never_an_escape`, `escape_and_a_key_in_one_read_are_escape_then_that_key`, `a_lone_escape_waits_for_the_next_byte`, `a_lone_escape_for_an_application_is_released_at_once`, `an_application_receives_the_same_bytes_for_every_split`, `with_escape_as_the_prefix_bare_escape_waits_and_alt_keys_are_actions`, `a_broken_sequence_is_its_bytes`, `an_overlong_sequence_is_discarded`, `cursor_keys_follow_the_application_cursor_mode`, `keypad_keys_follow_the_application_keypad_mode` (`src/router.rs`); `the_host_keypad_mode_is_written_when_it_changes` (`src/screen.rs`) |
-| TRM-02, INP-03, INP-05 (pure input-router supplement): replies, mouse and focus reports and pastes are never keys and never complete a pending prefix; a paste discards one | `replies_reports_and_pastes_are_never_keys`, `a_paste_discards_a_pending_prefix_and_leaves_none` (`src/router.rs`) |
+| TRM-02, INP-03, INP-05, FOC-01 (pure input-router supplement): replies, mouse and focus reports and pastes are never keys and never complete a pending prefix; a paste discards one, as a prefix it begins after | `replies_reports_and_pastes_are_never_keys`, `mouse_and_focus_reports_never_complete_or_clear_a_pending_prefix`, `a_paste_discards_a_pending_prefix_and_leaves_none` (`src/router.rs`) |
+| INP-03 (pure input-router supplement): pasted bytes exact, binary and broken end markers included, however reads split; each read's part, holding back only what may begin the end marker | `pasted_bytes_are_exact_however_reads_split`, `each_read_brings_its_part_of_a_paste` (`src/router.rs`) |
+| INP-04 (pure supplement): a target change discards a pending prefix; a gesture whose owner stops taking input is discarded through its release | `a_target_change_discards_a_pending_prefix` (`src/router.rs`), `a_gesture_whose_owner_stops_taking_input_is_discarded_through_its_release` (`src/mouse.rs`) |
+| INP-05 (pure supplement): SGR reports parsed, malformed ones not; clicks translated below the top row at the edges and one past; gesture ownership; the events each reporting mode asks for; SGR, UTF-8 and single-byte encodings at their limits and one past | `sgr_reports_parse_and_malformed_ones_do_not`, `a_click_inside_the_application_is_translated_below_the_top_row`, `each_gesture_keeps_the_target_its_press_found`, `an_application_receives_only_the_events_its_mode_asks_for`, `each_encoding_is_written_as_the_application_set_it` (`src/mouse.rs`) |
+| INP-03, COM-03, COM-04 (pure supplement; owner decision on #111): input in chunks with every unsent byte carried; a paste exact between markers only when bracketed; a truncated paste reported once, its rest discarded, its application owed exactly the rest of the start marker and the end marker, paid when the library has room and before later input | `input_goes_in_chunks_and_a_refusal_carries_every_unsent_byte`, `a_paste_is_exact_between_the_markers_only_when_bracketed`, `a_truncated_bracketed_paste_owes_its_end_marker_and_discards_the_rest`, `a_truncated_paste_owes_only_what_its_application_lacks`, `a_new_paste_waits_behind_what_an_earlier_one_owes` (`src/supervisor/stream.rs`); `a_refused_paste_shows_that_it_was_truncated` (`src/terminal.rs`) |
+| FOC-01, FOC-02 (pure supplement): Focus once per desire under ready authority, a newly ready restoration's current desire once, none without `focus-v1`, control or a running command; `focus-v1` lasts until the client ends; Open says whether `focus-v1` was selected; Focus and paste parts as their native requests; the limitation only when nothing else claims the error slot | `focus_follows_each_new_desire_under_ready_authority_once`, `focus_support_lasts_until_the_client_ends` (`src/terminal.rs`), `opening_says_whether_focus_and_status_were_selected`, `focus_and_paste_parts_become_their_native_requests` (`src/supervisor/client.rs`), `a_late_collection_shows_in_the_error_slot_unless_the_session_has_its_own` (`src/screen.rs`) |
 | COM-04, EXT-03 (pure input-router supplement): typed bytes reach an application exactly | `typed_bytes_reach_the_application_exactly` (`src/router.rs`) |
 | COM-03, COM-04 (pure supplement): chunks of at most `chunk_bytes`; the first refusal carries every unsent byte and consumes no request ID; a refusal is shown | `input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte` (`src/supervisor.rs`), `refused_input_shows_what_was_not_sent` (`src/terminal.rs`) |
 | #74 risk proof: plain and hooked sibling binaries without nested builds | `cargo_builds_the_plain_or_hooked_monitor_binary_for_its_tests` (`tests/build.rs`, plain and hooked runs); fixtures `workspace_binaries_contain_test_hooks`; xtask `release_check_builds_unhooked_binaries_in_a_private_target` |
 | #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`; Linux `linux_packaging_rejects_a_non_x86_64_or_hooked_monitor`; macOS `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
 
-Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), paste, mouse and focus
-routing to applications and target-change invalidation (#111, INP-03 to
-INP-05), global actions from the history screen (#116), HLP-02 over the selector (#113), selector
+Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), selector clicks and
+the wheel in the selector, and paste into search (#113), the wheel over
+history and alternate scroll (#112), toasts and their gestures (INP-05's
+toast cases, #115), viewing and host focus's effect on it (#114), FOC-01's
+history and toast cases (#112, #115), any-motion mouse tracking without a
+button held (the host keeps button-event tracking), FOC-02's host-native
+copy (a host manual check), INP-04's disconnect case beyond the pure
+supplement, global actions from the history screen (#116), HLP-02 over the selector (#113), selector
 search and footer (#113), Enter on disconnected and final rows and retained
 caches with their overlays (#116), Enter on Awaiting resources rows (#120),
 the label marquee and synchronized
