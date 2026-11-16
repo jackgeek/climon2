@@ -742,6 +742,9 @@ mod tests {
         seen: Vec<([u8; 16], Seen)>,
         unstalled: BTreeSet<[u8; 16]>,
         submitted: Vec<([u8; 16], Submitted)>,
+        /// Instances whose notification descriptor was looked up: the
+        /// supervisor does so as it learns of their handles.
+        looked_up: BTreeSet<[u8; 16]>,
     }
 
     static WORLD: Mutex<World> = Mutex::new(World {
@@ -749,6 +752,7 @@ mod tests {
         seen: Vec::new(),
         unstalled: BTreeSet::new(),
         submitted: Vec::new(),
+        looked_up: BTreeSet::new(),
     });
     static CHANGED: Condvar = Condvar::new();
     const WAIT: Duration = Duration::from_secs(20);
@@ -1243,6 +1247,9 @@ mod tests {
         };
         // SAFETY: the supervisor passes an output integer.
         unsafe { *out = descriptor };
+        changed(&mut world(), |world| {
+            world.looked_up.insert(fake.id);
+        });
         call
     }
 
@@ -1651,6 +1658,51 @@ mod tests {
                 (native::READY, 3, vec![1, 5, 6]),
                 (native::RESIZE, 4, vec![1, 5, 6, 120, 29]),
             ]
+        );
+    }
+
+    /// Client supervisor (#108): a request for a session whose client has
+    /// published its handles but not yet opened is refused at once as not
+    /// connected, submits nothing and consumes no request ID; once Open
+    /// succeeds, the same request is submitted as the first after Open's.
+    /// The request is sent once the supervisor has looked up the client's
+    /// descriptor, which it does as the client becomes Opening.
+    #[test]
+    fn a_request_before_the_client_opens_is_refused_as_not_connected() {
+        let id = session(14, 1);
+        script(
+            &id,
+            Script {
+                opens_late: true,
+                ..Script::default()
+            },
+        );
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = supervisor(1, 20_000, fake_library());
+        supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+        let published = guid(&id);
+        until(|world| world.looked_up.contains(&published));
+        supervisor.request(id.clone(), Asked::Acquire);
+        let refused = presented(Presentation::Answered(
+            Asked::Acquire,
+            Err("the session's client is not connected".into()),
+        ));
+        assert_eq!(next(&supervisor), (id.clone(), refused));
+        let_go(&id);
+        assert_eq!(
+            next(&supervisor),
+            (id.clone(), ClientEvent::Opened { status: false })
+        );
+        supervisor.request(id.clone(), Asked::Acquire);
+        let accepted = presented(Presentation::Answered(Asked::Acquire, Ok(())));
+        assert_eq!(next(&supervisor), (id.clone(), accepted));
+        supervisor.stop();
+        assert_eq!(
+            submitted(&id),
+            [(native::ACQUIRE, OPEN_ID + 1, vec![GENERATION])]
         );
     }
 
