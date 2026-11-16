@@ -99,12 +99,19 @@ bracketed-paste mode is on; a pending prefix before it becomes one literal
 prefix for that target, and none is left pending. A paste or gesture whose
 target stops taking input (a modal, a switch, a new control period or
 restoration, revocation or disconnect) is discarded through its end marker
-or release, and a pending prefix is discarded on such a change. A paste the
+or release, and a pending prefix is discarded on such a change. A bracketed
+paste cut short while its control period lasts (a new restoration, a host
+too small) owes its application the end marker, sent under the session's
+current authority once that restoration is ready (owner decision on #111);
+after revocation or disconnect the daemon closes it. A paste the
 client's input queue refuses partway shows `Paste truncated`; the rest is
 discarded and the application is sent the end marker (owner decision on
 #111). Mouse reports are hit-tested and translated below the top row, in
 the application's reporting mode and encoding; chrome and overlay events
-stay local, and each gesture keeps the target where it began. With
+stay local, and each gesture keeps the target where it began. The host's
+mouse tracking mirrors the level (1000, 1002 or 1003) of the application
+whose canvas is shown uncovered, otherwise the monitor's own button-event
+tracking (owner decision on #111). With
 `focus-v1`, [Focus](monitor-client/request-focus.md) follows selection,
 modal UI and host focus reports, once per change and once more for each
 newly ready restoration; without it no Focus is sent. Both that and a host

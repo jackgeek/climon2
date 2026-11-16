@@ -87,6 +87,8 @@ pub struct Modes {
     pub mouse: bool,
     /// Button-event (press, release and drag) mouse tracking, DEC 1002.
     pub mouse_drag: bool,
+    /// Any-event (all motion) mouse tracking, DEC 1003.
+    pub mouse_motion: bool,
     /// SGR extended mouse encoding, DEC 1006.
     pub sgr_mouse: bool,
     pub focus: bool,
@@ -106,6 +108,7 @@ impl Modes {
         cursor_visible: true,
         mouse: false,
         mouse_drag: false,
+        mouse_motion: false,
         sgr_mouse: false,
         focus: false,
         bracketed_paste: false,
@@ -123,6 +126,7 @@ impl Modes {
             cursor_visible: mode.contains(TermMode::SHOW_CURSOR),
             mouse: mode.intersects(TermMode::MOUSE_MODE | TermMode::SGR_MOUSE),
             mouse_drag: mode.contains(TermMode::MOUSE_DRAG),
+            mouse_motion: mode.contains(TermMode::MOUSE_MOTION),
             sgr_mouse: mode.contains(TermMode::SGR_MOUSE),
             focus: mode.contains(TermMode::FOCUS_IN_OUT),
             bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),

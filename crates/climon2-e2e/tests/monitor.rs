@@ -4963,7 +4963,13 @@ fn a_paste_refused_partway_is_truncated_and_its_application_gets_the_end_marker(
 /// paste's end arrives. A prefix pending when the monitor is revoked is
 /// discarded, so the take-control key after it takes control rather than
 /// following the prefix. A host resize brings a new restoration in the
-/// middle of a paste, and the rest of that paste is discarded too.
+/// middle of a paste, which keeps admission: the rest of that paste is
+/// discarded too, and once the new restoration is ready the application
+/// receives the end marker under it, before anything typed later (owner
+/// decision on #111). A host too small for the session in the middle of a
+/// paste also keeps admission: the application receives the end marker at
+/// once, under the same restoration, and the rest of the paste is
+/// discarded even once the host has room again.
 #[test]
 fn a_target_change_discards_the_rest_of_a_paste_and_a_pending_prefix() {
     let package = Package::new();
@@ -5001,7 +5007,20 @@ fn a_target_change_discards_the_rest_of_a_paste_and_a_pending_prefix() {
     terminal.resize(ROWS, 100).unwrap();
     ready_on(&mut terminal, 100, ("Moved", RUNNING), "29 100");
     read_alone(&mut terminal, monitor, b"r2\x1b[201~x");
-    expected.extend(b"x");
+    expected.extend(b"\x1b[201~x");
+    received_by(&package, "Moved", &expected);
+
+    read_alone(&mut terminal, monitor, b"\x1b[200~s1");
+    expected.extend(b"\x1b[200~s1");
+    received_by(&package, "Moved", &expected);
+    terminal.resize(3, 100).unwrap();
+    shows_too_small(&mut terminal, 3, 100);
+    expected.extend(b"\x1b[201~");
+    received_by(&package, "Moved", &expected);
+    terminal.resize(ROWS, 100).unwrap();
+    ready_on(&mut terminal, 100, ("Moved", RUNNING), "29 100");
+    read_alone(&mut terminal, monitor, b"s2\x1b[201~y");
+    expected.extend(b"y");
     received_by(&package, "Moved", &expected);
     terminal.send("\x1dx").unwrap();
     support::assert_released(&package, &mut terminal, 0);
@@ -5047,6 +5066,83 @@ fn a_disconnect_discards_a_pending_prefix() {
     assert_eq!(terminal.title().as_deref(), Some(TITLE));
     // A real listing reclaims the killed daemon's stale metadata.
     assert_eq!(package.list().len(), 1);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Waits until the host's mouse tracking is the monitor's own button-event
+/// tracking (1002), or with `level` 1000 click-only or 1003 any-event
+/// tracking, as the bytes the monitor wrote set it.
+fn host_tracks(terminal: &Terminal, level: u16) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let modes = terminal.modes();
+        let tracking = (modes.mouse, modes.mouse_drag, modes.mouse_motion);
+        let expected = (true, level == 1002, level == 1003);
+        if tracking == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "host mouse tracking {tracking:?}, not {level}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// INP-05 (Monitor; owner decision on #111): the host mirrors the mouse
+/// tracking level of the application taking input, so an application
+/// asking for any-event tracking (1003) gets motion with no button held,
+/// and one asking for clicks only (1000) gets no drags from the host. The
+/// host returns to the monitor's own button-event tracking (1002) while
+/// the application reports nothing, while the selector covers it, and
+/// while another client's takeover has it, and mirrors it again once it
+/// takes input again; leaving restores the baseline.
+#[test]
+fn the_host_mirrors_the_application_mouse_tracking_level() {
+    let package = Package::new();
+    without_introduction(&package);
+    let id = headless(&package, &watched("Track"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Track", RUNNING, "29 120");
+    host_tracks(&terminal, 1002);
+    set_modes(
+        &package,
+        &terminal,
+        "Track",
+        b"\x1b[?1003h\x1b[?1006h",
+        "T3",
+    );
+    host_tracks(&terminal, 1003);
+    terminal.send("\x1b[<35;6;4M").unwrap();
+    received_by(&package, "Track", b"\x1b[<35;6;3M");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "║Running Track");
+    host_tracks(&terminal, 1002);
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    host_tracks(&terminal, 1003);
+    set_modes(
+        &package,
+        &terminal,
+        "Track",
+        b"\x1b[?1003l\x1b[?1000h",
+        "T1",
+    );
+    host_tracks(&terminal, 1000);
+    set_modes(&package, &terminal, "Track", b"\x1b[?1000l", "T0");
+    host_tracks(&terminal, 1002);
+    set_modes(&package, &terminal, "Track", b"\x1b[?1003h", "T4");
+    host_tracks(&terminal, 1003);
+    let other = attach(&package, &id);
+    shows(&mut terminal, &placeholder_screen("Track", RUNNING));
+    host_tracks(&terminal, 1002);
+    detach(other);
+    ready_at(&mut terminal, "Track", RUNNING, "29 120");
+    host_tracks(&terminal, 1003);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
     finish_sessions(&package, "finish");
     package.assert_clean();
 }

@@ -32,6 +32,9 @@ pub(crate) struct Frame {
     /// taking input asked: the host sends its keypad keys as that
     /// application expects them.
     pub(crate) keypad: bool,
+    /// The host's mouse tracking (DEC 1000, 1002 or 1003) while it mirrors
+    /// the session taking input; none for the monitor's own (1002).
+    pub(crate) tracking: Option<u16>,
     /// The underline style of each underlined cell, by column and row, as
     /// SGR 4's subparameter, where it is not a single underline (2 double,
     /// 3 curly, 4 dotted, 5 dashed): a Ratatui cell holds only whether it

@@ -244,6 +244,8 @@ impl Monitor {
     /// prefix it left pending. An open paste or gesture learns of a change
     /// when its next part arrives.
     fn retarget(&mut self) {
+        let current = self.taking().map(|taking| taking.target);
+        self.cut(current.as_ref());
         let context = self.context();
         if context != self.context {
             self.router.retarget();
@@ -279,7 +281,7 @@ impl Monitor {
     /// being painted.
     fn show(&mut self) -> io::Result<()> {
         self.mark_shown();
-        self.focus();
+        self.synchronise();
         let rows = self.registry.rows();
         let row = self
             .selected
@@ -305,15 +307,18 @@ impl Monitor {
         self.screen.show(&scene)
     }
 
-    /// Application focus (spec #73, "Application focus"): the selected
+    /// What each terminal owes its application before the frame: the end
+    /// marker of a paste cut short ([`Terminal::paste_end`]), then
+    /// application focus (spec #73, "Application focus"). The selected
     /// session is focused while no modal covers it and the host has focus;
     /// every other is not. Each ready controller with `focus-v1` is told of
     /// each change once, a newly ready one of the current desire.
-    fn focus(&mut self) {
+    fn synchronise(&mut self) {
         let focused = self.host_focused && !self.covered();
         for (id, terminal) in &mut self.terminals {
             let desired = focused && self.selected.as_ref() == Some(id);
-            if let Some(request) = terminal.focus(desired) {
+            let owed = terminal.paste_end();
+            for request in owed.into_iter().chain(terminal.focus(desired)) {
                 self.supervisor.request(id.clone(), request);
             }
         }
@@ -529,10 +534,9 @@ impl Monitor {
 
     /// A paste is data for the target that took input when it began, sent
     /// with that target's markers while it still takes input; once it does
-    /// not, the rest of the paste is discarded through its end, never sent
-    /// elsewhere (spec #73, "Paste rules", "Target changes"). A modal owns a
-    /// paste, and discards it. A prefix the paste discarded reaches its
-    /// target as one literal prefix first.
+    /// not, the paste is [cut](Monitor::cut) (spec #73, "Paste rules",
+    /// "Target changes"). A modal owns a paste, and discards it. A prefix
+    /// the paste discarded reaches its target as one literal prefix first.
     fn paste(&mut self, pasted: Pasted, typed: &mut Vec<u8>) {
         let taking = self.taking();
         let starts = pasted.begin != Begin::Continued;
@@ -544,23 +548,39 @@ impl Monitor {
             typed.extend(pasted.begin.prefix());
         }
         let current = taking.map(|taking| taking.target);
-        let pasting = self
-            .pasting
-            .take()
-            .filter(|pasting| Some(&pasting.target) == current.as_ref());
+        self.cut(current.as_ref());
         self.submit(typed);
-        if let Some(Pasting { target, bracketed }) = &pasting {
-            self.terminal(&target.0).return_live();
+        let ends = pasted.ends;
+        if let Some(Pasting { target, bracketed }) = &self.pasting {
+            terminal(&mut self.terminals, self.model, &target.0).return_live();
             let part = Paste {
                 bracketed: *bracketed,
                 starts,
                 bytes: pasted.bytes,
-                ends: pasted.ends,
+                ends,
             };
             self.supervisor
                 .request(target.0.clone(), Request::Paste(target.1, part));
         }
-        self.pasting = pasting;
+        self.pasting = self.pasting.take().filter(|_| !ends);
+    }
+
+    /// A paste whose target no longer takes input as `current` (spec #73,
+    /// "Target changes") is cut: the rest of it is discarded through its
+    /// end, never sent elsewhere, even if the target takes input again. An
+    /// application that had bracketed paste on is owed the end marker
+    /// (owner decision on #111), which its terminal pays.
+    fn cut(&mut self, current: Option<&Target>) {
+        let cut = self
+            .pasting
+            .take_if(|pasting| Some(&pasting.target) != current);
+        if let Some(Pasting {
+            target: (id, authority),
+            bracketed: true,
+        }) = cut
+        {
+            self.terminal(&id).cut_paste(authority);
+        }
     }
 
     /// A mouse report goes to its gesture's owner (`mouse.rs`): to the
