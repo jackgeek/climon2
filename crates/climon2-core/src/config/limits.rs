@@ -282,15 +282,13 @@ impl Default for Retry {
     }
 }
 
-/// Rendering, work quanta, toasts and search.
+/// Rendering, work quanta and search.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 struct Ui {
     fps: u32,
     client_quantum_ms: u32,
     background_quantum_ms: u32,
-    toast_records: u32,
-    toast_bytes: u64,
     search_bytes: u64,
 }
 
@@ -300,8 +298,6 @@ impl Default for Ui {
             fps: 30,
             client_quantum_ms: 2,
             background_quantum_ms: 8,
-            toast_records: 128,
-            toast_bytes: 524_288,
             search_bytes: 4096,
         }
     }
@@ -597,8 +593,6 @@ impl Groups {
             (named!(ui.fps), FPS),
             (named!(ui.client_quantum_ms), QUANTUM),
             (named!(ui.background_quantum_ms), QUANTUM),
-            (named!(ui.toast_records), POSITIVE_32),
-            (named!(ui.toast_bytes), POSITIVE_64),
             (named!(ui.search_bytes), POSITIVE_64),
         ]
         .into_iter()
@@ -608,9 +602,8 @@ impl Groups {
     /// The first rule between settings these limits break, in this order:
     /// sub-budgets, reservations and every other monitor byte budget fit the
     /// totals that include them (each client's queues fit both the aggregate
-    /// queue budget and the client's own, and toasts, a UI queue, fit the
-    /// aggregate one; the daemon's notification assembly limits are not
-    /// monitor budgets); progress reserves leave room for ordinary work; the
+    /// queue budget and the client's own; the daemon's notification
+    /// assembly limits are not monitor budgets); progress reserves leave room for ordinary work; the
     /// largest chunk fits one request, the ordinary event capacity and one
     /// delivery, and the largest metadata record fits the reserve, that
     /// capacity and one delivery; the per-client quantum fits the aggregate
@@ -656,7 +649,6 @@ impl Groups {
             at_most(per_session, client),
             at_most(request, queued),
             at_most(events, queued),
-            at_most(named!(ui.toast_bytes), queued),
             at_most(request, client),
             at_most(events, client),
             below(reserve, events),

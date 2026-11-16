@@ -484,7 +484,7 @@ const EFFECTIVE: &str = r#"{
       "discovery": {"pass_ms": 30000, "stall_ms": 5000, "batch_records": 128, "batch_bytes": 1048576, "metadata_file_bytes": 262144, "metadata_depth": 32},
       "deadlines": {"load_ms": 10000, "start_ms": 10000, "operation_ms": 5000, "kill_ms": 10000, "restoration_stall_ms": 5000, "restoration_total_ms": 60000, "delivery_stall_ms": 5000, "leave_ms": 5000, "cleanup_ms": 10000, "shutdown_ms": 10000, "final_host_ms": 1000, "assembly_ms": 5000},
       "retry": {"initial_ms": 1000, "cap_ms": 40000, "jitter_percent": 20, "admission_ms": 1000},
-      "ui": {"fps": 30, "client_quantum_ms": 2, "background_quantum_ms": 8, "toast_records": 128, "toast_bytes": 524288, "search_bytes": 4096}
+      "ui": {"fps": 30, "client_quantum_ms": 2, "background_quantum_ms": 8, "search_bytes": 4096}
     }
   }
 }"#;

@@ -235,8 +235,6 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
         "fps": 30,
         "client_quantum_ms": 2,
         "background_quantum_ms": 8,
-        "toast_records": 128,
-        "toast_bytes": 524288,
         "search_bytes": 4096
       }
     }
@@ -285,9 +283,7 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
     `ui.search_bytes`) fit `memory.total_bytes`; `history_bytes_per_session`
     fits both `history_bytes_total` and `client_bytes`;
   - `queues.request_bytes` and `event_bytes` each fit both
-    `memory.queue_bytes_total` and `memory.client_bytes`, and
-    `ui.toast_bytes` fits `memory.queue_bytes_total`, which includes the UI
-    queues;
+    `memory.queue_bytes_total` and `memory.client_bytes`;
   - `payload.assembly_bytes` and `assembly_records` limit the daemon's
     notification assembly, not the monitor's memory, so no monitor total
     contains them;

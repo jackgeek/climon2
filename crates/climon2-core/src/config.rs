@@ -142,9 +142,8 @@ impl AttachConfig {
 pub struct MonitorSettings {
     /// Whether implicit key hints show; bindings never change.
     pub show_key_hints: bool,
-    /// Whether a toast rings the host bell as it first draws; only reported
-    /// until toasts read it.
-    bell: bool,
+    /// Whether a toast rings the host bell as it first draws (#115).
+    pub bell: bool,
     #[serde(deserialize_with = "object")]
     pub limits: Limits,
 }
