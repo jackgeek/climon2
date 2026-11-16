@@ -11,14 +11,18 @@ description ([#75](https://github.com/jackgeek/climon2/issues/75)), their
 local instance lifecycle
 ([#85](https://github.com/jackgeek/climon2/issues/85)), passive monitor
 connections ([#93](https://github.com/jackgeek/climon2/issues/93)), control
-and display ([#94](https://github.com/jackgeek/climon2/issues/94)), and
-Command final and Kill ([#96](https://github.com/jackgeek/climon2/issues/96)),
+and display ([#94](https://github.com/jackgeek/climon2/issues/94)), status,
+viewing and acknowledgement
+([#95](https://github.com/jackgeek/climon2/issues/95)), and Command final and
+Kill ([#96](https://github.com/jackgeek/climon2/issues/96)),
 but no monitor loads them yet; the client executable loads its own release's
 library for `climon2 kill`
 ([#100](https://github.com/jackgeek/climon2/issues/100)), the LIB-01 and LIB-02
 executable cases, and for ordinary attach
 ([#101](https://github.com/jackgeek/climon2/issues/101)), the COM-01 Monitor
-parity case. The Library layer's
+parity case, with its derived viewing and acknowledgement
+([#102](https://github.com/jackgeek/climon2/issues/102)), the STA-08
+ordinary-attach case. The Library layer's
 [second-release fixture](../GLOSSARY.md#testing)
 ([#97](https://github.com/jackgeek/climon2/issues/97)) runs both releases'
 libraries in one process, against sessions of each release's own daemon, for

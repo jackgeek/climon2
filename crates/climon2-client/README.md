@@ -100,14 +100,18 @@ this README; kill mode's tests observe `kill_ms`, and the attach tests observe
 the backpressure of `event_bytes`.
 
 **Attach mode** (#101): the instance's one Open (public ID 1) is interactive,
-at the terminal's size, requires `daemon-wire-v1` and selects no optional
-family: no title, status, notification or progress. The library checks the
+at the terminal's size, requires `daemon-wire-v1` and asks for `status-v1`
+alone, optionally (#102): never title, notification, progress or focus. The
+library names `status-v1` in the Open only when the daemon advertises it, so
+against a daemon without it the Open and everything after it are unchanged.
+The library checks the
 session's metadata and hello (session, protocol, release, revision-1
 advertisement) before any request; its refusal, or the daemon's, is one
 diagnostic before raw mode. Raw mode begins only after the Open succeeds. The
 executable then submits, in order and with increasing public IDs, Input under
-the held authority, Resize, Acquire (the take-control key), Ready and Leave
-(detach); a command the library has no room for waits, and so does the
+the held authority, Resize, Acquire (the take-control key), Ready, Set
+viewing, Acknowledge and Leave (detach); a command the library has no room
+for waits, and so does the
 terminal. The library never interprets Input as keys: the executable owns the
 host terminal, raw mode, escape-prefix routing, detach, the take-control key,
 the placeholder and presentation release. A controller waits for Control
@@ -124,6 +128,30 @@ from either role; after a confirmed Leave of the attachment the client prints
 `climon2: detached from session <id>; reattach with: climon2 attach <id>` on the
 restored terminal and returns 0. Bracketed paste spanning a role change is
 discarded through its closing marker, never replayed or read as keys.
+
+**Viewing and acknowledgement** (#102, a derived decision of spec #73): the
+status mechanics list an explicit ordinary attach as an acknowledgement
+trigger. After each Ready the executable, now the ready controller, reports
+Set viewing true under the same authority. After the Ready that follows an
+explicit attach or takeover (a grant with reason `attach` or `acquire`) it
+then submits one Acknowledge, which moves pending attention to acknowledged;
+the daemon judges whether anything was pending. A hand-back (`hand_back`)
+is not an explicit action and never acknowledges, nor does a replacement
+restoration within the same period. Nothing is reported before readiness.
+Detaching while holding an authority reports viewing false before the Leave.
+A revocation sends nothing: the revoked client is no longer the controller,
+and the daemon starts every control period not viewing, so revocation clears
+viewing there. When `status-v1` was not selected the library refuses Set
+viewing and Acknowledge locally (`unsupported_capability`) and sends
+nothing; the executable ignores those answers, as it ignores every answer
+but the Open's. Results never change what the executable shows.
+
+**Focus is assumed, best effort.** The executable does not track host
+terminal focus. Focus reports, when the application enables them, reach the
+application as input and are never interpreted here, so a ready controller
+counts as viewing even while its terminal window is in the background, and
+an attach or takeover the user is not looking at still acknowledges
+attention.
 
 The event loop polls the library's notification descriptor, the terminal and
 stdout. Keys are read only while every earlier command was accepted, so a
@@ -596,6 +624,9 @@ packaged scenarios in `climon2-e2e`.
 | COM-01 parity: hello and Open refusals before raw mode (session, protocol, release, no revision 1, malformed or late hello, a refused Open, an early record, a disconnect, an unreachable socket) | `hello_rejects_mismatched_session_protocol_version_and_unexpected_frames`, `hello_deadline_is_absolute_across_partial_reply`, `attach_refusal_or_unexpected_reply_fails_without_raw_mode`, `disconnect_before_attached_names_the_session`, `nonexistent_socket_and_bad_metadata_fail_without_touching_termios` |
 | LIB-02 executable case, attach: a missing library fails before any connection | `a_missing_library_fails_attach_before_any_connection` |
 | Derived: the executable passes exactly the published `cm1_limits` table | `attach_passes_exactly_the_published_limits_table` |
+| Derived viewing and acknowledgement (#102), STA-08 ordinary-attach case: the Open asks for `status-v1` when advertised; nothing before Ready; after an explicit attach's and a takeover's Ready, viewing true then one Acknowledge; a replacement restoration and a hand-back report viewing but never acknowledge; a revocation sends nothing; detach reports viewing false, then Leave | `ordinary_attach_reports_viewing_and_acknowledges_once_ready_after_attach_and_takeover` |
+| Derived (#102): against a daemon without `status-v1` the Open names no optional family and nothing comes between Ready and the next Input or Leave | `raw_bridge_preserves_bytes_and_restores_termios_after_final_output`, `a_confirmed_leave_detaches_with_the_notice` |
+| Derived (#102) against a real daemon, through the packaged CLI: an explicit attach and a takeover acknowledge pending attention once ready; a viewing client never does on its own | `ordinary_attach_and_takeover_acknowledge_pending_attention_once_ready` (`climon2-e2e/tests/status.rs`) |
 | #25 logs: environment-only filtering, one private log per client | `log_filter_reaches_client_through_environment_without_cli_flags`, `concurrent_clients_on_one_session_each_write_their_own_log` |
 | Attach gives the library its own `library-<second>-<pid>.log` beside the client's session log, under the client's `CLIMON2_LOG` filter (its creation record by default, none under `warn`) | `attach_gives_the_library_its_own_log_beside_the_clients_session_log` |
 

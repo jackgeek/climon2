@@ -194,12 +194,13 @@ size, to check that its limits hold one session's model beside the parser
 (#167). It chooses no new executable/library or consumption arrow, and does
 not sandbox trusted native code.
 
-**Current (#100, #101):** for ordinary attach and in kill mode the client
-executable loads the library in its own version folder,
+**Current (#100, #101, #102):** for ordinary attach and in kill mode the
+client executable loads the library in its own version folder,
 `<executable home>/<version>/`, through the shared loader, whatever
 `current`, the working directory or search paths name, and drives one
 instance through the C ABI: an interactive Open and the bridge's Input,
-Resize, Acquire, Ready and Leave for attach, or one Kill; the library speaks
+Resize, Acquire, Ready, Set viewing, Acknowledge and Leave for attach, or
+one Kill; the library speaks
 daemon wire revision 1 to the session daemon. The library instance writes
 its diagnostics to a log file of its own in the session-log directory,
 beside the client's,
