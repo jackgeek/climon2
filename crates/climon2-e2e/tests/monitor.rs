@@ -7499,7 +7499,8 @@ fn not_asking(terminal: &Terminal) {
 /// fallback selection, nothing deleted beyond normal daemon cleanup) and
 /// #116's owner decision (a gone session's Delete offers Remove), against
 /// real daemons. Bravo, the newer, is the initial selection. Delete on it
-/// asks with Cancel focused; keys, a paste and a click inside the dialog
+/// asks with Cancel focused, hiding the search's cursor; keys, a paste and
+/// a click inside the dialog
 /// decide nothing, and Enter then cancels back to the selector: Bravo is
 /// still running, and once the selector closes the first thing it receives
 /// is what is typed then. Confirmed, Bravo is killed and its row removed;
@@ -7521,6 +7522,8 @@ fn delete_terminates_or_removes_only_the_confirmed_session() {
     terminal.send(DELETE).unwrap();
     let bravo_running = ("Bravo", Some(RUNNING));
     asks(&terminal, bravo_running, TERMINATE, CANCEL_FOCUSED);
+    // The dialog hides the search's cursor.
+    assert!(!terminal.modes().cursor_visible);
     terminal
         .send("xy\x1b[A \x1b[200~pasted\r\x1b[201~")
         .unwrap();
@@ -7530,6 +7533,7 @@ fn delete_terminates_or_removes_only_the_confirmed_session() {
     terminal.send("\r").unwrap();
     not_asking(&terminal);
     listed_with(&terminal, RUNNING, "Bravo");
+    assert!(terminal.modes().cursor_visible);
     terminal.send(ESCAPE).unwrap();
     selector_closed(&terminal);
     terminal.send("after").unwrap();

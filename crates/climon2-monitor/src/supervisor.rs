@@ -915,13 +915,12 @@ impl State {
         }
     }
 
-    /// A Kill-only instance's Kill is its first request, pending from its
-    /// start, and it is never retried.
+    /// A Kill-only instance's Kill is its first and only request, pending
+    /// from its start, and it is never retried.
     fn started(&mut self, id: &SessionId, role: Role) {
         let instance = self.instances.get_mut(id).expect("a started instance");
         if role == Role::KillOnly {
             instance.pending.insert(KILL_ID, Pending::Kill);
-            instance.next += 1;
             instance.retry = Some(Retry::None);
             self.set_kill(id, Kill::Pending);
         }
@@ -1074,7 +1073,7 @@ impl State {
         };
         self.set(id, phase.after(&event));
         self.settle_retry(id, &event);
-        if phase.reporting() && self.follows(id) {
+        if phase.reporting() {
             self.tell(id, event);
         }
         self.advance(id);
@@ -1373,6 +1372,11 @@ mod tests {
         kills: Killing,
         /// The connection is lost once a Kill is answered.
         drops_after_kill: bool,
+        /// Once a Kill is answered, the presentation's records follow,
+        /// with the command's final results.
+        presents_after_kill: bool,
+        /// Destroy waits until the test lets it go.
+        destroy_waits: bool,
     }
 
     /// How the fake answers a Kill (#117).
@@ -1387,6 +1391,8 @@ mod tests {
         Loses,
         /// Never answered.
         Ignores,
+        /// Refused at submit, never sent.
+        RefusedAtSubmit,
     }
 
     /// What the observer saw of one session's instance.
@@ -1709,6 +1715,7 @@ mod tests {
 
     extern "C" fn destroy(instance: *mut Instance) -> Call {
         let fake = fake(instance);
+        wait_while(|world| fake.script.destroy_waits && !world.unstalled.contains(&fake.id));
         let state = fake.state();
         let released = state.communication && state.control && state.outstanding == 0;
         let free = released && !fake.script.destroy_fails;
@@ -1782,6 +1789,9 @@ mod tests {
     /// Records a Kill and answers it as the script says, then drops the
     /// connection if the script says so.
     fn kill(fake: &Fake, request_id: u64) -> Call {
+        if let Killing::RefusedAtSubmit = fake.script.kills {
+            return failure(native::FULL, b"full", b"no room for a kill");
+        }
         changed(&mut world(), |world| {
             world
                 .submitted
@@ -1812,10 +1822,13 @@ mod tests {
                 response.outcome = native::INDETERMINATE;
                 response.error.message = bytes_of(b"timeout");
             }
-            Killing::Ignores => return success(),
+            Killing::Ignores | Killing::RefusedAtSubmit => return success(),
         }
         answer.data.response = response;
         fake.push(Item::Delivery(vec![answer]));
+        if fake.script.presents_after_kill {
+            fake.push(Item::Delivery(presentation()));
+        }
         if fake.script.drops_after_kill {
             changed(&mut world(), |_| fake.state().dropped = true);
         }
@@ -3507,6 +3520,16 @@ mod tests {
         supervisor.remove(versioned(&old, "2026-11-13T10:00:03.000Z", "0.0.1"), true);
         let refused_old = ClientEvent::Termination(Termination::Refused("old".into()));
         assert_eq!(next(&supervisor), (old.clone(), refused_old));
+        // Nothing held a start or retry of it, so nothing starts again.
+        supervisor.request(old.clone(), Asked::Acquire);
+        let unconnected = Presentation::Answered(
+            Asked::Acquire,
+            Err("the session's client is not connected".into()),
+        );
+        assert_eq!(
+            next(&supervisor),
+            (old.clone(), ClientEvent::Presentation(unconnected))
+        );
         supervisor.stop();
         assert!(generations(&old).is_empty());
     }
@@ -3520,12 +3543,13 @@ mod tests {
     /// Kill unconfirmed, learned passively by a scheduled retry.
     #[test]
     fn a_final_or_gone_session_is_removed_without_a_kill_after_its_cleanup() {
-        let [open, unstarted, stuck, ignored, held] = [
+        let [open, unstarted, stuck, ignored, held, scheduled_retry] = [
             session(32, 1),
             session(32, 2),
             session(32, 3),
             session(32, 4),
             session(32, 5),
+            session(32, 6),
         ];
         let dropping = Script {
             drops: true,
@@ -3536,7 +3560,15 @@ mod tests {
             kills: Killing::Refuses,
             ..Script::default()
         };
-        scripts(&held, &[dropping, refusing_kill, Script::default()]);
+        let lingering = Script {
+            destroy_waits: true,
+            ..dropping
+        };
+        scripts(&held, &[lingering, refusing_kill, Script::default()]);
+        scripts(
+            &scheduled_retry,
+            &[dropping, refusing_kill, Script::default()],
+        );
         let stuck_script = Script {
             destroy_fails: true,
             ..Script::default()
@@ -3588,29 +3620,175 @@ mod tests {
         let (reports, cleaned) = reported_until(supervisor, &ignored, &unanswered);
         assert_eq!(reports, [unanswered]);
         assert!(cleaned);
-        supervisor.start_client(metadata(&held, "2026-11-13T10:00:02.000Z"));
-        let (reports, _) = reported_until(supervisor, &held, &opened);
-        assert_eq!(reports, std::slice::from_ref(&opened));
+        // Held's instance is over and its retry owed, but its owner is not
+        // yet done when the Delete begins; Scheduled's retry is already
+        // scheduled. Either is started again once the Kill is refused.
+        supervisor.start_client(metadata(&held, "2026-11-13T10:00:04.000Z"));
+        supervisor.start_client(metadata(&scheduled_retry, "2026-11-13T10:00:05.000Z"));
         let retrying = ClientEvent::Recovery(Recovery::Retrying(
             "the client stopped before it opened".into(),
         ));
-        reported_until(supervisor, &held, &retrying);
-        supervisor.remove(metadata(&held, "2026-11-13T10:00:02.000Z"), true);
-        let (reports, _) = reported_until(supervisor, &held, &opened);
+        let reports = reports_until(supervisor, |reports| {
+            [&held, &scheduled_retry].iter().all(|id| {
+                reports
+                    .get(*id)
+                    .is_some_and(|events| events.last() == Some(&retrying))
+            })
+        });
         assert_eq!(
-            reports,
-            [
-                ClientEvent::Termination(Termination::Refused("refused".into())),
-                ClientEvent::Starting,
-                opened.clone()
-            ]
+            reports[&held],
+            [opened.clone(), ClientEvent::Ended, retrying.clone()]
         );
-        assert_eq!(generations(&held), [1, 2, 3]);
-        assert_eq!(kills(&held), [2]);
+        let deadline = Instant::now() + WAIT;
+        while scheduled(&supervised.log(), &scheduled_retry).is_empty() {
+            assert!(Instant::now() < deadline, "no retry was scheduled");
+            thread::sleep(Duration::from_millis(10));
+        }
+        supervisor.remove(metadata(&held, "2026-11-13T10:00:04.000Z"), true);
+        supervisor.remove(metadata(&scheduled_retry, "2026-11-13T10:00:05.000Z"), true);
+        let_go(&held);
+        let refused = ClientEvent::Termination(Termination::Refused("refused".into()));
+        let reports = reports_until(supervisor, |reports| {
+            [&held, &scheduled_retry].iter().all(|id| {
+                reports
+                    .get(*id)
+                    .is_some_and(|events| events.last() == Some(&opened))
+            })
+        });
+        for id in [&held, &scheduled_retry] {
+            assert_eq!(
+                reports[id],
+                [refused.clone(), ClientEvent::Starting, opened.clone()]
+            );
+            assert_eq!(generations(id), [1, 2, 3]);
+            assert_eq!(kills(id), [2]);
+        }
 
         let mut supervised = supervised;
         supervised.supervisor.stop();
         assert_eq!(scheduled(&supervised.log(), &ignored).len(), 1);
         assert_eq!(kills(&ignored), [2]);
+    }
+
+    /// DEL-01 and DEL-02 (pure supplement over the fake library, #117): a
+    /// Kill refused at submit, through an open client or as a Kill-only
+    /// instance's only request, is refused, never sent; a pending Kill
+    /// keeps its own request ID, so a later request takes the next. A
+    /// Delete holds a waiting first start, never others: removed with no
+    /// instance, it is never started, while the session waiting beside it
+    /// starts once a start slot is free. A Delete whose Kill was refused
+    /// is over even once the session's own final results arrive: shutdown
+    /// reports no removal.
+    #[test]
+    fn refused_kills_end_their_delete_and_a_delete_holds_only_its_own_start() {
+        let [
+            refused_open,
+            refused_only,
+            pending,
+            late,
+            waiting,
+            held,
+            ended,
+        ] = [
+            session(33, 1),
+            session(33, 2),
+            session(33, 3),
+            session(33, 4),
+            session(33, 5),
+            session(33, 6),
+            session(33, 7),
+        ];
+        let at_submit = Script {
+            kills: Killing::RefusedAtSubmit,
+            ..Script::default()
+        };
+        script(&refused_open, at_submit);
+        let refusing = Script {
+            refuses_open: true,
+            retry: native::RETRY_PERMANENT,
+            ..Script::default()
+        };
+        scripts(&refused_only, &[refusing, at_submit]);
+        let ignoring = Script {
+            kills: Killing::Ignores,
+            ..Script::default()
+        };
+        script(&pending, ignoring);
+        let opening_late = Script {
+            opens_late: true,
+            ..Script::default()
+        };
+        script(&late, opening_late);
+        let refusing_then_ending = Script {
+            kills: Killing::Refuses,
+            presents_after_kill: true,
+            ..Script::default()
+        };
+        script(&ended, refusing_then_ending);
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = supervisor(1, 20_000, fake_library());
+        let opened = ClientEvent::Opened { status: false };
+        let full =
+            ClientEvent::Termination(Termination::Refused("full: no room for a kill".into()));
+        supervisor.start_client(metadata(&refused_open, "2026-11-13T10:00:00.000Z"));
+        reported_until(&supervisor, &refused_open, &opened);
+        supervisor.remove(metadata(&refused_open, "2026-11-13T10:00:00.000Z"), true);
+        assert_eq!(next(&supervisor), (refused_open.clone(), full.clone()));
+
+        supervisor.start_client(metadata(&refused_only, "2026-11-13T10:00:01.000Z"));
+        let rejected = ClientEvent::Recovery(Recovery::Rejected(
+            "the client stopped before it opened".into(),
+        ));
+        reported_until(&supervisor, &refused_only, &rejected);
+        supervisor.remove(metadata(&refused_only, "2026-11-13T10:00:01.000Z"), true);
+        assert_eq!(next(&supervisor), (refused_only.clone(), full));
+        assert!(kills(&refused_open).is_empty() && kills(&refused_only).is_empty());
+
+        supervisor.start_client(metadata(&pending, "2026-11-13T10:00:02.000Z"));
+        reported_until(&supervisor, &pending, &opened);
+        supervisor.remove(metadata(&pending, "2026-11-13T10:00:02.000Z"), true);
+        supervisor.request(pending.clone(), Asked::Acquire);
+        let answered = Presentation::Answered(Asked::Acquire, Ok(()));
+        assert_eq!(
+            next(&supervisor),
+            (pending.clone(), ClientEvent::Presentation(answered))
+        );
+        assert_eq!(
+            submitted(&pending),
+            [(native::KILL, 2, vec![]), (native::ACQUIRE, 3, vec![1])]
+        );
+
+        supervisor.start_client(metadata(&late, "2026-11-13T10:00:03.000Z"));
+        let late_id = guid(&late);
+        until(|world| world.seen.contains(&(late_id, Seen::Created)));
+        supervisor.start_client(metadata(&waiting, "2026-11-13T10:00:04.000Z"));
+        supervisor.start_client(metadata(&held, "2026-11-13T10:00:05.000Z"));
+        supervisor.remove(metadata(&held, "2026-11-13T10:00:05.000Z"), false);
+        assert_eq!(next(&supervisor), (held.clone(), ClientEvent::Removed));
+        let_go(&late);
+        reported_until(&supervisor, &waiting, &opened);
+        assert!(generations(&held).is_empty());
+
+        supervisor.start_client(metadata(&ended, "2026-11-13T10:00:06.000Z"));
+        reported_until(&supervisor, &ended, &opened);
+        supervisor.remove(metadata(&ended, "2026-11-13T10:00:06.000Z"), true);
+        let killed = ClientEvent::Report(Report::Final(Final {
+            outcome: Outcome::Signal(15),
+            changed: None,
+        }));
+        let (reports, _) = reported_until(&supervisor, &ended, &killed);
+        assert_eq!(
+            reports[0],
+            ClientEvent::Termination(Termination::Refused("refused".into()))
+        );
+        supervisor.stop();
+        let after: Vec<_> = supervisor.reports.try_iter().collect();
+        assert!(
+            !after.contains(&(ended.clone(), ClientEvent::Removed)),
+            "{after:?}"
+        );
     }
 }
