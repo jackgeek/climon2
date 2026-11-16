@@ -2444,7 +2444,10 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
         thread::sleep(Duration::from_millis(20));
     }
     terminal.send("\x1dx").unwrap();
-    assert_released(&package, &mut terminal, 0);
+    // Its many frames can outgrow the oracle's recent bytes under load, so
+    // only the title itself is checked.
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
     finish_sessions(&package, "finish");
     let home = package.isolation.home();
     for name in ["A1", "B2", "C3"] {
@@ -2764,6 +2767,52 @@ fn async_updates_clear_the_highlight_and_enter_pins_the_highlighted_session() {
     support::assert_released(&package, &mut terminal, 0);
     received_by(&package, "Beta", b"");
     detach(other);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// SEL-03 (Monitor and Fault: loss): a session lost while its row is
+/// highlighted (its daemon killed) turns Disconnected and moves below the
+/// connected rows, and the highlight moves with it. Enter there acquires
+/// nothing, neither that session (Enter on Disconnected rows is #116's) nor
+/// Alpha, which the loss moved into the highlighted row's old place: the
+/// selector stays open over Beta. Up then highlights Alpha, and Enter
+/// acquires exactly Alpha. No selector key reached a session.
+#[test]
+fn enter_pins_the_highlighted_session_while_it_is_lost() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &watched("Alpha"), "finish");
+    let gamma = headless(&package, &watched("Gamma"), "finish");
+    headless(&package, &watched("Beta"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Beta", STATUS, "29 120");
+    terminal.send("\x1ds\x1b[B").unwrap();
+    let listing = |rows: &[(&str, &str)]| selector_box((ROWS, COLS), "", rows, Some(FOOTER));
+    let connected = [(STATUS, "Beta"), (STATUS, "Gamma"), (STATUS, "Alpha")];
+    boxed_as(&terminal, ROWS, &listing(&connected), &[6]);
+    kill(Pid::from_raw(daemon_of(&package, &gamma)), Signal::SIGKILL).unwrap();
+    let lost = [
+        (STATUS, "Beta"),
+        (STATUS, "Alpha"),
+        ("Disconnected", "Gamma"),
+    ];
+    boxed_as(&terminal, ROWS, &listing(&lost), &[7]);
+    // Up after Enter shows that Enter was read and left the selector open.
+    terminal.send("\r\x1b[A").unwrap();
+    boxed_as(&terminal, ROWS, &listing(&lost), &[6]);
+    top_row_is(&mut terminal, &controlled("Beta", STATUS));
+    terminal.send("\r").unwrap();
+    ready_at(&mut terminal, "Alpha", STATUS, "29 120");
+    terminal.send("z").unwrap();
+    received_by(&package, "Alpha", b"z");
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    received_by(&package, "Beta", b"");
+    // Listing removes the lost session's stale metadata.
+    let detached =
+        serde_json::json!({"lifecycle": "detached", "attachments": 0, "controlled": false});
+    listed_as(&package, "Alpha", &detached);
     finish_sessions(&package, "finish");
     package.assert_clean();
 }
