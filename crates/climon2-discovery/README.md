@@ -127,6 +127,7 @@ hello peers.
 | DSC-03 Contract case (fair continuation while the directory changes) | `a_pass_continues_through_directory_changes_and_the_next_pass_reaches_what_it_missed` |
 | DSC-04 Contract and Fault cases (slow and dead probes, incomplete discovery) with DSC-03 fair continuation | `a_pass_deadline_reports_incomplete_progress_and_the_next_pass_continues_after_it` |
 | DSC-04 Contract case (bounded passes) with DSC-03 fair continuation: the deadline binds a pass that finds only invalid metadata | `a_pass_deadline_bounds_a_pass_that_finds_only_invalid_metadata` |
+| DSC-04 Contract case (bounded passes): entries rejected before any of them is read cost the batch byte budget nothing, at the budget's bound | `entries_rejected_unread_cost_the_batch_byte_budget_nothing` |
 | DSC-04 Contract case (bounded probes) | `probes_are_bounded_by_the_scans_concurrency`, `probes_run_concurrently_up_to_the_bound` |
 | DSC-04 Contract case (inaccessible discovery, incremental) | `an_unlistable_sessions_directory_makes_the_pass_incomplete` |
 

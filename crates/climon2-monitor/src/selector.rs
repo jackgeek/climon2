@@ -127,7 +127,11 @@ impl Selector {
         let block = Block::bordered().border_type(BorderType::Double);
         let inner = block.inner(outer);
         block.render(outer, buffer);
-        let status = rows.iter().map(|row| row.status.width()).max().unwrap_or(0);
+        let status = rows
+            .iter()
+            .map(|row| row.status.width())
+            .max()
+            .unwrap_or_default();
         let visible = usize::from(inner.height);
         let highlighted = self.highlighted(rows);
         let first = highlighted.map_or(0, |index| (index + 1).saturating_sub(visible));
@@ -358,6 +362,61 @@ mod tests {
         assert_eq!(shown(&selector, &without_b), Vec::<u16>::new());
         typed(&mut selector, b"\x1b[A", &without_b);
         assert_eq!(shown(&selector, &without_b), [2]);
+    }
+
+    /// SEL-01 basic cases (pure supplement): the highlight reverses its whole
+    /// row from border to border, past the end of its text, and no other row.
+    /// Moving below the last visible row scrolls by one, keeping the
+    /// highlighted row last in view.
+    #[test]
+    fn the_highlight_spans_its_row_and_stays_in_view() {
+        let rows = rows(&[("", "a"), ("", "b"), ("", "c")]);
+        let mut selector = Selector::default();
+        selector.open(&rows);
+        typed(&mut selector, b"\x1b[B\x1b[B", &rows);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 8, 6));
+        selector.render(&rows, buffer.area, &mut buffer);
+        assert_eq!(
+            lines(&buffer),
+            [
+                "        ",
+                " ╔════╗ ",
+                " ║ b  ║ ",
+                " ║ c  ║ ",
+                " ╚════╝ ",
+                "        ",
+            ]
+        );
+        let reversed: Vec<_> = (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .filter(|&position| {
+                buffer[position]
+                    .modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+            })
+            .collect();
+        assert_eq!(reversed, [(2, 3), (3, 3), (4, 3), (5, 3)]);
+    }
+
+    /// SEL-01 basic cases (pure supplement; the border at its smallest): an
+    /// area 3 cells wide and high holds a one-cell border and nothing else;
+    /// one cell narrower or lower, or a single row or column, holds no
+    /// selector at all, and drawing never fails.
+    #[test]
+    fn the_selector_draws_only_where_its_border_fits() {
+        let rows = rows(&[("Starting", "Alpha")]);
+        let mut selector = Selector::default();
+        selector.open(&rows);
+        let drawn = |width: u16, height: u16| {
+            let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
+            selector.render(&rows, buffer.area, &mut buffer);
+            lines(&buffer)
+        };
+        assert_eq!(drawn(3, 3), ["   ", " ╔ ", "   "]);
+        assert_eq!(drawn(2, 3), ["  "; 3]);
+        assert_eq!(drawn(3, 2), ["   "; 2]);
+        assert_eq!(drawn(1, 4), [" "; 4]);
+        assert_eq!(drawn(4, 1), ["    "]);
     }
 
     /// SEL-01 basic cases (pure supplement): prefix+s while the selector is

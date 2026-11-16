@@ -812,6 +812,43 @@ fn incremental_passes_report_every_entry_once_in_bounded_batches() {
     assert!(files.iter().all(|file| file.exists()));
 }
 
+/// DSC-04 Contract case (bounded passes; batch byte budget at its bound): an entry
+/// rejected before any of it is read, for a malformed name or because it cannot be read,
+/// costs the byte budget nothing. With the budget exactly two valid entries' size, both
+/// valid entries share the batch that also reports both invalid entries; a single byte
+/// charged to either invalid entry would push the second valid entry into its own batch.
+#[test]
+fn entries_rejected_unread_cost_the_batch_byte_budget_nothing() {
+    let (_directory, home) = home();
+    let valid = [0x81, 0x82].map(|suffix| save(&home, &record(&home, suffix, CREATED)));
+    let size = fs::metadata(&valid[0]).unwrap().len();
+    assert_eq!(fs::metadata(&valid[1]).unwrap().len(), size);
+    let sessions = home.root().join("sessions");
+    let malformed = sessions.join("0.pty");
+    fs::write(&malformed, b"{}").unwrap();
+    let unreadable = path(&home, &record(&home, 0x80, CREATED));
+    fs::create_dir(&unreadable).unwrap();
+    let scan = Scan {
+        batch_bytes: 2 * size,
+        ..BROAD
+    };
+    let mut reported = Vec::new();
+    let progress = Continuation::default().pass(&home, &scan, |batch| reported.push(batch));
+    assert!(matches!(progress, Progress::Complete), "{progress:?}");
+    let [batch] = reported.as_slice() else {
+        panic!("{reported:?}");
+    };
+    assert_eq!(ids(&batch.sessions), ids_of(&[0x81, 0x82]));
+    let invalid: Vec<_> = batch.invalid.iter().map(|invalid| &invalid.path).collect();
+    assert_eq!(invalid, [&malformed, &unreadable]);
+    assert!(
+        valid
+            .iter()
+            .chain([&malformed, &unreadable])
+            .all(|path| path.exists())
+    );
+}
+
 /// DSC-03 Contract case (fair continuation while the directory changes): entries added
 /// after the pass's position are reported in the same pass, and one removed before it is
 /// reached is not; an entry added behind the position waits for the next pass, which

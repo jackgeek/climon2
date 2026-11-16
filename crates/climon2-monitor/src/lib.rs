@@ -190,7 +190,7 @@ impl Monitor {
             },
             parser: Parser::new(),
         };
-        monitor.show(true).map(|()| monitor)
+        monitor.show().map(|()| monitor)
     }
 
     /// Acts on host events until an ending, then shuts every client down.
@@ -216,7 +216,7 @@ impl Monitor {
         let ending = self.handle(event)?;
         if ending.is_none() {
             self.collect();
-            self.show(false)?;
+            self.show()?;
         }
         Ok(ending)
     }
@@ -227,18 +227,18 @@ impl Monitor {
             Event::Resize(size) => {
                 self.screen.resize(size);
                 self.resize();
-                self.show(true).map(|()| None)
+                self.show().map(|()| None)
             }
             Event::Input(bytes) => Ok(self.input(bytes)),
             Event::Idle => Ok(None),
         }
     }
 
-    /// Paints the current scene: always when `force`, otherwise only when it
-    /// changed. Each terminal first learns whether this frame shows its
-    /// applied restoration, so its control and input readiness describe the
-    /// frame being painted.
-    fn show(&mut self, force: bool) -> io::Result<()> {
+    /// Paints the current scene when it differs from what the screen shows.
+    /// Each terminal first learns whether this frame shows its applied
+    /// restoration, so its control and input readiness describe the frame
+    /// being painted.
+    fn show(&mut self) -> io::Result<()> {
         self.mark_shown();
         let rows = self.registry.rows();
         let row = self
@@ -254,7 +254,7 @@ impl Monitor {
             incomplete: self.registry.incomplete(),
             session,
         };
-        self.screen.show(&scene, force)
+        self.screen.show(&scene)
     }
 
     /// Only the selected terminal can be shown, and only while nothing
@@ -369,10 +369,12 @@ impl Monitor {
         }
     }
 
-    /// Acts on each byte in turn until one ends the monitor.
+    /// Acts on each byte in turn until one ends the monitor. The end of the
+    /// read goes where typed keys go: past the open key introduction to the
+    /// selector, which ignores it while closed.
     fn input(&mut self, bytes: &[u8]) -> Option<Ending> {
         let ending = bytes.iter().find_map(|&byte| self.act(byte));
-        if ending.is_none() && !self.introduction.is_open() && self.selector.is_open() {
+        if !self.introduction.is_open() {
             self.selector.read_ended(&self.registry.rows());
         }
         ending
