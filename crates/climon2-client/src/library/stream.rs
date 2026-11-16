@@ -595,11 +595,14 @@ impl Stream {
             ServerMessage::InitialMetadata(metadata) => self.initial(&metadata),
             ServerMessage::TitleChanged(changed) => self.changed(changed.title.as_deref()),
             ServerMessage::StatusChanged(changed) => self.status_changed(&changed),
-            message => {
-                require(self.synchronized, UNEXPECTED)?;
-                self.present(message).map(Event::Presentation)
-            }
+            message => self.presentation(message),
         }
+    }
+
+    /// A presentation record, only after the Initial metadata.
+    fn presentation(&mut self, message: ServerMessage) -> Result<Event, Fault> {
+        require(self.synchronized, UNEXPECTED)?;
+        self.present(message).map(Event::Presentation)
     }
 
     /// A grant starts a period when none is held; a revocation ends the
