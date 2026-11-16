@@ -22,4 +22,5 @@ climon2-test-term = { path = "../climon2-test-term" }
 libc = "0.2.191"
 portable-pty = { version = "0.9.0", default-features = false }
 serde_json.workspace = true
+sha2.workspace = true
 tempfile = "3"

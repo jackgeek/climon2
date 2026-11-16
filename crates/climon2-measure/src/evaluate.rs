@@ -25,8 +25,17 @@ pub enum Probe {
     Switch,
     /// A client's start until it shows every session it must.
     Readiness,
-    /// A new session's creation until the client lists it.
+    /// A new session's creation until a client is connected to it.
     Arrival,
+    /// Every daemon resumed from a stall until typed input echoes again.
+    Recovery,
+    /// A toast's host bell until its text is shown (NOT-02).
+    ToastText,
+    /// A toast's host bell until its text is gone again (NOT-02).
+    ToastGone,
+    /// A heuristic session's title change until its attention toast is
+    /// shown: the daemon's status sampler under load (STA-02).
+    Sampler,
 }
 
 impl Probe {
@@ -50,6 +59,10 @@ impl fmt::Display for Probe {
             Self::Switch => "switch",
             Self::Readiness => "readiness",
             Self::Arrival => "arrival",
+            Self::Recovery => "recovery",
+            Self::ToastText => "toast-text",
+            Self::ToastGone => "toast-gone",
+            Self::Sampler => "status-sampler",
         })
     }
 }
@@ -287,6 +300,10 @@ mod tests {
             Probe::Switch,
             Probe::Readiness,
             Probe::Arrival,
+            Probe::Recovery,
+            Probe::ToastText,
+            Probe::ToastGone,
+            Probe::Sampler,
         ] {
             assert_eq!(latency_findings(probe, &latencies(&past)), [], "{probe}");
         }

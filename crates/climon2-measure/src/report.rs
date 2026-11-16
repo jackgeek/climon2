@@ -26,7 +26,7 @@ pub enum Mode {
 }
 
 impl Mode {
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Monitor => "monitor",
             Self::Standalone => "standalone",

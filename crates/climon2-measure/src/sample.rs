@@ -178,10 +178,10 @@ pub fn components(pid: i32) -> Option<Components> {
     platform::components(pid)
 }
 
-/// `pid` and every live descendant of it.
-pub fn descendants(pid: i32) -> Vec<i32> {
+/// `roots` and every live descendant of them.
+pub fn descendants(roots: &[i32]) -> Vec<i32> {
     let parents = platform::parents();
-    let mut found = vec![pid];
+    let mut found = roots.to_vec();
     let mut index = 0;
     while let Some(&parent) = found.get(index) {
         found.extend(
@@ -430,7 +430,7 @@ Rss:                  16 kB
             own.resident > 0 && own.threads >= 1 && own.descriptors >= 3,
             "{own:?}"
         );
-        assert!(descendants(std::process::id() as i32).contains(&(std::process::id() as i32)));
+        assert!(descendants(&[std::process::id() as i32]).contains(&(std::process::id() as i32)));
         assert_eq!(sample(-1), None);
     }
 }

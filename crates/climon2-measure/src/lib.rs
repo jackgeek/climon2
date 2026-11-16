@@ -3,7 +3,9 @@
 //! embedded qualified requirements, and the Measure-case report. Everything
 //! here but the process driving is pure.
 
+pub mod args;
 pub mod evaluate;
+pub mod harness;
 pub mod matrix;
 pub mod report;
 pub mod sample;

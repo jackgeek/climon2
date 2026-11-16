@@ -23,8 +23,10 @@ pub struct Workload {
     pub title: String,
     /// Output bytes per second.
     pub rate: u32,
-    /// A FIFO whose lines `attention` and `working` set the reported status.
+    /// A FIFO whose lines ask for output ([`answer`]).
     pub attention: Option<PathBuf>,
+    /// Report nothing, so the daemon's own heuristic sets the status.
+    pub heuristic: bool,
 }
 
 /// The bytes due `elapsed` into writing at `rate` bytes a second.
@@ -42,27 +44,40 @@ pub fn report(state: &str) -> Vec<u8> {
     format!("\x1b]7501;state={state}{kind}:app=climon2-measure\x1b\\").into_bytes()
 }
 
-/// The status a line read from the attention FIFO asks for.
-pub fn requested(line: &str) -> Option<&'static str> {
+/// What the application writes for a line read from its FIFO: `attention`
+/// and `working` report that status, `title` retitles the session
+/// `<title>-changed`.
+pub fn answer(line: &str, title: &str) -> Option<Vec<u8>> {
     match line.trim() {
-        "attention" => Some("blocked"),
-        "working" => Some("working"),
+        "attention" => Some(report("blocked")),
+        "working" => Some(report("working")),
+        "title" => Some(format!("\x1b]2;{title}-changed\x07").into_bytes()),
         _ => None,
     }
+}
+
+/// What the application writes first: its title, the line `started
+/// <title>`, and unless it is heuristic, that it is working.
+pub fn opening(workload: &Workload) -> Vec<u8> {
+    let mut bytes = format!("\x1b]2;{0}\x07started {0}\n", workload.title).into_bytes();
+    if !workload.heuristic {
+        bytes.extend(report("working"));
+    }
+    bytes
 }
 
 /// Runs the application until its terminal goes away.
 pub fn run(workload: &Workload) -> io::Result<()> {
     let mut out = io::stdout();
-    out.write_all(format!("\x1b]2;{}\x07", workload.title).as_bytes())?;
-    out.write_all(&report("working"))?;
+    out.write_all(&opening(workload))?;
     out.flush()?;
     if workload.rate > 0 {
         let rate = workload.rate;
         thread::spawn(move || write_at(rate));
     }
     if let Some(fifo) = workload.attention.clone() {
-        thread::spawn(move || attend(&fifo));
+        let title = workload.title.clone();
+        thread::spawn(move || attend(&fifo, &title));
     }
     let mut discarded = [0; 4096];
     while io::stdin().read(&mut discarded)? > 0 {}
@@ -87,15 +102,15 @@ fn write_at(rate: u32) -> io::Result<()> {
     }
 }
 
-/// Reports what each line of the FIFO asks for, reopening it after each
+/// Writes what each line of the FIFO asks for, reopening it after each
 /// writer closes it.
-fn attend(fifo: &PathBuf) -> io::Result<()> {
+fn attend(fifo: &PathBuf, title: &str) -> io::Result<()> {
     loop {
         let reader = io::BufReader::new(fs::File::open(fifo)?);
         for line in reader.lines() {
-            if let Some(state) = requested(&line?) {
+            if let Some(bytes) = answer(&line?, title) {
                 let mut out = io::stdout();
-                out.write_all(&report(state))?;
+                out.write_all(&bytes)?;
                 out.flush()?;
             }
         }
@@ -127,19 +142,40 @@ mod tests {
         );
     }
 
-    /// Attention is a blocked question; working clears it.
+    /// Attention is a blocked question; working clears it; title retitles
+    /// the session.
     #[test]
-    fn the_fifo_switches_between_attention_and_working() {
-        assert_eq!(requested("attention\n"), Some("blocked"));
-        assert_eq!(requested("working"), Some("working"));
-        assert_eq!(requested("other"), None);
+    fn the_fifo_asks_for_attention_working_or_a_new_title() {
         assert_eq!(
-            report("blocked"),
-            b"\x1b]7501;state=blocked:kind=question:app=climon2-measure\x1b\\"
+            answer("attention\n", "s002"),
+            Some(b"\x1b]7501;state=blocked:kind=question:app=climon2-measure\x1b\\".to_vec())
         );
         assert_eq!(
-            report("working"),
-            b"\x1b]7501;state=working:app=climon2-measure\x1b\\"
+            answer("working", "s002"),
+            Some(b"\x1b]7501;state=working:app=climon2-measure\x1b\\".to_vec())
         );
+        assert_eq!(
+            answer("title", "h001"),
+            Some(b"\x1b]2;h001-changed\x07".to_vec())
+        );
+        assert_eq!(answer("other", "s002"), None);
+    }
+
+    /// A session opens with its title and start line, and reports working
+    /// unless the daemon's heuristic is to set its status.
+    #[test]
+    fn a_session_opens_titled_and_working_unless_heuristic() {
+        let mut workload = Workload {
+            title: "s001".to_owned(),
+            rate: 0,
+            attention: None,
+            heuristic: false,
+        };
+        assert_eq!(
+            opening(&workload),
+            b"\x1b]2;s001\x07started s001\n\x1b]7501;state=working:app=climon2-measure\x1b\\"
+        );
+        workload.heuristic = true;
+        assert_eq!(opening(&workload), b"\x1b]2;s001\x07started s001\n");
     }
 }
