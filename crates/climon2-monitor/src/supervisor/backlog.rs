@@ -7,7 +7,7 @@
 //! catches up; the library holds what it has not delivered, and nothing is
 //! dropped.
 use crate::{
-    registry::{ClientEvent, Recovery, Report},
+    registry::{Answer, ClientEvent, Recovery, Report, Termination, Verdict},
     terminal::{Presentation, Request},
 };
 use climon2_core::SessionId;
@@ -64,7 +64,16 @@ fn carried(event: &ClientEvent) -> usize {
         ClientEvent::Report(Report::Title(Some(text)))
         | ClientEvent::Unavailable(text)
         | ClientEvent::Recovery(Recovery::Retrying(text) | Recovery::Rejected(text))
-        | ClientEvent::Answer(_, Err(text)) => text.capacity(),
+        | ClientEvent::Answer(
+            _,
+            Answer {
+                verdict: Verdict::Rejected(text) | Verdict::Uncertain(text),
+                ..
+            },
+        )
+        | ClientEvent::Termination(Termination::Refused(text) | Termination::Unconfirmed(text)) => {
+            text.capacity()
+        }
         _ => 0,
     }
 }
@@ -111,9 +120,17 @@ mod tests {
         String::with_capacity(capacity)
     }
 
+    fn answer(verdict: Verdict) -> Answer {
+        Answer {
+            verdict,
+            ended: None,
+        }
+    }
+
     /// LIM-02 (pure supplement): each report is charged by the allocation
     /// it holds, capacity and not length: the record and its session ID,
-    /// display bytes, titles and diagnostics, refusals, and the input or
+    /// display bytes, titles and diagnostics, refusals and Delete's
+    /// termination diagnostics (#117), and the input or
     /// paste an answered request carries; nothing else.
     #[test]
     fn each_report_is_charged_by_the_capacity_it_holds() {
@@ -135,8 +152,21 @@ mod tests {
             (ClientEvent::Recovery(Recovery::Retrying(text(11))), 11),
             (ClientEvent::Recovery(Recovery::Rejected(text(13))), 13),
             (ClientEvent::Recovery(Recovery::Gone), 0),
-            (ClientEvent::Answer(4, Err(text(15))), 15),
-            (ClientEvent::Answer(4, Ok(())), 0),
+            (
+                ClientEvent::Answer(4, answer(Verdict::Rejected(text(15)))),
+                15,
+            ),
+            (
+                ClientEvent::Answer(4, answer(Verdict::Uncertain(text(16)))),
+                16,
+            ),
+            (ClientEvent::Answer(4, answer(Verdict::Accepted)), 0),
+            (ClientEvent::Termination(Termination::Refused(text(21))), 21),
+            (
+                ClientEvent::Termination(Termination::Unconfirmed(text(22))),
+                22,
+            ),
+            (ClientEvent::Removed, 0),
             (
                 ClientEvent::Presentation(Presentation::Answered(
                     Request::Input(held, Vec::with_capacity(17)),

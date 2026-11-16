@@ -157,7 +157,7 @@ End one client's attachment without ending the session or its command; it is del
 _Avoid_: Exit the session, kill, stop
 
 **Kill**:
-A request, made with `c2 kill`, to end a session whatever its attachments; it is confirmed only after the command has ended and the session is cleaned up.
+A request, made with `c2 kill` or a monitor's confirmed Delete, to end a session whatever its attachments; it is confirmed only after the command has ended and the session is cleaned up.
 _Avoid_: Stop, force-detach
 
 **Hang-up grace**:
@@ -183,6 +183,10 @@ _Avoid_: Viewer mode, read-only view (what a monitor paints session content from
 **Selector**:
 The monitor's overlaid list of every session row it tracks, opened with the client escape prefix and s, showing each row's status and label without resizing any session; its always-focused search narrows the list to the rows that match.
 _Avoid_: Session picker, menu, switcher, session list window
+
+**Run-local dismissal**:
+A monitor's record that a confirmed Delete removed a session's row, so that monitor never lists the session again until it exits; nothing is persisted and nothing else is deleted.
+_Avoid_: Archive, hidden session, forgetting
 
 **Key introduction**:
 The monitor's modal list of its key actions, spelled with the configured client escape prefix, shown at startup until the user declines it for that climon2 home, and on request as help.

@@ -32,6 +32,15 @@
 //! getting a turn after each burst of newer ones, retries taking turns with
 //! them. A load still running after `deadlines.load_ms` is reported as
 //! loading slowly, never aborted (owner decision on #120).
+//!
+//! A confirmed Delete (#117) submits one Kill through the session's open
+//! client, or through a Kill-only instance when it has none, admitted and
+//! started ahead of every waiting client; a final or gone session needs
+//! none. The session is reported removed only once its end is known (or it
+//! needs no Kill) and no instance of it is left: each was asked to stop,
+//! its handles released and its owner joined. A refused Kill ends the
+//! Delete; a lost or failed one is never sent again, and only a passive
+//! client learns its outcome.
 mod admission;
 mod backlog;
 mod backoff;
@@ -40,7 +49,7 @@ mod owner;
 mod queue;
 mod stream;
 
-use crate::registry::Report;
+use crate::registry::{Answer, Final, Outcome, Report, Termination, Verdict};
 use crate::{
     registry::ClientEvent,
     terminal::{Presentation, Request},
@@ -48,7 +57,7 @@ use crate::{
 use admission::{Capacity, Holder, Ledger};
 use backlog::Backlog;
 pub(crate) use backlog::footprint;
-use client::{Client, Drain, Retry, Stop};
+use client::{Client, Drain, KILL_ID, Retry, Stop};
 use climon2_core::{
     SessionId, VersionName,
     config::{Admission, Backoff, Lanes},
@@ -185,9 +194,17 @@ pub(crate) struct Context {
 enum Command {
     Start(Box<SessionMetadata>),
     Request(SessionId, Request),
-    Forget(SessionId),
     Drop(SessionId, String),
+    Retire(Retirement),
     Shutdown,
+}
+
+/// Why a session's clients come to an end.
+enum Retirement {
+    /// Discovery proved its daemon gone: it is never retried.
+    Gone(SessionId),
+    /// A confirmed Delete, with whether it needs a Kill.
+    Delete(Box<SessionMetadata>, bool),
 }
 
 /// The running supervisor, as the UI thread holds it.
@@ -255,7 +272,15 @@ impl Supervisor {
     /// Discovery proved `id`'s daemon gone: nothing retries it any more
     /// (owner decision on #116, 2026-11-16).
     pub(crate) fn forget(&self, id: SessionId) {
-        let _ = self.commands.send(Command::Forget(id));
+        let _ = self.commands.send(Command::Retire(Retirement::Gone(id)));
+    }
+
+    /// A confirmed Delete of `metadata`'s session (#117): `kill` it first
+    /// unless it is final or gone. [`ClientEvent::Removed`] reports its
+    /// end; [`ClientEvent::Termination`] a Kill that did not end it.
+    pub(crate) fn remove(&self, metadata: SessionMetadata, kill: bool) {
+        let deleted = Retirement::Delete(Box::new(metadata), kill);
+        let _ = self.commands.send(Command::Retire(deleted));
     }
 
     /// `id`'s terminal model refused an update (#119): its open client is
@@ -282,7 +307,8 @@ impl Supervisor {
 /// What owner and load threads tell the supervisor.
 enum Internal {
     Loaded(VersionName, Result<Loaded, Refusal>),
-    Published(SessionId, Client),
+    /// The handles exist, with the first request's refusal, if refused.
+    Published(SessionId, Client, Option<String>),
     /// Run returned, or create failed, with why if it failed and whether
     /// that is retried.
     Stopped(SessionId, Result<(), (String, Retry)>),
@@ -372,8 +398,62 @@ impl Phase {
     }
 }
 
+/// What an instance is for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Role {
+    /// A passive monitoring client: monitor Open, then the session's
+    /// reports.
+    Monitor,
+    /// One Kill and nothing else (#117): it never opens, its row learns
+    /// nothing of it but the Kill's outcome, and it is never retried.
+    KillOnly,
+}
+
+/// An accepted request awaiting its answer.
+enum Pending {
+    Request(Request),
+    /// A confirmed Delete's Kill, answered to the Delete, never a terminal.
+    Kill,
+}
+
+/// A confirmed Delete under way (#117).
+struct Removal {
+    metadata: SessionMetadata,
+    kill: Kill,
+    /// The command's end is known, from a Kill's answer or a report.
+    ended: bool,
+    /// A start or retry was waiting when the Delete began: it waits again
+    /// if the Kill is refused.
+    resume: bool,
+}
+
+impl Removal {
+    /// Whether the session needs nothing more but its cleanup: its end is
+    /// known, or it needed no Kill.
+    fn over(&self) -> bool {
+        self.ended || self.kill == Kill::Skipped
+    }
+}
+
+/// Where a confirmed Delete's Kill stands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Kill {
+    /// None is needed: the session is final or gone.
+    Skipped,
+    /// Waiting for an instance to submit it through.
+    Wanted,
+    Pending,
+    Answered,
+    /// Refused without effect: the Delete ends once no instance is left.
+    Refused,
+    /// Failed or lost: never sent again; a passive client learns the
+    /// outcome.
+    Unconfirmed,
+}
+
 struct Instance {
     metadata: SessionMetadata,
+    role: Role,
     phase: Phase,
     /// Whether it is retried, decided once it is over.
     retry: Option<Retry>,
@@ -381,7 +461,7 @@ struct Instance {
     finished: bool,
     /// Accepted requests awaiting their answers, by request ID: at most
     /// [`State::ledger`].
-    pending: BTreeMap<u64, Request>,
+    pending: BTreeMap<u64, Pending>,
     /// The next request ID (Open is 1), none once they are exhausted: they
     /// never wrap.
     next: Option<u64>,
@@ -421,6 +501,11 @@ struct State {
     generations: BTreeMap<SessionId, u64>,
     /// Sessions discovery proved gone: never retried.
     forgotten: BTreeSet<SessionId>,
+    /// Confirmed Deletes under way.
+    removing: BTreeMap<SessionId, Removal>,
+    /// Sessions waiting for a Kill-only instance, from when it may be
+    /// admitted: started ahead of every waiting client.
+    killing: BTreeMap<SessionId, Instant>,
     /// The most requests one instance's pending ledger holds: every request
     /// its library may have accepted, queued or under way.
     ledger: usize,
@@ -456,6 +541,8 @@ impl State {
             attempts: BTreeMap::new(),
             generations: BTreeMap::new(),
             forgotten: BTreeSet::new(),
+            removing: BTreeMap::new(),
+            killing: BTreeMap::new(),
         }
     }
 
@@ -492,7 +579,7 @@ impl State {
                 && instance
                     .pending
                     .values()
-                    .any(|request| matches!(request, Request::Input(..)))
+                    .any(|pending| matches!(pending, Pending::Request(Request::Input(..))))
         })
     }
 
@@ -515,11 +602,18 @@ impl State {
         match command {
             Command::Start(metadata) => self.wait(*metadata),
             Command::Request(id, request) => self.submit(&id, request),
-            Command::Forget(id) => self.forget(id),
             Command::Drop(id, why) => self.fail(&id, why),
+            Command::Retire(retirement) => self.retire(retirement),
             Command::Shutdown => return false,
         }
         true
+    }
+
+    fn retire(&mut self, retirement: Retirement) {
+        match retirement {
+            Retirement::Gone(id) => self.forget(id),
+            Retirement::Delete(metadata, kill) => self.remove(*metadata, kill),
+        }
     }
 
     /// Retries of a session proven gone stop: one scheduled is dropped,
@@ -527,6 +621,221 @@ impl State {
     fn forget(&mut self, id: SessionId) {
         self.retrying.remove(&id);
         self.forgotten.insert(id);
+    }
+
+    /// A confirmed Delete: its waiting start or retry is held until the
+    /// Delete ends, and it moves on as far as it can.
+    fn remove(&mut self, metadata: SessionMetadata, kill: bool) {
+        let id = metadata.session_id.clone();
+        let retried = self.retrying.remove(&id).is_some();
+        let held = self.queue.take(|entry| entry.metadata.session_id == id);
+        let removal = Removal {
+            metadata,
+            kill: [Kill::Skipped, Kill::Wanted][usize::from(kill)],
+            ended: false,
+            resume: retried || !held.is_empty(),
+        };
+        self.removing.insert(id.clone(), removal);
+        self.advance(&id);
+    }
+
+    /// Moves `id`'s confirmed Delete on as far as it can go now.
+    fn advance(&mut self, id: &SessionId) {
+        let Some(removal) = self.removing.get(id) else {
+            return;
+        };
+        let (kill, over) = (removal.kill, removal.over());
+        match (self.phase(id), over) {
+            (None, true) => self.removed(id),
+            (None, false) => self.unheld(id, kill),
+            (Some(phase), _) => self.held(id, phase, kill, over),
+        }
+    }
+
+    /// The Delete is over and no instance is left: the row is dismissed.
+    fn removed(&mut self, id: &SessionId) {
+        self.removing.remove(id);
+        self.tell(id, ClientEvent::Removed);
+    }
+
+    /// A Delete not yet over with no instance left: its Kill waits for a
+    /// Kill-only instance, a refused one ends it, and an unconfirmed one is
+    /// learned passively.
+    fn unheld(&mut self, id: &SessionId, kill: Kill) {
+        match kill {
+            Kill::Wanted => {
+                self.killing.entry(id.clone()).or_insert_with(Instant::now);
+            }
+            Kill::Refused => self.refused(id),
+            Kill::Unconfirmed => self.relearn(id),
+            Kill::Skipped | Kill::Pending | Kill::Answered => {}
+        }
+    }
+
+    /// A Delete whose session still has an instance: once over, the
+    /// instance is asked to stop; a Kill waiting for an open client is
+    /// submitted through it.
+    fn held(&mut self, id: &SessionId, phase: Phase, kill: Kill, over: bool) {
+        match (phase, kill) {
+            (phase, _) if over => {
+                if let Some(live) = phase.live() {
+                    live.client.shutdown();
+                }
+            }
+            (Phase::Open(live), Kill::Wanted) => self.submit_kill(id, live),
+            _ => {}
+        }
+    }
+
+    /// A refused Delete with no instance left ends; a start or retry it
+    /// held waits again.
+    fn refused(&mut self, id: &SessionId) {
+        let removal = self.removing.remove(id).expect("a confirmed Delete");
+        if removal.resume {
+            self.restart(removal.metadata);
+        }
+    }
+
+    /// An unconfirmed Kill's outcome is learned by a passive client after
+    /// a backoff, never by another Kill.
+    fn relearn(&mut self, id: &SessionId) {
+        let metadata = self.removing[id].metadata.clone();
+        self.backoff(metadata);
+    }
+
+    /// Submits the Delete's Kill through `id`'s open client.
+    /// Its request IDs never wrap: once they are exhausted, the Kill is
+    /// refused unsent.
+    fn submit_kill(&mut self, id: &SessionId, live: Live) {
+        let instance = self.instances.get_mut(id).expect("an open instance");
+        let exhausted = || "the client's request IDs are exhausted".to_owned();
+        let submitted = instance.next.ok_or_else(exhausted).and_then(|request_id| {
+            live.client.kill(request_id)?;
+            Ok(request_id)
+        });
+        match submitted {
+            Ok(request_id) => {
+                instance.next = request_id.checked_add(1);
+                instance.pending.insert(request_id, Pending::Kill);
+                self.set_kill(id, Kill::Pending);
+            }
+            Err(why) => self.killed(id, rejected(why)),
+        }
+    }
+
+    fn set_kill(&mut self, id: &SessionId, kill: Kill) {
+        if let Some(removal) = self.removing.get_mut(id) {
+            removal.kill = kill;
+        }
+    }
+
+    /// A Delete's Kill was answered: a known command result ends the
+    /// session; otherwise the row learns that the Kill was refused, which
+    /// ends the Delete at once while a monitoring client stays, or that it
+    /// is unconfirmed.
+    fn killed(&mut self, id: &SessionId, answer: Answer) {
+        if let Some(outcome) = answer.ended {
+            self.ended(id, outcome);
+        }
+        let kill = self.verdict(id, answer.verdict);
+        self.set_kill(id, kill);
+        self.forsake(id, kill);
+        self.advance(id);
+    }
+
+    /// Where a Kill stands after its answer's verdict, telling the row how
+    /// it fell short.
+    fn verdict(&self, id: &SessionId, verdict: Verdict) -> Kill {
+        match verdict {
+            Verdict::Accepted => Kill::Answered,
+            Verdict::Rejected(why) => self.unkilled(id, Termination::Refused(why), Kill::Refused),
+            Verdict::Uncertain(why) => {
+                self.unkilled(id, Termination::Unconfirmed(why), Kill::Unconfirmed)
+            }
+        }
+    }
+
+    /// A refused Kill ends its Delete at once while a monitoring client of
+    /// the session lives on.
+    fn forsake(&mut self, id: &SessionId, kill: Kill) {
+        let monitored = self.role(id) == Some(Role::Monitor);
+        if kill == Kill::Refused && monitored && !self.over(id) {
+            self.removing.remove(id);
+        }
+    }
+
+    /// Tells the row how its Kill fell short, unless its end is known.
+    fn unkilled(&self, id: &SessionId, termination: Termination, kill: Kill) -> Kill {
+        if !self.over(id) {
+            self.tell(id, ClientEvent::Termination(termination));
+        }
+        kill
+    }
+
+    /// Whether `id`'s Delete knows its session's end.
+    fn over(&self, id: &SessionId) -> bool {
+        self.removing.get(id).is_some_and(|removal| removal.ended)
+    }
+
+    fn role(&self, id: &SessionId) -> Option<Role> {
+        self.instances.get(id).map(|instance| instance.role)
+    }
+
+    /// A Kill's answer carried the command's result: the row learns it as
+    /// the final outcome, and nothing retries the session.
+    fn ended(&mut self, id: &SessionId, outcome: Outcome) {
+        let ended = Final {
+            outcome,
+            changed: None,
+        };
+        self.tell(id, ClientEvent::Report(Report::Final(ended)));
+        self.finished(id);
+    }
+
+    /// A Kill-only instance for each Delete waiting for one whose
+    /// admission interval has passed, ahead of every waiting client, as its
+    /// release and the start lane allow; a refused release refuses its
+    /// Kill.
+    fn kill_only(&mut self, now: Instant) {
+        let due = self.killing.iter().filter(|(_, from)| passed(**from, now));
+        let killing: Vec<_> = due.map(|(id, _)| id.clone()).collect();
+        for id in killing {
+            let metadata = self.removing[&id].metadata.clone();
+            match self.releases.get(&metadata.climon2_version) {
+                Some(Release::Refused(refusal)) => {
+                    let why = refusal.message().to_owned();
+                    self.killing.remove(&id);
+                    self.killed(&id, rejected(why));
+                }
+                Some(&Release::Ready {
+                    functions,
+                    instance,
+                }) if room(self.starting(), self.context.lanes.starts) => {
+                    self.start_kill(metadata, functions, instance, now);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Reserves a Kill-only instance and starts it, or reconsiders it after
+    /// the admission interval.
+    fn start_kill(
+        &mut self,
+        metadata: SessionMetadata,
+        functions: &'static Functions,
+        instance: admission::Instance,
+        now: Instant,
+    ) {
+        let id = metadata.session_id.clone();
+        let holder = (Holder::Instance(id.clone()), instance.amount);
+        if let Err(why) = self.admitted.hold(&[holder], self.capacity()) {
+            tracing::info!(session = %id, %why, "Kill-only instance resource-blocked");
+            self.killing.insert(id, now + self.interval());
+            return;
+        }
+        self.killing.remove(&id);
+        self.spawn_owner(functions, instance.owner_stack, metadata, Role::KillOnly);
     }
 
     /// `metadata`'s session waits for its first start.
@@ -599,22 +908,27 @@ impl State {
         };
         live.client.submit(request_id, &request)?;
         instance.next = request_id.checked_add(1);
-        instance.pending.insert(request_id, request);
+        instance
+            .pending
+            .insert(request_id, Pending::Request(request));
         Ok(())
     }
 
-    /// A request's answer goes to the session's terminal as its request.
-    fn answer(&mut self, id: &SessionId, request_id: u64, answer: Result<(), String>) {
+    /// A request's answer goes to the session's terminal as its request, a
+    /// Kill's to its Delete.
+    fn answer(&mut self, id: &SessionId, request_id: u64, answer: Answer) {
         let pending = self
             .instances
             .get_mut(id)
             .map(|instance| &mut instance.pending);
-        if let Some(request) = pending.and_then(|pending| pending.remove(&request_id)) {
-            self.report(
-                id,
-                ClientEvent::Presentation(Presentation::Answered(request, answer)),
-            );
-            self.settle(id);
+        match pending.and_then(|pending| pending.remove(&request_id)) {
+            Some(Pending::Request(request)) => {
+                let answered = Presentation::Answered(request, answer.result());
+                self.report(id, ClientEvent::Presentation(answered));
+                self.settle(id);
+            }
+            Some(Pending::Kill) => self.killed(id, answer),
+            None => {}
         }
     }
 
@@ -627,7 +941,7 @@ impl State {
     fn internal(&mut self, internal: Internal) {
         match internal {
             Internal::Loaded(version, loaded) => self.loaded(version, loaded),
-            Internal::Published(id, client) => self.published(&id, client),
+            Internal::Published(id, client, refused) => self.published(&id, client, refused),
             Internal::Stopped(id, ran) => self.stopped(&id, ran),
             Internal::OwnerDone(id, destroyed) => self.owner_done(&id, destroyed),
         }
@@ -645,6 +959,7 @@ impl State {
             self.release(&version, now);
         }
         self.refusals();
+        self.kill_only(now);
         self.starts(now);
         self.slow(now);
         self.conditions();
@@ -652,11 +967,15 @@ impl State {
         self.reserved.store(reserved, Ordering::Relaxed);
     }
 
-    /// The releases waiting sessions need, newest session first.
+    /// The releases Kill-only instances and waiting sessions need, newest
+    /// session first.
     fn versions(&mut self) -> Vec<VersionName> {
+        let removing = &self.removing;
+        let killing = self.killing.keys().map(|id| &removing[id].metadata);
+        let waiting = self.queue.entries().map(|entry| &entry.metadata);
         let mut versions = Vec::new();
-        for entry in self.queue.entries() {
-            let version = &entry.metadata.climon2_version;
+        for metadata in killing.chain(waiting) {
+            let version = &metadata.climon2_version;
             if !versions.contains(version) {
                 versions.push(version.clone());
             }
@@ -734,7 +1053,12 @@ impl State {
                 if entry.told.is_some() {
                     self.tell(&entry.metadata.session_id, ClientEvent::Starting);
                 }
-                self.spawn_owner(functions, instance.owner_stack, entry.metadata);
+                self.spawn_owner(
+                    functions,
+                    instance.owner_stack,
+                    entry.metadata,
+                    Role::Monitor,
+                );
             }
             Err(why) => {
                 let id = &entry.metadata.session_id;
@@ -916,15 +1240,16 @@ impl State {
         }
     }
 
-    /// Starts an instance for `metadata`'s session in its next connection
-    /// generation, the first 1. Generations never wrap: once a session's
-    /// are exhausted, it is never attempted again (LIM-05).
+    /// Starts an instance in `role` for `metadata`'s session in its next
+    /// connection generation, the first 1. Generations never wrap: once a
+    /// session's are exhausted, it is never attempted again (LIM-05).
     /// Its owner thread gets the stack admission reserved for it.
     fn spawn_owner(
         &mut self,
         functions: &'static Functions,
         stack: u64,
         metadata: SessionMetadata,
+        role: Role,
     ) {
         let id = metadata.session_id.clone();
         let latest = self.generations.get(&id);
@@ -932,9 +1257,9 @@ impl State {
             latest.checked_add(1)
         }) else {
             let why = "connection generations are exhausted".to_owned();
-            return self.unstarted(metadata, why, Retry::Permanent);
+            return self.unspawned(metadata, why, Retry::Permanent, role);
         };
-        tracing::info!(session = %id, version = %metadata.climon2_version, "client starting");
+        tracing::info!(session = %id, version = %metadata.climon2_version, ?role, "client starting");
         self.generations.insert(id.clone(), generation);
         let (released, release) = mpsc::channel();
         let internal = self.internal.clone();
@@ -944,12 +1269,13 @@ impl State {
             thread::Builder::new()
                 .name("client".into())
                 .stack_size(self::stack(stack))
-                .spawn(move || owner::owner(functions, &startup, owned, &internal, &release))
+                .spawn(move || owner::owner(functions, &startup, owned, &internal, &release, role))
         });
         match spawned {
             Ok(owner) => {
                 let instance = Instance {
                     metadata,
+                    role,
                     phase: Phase::Creating,
                     retry: None,
                     finished: false,
@@ -959,9 +1285,33 @@ impl State {
                     released,
                     owner,
                 };
-                self.instances.insert(id, instance);
+                self.instances.insert(id.clone(), instance);
+                self.started(&id, role);
             }
-            Err(error) => self.unstarted(metadata, error.to_string(), Retry::Passive),
+            Err(error) => self.unspawned(metadata, error.to_string(), Retry::Passive, role),
+        }
+    }
+
+    /// A Kill-only instance's Kill is its first and only request, pending
+    /// from its start, and it is never retried.
+    fn started(&mut self, id: &SessionId, role: Role) {
+        let instance = self.instances.get_mut(id).expect("a started instance");
+        if role == Role::KillOnly {
+            instance.pending.insert(KILL_ID, Pending::Kill);
+            instance.retry = Some(Retry::None);
+            self.set_kill(id, Kill::Pending);
+        }
+    }
+
+    /// No instance could start: a monitoring client is Unavailable and
+    /// retried as `retry` says; a Kill-only instance's Kill was never sent.
+    /// What admission reserved for it is freed.
+    fn unspawned(&mut self, metadata: SessionMetadata, why: String, retry: Retry, role: Role) {
+        self.admitted
+            .free(&Holder::Instance(metadata.session_id.clone()));
+        match role {
+            Role::Monitor => self.unstarted(metadata, why, retry),
+            Role::KillOnly => self.killed(&metadata.session_id, rejected(why)),
         }
     }
 
@@ -1015,14 +1365,21 @@ impl State {
             if let Some(Release::Refused(_)) = self.releases.get(version) {
                 self.releases.remove(version);
             }
-            self.tell(&id, ClientEvent::Starting);
-            self.queue.push(metadata, Lane::Retry);
+            self.restart(metadata);
         }
     }
 
+    /// A fresh client waits in the retry lane for its start, its row
+    /// Starting again.
+    fn restart(&mut self, metadata: SessionMetadata) {
+        self.tell(&metadata.session_id, ClientEvent::Starting);
+        self.queue.push(metadata, Lane::Retry);
+    }
+
     /// The owner published its handles: look up the descriptor, or fail the
-    /// instance without one.
-    fn published(&mut self, id: &SessionId, client: Client) {
+    /// instance without one. A Kill-only instance whose Kill was refused
+    /// answers it so; one whose Delete is over is asked to stop.
+    fn published(&mut self, id: &SessionId, client: Client, refused: Option<String>) {
         let lookup = client.notification();
         let descriptor = lookup.as_ref().ok().copied();
         self.set(id, Phase::Opening(Live { client, descriptor }));
@@ -1030,6 +1387,11 @@ impl State {
         if let Err(error) = lookup {
             self.fail(id, format!("cannot poll the client: {error}"));
         }
+        let killing = self.role(id) == Some(Role::KillOnly);
+        if let Some(why) = refused.filter(|_| killing) {
+            self.answer(id, KILL_ID, rejected(why));
+        }
+        self.advance(id);
     }
 
     /// Waits one tick on the descriptor of every live instance that is not
@@ -1145,6 +1507,13 @@ impl State {
         if phase.reporting() {
             self.tell(id, event);
         }
+        self.advance(id);
+    }
+
+    /// Whether the row follows `id`'s instance: a monitoring client, never
+    /// a Kill-only one.
+    fn follows(&self, id: &SessionId) -> bool {
+        self.role(id) == Some(Role::Monitor)
     }
 
     /// An open client starts its session's backoff afresh; a final outcome
@@ -1159,10 +1528,14 @@ impl State {
         }
     }
 
-    /// The command's final outcome came through `id`'s instance.
+    /// The command's final outcome is known for `id`: nothing retries it,
+    /// and a Delete of it is over.
     fn finished(&mut self, id: &SessionId) {
         if let Some(instance) = self.instances.get_mut(id) {
             instance.finished = true;
+        }
+        if let Some(removal) = self.removing.get_mut(id) {
+            removal.ended = true;
         }
     }
 
@@ -1193,7 +1566,9 @@ impl State {
         let live = phase.live().filter(|_| phase.reporting())?;
         tracing::warn!(session = %id, %why, "client failed");
         self.set(id, Phase::Closing(live));
-        self.tell(id, ClientEvent::Unavailable(why));
+        if self.follows(id) {
+            self.tell(id, ClientEvent::Unavailable(why));
+        }
         Some(live)
     }
 
@@ -1239,7 +1614,7 @@ impl State {
         if let Some(instance) = self.instances.get(id) {
             let _ = instance.released.send(());
         }
-        if let Some(event) = phase.over(why.clone()) {
+        if let Some(event) = phase.over(why.clone()).filter(|_| self.follows(id)) {
             self.tell(id, event);
         }
         self.decide(id, why, retry);
@@ -1254,6 +1629,10 @@ impl State {
         };
         let _ = instance.owner.join();
         self.admitted.free(&Holder::Instance(id.clone()));
+        if let Some(removal) = self.removing.get_mut(id) {
+            removal.resume |= instance.retry == Some(Retry::Passive);
+            return self.cleaned(id, destroyed);
+        }
         if instance.retry != Some(Retry::Passive) {
             return;
         }
@@ -1264,6 +1643,24 @@ impl State {
                 self.recover(id, why, Retry::Permanent);
             }
         }
+    }
+
+    /// A Delete's instance is cleaned up and joined (a retry it was owed
+    /// waits for the Delete to end): a Kill it left unanswered is
+    /// unconfirmed. One whose cleanup cannot be confirmed
+    /// ends the Delete with why, its row kept (the fail-stop is #118's).
+    fn cleaned(&mut self, id: &SessionId, destroyed: Result<(), String>) {
+        if let Err(error) = destroyed {
+            self.removing.remove(id);
+            let why = format!("cannot confirm the client's cleanup: {error}");
+            return self.tell(id, ClientEvent::Termination(Termination::Unconfirmed(why)));
+        }
+        if self.removing[id].kill == Kill::Pending {
+            let why = "the client ended before the Kill was answered".to_owned();
+            let kill = self.unkilled(id, Termination::Unconfirmed(why), Kill::Unconfirmed);
+            self.set_kill(id, kill);
+        }
+        self.advance(id);
     }
 
     fn phase(&self, id: &SessionId) -> Option<Phase> {
@@ -1307,6 +1704,14 @@ impl State {
                 "client shutdown unconfirmed at its deadline"
             );
         }
+    }
+}
+
+/// A request refused before it was sent, with why.
+fn rejected(why: String) -> Answer {
+    Answer {
+        verdict: Verdict::Rejected(why),
+        ended: None,
     }
 }
 
@@ -1461,6 +1866,31 @@ mod tests {
         destroy_fails: bool,
         /// Open is refused, and the stream ends with terminal evidence.
         refuses_open: bool,
+        /// How a Kill is answered.
+        kills: Killing,
+        /// The connection is lost once a Kill is answered.
+        drops_after_kill: bool,
+        /// Once a Kill is answered, the presentation's records follow,
+        /// with the command's final results.
+        presents_after_kill: bool,
+        /// Destroy waits until the test lets it go.
+        destroy_waits: bool,
+    }
+
+    /// How the fake answers a Kill (#117).
+    #[derive(Clone, Copy, Default)]
+    enum Killing {
+        /// Terminated by signal 9, cleanup complete.
+        #[default]
+        Confirms,
+        /// Refused without effect.
+        Refuses,
+        /// Indeterminate: the answer was lost.
+        Loses,
+        /// Never answered.
+        Ignores,
+        /// Refused at submit, never sent.
+        RefusedAtSubmit,
     }
 
     /// What the observer saw of one session's instance.
@@ -1491,6 +1921,8 @@ mod tests {
         /// Instances whose notification descriptor was looked up: the
         /// supervisor does so as it learns of their handles.
         looked_up: BTreeSet<[u8; 16]>,
+        /// Each instance that was submitted monitor Open, by session.
+        opens: Vec<[u8; 16]>,
     }
 
     impl World {
@@ -1508,6 +1940,7 @@ mod tests {
         unstalled: BTreeSet::new(),
         submitted: Vec::new(),
         looked_up: BTreeSet::new(),
+        opens: Vec::new(),
     });
     static CHANGED: Condvar = Condvar::new();
     const WAIT: Duration = Duration::from_secs(20);
@@ -1577,6 +2010,10 @@ mod tests {
         refused: u32,
         communication: bool,
         control: bool,
+        /// Monitor Open was submitted: a Kill-only instance has none.
+        opened: bool,
+        /// The connection was lost after a Kill's answer.
+        dropped: bool,
     }
 
     struct Fake {
@@ -1737,7 +2174,8 @@ mod tests {
             fake.state().over = true;
             return failure(native::INTERNAL_ERROR, b"internal_error", b"run failed");
         }
-        if fake.script.ends_unopened.is_none() {
+        let opened = fake.state().opened;
+        if fake.script.ends_unopened.is_none() && opened {
             serve(fake);
         }
         fake.push(Item::Terminal);
@@ -1761,7 +2199,8 @@ mod tests {
         if fake.script.drops {
             return;
         }
-        wait_while(|world| !(shutdown() && (!fake.script.stalls || let_go(world))));
+        let dropped = || fake.state().dropped;
+        wait_while(|world| !(shutdown() && (!fake.script.stalls || let_go(world)) || dropped()));
     }
 
     /// Waits for each change of the world while `blocked` holds of it.
@@ -1774,6 +2213,7 @@ mod tests {
 
     extern "C" fn destroy(instance: *mut Instance) -> Call {
         let fake = fake(instance);
+        wait_while(|world| fake.script.destroy_waits && !world.unstalled.contains(&fake.id));
         let state = fake.state();
         let released = state.communication && state.control && state.outstanding == 0;
         let free = released && !fake.script.destroy_fails;
@@ -1788,11 +2228,16 @@ mod tests {
     extern "C" fn submit(communication: *mut Communication, request: *const Request) -> Call {
         // SAFETY: the supervisor passes a complete request.
         let request = unsafe { &*request };
+        let fake = fake(communication);
         if request.tag == native::OPEN {
             assert_eq!(request.request_id, OPEN_ID);
+            fake.state().opened = true;
+            changed(&mut world(), |world| world.opens.push(fake.id));
             return success();
         }
-        let fake = fake(communication);
+        if request.tag == native::KILL {
+            return kill(fake, request.request_id);
+        }
         {
             let mut state = fake.state();
             if state.refused < fake.script.refused_submits {
@@ -1836,6 +2281,55 @@ mod tests {
             answer(99, false),
             answer(request.request_id, refused),
         ]));
+        success()
+    }
+
+    /// Records a Kill and answers it as the script says, then drops the
+    /// connection if the script says so.
+    fn kill(fake: &Fake, request_id: u64) -> Call {
+        if let Killing::RefusedAtSubmit = fake.script.kills {
+            return failure(native::FULL, b"full", b"no room for a kill");
+        }
+        changed(&mut world(), |world| {
+            world
+                .submitted
+                .push((fake.id, (native::KILL, request_id, Vec::new())));
+        });
+        let mut answer = record(native::RESPONSE);
+        // SAFETY: an all-zero response is a valid plain value.
+        let mut response: native::Response = unsafe { std::mem::zeroed() };
+        response.request_id = request_id;
+        response.error = no_error();
+        match fake.script.kills {
+            Killing::Confirms => {
+                response.outcome = native::OK;
+                response.result_tag = native::TERMINATION;
+                // SAFETY: an all-zero termination is a valid plain value.
+                let mut termination: native::Termination = unsafe { std::mem::zeroed() };
+                termination.command_result.present = 1;
+                termination.command_result.value.kind = native::SIGNAL;
+                termination.command_result.value.value = 9;
+                termination.cleanup = native::CLEANUP_COMPLETE;
+                response.result.termination = termination;
+            }
+            Killing::Refuses => {
+                response.outcome = native::REJECTED;
+                response.error.message = bytes_of(b"refused");
+            }
+            Killing::Loses => {
+                response.outcome = native::INDETERMINATE;
+                response.error.message = bytes_of(b"timeout");
+            }
+            Killing::Ignores | Killing::RefusedAtSubmit => return success(),
+        }
+        answer.data.response = response;
+        fake.push(Item::Delivery(vec![answer]));
+        if fake.script.presents_after_kill {
+            fake.push(Item::Delivery(presentation()));
+        }
+        if fake.script.drops_after_kill {
+            changed(&mut world(), |_| fake.state().dropped = true);
+        }
         success()
     }
 
@@ -3936,6 +4430,501 @@ mod tests {
             log.matches("client library loading slowly").count(),
             1,
             "{log}"
+        );
+    }
+
+    /// The Kills `id`'s instances were submitted, by request ID.
+    fn kills(id: &SessionId) -> Vec<u64> {
+        let kills = submitted(id).into_iter();
+        kills
+            .filter(|(tag, ..)| *tag == native::KILL)
+            .map(|(_, request_id, _)| request_id)
+            .collect()
+    }
+
+    /// How many of `id`'s instances were submitted monitor Open.
+    fn opens(id: &SessionId) -> usize {
+        let id = guid(id);
+        world().opens.iter().filter(|opened| **opened == id).count()
+    }
+
+    /// Whether every instance of `id` made so far was destroyed and its
+    /// owner exited: a report this holds at was made after its cleanup and
+    /// join.
+    fn cleaned_up(id: &SessionId) -> bool {
+        let seen = seen(&guid(id));
+        let count = |what: Seen| seen.iter().filter(|seen| **seen == what).count();
+        let made = count(Seen::Created);
+        made == count(Seen::Destroyed(native::SUCCESS)) && made == count(Seen::OwnerExited)
+    }
+
+    /// What `supervisor` reports of `id`, presentation left out, until
+    /// `last`, and whether `id`'s instances were all cleaned up by then.
+    fn reported_until(
+        supervisor: &Supervisor,
+        id: &SessionId,
+        last: &ClientEvent,
+    ) -> (Vec<ClientEvent>, bool) {
+        let reports = reports_until(supervisor, |reports| {
+            reports
+                .get(id)
+                .is_some_and(|events| events.last() == Some(last))
+        });
+        (reports[id].clone(), cleaned_up(id))
+    }
+
+    fn killed_by(signal: u32) -> ClientEvent {
+        ClientEvent::Report(Report::Final(Final {
+            outcome: Outcome::Signal(signal),
+            changed: None,
+        }))
+    }
+
+    /// DEL-01 and DEL-02 (pure supplement over the fake library, #117): a
+    /// confirmed Delete of a session with an open client submits one Kill
+    /// through it; its termination result is the row's final outcome, the
+    /// client is asked to stop, and the session is reported removed only
+    /// once its instance is destroyed and its owner joined. A session
+    /// without an open client, one whose Open was refused for good or one
+    /// never started whose release must still load, is killed through a
+    /// Kill-only instance: no Open, its one Kill as request 2, nothing
+    /// reported of it but the Kill's outcome, removed after its cleanup.
+    #[test]
+    fn a_confirmed_kill_removes_its_session_only_after_cleanup() {
+        let [open, refused, unstarted] = [session(30, 1), session(30, 2), session(30, 3)];
+        let refusing = Script {
+            refuses_open: true,
+            retry: native::RETRY_PERMANENT,
+            ..Script::default()
+        };
+        scripts(&refused, &[refusing, Script::default()]);
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = supervisor(1, 20_000, fake_library());
+        supervisor.start_client(metadata(&open, "2026-11-13T10:00:00.000Z"));
+        let opened = ClientEvent::Opened { status: false };
+        let (reports, _) = reported_until(&supervisor, &open, &opened);
+        assert_eq!(reports, std::slice::from_ref(&opened));
+        supervisor.remove(metadata(&open, "2026-11-13T10:00:00.000Z"), true);
+        let (reports, cleaned) = reported_until(&supervisor, &open, &ClientEvent::Removed);
+        assert_eq!(
+            reports,
+            [killed_by(9), ClientEvent::Ended, ClientEvent::Removed]
+        );
+        assert!(cleaned);
+        assert_eq!(kills(&open), [2]);
+        assert_eq!(submitted(&open).len(), 1);
+
+        supervisor.start_client(metadata(&refused, "2026-11-13T10:00:01.000Z"));
+        let rejected = ClientEvent::Recovery(Recovery::Rejected(
+            "the client stopped before it opened".into(),
+        ));
+        let (reports, _) = reported_until(&supervisor, &refused, &rejected);
+        assert_eq!(
+            reports,
+            [ClientEvent::Unavailable("stale".into()), rejected]
+        );
+        supervisor.remove(metadata(&refused, "2026-11-13T10:00:01.000Z"), true);
+        let (reports, cleaned) = reported_until(&supervisor, &refused, &ClientEvent::Removed);
+        assert_eq!(reports, [killed_by(9), ClientEvent::Removed]);
+        assert!(cleaned);
+        assert_eq!((generations(&refused), opens(&refused)), (vec![1, 2], 1));
+        assert_eq!(kills(&refused), [2]);
+
+        let fresh = versioned(&unstarted, "2026-11-13T10:00:02.000Z", "0.2.0");
+        supervisor.remove(fresh, true);
+        let (reports, cleaned) = reported_until(&supervisor, &unstarted, &ClientEvent::Removed);
+        assert_eq!(reports, [killed_by(9), ClientEvent::Removed]);
+        assert!(cleaned);
+        assert_eq!((generations(&unstarted), opens(&unstarted)), (vec![1], 0));
+        assert_eq!(kills(&unstarted), [2]);
+        supervisor.stop();
+    }
+
+    /// DEL-01 and LIM-04 (pure supplement over the fake library; #117 with
+    /// #120's admission): a Kill-only instance is reserved like any
+    /// instance. With room for the release and exactly one instance, the
+    /// Kill-only instance of a session resource-blocked behind an open
+    /// client is refused admission too and waits; once a Delete of the open
+    /// client's session removes it, freeing its reservation, the Kill-only
+    /// instance is admitted, its one Kill sent as request 2, and its
+    /// session removed.
+    #[test]
+    fn a_kill_only_instance_waits_for_admission_like_any_instance() {
+        let [open, blocked] = [session(47, 1), session(47, 2)];
+        let mut supervised = adjusted(8, fake_library(), |context| {
+            context.admission.total_bytes = RELEASE + INSTANCE;
+            context.admission.admission_ms = 20;
+        });
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&open, "2026-11-16T10:00:02.000Z"));
+        supervisor.start_client(metadata(&blocked, "2026-11-16T10:00:01.000Z"));
+        let short = "not enough memory: 9699328 bytes needed, 0 bytes available";
+        let waiting = ClientEvent::AwaitingResources(short.into());
+        let mut others = Vec::new();
+        let reports = reports_of(supervisor, &blocked, &waiting, &mut others);
+        assert_eq!(reports, std::slice::from_ref(&waiting));
+        supervisor.remove(metadata(&blocked, "2026-11-16T10:00:01.000Z"), true);
+        supervisor.remove(metadata(&open, "2026-11-16T10:00:02.000Z"), true);
+        let mut sequence = Vec::new();
+        let reports = reports_of(supervisor, &blocked, &ClientEvent::Removed, &mut sequence);
+        assert_eq!(reports, [killed_by(9), ClientEvent::Removed]);
+        assert_eq!(
+            sequence.last(),
+            Some(&(open.clone(), ClientEvent::Removed)),
+            "the Kill-only instance waited for the open client's removal"
+        );
+        assert_eq!((generations(&blocked), opens(&blocked)), (vec![1], 0));
+        assert_eq!(kills(&blocked), [2]);
+        supervisor.stop();
+        let log = supervised.log();
+        assert!(log.contains("Kill-only instance resource-blocked"), "{log}");
+    }
+
+    /// DEL-02 (pure supplement over the fake library, #117): a refused Kill
+    /// ends its Delete at once, the client serving on; a Kill-only
+    /// instance's refusal, or its release's, ends it too, and a retry the
+    /// Delete held is started again. A lost Kill keeps the Delete: the
+    /// connection then lost, only a passive client in a fresh generation
+    /// learns the outcome, never another Kill, and the session is removed
+    /// once that client reports its final result and is cleaned up.
+    #[test]
+    fn a_refused_kill_ends_its_delete_and_a_lost_one_is_never_sent_again() {
+        let [refused, lost, old] = [session(31, 1), session(31, 2), session(31, 4)];
+        let refusing = Script {
+            kills: Killing::Refuses,
+            ..Script::default()
+        };
+        script(&refused, refusing);
+        let losing = Script {
+            kills: Killing::Loses,
+            drops_after_kill: true,
+            ..Script::default()
+        };
+        let ending = Script {
+            presents: true,
+            ..Script::default()
+        };
+        scripts(&lost, &[losing, ending]);
+        let soon = Backoff {
+            initial_ms: 50,
+            cap_ms: 50,
+            jitter_percent: 0,
+        };
+        let limits = climon2_core::config::Limits::default().library();
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = retrying(1, 20_000, refusing_old(), (limits, soon));
+        let opened = ClientEvent::Opened { status: false };
+        supervisor.start_client(metadata(&refused, "2026-11-13T10:00:00.000Z"));
+        reported_until(&supervisor, &refused, &opened);
+        supervisor.remove(metadata(&refused, "2026-11-13T10:00:00.000Z"), true);
+        let refusal = ClientEvent::Termination(Termination::Refused("refused".into()));
+        assert_eq!(next(&supervisor), (refused.clone(), refusal.clone()));
+        supervisor.request(refused.clone(), Asked::Acquire);
+        let answered = Presentation::Answered(Asked::Acquire, Ok(()));
+        assert_eq!(
+            next(&supervisor),
+            (refused.clone(), ClientEvent::Presentation(answered))
+        );
+
+        supervisor.start_client(metadata(&lost, "2026-11-13T10:00:01.000Z"));
+        reported_until(&supervisor, &lost, &opened);
+        supervisor.remove(metadata(&lost, "2026-11-13T10:00:01.000Z"), true);
+        let (reports, cleaned) = reported_until(&supervisor, &lost, &ClientEvent::Removed);
+        let unconfirmed = ClientEvent::Termination(Termination::Unconfirmed("timeout".into()));
+        assert_eq!(reports[0], unconfirmed);
+        assert!(reports.contains(&ClientEvent::Starting), "{reports:?}");
+        let finals = reports
+            .iter()
+            .filter(|event| matches!(event, ClientEvent::Report(Report::Final(_))));
+        assert_eq!(finals.count(), 2, "{reports:?}");
+        assert!(cleaned);
+        assert_eq!((generations(&lost), kills(&lost)), (vec![1, 2], vec![2]));
+
+        supervisor.start_client(versioned(&old, "2026-11-13T10:00:03.000Z", "0.0.1"));
+        let (reports, _) = reported_until(
+            &supervisor,
+            &old,
+            &ClientEvent::Recovery(Recovery::Rejected("old".into())),
+        );
+        assert_eq!(reports[0], ClientEvent::Unavailable("old".into()));
+        supervisor.remove(versioned(&old, "2026-11-13T10:00:03.000Z", "0.0.1"), true);
+        let refused_old = ClientEvent::Termination(Termination::Refused("old".into()));
+        assert_eq!(next(&supervisor), (old.clone(), refused_old));
+        // Nothing held a start or retry of it, so nothing starts again.
+        supervisor.request(old.clone(), Asked::Acquire);
+        let unconnected = Presentation::Answered(
+            Asked::Acquire,
+            Err("the session's client is not connected".into()),
+        );
+        assert_eq!(
+            next(&supervisor),
+            (old.clone(), ClientEvent::Presentation(unconnected))
+        );
+        supervisor.stop();
+        assert!(generations(&old).is_empty());
+    }
+
+    /// DEL-01 and DEL-02 (pure supplement over the fake library, #117): a
+    /// final or gone session's Delete sends no Kill: an open client is
+    /// asked to stop and the session reported removed after its cleanup,
+    /// one with no instance at once. A Delete whose instance's cleanup
+    /// cannot be confirmed is never reported removed but unconfirmed, with
+    /// why. A Kill-only instance that ends without answering leaves the
+    /// Kill unconfirmed, learned passively by a scheduled retry.
+    #[test]
+    fn a_final_or_gone_session_is_removed_without_a_kill_after_its_cleanup() {
+        let [open, unstarted, stuck, ignored, held, scheduled_retry] = [
+            session(32, 1),
+            session(32, 2),
+            session(32, 3),
+            session(32, 4),
+            session(32, 5),
+            session(32, 6),
+        ];
+        let dropping = Script {
+            drops: true,
+            retry: native::RETRY_PASSIVE,
+            ..Script::default()
+        };
+        let refusing_kill = Script {
+            kills: Killing::Refuses,
+            ..Script::default()
+        };
+        let lingering = Script {
+            destroy_waits: true,
+            ..dropping
+        };
+        scripts(&held, &[lingering, refusing_kill, Script::default()]);
+        scripts(
+            &scheduled_retry,
+            &[dropping, refusing_kill, Script::default()],
+        );
+        let stuck_script = Script {
+            destroy_fails: true,
+            ..Script::default()
+        };
+        script(&stuck, stuck_script);
+        let refusing = Script {
+            refuses_open: true,
+            retry: native::RETRY_PERMANENT,
+            ..Script::default()
+        };
+        let ignoring = Script {
+            kills: Killing::Ignores,
+            ..Script::default()
+        };
+        scripts(&ignored, &[refusing, ignoring]);
+        let supervised = supervisor(1, 20_000, fake_library());
+        let Supervised { supervisor, .. } = &supervised;
+        let opened = ClientEvent::Opened { status: false };
+        supervisor.start_client(metadata(&open, "2026-11-13T10:00:00.000Z"));
+        reported_until(supervisor, &open, &opened);
+        supervisor.remove(metadata(&open, "2026-11-13T10:00:00.000Z"), false);
+        let (reports, cleaned) = reported_until(supervisor, &open, &ClientEvent::Removed);
+        assert_eq!(reports, [ClientEvent::Ended, ClientEvent::Removed]);
+        assert!(cleaned);
+        assert!(submitted(&open).is_empty());
+
+        supervisor.remove(metadata(&unstarted, "2026-11-13T10:00:01.000Z"), false);
+        assert_eq!(next(supervisor), (unstarted.clone(), ClientEvent::Removed));
+        assert!(generations(&unstarted).is_empty());
+
+        supervisor.start_client(metadata(&stuck, "2026-11-13T10:00:02.000Z"));
+        reported_until(supervisor, &stuck, &opened);
+        supervisor.remove(metadata(&stuck, "2026-11-13T10:00:02.000Z"), false);
+        let cleanup = ClientEvent::Termination(Termination::Unconfirmed(
+            "cannot confirm the client's cleanup: busy: still in use".into(),
+        ));
+        let (reports, _) = reported_until(supervisor, &stuck, &cleanup);
+        assert_eq!(reports, [ClientEvent::Ended, cleanup]);
+
+        supervisor.start_client(metadata(&ignored, "2026-11-13T10:00:03.000Z"));
+        let rejected = ClientEvent::Recovery(Recovery::Rejected(
+            "the client stopped before it opened".into(),
+        ));
+        reported_until(supervisor, &ignored, &rejected);
+        supervisor.remove(metadata(&ignored, "2026-11-13T10:00:03.000Z"), true);
+        let unanswered = ClientEvent::Termination(Termination::Unconfirmed(
+            "the client ended before the Kill was answered".into(),
+        ));
+        let (reports, cleaned) = reported_until(supervisor, &ignored, &unanswered);
+        assert_eq!(reports, [unanswered]);
+        assert!(cleaned);
+        // Held's instance is over and its retry owed, but its owner is not
+        // yet done when the Delete begins; Scheduled's retry is already
+        // scheduled. Either is started again once the Kill is refused.
+        supervisor.start_client(metadata(&held, "2026-11-13T10:00:04.000Z"));
+        supervisor.start_client(metadata(&scheduled_retry, "2026-11-13T10:00:05.000Z"));
+        let retrying = ClientEvent::Recovery(Recovery::Retrying(
+            "the client stopped before it opened".into(),
+        ));
+        let reports = reports_until(supervisor, |reports| {
+            [&held, &scheduled_retry].iter().all(|id| {
+                reports
+                    .get(*id)
+                    .is_some_and(|events| events.last() == Some(&retrying))
+            })
+        });
+        assert_eq!(
+            reports[&held],
+            [opened.clone(), ClientEvent::Ended, retrying.clone()]
+        );
+        let deadline = Instant::now() + WAIT;
+        while scheduled(&supervised.log(), &scheduled_retry).is_empty() {
+            assert!(Instant::now() < deadline, "no retry was scheduled");
+            thread::sleep(Duration::from_millis(10));
+        }
+        supervisor.remove(metadata(&held, "2026-11-13T10:00:04.000Z"), true);
+        supervisor.remove(metadata(&scheduled_retry, "2026-11-13T10:00:05.000Z"), true);
+        let_go(&held);
+        let refused = ClientEvent::Termination(Termination::Refused("refused".into()));
+        let reports = reports_until(supervisor, |reports| {
+            [&held, &scheduled_retry].iter().all(|id| {
+                reports
+                    .get(*id)
+                    .is_some_and(|events| events.last() == Some(&opened))
+            })
+        });
+        for id in [&held, &scheduled_retry] {
+            assert_eq!(
+                reports[id],
+                [refused.clone(), ClientEvent::Starting, opened.clone()]
+            );
+            assert_eq!(generations(id), [1, 2, 3]);
+            assert_eq!(kills(id), [2]);
+        }
+
+        let mut supervised = supervised;
+        supervised.supervisor.stop();
+        assert_eq!(scheduled(&supervised.log(), &ignored).len(), 1);
+        assert_eq!(kills(&ignored), [2]);
+    }
+
+    /// DEL-01 and DEL-02 (pure supplement over the fake library, #117): a
+    /// Kill refused at submit, through an open client or as a Kill-only
+    /// instance's only request, is refused, never sent; a pending Kill
+    /// keeps its own request ID, so a later request takes the next. A
+    /// Delete holds a waiting first start, never others: removed with no
+    /// instance, it is never started, while the session waiting beside it
+    /// starts once a start slot is free. A Delete whose Kill was refused
+    /// is over even once the session's own final results arrive: shutdown
+    /// reports no removal.
+    #[test]
+    fn refused_kills_end_their_delete_and_a_delete_holds_only_its_own_start() {
+        let [
+            refused_open,
+            refused_only,
+            pending,
+            late,
+            waiting,
+            held,
+            ended,
+        ] = [
+            session(33, 1),
+            session(33, 2),
+            session(33, 3),
+            session(33, 4),
+            session(33, 5),
+            session(33, 6),
+            session(33, 7),
+        ];
+        let at_submit = Script {
+            kills: Killing::RefusedAtSubmit,
+            ..Script::default()
+        };
+        script(&refused_open, at_submit);
+        let refusing = Script {
+            refuses_open: true,
+            retry: native::RETRY_PERMANENT,
+            ..Script::default()
+        };
+        scripts(&refused_only, &[refusing, at_submit]);
+        let ignoring = Script {
+            kills: Killing::Ignores,
+            ..Script::default()
+        };
+        script(&pending, ignoring);
+        let opening_late = Script {
+            opens_late: true,
+            ..Script::default()
+        };
+        script(&late, opening_late);
+        let refusing_then_ending = Script {
+            kills: Killing::Refuses,
+            presents_after_kill: true,
+            ..Script::default()
+        };
+        script(&ended, refusing_then_ending);
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = supervisor(1, 20_000, fake_library());
+        let opened = ClientEvent::Opened { status: false };
+        let full =
+            ClientEvent::Termination(Termination::Refused("full: no room for a kill".into()));
+        supervisor.start_client(metadata(&refused_open, "2026-11-13T10:00:00.000Z"));
+        reported_until(&supervisor, &refused_open, &opened);
+        supervisor.remove(metadata(&refused_open, "2026-11-13T10:00:00.000Z"), true);
+        assert_eq!(next(&supervisor), (refused_open.clone(), full.clone()));
+
+        supervisor.start_client(metadata(&refused_only, "2026-11-13T10:00:01.000Z"));
+        let rejected = ClientEvent::Recovery(Recovery::Rejected(
+            "the client stopped before it opened".into(),
+        ));
+        reported_until(&supervisor, &refused_only, &rejected);
+        supervisor.remove(metadata(&refused_only, "2026-11-13T10:00:01.000Z"), true);
+        assert_eq!(next(&supervisor), (refused_only.clone(), full));
+        assert!(kills(&refused_open).is_empty() && kills(&refused_only).is_empty());
+
+        supervisor.start_client(metadata(&pending, "2026-11-13T10:00:02.000Z"));
+        reported_until(&supervisor, &pending, &opened);
+        supervisor.remove(metadata(&pending, "2026-11-13T10:00:02.000Z"), true);
+        supervisor.request(pending.clone(), Asked::Acquire);
+        let answered = Presentation::Answered(Asked::Acquire, Ok(()));
+        assert_eq!(
+            next(&supervisor),
+            (pending.clone(), ClientEvent::Presentation(answered))
+        );
+        assert_eq!(
+            submitted(&pending),
+            [(native::KILL, 2, vec![]), (native::ACQUIRE, 3, vec![1])]
+        );
+
+        supervisor.start_client(metadata(&late, "2026-11-13T10:00:03.000Z"));
+        let late_id = guid(&late);
+        until(|world| world.seen.contains(&(late_id, Seen::Created)));
+        supervisor.start_client(metadata(&waiting, "2026-11-13T10:00:04.000Z"));
+        supervisor.start_client(metadata(&held, "2026-11-13T10:00:05.000Z"));
+        supervisor.remove(metadata(&held, "2026-11-13T10:00:05.000Z"), false);
+        assert_eq!(next(&supervisor), (held.clone(), ClientEvent::Removed));
+        let_go(&late);
+        reported_until(&supervisor, &waiting, &opened);
+        assert!(generations(&held).is_empty());
+
+        supervisor.start_client(metadata(&ended, "2026-11-13T10:00:06.000Z"));
+        reported_until(&supervisor, &ended, &opened);
+        supervisor.remove(metadata(&ended, "2026-11-13T10:00:06.000Z"), true);
+        let killed = ClientEvent::Report(Report::Final(Final {
+            outcome: Outcome::Signal(15),
+            changed: None,
+        }));
+        let (reports, _) = reported_until(&supervisor, &ended, &killed);
+        assert_eq!(
+            reports[0],
+            ClientEvent::Termination(Termination::Refused("refused".into()))
+        );
+        supervisor.stop();
+        let after: Vec<_> = supervisor.reports.try_iter().collect();
+        assert!(
+            !after.contains(&(ended.clone(), ClientEvent::Removed)),
+            "{after:?}"
         );
     }
 }

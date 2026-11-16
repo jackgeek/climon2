@@ -635,7 +635,14 @@ fn key_introduction(prefix: &str, checked: bool, problem: Option<&str>) -> Vec<S
         _ => "Enter  Select the highlighted session".to_owned(),
     });
     lines.extend((prefix != "Ctrl+[").then(|| "Esc  Cancel".to_owned()));
+    // Forward Delete, fn+⌫ on a Mac (owner decision on #117).
+    let delete = if cfg!(target_os = "macos") {
+        "Del (fn+⌫)"
+    } else {
+        "Del"
+    };
     lines.extend([
+        format!("{delete}  Delete the highlighted session"),
         "Click a row  Highlight it".to_owned(),
         "Click outside  Cancel".to_owned(),
         "Wheel  Scroll the list".to_owned(),
@@ -1154,8 +1161,9 @@ fn the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_sav
     shows(&mut hidden, &opened);
     let monitor = monitor_process(&package).0;
     read_alone(&mut hidden, monitor, b"\x1d?");
-    hidden.resize(21, 71).unwrap();
-    let small = empty_monitor(21, 71, &[EMPTY]);
+    // The dialog's 21 rows, with Delete listed (#117), leave one spare.
+    hidden.resize(23, 71).unwrap();
+    let small = empty_monitor(23, 71, &[EMPTY]);
     let still_open = overlaid(&small, &key_introduction("Ctrl+]", false, None));
     shows(&mut hidden, &still_open);
     hidden.send(b"\r").unwrap();
@@ -1816,17 +1824,26 @@ enum Answer {
     Turns(std::sync::Arc<Turns>),
 }
 
-/// Each client's acts in turn, the last list for every later client.
+/// Each client's acts in turn, the last list for every later client, and
+/// what a Kill's own connection is answered with.
 struct Turns {
     taken: std::sync::atomic::AtomicUsize,
     acts: Vec<Vec<Act>>,
+    kills: Vec<Act>,
 }
 
 impl Turns {
     fn answer(acts: Vec<Vec<Act>>) -> Answer {
+        Self::killing(acts, Vec::new())
+    }
+
+    /// [`Turns::answer`], answering each Kill (#117) with `kills`, in which
+    /// `"$open"` is the Kill's request ID.
+    fn killing(acts: Vec<Vec<Act>>, kills: Vec<Act>) -> Answer {
         Answer::Turns(std::sync::Arc::new(Self {
             taken: std::sync::atomic::AtomicUsize::new(0),
             acts,
+            kills,
         }))
     }
 
@@ -1851,6 +1868,9 @@ enum Act {
     /// Wait until this file exists, for at most five [`TIMEOUT`]s: through a
     /// whole scenario.
     Hold(PathBuf),
+    /// Answer the client's Leave only once this file exists, for at most
+    /// [`TIMEOUT`]: its cleanup waits meanwhile.
+    HoldLeave(PathBuf),
     /// Hang up.
     Close,
 }
@@ -1870,6 +1890,8 @@ enum Heard {
     Served,
     /// After its acts, a turn-taking fake read a request with this code.
     Request(u8),
+    /// A turn-taking fake read a Kill on its own connection (#117).
+    Kill,
     /// A watched first connection was still open after the test's request
     /// was sent.
     Requested,
@@ -2022,7 +2044,14 @@ fn answer_once(
         Answer::Turns(turns) => {
             let families = [Family::MonitorV1, Family::TitleV1, Family::StatusV1];
             if hello(connection, (id, version), families) {
-                serve_heard(connection, || turns.next(), Some((ear, id)));
+                let acts = |kill: bool| {
+                    if kill {
+                        turns.kills.clone()
+                    } else {
+                        turns.next()
+                    }
+                };
+                serve_heard(connection, acts, Some((ear, id)));
             }
         }
         Answer::Hello(answered) => {
@@ -2106,14 +2135,15 @@ fn hello(
 /// Serves one client: reads its Open, performs `acts`, then answers its
 /// Leave and hangs up.
 fn serve(connection: &mut std::os::unix::net::UnixStream, acts: &[Act]) {
-    serve_heard(connection, || acts.to_vec(), None);
+    serve_heard(connection, |_| acts.to_vec(), None);
 }
 
-/// [`serve`] with the acts `acts` gives once the Open is read, recording
-/// in `heard`, if given, the Open and every later request.
+/// [`serve`] with the acts `acts` gives once the Open, or a Kill on its own
+/// connection, is read, recording in `heard`, if given, the Open or the
+/// Kill and every later request.
 fn serve_heard(
     connection: &mut std::os::unix::net::UnixStream,
-    acts: impl FnOnce() -> Vec<Act>,
+    acts: impl FnOnce(bool) -> Vec<Act>,
     heard: Option<(&Ear, &'static str)>,
 ) {
     use climon2_core::wire::{Frame, FrameLimit, read_frame, write_frame};
@@ -2121,10 +2151,12 @@ fn serve_heard(
     let Ok(Some(open)) = read_frame(connection, limit) else {
         return;
     };
+    let kill = open.code() == KILL;
     if let Some((ear, id)) = heard {
-        hear(ear, id, Heard::Served);
+        hear(ear, id, [Heard::Served, Heard::Kill][usize::from(kill)]);
     }
-    let acts = acts();
+    let acts = acts(kill);
+    let mut leave_after = None;
     // The client stays until it leaves or the monitor exits.
     let _ = connection.set_read_timeout(None);
     let open: Value = serde_json::from_slice(open.body()).unwrap();
@@ -2147,6 +2179,10 @@ fn serve_heard(
                 }
                 true
             }
+            Act::HoldLeave(path) => {
+                leave_after = Some(path);
+                true
+            }
             Act::Close => false,
         };
         if !sent {
@@ -2158,6 +2194,9 @@ fn serve_heard(
             hear(ear, id, Heard::Request(frame.code()));
         }
         if frame.code() == LEAVE {
+            if let Some(path) = leave_after {
+                await_file(path);
+            }
             let leave: Value = serde_json::from_slice(frame.body()).unwrap();
             let left = json!({
                 "request_id": leave["request_id"], "outcome": "ok",
@@ -2169,8 +2208,17 @@ fn serve_heard(
     }
 }
 
+/// Waits until `path` exists, for at most [`TIMEOUT`].
+fn await_file(path: &Path) {
+    let deadline = Instant::now() + TIMEOUT;
+    while !path.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Daemon wire revision 1 frame types, from the daemon wire reference.
 const LEAVE: u8 = 0x37;
+const KILL: u8 = 0x38;
 const RESPONSE: u8 = 0x40;
 const INITIAL_METADATA: u8 = 0x41;
 const STATUS_CHANGED: u8 = 0x43;
@@ -4139,9 +4187,17 @@ fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
     const WIDE: u16 = 250;
     let package = Package::new();
     without_introduction(&package);
+    // ab and cd stay unanswered while the daemon is stopped, and an
+    // operation past `deadlines.operation_ms` fails the connection: the
+    // deadline must outlast the test's steps until it resumes the daemon,
+    // even on a loaded host.
     limits_config(
         &package,
-        serde_json::json!({"transfer": {"chunk_bytes": 2}, "queues": {"operations": 2}}),
+        serde_json::json!({
+            "transfer": {"chunk_bytes": 2},
+            "queues": {"operations": 2},
+            "deadlines": {"operation_ms": 120_000},
+        }),
     );
     headless(&package, &recorder("Keys"), "finish");
     let daemon = package.metadata().daemon_pid;
@@ -4592,7 +4648,12 @@ fn status_keeps_updating_for_background_covered_and_revoked_rows() {
 /// 2026-11-16). Once Slow's
 /// Initial metadata reports its status, it is the first eligible row and
 /// becomes the one-time initial selection, acquired. Had the user selected
-/// a row meanwhile, even read-only, Slow would not be selected.
+/// a row meanwhile, even read-only, Slow would not be selected: here the
+/// user selects Slow itself while it still starts, and it stays not
+/// controlled once eligible. Slow's Open stays unanswered until the test
+/// releases it, so Slow is the late session whatever the host's speed;
+/// Held's client fails at its own start deadline soon after collection
+/// ends, and its row then shows that failure instead.
 #[test]
 fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible() {
     // Wide enough for the late note beside the held row's label.
@@ -4601,18 +4662,24 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
     for explicit in [false, true] {
         let package = Package::new();
         without_introduction(&package);
+        // Slow's client starts only once Held's fails at its own start
+        // deadline, about when collection ends, and then has one more
+        // deadline to receive Slow's Initial metadata: the test's steps
+        // between seeing the late note and releasing Slow must fit in it,
+        // even on a loaded host.
         limits_config(
             &package,
             serde_json::json!({
                 "scheduling": {"starts": 1},
-                "deadlines": {"start_ms": 4000, "operation_ms": 120_000},
+                "deadlines": {"start_ms": 10_000, "operation_ms": 120_000},
             }),
         );
         let go = package.isolation.home().join("slow.go");
         let ear = Ear::default();
+        let slow_id = fake_id(0xd2);
         let slow = serving(vec![
-            opened_with(true),
             Act::Await(go.clone()),
+            opened_with(true),
             initial_metadata("Slow", Some(wire_status("idle", &utc(1))), None),
         ]);
         let daemons = [
@@ -4623,13 +4690,7 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
                 Answer::Held(held),
                 &ear,
             ),
-            FakeDaemon::start(
-                &package,
-                fake_id(0xd2),
-                "2026-01-01T00:00:01.000Z",
-                slow,
-                &ear,
-            ),
+            FakeDaemon::start(&package, slow_id, "2026-01-01T00:00:01.000Z", slow, &ear),
         ];
         let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
         let hint = "Press Ctrl+] then x to exit.";
@@ -4644,9 +4705,11 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
         );
         if explicit {
             terminal.send("\x1ds").unwrap();
-            enter_on(&mut terminal, held);
+            // Once Held's client has failed the rows keep their order.
+            listed_with(&terminal, "Unavailable", &format!("fake {held}"));
+            enter_on(&mut terminal, slow_id);
             // With a row selected, the top row's error slot says it.
-            let noted = format!("fake {held} | {late} ");
+            let noted = format!("fake {slow_id} | {late} ");
             whole_frame_shows(&terminal, &noted, |screen| screen.starts_with(&noted));
         }
         fs::write(&go, b"").unwrap();
@@ -4655,10 +4718,13 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
             listed_with(&terminal, STATUS, "Slow");
             terminal.send(ESCAPE).unwrap();
             selector_closed(&terminal);
-            let plain = format!("fake {held} ");
-            whole_frame_shows(&terminal, "the held row, no longer late", |screen| {
-                screen.starts_with(&plain) && !screen.contains(late)
-            });
+            // Eligible now, but selected by the user: never acquired.
+            let top = session_top_row(
+                usize::from(WIDE),
+                "Slow",
+                &[STATUS, "Not controlling", SESSIONS_HINT],
+            );
+            top_row_is(&mut terminal, &top);
         } else {
             let top = session_top_row(
                 usize::from(WIDE),
@@ -8307,11 +8373,6 @@ fn until_served(ear: &Ear, count: usize) {
     }
 }
 
-/// Waits until a whole frame's top row starts with `start`.
-fn top_row_starts(terminal: &Terminal, start: &str) {
-    whole_frame_shows(terminal, start, |screen| screen.starts_with(start));
-}
-
 /// DSC-02 (Monitor) and LIM-06 (Monitor, start case; #120): with one start
 /// slot and `scheduling.newer_start_burst` at 1, four sessions whose starts
 /// all stall (their daemons never answer Open, so each start lasts its
@@ -8699,5 +8760,596 @@ fn the_operating_system_descriptor_limit_bounds_admission_until_it_rises() {
     terminal.send("\x1dx").unwrap();
     support::assert_released(&package, &mut terminal, 0);
     drop(fakes);
+    package.assert_clean();
+}
+
+/// Forward Delete, as a host sends it (`CSI 3 ~`).
+const DELETE: &str = "\x1b[3~";
+/// The Delete confirmation's offer for a session not known to be over, and
+/// for one final or gone (#117).
+const TERMINATE: &str = "Terminate and remove";
+const REMOVE: &str = "Remove";
+/// The Delete confirmation's buttons as they read focused.
+const CANCEL_FOCUSED: &str = "[ Cancel ]";
+const TERMINATE_FOCUSED: &str = "[ Terminate and remove ]";
+const REMOVE_FOCUSED: &str = "[ Remove ]";
+
+/// The Delete confirmation's four lines inside its border for `label`,
+/// `status` and `offer`, as `label` and `status` would show if they were
+/// the widest (#117).
+fn confirmation(label: &str, status: &str, offer: &str) -> [String; 4] {
+    let buttons = format!("[ Cancel ]  [ {offer} ]");
+    let width = [label, status, &buttons]
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap();
+    [label, status, "", buttons.as_str()].map(|line| format!("│ {line:<width$} │"))
+}
+
+/// Waits until a whole frame shows the Delete confirmation, titled, for
+/// `label` with `status` (any status when `None`) offering `offer`, with
+/// the button `focused` reversed.
+fn asks(terminal: &Terminal, (label, status): (&str, Option<&str>), offer: &str, focused: &str) {
+    let lines = confirmation(label, status.unwrap_or_default(), offer);
+    let reversed = |screen: &str| {
+        let rows: Vec<_> = screen.lines().collect();
+        let at = rows.windows(5).position(|window| {
+            window[0].contains("┌ Delete session")
+                && window[1].contains(lines[0].as_str())
+                && status.is_none_or(|_| window[2].contains(lines[1].as_str()))
+                && window[4].contains(lines[3].as_str())
+        })?;
+        let row = rows[at + 4];
+        let start = row[..row.find(lines[3].as_str())?].chars().count();
+        let width = lines[3].chars().count();
+        let cells = terminal.cells(at + 4);
+        let text: String = cells[start..start + width]
+            .iter()
+            .filter(|cell| cell.rendition.inverse)
+            .map(|cell| cell.text.as_str())
+            .collect();
+        Some(text)
+    };
+    let what = format!("{} focused on {focused}", lines[3]);
+    whole_frame_shows(terminal, &what, |screen| {
+        reversed(screen).as_deref() == Some(focused)
+    });
+}
+
+/// Sets a hooked daemon's status `clock` to `millis` whole, and waits
+/// until its daemon has read it (its `.ack`); a release archive's daemons
+/// have no such clock.
+fn set_clock(clock: &Path, millis: u64) {
+    let staged = clock.with_extension("new");
+    fs::write(&staged, millis.to_string()).unwrap();
+    fs::rename(staged, clock).unwrap();
+    if archive() {
+        return;
+    }
+    let mut ack = clock.as_os_str().to_owned();
+    ack.push(".ack");
+    let deadline = Instant::now() + TIMEOUT;
+    while fs::read_to_string(&ack).ok().as_deref().map(str::trim) != Some(&millis.to_string()) {
+        assert!(Instant::now() < deadline, "the daemon never read its clock");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waits until a whole frame shows no Delete confirmation.
+fn not_asking(terminal: &Terminal) {
+    frame_lacks(terminal, "Delete session");
+}
+
+/// DEL-01 (Monitor: default Cancel, nothing sent on cancel, no input
+/// leaking out of the dialog, the confirmed session's identity), DEL-02
+/// (Monitor: removal only after definitive termination, a gone session only
+/// removed, run-local dismissal against rediscovery, a non-acquiring
+/// fallback selection, nothing deleted beyond normal daemon cleanup) and
+/// #116's owner decision (a gone session's Delete offers Remove), against
+/// real daemons. Bravo, the newer, is the initial selection. Delete on it
+/// asks with Cancel focused, hiding the search's cursor; keys, a paste and
+/// a click inside the dialog
+/// decide nothing, and Enter then cancels back to the selector: Bravo is
+/// still running, and once the selector closes the first thing it receives
+/// is what is typed then. Confirmed, Bravo is killed and its row removed;
+/// the selection falls to Alpha, now at Bravo's place, which shows the
+/// placeholder, never acquired. Alpha's daemon killed and proven gone,
+/// Delete offers only Remove, which removes its row though its stale
+/// metadata stays: two later discovery passes, which list new sessions,
+/// never list it again. Bravo's library logs stay.
+#[test]
+fn delete_terminates_or_removes_only_the_confirmed_session() {
+    let package = Package::new();
+    without_introduction(&package);
+    let alpha = headless(&package, &watched("Alpha"), "finish");
+    let bravo = headless(&package, &watched("Bravo"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Bravo", RUNNING, "29 120");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Alpha");
+    terminal.send(DELETE).unwrap();
+    let bravo_running = ("Bravo", Some(RUNNING));
+    asks(&terminal, bravo_running, TERMINATE, CANCEL_FOCUSED);
+    // The dialog hides the search's cursor.
+    assert!(!terminal.modes().cursor_visible);
+    terminal
+        .send("xy\x1b[A \x1b[200~pasted\r\x1b[201~")
+        .unwrap();
+    click(&mut terminal, 14, 60);
+    terminal.send("\t\t").unwrap();
+    asks(&terminal, bravo_running, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\r").unwrap();
+    not_asking(&terminal);
+    listed_with(&terminal, RUNNING, "Bravo");
+    assert!(terminal.modes().cursor_visible);
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("after").unwrap();
+    received_by(&package, "Bravo", b"after");
+
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Bravo");
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, bravo_running, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\t").unwrap();
+    asks(&terminal, bravo_running, TERMINATE, TERMINATE_FOCUSED);
+    terminal.send("\r").unwrap();
+    whole_frame_shows(&terminal, "Bravo removed", |screen| {
+        !screen.contains("Bravo") && screen.contains(&format!("║{RUNNING} Alpha"))
+    });
+    let sessions = package.isolation.climon2_home().join("sessions");
+    assert!(!sessions.join(format!("{bravo}.pty")).exists());
+    assert!(!library_logs(&package, &bravo).is_empty());
+    terminal.send(ESCAPE).unwrap();
+    shows(&mut terminal, &placeholder_screen("Alpha", RUNNING));
+
+    kill(Pid::from_raw(daemon_of(&package, &alpha)), Signal::SIGKILL).unwrap();
+    whole_frame_shows(&terminal, "Alpha gone", |screen| {
+        screen
+            .lines()
+            .next()
+            .is_some_and(|top| top.starts_with(&format!("Alpha | {GONE}")))
+    });
+    terminal.send("\x1ds").unwrap();
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, ("Alpha", None), REMOVE, CANCEL_FOCUSED);
+    terminal.send("\x1b[C").unwrap();
+    asks(&terminal, ("Alpha", None), REMOVE, REMOVE_FOCUSED);
+    terminal.send("\r").unwrap();
+    whole_frame_shows(&terminal, "Alpha removed", |screen| {
+        !screen.contains("Alpha") && screen.contains('║')
+    });
+    terminal.send(ESCAPE).unwrap();
+    shows(
+        &mut terminal,
+        &empty_monitor(ROWS, COLS, &[EMPTY, "Press Ctrl+] then x to exit."]),
+    );
+    assert!(sessions.join(format!("{alpha}.pty")).exists());
+    for later in ["Charlie", "Delta"] {
+        headless(&package, &watched(later), "finish");
+        terminal.send("\x1ds").unwrap();
+        listed_with(&terminal, RUNNING, later);
+        terminal.send(ESCAPE).unwrap();
+        selector_closed(&terminal);
+    }
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Delta");
+    assert!(!terminal.screen().contains("Alpha"));
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    // A real listing reclaims the killed daemon's stale metadata.
+    package.list();
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// INP-01 and NOT-03 (Monitor, Delete-dialog cases; owner decision on
+/// #117) and the confirmed scenario that cancelling Delete never
+/// acknowledges attention, against real daemons. Calm, the newer, is the
+/// initial selection, which acknowledges nothing, and comes to need
+/// attention under the open selector. Inside Delete's dialog on Calm,
+/// prefix+s and prefix+? do nothing (Tab moves the focus as before, and no
+/// key introduction shows), and Escape cancels back to the selector with
+/// Calm still needing attention. Once Asking needs attention too, its
+/// daemon's clock moved past Calm's,
+/// prefix+j inside the dialog on Calm cancels it and jumps to Asking,
+/// acknowledging it once viewed, while Calm still needs attention; inside
+/// the dialog again, prefix+x exits the monitor, and Calm was never killed.
+#[test]
+fn inside_the_delete_dialog_prefix_j_cancels_and_jumps_and_prefix_x_exits() {
+    let package = Package::new();
+    without_introduction(&package);
+    let asking_clock = clock(&package, None);
+    headless_on(&package, &watched("Asking"), "finish", &asking_clock);
+    headless(&package, &watched("Calm"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Calm", RUNNING, "29 120");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Asking");
+    report_state(&package, "Calm", "idle");
+    listed_with(&terminal, ATTENTION, "Calm");
+    highlight_on(&mut terminal, "Calm");
+    terminal.send(DELETE).unwrap();
+    let calm = ("Calm", Some(ATTENTION));
+    asks(&terminal, calm, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\x1ds\t").unwrap();
+    asks(&terminal, calm, TERMINATE, TERMINATE_FOCUSED);
+    terminal.send("\x1d?\t").unwrap();
+    asks(&terminal, calm, TERMINATE, CANCEL_FOCUSED);
+    assert!(!terminal.screen().contains("Exit the monitor"));
+    terminal.send(ESCAPE).unwrap();
+    not_asking(&terminal);
+    listed_with(&terminal, ATTENTION, "Calm");
+
+    // Asking's attention is the newer (a release archive's daemons use the
+    // real clock, on which it is later anyway).
+    set_clock(&asking_clock, T0 + 10_000);
+    report_state(&package, "Asking", "idle");
+    listed_with(&terminal, ATTENTION, "Asking");
+    highlight_on(&mut terminal, "Calm");
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, calm, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Asking", ACKNOWLEDGED, "29 120");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, ATTENTION, "Calm");
+    highlight_on(&mut terminal, "Calm");
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, calm, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    let detached =
+        serde_json::json!({"lifecycle": "detached", "attachments": 0, "controlled": false});
+    listed_as(&package, "Calm", &detached);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// How many times fake `id` heard `what`.
+fn times_heard(ear: &Ear, id: &str, what: Heard) -> usize {
+    heard(ear, what)
+        .into_iter()
+        .filter(|(_, heard_by)| *heard_by == id)
+        .count()
+}
+
+/// Waits until fake `id` has heard `what` at least `count` times.
+fn until_heard(ear: &Ear, id: &str, what: Heard, count: usize) {
+    let deadline = Instant::now() + TIMEOUT;
+    while times_heard(ear, id, what) < count {
+        assert!(Instant::now() < deadline, "{id} never heard {what:?}");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Opens the selector until it lists `label` with `status`, then opens it
+/// again, so that it opens with a highlight.
+fn listed_on_reopening(terminal: &mut Terminal, status: &str, label: &str) {
+    terminal.send("\x1ds").unwrap();
+    listed_with(terminal, status, label);
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(terminal);
+    terminal.send("\x1ds").unwrap();
+    listed_with(terminal, status, label);
+}
+
+/// Waits until a whole frame's top row starts with `start`.
+fn top_row_starts(terminal: &Terminal, start: &str) {
+    whole_frame_shows(terminal, start, |screen| {
+        screen
+            .lines()
+            .next()
+            .is_some_and(|top| top.starts_with(start))
+    });
+}
+
+/// A fake session's turn: its Open answered without `status-v1` or
+/// `focus-v1`, which a turn-taking fake does not advertise, titled `title`,
+/// then `after`.
+fn titled_turn(title: &str, after: Vec<Act>) -> Vec<Act> {
+    let mut acts = vec![
+        opened_selecting(false, false),
+        initial_metadata(title, None, None),
+    ];
+    acts.extend(after);
+    acts
+}
+
+/// DEL-01 (Fault: a repeated Delete deduplicated, other sessions usable)
+/// and DEL-02 (Fault: a rejected Kill keeps the row and its error), against
+/// a fake daemon holding its Kill's answer. Once confirmed, Held shows
+/// Terminating, and Delete on it again opens nothing: the keys after it
+/// reach the search. Meanwhile Other, a real session, still takes typed
+/// keys. The Kill refused, Held is back to its status, its top row's error
+/// slot says why once selected, and Delete may ask again. The fake heard
+/// one Kill.
+#[test]
+fn a_held_kill_is_sent_once_and_a_refused_one_keeps_its_row_with_why() {
+    const HELD: &str = "0d5c0000-0000-4000-8000-0000000000e1";
+    let package = Package::new();
+    without_introduction(&package);
+    let home = package.isolation.home();
+    let refused = json!({
+        "request_id": "$open", "outcome": "rejected", "result": null,
+        "error": {"code": "invalid_state", "message": "refused by the fake"},
+    });
+    let kills = vec![
+        Act::Await(home.join("refuse")),
+        Act::Send(RESPONSE, refused),
+    ];
+    // The real session first, as its daemon wants a private sessions
+    // directory.
+    headless(&package, &watched("Other"), "finish");
+    let ear = Ear::default();
+    let fake = FakeDaemon::start(
+        &package,
+        HELD,
+        "2020-01-01T00:00:00.000Z",
+        Turns::killing(vec![titled_turn("Held", Vec::new())], kills),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Other", RUNNING, "29 120");
+    terminal.send("\x1ds").unwrap();
+    highlight_on(&mut terminal, "Held");
+    terminal.send(DELETE).unwrap();
+    let held = ("Held", Some("Unavailable"));
+    asks(&terminal, held, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\t").unwrap();
+    asks(&terminal, held, TERMINATE, TERMINATE_FOCUSED);
+    terminal.send("\r").unwrap();
+    listed_with(&terminal, "Terminating", "Held");
+    until_heard(&ear, HELD, Heard::Kill, 1);
+    terminal.send(format!("{DELETE}zz")).unwrap();
+    whole_frame_shows(&terminal, "the search", |screen| {
+        screen
+            .lines()
+            .nth(3)
+            .is_some_and(|line| line.starts_with(" ║zz "))
+    });
+    assert!(!terminal.screen().contains("Delete session"));
+    terminal.send("\x7f\x7f").unwrap();
+    listed_with(&terminal, "Terminating", "Held");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("still").unwrap();
+    received_by(&package, "Other", b"still");
+
+    fs::write(home.join("refuse"), b"").unwrap();
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Unavailable", "Held");
+    enter_on(&mut terminal, "Held");
+    top_row_starts(&terminal, "Held | Termination refused: refused by the fake");
+    terminal.send("\x1ds").unwrap();
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, held, TERMINATE, CANCEL_FOCUSED);
+    terminal.send(ESCAPE).unwrap();
+    not_asking(&terminal);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(times_heard(&ear, HELD, Heard::Kill), 1);
+    drop(fake);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// DEL-02 (Fault: a lost Kill answer never replayed, only the passive
+/// client learning the outcome, cleanup before dismissal, dismissal
+/// against rediscovery, a fallback selection that never acquires), against
+/// fake daemons. Lost, selected, is confirmed: its fake hangs up its Kill's
+/// own connection unanswered, so the row stays Terminating and its top
+/// row's error slot says the termination was not confirmed. Its passive
+/// client then hears the command's final result: the monitor asks it to
+/// stop, and while its Leave is unanswered the row stays. Once answered,
+/// the row is removed and the selection falls to Next, which shows the
+/// placeholder and was never sent Acquire. Lost's daemon, still answering,
+/// is probed by two more discovery passes and never listed or served again.
+#[test]
+fn a_lost_kill_is_never_sent_again_and_removal_waits_for_the_outcome_and_cleanup() {
+    const LOST: &str = "0d5c0000-0000-4000-8000-0000000000e2";
+    const NEXT: &str = "0d5c0000-0000-4000-8000-0000000000e3";
+    let package = Package::new();
+    without_introduction(&package);
+    let home = package.isolation.home();
+    let ended = json!({"command_result": {"kind": "signal", "number": 9, "name": "SIGKILL"}, "status": null});
+    let lost_acts = titled_turn(
+        "Lost",
+        vec![
+            Act::Await(home.join("final")),
+            Act::Send(COMMAND_FINAL, ended),
+            Act::HoldLeave(home.join("leave")),
+        ],
+    );
+    let ear = Ear::default();
+    let lost = FakeDaemon::start(
+        &package,
+        LOST,
+        "2020-01-01T00:00:01.000Z",
+        Turns::killing(vec![lost_acts], vec![Act::Close]),
+        &ear,
+    );
+    let next = FakeDaemon::start(
+        &package,
+        NEXT,
+        "2020-01-01T00:00:02.000Z",
+        Turns::answer(vec![titled_turn("Next", Vec::new())]),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    listed_on_reopening(&mut terminal, "Unavailable", "Next");
+    enter_on(&mut terminal, "Lost");
+    top_row_starts(&terminal, "Lost ");
+    terminal.send("\x1ds").unwrap();
+    terminal.send(DELETE).unwrap();
+    let asked = ("Lost", Some("Unavailable"));
+    asks(&terminal, asked, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\x1b[C").unwrap();
+    asks(&terminal, asked, TERMINATE, TERMINATE_FOCUSED);
+    terminal.send("\r").unwrap();
+    listed_with(&terminal, "Terminating", "Lost");
+    terminal.send(ESCAPE).unwrap();
+    top_row_starts(&terminal, "Lost | Termination not confirmed: ");
+
+    fs::write(home.join("final"), b"").unwrap();
+    until_heard(&ear, LOST, Heard::Request(LEAVE), 1);
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Terminating", "Lost");
+    fs::write(home.join("leave"), b"").unwrap();
+    whole_frame_shows(&terminal, "Lost removed", |screen| {
+        !screen.contains("Lost") && screen.contains("Unavailable Next")
+    });
+    terminal.send(ESCAPE).unwrap();
+    shows(&mut terminal, &placeholder_screen("Next", "Unavailable"));
+    let probed = times_heard(&ear, LOST, Heard::Connected);
+    until_heard(&ear, LOST, Heard::Connected, probed + 2);
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Unavailable", "Next");
+    assert!(!terminal.screen().contains("Lost"));
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(times_heard(&ear, LOST, Heard::Kill), 1);
+    assert_eq!(times_heard(&ear, LOST, Heard::Served), 1);
+    assert_eq!(requests_by_turn(&ear, NEXT), [vec![LEAVE]]);
+    drop((lost, next));
+    package.assert_clean();
+}
+
+/// DEL-01 (Monitor and Fault: the session finishing while asked switches
+/// the offer to Remove for the same session, through a reorder) and DEL-02
+/// (Fault: an already-final session's local cleanup before dismissal),
+/// against fake daemons. Asked on Ending with Terminate and remove
+/// focused, Ending's command ends: the dialog offers Remove for Ending,
+/// now Succeeded and listed first, its focus kept. Confirmed, no Kill is
+/// sent; Ending shows Removing while its Leave is unanswered, and is
+/// removed once it is answered. Stay is left alone.
+#[test]
+fn a_session_ending_while_asked_is_only_removed_after_its_cleanup() {
+    const ENDING: &str = "0d5c0000-0000-4000-8000-0000000000e4";
+    const STAY: &str = "0d5c0000-0000-4000-8000-0000000000e5";
+    let package = Package::new();
+    without_introduction(&package);
+    let home = package.isolation.home();
+    let ending_acts = titled_turn(
+        "Ending",
+        vec![
+            Act::Await(home.join("end")),
+            Act::Send(
+                COMMAND_FINAL,
+                json!({"command_result": exited(0), "status": null}),
+            ),
+            Act::HoldLeave(home.join("leave")),
+        ],
+    );
+    let ear = Ear::default();
+    let ending = FakeDaemon::start(
+        &package,
+        ENDING,
+        "2020-01-01T00:00:01.000Z",
+        Turns::answer(vec![ending_acts]),
+        &ear,
+    );
+    let stay = FakeDaemon::start(
+        &package,
+        STAY,
+        "2020-01-01T00:00:02.000Z",
+        Turns::answer(vec![titled_turn("Stay", Vec::new())]),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    listed_on_reopening(&mut terminal, "Unavailable", "Stay");
+    highlight_on(&mut terminal, "Ending");
+    terminal.send(DELETE).unwrap();
+    let asked = ("Ending", Some("Unavailable"));
+    asks(&terminal, asked, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\t").unwrap();
+    asks(&terminal, asked, TERMINATE, TERMINATE_FOCUSED);
+    fs::write(home.join("end"), b"").unwrap();
+    asks(
+        &terminal,
+        ("Ending", Some("Succeeded")),
+        REMOVE,
+        REMOVE_FOCUSED,
+    );
+    whole_frame_shows(&terminal, "Ending first", |screen| {
+        screen
+            .lines()
+            .nth(5)
+            .is_some_and(|line| line.contains("Succeeded   Ending"))
+    });
+    terminal.send("\r").unwrap();
+    listed_with(&terminal, "Removing", "Ending");
+    until_heard(&ear, ENDING, Heard::Request(LEAVE), 1);
+    listed_with(&terminal, "Removing", "Ending");
+    fs::write(home.join("leave"), b"").unwrap();
+    whole_frame_shows(&terminal, "Ending removed", |screen| {
+        !screen.contains("Ending") && screen.contains("Unavailable Stay")
+    });
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(times_heard(&ear, ENDING, Heard::Kill), 0);
+    assert_eq!(requests_by_turn(&ear, STAY), [vec![LEAVE]]);
+    drop((ending, stay));
+    package.assert_clean();
+}
+
+/// DEL-01 (Fault: the dialog keeps its session's identity): a Delete
+/// dialog on a session whose client never connected closes, retargeting
+/// nothing, once discovery proves that session gone and drops its row;
+/// keys typed then reach the selector's search.
+#[test]
+fn a_dialog_whose_row_is_dropped_closes_without_retargeting() {
+    const HELD: &str = "0d5c0000-0000-4000-8000-0000000000e6";
+    const STAY: &str = "0d5c0000-0000-4000-8000-0000000000e7";
+    let package = Package::new();
+    without_introduction(&package);
+    let ear = Ear::default();
+    let held = FakeDaemon::start(
+        &package,
+        HELD,
+        "2020-01-01T00:00:01.000Z",
+        Answer::Held(HELD),
+        &ear,
+    );
+    let stay = FakeDaemon::start(
+        &package,
+        STAY,
+        "2020-01-01T00:00:02.000Z",
+        Turns::answer(vec![titled_turn("Stay", Vec::new())]),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    listed_on_reopening(&mut terminal, "Unavailable", "Stay");
+    let label = format!("fake {HELD}");
+    highlight_on(&mut terminal, &label);
+    terminal.send(DELETE).unwrap();
+    asks(
+        &terminal,
+        (&label, Some("Starting")),
+        TERMINATE,
+        CANCEL_FOCUSED,
+    );
+    // Its metadata now names a socket nobody serves: its daemon is gone.
+    fake_metadata(
+        &package,
+        HELD,
+        "2020-01-01T00:00:01.000Z",
+        &package.isolation.home().join("gone.sock"),
+    );
+    whole_frame_shows(&terminal, "the dialog closed with its row", |screen| {
+        !screen.contains(HELD) && !screen.contains("Delete session")
+    });
+    terminal.send("st").unwrap();
+    whole_frame_shows(&terminal, "the search", |screen| {
+        screen
+            .lines()
+            .nth(3)
+            .is_some_and(|line| line.starts_with(" ║st "))
+    });
+    listed_with(&terminal, "Unavailable", "Stay");
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(times_heard(&ear, HELD, Heard::Kill), 0);
+    drop((held, stay));
     package.assert_clean();
 }

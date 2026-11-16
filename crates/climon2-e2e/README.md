@@ -471,6 +471,12 @@ earlier run would, so they open on the empty state.
 | TRM-06 (owner decision on #112) labels that fit exactly are whole, one cell longer truncated with `…`, wide and combining text cell-safe, an empty title keeping the latest, a status change moving nothing | `overflowing_titles_are_truncated_statically_with_an_ellipsis` |
 | TRM-01 (#108's note on #112) underline styles, cursor shape, blink and visibility, the 1049 alternate screen and a synchronized update spanning two writes reach the host | `underline_styles_cursor_styles_screens_and_synchronized_updates_reach_the_host` |
 | TRM-04 resizes to a narrower host, a too-small one and back under continuous output show only coherent frames, and the session gets every size sent and none while too small | `resizes_under_continuous_output_show_only_coherent_frames` |
+| DEL-01, DEL-02 (#117; Remove for a gone session, owner decision on #116) default Cancel, no leak, nothing sent on cancel; a confirmed Kill removes only its session after its daemon ended, logs kept; a non-acquiring fallback; a gone session only removed and its stale metadata never listed again | `delete_terminates_or_removes_only_the_confirmed_session` |
+| INP-01, NOT-03 (Delete-dialog cases, owner decision on #117) prefix+s and prefix+? inert, prefix+j cancels and jumps, prefix+x exits; cancelling Delete never acknowledges | `inside_the_delete_dialog_prefix_j_cancels_and_jumps_and_prefix_x_exits` |
+| DEL-01, DEL-02 (Fault, #117) a held Kill sent once, a repeated Delete opening nothing, other sessions usable; a refused Kill keeps its row with why | `a_held_kill_is_sent_once_and_a_refused_one_keeps_its_row_with_why` |
+| DEL-02 (Fault, #117) a lost Kill never resent, the passive client learning the outcome, the row kept until the held Leave is answered, a fallback never sent Acquire, no rediscovery of a still-answering daemon | `a_lost_kill_is_never_sent_again_and_removal_waits_for_the_outcome_and_cleanup` |
+| DEL-01, DEL-02 (Fault, #117) a session ending while asked offers Remove for the same session through a reorder; no Kill; removal after its held Leave | `a_session_ending_while_asked_is_only_removed_after_its_cleanup` |
+| DEL-01 (Fault, #117) a dialog whose never-connected row discovery drops closes, retargeting nothing | `a_dialog_whose_row_is_dropped_closes_without_retargeting` |
 
 Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
 holds a packaged client between Control granted and `Ready`; daemon
