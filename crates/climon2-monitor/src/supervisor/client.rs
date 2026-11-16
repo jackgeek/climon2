@@ -1,7 +1,7 @@
 //! One instance's caller handles and what draining them reports: the only
 //! place the supervisor reads the client library's records.
 use crate::{
-    registry::{ClientEvent, Final, Outcome, Recovery, Report, State, Status},
+    registry::{Answer, ClientEvent, Final, Outcome, Recovery, Report, State, Status, Verdict},
     terminal::{Authority, Paste, Presentation, Request},
 };
 use climon2_core::{
@@ -15,6 +15,9 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 /// Monitor Open's request ID.
 pub(super) const OPEN_ID: u64 = 1;
+/// A Kill-only instance's Kill, its only request (#117): never mistaken for
+/// Open's answer.
+pub(super) const KILL_ID: u64 = OPEN_ID + 1;
 const STATUS: &str = "status-v1";
 const FOCUS: &str = "focus-v1";
 
@@ -161,6 +164,14 @@ impl Client {
         checked(unsafe { (self.functions.submit)(self.communication, &request) })
     }
 
+    /// Submits a Kill of the instance's session as `request_id`, requiring
+    /// nothing beyond core support, as `climon2 kill` does (#117).
+    pub(super) fn kill(&self, request_id: u64) -> Result<(), String> {
+        let request = kill_request(request_id);
+        // SAFETY: a live communication handle and a complete request.
+        checked(unsafe { (self.functions.submit)(self.communication, &request) })
+    }
+
     /// Takes one delivery, reads it and releases it at once.
     pub(super) fn drain(&self, id: &SessionId) -> Drain {
         let mut drained = MaybeUninit::<Drained>::zeroed();
@@ -254,6 +265,21 @@ fn native_request(request_id: u64, request: &Request, generation: u64) -> native
         reserved: 0,
         request_id,
         args,
+    }
+}
+
+/// A Kill as `request_id`, with no required family.
+fn kill_request(request_id: u64) -> native::Request {
+    native::Request {
+        tag: native::KILL,
+        reserved: 0,
+        request_id,
+        args: native::RequestArgs {
+            required: native::Tokens {
+                data: std::ptr::null(),
+                count: 0,
+            },
+        },
     }
 }
 
@@ -377,10 +403,36 @@ fn response(response: &native::Response) -> Vec<ClientEvent> {
     if response.request_id == OPEN_ID {
         return opened(response);
     }
-    let answer = (response.outcome == native::OK)
-        .then_some(())
-        .ok_or_else(|| text(response.error.message));
-    vec![ClientEvent::Answer(response.request_id, answer)]
+    vec![ClientEvent::Answer(response.request_id, answer(response))]
+}
+
+/// An answer: accepted, refused without effect, or failed or
+/// indeterminate, with the command's result when it carries one.
+fn answer(response: &native::Response) -> Answer {
+    let why = || text(response.error.message);
+    let verdict = match response.outcome {
+        native::OK => Verdict::Accepted,
+        native::REJECTED => Verdict::Rejected(why()),
+        _ => Verdict::Uncertain(why()),
+    };
+    Answer {
+        verdict,
+        ended: carried(response),
+    }
+}
+
+/// The command's result an answer carries: a Kill's termination result,
+/// when present, or a known-final rejection's (#117).
+fn carried(response: &native::Response) -> Option<Outcome> {
+    // SAFETY (both): the result tag names the active member.
+    match response.result_tag {
+        native::TERMINATION => {
+            let command = unsafe { response.result.termination }.command_result;
+            outcome(command.value).filter(|_| command.present != 0)
+        }
+        native::KNOWN_FINAL => outcome(unsafe { response.result.known_final }),
+        _ => None,
+    }
 }
 
 /// Open's success says whether `status-v1` was selected, after telling the
@@ -686,6 +738,124 @@ mod tests {
             data: text.as_ptr(),
             length: text.len() as u64,
         }
+    }
+
+    /// A response to request 5 with `outcome`, its error's message `why`
+    /// and the result `tag` and `result`.
+    fn answered(
+        outcome: u32,
+        why: &'static [u8],
+        tag: u32,
+        result: native::ResponseResult,
+    ) -> Vec<ClientEvent> {
+        // SAFETY: an all-zero response is a valid plain value.
+        let mut response: native::Response = unsafe { std::mem::zeroed() };
+        response.request_id = 5;
+        response.outcome = outcome;
+        response.error.message = bytes(why);
+        response.result_tag = tag;
+        response.result = result;
+        read_one(&record(native::RESPONSE, native::RecordData { response }))
+    }
+
+    /// DEL-01 and DEL-02 (pure supplement, the header's `CM1_TERMINATION`
+    /// and `CM1_KNOWN_FINAL`; #117): an answer says whether it was accepted,
+    /// refused without effect, or failed or indeterminate, with why; a
+    /// Kill's termination carries its command result only when present, and
+    /// a known-final rejection its result; no other result carries one.
+    #[test]
+    fn answers_say_how_they_ended_and_carry_a_kills_command_result() {
+        let terminated = |present, value| native::ResponseResult {
+            termination: native::Termination {
+                command_result: native::OptionalCommand {
+                    present,
+                    reserved: 0,
+                    value,
+                },
+                cleanup: native::CLEANUP_COMPLETE,
+                reserved: 0,
+            },
+        };
+        let none = native::ResponseResult { changed: 0 };
+        let event = |verdict, ended| vec![ClientEvent::Answer(5, Answer { verdict, ended })];
+        assert_eq!(
+            answered(
+                native::OK,
+                b"",
+                native::TERMINATION,
+                terminated(1, result(native::SIGNAL, 9))
+            ),
+            event(Verdict::Accepted, Some(Outcome::Signal(9)))
+        );
+        assert_eq!(
+            answered(
+                native::INDETERMINATE,
+                b"lost",
+                native::TERMINATION,
+                terminated(0, result(native::EXIT, 1))
+            ),
+            event(Verdict::Uncertain("lost".into()), None)
+        );
+        assert_eq!(
+            answered(
+                native::FAILED,
+                b"failed",
+                native::TERMINATION,
+                terminated(1, result(native::EXIT, 3))
+            ),
+            event(Verdict::Uncertain("failed".into()), Some(Outcome::Exit(3)))
+        );
+        let known = native::ResponseResult {
+            known_final: result(native::EXIT, 0),
+        };
+        assert_eq!(
+            answered(native::REJECTED, b"ended", native::KNOWN_FINAL, known),
+            event(Verdict::Rejected("ended".into()), Some(Outcome::Exit(0)))
+        );
+        assert_eq!(
+            answered(native::REJECTED, b"stale", native::RESULT_NONE, none),
+            event(Verdict::Rejected("stale".into()), None)
+        );
+        let flag = native::ResponseResult {
+            flag: native::FlagResult {
+                changed: 1,
+                value: 1,
+                reserved: [0; 2],
+                accepted_bytes: 0,
+            },
+        };
+        assert_eq!(
+            answered(native::OK, b"", native::VIEWING_RESULT, flag),
+            event(Verdict::Accepted, None)
+        );
+        let answer = |verdict| {
+            Answer {
+                verdict,
+                ended: None,
+            }
+            .result()
+        };
+        assert_eq!(answer(Verdict::Accepted), Ok(()));
+        assert_eq!(answer(Verdict::Rejected("no".into())), Err("no".into()));
+        assert_eq!(
+            answer(Verdict::Uncertain("lost".into())),
+            Err("lost".into())
+        );
+    }
+
+    /// DEL-01 (pure supplement, the header's `CM1_KILL`; #117): a Kill
+    /// names its request and requires no family, as `climon2 kill`'s does.
+    #[test]
+    fn a_kill_requires_no_family() {
+        let request = kill_request(7);
+        assert_eq!(
+            (request.tag, request.request_id, request.reserved),
+            (native::KILL, 7, 0)
+        );
+        // SAFETY: the tag names the active member.
+        let required = unsafe { request.args.required };
+        assert!(required.data.is_null());
+        assert_eq!(required.count, 0);
     }
 
     /// Monitor Open's successful response, selecting `families`.
