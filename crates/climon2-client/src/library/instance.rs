@@ -11,8 +11,9 @@
 //! terminal evidence behind every record already queued.
 
 #[cfg(feature = "test-hooks")]
-use super::REQUIREMENTS;
+use super::{REQUIREMENTS, hooks::Worker};
 use super::{
+    allocation::Account,
     connection,
     failure::{
         BUSY, CANCELLED, CLOSED, FULL, Failed, Failure, Fault, INVALID_ARGUMENT,
@@ -24,6 +25,7 @@ use super::{
     request::{self, Operation, Submitted},
     startup::{Diagnostics, Paths, Startup},
     stream::Departure,
+    warm,
 };
 use climon2_core::{
     SessionId,
@@ -44,12 +46,6 @@ use std::{
     time::Duration,
 };
 use tracing::{Dispatch, Span};
-
-/// One delivery's own allocation, beside the records it holds.
-const DELIVERY: u64 = mem::size_of::<Delivery>() as u64;
-/// The allocation of an instance's own structures: its shared state, its
-/// owner's record and both handles.
-const FIXED: u64 = mem::size_of::<(Shared, Owner, Communication, Control)>() as u64;
 
 // SAFETY (all three): every field is an integer or a raw pointer, for which
 // zero (null) is a valid value.
@@ -83,9 +79,9 @@ const HANDLES: u8 = 2;
 
 /// A current measurement and its peak.
 #[derive(Clone, Copy, Default)]
-struct Gauge<T> {
-    current: T,
-    peak: T,
+pub(super) struct Gauge<T> {
+    pub(super) current: T,
+    pub(super) peak: T,
 }
 
 impl<T: Copy + Ord + AddAssign + SubAssign> Gauge<T> {
@@ -99,11 +95,11 @@ impl<T: Copy + Ord + AddAssign + SubAssign> Gauge<T> {
     }
 }
 
-/// What `snapshot` reports. Records and deliveries are accounted here
-/// alone: a record is charged from its queueing until its delivery's release.
+/// What `snapshot` reports besides allocation, which the instance's
+/// [`Account`] measures. Records and deliveries are accounted here alone: a
+/// record is charged from its queueing until its delivery's release.
 #[derive(Default)]
 struct Measures {
-    allocation: Gauge<u64>,
     request_bytes: Gauge<u64>,
     request_records: Gauge<u32>,
     /// Accepted requests whose outcome is not queued yet; each reserves one
@@ -119,20 +115,18 @@ struct Measures {
 }
 
 /// Each charge has one owner here: what enters a queue or a delivery is
-/// counted, with the allocation it holds, where it leaves.
+/// counted where it enters and where it leaves.
 impl Measures {
     /// A request enters the queue, with its bytes.
     fn queue_request(&mut self, bytes: u64) {
         self.request_records.add(1);
         self.request_bytes.add(bytes);
-        self.allocation.add(bytes);
     }
 
     /// A request leaves the queue, to execute or be cancelled.
     fn dequeue_request(&mut self, bytes: u64) {
         self.request_records.sub(1);
         self.request_bytes.sub(bytes);
-        self.allocation.sub(bytes);
     }
 
     /// A record enters the event queue, charged until its delivery's
@@ -140,13 +134,11 @@ impl Measures {
     fn queue_event(&mut self, charge: u64) {
         self.event_records.add(1);
         self.event_bytes.add(charge);
-        self.allocation.add(charge);
     }
 
     /// A delivery of `records` queued records is drained.
     fn deliver(&mut self, records: u32) {
         self.deliveries.add(1);
-        self.allocation.add(DELIVERY);
         self.drained += u64::from(records);
     }
 
@@ -155,7 +147,6 @@ impl Measures {
         self.deliveries.sub(1);
         self.event_records.sub(records);
         self.event_bytes.sub(charge);
-        self.allocation.sub(DELIVERY + charge);
         self.released += 1;
     }
 }
@@ -244,6 +235,8 @@ pub(super) struct Shared {
     notifier: Notifier,
     /// Raised whenever the connection has something new to look at.
     waker: Notifier,
+    /// Everything allocated while working for this instance.
+    account: Account,
     dispatch: Dispatch,
     /// Names this instance in every record: its generation.
     span: Span,
@@ -346,7 +339,7 @@ pub(super) type Handles = (Box<Owner>, Box<Communication>, Box<Control>);
 /// Local setup only: the notification descriptor and the waker, then the
 /// optional log file, the last step that can fail, so a failure leaves
 /// nothing behind.
-pub(super) fn create(startup: Startup) -> Result<Handles, Failure> {
+pub(super) fn create(startup: Startup, account: Account) -> Result<Handles, Failure> {
     let notifier = Notifier::new().map_err(|_| NO_DESCRIPTOR)?;
     let waker = Notifier::waker().map_err(|_| NO_DESCRIPTOR)?;
     let Startup {
@@ -361,7 +354,6 @@ pub(super) fn create(startup: Startup) -> Result<Handles, Failure> {
     let span = tracing::dispatcher::with_default(&dispatch, || {
         tracing::info_span!("client_instance", generation)
     });
-    let allocation = FIXED + paths.bytes();
     let shared = Arc::new(Shared {
         session,
         generation,
@@ -370,17 +362,15 @@ pub(super) fn create(startup: Startup) -> Result<Handles, Failure> {
         settings,
         notifier,
         waker,
+        account,
         dispatch,
         span,
         terminal: OnceLock::new(),
         state: Mutex::new(State::default()),
         changed: Condvar::new(),
     });
-    let mut state = shared.lock();
-    state.measures.allocation.add(allocation);
     let descriptors = Notifier::DESCRIPTORS + Notifier::DESCRIPTORS + logs;
-    state.measures.descriptors.add(descriptors);
-    drop(state);
+    shared.lock().measures.descriptors.add(descriptors);
     shared.scope(|| tracing::info!("client instance created"));
     let owner = Owner {
         shared: Arc::clone(&shared),
@@ -458,8 +448,29 @@ impl Shared {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Work for this instance: charged to it, under its diagnostics. A
+    /// caller's thread is warmed first, outside any charge.
     fn scope<T>(&self, work: impl FnOnce() -> T) -> T {
-        tracing::dispatcher::with_default(&self.dispatch, || self.span.in_scope(work))
+        warm::thread();
+        self.account.charged(|| {
+            tracing::dispatcher::with_default(&self.dispatch, || self.span.in_scope(work))
+        })
+    }
+
+    /// Starts one of this instance's own threads. It works for the instance
+    /// from its start, so everything it allocates, its thread-wide state
+    /// included, is charged here. Every worker starts through this.
+    #[cfg(feature = "test-hooks")]
+    fn spawn(
+        self: &Arc<Self>,
+        builder: thread::Builder,
+        work: impl FnOnce() + Send + 'static,
+    ) -> io::Result<JoinHandle<()>> {
+        let shared = Arc::clone(self);
+        builder.spawn(move || {
+            warm::adopt();
+            shared.scope(work);
+        })
     }
 
     pub(super) fn session(&self) -> &SessionId {
@@ -849,9 +860,10 @@ impl Shared {
     pub(super) fn snapshot(&self) -> native::Metrics {
         let state = self.lock();
         let measures = &state.measures;
+        let allocation = self.account.measure();
         native::Metrics {
-            allocation_bytes: measures.allocation.current,
-            peak_allocation_bytes: measures.allocation.peak,
+            allocation_bytes: allocation.current,
+            peak_allocation_bytes: allocation.peak,
             request_bytes: measures.request_bytes.current,
             peak_request_bytes: measures.request_bytes.peak,
             event_bytes: measures.event_bytes.current,
@@ -1057,18 +1069,23 @@ impl Run {
     #[cfg(not(feature = "test-hooks"))]
     fn start_workers(&mut self, _: &Arc<Shared>) {}
 
-    /// `worker` and `stall-cleanup` start one worker, whose stack is the
-    /// release's qualified worker stack.
+    /// `worker`, `stall-cleanup` and `joined-worker` start one worker, whose
+    /// stack is the release's qualified worker stack; a joined worker is
+    /// joined at once.
     #[cfg(feature = "test-hooks")]
     fn start_workers(&mut self, shared: &Arc<Shared>) {
-        if let Some(stalls) = super::hooks::worker() {
+        if let Some(kind) = super::hooks::worker() {
             let counted = Counted::new(shared);
-            let worker = thread::Builder::new()
+            let builder = thread::Builder::new()
                 .name("climon2-client-worker".into())
-                .stack_size(REQUIREMENTS.worker_stack_bytes as usize)
-                .spawn(move || work(counted, stalls))
+                .stack_size(REQUIREMENTS.worker_stack_bytes as usize);
+            let worker = shared
+                .spawn(builder, move || work(counted, kind))
                 .expect("the worker starts");
-            self.workers.push(worker);
+            match kind {
+                Worker::Joined => drop(worker.join()),
+                Worker::Ends | Worker::Stalls => self.workers.push(worker),
+            }
         }
     }
 }
@@ -1094,13 +1111,22 @@ impl Drop for Counted {
     }
 }
 
-/// A worker that ends with its instance's stream, or whose cleanup stalls.
+/// A worker that ends with its instance's stream or never, or one that
+/// briefly holds a block of `chunk_bytes`, so its own allocation shows in its
+/// instance's peak, and ends.
 #[cfg(feature = "test-hooks")]
-fn work(worker: Counted, stalls: bool) {
-    worker.0.wait_for_stop();
-    if stalls {
-        loop {
-            thread::park();
+fn work(worker: Counted, kind: Worker) {
+    match kind {
+        Worker::Ends => worker.0.wait_for_stop(),
+        Worker::Stalls => {
+            worker.0.wait_for_stop();
+            loop {
+                thread::park();
+            }
+        }
+        Worker::Joined => {
+            let block = Vec::<u8>::with_capacity(worker.0.limits.chunk_bytes as usize);
+            drop(std::hint::black_box(block));
         }
     }
 }
