@@ -1729,6 +1729,9 @@ enum Answer {
     Serve(std::sync::Arc<Vec<Act>>),
     /// As [`Answer::Serve`], without advertising `focus-v1`.
     Unfocused(std::sync::Arc<Vec<Act>>),
+    /// The hello as `id`, advertising `daemon-wire-v1` alone, so a monitor
+    /// client never sends its Open; then hold until the peer hangs up.
+    Bare(&'static str),
     /// As [`Answer::Serve`], each client taking its turn's acts and
     /// recording that it was served and each request it sent after them.
     Turns(std::sync::Arc<Turns>),
@@ -1899,6 +1902,10 @@ fn answer_once(
             if hello(connection, id, families) {
                 serve(connection, acts);
             }
+        }
+        Answer::Bare(answered) => {
+            let _ = hello(connection, answered, []);
+            let _ = connection.read_to_end(&mut Vec::new());
         }
         Answer::Turns(turns) => {
             let families = [Family::MonitorV1, Family::TitleV1, Family::StatusV1];
@@ -5409,6 +5416,167 @@ fn killed_and_ended_sessions_stay_read_only_and_are_never_retried() {
     support::assert_released(&package, &mut terminal, 0);
     // A real listing reclaims the killed daemon's stale metadata.
     package.list();
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// The delays the monitor's general log says it scheduled for `id`'s
+/// retries, in order.
+fn retry_delays(package: &Package, id: &str) -> Vec<u64> {
+    let session = format!("session={id}");
+    monitor_logs(package)
+        .lines()
+        .filter(|line| line.contains("client retry scheduled") && line.contains(&session))
+        .map(|line| {
+            let delay = line.split("delay_ms=").nth(1).unwrap();
+            delay.split_whitespace().next().unwrap().parse().unwrap()
+        })
+        .collect()
+}
+
+/// REC-01 (Monitor, Fault: missing library, repaired installation,
+/// permanently rejected protocol; visible exponential retry with jitter and
+/// cap), LIB-02 (Monitor: a library error stays on its rows) and DSC-05
+/// (Monitor, Fault: every row unavailable): with its version's client
+/// library missing, every row is Unavailable and the monitor stays open,
+/// still discovering a newly appearing session; selected, that row shows no
+/// terminal content, its condition and exactly `Reconnecting...`, the
+/// loader's diagnostic in its top row's error slot. Once the installation
+/// is repaired, the real session connects by itself and is listed Running,
+/// not selected, as an explicit selection came first. The other row's
+/// daemon lacks
+/// `monitor-v1`, a permanent rejection: it says it is not reconnecting and
+/// is never retried, while a session whose daemon keeps hanging up before
+/// answering its Open is retried with delays doubling from
+/// `retry.initial_ms`, each within its jitter, held at `retry.cap_ms`.
+#[test]
+fn failed_clients_retry_with_backoff_until_repaired_or_rejected_for_good() {
+    const REJECTING: &str = "0d5c0000-0000-4000-8000-0000000000d2";
+    const FLAKY: &str = "0d5c0000-0000-4000-8000-0000000000d3";
+    let package = Package::private();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({"retry": {"initial_ms": 200, "cap_ms": 800, "jitter_percent": 10}}),
+    );
+    headless(&package, &watched("Fixed"), "finish");
+    let library = package
+        .executable_home()
+        .join(VERSION)
+        .join("libclimon2_client.so");
+    let moved = library.with_extension("so.moved");
+    fs::rename(&library, &moved).unwrap();
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal.send("\x1ds").unwrap();
+    whole_frame_shows(&terminal, "Fixed unavailable", |screen| {
+        screen
+            .lines()
+            .any(|row| row.starts_with(" ║Unavailable /bin/bash") && row.contains("Fixed"))
+    });
+    let ear = Ear::default();
+    let rejecting = FakeDaemon::start(
+        &package,
+        REJECTING,
+        "2099-01-01T00:00:00.000Z",
+        Answer::Bare(REJECTING),
+        &ear,
+    );
+    listed_with(&terminal, "Unavailable", &format!("fake {REJECTING}"));
+    // Opened before any row existed, the selector highlights none until
+    // it is opened again.
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, REJECTING);
+    let missing = |lines: &[&str]| {
+        lines[0].starts_with(&format!("fake {REJECTING} | "))
+            && lines.iter().any(|line| line.trim() == NO_CONTENT)
+            && lines.iter().any(|line| line.trim() == RECONNECTING)
+    };
+    read_only_frame(
+        &terminal,
+        ("Unavailable", NOT_CONTROLLING),
+        "the missing library",
+        missing,
+    );
+    fs::rename(&moved, &library).unwrap();
+    read_only_frame(
+        &terminal,
+        ("Unavailable", NOT_CONTROLLING),
+        "the permanent rejection",
+        |lines| {
+            lines
+                .iter()
+                .any(|line| line.trim().starts_with("Not reconnecting: "))
+                && !lines.iter().any(|line| line.contains(RECONNECTING))
+        },
+    );
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Fixed");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    let monitor = monitor_process(&package).0;
+    let rejected = instances(&package, REJECTING, monitor);
+    let flaky = FakeDaemon::start(
+        &package,
+        FLAKY,
+        "2099-01-01T00:00:01.000Z",
+        Turns::new(vec![vec![Act::Close]]),
+        &ear,
+    );
+    let deadline = Instant::now() + TIMEOUT;
+    while retry_delays(&package, FLAKY).len() < 5 {
+        assert!(
+            Instant::now() < deadline,
+            "the flaky session was not retried"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    let delays = retry_delays(&package, FLAKY);
+    let ranges = [180..=220, 360..=440, 720..=800, 720..=800, 720..=800];
+    for (delay, range) in delays.iter().zip(ranges) {
+        assert!(range.contains(delay), "{delays:?}");
+    }
+    assert_eq!(instances(&package, REJECTING, monitor), rejected);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    drop((rejecting, flaky));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// REC-01 (Monitor, Fault: a contained panic) and LIB-05 (Monitor: a
+/// panicking instance stays on its own row): with the hooked library
+/// panicking once in the monitor's process as a connection handles its
+/// first frame, that session's first client fails, contained, while the
+/// other session connects; the failed one is retried passively, connects,
+/// and the first row to become eligible is selected and acquired. Fault
+/// hooks are absent from release archives, so this returns early there.
+#[test]
+fn a_contained_panic_is_retried_on_its_own_row() {
+    if archive() {
+        return;
+    }
+    let package = Package::new();
+    without_introduction(&package);
+    let first = headless(&package, &watched("First"), "finish");
+    let second = headless(&package, &watched("Second"), "finish");
+    let mut terminal = outer(&package, "CLIMON2_LIBRARY_FAULT=panic:receive c2 monitor");
+    terminal.send("\x1ds").unwrap();
+    for label in ["First", "Second"] {
+        listed_with(&terminal, RUNNING, label);
+    }
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    let retried: Vec<_> = [&first, &second]
+        .into_iter()
+        .filter(|id| !retry_delays(&package, id).is_empty())
+        .collect();
+    assert_eq!(retried.len(), 1, "{retried:?}");
+    let monitor = monitor_process(&package).0;
+    assert_eq!(instances(&package, retried[0], monitor), 2);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
     package.assert_clean();
 }
