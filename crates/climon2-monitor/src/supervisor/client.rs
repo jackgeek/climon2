@@ -277,19 +277,20 @@ fn presented(presentation: Option<Presentation>) -> Vec<ClientEvent> {
 }
 
 /// The Initial metadata's title, then its final outcome when the command
-/// already ended, otherwise its status when `status-v1` reported one. The
-/// library has checked that a final status comes exactly with a result.
+/// already ended, otherwise that it had not (#115) and its status when
+/// `status-v1` reported one. The library has checked that a final status
+/// comes exactly with a result.
 fn initial(metadata: &native::Metadata) -> Vec<ClientEvent> {
     let result = metadata.command_result;
     let standing = if result.present == 0 {
-        available(metadata.status)
-            .and_then(status)
-            .map(|status| ClientEvent::Report(Report::Status(status)))
+        let status = available(metadata.status).and_then(status);
+        let status = status.map(|status| ClientEvent::Report(Report::Status(status)));
+        [Some(ClientEvent::Report(Report::Unfinished)), status]
     } else {
-        finished(result.value, metadata.status)
+        [finished(result.value, metadata.status), None]
     };
     std::iter::once(title(metadata.title))
-        .chain(standing)
+        .chain(standing.into_iter().flatten())
         .collect()
 }
 
@@ -311,6 +312,7 @@ fn status(status: native::Status) -> Option<Status> {
     Some(Status {
         state: *state,
         changed,
+        episode: (status.episode_present != 0).then_some(status.episode_id),
     })
 }
 
@@ -543,27 +545,31 @@ mod tests {
     }
 
     /// STA-07 and COM-06 (Monitor, pure supplement): the Initial metadata
-    /// reports its title, then the stored status and its exact change time
-    /// (never the time it arrived), or, once the command ended, its final
-    /// outcome with the terminal status's time when `status-v1` reported
-    /// one; without status or result, nothing is fabricated.
+    /// reports its title, then, before the command ended, that it had not
+    /// (#115) and the stored status and its exact change time (never the
+    /// time it arrived), or, once it ended, its final outcome with the
+    /// terminal status's time when `status-v1` reported one; without status
+    /// or result, no status is fabricated.
     #[test]
     fn the_initial_metadata_reports_its_status_or_final_outcome() {
         let untitled = ClientEvent::Report(Report::Title(None));
+        let unfinished = ClientEvent::Report(Report::Unfinished);
         let idle = native_status(native::IDLE, LATER);
         assert_eq!(
             read_one(&metadata(Some(idle), None)),
             [
                 untitled.clone(),
+                unfinished.clone(),
                 ClientEvent::Report(Report::Status(Status {
                     state: State::Idle,
                     changed: at(1_800_000_001_234),
+                    episode: None,
                 }))
             ]
         );
         assert_eq!(
             read_one(&metadata(None, None)),
-            std::slice::from_ref(&untitled)
+            [untitled.clone(), unfinished]
         );
         let completed = native_status(native::COMPLETED, T0);
         assert_eq!(
@@ -579,29 +585,40 @@ mod tests {
         );
     }
 
-    /// STA-07 (Monitor, pure supplement): each nonfinal state maps to its
-    /// own status with the daemon's exact time; a final state, an unknown
-    /// one or an unreadable time reports nothing rather than a guess.
+    /// STA-07 and NOT-01 (Monitor, pure supplement): each nonfinal state
+    /// maps to its own status with the daemon's exact time and its
+    /// attention episode, if present; a final state, an unknown one or an
+    /// unreadable time reports nothing rather than a guess.
     #[test]
     fn status_records_keep_their_state_and_exact_change_time() {
         let changed = |state, time| {
             let status = native_status(state, time);
             read_one(&record(native::STATUS, native::RecordData { status }))
         };
-        for (state, expected) in [
-            (native::NEEDS_ATTENTION, State::NeedsAttention),
-            (native::ACKNOWLEDGED, State::Acknowledged),
-            (native::RUNNING, State::Running),
-            (native::IDLE, State::Idle),
+        for (state, expected, episode) in [
+            (native::NEEDS_ATTENTION, State::NeedsAttention, Some(1)),
+            (native::ACKNOWLEDGED, State::Acknowledged, Some(1)),
+            (native::RUNNING, State::Running, None),
+            (native::IDLE, State::Idle, None),
         ] {
             assert_eq!(
                 changed(state, T0),
                 [ClientEvent::Report(Report::Status(Status {
                     state: expected,
                     changed: at(1_800_000_000_000),
+                    episode,
                 }))]
             );
         }
+        let status = native::Status {
+            episode_id: 9,
+            ..native_status(native::NEEDS_ATTENTION, T0)
+        };
+        let read = read_one(&record(native::STATUS, native::RecordData { status }));
+        let ClientEvent::Report(Report::Status(attention)) = &read[0] else {
+            panic!("{read:?}");
+        };
+        assert_eq!(attention.episode, Some(9));
         for state in [0, native::COMPLETED, native::STATUS_FAILED, 7] {
             assert_eq!(changed(state, T0), []);
         }
