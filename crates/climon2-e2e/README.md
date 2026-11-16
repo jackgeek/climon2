@@ -143,6 +143,10 @@ acknowledge the turn that read it, so each status change happens at an
 exact, hand-computed time. Release archives have no hooks, so those cases
 return early in archive mode. The passive suites leave `status-v1` out of
 their Opens, because a real daemon reports status on its own clock.
+`status.rs` also watches ordinary `climon2 attach` clients acknowledge
+attention (#102): the host runs in a thread beside the test's terminals,
+its `await_file` step waits for a file the test creates once a client has
+attached or taken control, and its `touch` step tells the test when to act.
 
 `tests/mixed.rs` (#97) runs two releases in one host process. Each test
 installs, in its own executable home and with the real installer, the
@@ -318,6 +322,7 @@ before it.
 | Scenario | Named test |
 |---|---|
 | STA-07 Library (idle at the daemon's start in every Initial metadata, running at the first sample, needs_attention episode 1 ten seconds later; a fresh instance's Initial metadata keeps that episode and time; the final status only with Command final, completed, no Status after it), CTL-03 Library status case (the same status reaches a passive registration, an attachment revoked by takeover and a background controller) and STA-08 Library (viewing false from a background controller before Ready) | `installed_library_relays_status_to_every_role_and_keeps_its_identity_across_instances` (`status.rs`) |
+| Derived client-executable scenario (#102), STA-08 ordinary-attach case against a real daemon: pending attention stays pending while the session's own ready client only shows it; an explicit `climon2 attach` acknowledges it once ready (same episode); new agent work requests episode 2, which the viewing attached client does not acknowledge; the first client's take-control key acknowledges it once ready | `ordinary_attach_and_takeover_acknowledge_pending_attention_once_ready` (`status.rs`) |
 | STA-08 Library: viewing true and Acknowledge `not_ready` before Ready, viewing false accepted during restoration; `not_viewing` until viewing true; viewing changed then unchanged; explicit no-change Acknowledge; Status acknowledged (same episode and time) before the changed success, then no change; viewing false leaves the status; `not_controller` after takeover; a new period starts not viewing; accepted Input clears acknowledged attention, its Status first. COM-03 Library: `stale_generation` locally | `installed_library_sets_viewing_and_acknowledges_attention_through_a_real_daemon` (`status.rs`) |
 | COM-03 Library and Fault (viewing and acknowledgement cases): malformed requests `invalid_argument`, queued requests `cancelled` by shutdown; STA-08 Fault: `unsupported_capability` without `status-v1` and `stale_generation`, none sent | `installed_library_rejects_viewing_and_acknowledgement_it_cannot_send` (`status_faults.rs`) |
 | STA-08 Library and Fault and COM-03 Library and Fault: wire bodies sent once; viewing and acknowledgement results mapped, no-change explicit, Status before a changed acknowledgement; daemon rejections (`stale_period`, `stale_restoration`, `not_ready`, `not_viewing`) kept; contradicting or mismatched results `invalid_record`; held answers `timeout` (indeterminate), closed connections no fabricated Response, nothing replayed | `installed_library_maps_viewing_and_acknowledgement_answers_without_replay` (`status_faults.rs`) |
