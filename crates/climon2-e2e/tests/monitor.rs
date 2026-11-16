@@ -626,7 +626,14 @@ fn key_introduction(prefix: &str, checked: bool, problem: Option<&str>) -> Vec<S
         _ => "Enter  Select the highlighted session".to_owned(),
     });
     lines.extend((prefix != "Ctrl+[").then(|| "Esc  Cancel".to_owned()));
+    // Forward Delete, fn+⌫ on a Mac (owner decision on #117).
+    let delete = if cfg!(target_os = "macos") {
+        "Del (fn+⌫)"
+    } else {
+        "Del"
+    };
     lines.extend([
+        format!("{delete}  Delete the highlighted session"),
         "Click a row  Highlight it".to_owned(),
         "Click outside  Cancel".to_owned(),
         "Wheel  Scroll the list".to_owned(),
@@ -1144,8 +1151,9 @@ fn the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_sav
     shows(&mut hidden, &opened);
     let monitor = monitor_process(&package).0;
     read_alone(&mut hidden, monitor, b"\x1d?");
-    hidden.resize(21, 71).unwrap();
-    let small = empty_monitor(21, 71, &[EMPTY]);
+    // The dialog's 21 rows, with Delete listed (#117), leave one spare.
+    hidden.resize(23, 71).unwrap();
+    let small = empty_monitor(23, 71, &[EMPTY]);
     let still_open = overlaid(&small, &key_introduction("Ctrl+]", false, None));
     shows(&mut hidden, &still_open);
     hidden.send(b"\r").unwrap();
@@ -1806,17 +1814,26 @@ enum Answer {
     Turns(std::sync::Arc<Turns>),
 }
 
-/// Each client's acts in turn, the last list for every later client.
+/// Each client's acts in turn, the last list for every later client, and
+/// what a Kill's own connection is answered with.
 struct Turns {
     taken: std::sync::atomic::AtomicUsize,
     acts: Vec<Vec<Act>>,
+    kills: Vec<Act>,
 }
 
 impl Turns {
     fn answer(acts: Vec<Vec<Act>>) -> Answer {
+        Self::killing(acts, Vec::new())
+    }
+
+    /// [`Turns::answer`], answering each Kill (#117) with `kills`, in which
+    /// `"$open"` is the Kill's request ID.
+    fn killing(acts: Vec<Vec<Act>>, kills: Vec<Act>) -> Answer {
         Answer::Turns(std::sync::Arc::new(Self {
             taken: std::sync::atomic::AtomicUsize::new(0),
             acts,
+            kills,
         }))
     }
 
@@ -1838,6 +1855,9 @@ enum Act {
     Raw(u8, Vec<u8>),
     /// Wait until this file exists, for at most [`TIMEOUT`].
     Await(PathBuf),
+    /// Answer the client's Leave only once this file exists, for at most
+    /// [`TIMEOUT`]: its cleanup waits meanwhile.
+    HoldLeave(PathBuf),
     /// Hang up.
     Close,
 }
@@ -1857,6 +1877,8 @@ enum Heard {
     Served,
     /// After its acts, a turn-taking fake read a request with this code.
     Request(u8),
+    /// A turn-taking fake read a Kill on its own connection (#117).
+    Kill,
     /// A watched first connection was still open after the test's request
     /// was sent.
     Requested,
@@ -1986,7 +2008,14 @@ fn answer_once(
         Answer::Turns(turns) => {
             let families = [Family::MonitorV1, Family::TitleV1, Family::StatusV1];
             if hello(connection, id, families) {
-                serve_heard(connection, || turns.next(), Some((ear, id)));
+                let acts = |kill: bool| {
+                    if kill {
+                        turns.kills.clone()
+                    } else {
+                        turns.next()
+                    }
+                };
+                serve_heard(connection, acts, Some((ear, id)));
             }
         }
         Answer::Hello(answered) => {
@@ -2070,14 +2099,15 @@ fn hello(
 /// Serves one client: reads its Open, performs `acts`, then answers its
 /// Leave and hangs up.
 fn serve(connection: &mut std::os::unix::net::UnixStream, acts: &[Act]) {
-    serve_heard(connection, || acts.to_vec(), None);
+    serve_heard(connection, |_| acts.to_vec(), None);
 }
 
-/// [`serve`] with the acts `acts` gives once the Open is read, recording
-/// in `heard`, if given, the Open and every later request.
+/// [`serve`] with the acts `acts` gives once the Open, or a Kill on its own
+/// connection, is read, recording in `heard`, if given, the Open or the
+/// Kill and every later request.
 fn serve_heard(
     connection: &mut std::os::unix::net::UnixStream,
-    acts: impl FnOnce() -> Vec<Act>,
+    acts: impl FnOnce(bool) -> Vec<Act>,
     heard: Option<(&Ear, &'static str)>,
 ) {
     use climon2_core::wire::{Frame, FrameLimit, read_frame, write_frame};
@@ -2085,10 +2115,12 @@ fn serve_heard(
     let Ok(Some(open)) = read_frame(connection, limit) else {
         return;
     };
+    let kill = open.code() == KILL;
     if let Some((ear, id)) = heard {
-        hear(ear, id, Heard::Served);
+        hear(ear, id, [Heard::Served, Heard::Kill][usize::from(kill)]);
     }
-    let acts = acts();
+    let acts = acts(kill);
+    let mut leave_after = None;
     // The client stays until it leaves or the monitor exits.
     let _ = connection.set_read_timeout(None);
     let open: Value = serde_json::from_slice(open.body()).unwrap();
@@ -2104,10 +2136,11 @@ fn serve_heard(
                 write_frame(connection, &Frame::new(*code, body.clone()), limit).is_ok()
             }
             Act::Await(path) => {
-                let deadline = Instant::now() + TIMEOUT;
-                while !path.exists() && Instant::now() < deadline {
-                    thread::sleep(Duration::from_millis(10));
-                }
+                await_file(path);
+                true
+            }
+            Act::HoldLeave(path) => {
+                leave_after = Some(path);
                 true
             }
             Act::Close => false,
@@ -2121,6 +2154,9 @@ fn serve_heard(
             hear(ear, id, Heard::Request(frame.code()));
         }
         if frame.code() == LEAVE {
+            if let Some(path) = leave_after {
+                await_file(path);
+            }
             let leave: Value = serde_json::from_slice(frame.body()).unwrap();
             let left = json!({
                 "request_id": leave["request_id"], "outcome": "ok",
@@ -2132,8 +2168,17 @@ fn serve_heard(
     }
 }
 
+/// Waits until `path` exists, for at most [`TIMEOUT`].
+fn await_file(path: &Path) {
+    let deadline = Instant::now() + TIMEOUT;
+    while !path.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Daemon wire revision 1 frame types, from the daemon wire reference.
 const LEAVE: u8 = 0x37;
+const KILL: u8 = 0x38;
 const RESPONSE: u8 = 0x40;
 const INITIAL_METADATA: u8 = 0x41;
 const STATUS_CHANGED: u8 = 0x43;
@@ -3034,11 +3079,10 @@ fn async_updates_clear_the_highlight_and_enter_pins_the_highlighted_session() {
 /// initial selection, and Alpha then Gamma appear above it. A session lost
 /// while its row is highlighted (Gamma's daemon killed) turns Disconnected
 /// and moves below the connected rows, and the highlight moves with it.
-/// Enter there acquires nothing, neither that session (Enter on
-/// Disconnected rows is #116's) nor Alpha, which the loss moved into the
-/// highlighted row's old place: the selector stays open over Beta. Up twice
-/// then highlights Alpha, and Enter acquires exactly Alpha. No selector key
-/// reached a session.
+/// Enter there acquires nothing, neither that session, which it selects
+/// read-only (#116), nor Alpha, which the loss moved into the highlighted
+/// row's old place. Reopened, the selector's Enter on Alpha acquires
+/// exactly Alpha. No selector key reached a session.
 #[test]
 fn enter_pins_the_highlighted_session_while_it_is_lost() {
     let package = Package::new();
@@ -3065,11 +3109,14 @@ fn enter_pins_the_highlighted_session_while_it_is_lost() {
         ("Disconnected", "Gamma"),
     ];
     boxed_as(&terminal, ROWS, &listing(&lost), &[7]);
-    // Up after Enter shows that Enter was read and left the selector open.
-    terminal.send("\r\x1b[A").unwrap();
-    boxed_as(&terminal, ROWS, &listing(&lost), &[6]);
-    top_row_is(&mut terminal, &controlled("Beta", RUNNING));
-    terminal.send("\x1b[A\r").unwrap();
+    terminal.send("\r").unwrap();
+    whole_frame_shows(&terminal, "Gamma read-only", |screen| {
+        screen.lines().next().is_some_and(|top| {
+            top.starts_with("Gamma ") && top.contains(&format!(" | {NOT_CONTROLLING} "))
+        })
+    });
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Alpha");
     ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
     terminal.send("z").unwrap();
     received_by(&package, "Alpha", b"z");
@@ -6092,9 +6139,10 @@ fn killed_and_ended_sessions_stay_read_only_and_are_never_retried() {
 
     support::kill_session(&package, &ended);
     terminal.send("\x1ds").unwrap();
-    // The selector opens on its first row, the final one.
+    // The final row lists first, and the selector opens on the selected
+    // row, Lost, below it (#113).
     shows_row(&mut terminal, "║Failed (signal 1) Ended");
-    terminal.send("\r").unwrap();
+    terminal.send("\x1b[A\r").unwrap();
     whole_frame_shows(&terminal, "Ended read-only", |screen| {
         let lines: Vec<_> = screen.lines().collect();
         if lines.is_empty() {
@@ -7602,5 +7650,292 @@ fn inside_the_delete_dialog_prefix_j_cancels_and_jumps_and_prefix_x_exits() {
         serde_json::json!({"lifecycle": "detached", "attachments": 0, "controlled": false});
     listed_as(&package, "Calm", &detached);
     finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// How many times fake `id` heard `what`.
+fn times_heard(ear: &Ear, id: &str, what: Heard) -> usize {
+    heard(ear, what)
+        .into_iter()
+        .filter(|(_, heard_by)| *heard_by == id)
+        .count()
+}
+
+/// Waits until fake `id` has heard `what` at least `count` times.
+fn until_heard(ear: &Ear, id: &str, what: Heard, count: usize) {
+    let deadline = Instant::now() + TIMEOUT;
+    while times_heard(ear, id, what) < count {
+        assert!(Instant::now() < deadline, "{id} never heard {what:?}");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Opens the selector until it lists `label` with `status`, then opens it
+/// again, so that it opens with a highlight.
+fn listed_on_reopening(terminal: &mut Terminal, status: &str, label: &str) {
+    terminal.send("\x1ds").unwrap();
+    listed_with(terminal, status, label);
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(terminal);
+    terminal.send("\x1ds").unwrap();
+    listed_with(terminal, status, label);
+}
+
+/// Waits until a whole frame's top row starts with `start`.
+fn top_row_starts(terminal: &Terminal, start: &str) {
+    whole_frame_shows(terminal, start, |screen| {
+        screen
+            .lines()
+            .next()
+            .is_some_and(|top| top.starts_with(start))
+    });
+}
+
+/// A fake session's turn: its Open answered without `status-v1` or
+/// `focus-v1`, which a turn-taking fake does not advertise, titled `title`,
+/// then `after`.
+fn titled_turn(title: &str, after: Vec<Act>) -> Vec<Act> {
+    let mut acts = vec![
+        opened_selecting(false, false),
+        initial_metadata(title, None, None),
+    ];
+    acts.extend(after);
+    acts
+}
+
+/// DEL-01 (Fault: a repeated Delete deduplicated, other sessions usable)
+/// and DEL-02 (Fault: a rejected Kill keeps the row and its error), against
+/// a fake daemon holding its Kill's answer. Once confirmed, Held shows
+/// Terminating, and Delete on it again opens nothing: the keys after it
+/// reach the search. Meanwhile Other, a real session, still takes typed
+/// keys. The Kill refused, Held is back to its status, its top row's error
+/// slot says why once selected, and Delete may ask again. The fake heard
+/// one Kill.
+#[test]
+fn a_held_kill_is_sent_once_and_a_refused_one_keeps_its_row_with_why() {
+    const HELD: &str = "0d5c0000-0000-4000-8000-0000000000e1";
+    let package = Package::new();
+    without_introduction(&package);
+    let home = package.isolation.home();
+    let refused = json!({
+        "request_id": "$open", "outcome": "rejected", "result": null,
+        "error": {"code": "invalid_state", "message": "refused by the fake"},
+    });
+    let kills = vec![
+        Act::Await(home.join("refuse")),
+        Act::Send(RESPONSE, refused),
+    ];
+    // The real session first, as its daemon wants a private sessions
+    // directory.
+    headless(&package, &watched("Other"), "finish");
+    let ear = Ear::default();
+    let fake = FakeDaemon::start(
+        &package,
+        HELD,
+        "2020-01-01T00:00:00.000Z",
+        Turns::killing(vec![titled_turn("Held", Vec::new())], kills),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Other", RUNNING, "29 120");
+    terminal.send("\x1ds").unwrap();
+    highlight_on(&mut terminal, "Held");
+    terminal.send(DELETE).unwrap();
+    let held = ("Held", Some("Unavailable"));
+    asks(&terminal, held, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\t").unwrap();
+    asks(&terminal, held, TERMINATE, TERMINATE_FOCUSED);
+    terminal.send("\r").unwrap();
+    listed_with(&terminal, "Terminating", "Held");
+    until_heard(&ear, HELD, Heard::Kill, 1);
+    terminal.send(format!("{DELETE}zz")).unwrap();
+    whole_frame_shows(&terminal, "the search", |screen| {
+        screen
+            .lines()
+            .nth(3)
+            .is_some_and(|line| line.starts_with(" ║zz "))
+    });
+    assert!(!terminal.screen().contains("Delete session"));
+    terminal.send("\x7f\x7f").unwrap();
+    listed_with(&terminal, "Terminating", "Held");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("still").unwrap();
+    received_by(&package, "Other", b"still");
+
+    fs::write(home.join("refuse"), b"").unwrap();
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Unavailable", "Held");
+    enter_on(&mut terminal, "Held");
+    top_row_starts(&terminal, "Held | Termination refused: refused by the fake");
+    terminal.send("\x1ds").unwrap();
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, held, TERMINATE, CANCEL_FOCUSED);
+    terminal.send(ESCAPE).unwrap();
+    not_asking(&terminal);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(times_heard(&ear, HELD, Heard::Kill), 1);
+    drop(fake);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// DEL-02 (Fault: a lost Kill answer never replayed, only the passive
+/// client learning the outcome, cleanup before dismissal, dismissal
+/// against rediscovery, a fallback selection that never acquires), against
+/// fake daemons. Lost, selected, is confirmed: its fake hangs up its Kill's
+/// own connection unanswered, so the row stays Terminating and its top
+/// row's error slot says the termination was not confirmed. Its passive
+/// client then hears the command's final result: the monitor asks it to
+/// stop, and while its Leave is unanswered the row stays. Once answered,
+/// the row is removed and the selection falls to Next, which shows the
+/// placeholder and was never sent Acquire. Lost's daemon, still answering,
+/// is probed by two more discovery passes and never listed or served again.
+#[test]
+fn a_lost_kill_is_never_sent_again_and_removal_waits_for_the_outcome_and_cleanup() {
+    const LOST: &str = "0d5c0000-0000-4000-8000-0000000000e2";
+    const NEXT: &str = "0d5c0000-0000-4000-8000-0000000000e3";
+    let package = Package::new();
+    without_introduction(&package);
+    let home = package.isolation.home();
+    let ended = json!({"command_result": {"kind": "signal", "number": 9, "name": "SIGKILL"}, "status": null});
+    let lost_acts = titled_turn(
+        "Lost",
+        vec![
+            Act::Await(home.join("final")),
+            Act::Send(COMMAND_FINAL, ended),
+            Act::HoldLeave(home.join("leave")),
+        ],
+    );
+    let ear = Ear::default();
+    let lost = FakeDaemon::start(
+        &package,
+        LOST,
+        "2020-01-01T00:00:01.000Z",
+        Turns::killing(vec![lost_acts], vec![Act::Close]),
+        &ear,
+    );
+    let next = FakeDaemon::start(
+        &package,
+        NEXT,
+        "2020-01-01T00:00:02.000Z",
+        Turns::answer(vec![titled_turn("Next", Vec::new())]),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    listed_on_reopening(&mut terminal, "Unavailable", "Next");
+    enter_on(&mut terminal, "Lost");
+    top_row_starts(&terminal, "Lost ");
+    terminal.send("\x1ds").unwrap();
+    terminal.send(DELETE).unwrap();
+    let asked = ("Lost", Some("Unavailable"));
+    asks(&terminal, asked, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\x1b[C").unwrap();
+    asks(&terminal, asked, TERMINATE, TERMINATE_FOCUSED);
+    terminal.send("\r").unwrap();
+    listed_with(&terminal, "Terminating", "Lost");
+    terminal.send(ESCAPE).unwrap();
+    top_row_starts(&terminal, "Lost | Termination not confirmed: ");
+
+    fs::write(home.join("final"), b"").unwrap();
+    until_heard(&ear, LOST, Heard::Request(LEAVE), 1);
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Terminating", "Lost");
+    fs::write(home.join("leave"), b"").unwrap();
+    whole_frame_shows(&terminal, "Lost removed", |screen| {
+        !screen.contains("Lost") && screen.contains("Unavailable Next")
+    });
+    terminal.send(ESCAPE).unwrap();
+    shows(&mut terminal, &placeholder_screen("Next", "Unavailable"));
+    let probed = times_heard(&ear, LOST, Heard::Connected);
+    until_heard(&ear, LOST, Heard::Connected, probed + 2);
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Unavailable", "Next");
+    assert!(!terminal.screen().contains("Lost"));
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(times_heard(&ear, LOST, Heard::Kill), 1);
+    assert_eq!(times_heard(&ear, LOST, Heard::Served), 1);
+    assert_eq!(requests_by_turn(&ear, NEXT), [vec![LEAVE]]);
+    drop((lost, next));
+    package.assert_clean();
+}
+
+/// DEL-01 (Monitor and Fault: the session finishing while asked switches
+/// the offer to Remove for the same session, through a reorder) and DEL-02
+/// (Fault: an already-final session's local cleanup before dismissal),
+/// against fake daemons. Asked on Ending with Terminate and remove
+/// focused, Ending's command ends: the dialog offers Remove for Ending,
+/// now Succeeded and listed first, its focus kept. Confirmed, no Kill is
+/// sent; Ending shows Removing while its Leave is unanswered, and is
+/// removed once it is answered. Stay is left alone.
+#[test]
+fn a_session_ending_while_asked_is_only_removed_after_its_cleanup() {
+    const ENDING: &str = "0d5c0000-0000-4000-8000-0000000000e4";
+    const STAY: &str = "0d5c0000-0000-4000-8000-0000000000e5";
+    let package = Package::new();
+    without_introduction(&package);
+    let home = package.isolation.home();
+    let ending_acts = titled_turn(
+        "Ending",
+        vec![
+            Act::Await(home.join("end")),
+            Act::Send(
+                COMMAND_FINAL,
+                json!({"command_result": exited(0), "status": null}),
+            ),
+            Act::HoldLeave(home.join("leave")),
+        ],
+    );
+    let ear = Ear::default();
+    let ending = FakeDaemon::start(
+        &package,
+        ENDING,
+        "2020-01-01T00:00:01.000Z",
+        Turns::answer(vec![ending_acts]),
+        &ear,
+    );
+    let stay = FakeDaemon::start(
+        &package,
+        STAY,
+        "2020-01-01T00:00:02.000Z",
+        Turns::answer(vec![titled_turn("Stay", Vec::new())]),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    listed_on_reopening(&mut terminal, "Unavailable", "Stay");
+    highlight_on(&mut terminal, "Ending");
+    terminal.send(DELETE).unwrap();
+    let asked = ("Ending", Some("Unavailable"));
+    asks(&terminal, asked, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\t").unwrap();
+    asks(&terminal, asked, TERMINATE, TERMINATE_FOCUSED);
+    fs::write(home.join("end"), b"").unwrap();
+    asks(
+        &terminal,
+        ("Ending", Some("Succeeded")),
+        REMOVE,
+        REMOVE_FOCUSED,
+    );
+    whole_frame_shows(&terminal, "Ending first", |screen| {
+        screen
+            .lines()
+            .nth(5)
+            .is_some_and(|line| line.contains("Succeeded   Ending"))
+    });
+    terminal.send("\r").unwrap();
+    listed_with(&terminal, "Removing", "Ending");
+    until_heard(&ear, ENDING, Heard::Request(LEAVE), 1);
+    listed_with(&terminal, "Removing", "Ending");
+    fs::write(home.join("leave"), b"").unwrap();
+    whole_frame_shows(&terminal, "Ending removed", |screen| {
+        !screen.contains("Ending") && screen.contains("Unavailable Stay")
+    });
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(times_heard(&ear, ENDING, Heard::Kill), 0);
+    assert_eq!(requests_by_turn(&ear, STAY), [vec![LEAVE]]);
+    drop((ending, stay));
     package.assert_clean();
 }
