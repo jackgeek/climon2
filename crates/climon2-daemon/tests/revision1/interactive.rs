@@ -32,14 +32,14 @@ pub(super) fn geometry(cols: u32, rows: u32) -> Geometry {
 pub(super) struct Attached {
     pub(super) stream: UnixStream,
     /// The families its Open selected, sorted.
-    selected: Vec<String>,
+    pub(super) selected: Vec<String>,
     /// The command result its Initial metadata reported, if any.
     pub(super) initial_result: Option<CommandResult>,
     pub(super) period: u64,
     pub(super) restoration: u64,
     /// From its Control granted until its Control revoked.
-    controlling: bool,
-    request: u64,
+    pub(super) controlling: bool,
+    pub(super) request: u64,
     pub(super) display: Vec<u8>,
 }
 
@@ -134,7 +134,7 @@ impl Attached {
     }
 
     /// Control granted, then the beginning of its restoration.
-    fn grant(&mut self, reason: GrantReason, geometry: Geometry) {
+    pub(super) fn grant(&mut self, reason: GrantReason, geometry: Geometry) {
         let ServerMessage::ControlGranted(granted) = message(&mut self.stream) else {
             panic!("expected Control granted");
         };
@@ -174,7 +174,7 @@ impl Attached {
 
     /// Restoration begin for `restoration` of the current period at
     /// `geometry`.
-    fn begun(&mut self, restoration: u64, geometry: Geometry) {
+    pub(super) fn begun(&mut self, restoration: u64, geometry: Geometry) {
         self.restoration = restoration;
         let begin = RestorationBegin {
             authority: self.authority(),
@@ -212,7 +212,7 @@ impl Attached {
     /// A Display reaches only the controller, carries its current authority,
     /// and holds at least one byte and at most 65,535, the private
     /// protocol's output chunk.
-    fn displayed(&mut self, display: Display) {
+    pub(super) fn displayed(&mut self, display: Display) {
         assert!(self.controlling, "Display after Control revoked");
         assert_eq!(
             display.authority,
@@ -286,7 +286,7 @@ impl Attached {
 
     /// Sends the request `record` builds from the next request ID and
     /// `authority`, and returns its outcome.
-    fn ask(
+    pub(super) fn ask(
         &mut self,
         authority: AuthorityIds,
         record: impl FnOnce(Counter, AuthorityIds) -> Frame,
@@ -320,7 +320,7 @@ impl Attached {
         assert_eq!(self.ready(), Outcome::Ok(ready));
     }
 
-    fn input_as(&mut self, authority: AuthorityIds, payload: &[u8]) -> Outcome {
+    pub(super) fn input_as(&mut self, authority: AuthorityIds, payload: &[u8]) -> Outcome {
         self.ask(authority, |request_id, authority| {
             Input {
                 request_id,
@@ -344,7 +344,7 @@ impl Attached {
         );
     }
 
-    fn resize_as(&mut self, authority: AuthorityIds, cols: u32, rows: u32) -> Outcome {
+    pub(super) fn resize_as(&mut self, authority: AuthorityIds, cols: u32, rows: u32) -> Outcome {
         self.ask(authority, |request_id, authority| {
             Resize {
                 request_id,
@@ -359,7 +359,7 @@ impl Attached {
         self.resize_as(self.authority(), cols, rows)
     }
 
-    fn focus_as(&mut self, authority: AuthorityIds, focused: bool) -> Outcome {
+    pub(super) fn focus_as(&mut self, authority: AuthorityIds, focused: bool) -> Outcome {
         self.ask(authority, |request_id, authority| {
             Focus {
                 request_id,
@@ -370,14 +370,14 @@ impl Attached {
         })
     }
 
-    fn focus(&mut self, focused: bool) -> Outcome {
+    pub(super) fn focus(&mut self, focused: bool) -> Outcome {
         self.focus_as(self.authority(), focused)
     }
 
     /// Sends Input of `payload`, then a Focus changing the desired focus to
     /// `focused`, in one write; both are accepted, the Focus with its
     /// sequence.
-    fn type_then_focus(&mut self, payload: &[u8], focused: bool) {
+    pub(super) fn type_then_focus(&mut self, payload: &[u8], focused: bool) {
         let authority = self.authority();
         let typed = self.next();
         let reported = self.next();
@@ -989,16 +989,17 @@ fn focus_reports_follow_the_input_accepted_before_them() {
 
 /// COM-01 and COM-03 (Contract, interactive first roles): an interactive
 /// Open selects the requested families this daemon supports, `focus-v1`
-/// included, and is rejected without effects, ending its stream, for an
-/// unsupported revision, an unknown required family or a geometry beyond
-/// the supported terminal size, one dimension at a time. The session keeps
-/// its one attachment.
+/// and `status-v1` included, and is rejected without effects, ending its
+/// stream, for an unsupported revision, an unknown required family or a
+/// geometry beyond the supported terminal size, one dimension at a time.
+/// The session keeps its one attachment, whose selected `status-v1` reports
+/// its Input's running status and its command's final failed status.
 #[test]
 fn interactive_open_selects_supported_families_and_rejects_without_effects() {
-    let mut session = Session::start("exit");
+    let mut session = super::clocked("exit");
     let optional = ["focus-v1", "title-v1", "status-v1", "future-v9"];
     let mut attached = ready_attachment(&session, &optional);
-    assert_eq!(attached.selected, ["focus-v1", "title-v1"]);
+    assert_eq!(attached.selected, ["focus-v1", "status-v1", "title-v1"]);
     let mut later_revision = open(1, &[], &[], Mode::Interactive(geometry(80, 24)));
     later_revision.revision = 2;
     let refused = [
@@ -1026,18 +1027,38 @@ fn interactive_open_selects_supported_families_and_rejects_without_effects() {
         crate::advertised_state(&session),
         (Lifecycle::Attached, 1, true)
     );
-    attached.typed(b"go\n");
-    attached.ended(&exited(42));
+    let request_id = attached.next();
+    let input = Input {
+        request_id,
+        authority: attached.authority(),
+        payload: b"go\n".to_vec(),
+    };
+    send(&mut attached.stream, &input.to_frame());
+    let running = super::status(wire::StatusState::Running, 0, None);
+    assert_eq!(
+        attached.next_after_display(),
+        super::status_changed(running)
+    );
+    let accepted_bytes = NonZeroU32::new(3).unwrap();
+    assert_eq!(
+        attached.response(),
+        Outcome::Ok(Success::InputAccepted { accepted_bytes })
+    );
+    assert_eq!(
+        attached.next_after_display(),
+        super::command_final_at(&exited(42), 0)
+    );
+    attached.session_ended();
     session.finish();
 }
 
 /// COM-02 and COM-03 (Contract, interactive requests): each request on an
 /// interactive attachment gets its documented result or rejection, without
 /// effects when rejected and with the stream going on. A later Open or Kill
-/// never repurposes the attachment (`invalid_state`); Set viewing and
-/// Acknowledge stay `invalid_state` until #91; empty Input is
+/// never repurposes the attachment (`invalid_state`); empty Input is
 /// `invalid_argument` and a geometry beyond the supported size
-/// `invalid_geometry`; Focus without `focus-v1` is `unsupported_capability`.
+/// `invalid_geometry`; Focus without `focus-v1`, and Set viewing and
+/// Acknowledge without `status-v1`, are `unsupported_capability`.
 /// Ready again is an explicit no-op, as is Acquire by the controller, which
 /// keeps its period and restoration. Leave releases the presentation, then
 /// reports the detached attachment, and the stream ends; as the final
@@ -1071,7 +1092,7 @@ fn requests_on_an_interactive_attachment_get_their_documented_results() {
         }
         .to_frame()
     });
-    rejected(viewing, "invalid_state");
+    rejected(viewing, "unsupported_capability");
     let acknowledged = attached.ask(attached.authority(), |request_id, authority| {
         Acknowledge {
             request_id,
@@ -1079,7 +1100,7 @@ fn requests_on_an_interactive_attachment_get_their_documented_results() {
         }
         .to_frame()
     });
-    rejected(acknowledged, "invalid_state");
+    rejected(acknowledged, "unsupported_capability");
     rejected(attached.input(b""), "invalid_argument");
     rejected(attached.resize(65536, 30), "invalid_geometry");
     rejected(attached.resize(100, 65536), "invalid_geometry");
@@ -1116,18 +1137,19 @@ fn requests_on_an_interactive_attachment_get_their_documented_results() {
     );
 }
 
-/// COM-03 (Contract, committed termination): a terminating session rejects
-/// new interactive work with `session_terminating`: an interactive Open,
-/// which ends its stream, and Input, Resize, Ready, Focus and Acquire on its
-/// attachments. Leave still works: the controller's presentation is
+/// COM-03 (Contract, committed termination) and STA-08 (Contract,
+/// termination case): a terminating session rejects new interactive work
+/// with `session_terminating`: an interactive Open, which ends its stream,
+/// and Input, Resize, Ready, Focus, Set viewing, Acknowledge and Acquire on
+/// its attachments. Leave still works: the controller's presentation is
 /// released before the departure is reported, and neither attachment is
 /// handed control.
 #[test]
 fn committed_termination_rejects_new_interactive_work_and_leave_still_works() {
-    let mut session = Session::start("ignore-hup");
+    let mut session = super::clocked("ignore-hup");
     let mut other = ready_attachment(&session, &[]);
-    let mut controller =
-        Attached::open(&session, geometry(91, 37), &["focus-v1"], geometry(91, 37));
+    let optional = ["focus-v1", "status-v1"];
+    let mut controller = Attached::open(&session, geometry(91, 37), &optional, geometry(91, 37));
     other.revoked(RevocationReason::Takeover);
     controller.confirm_ready();
     let mut killer = committed_kill(&session);
@@ -1142,6 +1164,27 @@ fn committed_termination_rejects_new_interactive_work_and_leave_still_works() {
     rejected(controller.resize(100, 30), "session_terminating");
     rejected(controller.ready(), "session_terminating");
     rejected(controller.focus(true), "session_terminating");
+    for viewing in [true, false] {
+        let authority = controller.authority();
+        let outcome = controller.ask(authority, |request_id, authority| {
+            SetViewing {
+                request_id,
+                authority,
+                viewing,
+            }
+            .to_frame()
+        });
+        rejected(outcome, "session_terminating");
+    }
+    let authority = controller.authority();
+    let acknowledged = controller.ask(authority, |request_id, authority| {
+        Acknowledge {
+            request_id,
+            authority,
+        }
+        .to_frame()
+    });
+    rejected(acknowledged, "session_terminating");
     let request_id = other.next();
     request(&mut other.stream, &Acquire { request_id });
     rejected(other.response(), "session_terminating");

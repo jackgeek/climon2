@@ -367,6 +367,9 @@ fn command_tail(command: &mut Command, fd: u32, home: &Path, mode: &str, missing
         command.arg(home.join("missing-command"));
     } else if mode == "cannot-run" {
         command.arg(home.join("not-executable"));
+    } else if mode == "silent" {
+        // Not the libtest fixture, which prints its harness lines: nothing at all.
+        command.args(["sleep", "120"]);
     } else if mode == "job-control" {
         command.args(["bash", "--norc", "--noprofile", "-i"]);
     } else if mode == "literal" {
@@ -856,8 +859,10 @@ fn restoration(stream: &mut UnixStream) -> (u64, Vec<u8>) {
     (period, bytes)
 }
 
+/// Waits for a fixture's marker file. Fixtures write theirs after their own
+/// output, which a loaded host can take well over five seconds to produce.
 fn wait_file(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !path.exists() {
         assert!(
             Instant::now() < deadline,
@@ -2215,7 +2220,8 @@ fn record_lines() -> ! {
 /// UTF-8 bytes, `é` repeated), `titles A B` (`t-A` through `t-B` in one
 /// write) and `long-titles A B` (the same, each padded with `x` to 4,000
 /// bytes); `text TEXT` prints TEXT as a line, `colors N` prints `N` rows
-/// whose every cell changes colour, `reset` is `ESC c`, and `exit` ends the
+/// whose every cell changes colour, `print TEXT` prints TEXT with each `\e`
+/// replaced by ESC and no line end, `reset` is `ESC c`, and `exit` ends the
 /// fixture with status 0, `exit N` with status `N` and `signal N` by signal
 /// `N`.
 fn follow_script() -> ! {
@@ -2268,6 +2274,10 @@ fn follow_script() -> ! {
                 }
                 ["title", ..] => write!(out, "\x1b]2;{}\x07", &command["title ".len()..]).unwrap(),
                 ["text", ..] => write!(out, "{}\r\n", &command["text ".len()..]).unwrap(),
+                ["print", ..] => {
+                    let text = command["print ".len()..].replace("\\e", "\x1b");
+                    write!(out, "{text}").unwrap();
+                }
                 ["colors", rows] => {
                     for _ in 0..rows.parse().unwrap() {
                         for cell in 0..90 {

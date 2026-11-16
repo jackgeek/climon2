@@ -98,6 +98,14 @@ mapping it scrambles and unmaps as soon as `create` returns, an ownership
 ledger shows how every handle and delivery was released, a timeline records
 each call's thread, and probes compare the process's environment, working
 directory, signals and standard streams and the notification descriptor.
+On x86-64 GNU/Linux the host also counts the library's heap (#180): it
+defines glibc's `malloc`, `calloc`, `realloc`, `free` and `posix_memalign`,
+exported dynamically, so the loaded library binds to them. Each allocating
+entry is a naked function that passes on its return address, and the host
+records each block the library image's own code allocated until it is freed;
+glibc's internal blocks are never the library's. macOS binds a library to its
+system allocator directly, so there the tests check exact self-consistency
+instead: each instance's own changes return exactly to their earlier values.
 Expected values come from the native header and contract. Fault cases select
 the hooked library's `CLIMON2_LIBRARY_FAULT` and return early in archive
 mode, whose release library has no hooks; every other case runs against the
@@ -119,6 +127,23 @@ late answers, a peer that closes mid-conversation) and records every frame
 the library sent, so a replay or an early Open shows. Ordering uses trigger
 files and observable completion, never sleeps; every peer wait is bounded and
 an expired wait is recorded.
+
+`tests/mixed.rs` (#97) runs two releases in one host process. Each test
+installs, in its own executable home and with the real installer, the
+[second-release fixture](../../GLOSSARY.md#testing) as release 0.0.97 in a
+sibling version folder: this build's other executables with the test-only
+`climon2-second-release` crate's library and session daemon. The library is
+the client library source built with its own release identity and without
+test hooks. The daemon is the daemon library behind a thin main that serves
+only 0.0.97 and gives its session's command `CLIMON2_SECOND_RELEASE_DAEMON`;
+each test session turns that into its title, so a library relays over
+`title-v1` which release's daemon it is connected to. Each release's CLI
+starts headless sessions served by its own folder's daemon. The host loads
+both releases' libraries through the shared loader (`script` input
+`releases`; each `create` step names its `release`) and runs instances of
+both at the same time. Releases ship no private dependencies, so
+release-relative private-dependency resolution (LIB-01) is not exercised.
+The Fault case returns early in archive mode.
 
 ## Session continuity scenarios
 
@@ -177,10 +202,14 @@ sessions in `tests/headless.rs`.
 | LIB-03 Library: failed creates return no handles and leave no descriptor: null arguments, mismatched release, generation, native paths (non-UTF-8 kept, `PATH_MAX` bound) | `installed_library_create_rejects_invalid_identity_and_paths_without_handles` |
 | LIB-03 Library: client keys, log path and `CLIMON2_LOG` filter | `installed_library_create_rejects_invalid_settings_and_diagnostics_without_handles` |
 | LIB-03 Library: limits it cannot honour, each at its bound (`drain_payload_bytes` must hold a `metadata_record_bytes` record), never raised or lowered; no descriptor left for the notification and waker descriptors or for the log file (`CM1_RESOURCE_LIMIT`, no log file), one more is enough | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` |
-| LIB-03 Library and Fault: copies survive unmapped caller memory; lossless native paths; two instances' homes, settings, logs and allocations stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` |
+| LIB-03 Library and Fault: copies survive unmapped caller memory; lossless native paths; two instances' homes, settings and logs stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` |
 | LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` |
 | LIB-04 Library and Fault, Linux `eventfd`: borrowed descriptor, counted once; a scheduled race in which polling sees the stream end while the handle is used before shutdown and after the end, every call succeeding with the same descriptor | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` |
-| LIB-04 Fault: allocator pairing, a delivery charged until released | `installed_library_charges_a_delivery_until_it_is_released` |
+| LIB-04 Fault: allocator pairing, a delivery charged until released, the release returning exactly what the drain charged | `installed_library_charges_a_delivery_until_it_is_released` |
+| LIM-02 and LIB-03 Library, x86-64 GNU/Linux: `snapshot`'s current and peak allocation equal the host's own count of the library's heap, after create and once ended, one call at a time after a warm-up lifecycle on the same threads, with logging on (its dispatcher included) and off, and with a `joined-worker` whose `chunk_bytes` block sets the peak (the peaks differ by more than nothing and at most one thread handle, which the standard library allocates outside every allocator) | `installed_library_snapshot_counts_every_allocation_its_instance_holds` |
+| LIM-02 and LIB-03 Library, x86-64 GNU/Linux: an instance that opens a passive monitor connection to a fake daemon peer, shuts down after its Response and drains to terminal evidence keeping its deliveries: current allocation equals the host's count with both records unreleased, and the peak the connection set equals the host's, with logging on and off | `installed_library_snapshot_counts_a_passive_connections_allocation` |
+| LIB-03 Library: while `a` lives, a whole lifecycle of `b` leaves `a`'s current and peak allocation exactly unchanged | `installed_library_instances_never_change_each_others_allocation` |
+| LIB-03 Library: successive instances on one owner thread whose startups differ only in the home's length differ by exactly that many bytes, current and peak | `installed_library_charges_successive_instances_only_for_their_own_differences` |
 | LIB-04 Fault: the failure diagnostic only within `event_bytes`, at and one under the bound | `installed_library_queues_the_failure_diagnostic_only_within_event_bytes` |
 | LIB-05 Fault: injected panic at the bootstrap and `create` | `installed_library_contains_a_panic_at_the_bootstrap_or_create` |
 | LIB-05 and LIB-04 Fault: injected panic at `submit`, `notification`, `snapshot`, `drain`, `shutdown` and `run` stops the instance, with no retry from `shutdown` on; a delivery held past terminal evidence alone keeps communication and destroy busy | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` |
@@ -218,6 +247,15 @@ no worker that could stall. Open
 | LIB-04 Fault: deliveries stop before `drain_payload_bytes`, which always holds a whole record | `installed_library_batches_records_within_drain_payload_bytes` (`passive_admission.rs`) |
 | COM-02 and LIB-04 Fault: frames split bytewise or coalesced; daemon records wait while the event queue is full, never dropped or overrunning it | `installed_library_holds_daemon_records_while_the_event_queue_is_full` (`passive_admission.rs`) |
 | LIB-04 Fault: each record charged its header twice (the `cm1_record` and the library's copy) and the bytes it owns once | `installed_library_charges_each_record_its_header_and_the_bytes_it_owns` (`passive_admission.rs`) |
+
+### Library layer: mixed releases (`tests/mixed.rs`, #97)
+
+| Scenario | Named test |
+|---|---|
+| LIB-01 Library (exact-version lookup and one shared load; private-dependency resolution not exercised, releases ship none): both releases installed; with `current`, the working directory, `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` naming the other release, one process loads each by its exact version folder, in both orders; two instances of each register passively with a session of their own release at the same time, relay the title only their own release's daemon produces, and leave; a second load of each release shares the first, and exactly the two files are loaded once each | `mixed_releases_load_by_exact_version_and_run_side_by_side_whatever_current_cwd_and_search_paths` |
+| LIB-01 Library (exact-release pairing): the second-release fixture's daemon, with its release compiled in, starts no session for a CLI of another release (folder 0.0.98) | `second_release_daemon_serves_only_its_compiled_in_release` |
+| LIB-03 Library, identity separation: beside registered instances of both releases, a create expecting the other release fails `CM1_RELEASE_MISMATCH` without handles, and an Open of the other release's session, served by the other release's daemon, is refused `release_mismatch`, permanently, before any role | `mixed_release_instances_keep_their_own_release_identity_side_by_side` |
+| LIB-03 Fault, fault containment: `panic:receive`, once per hooked image, cannot reach the second-release fixture's instance, which opens and receives its Initial metadata before the hooked release's instance is submitted; that instance then fails (`internal_error`) and the second-release fixture's instance leaves | `a_fault_in_one_release_never_reaches_the_other_releases_instances` |
 
 ### Session continuity (plan section 6.1)
 
@@ -262,7 +300,7 @@ earlier run would, so they open on the empty state.
 | INP-01 configured prefix hint and exit 0, null take-control key accepted; once read, Ctrl+C and the default prefix+x are not exits (SIGTERM then gives 143) | `installed_monitor_hints_and_exits_with_the_configured_prefix` |
 | INP-01 null escape prefix and invalid keys refused before terminal changes | `installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys` |
 | CFG-01 unreadable and malformed JSONC, null, wrong type, duplicate, overflow, out-of-range and inconsistent settings: one diagnostic, 125, no terminal change | `installed_monitor_refuses_every_invalid_configuration_before_the_terminal_changes` |
-| CFG-01 limits one byte short of one 500x200 session's documented current model and recent page (total, then client budget) or recent page (history total, then per-session history budget): one diagnostic naming that limit, 125, no terminal change; at those limits the monitor opens and prefix+x exits 0 (#167) | `installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model` |
+| CFG-01 limits one byte short of the monitor's parser and one 500x200 session's documented current model and recent page (total), of the model and page (client budget) or recent page (history total, then per-session history budget): one diagnostic naming that limit, 125, no terminal change; at those limits the monitor opens and prefix+x exits 0 (#167) | `installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model` |
 | CFG-01 `monitor.show_key_hints` false hides the empty state's hint, prefix+x still exits; unknown and unrelated settings ignored | `installed_monitor_without_key_hints_shows_none_and_still_exits` |
 | CFG-01 no live reload: after an edit, a repaint keeps the started settings and the edited prefix, once read, does not exit (SIGTERM then gives 143) | `editing_the_configuration_while_the_monitor_runs_changes_nothing` |
 | CFG-01 every effective setting in the monitor's general log | `installed_monitor_logs_its_effective_configuration` |
