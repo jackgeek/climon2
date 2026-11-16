@@ -28,6 +28,9 @@ const NO_SELECTION: &str = "No session selected";
 const EMPTY: &str = "No sessions to show.";
 /// The body once rows exist, while nothing is selected (#107).
 const UNSELECTED: &str = "No session selected.";
+/// Why the list is incomplete when initial collection ended with sessions
+/// still starting (#266).
+const LATE: &str = "some sessions are still starting";
 const TOO_SMALL: &str = "Terminal too small";
 /// The non-controller placeholder, as the client executable words it.
 const VIEWED_ELSEWHERE: &str = "This session is being viewed elsewhere.";
@@ -86,6 +89,10 @@ pub(crate) struct Scene<'a> {
     pub(crate) selector: &'a Selector,
     /// Why the latest discovery pass was incomplete, if it was.
     pub(crate) incomplete: Option<&'a str>,
+    /// The startup progress while the initial collection lasts (#266).
+    pub(crate) progress: Option<String>,
+    /// Whether the initial collection ended with sessions still starting.
+    pub(crate) late: bool,
     pub(crate) session: Option<Session<'a>>,
 }
 
@@ -227,24 +234,16 @@ impl Screen {
         shown && view.is_some_and(|view| view.modes().application_keypad)
     }
 
-    /// The body with nothing selected, centred: the empty state until a row
-    /// exists, then that nothing is selected; an incomplete discovery pass
-    /// is said under it, so a list is never presented as complete. With key
-    /// hints off, it names any problem with the saved choice where its hint
-    /// would be: a diagnostic, not a hint.
+    /// The body with nothing selected, centred: its [`state`], then any
+    /// [`incomplete`] discovery under it, so a list is never presented as
+    /// complete. With key hints off, it names any problem with the saved
+    /// choice where its hint would be: a diagnostic, not a hint.
     fn body(&self, scene: &Scene<'_>, buffer: &mut Buffer, below: Rect) {
         let note = self.hint.as_deref().or(scene.introduction.problem());
-        let state = if scene.rows.is_empty() {
-            EMPTY
-        } else {
-            UNSELECTED
-        };
-        let incomplete = scene
-            .incomplete
-            .map(|why| format!("Discovery incomplete: {why}"));
-        let lines: Vec<_> = std::iter::once(state)
+        let incomplete = incomplete(scene.incomplete, scene.late);
+        let lines: Vec<_> = std::iter::once(state(scene.progress.as_deref(), scene.rows))
             .chain(note)
-            .chain(incomplete.as_deref())
+            .chain(incomplete.iter().map(String::as_str))
             .collect();
         centred(&lines, buffer, below);
     }
@@ -265,6 +264,23 @@ impl Screen {
         }
         None
     }
+}
+
+/// The body's state with nothing selected: the startup progress while the
+/// initial collection lasts, otherwise the empty state until a row exists,
+/// then that nothing is selected.
+fn state<'a>(progress: Option<&'a str>, rows: &[View]) -> &'a str {
+    let idle = [EMPTY, UNSELECTED][usize::from(!rows.is_empty())];
+    progress.unwrap_or(idle)
+}
+
+/// Why discovery is incomplete: the latest pass's reason, then whether the
+/// initial collection ended with sessions still starting.
+fn incomplete(pass: Option<&str>, late: bool) -> Vec<String> {
+    pass.into_iter()
+        .chain(late.then_some(LATE))
+        .map(|why| format!("Discovery incomplete: {why}"))
+        .collect()
 }
 
 /// `lines`, each centred, in the middle of `area`.
@@ -599,6 +615,39 @@ mod tests {
         assert_eq!(
             shown(Some(0x14), true, &Canvas::Nothing),
             ["", "", "", "", ""]
+        );
+    }
+
+    /// DSC-01 (initial-selection case, pure supplement) and the owner's
+    /// wording of 2026-11-16: with nothing selected the body reads the
+    /// startup progress while collecting, otherwise the empty state until a
+    /// row exists and then that nothing is selected; an incomplete pass and
+    /// a collection that ended with sessions still starting are each said
+    /// as discovery incomplete, the pass first.
+    #[test]
+    fn the_body_says_the_startup_progress_or_the_state_and_any_incompleteness() {
+        let row = View {
+            id: "00000000-0000-4000-8000-000000000001".parse().unwrap(),
+            status: "Idle".into(),
+            label: "Row".into(),
+            since: std::time::SystemTime::UNIX_EPOCH,
+        };
+        let progress = "Connecting to 2 sessions (1 ready)";
+        assert_eq!(state(Some(progress), &[]), progress);
+        assert_eq!(state(Some(progress), std::slice::from_ref(&row)), progress);
+        assert_eq!(state(None, &[]), "No sessions to show.");
+        assert_eq!(state(None, &[row]), "No session selected.");
+        assert_eq!(incomplete(None, false), Vec::<String>::new());
+        assert_eq!(
+            incomplete(Some("the pass deadline passed"), true),
+            [
+                "Discovery incomplete: the pass deadline passed",
+                "Discovery incomplete: some sessions are still starting",
+            ]
+        );
+        assert_eq!(
+            incomplete(None, true),
+            ["Discovery incomplete: some sessions are still starting"]
         );
     }
 
