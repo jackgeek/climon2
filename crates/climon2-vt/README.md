@@ -331,7 +331,8 @@ the monitor's default 10,000, ten whole chunks) or the bound refuses it, a
 full history loses its oldest row to each row pushed without the engine
 reporting it, so it reports truncation as soon as output that could push a
 row out leaves it full, even before one is lost (the owner's decision on
-#83; exact counting is decided with #112). A model keeping no history reports
+#83; the anchored view counts pushed rows exactly, [above](#read-only-views),
+#112). A model keeping no history reports
 it as soon as it is fed.
 
 Titles are decoded by Alacritty 0.26.0: it trims surrounding whitespace,

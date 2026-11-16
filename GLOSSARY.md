@@ -246,7 +246,7 @@ It can contain unrelated output and copies of retained history.
 _Avoid_: Retained history, daemon history
 
 **Truncation notice**:
-The line `[climon2: older session scrollback was discarded]` that marks, without measuring, retained history lost before it could be restored.
+The line `[climon2: older session scrollback was discarded]` that marks, without measuring, retained history lost before it could be restored; a monitor shows the same line above the oldest history row it kept once it discarded older ones.
 _Avoid_: History gap, eviction marker
 
 **Presentation**:

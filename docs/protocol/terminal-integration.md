@@ -283,7 +283,25 @@ Respect supported synchronized updates for coherent frames, but do not stall
 required UI, selector, or exit progress. Numerical scheduling/rendering budgets
 are in [operational limits](../monitor-operational-limits.md#ui-sampling-and-responsiveness).
 
+**Implemented ([#112](https://github.com/jackgeek/climon2/issues/112)):** while the application's synchronized update
+(`CSI ? 2026 h`) is open in the monitor's model, the monitor keeps painting
+the canvas it painted before the update, for that session at that host
+size, and draws the top row and overlays as ever; the update shows whole at
+its end (`CSI ? 2026 l`), which the session daemon sends a controller once
+vte's 150 ms timeout passes. The monitor never writes a synchronized update
+to its host. Resize and restoration keep the last coherent frame clipped or
+padded until the restoration at the new geometry is applied, and the
+monitor submits each desired size at once, so no resize intent is ever
+unsent to coalesce.
+
 ## Normal history, alternate screen, and stale inspection
+
+**Implemented ([#112](https://github.com/jackgeek/climon2/issues/112)), except stale inspection and recovery below:**
+normal history scrolling, anchoring, eviction, return to live, the
+alternate-screen wheel and the cursor rules of this section and the next.
+The wheel moves one row a notch; while scrolled back the top row's control
+slot says `History`; the truncation notice sits above the oldest kept row
+(owner decisions, 2026-11-16).
 
 Normal-screen history is bounded internal
 [retained history](../../GLOSSARY.md#restoration-and-presentation), not host
