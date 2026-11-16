@@ -334,3 +334,23 @@ fn an_existing_unreadable_file_is_an_error_not_defaults() {
     assert!(matches!(error, ConfigError::Unreadable(_)), "{error:?}");
     fs::remove_dir_all(home.root()).unwrap();
 }
+
+/// LIM-01 (exec-provided assembly limits): exec reads the daemon's
+/// notification assembly limits from `monitor.limits`, the documented
+/// defaults when absent, and refuses the file when one is out of range.
+#[test]
+fn exec_passes_on_the_daemon_notification_assembly_limits() {
+    let defaults = exec("{}").unwrap().assembly;
+    assert_eq!(defaults, Assembly::new(32, 65_536, 5_000).unwrap());
+    let text = r#"{"monitor":{"limits":{"payload":{"assembly_records":2,"assembly_bytes":40},"deadlines":{"assembly_ms":1000}}}}"#;
+    assert_eq!(
+        exec(text).unwrap().assembly,
+        Assembly::new(2, 40, 1_000).unwrap()
+    );
+    for text in [
+        r#"{"monitor":{"limits":{"payload":{"assembly_records":0}}}}"#,
+        r#"{"monitor":{"limits":{"deadlines":{"assembly_ms":3600001}}}}"#,
+    ] {
+        invalid(exec(text));
+    }
+}

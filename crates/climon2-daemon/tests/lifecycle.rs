@@ -356,7 +356,21 @@ impl Prepared {
     }
 }
 
+/// The documented notification assembly limits, unless the test gave its
+/// own.
+const ASSEMBLY: [&str; 6] = [
+    "--assembly-records",
+    "32",
+    "--assembly-bytes",
+    "65536",
+    "--assembly-ms",
+    "5000",
+];
+
 fn command_tail(command: &mut Command, fd: u32, home: &Path, mode: &str, missing: bool) {
+    if !command.get_args().any(|argument| argument == ASSEMBLY[0]) {
+        command.args(ASSEMBLY);
+    }
     command.args([
         "--scrollback-max-rows",
         mode.strip_prefix("retain-").unwrap_or("10000"),

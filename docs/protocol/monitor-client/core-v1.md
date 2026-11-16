@@ -31,13 +31,13 @@ or a caller's thread is shared-release allocation, so it is not counted.
 [passive monitor connection](../../../GLOSSARY.md#attachment-and-control) or an
 interactive attachment to its [session daemon](../../../GLOSSARY.md#sessions)
 over [daemon wire revision 1](../daemon-client/core-v1.md), delivers
-Response, Initial metadata, Title, Status, Command final, Control granted
-and revoked, Restoration begin and complete, Display, Geometry and
-diagnostic records, and attempts [Leave](../daemon-client/request-leave.md)
-once on shutdown. It sends [Kill](../daemon-client/request-kill.md) on an
-auxiliary connection of its own.
+Response, Initial metadata, Title, Status, Notification, Progress, Command
+final, Control granted and revoked, Restoration begin and complete, Display,
+Geometry and diagnostic records, and attempts
+[Leave](../daemon-client/request-leave.md) once on shutdown. It sends
+[Kill](../daemon-client/request-kill.md) on an auxiliary connection of its own.
 [Implemented behavior](#implemented-behavior) records the choices this page
-leaves open. The notification and progress records are not implemented. The [C ABI](../TERMS.md#c-abi)
+leaves open. The [C ABI](../TERMS.md#c-abi)
 [header](client-v1.h) is authoritative for declarations, numeric tags and field
 order. This page owns their semantics. The [examples](examples.c) compile but
 do not link to a shipped library. [Declaration checks](check.py) are not runtime
@@ -501,14 +501,17 @@ The Library-layer tests for
 ([#94](https://github.com/jackgeek/climon2/issues/94)), for
 [status, viewing and acknowledgement](../../../crates/climon2-e2e/README.md#library-layer-status-viewing-and-acknowledgement-testsstatusrs-95)
 ([#95](https://github.com/jackgeek/climon2/issues/95)) and for
+[notifications and progress](../../../crates/climon2-e2e/README.md#library-layer-notifications-and-progress-testsnotificationsrs-98)
+([#98](https://github.com/jackgeek/climon2/issues/98)) and for
 [termination](../../../crates/climon2-e2e/README.md#library-layer-termination-teststerminationrs-96)
 ([#96](https://github.com/jackgeek/climon2/issues/96)) are the evidence for
 this section.
 
 - **Description.** `capabilities` lists exactly the families the library
   relays: `daemon-wire-v1`, `monitor-v1`, `title-v1`, `status-v1`
-  ([#95](https://github.com/jackgeek/climon2/issues/95)) and `focus-v1`. `notification-v1` and `progress-v1` join
-  with [#98](https://github.com/jackgeek/climon2/issues/98).
+  ([#95](https://github.com/jackgeek/climon2/issues/95)), `notification-v1`,
+  `progress-v1` ([#98](https://github.com/jackgeek/climon2/issues/98)) and
+  `focus-v1`: every revision-1 family.
   A required family outside the description is `CM1_UNSUPPORTED_OPERATION`
   with `unsupported_capability`; an optional one is not requested.
 - **Admission.** `submit` checks the tag (`CM1_OPEN` to `CM1_FOCUS`), reserved
@@ -591,6 +594,23 @@ this section.
   `invalid_record`, as does a status the shared codec refuses (a final
   state in Status changed, or an episode outside attention). A status
   record owns no buffer: it is charged its record alone.
+- **Notifications and progress** ([#98](https://github.com/jackgeek/climon2/issues/98)).
+  With `notification-v1` selected, each Notification after the Initial
+  metadata is delivered as `CM1_NOTIFICATION`: its source (`CM1_OSC9`,
+  `CM1_OSC99` or `CM1_OSC777`), its episode (present exactly when the wire
+  episode is not null) and its source identifier, title and body as
+  optional text, present exactly when not null, copied exactly. With
+  `progress-v1` selected, the Initial metadata's progress is available and
+  each Progress changed is delivered as `CM1_PROGRESS`, with the state's
+  code and the percentage, absent (and zero) when null. Both arrive
+  whatever the control: passive, background or revoked. A notification title
+  over `notification_title_bytes` or body over `notification_body_bytes`
+  fails the connection with library `resource_limit`, never truncated; one
+  with neither title nor body, a Notification or Progress changed before the
+  Initial metadata or without its family selected, and an Initial metadata
+  whose progress availability differs from the selection fail it with
+  transport `invalid_record`. A notification is charged its record and its
+  text; a progress record its record alone.
 - **Presentation.** Control granted, revoked, Restoration begin and
   complete, Display and Geometry follow the Initial metadata and name the
   authority the role holds: a grant only when none is held; a revocation,

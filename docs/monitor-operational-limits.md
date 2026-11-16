@@ -6,7 +6,10 @@ monitor reports its effective values
 ([#82](https://github.com/jackgeek/climon2/issues/82)). At startup the monitor
 alone also refuses limits that cannot hold one session's mandatory current
 model and recent page
-([#167](https://github.com/jackgeek/climon2/issues/167)). Operating-system
+([#167](https://github.com/jackgeek/climon2/issues/167)). `exec` passes the
+notification assembly limits to the session daemon, which enforces them
+with the release-constant notification text and record bounds
+([#98](https://github.com/jackgeek/climon2/issues/98)). Operating-system
 limits are left to admission
 ([#120](https://github.com/jackgeek/climon2/issues/120)). The client library
 rejects native instance limits it cannot honour, bounds worker cleanup by
@@ -142,8 +145,11 @@ An illustrative override is:
 ```
 
 The monitor and `exec` validate this configuration, the monitor alone also
-against its terminal models' mandatory allocation (above), but no limit is
-enforced yet. It does not modify daemon `scrollback.max_rows`.
+against its terminal models' mandatory allocation (above), but no other
+limit is enforced yet. Only `exec` passes `payload.assembly_records`,
+`payload.assembly_bytes` and `deadlines.assembly_ms` on, to the daemon it
+starts (#98); a monitor's configuration never reconfigures a running daemon,
+and it does not modify daemon `scrollback.max_rows`.
 
 ## Memory, history and admission
 

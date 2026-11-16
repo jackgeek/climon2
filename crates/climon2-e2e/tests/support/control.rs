@@ -128,6 +128,20 @@ impl Session {
         Self::running(package, root, &[], &[], Some(clock))
     }
 
+    /// A clocked idle session (see [`Session::clocked`]) whose application
+    /// prints `text` once the `go` file exists (#98).
+    pub fn clocked_printing(
+        package: &Package,
+        root: &Path,
+        clock: &Path,
+        go: &Path,
+        text: &str,
+    ) -> Self {
+        let go = go.to_str().unwrap();
+        let before = ["await-file", go, "print", text];
+        Self::running(package, root, &before, &[], Some(clock))
+    }
+
     /// A clocked session (see [`Session::clocked`]) whose application,
     /// after `ECHO-READY`, waits for the `work` file and then prints `MORE`,
     /// new agent work for the status heuristic (#102).
