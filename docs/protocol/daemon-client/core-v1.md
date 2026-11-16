@@ -3,8 +3,9 @@
 **Status: developer-agreed specification in [#67](https://github.com/jackgeek/climon2/issues/67), partly implemented.**
 This is the maintained contract, not evidence that any release conforms.
 The [#63 terminal contract](../terminal-integration.md) adds optional core
-[Focus](request-focus.md) and canonical monitor-mode presentation below;
-these amendments are also agreed, and Focus is implemented.
+[Focus](request-focus.md) and
+[canonical presentation](../../../GLOSSARY.md#restoration-and-presentation) of monitor-mode connections below;
+these amendments are also agreed, and the session daemon implements both.
 The [private protocol](post-hello.md) is not this revision;
 [session daemons](../../../GLOSSARY.md#sessions) now speak both, and the
 first [frame](../TERMS.md#frame) after [hello](../../../GLOSSARY.md#sessions)
@@ -26,27 +27,30 @@ for [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
 interactive [attachments](../../../GLOSSARY.md#attachment-and-control)
 ([#87](https://github.com/jackgeek/climon2/issues/87)), standalone
 [Kill](../../../GLOSSARY.md#attachment-and-control)
-([#88](https://github.com/jackgeek/climon2/issues/88)) and
+([#88](https://github.com/jackgeek/climon2/issues/88)), monitors that
+acquire and inherit control
+([#89](https://github.com/jackgeek/climon2/issues/89)) and
 `status-v1` ([#91](https://github.com/jackgeek/climon2/issues/91)), with
 output-driven status detection from [OSC](../TERMS.md#osc) 7501 program status and OSC 133
 shell markers ([#92](https://github.com/jackgeek/climon2/issues/92)): the
 [hello advertisement](hello-reply.md#revision-1-advertisement), framing and
 validation with their connection-fatal codes, Open in both modes, Leave,
-Input, Resize, Ready, Set viewing, Acknowledge, Acquire between
-attachments, Focus, Kill, Response, Fatal error, Initial metadata (the
-title, the status and a known command result; progress reported
-unavailable), Title changed, Status changed, Control granted and revoked,
-Restoration begin and complete, Display, Geometry and
+Input, Resize, Ready, Set viewing, Acknowledge, Acquire, Focus, Kill,
+Response, Fatal error, Initial metadata (the title, the status and a known
+command result; progress reported unavailable), Title changed, Status
+changed, Control granted and revoked, Restoration begin and complete,
+Display, Geometry and
 [Command final](event-command-final.md#implemented-behavior) with the final
 status,
 with the private protocol's takeover,
 [hand-back](../../../GLOSSARY.md#attachment-and-control) and
-[leave policy](../../../GLOSSARY.md#attachment-and-control). Until it serves them, it
+[leave policy](../../../GLOSSARY.md#attachment-and-control), the
+[promotion](../../../GLOSSARY.md#attachment-and-control) of passive registrations
+and the [canonical presentation](../../../GLOSSARY.md#restoration-and-presentation)
+of monitor-mode connections. Until it serves them, it
 rejects the other
-requests without effects, as each request's page describes. Acquire by a
-passive monitor connection, the
-notification and progress messages, promotion of passive registrations,
-canonical monitor-mode presentation and bounded delivery remain
+requests without effects, as each request's page describes. The
+notification and progress messages and bounded delivery remain
 unimplemented. The
 [client library](../../../GLOSSARY.md#sessions) speaks this revision for
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93));
@@ -294,8 +298,11 @@ Monitor-mode Display/restoration is always serialized at effective session
 geometry, including promotion/background grants, not host/requested geometry.
 The existing Grant/Restoration begin/Geometry fields suffice with this new
 [canonical policy](../terminal-integration.md#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1);
-no presentation-size field is added. Ordinary interactive direct/derived/
-native-history behavior is unchanged.
+no presentation-size field is added. Every change of the effective geometry is
+followed by a Restoration begin at that geometry before any Display at it, so
+a monitor model is never reflowed in place (developer decision on
+[#76](https://github.com/jackgeek/climon2/issues/76), 2026-11-13). Ordinary
+interactive direct/derived/native-history behavior is unchanged.
 Applied model readiness permits Ready and resize progress without selection or
 paint; selected application input additionally waits for a coherent painted
 current target. Focus validates current authority and readiness, but focus-out
@@ -506,7 +513,13 @@ while it runs), and standalone Kill: its answer after termination and
 cleanup, Kills of both protocols joining one
 [hang-up grace](../../../GLOSSARY.md#attachment-and-control), its success
 after a session failure, and its partial result after a failed cleanup or
-an unconfirmed termination. For `status-v1` they cover, on a controllable
+an unconfirmed termination. For monitors they cover Acquire by a
+registration, of a starting session too and after the Command final,
+succession (hand-back before the newest registration's promotion, leave
+policy only after it, in headless sessions too), Leave, a committed Kill and
+a registration's queue overflow racing a promotion, and canonical
+restorations at the effective geometry, with a Restoration begin after every
+geometry change. For `status-v1` they cover, on a controllable
 clock, the activity and attention transitions, the re-armed user window,
 both input-clearing paths, coalescing and re-armed episodes, atomic
 inactivity attention, sampling and clamped deadlines, effective-only change

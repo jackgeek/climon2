@@ -39,7 +39,10 @@ It is not a plugin extension, release-number inference, or change to frozen
 hello required fields. Missing library/daemon focus support leaves sessions
 usable with an explicit limitation. Monitor-mode presentation is canonically
 serialized at effective session geometry; ordinary attach remains unchanged.
-These additions are agreed, not implemented.
+Session daemons implement Focus
+([#87](https://github.com/jackgeek/climon2/issues/87)) and this canonical
+presentation ([#89](https://github.com/jackgeek/climon2/issues/89)); the client
+library's side is agreed, not implemented.
 
 The later [lifecycle contract](../monitor-lifecycle.md) agrees automatic
 exponential passive recovery, prior-instance cleanup/join before replacement,

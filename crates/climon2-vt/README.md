@@ -14,11 +14,13 @@ The [#63 terminal contract](../../docs/protocol/terminal-integration.md) has
 the monitor paint each session with Ratatui from
 [read-only views](#read-only-views) of its model (#83). They are Rust types,
 not a native cross-release cell schema, and the monitor does not paint from
-them yet (#108, #112). **Agreed, not implemented:** monitor-mode daemon
-presentation must be serialized at effective session geometry; ordinary host
-direct/derived presentation below is unchanged. The daemon remains the sole
-query authority; the monitor never forwards parser replies or session bytes
-directly to its host.
+them yet (#108, #112). The daemon remains the sole query authority; the
+monitor never forwards parser replies or session bytes directly to its host.
+
+**Implemented ([#89](https://github.com/jackgeek/climon2/issues/89)):** the
+canonical restoration (`Vt::canonical`) that the session daemon serializes
+for monitor-mode connections at the effective session geometry. Ordinary
+host Direct/Derived presentation below is unchanged.
 
 ## Public boundaries
 
@@ -83,6 +85,18 @@ directly to its host.
   snapshot point; `Vt::produce(&mut restoration, &mut presentation, budget)
   -> Chunk { bytes, done }` yields whole history rows up to about `budget`
   bytes, then the screen suffix. Commit `RestoreEnd` after the `done` chunk.
+- `Vt::canonical(&mut presentation) -> (phase A, Restoration)` takes the
+  snapshot point of a canonical restoration, produced the same way: the
+  session at its own geometry for a fresh terminal of exactly that size,
+  whatever host `presentation` described. Phase A is only the prologue (whose
+  scroll-region reset homes the cursor) and any truncation notice, history
+  rows are printed from the top of the fresh screen, and C1 scrolls off
+  exactly the lines printed (a wrapped notice counts as the rows it wraps
+  onto), so the fresh terminal's history is exactly the retained rows. No
+  host content is preserved and no byte depends on a host's size.
+  `presentation` becomes a fresh Direct record of a host of the session
+  geometry, so live output for it stays Direct; a monitor-mode connection
+  parses each restoration into a fresh model.
 - `Vt::derive(&mut presentation)`: the live update for a Derived controller
   after `RestoreEnd`; empty when nothing changed.
 - `Vt::present(&mut presentation, host_cols, host_rows)`: after a ready
@@ -267,6 +281,7 @@ monitor's evidence.
 | STA-02 (crate case): the sampled viewport is the active screen's characters only; styles, cursor-only movement, identical redraws and a screen switch with identical characters leave it unchanged, while a changed character, a combining mark and a resize change it | `tests/viewport.rs`: `the_viewport_is_the_active_screens_characters_only` |
 | STA-03, STA-04 and STA-05 (crate case): every OSC string and full reset is observed once, in stream order, after the engine executed it, with the viewport and title as of that point, its body and whole length for BEL, ST, CAN-implied and interrupt-implied terminators; the observer's answers reach the program in order with the engine's; split sequences are observed once complete, oversized ones and look-alike text never; observed strings never reach live output | `tests/signals.rs`: `osc_strings_and_full_resets_are_observed_in_stream_order`, `split_oversized_and_textual_sequences_are_observed_as_the_engine_sees_them` |
 | FOC-01 (crate case): the application's focus reporting mode (1004) is reported, and each feed says whether it newly enabled the mode, however its tokens were split across reads | `tests/live.rs`: `focus_reporting_reports_the_mode_and_each_feed_that_newly_enabled_it` |
+| TRM-03 and CTL-04 (crate case, canonical monitor-mode serialization): a canonical restoration rebuilds exactly the retained history, screen and cursor in a fresh terminal of the session geometry, with identical bytes whatever host the presentation described; no blank row is added and none lost, with a wrapped truncation notice, a gap notice during production, more rows than the screen, a soft-wrapped row and a one-row screen | `tests/restore.rs`: `a_canonical_restoration_is_the_session_at_its_geometry_for_a_fresh_terminal`, `a_canonical_restoration_scrolls_off_exactly_the_history_it_printed`, `a_canonical_restoration_counts_a_gap_notice_among_the_rows_it_scrolls_off` |
 | TRM-02 (crate case): a C0 control between `ESC` and an introducer never lets a filtered sequence reach the host; each token keeps the kind vte dispatches (#152) | `tests/live.rs`: `a_control_after_esc_reaches_the_host_without_the_filtered_sequence`; `tests/tokenizer.rs`: `vte_dispatches_each_token_as_its_kind` |
 | TRM-01 (crate case): wide and combining characters, a wide character wrapping at the right margin; colours (the 16 ANSI colours, palette, direct, underline colour, defaults) and rendition; a tab's cells blank, in the text views too | `tests/view.rs`: `wide_and_combining_characters_fill_the_cells_they_cover`, `cells_keep_the_colours_sgr_selected`, `sgr_selects_each_of_the_sixteen_ansi_colours`, `cells_keep_the_rendition_sgr_selected`, `a_tab_leaves_the_cells_it_passes_blank` |
 | TRM-01 (crate case): cursor position, visibility, shape (the host's default for no DECSCUSR, Ps 0 or RIS) and blink; the 1049 alternate screen, entered cleared and left with the normal screen and cursor restored | `tests/view.rs`: `the_cursor_is_where_the_application_moved_it`, `the_cursor_has_the_visibility_shape_and_blink_the_application_selected`, `the_alternate_screen_replaces_the_normal_screen_until_it_is_left` |

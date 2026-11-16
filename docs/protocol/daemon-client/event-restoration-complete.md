@@ -1,7 +1,8 @@
 # Restoration complete — `0x4a`
 
-**Status: agreed and implemented for interactive attachments**
-([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** for interactive attachments
+([#87](https://github.com/jackgeek/climon2/issues/87)) and monitor-mode
+connections ([#89](https://github.com/jackgeek/climon2/issues/89)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) completes the identified
 [restoration](../../../GLOSSARY.md#restoration-and-presentation) sent to the
 controlling [client](../../../GLOSSARY.md#sessions).

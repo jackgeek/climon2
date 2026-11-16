@@ -6,6 +6,7 @@ mod interactive;
 mod passive;
 mod signals;
 mod status;
+mod succession;
 mod termination;
 
 use super::Session;

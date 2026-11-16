@@ -10,10 +10,10 @@ use climon2_core::{
     hello::Lifecycle,
     protocol::{self, ClientMessage, ServerMessage as PrivateMessage, TerminalSize},
     wire::{
-        self, Acknowledge, Acquire, AuthorityIds, AuthorityResult, CommandResult, ControlRecord,
-        ControlRevoked, Counter, Display, Focus, FocusBytes, Frame, Geometry, GrantReason, Input,
-        Kill, Leave, Mode, Outcome, Ready, Resize, Response, RestorationBegin, RestorationComplete,
-        RevocationReason, ServerMessage, SetViewing, Success,
+        self, Acknowledge, Acquire, ActualGeometry, AuthorityIds, AuthorityResult, CommandResult,
+        ControlRecord, ControlRevoked, Counter, Display, Focus, FocusBytes, Frame, Geometry,
+        GrantReason, Input, Kill, Leave, Mode, Outcome, Ready, Resize, Response, RestorationBegin,
+        RestorationComplete, RevocationReason, ServerMessage, SetViewing, Success,
     },
 };
 use std::{fs, io::Write, num::NonZeroU32, os::unix::net::UnixStream, time::Duration};
@@ -63,6 +63,27 @@ impl Attached {
         let mut attached = Self::opened_begun(stream, granted);
         attached.completed();
         attached
+    }
+
+    /// A passive monitor connection registered with request 1, selecting
+    /// no optional family: not an attachment, and without control, until
+    /// its Acquire or a promotion grants it control.
+    pub(super) fn registered(session: &Session) -> Self {
+        Self::passive(super::monitor(session, &[]).0)
+    }
+
+    /// The passive monitor connection `stream`, whose Open with request 1
+    /// was answered with its Initial metadata.
+    pub(super) fn passive(stream: UnixStream) -> Self {
+        Self {
+            stream,
+            selected: Vec::new(),
+            period: 0,
+            restoration: 0,
+            controlling: false,
+            request: 1,
+            display: Vec::new(),
+        }
     }
 
     /// The Response, Initial metadata, Control granted (`attach`) at the
@@ -132,6 +153,19 @@ impl Attached {
     pub(super) fn restored(&mut self, restoration: u64, geometry: Geometry) {
         self.begun(restoration, geometry);
         self.completed();
+    }
+
+    /// The effective geometry of a monitor-mode controller changed to
+    /// `geometry`: Geometry under its period comes next, then, before any
+    /// Display at that geometry, the Restoration begin of the period's next
+    /// restoration at it, then that restoration.
+    pub(super) fn regeometried(&mut self, geometry: Geometry) {
+        let actual = ActualGeometry {
+            period: counter(self.period),
+            geometry,
+        };
+        assert_eq!(message(&mut self.stream), ServerMessage::Geometry(actual));
+        self.restored(self.restoration + 1, geometry);
     }
 
     /// Restoration begin for `restoration` of the current period at
@@ -218,6 +252,23 @@ impl Attached {
             }
             other => panic!("expected the Response to {}, got {other:?}", self.request),
         }
+    }
+
+    /// Sends the request `record` builds from the next request ID; its
+    /// Response is read with [`Attached::response`].
+    pub(super) fn send(&mut self, record: impl FnOnce(Counter) -> Frame) {
+        let frame = record(self.next());
+        send(&mut self.stream, &frame);
+    }
+
+    /// The stream ended exactly between frames.
+    pub(super) fn closed(&mut self) {
+        assert_closed(&mut self.stream);
+    }
+
+    /// The title of the next record, which must be a Title changed.
+    pub(super) fn title_changed(&mut self) -> Option<String> {
+        super::title_changed(&mut self.stream)
     }
 
     /// Sends the request `record` builds from the next request ID and
