@@ -1783,6 +1783,11 @@ enum Answer {
     Hello(&'static str),
     /// Read the hello and never answer, until the prober hangs up.
     Silent,
+    /// As [`Answer::Silent`]; while the first connection is still open,
+    /// once this flag is set (by a test that set it after sending a
+    /// request), record [`Heard::Requested`]. Later connections are
+    /// [`Answer::Silent`].
+    Watched(std::sync::Arc<std::sync::atomic::AtomicBool>),
     /// The hello as [`Answer::Hello`] gives it; then hold the connection,
     /// answering nothing, until the peer hangs up or the fake is dropped:
     /// a client's Open never completes while it holds.
@@ -1852,6 +1857,9 @@ enum Heard {
     Served,
     /// After its acts, a turn-taking fake read a request with this code.
     Request(u8),
+    /// A watched first connection was still open after the test's request
+    /// was sent.
+    Requested,
 }
 
 /// Every fake daemon's record of one test: when, which session, what.
@@ -1915,6 +1923,7 @@ impl FakeDaemon {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopped = stop.clone();
         let ear = ear.clone();
+        let mut answer = answer;
         let thread = thread::spawn(move || {
             while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
                 let Ok((mut connection, _)) = listener.accept() else {
@@ -1924,7 +1933,10 @@ impl FakeDaemon {
                 hear(&ear, id, Heard::Connected);
                 connection.set_nonblocking(false).unwrap();
                 let ear = ear.clone();
-                let answer = answer.clone();
+                let answer = match answer {
+                    Answer::Watched(_) => std::mem::replace(&mut answer, Answer::Silent),
+                    _ => answer.clone(),
+                };
                 let stopped = stopped.clone();
                 thread::spawn(move || answer_once(&mut connection, id, &answer, &ear, &stopped));
             }
@@ -1985,6 +1997,30 @@ fn answer_once(
             }
         }
         Answer::Silent => {
+            let _ = connection.read_to_end(&mut Vec::new());
+            hear(ear, id, Heard::Closed);
+        }
+        Answer::Watched(sent) => {
+            // A read that times out shows the prober has neither hung up nor
+            // sent more (a probe never does); one that returns shows it has.
+            let _ = connection.set_read_timeout(Some(Duration::from_millis(10)));
+            let open = |mut connection: &std::os::unix::net::UnixStream| {
+                connection.read(&mut [0; 1]).is_err_and(|error| {
+                    matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    )
+                })
+            };
+            while open(connection) {
+                if sent.load(std::sync::atomic::Ordering::SeqCst) {
+                    if open(connection) {
+                        hear(ear, id, Heard::Requested);
+                    }
+                    break;
+                }
+            }
+            let _ = connection.set_read_timeout(Some(TIMEOUT));
             let _ = connection.read_to_end(&mut Vec::new());
             hear(ear, id, Heard::Closed);
         }
@@ -2318,58 +2354,80 @@ fn clients_start_one_at_a_time_newest_first_with_ascending_id_ties() {
 
 /// DSC-03 (Monitor, cadence cases): discovery starts at once, and each later
 /// pass starts a second after the previous one finished, never overlapping
-/// it, even when the selector is opened during a pass. A silent daemon holds
-/// each pass's probe for the frozen two-second hello deadline, so its
-/// probes are at least three seconds apart; a zero cadence, or one measured
-/// from the pass's start, would put them two seconds apart. The bound
-/// allows half a second of observer lag.
+/// it, even when the selector is opened during a pass. With
+/// `scheduling.probes` at 1, each pass probes three silent daemons one at a
+/// time, each for the frozen two-second hello deadline, so the first pass
+/// lasts about six seconds: the selector is requested in it under any load
+/// that lets the test act within that time. That the request came during the
+/// first pass is proven, not assumed: a daemon's first probe, still open
+/// after the request was sent, records it. Each daemon's nth probe belongs to
+/// the nth pass. A pass starts when its first probe connects and ends when
+/// its last probe hangs up; a zero cadence, one measured from the pass's
+/// start, or an overlap would start the next pass at or before that end. The
+/// bound allows half the cadence for observer lag.
 #[test]
 fn discovery_passes_start_a_second_after_the_previous_one_ends_without_overlap() {
     let package = Package::new();
     without_introduction(&package);
+    limits_config(&package, serde_json::json!({"scheduling": {"probes": 1}}));
     let ear = Ear::default();
-    let silent = FakeDaemon::start(
-        &package,
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ids = [
         "0d5c0000-0000-4000-8000-0000000000c1",
-        "2026-01-01T00:00:00.000Z",
-        Answer::Silent,
-        &ear,
-    );
+        "0d5c0000-0000-4000-8000-0000000000c2",
+        "0d5c0000-0000-4000-8000-0000000000c3",
+    ];
+    let silent: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            let answer = Answer::Watched(sent.clone());
+            FakeDaemon::start(&package, id, "2026-01-01T00:00:00.000Z", answer, &ear)
+        })
+        .collect();
     let started = Instant::now();
     let mut terminal = outer(&package, "c2 monitor");
-    let probes = |count: usize| {
+    let connections = |count: usize| {
         let deadline = Instant::now() + TIMEOUT;
         while heard(&ear, Heard::Connected).len() < count {
             assert!(Instant::now() < deadline, "{:?}", ear.lock().unwrap());
             thread::sleep(Duration::from_millis(10));
         }
     };
-    probes(1);
-    // The first pass is still probing: open the selector during it.
-    assert_eq!(heard(&ear, Heard::Closed), []);
+    // The first pass has started: request the selector during it.
+    connections(1);
     terminal.send("\x1ds").unwrap();
+    sent.store(true, std::sync::atomic::Ordering::SeqCst);
     shows_row(&mut terminal, "║Unavailable fake");
-    probes(3);
+    // The third pass has started.
+    connections(2 * ids.len() + 1);
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
     drop(silent);
     let ear = ear.lock().unwrap().clone();
     assert!(ear[0].0 - started < TIMEOUT);
-    // The third probe may still be open when the monitor exits.
-    let kinds: Vec<_> = ear.iter().map(|(_, _, heard)| *heard).take(5).collect();
-    assert_eq!(
-        kinds,
-        [Heard::Connected, Heard::Closed].repeat(3)[..5],
-        "passes overlapped: {ear:?}"
+    assert!(
+        ear.iter().any(|(_, _, heard)| *heard == Heard::Requested),
+        "the selector was not requested during the first pass: {ear:?}"
     );
-    let connected: Vec<_> = ear
-        .iter()
-        .filter(|(_, _, heard)| *heard == Heard::Connected)
-        .map(|(at, _, _)| *at)
-        .collect();
-    for pair in connected.windows(2) {
-        let apart = pair[1] - pair[0];
-        assert!(apart >= Duration::from_millis(2500), "{apart:?}: {ear:?}");
+    // When each daemon heard its nth record of a kind, if it did.
+    let nth = |kind: Heard, n: usize| {
+        ids.map(|id| {
+            ear.iter()
+                .filter(|(_, heard_by, heard)| *heard_by == id && *heard == kind)
+                .map(|(at, _, _)| *at)
+                .nth(n)
+        })
+    };
+    for pass in 0..2 {
+        // Every probe of this pass hung up; the next pass's first connected.
+        let ended = nth(Heard::Closed, pass).map(|at| at.unwrap_or_else(|| panic!("{ear:?}")));
+        let ended = ended.into_iter().max().unwrap();
+        let began = nth(Heard::Connected, pass + 1).into_iter().flatten().min();
+        let after = began.and_then(|began| began.checked_duration_since(ended));
+        assert!(
+            after.is_some_and(|after| after >= Duration::from_millis(500)),
+            "pass {pass} to the next: {after:?}: {ear:?}"
+        );
     }
     package.assert_clean();
 }
