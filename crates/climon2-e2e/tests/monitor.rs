@@ -1802,6 +1802,9 @@ enum Act {
     Await(PathBuf),
     /// Hang up.
     Close,
+    /// Read every later request and answer none, a Leave included, until
+    /// the peer hangs up.
+    Hold,
 }
 
 /// What a fake daemon heard, in the order its threads recorded it.
@@ -2073,6 +2076,14 @@ fn serve_heard(
                 true
             }
             Act::Close => false,
+            Act::Hold => {
+                while let Ok(Some(frame)) = read_frame(connection, limit) {
+                    if let Some((ear, id)) = heard {
+                        hear(ear, id, Heard::Request(frame.code()));
+                    }
+                }
+                false
+            }
         };
         if !sent {
             return;
@@ -6302,5 +6313,299 @@ fn resizes_under_continuous_output_show_only_coherent_frames() {
     support::assert_released(&package, &mut terminal, 0);
     assert_eq!(terminal.title().as_deref(), Some(TITLE));
     finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Waits until fake daemons served `count` clients, at most [`TIMEOUT`].
+fn served(ear: &Ear, count: usize) {
+    let deadline = Instant::now() + TIMEOUT;
+    while heard(ear, Heard::Served).len() < count {
+        assert!(Instant::now() < deadline, "the fake daemon served too few");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// A fake daemon whose client opens, titled `title`, then `after`.
+fn opening(title: &str, after: Vec<Act>) -> Answer {
+    let mut acts = vec![
+        opened_selecting(false, false),
+        initial_metadata(title, None, None),
+    ];
+    acts.extend(after);
+    Turns::answer(vec![acts])
+}
+
+/// The general log's evidence record for session `id` (#118).
+fn evidence(package: &Package, id: &str) -> String {
+    let log = monitor_log(package);
+    let prefix = format!("client shutdown evidence session={id} ");
+    let line = log.lines().find(|line| line.contains(&prefix));
+    let line = line.unwrap_or_else(|| panic!("no evidence for {id} in {log}"));
+    line[line.find(&prefix).unwrap() + prefix.len()..].to_owned()
+}
+
+/// EXT-01 (Monitor; #118), EXT-03 (Monitor: orderly exit) and EXT-04
+/// (Monitor: no inherited status): prefix+x leaves a passive client (a
+/// fake daemon's) and a controlling one (a real session the initial
+/// selection acquired) on one shutdown path. Each kind of evidence is
+/// recorded on its own for each: the daemon's acceptance of the Leave,
+/// closure, the client outcome, worker cleanup, handle release, destroy
+/// and the owner thread's join. The fake daemon heard nothing but the
+/// Leave after Open; the controlled session's Leave detached its
+/// attachment. The exit is 0, with the host restored and cleared and
+/// nothing printed, though the session's command never exits 0.
+#[test]
+fn exit_leaves_every_client_and_records_each_kind_of_evidence_alone() {
+    const PASSIVE: &str = "0d5c0000-0000-4000-8000-0000000000e1";
+    let package = Package::new();
+    without_introduction(&package);
+    let attached = headless(&package, &recorder("Keys"), "finish");
+    let ear = Ear::default();
+    let fake = FakeDaemon::start(
+        &package,
+        PASSIVE,
+        "2099-01-01T00:00:00.000Z",
+        opening("Passive", Vec::new()),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    record(&mut terminal, "Keys", COLS);
+    served(&ear, 1);
+    terminal.send("\x1dx").unwrap();
+    terminal.wait_for_text("OUTER-DONE=0", TIMEOUT).unwrap();
+    assert!(!written(&mut terminal).contains("climon2: error"));
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(requests_by_turn(&ear, PASSIVE), [[LEAVE]]);
+    let confirmed = |detached: bool| {
+        format!(
+            "leave=Some(Confirmed) detached=Some({detached}) closed=Some(true) \
+             failed=Some(false) workers=Some(true) released=true destroyed=Some(true) \
+             joined=true"
+        )
+    };
+    assert_eq!(evidence(&package, PASSIVE), confirmed(false));
+    assert_eq!(evidence(&package, &attached), confirmed(true));
+    assert!(monitor_log(&package).contains("monitor stopped status=0"));
+    drop(fake);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// EXT-02 (Monitor, Fault; #118) and LIB-06 (Monitor, Fault: a stall
+/// beyond the cleanup budget): a daemon that never answers the Leave, with
+/// `deadlines.leave_ms` far beyond a four-second `deadlines.shutdown_ms`,
+/// stalls its client's shutdown. The monitor shows `Exiting: waiting for 1
+/// session`, reads and discards repeated prefix+x and catchable signals
+/// (none restarts the deadline, changes the status or reaches the shell),
+/// does not give up before the deadline, then restores and clears the
+/// host and fail-stops with the climon2 error code and one diagnostic
+/// naming the session and exactly what is unconfirmed: no join, release or
+/// destroy is claimed.
+#[test]
+fn a_stalled_leave_fail_stops_at_the_deadline_however_often_exit_is_repeated() {
+    const HELD: &str = "0d5c0000-0000-4000-8000-0000000000e2";
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({"deadlines": {"leave_ms": 600_000, "shutdown_ms": 4000}}),
+    );
+    let ear = Ear::default();
+    let fake = FakeDaemon::start(
+        &package,
+        HELD,
+        "2099-01-01T00:00:00.000Z",
+        opening("Held", vec![Act::Hold]),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    served(&ear, 1);
+    let monitor = Pid::from_raw(monitor_process(&package).0);
+    let started = Instant::now();
+    terminal.send("\x1dx").unwrap();
+    terminal
+        .wait_for_text("Exiting: waiting for 1 session", TIMEOUT)
+        .unwrap();
+    let repeat = |terminal: &mut Terminal| {
+        for signal in [Signal::SIGTERM, Signal::SIGINT, Signal::SIGHUP] {
+            kill(monitor, signal).unwrap();
+        }
+        terminal.send("\x1dx").unwrap();
+    };
+    repeat(&mut terminal);
+    // At least two seconds still pass with no exit, so the deadline is not
+    // cut short; then repeats come again, two seconds before it.
+    assert!(
+        terminal
+            .wait_for_bytes(DONE, Duration::from_secs(2))
+            .is_err()
+    );
+    let repeated = started.elapsed();
+    assert!(repeated < Duration::from_millis(3500), "{repeated:?}");
+    repeat(&mut terminal);
+    terminal.wait_for_bytes(DONE, TIMEOUT).unwrap();
+    let took = started.elapsed();
+    assert!(took >= Duration::from_secs(4), "{took:?}");
+    // A deadline restarted by the later repeats would end four seconds
+    // after them.
+    assert!(took < repeated + Duration::from_secs(4), "{took:?}");
+    assert_diagnosed_after_release(
+        &mut terminal,
+        &format!(
+            "climon2: error: monitor shutdown unconfirmed: session {HELD}: no terminal \
+             evidence, handles not released, run not returned, not destroyed, thread not \
+             joined (logs: "
+        ),
+    );
+    assert_released(&package, &mut terminal, 125);
+    assert_eq!(requests_by_turn(&ear, HELD), [[LEAVE]]);
+    assert_eq!(
+        evidence(&package, HELD),
+        "leave=None detached=None closed=None failed=None workers=None released=false \
+         destroyed=None joined=false"
+    );
+    drop(fake);
+    package.assert_clean();
+}
+
+/// EXT-02 and LIB-06 (Monitor, Fault; #118; hooked library only): a
+/// client whose worker cleanup outlives `deadlines.cleanup_ms`
+/// (`stall-cleanup`) leaves with its Leave confirmed, but its run reports
+/// cleanup incomplete and destroy stays busy: the monitor never claims the
+/// worker joined or kills it, and fail-stops, restoring and clearing the
+/// host first, with the climon2 error code and one diagnostic naming the
+/// session, the worker cleanup and the destroy.
+#[test]
+fn unconfirmed_worker_cleanup_fail_stops_without_claiming_it() {
+    const STUCK: &str = "0d5c0000-0000-4000-8000-0000000000e3";
+    if archive() {
+        return;
+    }
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(&package, json!({"deadlines": {"cleanup_ms": 200}}));
+    let ear = Ear::default();
+    let fake = FakeDaemon::start(
+        &package,
+        STUCK,
+        "2099-01-01T00:00:00.000Z",
+        opening("Stuck", Vec::new()),
+        &ear,
+    );
+    let mut terminal = outer(&package, "CLIMON2_LIBRARY_FAULT=stall-cleanup c2 monitor");
+    served(&ear, 1);
+    terminal.send("\x1dx").unwrap();
+    assert_diagnosed_after_release(
+        &mut terminal,
+        &format!(
+            "climon2: error: monitor shutdown unconfirmed: session {STUCK}: worker cleanup \
+             unconfirmed: worker cleanup incomplete, not destroyed: busy: run, workers, \
+             handles or deliveries are still outstanding (logs: "
+        ),
+    );
+    assert_released(&package, &mut terminal, 125);
+    assert_eq!(requests_by_turn(&ear, STUCK), [[LEAVE]]);
+    assert_eq!(
+        evidence(&package, STUCK),
+        "leave=Some(Confirmed) detached=Some(false) closed=Some(true) failed=Some(false) \
+         workers=Some(false) released=true destroyed=Some(false) joined=true"
+    );
+    drop(fake);
+    package.assert_clean();
+}
+
+/// EXT-02 (Monitor, Fault; #118; hooked monitor only): a discovery pass
+/// that never ends (`CLIMON2_MONITOR_FAULT=discovery`) is never joined or
+/// claimed: at the half-second shutdown deadline the monitor restores and
+/// clears the host and fail-stops with the climon2 error code and one
+/// diagnostic naming the unfinished pass.
+#[test]
+fn debug_hook_stalled_discovery_fail_stops_at_the_deadline() {
+    if archive() {
+        return;
+    }
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(&package, json!({"deadlines": {"shutdown_ms": 500}}));
+    let mut terminal = outer(&package, "CLIMON2_MONITOR_FAULT=discovery c2 monitor");
+    terminal
+        .wait_for_text("Connecting to 0 sessions", TIMEOUT)
+        .unwrap();
+    terminal.send("\x1dx").unwrap();
+    assert_diagnosed_after_release(
+        &mut terminal,
+        "climon2: error: monitor shutdown unconfirmed: discovery pass unfinished (logs: ",
+    );
+    assert_released(&package, &mut terminal, 125);
+    package.assert_clean();
+}
+
+/// EXT-03 (Fault; #118; hooked monitor only): host restoration that never
+/// finishes (`CLIMON2_MONITOR_FAULT=release`) ends the whole process with
+/// the climon2 error code once `deadlines.final_host_ms` has passed,
+/// never described as a restored host: the general log says the final host
+/// restoration was unfinished, and nothing claims the monitor stopped.
+#[test]
+fn debug_hook_unfinished_host_restoration_fails_after_the_final_host_allowance() {
+    if archive() {
+        return;
+    }
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(&package, json!({"deadlines": {"final_host_ms": 300}}));
+    let mut terminal = outer(&package, "CLIMON2_MONITOR_FAULT=release c2 monitor");
+    terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
+    let started = Instant::now();
+    terminal.send("\x1dx").unwrap();
+    terminal.wait_for_bytes(b"OUTER-DONE=125", TIMEOUT).unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(300));
+    assert!(terminal.modes().alternate_screen, "never restored");
+    let home = package.isolation.home();
+    assert_ne!(
+        fs::read(home.join("after")).unwrap(),
+        fs::read(home.join("before")).unwrap(),
+        "termios never restored"
+    );
+    terminal.send("plain words\n").unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    let log = monitor_log(&package);
+    assert!(
+        log.contains("final host restoration unfinished within_ms=300"),
+        "{log}"
+    );
+    assert!(!log.contains("monitor stopped"), "{log}");
+    package.assert_clean();
+}
+
+/// LIB-06 (Monitor, Fault; #118; hooked library only): a native crash in
+/// the client library (`abort:receive`, as the client handles its
+/// daemon's first frame), run in this disposable monitor process, ends the
+/// whole monitor: the shell reports the abort (128 + SIGABRT), and nothing
+/// promises the host was restored.
+#[test]
+fn a_native_abort_in_a_client_library_ends_the_whole_monitor() {
+    const CRASH: &str = "0d5c0000-0000-4000-8000-0000000000e4";
+    if archive() {
+        return;
+    }
+    let package = Package::new();
+    without_introduction(&package);
+    let ear = Ear::default();
+    let fake = FakeDaemon::start(
+        &package,
+        CRASH,
+        "2099-01-01T00:00:00.000Z",
+        opening("Crash", Vec::new()),
+        &ear,
+    );
+    let mut terminal = outer(
+        &package,
+        "ulimit -c 0; CLIMON2_LIBRARY_FAULT=abort:receive c2 monitor",
+    );
+    terminal.wait_for_bytes(b"OUTER-DONE=134", TIMEOUT).unwrap();
+    assert!(!monitor_log(&package).contains("monitor stopped"));
+    terminal.send("plain words\n").unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    drop(fake);
     package.assert_clean();
 }

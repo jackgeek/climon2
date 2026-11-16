@@ -59,6 +59,9 @@ pub(crate) struct Host {
     /// exactly the documented normal-shell baseline.
     baseline: Presentation,
     buffer: [u8; READ_BYTES],
+    /// A termination signal was reported: it stays caught, and later ones
+    /// change nothing, so host input is read again (#118).
+    signalled: bool,
 }
 
 impl Host {
@@ -80,6 +83,7 @@ impl Host {
             input,
             baseline: Presentation::new(size.cols, size.rows),
             buffer: [0u8; READ_BYTES],
+            signalled: false,
         })
     }
 
@@ -97,10 +101,12 @@ impl Host {
         write_host(&bytes)
     }
 
-    /// The next thing to act on: termination signals first, then resizes,
-    /// then host input.
+    /// The next thing to act on: the first termination signal, once, then
+    /// resizes, then host input.
     pub(crate) fn next(&mut self) -> io::Result<Event<'_>> {
-        if let Some(signal) = self.signals.termination_signal() {
+        let signal = self.signals.termination_signal();
+        if let Some(signal) = signal.filter(|_| !self.signalled) {
+            self.signalled = true;
             return Ok(Event::End(Ending::Signal(signal)));
         }
         if self.signals.take_resize() {

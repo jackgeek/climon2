@@ -349,7 +349,9 @@ signal handlers or standard streams.
 With `test-hooks` only (`src/library/hooks.rs`), `CLIMON2_LIBRARY_FAULT`
 selects faults: `panic:<call>[,<call>...]` panics once at each named export's
 boundary (`bootstrap` names `climon2_client_get_interface`), or at `receive`,
-as a running connection handles a frame from its daemon; `worker` makes
+as a running connection handles a frame from its daemon; `abort:<call>`
+aborts the whole embedding process at the same points, a native crash
+nothing contains (#118); `worker` makes
 `run` start a worker that ends with its stream, `stall-cleanup` one whose
 cleanup never ends, and `joined-worker` one that briefly holds a block of
 `chunk_bytes` and ends, and that `run` joins before going on. Release builds
