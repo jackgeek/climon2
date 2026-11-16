@@ -15,7 +15,8 @@ help (#105), session discovery, passive clients and the basic selector
 control and painting of the selected session (#108), the input router that
 sends typed keys to it (#109), and switching, revocation, taking control back
 and Enter on Starting and Unavailable rows (#110), initial selection
-(#266), and paste, mouse and focus (#111). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
+(#266), paste, mouse and focus (#111), and disconnection, read-only history
+and passive recovery (#116). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
 
 ## Startup, before the host terminal changes
 
@@ -222,7 +223,7 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   or fails. Each instance has an owner thread that creates it with the
   effective `monitor.limits` (`client_bytes` is all of `memory.client_bytes`:
   the monitor reserves no model capacity yet), both client keys and the log
-  `logs/<session ID>/library-<stamp>-<pid>.log`, submits monitor Open (request
+  `logs/<session ID>/library-<stamp>-<pid>-<generation>.log`, submits monitor Open (request
   1, geometry 0x0; `daemon-wire-v1` and `monitor-v1` required, `title-v1`,
   `status-v1`, `notification-v1`, `progress-v1` and `focus-v1` optional),
   publishes its handles, runs it, and destroys it once the supervisor has
@@ -232,19 +233,21 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   delivery at once (`supervisor/client.rs`), and reports Open's outcome
   (with whether `status-v1` was selected), titles from Initial metadata and
   `CM1_TITLE`, the status or final outcome from Initial metadata,
-  `CM1_STATUS` and `CM1_FINAL`, and the end. A refused release (its loader `Failure` kept for
-  #116's retry), a failed create, Open, notification lookup or drain, a run
-  that returns without terminal evidence, or a client that ends before
-  opening makes the row Unavailable; one that ends after opening,
-  Disconnected. A failed instance is asked to stop and drained until its
-  stream is over; its handles are then released, its start slot is free
-  (only instances still creating or opening hold one), and its owner
-  destroys it. Nothing is retried yet. Starts are newest created first only
+  `CM1_STATUS` and `CM1_FINAL`, and the end. A refused release, a failed
+  create, Open, notification lookup or drain, a run that returns without
+  terminal evidence, or a client that ends before opening makes the row
+  Unavailable; one that ends after opening, Disconnected. A failed instance
+  is asked to stop and drained until its stream is over; its handles are
+  then released, its start slot is free (only instances still creating or
+  opening hold one), and its owner destroys it. Whether it is retried is
+  [#116's recovery](#disconnection-read-only-history-and-passive-recovery-116).
+  Starts are newest created first only
   among the sessions waiting together: fairness across discovery batches
   and resource admission arrive with #120. The general log records `client
   library loaded` or `client library refused`, `client starting
   session=<id>`, `client published`, `client failed`, `client stopped`,
-  `client ended` and client diagnostics, content-free.
+  `client ended`, `client retry scheduled session=<id> delay_ms=<n>` and
+  client diagnostics, content-free.
 - **The selector** (`selector.rs`): prefix+s, unless the modal key
   introduction is open, overlays the rows below the top row, one cell in from
   each edge, with a captionless double border. Each row is its status, padded
@@ -287,9 +290,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   requests (every request the library may have accepted), and one more is
   refused at once. A session selected earlier keeps control in the
   background when another is selected. Enter on other rows is #110's
-  (below), except disconnected and final rows, which it ignores until
-  [#116](https://github.com/jackgeek/climon2/issues/116) opens their retained
-  history.
+  (below), and on disconnected and final rows
+  [#116's](#disconnection-read-only-history-and-passive-recovery-116).
 - **Terminals** (`terminal.rs`, pure): each session has one `climon2-vt`
   model, kept by session ID for the whole run and bounded by
   `memory.client_bytes` and `history.max_rows`. The model and the library
@@ -431,8 +433,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   connected row not known to be final, a connected Unavailable row
   included, is selected and acquired; a Starting row, or an Unavailable row
   with no connected client (uncertain or failed), is selected but never
-  acquired; disconnected and final rows are ignored until #116. The
-  monitor's own session has no row to press Enter on. Awaiting resources rows arrive with
+  acquired; disconnected and final rows are selected read-only (#116,
+  below). The monitor's own session has no row to press Enter on. Awaiting resources rows arrive with
   #120, which proves their Enter.
 - **Switching** keeps control of the session switched away from in the
   background: its client stays, its model stays live, and it gets no
@@ -447,9 +449,9 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   take control` while a take-control key is bound and
   `monitor.show_key_hints` is true; never its cached output. A row selected
   without a connected client shows `No terminal content is available.` and its condition
-  (`Starting` or `Unavailable`); a retained cache with its overlay is #116's.
-  Anything else (acquiring, before the first restoration, disconnected or
-  final without a view) shows a blank canvas.
+  (`Starting` or `Unavailable`), unless it has retained history (#116,
+  below). A connected session the monitor is acquiring, or before its first
+  restoration, shows a blank canvas.
 - **The take-control key** (`client.take_control_key`), unprefixed, acquires
   the selected session while it shows the placeholder, and is consumed
   either way when nothing takes input, also on a host too small to show
@@ -462,6 +464,69 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   selection, input or resize; the selection is kept through revocation,
   completion, loss and failed acquisition, and input never goes to another
   session.
+
+## Disconnection, read-only history and passive recovery (#116)
+
+- **Classifying an end** (`supervisor.rs`, `supervisor/client.rs`). Each
+  instance that is over is retried as its terminal evidence's retry says
+  (none, passive or permanent), or passively when the monitor stopped it
+  itself (a failed notification lookup or drain, a run that returned
+  without terminal evidence). Open's refusal ends the stream by itself, so
+  its evidence decides. A refused release is retried when a later load may
+  succeed (the library missing, missing a dependency or of another
+  architecture, a contained bootstrap failure, or no load thread), and is
+  otherwise permanent; create's refusal is permanent for invalid arguments,
+  an unsupported revision or limit or another release, otherwise passive.
+  Nothing is retried once the client delivered the command's final outcome
+  (the library also says none then), or once destroy failed, when worker
+  cleanup cannot be confirmed: that row says `cannot confirm the client's
+  cleanup: <error>` and is never replaced (the fail-stop is #118's).
+- **Passive retry.** A retry waits until the old instance's deliveries and
+  handles are released, its run has returned and its owner has destroyed it
+  and been joined, then a backoff (`supervisor/backoff.rs`): from
+  `retry.initial_ms`, doubling with saturation to `retry.cap_ms`, each delay
+  with fresh uniform jitter of up to `retry.jitter_percent` either way,
+  clamped to the cap, with no attempt-count cutoff; an open client starts
+  the next backoff afresh. The new instance has the session's next
+  connection generation (the first is 1) and its own library log; it is
+  created with the same startup, never replays a request (input, Acquire,
+  Ready, a paste, Kill) and never acquires: the row shows the non-controller
+  placeholder once it opens, until the user acquires. A recoverably refused
+  release is loaded again, once, when a waiting session's retry is due. A
+  session discovery proves gone (its daemon not running) is never retried
+  again (owner decision, 2026-11-16). Shutdown starts no retry. Fairness
+  and admission across retries are #120's; #119 reuses this path for a
+  session dropped at its memory limit.
+- **Rows** (`registry.rs`). A row learns its recovery with its end: retrying
+  with its diagnostic, or rejected for good with why. A retry's new
+  instance makes it Starting, then Unavailable if it fails before opening
+  or Disconnected if it ends after; it is never a first start, so it never
+  holds initial selection. A new connection ends recovery and drops the old
+  connection's stale status, so only the new client's reports label the
+  row (#107's review). A known final outcome survives every loss, and a
+  loss alone is never shown as completion. Discovery proving the session
+  gone marks a not-connected, not-final row so for good: `Session no
+  longer exists`, the state #117's Delete reads to offer Remove alone.
+- **Enter** on a disconnected or final row selects it read-only, never
+  acquiring, as on Starting and Unavailable rows with no connected client.
+- **What a not-connected row shows** (`lib.rs`, `screen.rs`). A row neither
+  connected nor known final shows its terminal's retained history
+  read-only: the model as its last applied restoration and the output
+  after it left it, from any generation, without a cursor, with no input,
+  resize, acquisition or acknowledgement; the wheel scrolls it a row a
+  notch, with `History` in the control slot. Without one (no restoration was
+  ever applied) it shows `No terminal content is available.` and its
+  condition. Over either, exactly `Reconnecting...` while a retry is
+  scheduled or running, `Not reconnecting: <why>` once rejected for good, or
+  `Session no longer exists`; the top row's error slot carries the row's
+  diagnostic (owner decision on #116), unless its terminal has its own
+  error. A final row shows only the view frozen at its end (#108), never an
+  earlier period's cache, otherwise no content and its outcome. A
+  connected row, revoked or reconnected, still shows only the placeholder,
+  never its cache. Global actions work from every one of these screens.
+- **Not yet:** a session dropped at the memory allocation limit (#119)
+  becomes retried through the same path, and an update the model cannot
+  represent still shows only its error (#119 makes that row read-only).
 
 ## Paste, mouse and focus (#111)
 
@@ -592,6 +657,10 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Canvas, above the oldest history row kept once older rows were discarded (#112; the glossary's truncation notice, owner decision 2026-11-16) | `[climon2: older session scrollback was discarded]` | `screen.rs` |
 | Top-row label or selector row that overflows its cells (#112, owner decision 2026-11-16) | `<text, truncated>…` | `registry.rs` |
 | Top row's error slot: a paste the input queue refused partway (#111, owner decision 2026-11-16) | `Paste truncated` | `terminal.rs` |
+| Over a not-connected row's retained history or its no-content state while a passive retry is scheduled or running (#116) | `Reconnecting...` | `screen.rs` |
+| Over the same once recovery is permanently rejected (#116) | `Not reconnecting: <diagnostic>` | `screen.rs` |
+| Over the same, and in the top row's error slot, once discovery proved the session's daemon gone (#116, owner decision 2026-11-16) | `Session no longer exists` | `screen.rs` |
+| Top row's error slot: a lost or failed client's diagnostic (#116, owner decision 2026-11-16) | the library's or loader's own message, or the monitor's: `cannot poll the client: <error>`, `cannot drain the client: <error>`, `the client stopped without terminal evidence`, `the client stopped before it opened`, `cannot confirm the client's cleanup: <error>` | `supervisor.rs` |
 
 ## Specification mapping
 
@@ -717,6 +786,13 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | FOC-01, FOC-02 (pure supplement): Focus once per desire under ready authority, a newly ready restoration's current desire once, none without `focus-v1`, control or a running command; `focus-v1` lasts until the client ends; Open says whether `focus-v1` was selected; Focus and paste parts as their native requests | `focus_follows_each_new_desire_under_ready_authority_once`, `focus_support_lasts_until_the_client_ends` (`src/terminal.rs`), `opening_says_whether_focus_and_status_were_selected`, `focus_and_paste_parts_become_their_native_requests` (`src/supervisor/client.rs`) |
 | COM-04, EXT-03 (pure input-router supplement): typed bytes reach an application exactly | `typed_bytes_reach_the_application_exactly` (`src/router.rs`) |
 | COM-03, COM-04 (pure supplement): chunks of at most `chunk_bytes`; the first refusal carries every unsent byte and consumes no request ID; a refusal is shown | `input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte` (`src/supervisor.rs`), `refused_input_shows_what_was_not_sent` (`src/terminal.rs`) |
+| REC-01 (Monitor, Fault: transport loss), REC-02 (Monitor, Fault: full history; `Reconnecting...` while scheduled and while running; the placeholder after the reconnect), COM-03 and COM-05 (Monitor: indeterminate work never replayed, a fresh attempt sent nothing old), DSC-05 (Monitor, Fault: loss keeps the selection), Enter on disconnected and unconnected Starting rows (derived) (#116) | `a_lost_connection_keeps_its_history_read_only_until_a_passive_reconnect` (e2e, Fault peers) |
+| REC-02 (Monitor: full history, no history), REC-01 (Monitor: a gone daemon and a known outcome stop retry), HDL-01 (Monitor case: `climon2 kill` from another terminal), COM-06 (Monitor), DSC-05 (Monitor: every row final or gone, discovery continues), Enter on final rows (derived), global actions from the read-only screens (#116) | `killed_and_ended_sessions_stay_read_only_and_are_never_retried` (e2e) |
+| REC-01 (Monitor, Fault: missing library, repaired installation, permanently rejected protocol, visible exponential retry with jitter and cap), LIB-02 (Monitor), DSC-05 (Monitor, Fault: every row unavailable) (#116) | `failed_clients_retry_with_backoff_until_repaired_or_rejected_for_good` (e2e, Fault peers) |
+| REC-01 (Monitor, Fault: contained panic), LIB-05 (Monitor: the panicking instance stays on its row) (#116) | `a_contained_panic_is_retried_on_its_own_row` (e2e, hooked only) |
+| REC-01, COM-05 (pure supplement over the fake library): a failure is retried in the next generation only after the old instance is destroyed and its owner joined, with backoff doubling to the cap, from the start again after an open; permanent rejections, invalid configuration, known outcomes and unconfirmed cleanup retry nothing, scarce resources are retried; a missing library is loaded again when due; a session proven gone is never retried; each loader refusal, create refusal and terminal evidence's retry class (#116) | `a_failed_client_is_retried_after_its_cleanup_in_a_fresh_generation`, `rejections_known_outcomes_and_unconfirmed_cleanup_retry_nothing`, `a_missing_library_is_loaded_again_when_its_retry_is_due`, `a_session_proven_gone_is_never_retried`, `only_a_refusal_a_later_load_may_not_repeat_is_retried` (`src/supervisor.rs`), `create_refusals_and_terminal_evidence_say_whether_to_retry` (`src/supervisor/client.rs`) |
+| REC-01 (pure supplement): the delay doubles from `retry.initial_ms` to `retry.cap_ms` (at the cap and one doubling past it), saturating; jitter over the whole spread at its ends and one past, within the cap; fresh random values (#116) | `the_delay_doubles_from_its_start_to_its_cap`, `jitter_spreads_each_delay_either_way_within_the_cap`, `each_random_value_is_fresh` (`src/supervisor/backoff.rs`) |
+| REC-02 (pure supplement): rows keep recovery through a retry's Starting, never a first start; a reconnect clears recovery and the old stale status (#107's review); rejection replaces retrying; a gone session stops recovery for good, not for connected or final rows; the last applied content is retained read-only across generations, none before one; only rows neither connected nor final show it; the placeholder, history or no content under the overlay; the overlays and diagnostic (#116) | `recovery_follows_a_lost_client_until_it_reconnects_or_its_session_is_gone` (`src/registry.rs`), `the_last_applied_content_is_retained_read_only` (`src/terminal.rs`), `a_selected_row_without_a_view_shows_the_placeholder_its_history_or_no_content`, `only_a_row_neither_connected_nor_final_shows_its_retained_history` (`src/lib.rs`), `a_lost_session_shows_its_history_read_only_under_its_overlay` (`src/screen.rs`) |
 | #74 risk proof: plain and hooked sibling binaries without nested builds | `cargo_builds_the_plain_or_hooked_monitor_binary_for_its_tests` (`tests/build.rs`, plain and hooked runs); fixtures `workspace_binaries_contain_test_hooks`; xtask `release_check_builds_unhooked_binaries_in_a_private_target` |
 | #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`; Linux `linux_packaging_rejects_a_non_x86_64_or_hooked_monitor`; macOS `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
 
@@ -726,11 +802,11 @@ toast cases, #115), viewing and host focus's effect on it (#114), FOC-01's
 toast cases (#115), FOC-02's host-native
 copy (a host manual check), INP-04's disconnect case in the middle of a
 paste or gesture (the selection stays on the lost session, so nothing
-else could receive the rest; #116 owns its recovery), global actions from the history screen (#116), HLP-02 over the selector (#113), selector
-search and footer (#113), Enter on disconnected and final rows and retained
-caches with their overlays (#116), Enter on Awaiting resources rows (#120),
+else could receive the rest, and a reconnect replays none of it), HLP-02 over the selector (#113), selector
+search and footer (#113), Enter on Awaiting resources rows (#120),
 Awaiting resources
 ending initial collection (#120), resource admission and fairness, including newest-first starts
-across discovery batches, and `discovery.stall_ms` (#120), passive retry
-(#116), the fail-stop after an unconfirmed shutdown (#118), and the universal archive's runtime on both architectures, which
+across discovery batches, and `discovery.stall_ms` (#120), a session
+dropped at its memory limit and retried (#119), the fail-stop after an
+unconfirmed shutdown or cleanup (#118), and the universal archive's runtime on both architectures, which
 only CI's `dist` and `archive` jobs build and execute.
