@@ -11,9 +11,13 @@ contained and no process-global state changed
 ([#85](https://github.com/jackgeek/climon2/issues/85)). An instance opens a
 passive monitor connection to its session's daemon on its owner thread,
 never raising `SIGPIPE` in the process
-([#93](https://github.com/jackgeek/climon2/issues/93)). The one shared loader
-that the [monitor](../../GLOSSARY.md#sessions) and the
-[client executable](../../GLOSSARY.md#sessions) will both use is implemented
+([#93](https://github.com/jackgeek/climon2/issues/93)), or an interactive
+attachment, and relays control and display
+([#94](https://github.com/jackgeek/climon2/issues/94)), and sends
+[Kill](../../GLOSSARY.md#attachment-and-control) on an auxiliary connection
+of its own ([#96](https://github.com/jackgeek/climon2/issues/96)). The one
+shared loader that the [monitor](../../GLOSSARY.md#sessions) and the
+[client executable](../../GLOSSARY.md#sessions) both use is implemented
 ([#84](https://github.com/jackgeek/climon2/issues/84)): it performs the
 [lookup](#artifact-and-dependency-lookup), the load-failure classification and
 the description validation below, and keeps every handle it opens. The monitor
@@ -25,9 +29,12 @@ descriptors, drains and releases every delivery, and on exit requests
 shutdown of every instance and waits up to `deadlines.shutdown_ms` for each to
 end, its handles to be released and its owner to be joined. An instance
 unconfirmed by then is reported and left, never destroyed, to process exit:
-the monitor does not claim it joined. Admission,
-recovery, acquisition and fail-stop remain unimplemented, and the client
-executable does not load the library yet. The
+the monitor does not claim it joined. The client executable's kill mode loads
+its own version folder's library through it and submits Kill through the
+function table ([#100](https://github.com/jackgeek/climon2/issues/100)); test
+tooling uses it too. Admission, recovery, acquisition and fail-stop remain
+unimplemented, and the client executable does not load the library for
+ordinary attach yet. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
 requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)
 adds x86-64 GNU/Linux. [Native revision 1](monitor-client/core-v1.md), confirmed in
@@ -75,7 +82,9 @@ from the [install layout](../../GLOSSARY.md#installation). The library file is
 GNU/Linux; the version folder, not the file name, carries the release. Never
 substitute `current`, another installed release, or a library found through a
 search path. The [client executable](../../GLOSSARY.md#sessions) loads the same
-filename beside itself and verifies its own exact release.
+filename beside itself and verifies its own exact release: its executable home
+and release are those of the version folder it runs from, so the library must
+describe that folder's release ([#100](https://github.com/jackgeek/climon2/issues/100)).
 
 On macOS, [dyld](TERMS.md#dynamic-loader) searches each `DYLD_LIBRARY_PATH`
 directory for the library file's name before it opens an absolute path, so

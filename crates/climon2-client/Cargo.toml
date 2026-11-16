@@ -22,6 +22,7 @@ tracing = "0.1.44"
 serde_json.workspace = true
 tempfile = "3.27.0"
 climon2-test-term = { path = "../climon2-test-term" }
+climon2-fixtures = { path = "../climon2-fixtures" }
 
 [lints]
 workspace = true

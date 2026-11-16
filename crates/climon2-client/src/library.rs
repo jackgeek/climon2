@@ -28,6 +28,7 @@ mod handshake;
 #[cfg(feature = "test-hooks")]
 mod hooks;
 mod instance;
+mod kill;
 mod link;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[path = "library/linux.rs"]
@@ -68,7 +69,7 @@ unsafe impl<T> Sync for Immutable<T> {}
 unsafe impl<T> Send for Immutable<T> {}
 
 /// The families this release relays, as the description lists them.
-static CAPABILITIES: LazyLock<Immutable<[Bytes; 3]>> =
+static CAPABILITIES: LazyLock<Immutable<[Bytes; families::RELAYED.len()]>> =
     LazyLock::new(|| Immutable(families::RELAYED.map(|family| failure::bytes(family.token()))));
 
 /// Built once, then immutable until process exit.
