@@ -7365,3 +7365,242 @@ fn representative_status_sequences_show_the_right_row_states() {
     finish_sessions(&package, "finish");
     package.assert_clean();
 }
+
+/// Forward Delete, as a host sends it (`CSI 3 ~`).
+const DELETE: &str = "\x1b[3~";
+/// The Delete confirmation's offer for a session not known to be over, and
+/// for one final or gone (#117).
+const TERMINATE: &str = "Terminate and remove";
+const REMOVE: &str = "Remove";
+/// The Delete confirmation's buttons as they read focused.
+const CANCEL_FOCUSED: &str = "[ Cancel ]";
+const TERMINATE_FOCUSED: &str = "[ Terminate and remove ]";
+const REMOVE_FOCUSED: &str = "[ Remove ]";
+
+/// The Delete confirmation's four lines inside its border for `label`,
+/// `status` and `offer`, as `label` and `status` would show if they were
+/// the widest (#117).
+fn confirmation(label: &str, status: &str, offer: &str) -> [String; 4] {
+    let buttons = format!("[ Cancel ]  [ {offer} ]");
+    let width = [label, status, &buttons]
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap();
+    [label, status, "", buttons.as_str()].map(|line| format!("│ {line:<width$} │"))
+}
+
+/// Waits until a whole frame shows the Delete confirmation, titled, for
+/// `label` with `status` (any status when `None`) offering `offer`, with
+/// the button `focused` reversed.
+fn asks(terminal: &Terminal, (label, status): (&str, Option<&str>), offer: &str, focused: &str) {
+    let lines = confirmation(label, status.unwrap_or_default(), offer);
+    let reversed = |screen: &str| {
+        let rows: Vec<_> = screen.lines().collect();
+        let at = rows.windows(5).position(|window| {
+            window[0].contains("┌ Delete session")
+                && window[1].contains(lines[0].as_str())
+                && status.is_none_or(|_| window[2].contains(lines[1].as_str()))
+                && window[4].contains(lines[3].as_str())
+        })?;
+        let row = rows[at + 4];
+        let start = row[..row.find(lines[3].as_str())?].chars().count();
+        let width = lines[3].chars().count();
+        let cells = terminal.cells(at + 4);
+        let text: String = cells[start..start + width]
+            .iter()
+            .filter(|cell| cell.rendition.inverse)
+            .map(|cell| cell.text.as_str())
+            .collect();
+        Some(text)
+    };
+    let what = format!("{} focused on {focused}", lines[3]);
+    whole_frame_shows(terminal, &what, |screen| {
+        reversed(screen).as_deref() == Some(focused)
+    });
+}
+
+/// Sets a hooked daemon's status `clock` to `millis` whole, and waits
+/// until its daemon has read it (its `.ack`); a release archive's daemons
+/// have no such clock.
+fn set_clock(clock: &Path, millis: u64) {
+    let staged = clock.with_extension("new");
+    fs::write(&staged, millis.to_string()).unwrap();
+    fs::rename(staged, clock).unwrap();
+    if archive() {
+        return;
+    }
+    let mut ack = clock.as_os_str().to_owned();
+    ack.push(".ack");
+    let deadline = Instant::now() + TIMEOUT;
+    while fs::read_to_string(&ack).ok().as_deref().map(str::trim) != Some(&millis.to_string()) {
+        assert!(Instant::now() < deadline, "the daemon never read its clock");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waits until a whole frame shows no Delete confirmation.
+fn not_asking(terminal: &Terminal) {
+    frame_lacks(terminal, "Delete session");
+}
+
+/// DEL-01 (Monitor: default Cancel, nothing sent on cancel, no input
+/// leaking out of the dialog, the confirmed session's identity), DEL-02
+/// (Monitor: removal only after definitive termination, a gone session only
+/// removed, run-local dismissal against rediscovery, a non-acquiring
+/// fallback selection, nothing deleted beyond normal daemon cleanup) and
+/// #116's owner decision (a gone session's Delete offers Remove), against
+/// real daemons. Bravo, the newer, is the initial selection. Delete on it
+/// asks with Cancel focused; keys, a paste and a click inside the dialog
+/// decide nothing, and Enter then cancels back to the selector: Bravo is
+/// still running, and once the selector closes the first thing it receives
+/// is what is typed then. Confirmed, Bravo is killed and its row removed;
+/// the selection falls to Alpha, now at Bravo's place, which shows the
+/// placeholder, never acquired. Alpha's daemon killed and proven gone,
+/// Delete offers only Remove, which removes its row though its stale
+/// metadata stays: two later discovery passes, which list new sessions,
+/// never list it again. Bravo's library logs stay.
+#[test]
+fn delete_terminates_or_removes_only_the_confirmed_session() {
+    let package = Package::new();
+    without_introduction(&package);
+    let alpha = headless(&package, &watched("Alpha"), "finish");
+    let bravo = headless(&package, &watched("Bravo"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Bravo", RUNNING, "29 120");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Alpha");
+    terminal.send(DELETE).unwrap();
+    let bravo_running = ("Bravo", Some(RUNNING));
+    asks(&terminal, bravo_running, TERMINATE, CANCEL_FOCUSED);
+    terminal
+        .send("xy\x1b[A \x1b[200~pasted\r\x1b[201~")
+        .unwrap();
+    click(&mut terminal, 14, 60);
+    terminal.send("\t\t").unwrap();
+    asks(&terminal, bravo_running, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\r").unwrap();
+    not_asking(&terminal);
+    listed_with(&terminal, RUNNING, "Bravo");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("after").unwrap();
+    received_by(&package, "Bravo", b"after");
+
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Bravo");
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, bravo_running, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\t").unwrap();
+    asks(&terminal, bravo_running, TERMINATE, TERMINATE_FOCUSED);
+    terminal.send("\r").unwrap();
+    whole_frame_shows(&terminal, "Bravo removed", |screen| {
+        !screen.contains("Bravo") && screen.contains(&format!("║{RUNNING} Alpha"))
+    });
+    let sessions = package.isolation.climon2_home().join("sessions");
+    assert!(!sessions.join(format!("{bravo}.pty")).exists());
+    assert!(!library_logs(&package, &bravo).is_empty());
+    terminal.send(ESCAPE).unwrap();
+    shows(&mut terminal, &placeholder_screen("Alpha", RUNNING));
+
+    kill(Pid::from_raw(daemon_of(&package, &alpha)), Signal::SIGKILL).unwrap();
+    whole_frame_shows(&terminal, "Alpha gone", |screen| {
+        screen
+            .lines()
+            .next()
+            .is_some_and(|top| top.starts_with(&format!("Alpha | {GONE}")))
+    });
+    terminal.send("\x1ds").unwrap();
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, ("Alpha", None), REMOVE, CANCEL_FOCUSED);
+    terminal.send("\x1b[C").unwrap();
+    asks(&terminal, ("Alpha", None), REMOVE, REMOVE_FOCUSED);
+    terminal.send("\r").unwrap();
+    whole_frame_shows(&terminal, "Alpha removed", |screen| {
+        !screen.contains("Alpha") && screen.contains('║')
+    });
+    terminal.send(ESCAPE).unwrap();
+    shows(
+        &mut terminal,
+        &empty_monitor(ROWS, COLS, &[EMPTY, "Press Ctrl+] then x to exit."]),
+    );
+    assert!(sessions.join(format!("{alpha}.pty")).exists());
+    for later in ["Charlie", "Delta"] {
+        headless(&package, &watched(later), "finish");
+        terminal.send("\x1ds").unwrap();
+        listed_with(&terminal, RUNNING, later);
+        terminal.send(ESCAPE).unwrap();
+        selector_closed(&terminal);
+    }
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Delta");
+    assert!(!terminal.screen().contains("Alpha"));
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    // A real listing reclaims the killed daemon's stale metadata.
+    package.list();
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// INP-01 and NOT-03 (Monitor, Delete-dialog cases; owner decision on
+/// #117) and the confirmed scenario that cancelling Delete never
+/// acknowledges attention, against real daemons. Calm, the newer, is the
+/// initial selection, which acknowledges nothing, and comes to need
+/// attention under the open selector. Inside Delete's dialog on Calm,
+/// prefix+s and prefix+? do nothing (Tab moves the focus as before, and no
+/// key introduction shows), and Escape cancels back to the selector with
+/// Calm still needing attention. Once Asking needs attention too, its
+/// daemon's clock moved past Calm's,
+/// prefix+j inside the dialog on Calm cancels it and jumps to Asking,
+/// acknowledging it once viewed, while Calm still needs attention; inside
+/// the dialog again, prefix+x exits the monitor, and Calm was never killed.
+#[test]
+fn inside_the_delete_dialog_prefix_j_cancels_and_jumps_and_prefix_x_exits() {
+    let package = Package::new();
+    without_introduction(&package);
+    let asking_clock = clock(&package, None);
+    headless_on(&package, &watched("Asking"), "finish", &asking_clock);
+    headless(&package, &watched("Calm"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Calm", RUNNING, "29 120");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Asking");
+    report_state(&package, "Calm", "idle");
+    listed_with(&terminal, ATTENTION, "Calm");
+    highlight_on(&mut terminal, "Calm");
+    terminal.send(DELETE).unwrap();
+    let calm = ("Calm", Some(ATTENTION));
+    asks(&terminal, calm, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\x1ds\t").unwrap();
+    asks(&terminal, calm, TERMINATE, TERMINATE_FOCUSED);
+    terminal.send("\x1d?\t").unwrap();
+    asks(&terminal, calm, TERMINATE, CANCEL_FOCUSED);
+    assert!(!terminal.screen().contains("Exit the monitor"));
+    terminal.send(ESCAPE).unwrap();
+    not_asking(&terminal);
+    listed_with(&terminal, ATTENTION, "Calm");
+
+    // Asking's attention is the newer (a release archive's daemons use the
+    // real clock, on which it is later anyway).
+    set_clock(&asking_clock, T0 + 10_000);
+    report_state(&package, "Asking", "idle");
+    listed_with(&terminal, ATTENTION, "Asking");
+    highlight_on(&mut terminal, "Calm");
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, calm, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Asking", ACKNOWLEDGED, "29 120");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, ATTENTION, "Calm");
+    highlight_on(&mut terminal, "Calm");
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, calm, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    let detached =
+        serde_json::json!({"lifecycle": "detached", "attachments": 0, "controlled": false});
+    listed_as(&package, "Calm", &detached);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
