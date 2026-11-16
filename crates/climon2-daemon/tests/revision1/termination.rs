@@ -452,20 +452,35 @@ fn the_end_of_the_commands_output_while_it_runs_is_no_final_result() {
 /// stages only an exit whose output the daemon already read.
 fn exited_unreaped(pid: u32) {
     let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let output = std::process::Command::new("/bin/ps")
-            .args(["-o", "stat=", "-p", &pid.to_string()])
-            .output()
-            .unwrap();
-        if String::from_utf8_lossy(&output.stdout)
-            .trim_start()
-            .starts_with('Z')
-        {
-            return;
-        }
+    while !reapable(pid) {
         assert!(Instant::now() < deadline, "the command never exited");
         thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// Whether the command `pid` exited, every thread of it, so that its
+/// parent's next wait reaps it. Linux shows a process as a zombie as soon
+/// as its main thread exited, while its other threads may still be
+/// exiting and no wait can reap it yet: the libtest fixture exits from its
+/// test thread. So it also requires that no other thread is left.
+#[cfg(target_os = "linux")]
+fn reapable(pid: u32) -> bool {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    status.lines().any(|line| line.starts_with("State:\tZ"))
+        && status.lines().any(|line| line == "Threads:\t1")
+}
+
+/// Whether the command `pid` exited: macOS makes a process a zombie only
+/// once all its threads exited.
+#[cfg(not(target_os = "linux"))]
+fn reapable(pid: u32) -> bool {
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .trim_start()
+        .starts_with('Z')
 }
 
 /// COM-06 (Contract: Command final means no more output follows): the
