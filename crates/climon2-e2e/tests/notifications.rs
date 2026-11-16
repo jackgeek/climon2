@@ -12,7 +12,13 @@
 mod support;
 
 use serde_json::{Value, json};
-use support::{Package, TIMEOUT, control::*, library::archive, passive::*, status::*};
+use support::{
+    Package, TIMEOUT,
+    control::*,
+    library::{CHARGE, archive},
+    passive::*,
+    status::*,
+};
 
 /// The controllable clock's start.
 const AT_START: &str = "2027-01-15T08:00:00.000Z";
@@ -348,7 +354,8 @@ fn limits() -> Value {
 /// notification whose title and body fill them with multi-byte characters
 /// arrives whole, as do one with a body alone and one with no episode;
 /// progress maps state and percentage exactly, an unknown error percentage
-/// absent rather than zero).
+/// absent rather than zero; while queued, a notification is charged its
+/// record and its text, and a progress its record alone).
 #[test]
 fn installed_library_maps_notifications_and_progress_exactly_at_their_bounds() {
     let package = Package::new();
@@ -374,12 +381,23 @@ fn installed_library_maps_notifications_and_progress_exactly_at_their_bounds() {
         { "do": "create", "peer": fake, "startup": limits() },
         { "do": "submit", "request": open(1, &REQUIRED, &REPORTING) },
         { "do": "run" },
+        { "do": "await_snapshot", "gauge": "event_records", "value": 8, "as": "charged" },
         { "do": "drain", "until": until },
         { "do": "shutdown" },
         { "do": "finish" },
     ]);
-    let report = script(&package, &root, steps);
-    let records = step(&report, 3)["records"].as_array().unwrap();
+    let report = script(&package, &root, steps.clone());
+    let charges = &labelled(&report, steps.as_array().unwrap(), "charged")["output"];
+    let selected = TOKEN * SELECTED.len() as u64;
+    // Each notification's source identifier, title and body: "n", seven
+    // and nine bytes; "n" and "b"; and "t".
+    let text = (1 + 7 + 9) + (1 + 1) + 1;
+    assert_eq!(
+        charges["event_bytes"],
+        8 * CHARGE + selected + text,
+        "{charges:#}"
+    );
+    let records = step(&report, 4)["records"].as_array().unwrap();
     assert_eq!(assert_response(&records[0], 1, 1, OK)["result_tag"], OPENED);
     assert_header(&records[1], INITIAL_METADATA, 1);
     assert_eq!(
@@ -397,7 +415,7 @@ fn installed_library_maps_notifications_and_progress_exactly_at_their_bounds() {
         notification(OSC777, None, (Some("t"), None), 0),
     ];
     assert_eq!(reports(&records[2..], 1), expected, "{records:#?}");
-    let (_, terminal) = finished(step(&report, 5));
+    let (_, terminal) = finished(step(&report, 6));
     assert_left(terminal, 1);
     assert_all_released(&report["ledger"]);
     package.assert_clean();
@@ -406,7 +424,8 @@ fn installed_library_maps_notifications_and_progress_exactly_at_their_bounds() {
 /// STA-06 Fault and LIM-01 Library (notification text one byte past its
 /// bound, multi-byte characters included, fails the connection with
 /// `resource_limit` instead of being truncated; a notification with
-/// neither title nor body, progress when `progress-v1` is not selected, an
+/// neither title nor body, a notification or a progress before the Initial
+/// metadata, progress when `progress-v1` is not selected, an
 /// Initial metadata reporting progress nobody selected, and one omitting
 /// selected progress are `invalid_record`): each fails the connection with
 /// a diagnostic and failed terminal evidence with passive retry.
@@ -440,6 +459,16 @@ fn installed_library_fails_the_connection_on_notification_and_progress_faults() 
         (
             "blank",
             peer(&SELECTED, vec![ready(), notified(json!(""), Value::Null)]),
+            invalid,
+        ),
+        (
+            "early-notification",
+            peer(&SELECTED, vec![notified(json!("t"), Value::Null)]),
+            invalid,
+        ),
+        (
+            "early-progress",
+            peer(&SELECTED, vec![progress_changed("none", Value::Null)]),
             invalid,
         ),
         (
