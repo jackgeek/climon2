@@ -693,20 +693,90 @@ impl Peer {
         self.send(1, &body);
     }
 
-    /// The hello, then the interactive Open at the terminal's 97x31, which
-    /// requires `daemon-wire-v1` and selects no optional family.
+    /// The hello of a daemon without `status-v1`, then the interactive Open
+    /// at the terminal's 97x31, which requires `daemon-wire-v1` and, as no
+    /// optional family the client asks for is advertised, names none.
     fn open(&mut self) -> Value {
-        self.hello_with(json!({}));
+        self.open_advertising(json!({}), &[])
+    }
+
+    /// The hello with `extensions`, then the interactive Open at 97x31
+    /// requiring `daemon-wire-v1` and naming `optional`.
+    fn open_advertising(&mut self, extensions: Value, optional: &[&str]) -> Value {
+        self.hello_with(extensions);
         let open = self.json(0x30);
         assert_eq!(
             open,
             json!({
                 "request_id": open["request_id"], "revision": 1,
-                "required_capabilities": ["daemon-wire-v1"], "optional_capabilities": [],
+                "required_capabilities": ["daemon-wire-v1"], "optional_capabilities": optional,
                 "mode": "interactive", "geometry": { "cols": 97, "rows": 31 }
             })
         );
         open
+    }
+
+    /// The hello of a daemon that also advertises `status-v1`, which the
+    /// Open asks for, optionally, and the Open's success selecting it, then
+    /// an Initial metadata whose status is pending attention.
+    fn attach_with_status(&mut self) {
+        let mut advertised = json!(["attach", "kill", "state-v1", "client-startup-v1"]);
+        advertised
+            .as_array_mut()
+            .unwrap()
+            .extend([json!("daemon-wire-v1"), json!("status-v1")]);
+        let open = self.open_advertising(json!({ "capabilities": advertised }), &["status-v1"]);
+        let opened = json!({
+            "kind": "opened", "connection_id": "00112233-4455-6677-8899-aabbccddeeff",
+            "selected_capabilities": ["daemon-wire-v1", "status-v1"]
+        });
+        self.answer(&open, opened);
+        let unavailable = json!({ "available": false, "value": null });
+        let pending = json!({
+            "state": "needs_attention", "changed_at": "2026-11-16T08:00:00.000Z", "episode_id": "1"
+        });
+        let metadata = json!({
+            "title": unavailable, "status": { "available": true, "value": pending },
+            "progress": unavailable, "command_result": null
+        });
+        self.send(0x41, &metadata);
+    }
+
+    /// The client's next request is Set viewing to `viewing` under
+    /// `authority`; answered.
+    fn viewing(&mut self, authority: Authority, viewing: bool) {
+        let request = self.json(0x35);
+        let mut expected = ids(authority);
+        expected["request_id"] = request["request_id"].clone();
+        expected["viewing"] = viewing.into();
+        assert_eq!(request, expected);
+        let result = json!({ "kind": "viewing", "changed": true, "viewing": viewing });
+        self.answer(&request, result);
+    }
+
+    /// The client's next request is Acknowledge under `authority`; answered
+    /// as having acknowledged pending attention.
+    fn acknowledge(&mut self, authority: Authority) {
+        let request = self.json(0x36);
+        let mut expected = ids(authority);
+        expected["request_id"] = request["request_id"].clone();
+        assert_eq!(request, expected);
+        self.answer(
+            &request,
+            json!({ "kind": "acknowledgement", "changed": true }),
+        );
+    }
+
+    /// Answers the client's next request, an Acquire, with control under
+    /// `authority`, granted first.
+    fn acquired(&mut self, authority: Authority) {
+        let acquire = self.json(0x33);
+        assert_eq!(acquire, json!({ "request_id": acquire["request_id"] }));
+        self.grant(authority, "acquire");
+        let mut acquired = ids(authority);
+        acquired["kind"] = "acquired".into();
+        acquired["changed"] = true.into();
+        self.answer(&acquire, acquired);
     }
 
     /// Admits `open`: its success, then the Initial metadata.
@@ -814,7 +884,9 @@ impl Peer {
 /// bytes, Ctrl-C/Ctrl-Z and the final status. Raw mode begins only once the
 /// Open is admitted; input goes as Input under the grant's authority; the
 /// command's exit status, then the session-ending revocation and the close,
-/// end the client with that status.
+/// end the client with that status. Derived scenario (#102): against a
+/// daemon without `status-v1` the Open names no optional family and Input
+/// follows Ready directly, with no Set viewing or Acknowledge.
 #[test]
 fn raw_bridge_preserves_bytes_and_restores_termios_after_final_output() {
     let (home, metadata, listener) = setup();
@@ -1058,7 +1130,9 @@ fn unconfirmed_detach_exits_after_five_seconds_and_restores_terminal() {
 }
 
 /// COM-01 Monitor parity case: a confirmed Leave of the attachment detaches:
-/// the notice on the restored terminal, status 0.
+/// the notice on the restored terminal, status 0. Derived scenario (#102):
+/// against a daemon without `status-v1` nothing comes between Ready and the
+/// Leave: no Set viewing either way and no Acknowledge.
 #[test]
 fn a_confirmed_leave_detaches_with_the_notice() {
     let (home, metadata, listener) = setup();
@@ -2435,4 +2509,69 @@ fn a_hang_up_behind_blocked_output_and_held_input_ends_within_the_closing_deadli
     drop(typing);
     assert_eq!(code, 125);
     assert!(error.contains("session result not confirmed"), "{error}");
+}
+
+/// Derived scenario (spec #73, Client executable: viewing and
+/// acknowledgement; STA-08 Monitor ordinary-attach case): against a daemon
+/// that advertises `status-v1` the Open asks for it, optionally. Nothing is
+/// reported before readiness: the first request after the Open is Ready.
+/// Once the explicit attach is ready the client reports viewing true and
+/// then sends one Acknowledge under the same authority; a replacement
+/// restoration in the same period reports viewing again once ready, but
+/// does not acknowledge a second time. A takeover's
+/// revocation sends nothing (the daemon starts every period not viewing);
+/// the take-control key's Acquire, once ready, again reports viewing true
+/// and acknowledges once. A hand-back is not an explicit action: once ready
+/// it reports viewing true but never acknowledges. Detaching reports
+/// viewing false, then sends Leave.
+#[test]
+fn ordinary_attach_reports_viewing_and_acknowledges_once_ready_after_attach_and_takeover() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut peer = Peer::accept_client(&listener, &mut pty.child);
+    peer.attach_with_status();
+    peer.grant(FIRST, "attach");
+    peer.complete(FIRST);
+    peer.ready(FIRST);
+    peer.viewing(FIRST, true);
+    peer.acknowledge(FIRST);
+    pty.wait_raw();
+    let replaced = (1, 2);
+    let mut begin = ids(replaced);
+    begin["geometry"] = json!({ "cols": 97, "rows": 31 });
+    peer.send(0x48, &begin);
+    peer.complete(replaced);
+    peer.ready(replaced);
+    peer.viewing(replaced, true);
+
+    peer.revoke(replaced, "takeover");
+    pty.read_until(b"take control");
+    pty.master.write_all(b"\x14").unwrap();
+    let taken = (2, 2);
+    peer.acquired(taken);
+    peer.complete(taken);
+    peer.ready(taken);
+    peer.viewing(taken, true);
+    peer.acknowledge(taken);
+
+    peer.revoke(taken, "takeover");
+    pty.read_until(b"take control");
+    let handed = (4, 3);
+    peer.grant(handed, "hand_back");
+    peer.complete(handed);
+    peer.ready(handed);
+    peer.viewing(handed, true);
+    pty.master.write_all(b"\x1dd").unwrap();
+    peer.viewing(handed, false);
+    let leave = peer.json(0x37);
+    peer.answer(
+        &leave,
+        json!({ "kind": "left", "attachment_detached": true }),
+    );
+    drop(peer);
+    let (_, error) = pty.finish(0);
+    assert!(
+        error.starts_with("climon2: detached from session"),
+        "{error}"
+    );
 }

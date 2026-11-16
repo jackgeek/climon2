@@ -1,9 +1,10 @@
 //! Ordinary attach (#101) through the executable's own release's client
-//! library: one interactive Open that requires `daemon-wire-v1` and selects
-//! no optional family, then the commands the bridge decides (Input, Resize,
-//! Acquire, Ready and Leave), offered in order. The library's records are
-//! parsed once, here, into the events the bridge acts on; it interprets no
-//! key, and the executable keeps the host terminal.
+//! library: one interactive Open that requires `daemon-wire-v1` and asks
+//! for `status-v1` alone, optionally (#102), then the commands the bridge
+//! decides (Input, Resize, Acquire, Ready, Set viewing, Acknowledge and
+//! Leave), offered in order. The library's records are parsed once, here,
+//! into the events the bridge acts on; it interprets no key, and the
+//! executable keeps the host terminal.
 
 use crate::{
     embedded::{self, Admission, Drained, Embedded, NativeError},
@@ -16,7 +17,7 @@ use climon2_core::{
     protocol::TerminalSize,
 };
 use climon2_platform::terminal::Signals;
-use std::{collections::VecDeque, io, num::NonZeroU32, path::Path, ptr, slice};
+use std::{collections::VecDeque, io, num::NonZeroU32, path::Path, slice};
 
 /// The public ID of the instance's one Open; later requests follow it.
 const OPEN: u64 = 1;
@@ -25,8 +26,17 @@ const OPEN: u64 = 1;
 /// checked again.
 const POLL_MS: i32 = 25;
 
-/// The only family ordinary attach requires; it selects nothing optional.
+/// The only family ordinary attach requires.
 const CORE: &[u8] = b"daemon-wire-v1";
+
+/// The only family ordinary attach asks for optionally, for viewing and
+/// acknowledgement (#102). Without it the library refuses both locally,
+/// sending nothing.
+const STATUS: &[u8] = b"status-v1";
+
+/// The grant reasons of an explicit attach or takeover, whose readiness
+/// acknowledges pending attention (#102).
+const EXPLICIT: [u32; 2] = [native::ATTACH, native::TAKE_CONTROL];
 
 /// The failures that mean the connection to the session was lost: its
 /// transport closed or broke, mid-frame or between frames.
@@ -52,13 +62,30 @@ impl Authority {
 
 /// What the bridge asks of the session.
 pub(crate) enum Command {
-    Input(Authority, Vec<u8>),
-    Resize(Authority, TerminalSize),
+    /// An act under the authority the daemon named.
+    Held(Authority, Held),
     /// The take-control key.
     Acquire,
-    Ready(Authority),
     /// Detach.
     Leave,
+}
+
+/// An act under a named authority.
+pub(crate) enum Held {
+    Input(Vec<u8>),
+    Resize(TerminalSize),
+    /// Set viewing (#102).
+    Viewing(bool),
+    /// A request naming the authority alone.
+    Confirm(Confirm),
+}
+
+/// The requests that name the authority alone.
+#[derive(Clone, Copy)]
+pub(crate) enum Confirm {
+    Ready,
+    /// Acknowledge pending attention (#102).
+    Acknowledge,
 }
 
 impl Command {
@@ -75,43 +102,58 @@ impl Command {
 
     fn arguments(&self) -> (u32, native::RequestArgs) {
         match self {
-            Self::Input(authority, bytes) => (native::INPUT, input(*authority, bytes)),
-            Self::Resize(authority, size) => (native::RESIZE, resize(*authority, *size)),
-            control => control.control(),
-        }
-    }
-
-    /// Ready, and the requests that name only the generation.
-    fn control(&self) -> (u32, native::RequestArgs) {
-        match self {
-            Self::Ready(authority) => (native::READY, ready(*authority)),
+            Self::Held(authority, held) => held.arguments(authority.native()),
             Self::Acquire => (native::ACQUIRE, generation()),
-            _ => (native::LEAVE, generation()),
+            Self::Leave => (native::LEAVE, generation()),
         }
     }
 }
 
-fn input(authority: Authority, input: &[u8]) -> native::RequestArgs {
+impl Held {
+    fn arguments(&self, authority: native::Authority) -> (u32, native::RequestArgs) {
+        match self {
+            Self::Input(bytes) => (native::INPUT, input(authority, bytes)),
+            Self::Resize(size) => (native::RESIZE, resize(authority, *size)),
+            Self::Viewing(viewing) => (native::VIEWING, flag(authority, *viewing)),
+            Self::Confirm(confirm) => (confirm.tag(), native::RequestArgs { authority }),
+        }
+    }
+}
+
+impl Confirm {
+    fn tag(self) -> u32 {
+        match self {
+            Self::Ready => native::READY,
+            Self::Acknowledge => native::ACKNOWLEDGE,
+        }
+    }
+}
+
+fn input(authority: native::Authority, input: &[u8]) -> native::RequestArgs {
     native::RequestArgs {
         input: native::Input {
-            authority: authority.native(),
+            authority,
             bytes: bytes(input),
         },
     }
 }
 
-fn resize(authority: Authority, size: TerminalSize) -> native::RequestArgs {
+fn resize(authority: native::Authority, size: TerminalSize) -> native::RequestArgs {
     native::RequestArgs {
         resize: native::Resize {
-            authority: authority.native(),
+            authority,
             geometry: geometry(size),
         },
     }
 }
 
-fn ready(authority: Authority) -> native::RequestArgs {
+fn flag(authority: native::Authority, value: bool) -> native::RequestArgs {
     native::RequestArgs {
-        authority: authority.native(),
+        flag: native::Flag {
+            authority,
+            value: value.into(),
+            reserved: [0; 7],
+        },
     }
 }
 
@@ -161,8 +203,14 @@ pub(crate) enum Event {
     Refused(io::Error),
     /// The command's status, from its final result.
     Known(u32),
-    /// Control granted, or a restoration begun, under this authority.
-    Granted(Authority),
+    /// Control granted under this authority, by an explicit attach or
+    /// takeover or not.
+    Granted {
+        authority: Authority,
+        explicit: bool,
+    },
+    /// A restoration begun under this authority.
+    Restoring(Authority),
     Display(Vec<u8>),
     /// The restoration under this authority is complete.
     Restored(Authority),
@@ -226,16 +274,19 @@ unsafe fn final_result(data: &RecordData) -> Option<Event> {
 unsafe fn granted(data: &RecordData) -> Option<Event> {
     // SAFETY: guaranteed by the caller.
     let granted = unsafe { &data.granted };
-    Some(Event::Granted(Authority {
-        period: granted.period,
-        restoration: granted.restoration_id,
-    }))
+    Some(Event::Granted {
+        authority: Authority {
+            period: granted.period,
+            restoration: granted.restoration_id,
+        },
+        explicit: EXPLICIT.contains(&granted.reason),
+    })
 }
 
 unsafe fn restoration(data: &RecordData) -> Option<Event> {
     // SAFETY: guaranteed by the caller.
     let restoration = unsafe { &data.restoration };
-    Some(Event::Granted(Authority {
+    Some(Event::Restoring(Authority {
         period: restoration.period,
         restoration: restoration.restoration_id,
     }))
@@ -314,8 +365,8 @@ impl Attachment {
         size: TerminalSize,
     ) -> io::Result<Self> {
         let instance = embedded::session_instance(metadata, session, home)?;
-        let required = [bytes(CORE)];
-        instance.submit(&open(size, &required))?;
+        let (required, optional) = ([bytes(CORE)], [bytes(STATUS)]);
+        instance.submit(&open(size, &required, &optional))?;
         Ok(Self {
             instance,
             queue: VecDeque::new(),
@@ -394,9 +445,13 @@ impl Attachment {
     }
 }
 
-/// The interactive Open at `size`, requiring `required` and nothing
-/// optional.
-fn open(size: TerminalSize, required: &[native::Bytes]) -> native::Request {
+/// The interactive Open at `size`, requiring `required` and asking for
+/// `optional`.
+fn open(
+    size: TerminalSize,
+    required: &[native::Bytes],
+    optional: &[native::Bytes],
+) -> native::Request {
     native::Request {
         tag: native::OPEN,
         reserved: 0,
@@ -406,16 +461,17 @@ fn open(size: TerminalSize, required: &[native::Bytes]) -> native::Request {
                 mode: native::INTERACTIVE,
                 reserved: 0,
                 geometry: geometry(size),
-                required: native::Tokens {
-                    data: required.as_ptr(),
-                    count: required.len() as u64,
-                },
-                optional: native::Tokens {
-                    data: ptr::null(),
-                    count: 0,
-                },
+                required: tokens(required),
+                optional: tokens(optional),
             },
         },
+    }
+}
+
+fn tokens(tokens: &[native::Bytes]) -> native::Tokens {
+    native::Tokens {
+        data: tokens.as_ptr(),
+        count: tokens.len() as u64,
     }
 }
 
