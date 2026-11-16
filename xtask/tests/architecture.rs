@@ -16,6 +16,7 @@ const PACKAGES: &[&str] = &[
     "climon2-fixtures",
     "climon2-e2e",
     "climon2-second-release",
+    "climon2-measure",
     "xtask",
 ];
 /// The second-release fixture is built as its own version, the release
@@ -77,6 +78,7 @@ fn is_test_only(name: &str) -> bool {
             | "climon2-fixtures"
             | "climon2-e2e"
             | "climon2-second-release"
+            | "climon2-measure"
             | "xtask"
     )
 }
