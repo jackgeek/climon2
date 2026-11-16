@@ -53,9 +53,12 @@ requests without effects, as each request's page describes. The
 notification and progress messages and bounded delivery remain
 unimplemented. The
 [client library](../../../GLOSSARY.md#sessions) speaks this revision for
-passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93))
-and for control and display ([#94](https://github.com/jackgeek/climon2/issues/94));
-no other [client](../../../GLOSSARY.md#sessions) does yet. The
+passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
+for control and display ([#94](https://github.com/jackgeek/climon2/issues/94)),
+for `status-v1` ([#95](https://github.com/jackgeek/climon2/issues/95)),
+with Command final, and for standalone Kill
+([#96](https://github.com/jackgeek/climon2/issues/96)); no other
+[client](../../../GLOSSARY.md#sessions) does yet. The
 [daemon's contract tests](../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
 are the evidence for the implemented parts.
 

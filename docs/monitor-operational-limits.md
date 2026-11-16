@@ -15,7 +15,8 @@ rejects native instance limits it cannot honour, bounds worker cleanup by
 connections it also enforces its request and event queues, outstanding
 operations and their outcome reserves, deliveries, drain ceilings,
 `wire_frame_bytes`, `metadata_record_bytes`, `title_bytes`, `start_ms` and
-`leave_ms` ([#93](https://github.com/jackgeek/climon2/issues/93)); nothing
+`leave_ms` ([#93](https://github.com/jackgeek/climon2/issues/93)), and
+`kill_ms` for Kill ([#96](https://github.com/jackgeek/climon2/issues/96)); nothing
 else enforces the limits yet.** This resolves
 [Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69).
 It supplies requirements and evidence, not executable code or a benchmark suite.

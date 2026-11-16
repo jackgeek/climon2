@@ -25,10 +25,6 @@ pub(super) const INVALID_ARGUMENT: Kind = Kind {
     code: native::INVALID_ARGUMENT,
     name: "invalid_argument",
 };
-pub(super) const UNSUPPORTED_OPERATION: Kind = Kind {
-    code: native::UNSUPPORTED_OPERATION,
-    name: "unsupported_operation",
-};
 /// A capability family this release does not relay: still
 /// `CM1_UNSUPPORTED_OPERATION`, with the more specific code.
 pub(super) const UNSUPPORTED_CAPABILITY: Kind = Kind {

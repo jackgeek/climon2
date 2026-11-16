@@ -1,8 +1,11 @@
 //! Version-matched, byte-transparent terminal client (ADR 0001).
 
+mod attachment;
 mod bridge;
+mod embedded;
+mod kill;
 mod library;
-mod transport;
+mod polling;
 
 use climon2_core::{
     config::ConfigSource,
@@ -54,14 +57,21 @@ fn metadata_path(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Pa
 /// Errors are returned only after raw mode and file status flags are restored.
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> {
     let operation = startup_operation().map_err(|error| failure(error, None))?;
-    let (metadata, log) = session_log(arguments).map_err(|error| failure(error, None))?;
+    let path = metadata_path(arguments).map_err(|error| failure(error, None))?;
+    let (metadata, log) = session_log(&path).map_err(|error| failure(error, None))?;
     let logs = log.path().parent();
     let filter = std::env::var("CLIMON2_LOG").ok();
     let dispatch = log
         .dispatch(filter.as_deref())
         .map_err(|error| failure(error, logs))?;
     tracing::dispatcher::with_default(&dispatch, || {
-        supervised(&metadata, operation).map_err(|error| session_failure(error, &metadata, logs))
+        let session = embedded::Session {
+            metadata: &path,
+            log: log.path(),
+            filter: filter.as_deref(),
+        };
+        supervised(&metadata, &session, operation)
+            .map_err(|error| session_failure(error, &metadata, logs))
     })
 }
 
@@ -82,10 +92,8 @@ fn config_settings() -> io::Result<ClientSettings> {
 }
 
 /// Before the log exists, failures carry no logs suffix.
-fn session_log(
-    arguments: impl IntoIterator<Item = OsString>,
-) -> io::Result<(SessionMetadata, LogFile)> {
-    let metadata = read_metadata(arguments)?;
+fn session_log(path: &Path) -> io::Result<(SessionMetadata, LogFile)> {
+    let metadata = read_metadata(path)?;
     // The CLI already canonicalized this home; direct clients must supply it too.
     let log = LogFile::session(
         home::named()?.root(),
@@ -97,38 +105,34 @@ fn session_log(
     Ok((metadata, log))
 }
 
-fn read_metadata(arguments: impl IntoIterator<Item = OsString>) -> io::Result<SessionMetadata> {
-    let path = metadata_path(arguments)?;
-    let bytes = fs::read(&path)?;
-    SessionMetadata::from_json(&path, &bytes).map_err(io::Error::other)
+fn read_metadata(path: &Path) -> io::Result<SessionMetadata> {
+    let bytes = fs::read(path)?;
+    SessionMetadata::from_json(path, &bytes).map_err(io::Error::other)
 }
 
 /// Panics are logged without their payload and reported as one generic failure.
-fn supervised(metadata: &SessionMetadata, operation: StartupEnvelope) -> io::Result<u32> {
+fn supervised(
+    metadata: &SessionMetadata,
+    session: &embedded::Session,
+    operation: StartupEnvelope,
+) -> io::Result<u32> {
     std::panic::set_hook(Box::new(|_| tracing::error!("client panic")));
     std::panic::catch_unwind(|| match operation {
-        StartupEnvelope::Attach(settings) => attach(metadata, settings),
-        StartupEnvelope::Kill => kill(metadata),
+        StartupEnvelope::Attach(settings) => attach(metadata, session, settings),
+        StartupEnvelope::Kill => kill(metadata, session),
     })
     .unwrap_or_else(|_| Err(io::Error::other("client panicked")))
 }
 
-/// Kill mode: no terminal, no attachment; success only on confirmed termination.
-fn kill(metadata: &SessionMetadata) -> io::Result<u32> {
+/// Kill mode, through this release's client library: success only on
+/// confirmed termination; a termination signal wins over any outcome.
+fn kill(metadata: &SessionMetadata, session: &embedded::Session) -> io::Result<u32> {
     let signals = terminal::Signals::client()?;
-    let result = kill_request(metadata, &signals);
+    let result = kill::run(metadata, session, home::named()?.root(), &signals);
     if let Some(signal) = signals.termination_signal() {
         return Ok(128 + signal);
     }
     result
-}
-
-fn kill_request(metadata: &SessionMetadata, signals: &terminal::Signals) -> io::Result<u32> {
-    let mut transport = transport::Transport::connect(metadata)?;
-    transport.hello(metadata, signals, transport::Request::Kill)?;
-    transport.send(&climon2_core::protocol::ClientMessage::Kill)?;
-    transport.terminated(signals)?;
-    Ok(0)
 }
 
 fn session_failure(error: io::Error, metadata: &SessionMetadata, logs: Option<&Path>) -> Error {
@@ -142,23 +146,37 @@ fn session_failure(error: io::Error, metadata: &SessionMetadata, logs: Option<&P
     failure(error, logs)
 }
 
-fn attach(metadata: &SessionMetadata, settings: ClientSettings) -> io::Result<u32> {
+/// Ordinary attach, through this release's client library; a termination
+/// signal before the bridge starts wins over any outcome.
+fn attach(
+    metadata: &SessionMetadata,
+    session: &embedded::Session,
+    settings: ClientSettings,
+) -> io::Result<u32> {
     let state = Terminal::new()?;
-    let result = connection(&state, metadata);
+    let result = connection(&state, metadata, session);
     if let Some(signal) = state.signals.termination_signal() {
         return Ok(128 + signal);
     }
-    let (transport, size) = result?;
-    raw_bridge(transport, state, size, metadata, settings)
+    raw_bridge(result?, state, metadata, settings)
 }
 
+/// The attachment, once the session admitted it, before raw mode.
 fn connection(
     state: &Terminal,
     metadata: &SessionMetadata,
-) -> io::Result<(transport::Transport, climon2_core::protocol::TerminalSize)> {
-    let mut transport = transport::Transport::connect(metadata)?;
-    let size = handshake(&mut transport, state, metadata)?;
-    Ok((transport, size))
+    session: &embedded::Session,
+) -> io::Result<bridge::Opened> {
+    tracing::debug!("opening the attachment");
+    let size = terminal::size(&state.input)?;
+    let attachment = attachment::Attachment::open(metadata, session, home::named()?.root(), size)?;
+    let backlog = attachment.opened(&state.signals)?;
+    tracing::debug!("client attached");
+    Ok(bridge::Opened {
+        attachment,
+        backlog,
+        size,
+    })
 }
 
 struct Terminal {
@@ -176,24 +194,9 @@ impl Terminal {
     }
 }
 
-fn handshake(
-    transport: &mut transport::Transport,
-    state: &Terminal,
-    metadata: &SessionMetadata,
-) -> io::Result<climon2_core::protocol::TerminalSize> {
-    tracing::debug!("starting hello handshake");
-    transport.hello(metadata, &state.signals, transport::Request::Attach)?;
-    let size = terminal::size(&state.input)?;
-    transport.send(&climon2_core::protocol::ClientMessage::Attach(size))?;
-    transport.attached(&state.signals)?;
-    tracing::debug!("client attached");
-    Ok(size)
-}
-
 fn raw_bridge(
-    transport: transport::Transport,
+    opened: bridge::Opened,
     state: Terminal,
-    size: climon2_core::protocol::TerminalSize,
     metadata: &SessionMetadata,
     settings: ClientSettings,
 ) -> io::Result<u32> {
@@ -201,10 +204,9 @@ fn raw_bridge(
     #[cfg(feature = "test-hooks")]
     client_fault();
     let result = bridge::run(
-        transport,
+        opened,
         state.input,
         state.signals,
-        size,
         &metadata.session_id,
         settings,
     )?;

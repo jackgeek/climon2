@@ -164,6 +164,7 @@ name = "climon2-client"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-fixtures",
  "climon2-platform",
  "climon2-test-term",
  "libc",
@@ -268,6 +269,7 @@ dependencies = [
  "ratatui-core",
  "serde_json",
  "tempfile",
+ "time",
  "tracing",
  "unicode-width",
 ]

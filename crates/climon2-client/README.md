@@ -16,8 +16,12 @@ Every invocation writes its own session log,
 `<home>/logs/<session-id>/client-<UTC YYYYMMDDTHHMMSSZ>-<pid>.log`, created
 `0600` with `create_new` and `O_NOFOLLOW`. No client truncates, deletes, shares
 or reopens another client's log, so concurrent and later clients of one session
-never collide; a collision would be an ordinary I/O failure. Failures after the
-log exists carry the ` (logs: <session-log directory>)` suffix.
+never collide; a collision would be an ordinary I/O failure. In kill mode the
+client library instance writes its own diagnostics beside it, in
+`<home>/logs/<session-id>/library-<UTC YYYYMMDDTHHMMSSZ>-<pid>.log` (the
+client's pid), which the library creates the same way, under the client's
+`CLIMON2_LOG` filter or the default. Failures after the log exists carry the
+` (logs: <session-log directory>)` suffix, the directory holding both.
 
 The operation comes from the `CLIMON2_CLIENT_STARTUP` startup envelope (core
 `startup_envelope`, at most 4096 bytes), which the CLI sets: `attach` with the
@@ -25,47 +29,158 @@ exact validated client settings, or `kill`. A present envelope is used exactly
 or rejected. Without one, a directly started client reads and validates the
 `client` section of `config.jsonc` and attaches.
 
-Connection, hello write, and complete hello reply share one real two-second
-deadline. Peers must have the effective UID and hello must match session,
-protocol, metadata version, and the capability for the operation (`attach` or
-`kill`); a missing capability fails before any request is sent.
+Both operations go through this release's own
+[client library](#client-library-libclimon2_clientdylib-libclimon2_clientso)
+over daemon wire revision 1, never the private post-hello protocol: ordinary
+attach since #101 (`src/attachment.rs`, `src/bridge.rs`) and kill since #100
+(`src/kill.rs`); `src/embedded.rs` loads and drives the library for both.
+The executable loads `<executable home>/<version>/<library file>`, beside
+itself, through the shared loader (`climon2_platform::library`), with eager,
+local resolution; its release is the version folder it runs from, which the
+library must describe. `current`, the working directory and search paths never
+choose the library, and no other version's library is ever loaded. A missing,
+other-release or faulty library, or an executable outside a version folder,
+fails with status 125 and the loader's diagnostic before any connection.
 
-**Kill mode** opens no terminal and no attachment: it sends `Kill` and waits for
-`Terminated`. Confirmed termination returns 0 whatever the command's status; an
-`Error`, a refusal or a lost connection is a failure, and HUP/TERM/INT while
-waiting return 128+signal. The CLI bounds the whole operation.
+The executable then creates one instance on an owner thread of its own
+(generation 1, the session's metadata, home and socket directory, no client
+keys, its own log file beside the client's under the client's filter, the
+fixed limits below). **Kill mode** (#100) opens no terminal and no
+attachment: it submits one Kill (public
+ID 1, requiring nothing beyond core support) and drains until the instance's
+stream ends. The library sends the Kill on its own hello-validated connection
+over daemon wire revision 1 and gives it one definitive outcome. A confirmed
+termination returns 0 whatever the command's status. Every failure is status
+125 with the diagnostic kill gave before #100 (owner decision on #100):
+- a Kill sent and then outliving `kill_ms`, or never answered:
+  `termination of session <id> was not confirmed`, the CLI's message for its
+  own ten-second bound;
+- a hello the daemon leaves unanswered, which fails at the frozen two-second
+  hello deadline and never sends the Kill: `session <id> did not respond`;
+- a connection that cannot be made, closes (also inside a frame) or fails,
+  during the hello or after the Kill (the library's transport `io_error` or
+  `truncated_frame`): `lost connection to session <id>`;
+- anything else, such as a refusal or a partial termination: the library's
+  message, which for a daemon error, even one coded `io_error`, is the
+  daemon's own.
 
-**Attach mode**: raw mode begins only after the daemon accepts Attach. A
-controller waits for Granted, writes the restoration and live backlog, drains
-and discards input typed during restoration, then sends Ready; application
-input is admitted only after that confirmation. A revoked client shows the
+HUP/TERM/INT while waiting return
+128+signal at once, without waiting for the Kill's answer; the daemon finishes
+a committed termination anyway. Otherwise the executable releases its handles,
+and the owner thread destroys the instance and is joined. The CLI still bounds
+the whole operation.
+
+The executable never reads `monitor.limits`; every instance it creates gets
+this fixed `cm1_limits` table (`embedded::LIMITS`), the operational-limits
+per-client defaults except `restoration_total_ms` at its maximum:
+
+| Field | Value |
+|---|---|
+| `client_bytes` | 67,108,864 |
+| `request_bytes` / `request_records` | 262,144 / 64 |
+| `event_bytes` / `event_records` | 1,048,576 / 1,024 |
+| `progress_bytes` / `progress_records` | 65,536 / 32 |
+| `deliveries` / `operations` | 8 / 16 |
+| `chunk_bytes` | 65,536 |
+| `drain_records` / `drain_payload_bytes` | 64 / 65,536 |
+| `wire_frame_bytes` | 1,048,576 |
+| `metadata_record_bytes` | 16,384 |
+| `title_bytes` / `notification_title_bytes` / `notification_body_bytes` | 4,096 / 4,096 / 8,192 |
+| `max_workers` | 2 |
+| `operation_ms` / `kill_ms` | 5,000 / 10,000 |
+| `restoration_stall_ms` / `restoration_total_ms` | 5,000 / 3,600,000 |
+| `delivery_stall_ms` / `leave_ms` / `cleanup_ms` / `start_ms` | 5,000 / 5,000 / 10,000 / 10,000 |
+| `reserved` | 0 |
+
+`attach_passes_exactly_the_published_limits_table` compares the limits the
+executable passes, recorded by a stand-in library, with this table, parsed from
+this README; kill mode's tests observe `kill_ms`, and the attach tests observe
+`operations` (unanswered Input stops the terminal being read),
+`wire_frame_bytes` and `metadata_record_bytes` (frames beyond them fail) and
+the backpressure of `event_bytes`.
+
+**Attach mode** (#101): the instance's one Open (public ID 1) is interactive,
+at the terminal's size, requires `daemon-wire-v1` and asks for `status-v1`
+alone, optionally (#102): never title, notification, progress or focus. The
+library names `status-v1` in the Open only when the daemon advertises it, so
+against a daemon without it the Open and everything after it are unchanged.
+The library checks the
+session's metadata and hello (session, protocol, release, revision-1
+advertisement) before any request; its refusal, or the daemon's, is one
+diagnostic before raw mode. Raw mode begins only after the Open succeeds. The
+executable then submits, in order and with increasing public IDs, Input under
+the held authority, Resize, Acquire (the take-control key), Ready, Set
+viewing, Acknowledge and Leave (detach); a command the library has no room
+for waits, and so does the
+terminal. The library never interprets Input as keys: the executable owns the
+host terminal, raw mode, escape-prefix routing, detach, the take-control key,
+the placeholder and presentation release. A controller waits for Control
+granted, writes the restoration and live output, drains and discards input
+typed during restoration (a replacement Restoration begin included), then
+sends Ready once typed-ahead keys are drained and the restoration is written;
+application input is sent only after that. An observer holds no authority to
+resize under, so the session hears its size once it holds control again. A revoked client shows the
 placeholder: the first line `This session is being viewed elsewhere.` and, when
 a take-control key is configured, `Press <key> to take control`. It is redrawn
 on resize. That key takes control; observer input is never sent. The escape
-prefix (default Ctrl+]) followed by `d` requests an explicit detach from either
-role; after `Detached` the client prints
+prefix (default Ctrl+]) followed by `d` requests an explicit detach (Leave)
+from either role; after a confirmed Leave of the attachment the client prints
 `climon2: detached from session <id>; reattach with: climon2 attach <id>` on the
 restored terminal and returns 0. Bracketed paste spanning a role change is
 discarded through its closing marker, never replayed or read as keys.
 
-The event loop has one incremental incoming frame, one pending Input/Resize
-frame, and one pending Output payload. Core validates framing; no payload
-exceeds 65,535 bytes. Socket or terminal backpressure stops the corresponding
-producer, and no further frame is decoded while stdout has pending bytes. A
-pending detach or a hung-up session has a bounded five-second closing deadline
-(`detach not confirmed` or `session result not confirmed`), serviced even while
+**Viewing and acknowledgement** (#102, a derived decision of spec #73): the
+status mechanics list an explicit ordinary attach as an acknowledgement
+trigger. After each Ready the executable, now the ready controller, reports
+Set viewing true under the same authority. After the Ready that follows an
+explicit attach or takeover (a grant with reason `attach` or `acquire`) it
+then submits one Acknowledge, which moves pending attention to acknowledged;
+the daemon judges whether anything was pending. A hand-back (`hand_back`)
+is not an explicit action and never acknowledges, nor does a replacement
+restoration within the same period. Nothing is reported before readiness.
+Detaching while holding an authority reports viewing false before the Leave.
+A revocation sends nothing: the revoked client is no longer the controller,
+and the daemon starts every control period not viewing, so revocation clears
+viewing there. When `status-v1` was not selected the library refuses Set
+viewing and Acknowledge locally (`unsupported_capability`) and sends
+nothing; the executable ignores those answers, as it ignores every answer
+but the Open's. Results never change what the executable shows.
+
+**Focus is assumed, best effort.** The executable does not track host
+terminal focus. Focus reports, when the application enables them, reach the
+application as input and are never interpreted here, so a ready controller
+counts as viewing even while its terminal window is in the background, and
+an attach or takeover the user is not looking at still acknowledges
+attention.
+
+The event loop polls the library's notification descriptor, the terminal and
+stdout. Keys are read only while every earlier command was accepted, so a
+full library stops reading the terminal. The client receives one delivery at
+a time while less than 65,536 bytes of output wait for the terminal, so
+backpressure reaches the library, which stops reading the session once its
+fixed event allowance is full, while the end of the session is still seen. A
+pending detach, the end of the stream or a hung-up session (one that no
+longer accepts commands) has a bounded five-second closing deadline (`detach
+not confirmed` or `session result not confirmed`), serviced even while
 terminal output is blocked.
 
-SIGWINCH is coalesced and unchanged sizes are suppressed. HUP/TERM/INT close
-the socket and return 128+signal. Stdin EOF/EIO silently returns 129. Ctrl-C,
-Ctrl-Z, binary bytes and all terminal control sequences are forwarded unchanged.
-Exit is read only after pending output drains. Termios and nonblocking flags
+SIGWINCH is coalesced and unchanged sizes are suppressed. HUP/TERM/INT end the
+process without a Leave, closing the connection, and return 128+signal. Stdin
+EOF/EIO silently returns 129. Ctrl-C, Ctrl-Z, binary bytes and all terminal
+control sequences are forwarded unchanged. The command's status comes from its
+Command final, or from the Initial metadata when it ended before the attach,
+and is returned once the stream ends and pending output has drained: the exit
+code, or 128 plus the signal's number, as before. A transport loss (a close
+between or inside frames without a known result) is
+`lost connection to session <id>`; a daemon's fatal error is its own message. Termios and nonblocking flags
 are restored on normal exit, errors, signals, and unwinding. Leave policy
 belongs exclusively to the daemon.
 
 The daemon's release bytes return the terminal to its normal-shell baseline. A
-shown placeholder is ended below itself (cursor to the last row, CR LF) on Exit,
-Detached and Error, and with one non-blocking attempt on a termination signal.
+shown placeholder is ended below itself (cursor to the last row, CR LF) when the
+stream ends (the command's status, a detach or an error), and with one
+non-blocking attempt on a termination signal. A session-ending revocation
+takes control away without a placeholder.
 Only when no daemon response arrives (unexpected connection loss, or the
 five-second deadline expiring) does the client write its conservative reset:
 synchronized update ended, `CSI 0 m`, cursor shown, mouse, focus and bracketed
@@ -95,10 +210,10 @@ until process exit, and the same pointer on every call:
 
 - `release`: the version folder name, compiled in (`CARGO_PKG_VERSION`). A copy
   placed in another version's folder still reports its own release.
-- `capabilities`: `daemon-wire-v1`, `monitor-v1`, `title-v1` and `focus-v1`,
-  exactly the families the library relays (#93 and #94,
-  `src/library/families.rs`). `status-v1` joins with #95, and
-  `notification-v1` and `progress-v1` with #98.
+- `capabilities`: `daemon-wire-v1`, `monitor-v1`, `title-v1`, `status-v1`
+  and `focus-v1`, exactly the families the library relays (#93, #94 and
+  #95, `src/library/families.rs`). `notification-v1` and `progress-v1` join
+  with #98.
 - `requirements`: provisional bounded values until the measurement job (#121)
   records qualified ones. Each equals its default `monitor.limits` reservation
   where one exists, plus 1 MiB of instance-local allocation, so a
@@ -114,7 +229,8 @@ until process exit, and the same pointer on every call:
   | `load_descriptors` | 4 | `resources.descriptors_per_load` |
 
 - `functions`: all eleven entries; the instance lifecycle below (#85),
-  passive monitor connections (#93), and control and display (#94). Failed calls report library
+  passive monitor connections (#93), control and display (#94), and status,
+  viewing and acknowledgement (#95). Failed calls report library
   origin, a stable error code and a static message (so error text outlives
   every borrower), zero their nonnull output structs (`run` keeps its report),
   and `notification` writes -1. A null handle or output pointer, the one
@@ -245,9 +361,9 @@ start no workers: an instance's connection runs on its owner thread, inside
 `submit` validates and copies a request once (`src/library/request.rs`),
 without daemon I/O or waiting, reading only the active member: a known tag
 (`CM1_OPEN` to `CM1_FOCUS`, else `CM1_INVALID_ARGUMENT`), reserved zero, a
-nonzero ID (`CM1_INVALID_REQUEST_ID`), then the operation. Open, Leave and
-the control requests below (#94) are accepted; Set viewing, Acknowledge and
-Kill are `CM1_UNSUPPORTED_OPERATION` (`unsupported_operation`). A monitor Open has
+nonzero ID (`CM1_INVALID_REQUEST_ID`), then the operation. Open, Leave,
+the control requests below (#94), Set viewing and Acknowledge (#95) and Kill
+(#96) are accepted. A monitor Open has
 zero geometry and reserved fields; each token list is null and zero, or a
 pointer and a count; tokens are nonempty UTF-8, each named once across both
 lists. A required family the library does not relay is
@@ -276,8 +392,8 @@ every required family and nothing unrequested.
 
 Records are Responses (opened: the connection GUID's canonical bytes and the
 selected tokens; left; a known final command result), the Initial metadata
-(the title unavailable unless `title-v1` is selected; status and progress
-unavailable; the command result), Title changes (only after the Initial
+(the title unavailable unless `title-v1` is selected, the status unless
+`status-v1` is (#95); progress unavailable; the command result), Title changes (only after the Initial
 metadata, only with `title-v1`) and diagnostics. A frame over
 `metadata_record_bytes` (type byte included) or a title over `title_bytes`
 fails the connection (`resource_limit`); nothing is truncated. While the
@@ -367,6 +483,30 @@ departure can report a detached attachment. Every connection is closed.
 Sends never raise `SIGPIPE`: Linux sends with `MSG_NOSIGNAL`, macOS sets
 `SO_NOSIGPIPE`.
 
+### Status, viewing and acknowledgement (#95)
+
+With `status-v1` selected, the Initial metadata's status is available and
+each Status changed after it is delivered as a `CM1_STATUS` record whatever
+the role holds (passive, background or revoked), with the daemon's state,
+episode and stored change time copied exactly (`src/library/records.rs`),
+inline, so a status record is charged its record alone. The status is final
+exactly when the command's result is known: a final status without the
+result, a working status with it, a Status changed before the Initial
+metadata, without `status-v1` or after the final result, or a Command final
+whose status presence differs from the selection fail the connection with
+transport `invalid_record` (`src/library/stream.rs`). The Command final's
+final status reaches `CM1_FINAL`; without `status-v1` it stays unavailable.
+
+Set viewing (a 0/1 flag, reserved bytes zero) and Acknowledge name the
+authority like the control requests and follow their rules; without
+`status-v1` selected both are `unsupported_capability`, locally and never
+sent. The daemon judges period, restoration, readiness and the latest
+viewing (`not_ready`, `not_viewing`, copied with daemon origin). Set
+viewing's success must report the viewing it asked for and maps to
+`CM1_VIEWING_RESULT` (changed, value, zero bytes); Acknowledge's to
+`CM1_ACKNOWLEDGEMENT` (changed, zero for the explicit no-change success).
+Timeouts, losses and cancellation are as for the control requests.
+
 Loaders open the absolute `<executable home>/<version>/<library file>` with
 eager, local resolution (`RTLD_NOW | RTLD_LOCAL`); `current`, the working
 directory, `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` do not change
@@ -430,12 +570,21 @@ private target directory and checks.
 | LIB-05 Library and Fault: a stalled instance never stops another; `submit`, `drain` and release return at once | `installed_library_instance_stalled_by_its_daemon_never_stops_another` (`passive.rs`) |
 | COM-01 Fault: missing support, mismatched identity, unreachable or silent daemons rejected before any Open is sent; families intersect | `installed_library_rejects_an_open_the_session_cannot_honour_before_any_role`, `installed_library_selects_only_families_both_sides_support` (`climon2-e2e/tests/passive_faults.rs`) |
 | COM-02 Fault: forbidden, malformed, truncated, oversized and out-of-order traffic fails the connection with its origin and code; limits exactly met are accepted | `installed_library_fails_the_connection_on_traffic_revision_one_forbids`, `installed_library_accepts_records_exactly_at_their_limits` (`passive_faults.rs`) |
-| COM-03, EXT-01 and EXT-02 Fault: timeouts, lost answers without fabrication or replay, refusals and their retry, known final results, shutdown and explicit Leave evidence | `installed_library_reports_lost_and_late_answers_truthfully_without_replay`, `installed_library_reports_a_known_final_result_and_never_retries`, `installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures` (`passive_faults.rs`) |
+| COM-03, EXT-01, EXT-02 and REC-01 Fault: timeouts, lost answers without fabrication or replay, refusals and their retry, known final results (a later close a clean stop), shutdown and explicit Leave evidence | `installed_library_reports_lost_and_late_answers_truthfully_without_replay`, `installed_library_reports_a_known_final_result_and_never_retries`, `installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures` (`passive_faults.rs`) |
 | LIB-04 and LIB-05 Fault: a panic inside a running connection leaves no descriptor or operation counted | `installed_library_panic_in_a_connection_leaves_nothing_counted` (`passive_faults.rs`) |
 | LIB-05 Fault: no `SIGPIPE` in an embedder that left it at its default | `installed_library_never_raises_sigpipe_in_its_embedder` (`passive_faults.rs`) |
 | COM-02 and COM-03 Library: native admission, every queue limit at and one past its bound, no ID consumed by a rejection | `installed_library_admits_only_valid_requests_and_rejections_cost_nothing`, `installed_library_bounds_requests_by_every_queue_limit` (`climon2-e2e/tests/passive_admission.rs`) |
 | LIB-04 Library: delivery lifetimes and limits | `installed_library_holds_each_delivery_until_released` (`passive_admission.rs`) |
 | LIB-04 Fault: drain batching, a full event queue holding daemon records, per-record charges | `installed_library_batches_records_within_drain_payload_bytes`, `installed_library_holds_daemon_records_while_the_event_queue_is_full`, `installed_library_charges_each_record_its_header_and_the_bytes_it_owns` (`passive_admission.rs`), `installed_library_charges_presentation_records_only_the_display_bytes_they_own` (`control_faults.rs`) |
+| COM-06 and REC-01 Library: exit zero, exit 143 and a signal from real daemons each arrive as one Command final of their own kind; the daemon's close then stops cleanly, retry none | `installed_library_relays_each_real_command_final_apart_from_signals` (`climon2-e2e/tests/termination.rs`) |
+| COM-03 Kill, DEL-02, COM-06 and REC-01 Library: a Kill alongside a passive Open and a Kill-only instance succeed only after the real hang-up grace and cleanup, on their own connections; a second pending Kill `invalid_state`; one Command final of the same result | `installed_library_kills_a_real_session_only_after_termination_and_cleanup` (`termination.rs`) |
+| COM-03 Kill, DEL-02 and REC-01 Library: a Kill that cannot reach a stopped daemon is rejected `timeout` and leaves the opened role, whose Leave is later confirmed | `installed_library_keeps_a_real_role_when_its_kill_cannot_reach_the_daemon` (`termination.rs`) |
+| REC-01 Library: transport loss and a contained panic call for passive retry, another session's startup for permanent | `installed_library_classifies_real_failures_for_retry` (`termination.rs`) |
+| REC-01 Library: startup failure calls for passive retry; destroy is busy until handles are released; a fresh instance and generation open only after destroy and join | `installed_library_recovers_only_through_a_fresh_instance_after_join` (`termination.rs`) |
+| COM-06 and REC-01 Fault: exit 0 and 143 as Command final records, a contradictory repeat, closure without final evidence or meeting a Leave (beside #94's Command final cases) | `installed_library_relays_each_command_final_once_and_closure_invents_nothing` (`climon2-e2e/tests/termination_faults.rs`) |
+| COM-03 Kill, DEL-02, COM-06 and REC-01 Fault: confirmed, known-final, partial, refused, lost, late, malformed and Fatal Kill answers; refusals before sending; one pending Kill; cancellation and shutdown; never replayed | `installed_library_reports_each_kill_outcome_truthfully_and_never_replays_it` (`termination_faults.rs`) |
+| COM-06 and COM-03 Fault: a partial termination on any request but a Kill is `invalid_record`; a Leave so answered stays indeterminate | `installed_library_refuses_a_partial_termination_on_any_other_request` (`termination_faults.rs`) |
+| COM-03 Kill, DEL-02, COM-06 and REC-01 Fault: each Kill failure on an opened role only answers its request; the role reads on to its own end | `installed_library_keeps_an_opened_role_through_each_kill_failure` (`termination_faults.rs`) |
 | DOC-01 exported interface: only the bootstrap is exported, from the real release library and from a defective stand-in | `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`), `release_checks_reject_extra_exports` (`xtask/src/library.rs`) |
 | DOC-01 layout case on x86-64 GNU/Linux and both macOS architectures | `rust_native_declarations_match_the_published_header` (`climon2-core/tests/native_layout.rs`) |
 | #75 risk proof: `cargo test` builds the hooked library as a sibling artifact without nested builds (ELF on Linux, Mach-O on macOS); the plain library is the release build | `workspace_client_library_is_a_hooked_sibling_of_the_test_executables` (`climon2-fixtures/tests/hooks.rs`); plain: `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`) |
@@ -453,53 +602,58 @@ no worker that could stall. Open
 
 ## Behavioral evidence
 
-`tests/bridge.rs` drives the real binary on real PTYs with local protocol peers:
+`tests/bridge.rs` drives the real binary on real PTYs (#20, #101). Each test
+installs the client executable and the workspace's client library in a
+private version folder and answers as a revision-1 peer whose frames it writes
+by hand from the wire reference. These are the private protocol's bridge
+tests, re-expressed over revision-1 peers: the COM-01 Monitor parity case
+(ordinary attach, input, resize, escape, detach and Kill parity), beside the
+packaged scenarios in `climon2-e2e`.
 
-- `raw_bridge_preserves_bytes_and_restores_termios_after_final_output`
-- `raw_client_signals_restore_termios_close_connection_and_return_signal_status`
-- `termination_before_attached_does_not_enter_raw_mode_or_report_error`
-- `protocol_error_lost_connection_and_panic_restore_before_one_line_diagnosis`
-- `an_error_while_observing_ends_the_placeholder_before_the_diagnostic`
-- `a_signal_while_observing_ends_the_placeholder_and_keeps_the_signal_status`
-- `a_lost_connection_while_observing_resets_conservatively_and_ends_the_placeholder`
-- `hello_rejects_mismatched_session_protocol_version_and_unexpected_frames`
-- `hello_deadline_is_absolute_across_partial_reply`
-- `fragmented_frames_and_coalesced_resize_preserve_the_stream`
-- `separate_stdin_and_stdout_descriptions_both_get_their_flags_back`
-- `one_way_descriptors_are_bridged_and_restored` (a read-only stdin whose
-  file-status flags are all clear, as `< /dev/tty` gives on macOS, and a
-  write-only stdout, so input is provably read from stdin)
-- `input_consumed_by_another_reader_after_poll_is_not_a_hang_up` (Linux: ptrace
-  stops the client between its poll and its terminal read while another reader
-  takes the input)
-- `bounded_output_backpressure_drains_every_byte_before_exit`
-- `terminal_eof_or_eio_is_silent_status_129_and_closes_connection` (the client
-  is stopped while the terminal hangs up, so it sees only a finished hang-up:
-  Linux wakes terminal readers before it completes one)
-- `terminal_eio_is_silent_status_129_and_restores_termios` (background job of a
-  `/bin/sh` session leader with SIGTTIN/SIGTTOU ignored, so reads fail with EIO)
-- `attach_refusal_or_unexpected_reply_fails_without_raw_mode`
-- `hung_up_session_during_blocked_output_sleeps_then_delivers_everything` (bounds
-  the client's CPU time, via `ps`, while stdout is blocked and the session is gone)
-- `disconnect_before_attached_names_the_session`
-- `invalid_length_prefix_closes_immediately_without_a_type_byte`
-- `input_backpressure_is_bounded_and_lossless`
-- `nonexistent_socket_and_bad_metadata_fail_without_touching_termios`
-- `log_filter_reaches_client_through_environment_without_cli_flags`
-- `concurrent_clients_on_one_session_each_write_their_own_log`
-- `input_typed_before_restore_end_is_drained_and_never_replayed`
-- `a_revoked_client_shows_the_placeholder_until_the_session_ends`
-- `a_paste_spanning_role_changes_is_never_replayed_or_read_as_keys`
-- `unconfirmed_detach_exits_after_five_seconds_and_restores_terminal`
-- `lost_session_while_stdout_is_blocked_ends_within_the_closing_deadline`
-- `pending_detach_while_stdout_is_blocked_ends_within_the_bound`
+| Scenario | Named test |
+|---|---|
+| COM-01 parity: byte transparency (binary, Ctrl-C/Ctrl-Z, paste), raw mode only after the Open succeeds, the Open requiring only `daemon-wire-v1`, status from Command final | `raw_bridge_preserves_bytes_and_restores_termios_after_final_output`, `one_way_descriptors_are_bridged_and_restored`, `fragmented_frames_and_coalesced_resize_preserve_the_stream` |
+| COM-01 parity: keys typed during a restoration, or a replacement restoration, are dropped; Ready waits for typed-ahead keys and the written restoration | `input_typed_before_restore_end_is_drained_and_never_replayed`, `a_replacement_restoration_drops_typed_keys_until_ready`, `ready_waits_until_the_restoration_is_written`, `ready_waits_until_typed_ahead_keys_are_drained` |
+| COM-01 parity: the placeholder, its redraw on resize, the take-control key (Acquire), and an observer's size reaching the session once it holds control | `a_revoked_client_shows_the_placeholder_until_the_session_ends`, `a_resized_observer_tells_the_session_its_size_once_it_holds_control` |
+| COM-01 parity: paste discard across role changes | `a_paste_spanning_role_changes_is_never_replayed_or_read_as_keys` |
+| COM-01 parity: detach, confirmed or unconfirmed within the five-second deadline, from either role | `a_confirmed_leave_detaches_with_the_notice`, `unconfirmed_detach_exits_after_five_seconds_and_restores_terminal`, `pending_detach_while_stdout_is_blocked_ends_within_the_bound`, `an_observer_detaching_ignores_resizes_and_ends_the_placeholder` |
+| COM-01 parity: signals (HUP/TERM/INT, before and after the Open's answer, while observing) and terminal EOF/EIO | `raw_client_signals_restore_termios_close_connection_and_return_signal_status`, `termination_before_attached_does_not_enter_raw_mode_or_report_error`, `a_signal_while_observing_ends_the_placeholder_and_keeps_the_signal_status`, `terminal_eof_or_eio_is_silent_status_129_and_closes_connection`, `terminal_eio_is_silent_status_129_and_restores_termios`, `input_consumed_by_another_reader_after_poll_is_not_a_hang_up` |
+| Exit statuses unchanged: the exit code, 128 plus a signal's number (125 on overflow), a result known at the Open | `a_signalled_command_ends_the_client_with_128_plus_the_signal`, `a_result_known_at_the_open_ends_the_client_with_that_status`, `separate_stdin_and_stdout_descriptions_both_get_their_flags_back` |
+| COM-01 parity: output and input backpressure, blocked-terminal deadlines and the bounded read-ahead | `bounded_output_backpressure_drains_every_byte_before_exit`, `input_backpressure_is_bounded_and_lossless`, `hung_up_session_during_blocked_output_sleeps_then_delivers_everything`, `hang_up_behind_blocked_output_and_input_keeps_output_and_leaves_keys`, `a_hang_up_behind_blocked_output_and_held_input_ends_within_the_closing_deadline`, `lost_session_while_stdout_is_blocked_ends_within_the_closing_deadline`, `exit_read_while_stdout_is_blocked_ends_within_the_closing_deadline`, `output_read_ahead_of_a_blocked_terminal_is_bounded`, `an_idle_client_sleeps` |
+| COM-01 parity: failures restore before one diagnostic; only a lost connection (between or inside frames) resets conservatively | `protocol_error_lost_connection_and_panic_restore_before_one_line_diagnosis`, `an_error_while_observing_ends_the_placeholder_before_the_diagnostic`, `a_lost_connection_while_observing_resets_conservatively_and_ends_the_placeholder`, `a_close_inside_a_frame_is_a_lost_connection`, `invalid_length_prefix_closes_immediately_without_a_type_byte` |
+| COM-01 parity: hello and Open refusals before raw mode (session, protocol, release, no revision 1, malformed or late hello, a refused Open, an early record, a disconnect, an unreachable socket) | `hello_rejects_mismatched_session_protocol_version_and_unexpected_frames`, `hello_deadline_is_absolute_across_partial_reply`, `attach_refusal_or_unexpected_reply_fails_without_raw_mode`, `disconnect_before_attached_names_the_session`, `nonexistent_socket_and_bad_metadata_fail_without_touching_termios` |
+| LIB-02 executable case, attach: a missing library fails before any connection | `a_missing_library_fails_attach_before_any_connection` |
+| Derived: the executable passes exactly the published `cm1_limits` table | `attach_passes_exactly_the_published_limits_table` |
+| Derived viewing and acknowledgement (#102), STA-08 ordinary-attach case: the Open asks for `status-v1` when advertised; nothing before Ready; after an explicit attach's and a takeover's Ready, viewing true then one Acknowledge; a replacement restoration and a hand-back report viewing but never acknowledge; a revocation sends nothing; detach reports viewing false, then Leave | `ordinary_attach_reports_viewing_and_acknowledges_once_ready_after_attach_and_takeover` |
+| Derived (#102): against a daemon without `status-v1` the Open names no optional family and nothing comes between Ready and the next Input or Leave | `raw_bridge_preserves_bytes_and_restores_termios_after_final_output`, `a_confirmed_leave_detaches_with_the_notice` |
+| Derived (#102) against a real daemon, through the packaged CLI: an explicit attach and a takeover acknowledge pending attention once ready; a viewing client never does on its own | `ordinary_attach_and_takeover_acknowledge_pending_attention_once_ready` (`climon2-e2e/tests/status.rs`) |
+| #25 logs: environment-only filtering, one private log per client | `log_filter_reaches_client_through_environment_without_cli_flags`, `concurrent_clients_on_one_session_each_write_their_own_log` |
+| Attach gives the library its own `library-<second>-<pid>.log` beside the client's session log, under the client's `CLIMON2_LOG` filter (its creation record by default, none under `warn`) | `attach_gives_the_library_its_own_log_beside_the_clients_session_log` |
 
-`tests/termination.rs` covers kill mode:
-`confirmed_termination_is_silent_success_whatever_the_command_status`,
-`a_daemon_error_or_lost_connection_is_a_failed_kill`,
-`kill_needs_the_kill_capability_and_never_sends_a_request_without_it`,
-`a_kill_capable_session_without_attach_refuses_attach_mode` and
-`a_signal_while_waiting_for_confirmation_is_the_signal_status`.
+`tests/termination.rs` covers kill mode through the library (#100). Each test
+installs the client executable and the workspace's hooked client library in a
+private version folder and answers as a revision-1 peer whose frames it
+writes by hand from the wire reference:
+
+| Scenario | Named test |
+|---|---|
+| LIB-01 executable case and COM-01 Fault (Kill parity): a confirmed termination (exit 143, complete cleanup) is silent status 0, through the library beside the executable; one Kill, wire ID 1, revision 1, requiring nothing | `confirmed_termination_is_silent_success_whatever_the_command_status` |
+| LIB-01 executable case: stand-ins describing this release in the folder `current` names, the working directory, `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` are never loaded | `the_library_beside_the_executable_is_used_whatever_current_cwd_and_search_paths` |
+| LIB-02 executable case: a missing library, another release's, one without a bootstrap and one with an incomplete function table, and an executable outside a version folder, fail with 125 and the loader's diagnostic before anything connects | `a_missing_wrong_release_or_faulty_library_fails_before_any_connection` |
+| COM-01 Fault (Kill parity) and COM-03 Fault, executable case: a refusal (also one coded `io_error`) and a partial termination give the daemon's message, a connection closed during the hello or after the Kill `lost connection to session <id>`, a Kill outliving `kill_ms` the CLI's unconfirmed message, each with 125; the Kill is never sent again | `a_refused_partial_lost_or_unconfirmed_kill_is_a_failed_kill` |
+| COM-01 and COM-03 Fault, executable case: a hello the daemon accepts but never answers fails at the two-second hello deadline, not `kill_ms`, with `session <id> did not respond`, and the Kill is never sent | `a_silent_hello_fails_at_the_hello_deadline_without_sending_the_kill` |
+| The library's diagnostics land in its own `library-<second>-<pid>.log` beside the client's session log, under the client's `CLIMON2_LOG` filter (its creation record by default, none under `warn`) | `the_library_logs_into_its_own_file_beside_the_clients_session_log` |
+| COM-01 Fault, executable case: a daemon of this release without daemon wire revision 1 is refused before any request | `kill_needs_daemon_wire_revision_1_and_never_sends_a_request_without_it` |
+| COM-01 Fault (Kill parity), executable case: SIGTERM while waiting is status 143 at once, silently | `a_signal_while_waiting_for_confirmation_is_the_signal_status` |
+
+Against real daemons, `climon2 kill` through the CLI and the packaged
+launcher is unchanged: `kill_terminates_a_detached_session_silently_after_cleanup`,
+`kill_while_attached_gives_the_client_the_signal_status` and
+`an_unconfirmed_kill_fails_at_the_deadline_and_reaps_only_its_helper`
+(`climon2-cli/tests/exec.rs`, whose private installation now carries the
+library), and `installed_kill_ends_detached_and_attached_sessions` with the
+other packaged kills (`climon2-e2e`), including a 0.0.97 session killed from
+the second-release fixture's folder (`climon2-e2e/tests/mixed.rs`).
 `tests/scaffold.rs` covers the frozen invocation `attach --metadata <absolute
 path>`: `invocations_outside_the_frozen_contract_are_one_line_usage_failures_without_stdout`
 (no arguments, a missing or relative path, another flag or operation, or an

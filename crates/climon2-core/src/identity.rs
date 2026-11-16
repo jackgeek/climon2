@@ -73,15 +73,26 @@ impl SessionId {
     pub fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(uuid::Uuid::from_bytes(bytes).hyphenated().to_string())
     }
+
+    /// The 16 bytes of this session ID, in canonical textual order, as the
+    /// native C ABI carries it.
+    pub fn bytes(&self) -> [u8; 16] {
+        guid_bytes(&self.0)
+    }
 }
 
 impl Guid {
     /// The 16 bytes of this GUID, in canonical textual order.
     pub fn bytes(&self) -> [u8; 16] {
-        uuid::Uuid::parse_str(&self.0)
-            .expect("a Guid is validated canonical text")
-            .into_bytes()
+        guid_bytes(&self.0)
     }
+}
+
+/// The bytes of validated canonical GUID text.
+fn guid_bytes(text: &str) -> [u8; 16] {
+    uuid::Uuid::parse_str(text)
+        .expect("a GUID is validated canonical text")
+        .into_bytes()
 }
 validated_string!(Timestamp, validate_timestamp);
 validated_string!(MetadataPath, validate_metadata_path);

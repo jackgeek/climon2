@@ -1,5 +1,7 @@
 use climon2_core::SessionId;
-use climon2_platform::logging::{LogFile, Role, client_log_name, prune, timestamp};
+use climon2_platform::logging::{
+    LogFile, Role, client_log_name, library_log_name, prune, timestamp,
+};
 use std::{
     fs,
     io::Write,
@@ -121,6 +123,17 @@ fn client_log_name_is_the_utc_second_and_pid() {
     assert_eq!(
         client_log_name(at, 4242).unwrap(),
         "client-20261029T000405Z-4242.log"
+    );
+}
+
+/// #100: the client library's own log is named like its client's, by the
+/// UTC second and pid, under `library`.
+#[test]
+fn library_log_name_is_the_utc_second_and_pid() {
+    let at = SystemTime::UNIX_EPOCH + Duration::from_millis(1_793_232_245_678);
+    assert_eq!(
+        library_log_name(at, 4242).unwrap(),
+        "library-20261029T000405Z-4242.log"
     );
 }
 

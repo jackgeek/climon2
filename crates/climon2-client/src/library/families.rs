@@ -6,12 +6,13 @@
 use climon2_core::wire::{Advertisement, Families, Family, Mode, Requested};
 
 /// Core (roles, control, restoration and display), passive monitor entry,
-/// titles and application focus (#94). `status-v1` joins with #95, and
-/// `notification-v1` and `progress-v1` with #98.
-pub(super) const RELAYED: [Family; 4] = [
+/// titles, application focus (#94) and status with viewing and
+/// acknowledgement (#95). `notification-v1` and `progress-v1` join with #98.
+pub(super) const RELAYED: [Family; 5] = [
     Family::DaemonWireV1,
     Family::MonitorV1,
     Family::TitleV1,
+    Family::StatusV1,
     Family::FocusV1,
 ];
 
@@ -25,12 +26,24 @@ fn advertised(advertisement: &Advertisement, token: &str) -> bool {
     relayed(token).is_some_and(|family| advertisement.supports(family))
 }
 
-/// Whether the daemon advertises everything an Open requires: `monitor-v1`
-/// for monitor mode, whatever the caller lists, and every required family.
-pub(super) fn supports(advertisement: &Advertisement, mode: Mode, requested: &Requested) -> bool {
-    (mode != Mode::Monitor || advertisement.supports(Family::MonitorV1))
-        && requested
-            .required()
+/// A first role, with the families it requires.
+#[derive(Clone, Copy)]
+pub(super) enum Role<'a> {
+    /// An Open: `monitor-v1` for monitor mode, whatever the caller lists,
+    /// and every required family.
+    Open(Mode, &'a Requested),
+    /// A Kill: every required family; core support is implicit (#96).
+    Kill(&'a Families),
+}
+
+/// Whether the daemon advertises everything `role` requires.
+pub(super) fn supports(advertisement: &Advertisement, role: Role) -> bool {
+    let (monitor, required) = match role {
+        Role::Open(mode, requested) => (mode == Mode::Monitor, requested.required()),
+        Role::Kill(required) => (false, required),
+    };
+    (!monitor || advertisement.supports(Family::MonitorV1))
+        && required
             .tokens()
             .iter()
             .all(|token| advertised(advertisement, token))

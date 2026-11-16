@@ -4,23 +4,24 @@
 //! sends maps to a native record or an explicit connection failure; nothing
 //! is skipped or fabricated. Presentation records must name the authority
 //! the role holds (#94): an old period or restoration never reaches the
-//! caller as current.
+//! caller as current. Status arrives only with `status-v1` selected, and
+//! never after the command's final result (#95).
 
 use super::{
     failure::{Failed, Fault, Retry, require},
     families::{self, Selection},
     link::fatal,
     records::{
-        Answer, Command, Done, Event, Initial, Metadata, Outcome, Presentation, Response, Screen,
-        Title,
+        Answer, Changed, Command, Done, Ending, Event, Initial, Metadata, Outcome, Presentation,
+        Response, Screen, Status, Title,
     },
-    request::{Act, Held},
+    request::{Act, Confirm, Held, Toggle},
 };
 use climon2_core::{
     native,
     wire::{
         self, AuthorityIds, Available, ControlRecord, Counter, Families, Family, Frame, FrameLimit,
-        KnownResult, Mode, Requested, ServerMessage, Success,
+        KnownResult, Mode, PartialTermination, Requested, ServerMessage, Success,
     },
 };
 use std::time::Instant;
@@ -41,11 +42,15 @@ const REPEATED: Fault = Fault::transport(
     "a Command final follows a known final result",
 );
 const EMPTY_DISPLAY: Fault = Fault::transport("invalid_record", "a Display carries no bytes");
-const MISMATCHED: Fault = Fault::transport(
+const DISAGREEING: Fault = Fault::transport(
+    "invalid_record",
+    "a status is final exactly when the command's result is known",
+);
+pub(super) const MISMATCHED: Fault = Fault::transport(
     "invalid_record",
     "a response's result does not belong to its request",
 );
-const UNCORRELATED: Fault = Fault::transport(
+pub(super) const UNCORRELATED: Fault = Fault::transport(
     "invalid_request_id",
     "a response names no unanswered request",
 );
@@ -122,11 +127,42 @@ fn focused(success: Success) -> Option<Done> {
             changed,
             focused,
             accepted_bytes,
-        } => Some(Done::Focus {
+        } => Some(Done::Changed(Changed::Flag {
+            tag: native::FOCUS_RESULT,
             changed,
-            focused,
+            value: focused,
             bytes: accepted_bytes.into(),
-        }),
+        })),
+        _ => None,
+    }
+}
+
+/// Set viewing's result reports the viewing it asked for.
+fn viewed(success: Success, asked: bool) -> Option<Done> {
+    match success {
+        Success::Viewing { changed, viewing } if viewing == asked => {
+            Some(Done::Changed(Changed::Flag {
+                tag: native::VIEWING_RESULT,
+                changed,
+                value: viewing,
+                bytes: 0,
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn viewing_on(success: Success) -> Option<Done> {
+    viewed(success, true)
+}
+
+fn viewing_off(success: Success) -> Option<Done> {
+    viewed(success, false)
+}
+
+fn acknowledged(success: Success) -> Option<Done> {
+    match success {
+        Success::Acknowledgement { changed } => Some(Done::Changed(Changed::Acknowledged(changed))),
         _ => None,
     }
 }
@@ -140,6 +176,14 @@ impl Act {
                 input: None,
             },
             Self::Held(_, held) => held.expects(),
+        }
+    }
+
+    /// The family it needs selected, if any.
+    fn family(&self) -> Option<Family> {
+        match self {
+            Self::Acquire => None,
+            Self::Held(_, held) => held.family(),
         }
     }
 
@@ -157,10 +201,18 @@ impl Held {
         let (result, input): (fn(Success) -> Option<Done>, _) = match self {
             Self::Input(payload) => (accepted, Some(payload.len() as u32)),
             Self::Resize(_) => (resized, None),
-            Self::Ready => (readied, None),
-            Self::Focus(_) => (focused, None),
+            Self::Toggle(toggle, on) => (toggle.result(*on), None),
+            Self::Confirm(confirm) => (confirm.result(), None),
         };
         Expects { result, input }
+    }
+
+    fn family(&self) -> Option<Family> {
+        match self {
+            Self::Toggle(toggle, _) => Some(toggle.family()),
+            Self::Confirm(confirm) => confirm.family(),
+            Self::Input(_) | Self::Resize(_) => None,
+        }
     }
 
     /// Its wire request under `authority`, as `request_id`.
@@ -178,15 +230,73 @@ impl Held {
                 geometry,
             }
             .to_frame(),
+            Self::Toggle(toggle, on) => toggle.frame(request_id, authority, on),
+            Self::Confirm(confirm) => confirm.frame(request_id, authority),
+        }
+    }
+}
+
+impl Toggle {
+    /// The result its success must carry: Set viewing's, the viewing it
+    /// asked for.
+    fn result(self, on: bool) -> fn(Success) -> Option<Done> {
+        match (self, on) {
+            (Self::Focus, _) => focused,
+            (Self::Viewing, true) => viewing_on,
+            (Self::Viewing, false) => viewing_off,
+        }
+    }
+
+    fn family(self) -> Family {
+        match self {
+            Self::Focus => Family::FocusV1,
+            Self::Viewing => Family::StatusV1,
+        }
+    }
+
+    fn frame(self, request_id: Counter, authority: AuthorityIds, on: bool) -> Frame {
+        match self {
+            Self::Focus => wire::Focus {
+                request_id,
+                authority,
+                focused: on,
+            }
+            .to_frame(),
+            Self::Viewing => wire::SetViewing {
+                request_id,
+                authority,
+                viewing: on,
+            }
+            .to_frame(),
+        }
+    }
+}
+
+impl Confirm {
+    fn result(self) -> fn(Success) -> Option<Done> {
+        match self {
+            Self::Ready => readied,
+            Self::Acknowledge => acknowledged,
+        }
+    }
+
+    fn family(self) -> Option<Family> {
+        match self {
+            Self::Ready => None,
+            Self::Acknowledge => Some(Family::StatusV1),
+        }
+    }
+
+    fn frame(self, request_id: Counter, authority: AuthorityIds) -> Frame {
+        match self {
             Self::Ready => wire::Ready {
                 request_id,
                 authority,
             }
             .to_frame(),
-            Self::Focus(focused) => wire::Focus {
+            Self::Acknowledge => wire::Acknowledge {
                 request_id,
                 authority,
-                focused,
             }
             .to_frame(),
         }
@@ -284,8 +394,10 @@ impl Effect {
     pub(super) fn concludes(&self) -> bool {
         match self {
             Self::Record(Event::Metadata(Metadata::Initial(initial))) => initial.command.is_some(),
-            Self::Record(Event::Metadata(Metadata::Final(_))) => true,
-            Self::Opened(response, _) => matches!(response.answer, Some(Answer::KnownFinal(_))),
+            Self::Record(Event::Metadata(Metadata::Final(..))) => true,
+            Self::Opened(response, _) => {
+                matches!(response.answer, Some(Answer::Ending(Ending::KnownFinal(_))))
+            }
             _ => false,
         }
     }
@@ -439,9 +551,10 @@ impl Stream {
             .any(|pending| matches!(pending.sent, Sent::Leave { .. }))
     }
 
-    /// Whether the Open selected `focus-v1`.
-    pub(super) fn focus(&self) -> bool {
-        self.selects(Family::FocusV1)
+    /// Whether the Open selected the family `act` needs, if it needs one:
+    /// `focus-v1` for Focus, `status-v1` for Set viewing and Acknowledge.
+    pub(super) fn supports(&self, act: &Act) -> bool {
+        act.family().is_none_or(|family| self.selects(family))
     }
 
     fn selects(&self, family: Family) -> bool {
@@ -477,16 +590,21 @@ impl Stream {
         }
     }
 
-    /// Initial metadata, then title changes and presentation records.
+    /// Initial metadata, then title and status changes and presentation
+    /// records.
     fn report(&mut self, message: ServerMessage) -> Result<Event, Fault> {
         match message {
             ServerMessage::InitialMetadata(metadata) => self.initial(&metadata),
             ServerMessage::TitleChanged(changed) => self.changed(changed.title.as_deref()),
-            message => {
-                require(self.synchronized, UNEXPECTED)?;
-                self.present(message).map(Event::Presentation)
-            }
+            ServerMessage::StatusChanged(changed) => self.status_changed(&changed),
+            message => self.presentation(message),
         }
+    }
+
+    /// A presentation record, only after the Initial metadata.
+    fn presentation(&mut self, message: ServerMessage) -> Result<Event, Fault> {
+        require(self.synchronized, UNEXPECTED)?;
+        self.present(message).map(Event::Presentation)
     }
 
     /// A grant starts a period when none is held; a revocation ends the
@@ -583,9 +701,15 @@ impl Stream {
         self.selected.is_some() && !self.synchronized
     }
 
+    /// A request's answer. It stays unanswered when its answer breaks the
+    /// wire's rules: a Leave whose answer is invalid is unconfirmed, never
+    /// not required (#96).
     fn respond(&mut self, response: wire::Response) -> Result<Effect, Fault> {
-        let sent = self.answered(response.request_id)?;
-        Verdict::from(response.outcome).and_then(|verdict| self.resolve(sent, verdict))
+        let index = self.answered(response.request_id)?;
+        let sent = self.pending[index].sent.clone();
+        let effect = self.resolve(sent, Verdict::from(response.outcome))?;
+        self.pending.remove(index);
+        Ok(effect)
     }
 
     fn resolve(&mut self, sent: Sent, verdict: Verdict) -> Result<Effect, Fault> {
@@ -596,14 +720,13 @@ impl Stream {
         }
     }
 
-    fn answered(&mut self, request_id: Counter) -> Result<Sent, Fault> {
+    /// Where the unanswered request a response names waits.
+    fn answered(&self, request_id: Counter) -> Result<usize, Fault> {
         require(!self.awaiting_metadata(), UNEXPECTED)?;
-        let index = self
-            .pending
+        self.pending
             .iter()
             .position(|pending| pending.wire == request_id.get())
-            .ok_or(UNCORRELATED)?;
-        Ok(self.pending.remove(index).sent)
+            .ok_or(UNCORRELATED)
     }
 
     fn opened(&mut self, id: u64, sent: &Requested, verdict: Verdict) -> Result<Effect, Fault> {
@@ -634,8 +757,10 @@ impl Stream {
                 connection_id,
                 selected_capabilities,
             }) => self.selected(&connection_id, &selected_capabilities, sent),
-            Carried::KnownFinal(result) => Ok(Answer::KnownFinal(Command::from(&result))),
-            Carried::Success(_) => Err(MISMATCHED),
+            Carried::KnownFinal(result) => {
+                Ok(Answer::Ending(Ending::KnownFinal(Command::from(&result))))
+            }
+            Carried::Success(_) | Carried::Termination(_) => Err(MISMATCHED),
         }
     }
 
@@ -662,32 +787,67 @@ impl Stream {
     }
 
     /// The command's final result, once, after an Initial metadata that
-    /// did not know it; its status is null, since `status-v1` is never
-    /// selected. The stream reads on: the release, the `session_ending`
-    /// revocation and the close may follow.
+    /// did not know it, with the final status exactly when `status-v1` is
+    /// selected (the shared codec makes it agree with the result). The
+    /// stream reads on: the release, the `session_ending` revocation and
+    /// the close may follow.
     fn finished(&mut self, finished: &wire::CommandFinal) -> Result<Event, Fault> {
         require(self.synchronized, UNEXPECTED)?;
         require(!self.known, REPEATED)?;
-        require(finished.status().is_none(), UNEXPECTED)?;
+        let status = finished.status();
+        require(
+            status.is_some() == self.selects(Family::StatusV1),
+            UNEXPECTED,
+        )?;
         self.known = true;
         let command = Command::from(finished.command_result());
-        Ok(Event::Metadata(Metadata::Final(command)))
+        Ok(Event::Metadata(Metadata::Final(
+            command,
+            status.map(Status::from),
+        )))
     }
 
-    /// Status and progress are never selected yet, so both must be
-    /// unavailable; the title is available exactly when selected.
+    /// Progress is never selected yet, so it must be unavailable; the title
+    /// and the status are available exactly when selected.
     fn metadata(&self, metadata: &wire::InitialMetadata) -> Result<Event, Fault> {
         let title = self.availability(metadata.title())?;
-        let unselected = matches!(metadata.status(), Available::Unavailable)
-            && matches!(metadata.progress(), Available::Unavailable);
-        unselected
-            .then(|| {
-                Event::Metadata(Metadata::Initial(Initial {
-                    title,
-                    command: metadata.command_result().map(Command::from),
-                }))
-            })
-            .ok_or(UNEXPECTED)
+        let status = self.status(metadata)?;
+        require(
+            matches!(metadata.progress(), Available::Unavailable),
+            UNEXPECTED,
+        )?;
+        Ok(Event::Metadata(Metadata::Initial(Initial {
+            title,
+            status,
+            command: metadata.command_result().map(Command::from),
+        })))
+    }
+
+    /// The status, available exactly when `status-v1` is selected, and
+    /// final exactly when the command's result is known: never a final
+    /// value without the result, nor activity after it.
+    fn status(&self, metadata: &wire::InitialMetadata) -> Result<Option<Status>, Fault> {
+        match (self.selects(Family::StatusV1), metadata.status()) {
+            (false, Available::Unavailable) => Ok(None),
+            (true, Available::Available(status)) => {
+                let known = metadata.command_result().is_some();
+                require(status.state().is_final() == known, DISAGREEING)?;
+                Ok(Some(Status::from(status)))
+            }
+            _ => Err(UNEXPECTED),
+        }
+    }
+
+    /// A Status changed: after the Initial metadata, with `status-v1`
+    /// selected, and never once the final result is known.
+    fn status_changed(&self, changed: &wire::StatusChanged) -> Result<Event, Fault> {
+        require(
+            self.synchronized && self.selects(Family::StatusV1) && !self.known,
+            UNEXPECTED,
+        )?;
+        Ok(Event::Metadata(Metadata::Status(Status::from(
+            changed.status(),
+        ))))
     }
 
     fn availability(&self, title: &Available<Option<String>>) -> Result<Title, Fault> {
@@ -754,7 +914,7 @@ fn answered(id: u64, expects: Expects, verdict: Verdict) -> Result<Effect, Fault
     let answer = carried
         .map(|carried| match carried {
             Carried::Success(success) => expects.answer(success),
-            Carried::KnownFinal(_) => Err(MISMATCHED),
+            Carried::KnownFinal(_) | Carried::Termination(_) => Err(MISMATCHED),
         })
         .transpose()?;
     Ok(Effect::Answered(Response {
@@ -764,35 +924,38 @@ fn answered(id: u64, expects: Expects, verdict: Verdict) -> Result<Effect, Fault
     }))
 }
 
-/// What a response may carry: an operation's result, or a rejection's
-/// known final command result.
+/// What a response may carry: an operation's result, a rejection's known
+/// final command result, or a failed or indeterminate Kill's partial
+/// termination (#96). Whether it belongs to its request is the resolver's
+/// to say.
 #[derive(Debug)]
-enum Carried {
+pub(super) enum Carried {
     Success(Success),
     KnownFinal(wire::CommandResult),
+    Termination(PartialTermination),
 }
 
 /// A response's outcome, the result it carries and, for a non-success, the
 /// retry its error calls for.
-struct Verdict {
-    outcome: Outcome,
-    carried: Option<Carried>,
-    retry: Retry,
+pub(super) struct Verdict {
+    pub(super) outcome: Outcome,
+    pub(super) carried: Option<Carried>,
+    pub(super) retry: Retry,
 }
 
 impl Verdict {
-    fn from(outcome: wire::Outcome) -> Result<Self, Fault> {
+    pub(super) fn from(outcome: wire::Outcome) -> Self {
         match outcome {
-            wire::Outcome::Ok(success) => Ok(Self {
+            wire::Outcome::Ok(success) => Self {
                 outcome: Outcome::Ok,
                 carried: Some(Carried::Success(success)),
                 retry: Retry::None,
-            }),
-            wire::Outcome::Rejected(rejection) => Ok(Self::of(
+            },
+            wire::Outcome::Rejected(rejection) => Self::of(
                 Outcome::Rejected,
                 &rejection.error,
                 rejection.known_final.map(Carried::KnownFinal),
-            )),
+            ),
             wire::Outcome::Failed(failure) => Self::failure(Outcome::Failed, &failure),
             wire::Outcome::Indeterminate(failure) => {
                 Self::failure(Outcome::Indeterminate, &failure)
@@ -809,14 +972,13 @@ impl Verdict {
         }
     }
 
-    /// A failed or indeterminate outcome keeps a known result of its own
-    /// operation; a Kill's partial termination belongs to no request here.
-    fn failure(outcome: fn(Fault) -> Outcome, failure: &wire::Failure) -> Result<Self, Fault> {
-        let carried = match failure.known() {
-            None => None,
-            Some(KnownResult::Operation(success)) => Some(Carried::Success(success.clone())),
-            Some(KnownResult::Termination(_)) => return Err(MISMATCHED),
-        };
-        Ok(Self::of(outcome, failure.error(), carried))
+    /// A failed or indeterminate outcome keeps what it knows of its
+    /// operation.
+    fn failure(outcome: fn(Fault) -> Outcome, failure: &wire::Failure) -> Self {
+        let carried = failure.known().map(|known| match known {
+            KnownResult::Operation(success) => Carried::Success(success.clone()),
+            KnownResult::Termination(termination) => Carried::Termination(termination.clone()),
+        });
+        Self::of(outcome, failure.error(), carried)
     }
 }

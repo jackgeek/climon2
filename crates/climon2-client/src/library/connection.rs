@@ -1,24 +1,26 @@
 //! An instance's daemon connection, run on its owner thread by `run`: its
 //! one Open (session metadata, the frozen hello, then daemon wire revision
 //! 1), the commands on its role (#94), the records the daemon sends, Leave,
-//! and shutdown. One poll loop
-//! waits on the socket and the instance's waker; submitted work arrives
+//! shutdown, and a Kill on its own auxiliary connection (#96). One poll
+//! loop waits on both sockets and the instance's waker; submitted work arrives
 //! through the instance's request queue and records leave through its event
 //! queue, so `submit`, `drain` and `release_delivery` never touch the
 //! connection.
 
 use super::{
     failure::{CANCELLED, Failed, Fault, require},
+    families::Role,
     handshake::{self, Expected, Peer},
     instance::{Descriptor, Next, Shared, Taken},
+    kill::{Errand, Settled},
     link::{self, Link, TIMEOUT},
-    records::{Event, Response},
-    request::{Act, Command, Held, Open, Operation, Submitted},
+    records::{Answer, Event, Response},
+    request::{Act, Command, Open, Operation, Submitted},
     stream::{Departure, Effect, Stream},
 };
 use climon2_core::{
     protocol::HELLO_TIMEOUT,
-    wire::{self, Frame},
+    wire::{self, Families, Frame},
 };
 use std::{
     collections::VecDeque,
@@ -41,19 +43,21 @@ const STALLED: Fault = Fault::library(
     "delivery_stalled",
     "no record waiting for event room was queued within delivery_stall_ms",
 );
-const UNFOCUSED: Fault = Fault::library(
+const UNSELECTED: Fault = Fault::library(
     "unsupported_capability",
-    "focus-v1 is not selected on this connection",
+    "the family this request needs is not selected on this connection",
 );
 
-/// Runs the connection until its stream ends, and returns the Leave
-/// evidence. Whatever ends it, the requests it took and the socket it held
-/// are no longer counted once it returns or unwinds.
+/// Runs the connection until its stream ends and no Kill is under way,
+/// and returns the Leave evidence. Whatever ends it, the requests it took
+/// and the sockets it held are no longer counted once it returns or
+/// unwinds.
 pub(super) fn run(shared: &Shared) -> Departure {
     let mut driver = Driver::new(shared);
     while !driver.ended {
         driver.turn();
     }
+    driver.await_kill();
     driver.departure
 }
 
@@ -80,6 +84,8 @@ struct Driver<'a> {
     /// While records wait: when the connection fails unless one of them
     /// is queued first.
     stall: Option<Instant>,
+    /// The Kill under way on its auxiliary connection: at most one.
+    errand: Option<Errand<'a>>,
     shutdown: bool,
     departure: Departure,
     ended: bool,
@@ -95,6 +101,7 @@ impl<'a> Driver<'a> {
             start: None,
             parked: VecDeque::new(),
             stall: None,
+            errand: None,
             shutdown: false,
             departure: Departure::NOT_REQUIRED,
             ended: false,
@@ -148,10 +155,68 @@ impl<'a> Driver<'a> {
 
     fn execute(&mut self, request: Submitted) {
         match request.operation {
-            Operation::Open(open) if self.connection.is_none() => self.open(request.id, &open),
-            Operation::Open(_) => self.reject(request.id, INVALID_STATE),
+            Operation::Open(open) => self.first(request.id, &open),
             Operation::Leave(generation) => self.leave(request.id, generation),
             Operation::Command(command) => self.command(request.id, command),
+            Operation::Kill(required) => self.kill(request.id, required),
+        }
+    }
+
+    /// Validates the session and hello on a connection of the Kill's own,
+    /// within `kill_ms`, and sends it there; at most one is pending.
+    fn kill(&mut self, id: u64, required: Families) {
+        if self.errand.is_some() {
+            return self.reject(id, INVALID_STATE);
+        }
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(self.shared.limits().kill_ms.into());
+        let hello = (started + HELLO_TIMEOUT).min(deadline);
+        let connected = handshake::connect(&self.expected(), Role::Kill(&required), hello);
+        match connected {
+            Ok(_) if self.shared.shutting_down() => self.reject(id, CANCELLED),
+            Ok(connected) => {
+                let counted = self.shared.connected();
+                let sent = Errand::send(id, required, connected, deadline, counted);
+                self.sent(id, sent.map_err(Failed::permanent));
+            }
+            Err(failed) => self.sent(id, Err(failed)),
+        }
+    }
+
+    /// A Kill under way, or one refused before it was sent.
+    fn sent(&mut self, id: u64, sent: Result<Errand<'a>, Failed>) {
+        match sent {
+            Ok(errand) => self.errand = Some(errand),
+            Err(Failed { fault, retry }) => self.settle(Settled {
+                response: Response::rejected(id, fault),
+                retry,
+            }),
+        }
+    }
+
+    /// Once the stream has ended, waits for the outcome of a Kill still
+    /// under way, bounded by its `kill_ms`.
+    fn await_kill(&mut self) {
+        if let Some(errand) = self.errand.take() {
+            self.settle(errand.outcome());
+        }
+    }
+
+    /// A Kill's outcome. An instance that never opened a role ends after
+    /// it: cleanly once termination is confirmed, failed with the Kill's
+    /// error otherwise.
+    fn settle(&mut self, settled: Settled) {
+        let Settled { response, retry } = settled;
+        let fault = response.outcome.fault().cloned();
+        let concludes =
+            matches!(&response.answer, Some(Answer::Ending(ending)) if ending.concludes());
+        self.shared.conclude(concludes);
+        self.taken.answer(response);
+        if self.start.is_none() {
+            match fault {
+                Some(fault) => self.end(Failed::new(fault, retry)),
+                None => self.ended = true,
+            }
         }
     }
 
@@ -170,12 +235,13 @@ impl<'a> Driver<'a> {
             .find_map(|(refused, fault)| refused.then_some(fault))
     }
 
-    /// A command goes on the role unless refused; Focus needs `focus-v1`.
+    /// A command goes on the role unless refused; Focus needs `focus-v1`,
+    /// Set viewing and Acknowledge `status-v1` (#95).
     fn command(&mut self, id: u64, command: Command) {
-        let unfocused = matches!(command.act, Act::Held(_, Held::Focus(_))) && !self.stream.focus();
+        let unselected = !self.stream.supports(&command.act);
         let refusal = self
             .refusal(command.generation)
-            .or(unfocused.then_some(UNFOCUSED));
+            .or(unselected.then_some(UNSELECTED));
         match refusal {
             Some(fault) => self.reject(id, fault),
             None => self.send_command(id, command.act),
@@ -220,22 +286,25 @@ impl<'a> Driver<'a> {
         }
     }
 
+    /// The instance's one Open; another is `invalid_state`.
+    fn first(&mut self, id: u64, open: &Open) {
+        match self.connection {
+            None => self.open(id, open),
+            Some(_) => self.reject(id, INVALID_STATE),
+        }
+    }
+
     fn open(&mut self, id: u64, open: &Open) {
         let started = Instant::now();
         let start_ms = Duration::from_millis(self.shared.limits().start_ms.into());
         self.start = Some(started + start_ms);
         let deadline = (started + HELLO_TIMEOUT).min(started + start_ms);
-        match self.handshake(open, deadline) {
+        let role = Role::Open(open.mode, &open.requested);
+        match handshake::connect(&self.expected(), role, deadline) {
             Ok(_) if self.shared.shutting_down() => self.reject(id, CANCELLED),
             Ok((link, peer)) => self.request(id, open, link, peer),
             Err(failed) => self.refuse(id, failed),
         }
-    }
-
-    fn handshake(&self, open: &Open, deadline: Instant) -> Result<(Link, Peer), Failed> {
-        let expected = self.expected();
-        let socket = handshake::socket(&expected)?;
-        handshake::hello(&socket, &expected, open, deadline)
     }
 
     fn expected(&self) -> Expected<'_> {
@@ -269,6 +338,7 @@ impl<'a> Driver<'a> {
         }
     }
 
+    /// Waits for the waker, the open role's socket and a Kill's.
     fn wait(&mut self) {
         self.unpark();
         let reading = self.parked.is_empty();
@@ -277,8 +347,21 @@ impl<'a> Driver<'a> {
             .as_ref()
             .map(|connection| &connection.link)
             .filter(|link| reading || link.writing());
-        link::wait(Some(self.shared.waker()), link, self.deadline());
+        let links: Vec<&Link> = link
+            .into_iter()
+            .chain(self.errand.as_ref().map(Errand::link))
+            .collect();
+        link::wait(Some(self.shared.waker()), &links, self.deadline());
         self.service();
+        self.errand();
+    }
+
+    /// Serves the Kill under way, until its outcome.
+    fn errand(&mut self) {
+        if let Some(settled) = self.errand.as_mut().and_then(Errand::service) {
+            self.errand = None;
+            self.settle(settled);
+        }
     }
 
     /// Queues the waiting records, oldest first, while they fit. Each one
@@ -299,14 +382,22 @@ impl<'a> Driver<'a> {
         }
     }
 
-    /// The deadline that applies: while records wait for room, nothing
-    /// is read, so only the stall's; otherwise the earliest of an
+    /// The stream's deadline that applies: while records wait for room,
+    /// nothing is read, so only the stall's; otherwise the earliest of an
     /// unanswered request's and the Open's until its Initial metadata.
-    fn deadline(&self) -> Option<Instant> {
+    fn stream_deadline(&self) -> Option<Instant> {
         self.stall.or_else(|| {
             let start = self.start.filter(|_| !self.stream.synchronized());
             self.stream.deadline().into_iter().chain(start).min()
         })
+    }
+
+    /// The earliest deadline to wake for: the stream's or a Kill's.
+    fn deadline(&self) -> Option<Instant> {
+        self.stream_deadline()
+            .into_iter()
+            .chain(self.errand.as_ref().map(Errand::deadline))
+            .min()
     }
 
     fn service(&mut self) {
@@ -420,7 +511,7 @@ impl<'a> Driver<'a> {
 
     fn expire(&mut self) {
         let expired = self
-            .deadline()
+            .stream_deadline()
             .is_some_and(|deadline| link::remaining(deadline).is_none());
         if expired && !self.ended {
             self.timed_out();

@@ -12,11 +12,15 @@ over a selector. The basic [selector](../GLOSSARY.md#attachment-and-control) of
 [#106](https://github.com/jackgeek/climon2/issues/106) is implemented: prefix+s
 overlays the captionless double border with status and title columns and a
 reversed highlight, Up and Down move it without wrapping, and Escape closes
-it, without resizing an application or acquiring anything. Rows list newest
-created first, connected rows show Unavailable without `status-v1` and no
-status otherwise, and not-connected rows show Starting, Unavailable or
-Disconnected; a row never seen connected is dropped once its session is
-proven gone. The monitor's own enclosing session is not listed at all (owner
+it, without resizing an application or acquiring anything. Rows show the
+effective status their daemons report (Needs attention, Acknowledged,
+Running, Idle), Succeeded or Failed with the exact exit code or signal, or a
+not-connected label (Starting, Unavailable or Disconnected), and list in the
+status order of the
+[session-status mechanics](session-status.md#reporting-ordering-and-initial-selection)
+([#107](https://github.com/jackgeek/climon2/issues/107)); a row never seen
+connected is dropped once its session is proven gone. The monitor's own
+enclosing session is not listed at all (owner
 decision on [#110](https://github.com/jackgeek/climon2/issues/110),
 2026-11-14), which amends the earlier non-selectable "This monitor" row
 whose Enter explained why. Its keys come from the input router of
@@ -32,8 +36,9 @@ known to be final is acquired, and a Starting row or an Unavailable row
 without a connected client is selected without acquiring
 ([#110](https://github.com/jackgeek/climon2/issues/110)); disconnected and
 final rows wait for [#116](https://github.com/jackgeek/climon2/issues/116). Nothing else this
-document specifies is implemented: no search or separator, status order,
-key-hint footer, Delete, toasts or bell.
+document specifies is implemented: no search or separator, initial
+selection ([#266](https://github.com/jackgeek/climon2/issues/266)), key-hint
+footer, Delete, toasts or bell.
 The [throwaway prototype](https://github.com/jackgeek/climon2/pull/72) is a
 primary source, not monitor implementation or real daemon/client acceptance.
 Use the [terminal contract](protocol/terminal-integration.md) and

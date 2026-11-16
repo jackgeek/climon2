@@ -9,6 +9,7 @@ use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
     process::Command,
+    time::Duration,
 };
 
 /// `sizeof(cm1_record)` on every supported target.
@@ -66,8 +67,14 @@ pub fn host_at(
 
 /// The host's one JSON report. It must exit successfully and nothing, neither
 /// the library nor the loader, may write to its standard error.
-pub fn observe(mut host: Command) -> Value {
-    let output = output_within(&mut host, TIMEOUT);
+pub fn observe(host: Command) -> Value {
+    observe_within(host, TIMEOUT)
+}
+
+/// [`observe`], within `bound`: for a host whose steps also wait on what
+/// the test does outside it (#102).
+pub fn observe_within(mut host: Command, bound: Duration) -> Value {
+    let output = output_within(&mut host, bound);
     assert!(output.status.success(), "{output:?}");
     assert!(
         output.stderr.is_empty(),
@@ -85,10 +92,17 @@ pub fn archive() -> bool {
 /// One host scenario over the installed library, with `fault` selecting the
 /// hooked library's `CLIMON2_LIBRARY_FAULT`.
 pub fn scenario(package: &Package, name: &str, input: &Value, fault: Option<&str>) -> Value {
-    let mut command = host(&home(package), VERSION, package.isolation.home());
-    command.arg(name).arg(input.to_string());
+    let mut command = scenario_command(package, name, input);
     if let Some(fault) = fault {
         command.env("CLIMON2_LIBRARY_FAULT", fault);
     }
     observe(command)
+}
+
+/// The host running scenario `name` with `input` over the installed
+/// library.
+pub fn scenario_command(package: &Package, name: &str, input: &Value) -> Command {
+    let mut command = host(&home(package), VERSION, package.isolation.home());
+    command.arg(name).arg(input.to_string());
+    command
 }
