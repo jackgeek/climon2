@@ -311,8 +311,9 @@ Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), application input such
 as Ctrl+C (#109), mouse and focus report classification (#109) and their
 routing to applications (#111), HLP-02 over the selector (#113), selector
 search, footer and Enter (#108, #113), initial selection (#266, moved
-from #107; it acquires through #108) and the CTL-03 status-value case (deferred to #107
-from #110; background, covered and revoked rows need #108's control), resource admission and fairness, including newest-first starts
+from #107; it acquires through #108) and the CTL-03 status-value case for background, covered and
+revoked rows (#266, moved there from #107 by the owner; those roles need
+#108's control), resource admission and fairness, including newest-first starts
 across discovery batches, and `discovery.stall_ms` (#120), passive retry
 (#116), an Escape that does not end its host read closing the selector
 (#109, INP-02), the fail-stop after an unconfirmed shutdown (#118), Escape closing the key introduction when Escape is not
