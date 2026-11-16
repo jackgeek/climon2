@@ -3384,9 +3384,17 @@ fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
     const WIDE: u16 = 250;
     let package = Package::new();
     without_introduction(&package);
+    // ab and cd stay unanswered while the daemon is stopped, and an
+    // operation past `deadlines.operation_ms` fails the connection: the
+    // deadline must outlast the test's steps until it resumes the daemon,
+    // even on a loaded host.
     limits_config(
         &package,
-        serde_json::json!({"transfer": {"chunk_bytes": 2}, "queues": {"operations": 2}}),
+        serde_json::json!({
+            "transfer": {"chunk_bytes": 2},
+            "queues": {"operations": 2},
+            "deadlines": {"operation_ms": 120_000},
+        }),
     );
     headless(&package, &recorder("Keys"), "finish");
     let daemon = package.metadata().daemon_pid;
@@ -3845,11 +3853,16 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
     for explicit in [false, true] {
         let package = Package::new();
         without_introduction(&package);
+        // Slow's client starts only once Held's fails at its own start
+        // deadline, about when collection ends, and then has one more
+        // deadline to receive Slow's Initial metadata: the test's steps
+        // between seeing the late note and releasing Slow must fit in it,
+        // even on a loaded host.
         limits_config(
             &package,
             serde_json::json!({
                 "scheduling": {"starts": 1},
-                "deadlines": {"start_ms": 4000, "operation_ms": 120_000},
+                "deadlines": {"start_ms": 10_000, "operation_ms": 120_000},
             }),
         );
         let go = package.isolation.home().join("slow.go");
