@@ -215,7 +215,7 @@ daemons still serve until its deletion.
 
 **Current (#84):** one validated loader for client libraries is part of
 `climon2-platform`, not a separate artifact; the monitor (#106) and the client
-executable both load through it. The library host and xtask's release
+executable (#100, #101) load through it. The library host and xtask's release
 checks load the client library through it too, from a version folder of an
 executable home. The [client library stand-in](../GLOSSARY.md#testing),
 `crates/climon2-fixtures/stand-in/client-library.c`, is compiled by tests,
@@ -262,7 +262,7 @@ release-private dependency resolution, and explicit memory ownership.
 Every successfully opened library handle stays loaded until monitor exit,
 including handles rejected by later validation. Such releases remain in use
 until process exit; completed instance cleanup and joins do not unload them.
-The monitor's and the client executable's loading are current (#106, #100, #101). Complete interface
+The monitor's loading is current (#106), as is the client executable's for attach and kill (#100, #101). Complete interface
 declarations are specified in [native revision 1](protocol/monitor-client/core-v1.md),
 with explicit startup/role, ownership, cleanup and fresh-instance recovery calls.
 No new artifact or consumption arrow is added. Monitor-client communication is

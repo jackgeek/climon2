@@ -20,9 +20,9 @@ connections ([#93](https://github.com/jackgeek/climon2/issues/93)), control
 and display ([#94](https://github.com/jackgeek/climon2/issues/94)), status,
 viewing and acknowledgement
 ([#95](https://github.com/jackgeek/climon2/issues/95)), and Command final and
-Kill ([#96](https://github.com/jackgeek/climon2/issues/96)); the monitor loads
-them for passive connections (#106), and the client executable loads its own
-release's library for `climon2 kill`
+Kill ([#96](https://github.com/jackgeek/climon2/issues/96)),
+which the monitor loads (#106); the client executable loads its own release's
+library for `climon2 kill`
 ([#100](https://github.com/jackgeek/climon2/issues/100)), the LIB-01 and LIB-02
 executable cases, and for ordinary attach
 ([#101](https://github.com/jackgeek/climon2/issues/101)), the COM-01 Monitor
