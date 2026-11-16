@@ -588,7 +588,7 @@ fn installed_library_relays_the_command_final_before_the_release_and_session_end
     let authority = assert_attached(&drained(&report, &steps, "attached-a"), 1, 7, [100, 30]);
     let (records, terminal) = finished(labelled(&report, &steps, "ended"));
     assert_eq!(tags(&records), [FINAL, DISPLAY, REVOKED], "{records:#?}");
-    assert_final(&records[0], 7, command_result(EXIT, 0));
+    assert_final(&records[0], 7, &native_command(EXIT, 0, None));
     assert_released(&records[1..2], 7, authority);
     let ended = presented(&records[2], REVOKED, 7);
     assert_eq!(ids(ended), authority, "{ended:#}");

@@ -13,8 +13,10 @@ passive monitor connection to its session's daemon on its owner thread,
 never raising `SIGPIPE` in the process
 ([#93](https://github.com/jackgeek/climon2/issues/93)), or an interactive
 attachment, and relays control and display
-([#94](https://github.com/jackgeek/climon2/issues/94)). The one shared loader
-that the [monitor](../../GLOSSARY.md#sessions) and the
+([#94](https://github.com/jackgeek/climon2/issues/94)), and sends
+[Kill](../../GLOSSARY.md#attachment-and-control) on an auxiliary connection
+of its own ([#96](https://github.com/jackgeek/climon2/issues/96)). The one
+shared loader that the [monitor](../../GLOSSARY.md#sessions) and the
 [client executable](../../GLOSSARY.md#sessions) will both use is implemented
 ([#84](https://github.com/jackgeek/climon2/issues/84)): it performs the
 [lookup](#artifact-and-dependency-lookup), the load-failure classification and

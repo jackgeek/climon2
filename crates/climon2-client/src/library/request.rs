@@ -38,6 +38,9 @@ pub(super) enum Operation {
     Leave(u64),
     /// A request on the opened role (#94), naming its generation.
     Command(Command),
+    /// Kill, with the families its auxiliary connection requires (#96):
+    /// unique, each relayed.
+    Kill(Families),
 }
 
 /// An Open's mode and families, parsed once: unique, required and optional
@@ -129,9 +132,10 @@ fn header(request: &native::Request) -> Result<u64, Failure> {
 type Parser = unsafe fn(&native::Request, Capacity) -> Result<(Operation, u64), Failure>;
 
 /// Every request this release performs, by tag.
-const PARSERS: [(u32, Parser); 7] = [
+const PARSERS: [(u32, Parser); 8] = [
     (native::OPEN, open_request),
     (native::LEAVE, leave),
+    (native::KILL, kill),
     (native::ACQUIRE, acquire),
     (native::INPUT, input),
     (native::RESIZE, resize),
@@ -308,9 +312,28 @@ unsafe fn open_request(
 unsafe fn open(open: &native::Open, capacity: u64) -> Result<(Operation, u64), Failure> {
     let mode = mode(open)?;
     // SAFETY: guaranteed by the caller.
-    let lists = unsafe { Lists::read(open, capacity) }?;
+    let lists = unsafe { Lists::read(open.required, open.optional, capacity) }?;
     // SAFETY: as above; `read` bounded the lists.
-    unsafe { lists.open(mode) }
+    let requested = unsafe { lists.tokens() }?;
+    Ok((Operation::Open(relayed(mode, &requested)?), lists.bytes))
+}
+
+/// A Kill's required families, checked as an Open's are (#96).
+///
+/// # Safety
+///
+/// The tag names `required`, whose list covers its count.
+unsafe fn kill(request: &native::Request, capacity: Capacity) -> Result<(Operation, u64), Failure> {
+    let none = Tokens {
+        data: std::ptr::null(),
+        count: 0,
+    };
+    // SAFETY: guaranteed by the caller.
+    let lists = unsafe { Lists::read(request.args.required, none, capacity.request_bytes) }?;
+    // SAFETY: as above; `read` bounded the lists.
+    let requested = unsafe { lists.tokens() }?;
+    every_relayed(requested.required())?;
+    Ok((Operation::Kill(requested.required().clone()), lists.bytes))
 }
 
 /// Monitor mode at zero geometry, or interactive at a positive one;
@@ -335,7 +358,8 @@ fn monitor(geometry: native::Geometry) -> Result<Mode, Failure> {
 /// Validated tokens, copied from the caller.
 type Texts = Vec<String>;
 
-/// An Open's two token lists, sized before any token is read.
+/// A request's two token lists, sized before any token is read: an Open's,
+/// or a Kill's required list with an empty optional one.
 struct Lists<'a> {
     required: &'a [Bytes],
     optional: &'a [Bytes],
@@ -346,10 +370,10 @@ impl<'a> Lists<'a> {
     /// # Safety
     ///
     /// As for [`parse`].
-    unsafe fn read(open: &native::Open, capacity: u64) -> Result<Self, Failure> {
+    unsafe fn read(required: Tokens, optional: Tokens, capacity: u64) -> Result<Self, Failure> {
         // SAFETY (both): guaranteed by the caller.
-        let required = unsafe { entries(open.required) }?;
-        let optional = unsafe { entries(open.optional) }?;
+        let required = unsafe { entries(required) }?;
+        let optional = unsafe { entries(optional) }?;
         let bytes = [required, optional]
             .into_iter()
             .flatten()
@@ -363,15 +387,6 @@ impl<'a> Lists<'a> {
                 bytes,
             })
             .ok_or(TOO_LARGE)
-    }
-
-    /// # Safety
-    ///
-    /// As for [`parse`].
-    unsafe fn open(&self, mode: Mode) -> Result<(Operation, u64), Failure> {
-        // SAFETY: guaranteed by the caller.
-        let requested = unsafe { self.tokens() }?;
-        Ok((Operation::Open(relayed(mode, &requested)?), self.bytes))
     }
 
     /// Every token nonempty UTF-8, each one once across both lists.
@@ -440,20 +455,23 @@ unsafe fn texts(list: &[Bytes]) -> Result<Texts, Failure> {
 /// The relayed families: a required family this release does not relay is
 /// unsupported; an optional one is never requested.
 fn relayed(mode: Mode, requested: &Requested) -> Result<Open, Failure> {
-    let relayed = |token: &str| families::relayed(token).is_some();
+    every_relayed(requested.required())?;
+    Ok(Open {
+        mode,
+        requested: requested.retain_optional(|token| families::relayed(token).is_some()),
+    })
+}
+
+/// Every required family is one this release relays.
+fn every_relayed(required: &Families) -> Result<(), Failure> {
     require(
-        requested
-            .required()
+        required
             .tokens()
             .iter()
-            .all(|token| relayed(token)),
+            .all(|token| families::relayed(token).is_some()),
         Failure::new(
             UNSUPPORTED_CAPABILITY,
             "this client library does not relay a required family",
         ),
-    )?;
-    Ok(Open {
-        mode,
-        requested: requested.retain_optional(relayed),
-    })
+    )
 }

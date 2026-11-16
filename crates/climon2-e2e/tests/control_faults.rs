@@ -83,12 +83,6 @@ fn shown(period: u64, restoration: u64, hex: &str) -> Value {
     json!({ "send": { "type": 0x49, "hex": format!("{period:016x}{restoration:016x}{hex}") } })
 }
 
-/// A Command final of the wire `result`, with the null status of an
-/// unselected `status-v1`.
-fn command_final(result: Value) -> Value {
-    send(0x4c, json!({ "command_result": result, "status": null }))
-}
-
 /// The fake daemon's Response to the latest request of `kind`.
 fn answered(kind: &str, outcome: &str, result: Value, error: Value) -> Value {
     response(&format!("${kind}"), outcome, result, error)
@@ -946,7 +940,7 @@ fn installed_library_resolves_a_promotion_racing_leave_and_fresh_attempts_stand_
         .unwrap();
     let records = &all[completed + 1..];
     assert_eq!(records.len(), 3, "{records:#?}");
-    assert_final(&records[0], 1, command_result(EXIT, 0));
+    assert_final(&records[0], 1, &native_command(EXIT, 0, None));
     let actual = presented(&records[1], GEOMETRY, 1);
     assert_eq!(actual, &json!({ "period": PERIOD, "geometry": [90, 25] }));
     let ended = presented(&records[2], REVOKED, 1);
@@ -1159,14 +1153,13 @@ fn installed_library_relays_one_command_final_after_the_initial_metadata() {
         assert_terminal(terminal, 1, (outcome, *retry, LEAVE_NOT_REQUIRED), *error);
     }
     let (signalled, _) = finished(step(&report, finishes[0].1));
-    let named = json!({ "present": 1, "reserved": 0, "value": "SIGTERM" });
     assert_final(
         &signalled[2],
         1,
-        json!({ "kind": SIGNAL, "value": 15, "signal_name": named }),
+        &native_command(SIGNAL, 15, Some("SIGTERM")),
     );
     let (second, _) = finished(step(&report, finishes[2].1));
-    assert_final(&second[2], 1, command_result(EXIT, 0));
+    assert_final(&second[2], 1, &native_command(EXIT, 0, None));
     assert_all_released(&report["ledger"]);
 }
 
