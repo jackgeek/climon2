@@ -568,6 +568,34 @@ mod tests {
         );
     }
 
+    /// TRM-01 (pure supplement): each colour the engine reports reaches its
+    /// cell as the same kind of colour: the 16 ANSI colours (normal and
+    /// bright) as themselves, palette entries as indexes, direct colours as
+    /// RGB, and the default as the host's own, for the foreground, the
+    /// background and the underline alike.
+    #[test]
+    fn each_colour_reaches_its_cell_as_the_same_kind() {
+        let coloured = model(
+            4,
+            1,
+            b"\x1b[31;44mA\x1b[0;38;5;200;48;2;1;2;3mB\x1b[0;4;95;58;2;9;8;7mC\x1b[0mD",
+        );
+        let (buffer, _) = painted(&coloured, 4, 2);
+        let colours: Vec<_> = buffer.content()[4..8]
+            .iter()
+            .map(|cell| (cell.fg, cell.bg, cell.underline_color))
+            .collect();
+        assert_eq!(
+            colours,
+            [
+                (Color::Red, Color::Blue, Color::Reset),
+                (Color::Indexed(200), Color::Rgb(1, 2, 3), Color::Reset),
+                (Color::LightMagenta, Color::Reset, Color::Rgb(9, 8, 7)),
+                (Color::Reset, Color::Reset, Color::Reset),
+            ]
+        );
+    }
+
     /// TRM-01 (pure supplement): DECSCUSR's `Ps` for every shape, steady
     /// and blinking; the host's own shape is 0 either way.
     #[test]
