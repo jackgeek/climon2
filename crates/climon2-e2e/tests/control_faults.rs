@@ -1006,9 +1006,9 @@ fn installed_library_relays_one_command_final_after_the_initial_metadata() {
 /// COM-03 Library and Fault (backpressure is the caller's, never a false
 /// timeout): while a Display waits for room in `event_bytes`, the library
 /// reads nothing, so an answer behind it cannot arrive; the Ready
-/// waiting for it is not timed out at `operation_ms` (1 s). Instead,
+/// waiting for it is not timed out at `operation_ms` (3 s). Instead,
 /// once the waiting Display has had no room for `delivery_stall_ms`
-/// (2 s), the connection fails with library `delivery_stalled`: the
+/// (6 s), the connection fails with library `delivery_stalled`: the
 /// Ready stays unanswered for the caller's pending ledger, never
 /// fabricated, and what was queued before is still delivered, then the
 /// diagnostic. Its error states how many records were still undelivered:
@@ -1038,8 +1038,8 @@ fn installed_library_fails_a_stalled_delivery_without_timing_out_its_commands() 
         "metadata_record_bytes": metadata,
         "event_bytes": reserve + one_display + CHARGE + 128,
         "progress_bytes": 1,
-        "operation_ms": 1000,
-        "delivery_stall_ms": 2000,
+        "operation_ms": 3000,
+        "delivery_stall_ms": 6000,
     });
     let then = [
         json!({ "do": "submit", "request": ready(2, 1, CURRENT) }),
@@ -1075,7 +1075,7 @@ fn installed_library_fails_a_stalled_delivery_without_timing_out_its_commands() 
 /// fits `event_records` less its one-record progress reserve, waits until the caller releases what it drained;
 /// once queued, nothing waits, so no stall deadline remains, and a Ready
 /// the daemon never answers then reports `timeout` at `operation_ms`
-/// (300 ms), well before `delivery_stall_ms` (1 s) from the wait.
+/// (300 ms), well before `delivery_stall_ms` (5 s) from the wait.
 #[test]
 fn installed_library_times_commands_out_again_once_waiting_records_are_queued() {
     let package = Package::new();
@@ -1088,7 +1088,7 @@ fn installed_library_times_commands_out_again_once_waiting_records_are_queued() 
         "event_records": 8,
         "progress_records": 1,
         "operation_ms": 300,
-        "delivery_stall_ms": 1000,
+        "delivery_stall_ms": 5000,
     });
     let steps = vec![
         json!({ "do": "create", "peer": peer, "startup": { "limits": limits } }),
