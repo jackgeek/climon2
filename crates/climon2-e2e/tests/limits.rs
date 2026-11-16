@@ -321,3 +321,204 @@ fn installed_library_reports_descriptor_exhaustion_explicitly() {
     assert_all_released(&report["ledger"]);
     package.assert_clean();
 }
+
+/// LIM-02 Library (the progress reserve is not room for ordinary work):
+/// each accepted request reserves its outcome in the event allowance less
+/// the progress reserve, never in the reserve. With room for exactly two
+/// outcomes outside a reserve of one record, or of one outcome's bytes,
+/// two Leaves are accepted at the limit and a third is `queue_full`,
+/// though the whole allowance would hold it.
+#[test]
+fn installed_library_keeps_the_progress_reserve_from_submitted_work() {
+    let package = Package::new();
+    let root = root(&package);
+    let reserve = support::library::CHARGE + 1024;
+    let cases = [
+        json!({ "event_records": 3, "progress_records": 1 }),
+        json!({ "event_bytes": 3 * reserve, "progress_bytes": reserve,
+                "metadata_record_bytes": 1024 }),
+    ];
+    let mut steps = Vec::new();
+    for (index, limits) in cases.iter().enumerate() {
+        let name = index.to_string();
+        let submit =
+            |request: Value| json!({ "do": "submit", "instance": name, "request": request });
+        steps.extend([
+            json!({ "do": "create", "instance": name, "startup": { "limits": limits } }),
+            submit(leave(1, 1)),
+            submit(leave(2, 1)),
+            submit(leave(3, 1)),
+            json!({ "do": "shutdown", "instance": name }),
+            json!({ "do": "run", "instance": name }),
+            json!({ "do": "finish", "instance": name }),
+        ]);
+    }
+    let report = script(&package, &root, json!(steps));
+    for (index, limits) in cases.iter().enumerate() {
+        let start = index * 7;
+        assert_success(step(&report, start + 1));
+        assert_success(step(&report, start + 2));
+        let full = step(&report, start + 3);
+        assert_eq!(full["code"], FULL, "{limits}: {full:#}");
+        assert_failure(full, FULL, "queue_full");
+        let (records, _) = finished(step(&report, start + 6));
+        assert_eq!(records.len(), 2, "{limits}: {records:#?}");
+    }
+    assert_all_released(&report["ledger"]);
+    package.assert_clean();
+}
+
+/// LIM-02 Library and Fault (protected progress stays serviceable): with
+/// an event allowance of four records, two of them the progress reserve,
+/// and a Ready's outcome reserved, a Display fills the ordinary room at its
+/// limit; the Command final after it, a protected record, is queued into
+/// the reserve although nothing was drained; the next Display, one past
+/// the ordinary room, waits, never dropped, until the caller releases the
+/// first delivery, and then arrives in order.
+#[test]
+fn installed_library_serves_protected_records_from_the_progress_reserve() {
+    let package = Package::new();
+    let peer = attached_peer(json!({
+        "ready": [
+            shown(PERIOD, 2, "42"),
+            command_final(json!({ "kind": "exit", "code": 0 })),
+            shown(PERIOD, 2, "43"),
+        ],
+    }));
+    let then = [
+        json!({ "do": "submit", "request": ready(2, 1, CURRENT) }),
+        json!({ "do": "await_snapshot", "gauge": "event_records", "value": 2 }),
+        json!({ "do": "drain", "keep": true, "as": "reserved" }),
+        json!({ "do": "release" }),
+        json!({ "do": "drain", "until": { "display": "43" }, "as": "waited" }),
+        json!({ "do": "shutdown" }),
+    ];
+    let limits = json!({ "limits": { "event_records": 4, "progress_records": 2 } });
+    let mut plan = Plan::new();
+    plan.add("a", attached("a", peer, limits, &then));
+    let steps = plan.steps.clone();
+    let (report, finishes) = plan.run(&package);
+    let reserved = drained(&report, &steps, "reserved");
+    assert_eq!(tags(&reserved), [DISPLAY, FINAL], "{reserved:#?}");
+    assert_eq!(display(&reserved, 1, [PERIOD, 2]), "42");
+    assert_final(&reserved[1], 1, &native_command(EXIT, 0, None));
+    let waited = drained(&report, &steps, "waited");
+    assert_eq!(tags(&waited), [DISPLAY], "{waited:#?}");
+    assert_eq!(display(&waited, 1, [PERIOD, 2]), "43");
+    let (_, terminal) = finished(step(&report, finishes[0].1));
+    assert_detached(terminal, 1);
+    assert_all_released(&report["ledger"]);
+}
+
+/// The fake daemon's attach whose restoration sends `steps` after its
+/// beginning, in place of one Display and the complete.
+fn restoring_peer(steps: Vec<Value>) -> Value {
+    let mut records = attach_records(&ATTACHED);
+    records.truncate(4);
+    records.extend(steps);
+    let mut peer = attached_peer(json!({}));
+    peer["open"] = json!(records);
+    peer
+}
+
+/// `count` Displays of the restoration, each followed by `pause` ms.
+fn paced(count: usize, pause: u64) -> Vec<Value> {
+    (0..count)
+        .flat_map(|_| [shown(PERIOD, 2, "41"), json!({ "pause_ms": pause })])
+        .collect()
+}
+
+/// A restoration whose deadline expired: its records up to the failure,
+/// then the library's `timeout` naming `deadline`, and terminal evidence
+/// failed with a passive retry.
+fn assert_restoration_expired(report: &Value, steps: &[Value], name: &str, deadline: &str) {
+    let records = drained(report, steps, &format!("attached-{name}"));
+    let last = records.last().unwrap();
+    assert_diagnostic(last, 1, ORIGIN_LIBRARY, "timeout");
+    let message = last["diagnostic"]["message"].as_str().unwrap();
+    assert!(message.contains(deadline), "{name}: {message}");
+    assert_eq!(
+        tags(&records[..4]),
+        [RESPONSE, INITIAL_METADATA, GRANTED, RESTORATION_BEGIN]
+    );
+    assert!(
+        records[4..records.len() - 1]
+            .iter()
+            .all(|record| record["tag"] == DISPLAY)
+    );
+}
+
+/// LIM-01 Library and Fault (`restoration_stall_ms` and
+/// `restoration_total_ms`): a restoration is timed from its beginning
+/// until its complete. Displays 600 ms apart keep a 1,500 ms stall deadline
+/// from expiring over 2,400 ms, each queued Display restarting it, and the
+/// restoration completes; one that stops after a Display fails the
+/// connection with library `timeout` at the stall deadline. Displays
+/// 400 ms apart complete within a 2,500 ms total deadline, and go on past
+/// it fail the same way at the total deadline though no gap stalls.
+/// Either failure calls for a passive retry, and the records before it
+/// stay delivered.
+#[test]
+fn installed_library_bounds_a_restoration_by_its_stall_and_total_deadlines() {
+    let package = Package::new();
+    let deadlines = json!({ "limits": {
+        "restoration_stall_ms": 1500, "restoration_total_ms": 2500 } });
+    let completed = |mut steps: Vec<Value>| {
+        steps.push(complete(PERIOD, 2));
+        restoring_peer(steps)
+    };
+    let mut stopped = paced(1, 0);
+    stopped.push(json!("hold"));
+    let groups = [
+        [
+            ("stall-within", completed(paced(4, 600))),
+            ("stall-past", restoring_peer(stopped)),
+        ],
+        [
+            ("total-within", completed(paced(4, 400))),
+            ("total-past", restoring_peer(paced(12, 400))),
+        ],
+    ];
+    for cases in groups {
+        let mut plan = Plan::new();
+        for (name, peer) in cases {
+            let then = if name.ends_with("within") {
+                vec![json!({ "do": "shutdown" })]
+            } else {
+                vec![json!({ "do": "wait_run" })]
+            };
+            plan.add(name, attached(name, peer, deadlines.clone(), &then));
+        }
+        let steps = plan.steps.clone();
+        let (report, finishes) = plan.run(&package);
+        for (name, finish) in &finishes {
+            assert_restoration(&report, &steps, (name, *finish));
+        }
+        assert_all_released(&report["ledger"]);
+    }
+}
+
+/// One restoration case's outcome: one `within` its deadline completes and
+/// the attachment detaches; one `past` it fails with `timeout` naming the
+/// deadline its name starts with.
+fn assert_restoration(report: &Value, steps: &[Value], (name, finish): (&str, usize)) {
+    let (_, terminal) = finished(step(report, finish));
+    if name.ends_with("within") {
+        let records = drained(report, steps, &format!("attached-{name}"));
+        assert_eq!(tags(&records).last(), Some(&RESTORATION_COMPLETE), "{name}");
+        assert_detached(terminal, 1);
+        return;
+    }
+    let deadline = if name.starts_with("stall") {
+        "restoration_stall_ms"
+    } else {
+        "restoration_total_ms"
+    };
+    assert_restoration_expired(report, steps, name, deadline);
+    assert_terminal(
+        terminal,
+        1,
+        (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED),
+        Some((ORIGIN_LIBRARY, "timeout")),
+    );
+}

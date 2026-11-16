@@ -1011,7 +1011,8 @@ fn installed_library_relays_one_command_final_after_the_initial_metadata() {
 /// (2 s), the connection fails with library `delivery_stalled`: the
 /// Ready stays unanswered for the caller's pending ledger, never
 /// fabricated, and what was queued before is still delivered, then the
-/// diagnostic, whose static text costs only its record.
+/// diagnostic. Its error states how many records were still undelivered:
+/// the two `chunk_bytes` records of the second Display (LIM-02, #99).
 #[test]
 fn installed_library_fails_a_stalled_delivery_without_timing_out_its_commands() {
     let package = Package::new();
@@ -1023,7 +1024,7 @@ fn installed_library_fails_a_stalled_delivery_without_timing_out_its_commands() 
     let peer = attached_peer(json!({
         "ready": [
             shown(PERIOD, 2, &big),
-            shown(PERIOD, 2, &big),
+            shown(PERIOD, 2, &big.repeat(2)),
             answered(
                 "ready",
                 "ok",
@@ -1035,7 +1036,7 @@ fn installed_library_fails_a_stalled_delivery_without_timing_out_its_commands() 
     let limits = json!({
         "chunk_bytes": chunk,
         "metadata_record_bytes": metadata,
-        "event_bytes": reserve + one_display + CHARGE,
+        "event_bytes": reserve + one_display + CHARGE + 128,
         "progress_bytes": 1,
         "operation_ms": 1000,
         "delivery_stall_ms": 2000,
@@ -1054,6 +1055,8 @@ fn installed_library_fails_a_stalled_delivery_without_timing_out_its_commands() 
     assert_eq!(tags(&records), [DISPLAY, DIAGNOSTIC], "{records:#?}");
     assert_eq!(display(&records, 1, [PERIOD, 2]), big);
     assert_diagnostic(&records[1], 1, ORIGIN_LIBRARY, "delivery_stalled");
+    let message = records[1]["diagnostic"]["message"].as_str().unwrap();
+    assert!(message.ends_with("undelivered records: 2"), "{message}");
     assert_terminal(
         terminal,
         1,
@@ -1069,7 +1072,7 @@ fn installed_library_fails_a_stalled_delivery_without_timing_out_its_commands() 
 
 /// COM-03 Library and Fault (a wait for event room ends with it): a
 /// Display split into two `chunk_bytes` records, of which only the first
-/// fits `event_records`, waits until the caller releases what it drained;
+/// fits `event_records` less its one-record progress reserve, waits until the caller releases what it drained;
 /// once queued, nothing waits, so no stall deadline remains, and a Ready
 /// the daemon never answers then reports `timeout` at `operation_ms`
 /// (300 ms), well before `delivery_stall_ms` (1 s) from the wait.
@@ -1082,7 +1085,7 @@ fn installed_library_times_commands_out_again_once_waiting_records_are_queued() 
     peer["open"] = json!(records);
     let limits = json!({
         "chunk_bytes": 1,
-        "event_records": 7,
+        "event_records": 8,
         "progress_records": 1,
         "operation_ms": 300,
         "delivery_stall_ms": 1000,

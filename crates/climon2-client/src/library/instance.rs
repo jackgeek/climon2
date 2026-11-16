@@ -262,6 +262,27 @@ unsafe impl Send for Evidence {}
 // SAFETY: as above.
 unsafe impl Sync for Evidence {}
 
+/// Which part of the event allowance a record may use (#99): an
+/// outcome, control, status or restoration boundary is protected progress
+/// and may use the progress reserve; ordinary work (Display, Title,
+/// Notification, Progress changed, Geometry, and the outcome room `submit`
+/// reserves) may not.
+#[derive(Clone, Copy)]
+enum Room {
+    Ordinary,
+    Protected,
+}
+
+impl Room {
+    fn of(event: &Event) -> Self {
+        if event.ordinary() {
+            Self::Ordinary
+        } else {
+            Self::Protected
+        }
+    }
+}
+
 /// What the connection does next.
 pub(super) enum Next {
     /// A failure elsewhere ended the stream.
@@ -583,7 +604,7 @@ impl Shared {
     fn diagnose(&self, state: &mut State, fault: Fault) {
         let event = Event::Diagnostic(fault);
         let reserved = u64::from(state.measures.operations.current);
-        if self.events_fit(state, reserved, 1, event.charge()) {
+        if self.events_fit(state, reserved, (1, event.charge()), Room::Protected) {
             self.queue(state, event);
         }
     }
@@ -661,7 +682,7 @@ impl Shared {
             (operations, u64::from(limits.operations)),
         ];
         fits.into_iter().all(|(need, limit)| need <= limit)
-            && self.events_fit(state, operations, 0, 0)
+            && self.events_fit(state, operations, (0, 0), Room::Ordinary)
     }
 
     /// What each outstanding operation reserves for its outcome: a record's
@@ -671,16 +692,23 @@ impl Shared {
         CHARGE + u64::from(self.limits.metadata_record_bytes)
     }
 
-    /// Whether the event allowance holds every queued and delivered record,
-    /// the outcomes `operations` reserve, and `records` more records of
-    /// `bytes`.
-    fn events_fit(&self, state: &State, operations: u64, records: u64, bytes: u64) -> bool {
+    /// Whether the part of the event allowance `room` may use holds every
+    /// queued and delivered record, the outcomes `operations` reserve, and
+    /// `records` more records of `bytes`.
+    fn events_fit(
+        &self,
+        state: &State,
+        operations: u64,
+        (records, bytes): (u64, u64),
+        room: Room,
+    ) -> bool {
         let measures = &state.measures;
         let reserved = operations.saturating_mul(self.reserve());
+        let (record_limit, byte_limit) = self.allowance(room);
         let fits = [
             (
                 u64::from(measures.event_records.current) + operations + records,
-                u64::from(self.limits.event_records),
+                record_limit,
             ),
             (
                 measures
@@ -688,10 +716,25 @@ impl Shared {
                     .current
                     .saturating_add(reserved)
                     .saturating_add(bytes),
-                self.limits.event_bytes,
+                byte_limit,
             ),
         ];
         fits.into_iter().all(|(need, limit)| need <= limit)
+    }
+
+    /// The records and bytes of the event allowance `room` may use: all of
+    /// it for protected progress, all but the progress reserve, which create
+    /// keeps smaller than the allowance, for ordinary work (#99).
+    fn allowance(&self, room: Room) -> (u64, u64) {
+        let limits = &self.limits;
+        let all = (u64::from(limits.event_records), limits.event_bytes);
+        match room {
+            Room::Protected => all,
+            Room::Ordinary => (
+                all.0 - u64::from(limits.progress_records),
+                all.1 - limits.progress_bytes,
+            ),
+        }
     }
 
     fn accept(&self, state: &mut State, submitted: Submitted) {
@@ -741,7 +784,8 @@ impl Shared {
     pub(super) fn offer(&self, event: Event) -> Option<Event> {
         let mut state = self.lock();
         let reserved = u64::from(state.measures.operations.current);
-        if !self.events_fit(&state, reserved, 1, event.charge()) {
+        let need = (1, event.charge());
+        if !self.events_fit(&state, reserved, need, Room::of(&event)) {
             return Some(event);
         }
         self.queue(&mut state, event);

@@ -637,8 +637,6 @@ enum Expect {
     Left(u64),
     /// The Initial metadata.
     Metadata,
-    /// A Title changed record.
-    Title,
     /// A failed Leave `id` whose known result detached an attachment.
     FailedLeft(u64, (u64, &'static str)),
     /// A Response to `id` with `outcome`, no result and an error.
@@ -664,7 +662,6 @@ fn assert_records(name: &str, records: &[Value], expected: &[Expect]) {
                 assert_eq!(response["error"], no_error(), "{name}: {record:#}");
             }
             Expect::Metadata => assert_header(record, INITIAL_METADATA, 1),
-            Expect::Title => assert_header(record, TITLE, 1),
             Expect::FailedLeft(id, (origin, code)) => {
                 let response = assert_response(record, 1, *id, FAILED);
                 assert_eq!(response["result_tag"], LEFT, "{name}: {record:#}");
@@ -922,14 +919,13 @@ fn installed_library_reports_lost_and_late_answers_truthfully_without_replay() {
                 json!({ "open": [
                     opened(&SELECTED),
                     initial(json!("t")),
-                    title_changed(json!("x")),
                     send(0x4d, daemon_error("internal_error")),
                 ] }),
-                json!({ "limits": { "event_records": 3, "progress_records": 1 } }),
+                json!({ "limits": { "event_records": 2, "progress_records": 1 } }),
                 &alone,
             ),
             drained: None,
-            records: vec![Expect::Opened(1), Expect::Metadata, Expect::Title],
+            records: vec![Expect::Opened(1), Expect::Metadata],
             terminal: (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED),
             error: Some(daemon("internal_error")),
             kinds: &["hello", "open"],
