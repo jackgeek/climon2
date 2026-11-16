@@ -8,6 +8,7 @@ pub mod control;
 mod pty;
 mod session;
 mod startup;
+mod status;
 
 use climon2_platform::{
     daemon::{Readiness, ReadinessWriter},

@@ -655,6 +655,25 @@ fn utc_times_are_exact_calendar_milliseconds() {
     }
 }
 
+/// STA-07 (codec case): a change time is written from milliseconds since
+/// the Unix epoch exactly, to the millisecond, from the epoch itself to the
+/// last millisecond of year 9999; one millisecond later has no four-digit
+/// year and is no UTC time.
+#[test]
+fn utc_times_are_written_from_unix_milliseconds() {
+    for (millis, text) in [
+        (0, "1970-01-01T00:00:00.000Z"),
+        (1, "1970-01-01T00:00:00.001Z"),
+        (1_800_000_000_000, "2027-01-15T08:00:00.000Z"),
+        (1_800_000_011_999, "2027-01-15T08:00:11.999Z"),
+        (253_402_300_799_999, "9999-12-31T23:59:59.999Z"),
+    ] {
+        assert_eq!(Utc::from_unix_millis(millis), Some(utc(text)), "{millis}");
+    }
+    assert_eq!(Utc::from_unix_millis(253_402_300_800_000), None);
+    assert_eq!(Utc::from_unix_millis(u64::MAX), None);
+}
+
 /// COM-02 / COM-06 / STA-07 (codec case): only the two attention states
 /// carry a nonnull episode; Status changed never carries the final transition.
 #[test]
