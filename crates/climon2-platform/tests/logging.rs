@@ -1,6 +1,6 @@
 use climon2_core::SessionId;
 use climon2_platform::logging::{
-    LogFile, Role, client_log_name, library_log_name, prune, timestamp,
+    LogFile, Role, client_log_name, library_log, library_log_name, prune, timestamp,
 };
 use std::{
     fs,
@@ -135,6 +135,39 @@ fn library_log_name_is_the_utc_second_and_pid() {
         library_log_name(at, 4242).unwrap(),
         "library-20261029T000405Z-4242.log"
     );
+}
+
+/// #116: each of the monitor's library instances for a session logs in
+/// that session's private log directory, named by the UTC second, the pid
+/// and its connection generation, so a retry within the same second never
+/// collides with the attempt before it.
+#[test]
+fn each_monitor_library_instance_logs_apart_by_its_generation() {
+    let home = tempfile::tempdir().unwrap();
+    let before = SystemTime::now();
+    let [first, second] =
+        [1, 2].map(|generation| library_log(home.path(), &id(), generation).unwrap());
+    let directory = home.path().join("logs").join(id().as_str());
+    assert_eq!(first.parent(), Some(directory.as_path()));
+    assert_eq!(
+        fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let names =
+        [&first, &second].map(|path| path.file_name().unwrap().to_str().unwrap().to_owned());
+    for (name, generation) in names.iter().zip([1, 2]) {
+        let pid = std::process::id();
+        let stamp = name
+            .strip_prefix("library-")
+            .and_then(|rest| rest.strip_suffix(&format!("-{pid}-{generation}.log")))
+            .unwrap();
+        let named = library_log_name(before, pid).unwrap();
+        assert_eq!(
+            stamp.len(),
+            named.len() - format!("library--{pid}.log").len()
+        );
+    }
+    assert_ne!(first, second);
 }
 
 /// #25: prune only old non-live session logs and old general logs, never metadata.

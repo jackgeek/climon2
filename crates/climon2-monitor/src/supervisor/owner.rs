@@ -139,7 +139,7 @@ impl StartupData {
         generation: u64,
     ) -> std::io::Result<Self> {
         let id = &metadata.session_id;
-        let log = climon2_platform::logging::library_log(context.home.root(), id)?;
+        let log = climon2_platform::logging::library_log(context.home.root(), id, generation)?;
         let guid: Guid = id.as_str().parse().map_err(std::io::Error::other)?;
         let path = |path: &Path| path.as_os_str().as_bytes().to_vec();
         let (take_control_enabled, take_control_byte) = context
