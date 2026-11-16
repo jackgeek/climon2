@@ -116,7 +116,11 @@ impl Selector {
         let block = Block::bordered().border_type(BorderType::Double);
         let inner = block.inner(outer);
         block.render(outer, buffer);
-        let status = rows.iter().map(|row| row.status.width()).max().unwrap_or(0);
+        let status = rows
+            .iter()
+            .map(|row| row.status.width())
+            .max()
+            .unwrap_or_default();
         let visible = usize::from(inner.height);
         let highlighted = self.highlighted(rows);
         let first = highlighted.map_or(0, |index| (index + 1).saturating_sub(visible));

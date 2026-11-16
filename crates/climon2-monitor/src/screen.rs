@@ -55,16 +55,17 @@ impl Screen {
         Ok(screen)
     }
 
-    /// The next frame is drawn at `size`.
+    /// The next frame is drawn at `size`, and painted whole: after a resize
+    /// the host's screen may no longer hold the frame last painted.
     pub(crate) fn resize(&mut self, size: TerminalSize) {
         self.size = size;
+        self.painted = Buffer::default();
     }
 
-    /// Paints `scene`: always when `force`, otherwise only when its frame
-    /// differs from the one painted.
-    pub(crate) fn show(&mut self, scene: &Scene<'_>, force: bool) -> io::Result<()> {
+    /// Paints `scene` unless its frame is the one painted.
+    pub(crate) fn show(&mut self, scene: &Scene<'_>) -> io::Result<()> {
         let frame = self.frame(scene);
-        if !force && frame == self.painted {
+        if frame == self.painted {
             return Ok(());
         }
         self.paint(frame)

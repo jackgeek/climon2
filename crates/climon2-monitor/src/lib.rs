@@ -166,7 +166,7 @@ impl Monitor {
             discovery,
             supervisor,
         };
-        monitor.show(true).map(|()| monitor)
+        monitor.show().map(|()| monitor)
     }
 
     /// Acts on host events until an ending, then shuts every client down.
@@ -192,7 +192,7 @@ impl Monitor {
         let ending = self.handle(event)?;
         if ending.is_none() {
             self.collect();
-            self.show(false)?;
+            self.show()?;
         }
         Ok(ending)
     }
@@ -202,16 +202,15 @@ impl Monitor {
             Event::End(ending) => Ok(Some(ending)),
             Event::Resize(size) => {
                 self.screen.resize(size);
-                self.show(true).map(|()| None)
+                self.show().map(|()| None)
             }
             Event::Input(bytes) => Ok(self.input(bytes)),
             Event::Idle => Ok(None),
         }
     }
 
-    /// Paints the current scene: always when `force`, otherwise only when it
-    /// changed.
-    fn show(&mut self, force: bool) -> io::Result<()> {
+    /// Paints the current scene when it differs from what the screen shows.
+    fn show(&mut self) -> io::Result<()> {
         let rows = self.registry.rows();
         let scene = Scene {
             introduction: &self.introduction,
@@ -219,7 +218,7 @@ impl Monitor {
             selector: &self.selector,
             incomplete: self.registry.incomplete(),
         };
-        self.screen.show(&scene, force)
+        self.screen.show(&scene)
     }
 
     /// Applies what discovery and the supervisor reported since the last
@@ -260,10 +259,12 @@ impl Monitor {
         }
     }
 
-    /// Acts on each byte in turn until one ends the monitor.
+    /// Acts on each byte in turn until one ends the monitor. The end of the
+    /// read goes where typed keys go: past the open key introduction to the
+    /// selector, which ignores it while closed.
     fn input(&mut self, bytes: &[u8]) -> Option<Ending> {
         let ending = bytes.iter().find_map(|&byte| self.act(byte));
-        if ending.is_none() && !self.introduction.is_open() && self.selector.is_open() {
+        if !self.introduction.is_open() {
             self.selector.read_ended(&self.registry.rows());
         }
         ending
