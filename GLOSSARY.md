@@ -230,6 +230,10 @@ _Avoid_: Session status, daemon outcome
 The status a monitor shows for a session row without a current daemon status: Starting while its client starts, Awaiting resources while it cannot be admitted, Unavailable when it cannot be reached or reports no status, and Disconnected once its connection is lost. The monitor's own enclosing session has no row at all. A row never seen connected is dropped, not shown Disconnected, once its session is proven gone; a row that was connected keeps Disconnected with its history.
 _Avoid_: Error state, dead, offline, unknown status
 
+**Resource-blocked**:
+A session row the monitor has not yet given a client because the resources that client, or its release, would reserve cannot be admitted now; the row shows Awaiting resources and is reconsidered fairly. It is local availability, not a daemon status.
+_Avoid_: Capped, omitted, queued, evicted
+
 **Final outcome**:
 A session command's authoritative result, its exact exit code or signal, which a monitor row shows as Succeeded for exit zero and Failed otherwise, and keeps after the connection ends.
 _Avoid_: Completion status, exit status, disconnection

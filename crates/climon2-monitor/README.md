@@ -16,8 +16,9 @@ control and painting of the selected session (#108), the input router that
 sends typed keys to it (#109), and switching, revocation, taking control back
 and Enter on Starting and Unavailable rows (#110), initial selection
 (#266), paste, mouse and focus (#111), the selector's search, navigation and footer (#113), viewing, acknowledgement, the prefix+j attention jump and the host attention reports (#114), toasts and the bell (#115), disconnection, read-only history
-and passive recovery (#116), and memory accounting, bounded history and the
-render and work cadence (#119). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
+and passive recovery (#116), memory accounting, bounded history and the
+render and work cadence (#119), and admission, library loading and fair
+scheduling (#120). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
 
 ## Startup, before the host terminal changes
 
@@ -178,7 +179,7 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   second after the previous one ended, so passes never overlap, bounded by
   `scheduling.probes` and `monitor.limits.discovery` (`pass_ms`,
   `batch_records`, `batch_bytes`, `metadata_file_bytes`, `metadata_depth`;
-  `discovery.stall_ms` is not applied, #120). The pass deadline runs from the
+  `discovery.stall_ms` is not applied: an open owner question on #120). The pass deadline runs from the
   pass's start once it has reached an entry or started a probe. Opening the
   selector requests nothing of discovery, so it can neither start a pass
   early nor overlap one. Each batch reaches the UI thread as it is probed. It never deletes metadata.
@@ -222,11 +223,12 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
 - **The client supervisor** (`supervisor.rs`) has its own thread. It loads
   each release once through `climon2_platform::library::Loader` on a worker
   thread (at most `scheduling.loads` at once; a session waiting on its release
-  holds no start slot) and starts clients newest created first, then
-  ascending session ID, at most `scheduling.starts` at once until each opens
-  or fails. Each instance has an owner thread that creates it with the
-  effective `monitor.limits` (`client_bytes` is all of `memory.client_bytes`:
-  the monitor reserves no model capacity yet), both client keys and the log
+  holds no start slot) and starts clients fairly, at most `scheduling.starts`
+  at once until each opens or fails, each once admission reserves it
+  ([below](#admission-and-fair-scheduling-120)). Each instance has an owner
+  thread, with the stack admission reserved, that creates it with the
+  effective `monitor.limits` (`client_bytes` is the library's share of
+  `memory.client_bytes`, #119), both client keys and the log
   `logs/<session ID>/library-<stamp>-<pid>-<generation>.log`, submits monitor Open (request
   1, geometry 0x0; `daemon-wire-v1` and `monitor-v1` required, `title-v1`,
   `status-v1`, `notification-v1`, `progress-v1` and `focus-v1` optional),
@@ -245,10 +247,9 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   then released, its start slot is free (only instances still creating or
   opening hold one), and its owner destroys it. Whether it is retried is
   [#116's recovery](#disconnection-read-only-history-and-passive-recovery-116).
-  Starts are newest created first only
-  among the sessions waiting together: fairness across discovery batches
-  and resource admission arrive with #120. The general log records `client
-  library loaded` or `client library refused`, `client starting
+  The general log records `client
+  library loaded`, `client library loading slowly` or `client library
+  refused`, `client starting
   session=<id>`, `client published`, `client failed`, `client stopped`,
   `client ended`, `client retry scheduled session=<id> delay_ms=<n>` and
   client diagnostics, content-free.
@@ -342,11 +343,11 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   [#116's](#disconnection-read-only-history-and-passive-recovery-116).
 - **Terminals** (`terminal.rs`, pure): each session has one `climon2-vt`
   model, kept by session ID for the whole run and bounded by
-  `memory.client_bytes` and `history.max_rows`. The model and the library
-  are each bounded by all of `memory.client_bytes`, so a client may use up to
-  twice it: an approved POC gap, recorded on
-  [#120](https://github.com/jackgeek/climon2/issues/120), which divides that
-  budget. Its client's records drive it: a grant
+  `memory.client_bytes` and `history.max_rows`: the model holds what the
+  library's share leaves of that budget, never a second allowance (#119,
+  closing the gap recorded on
+  [#120](https://github.com/jackgeek/climon2/issues/120)). Its client's
+  records drive it: a grant
   starts a control period; each Restoration begin stages a separate model
   (a newer one supersedes it, and it never becomes current); its Display
   bytes build it; Restoration complete replaces the model and its history
@@ -455,8 +456,9 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   after the first pass are not waited for. While it collects, the body
   reads `Connecting to N sessions (M ready)` (`1 session` for one, owner
   decision on #266): N clients started for the first pass, M of them no
-  longer starting. Awaiting resources does not
-  exist yet (#120).
+  longer starting. A resource-blocked row, Awaiting resources (#120), is
+  settled: collection never waits for it, and while it awaits resources it
+  is never eligible.
 - **Selection.** When collection ends, the monitor selects and acquires the
   first eligible row in row order: connected, its status known and not
   final. Not-connected rows, a connected row without `status-v1`, final and
@@ -482,8 +484,11 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   included, is selected and acquired; a Starting row, or an Unavailable row
   with no connected client (uncertain or failed), is selected but never
   acquired; disconnected and final rows are selected read-only (#116,
-  below). The monitor's own session has no row to press Enter on. Awaiting resources rows arrive with
-  #120, which proves their Enter.
+  below). The monitor's own session has no row to press Enter on. An
+  Awaiting resources row is selected read-only like a Starting one, with its
+  condition, any retained cache and its overlay, and never acquired; once
+  admitted and connected it shows the placeholder until the user acquires
+  (#120).
 - **Switching** keeps control of the session switched away from in the
   background: its client stays, its model stays live, and it gets no
   input or resize. Enter on it again acquires it, which the daemon answers
@@ -542,8 +547,9 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   placeholder once it opens, until the user acquires. A recoverably refused
   release is loaded again, once, when a waiting session's retry is due. A
   session discovery proves gone (its daemon not running) is never retried
-  again (owner decision, 2026-11-16). Shutdown starts no retry. Fairness
-  and admission across retries are #120's; #119 reuses this path for a
+  again (owner decision, 2026-11-16). Shutdown starts no retry. A retry
+  that is due waits for its start like a first start, in its own lane, and
+  through admission (#120); #119 reuses this path for a
   session dropped at its memory limit.
 - **Rows** (`registry.rs`). A row learns its recovery with its end: retrying
   with its diagnostic, or rejected for good with why. A retry's new
@@ -579,6 +585,68 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   is Unavailable with that diagnostic, its model keeps the page its
   accepted output produced, read-only like any retained cache, and the
   client is retried passively through this path. Other sessions go on.
+
+## Admission and fair scheduling (#120)
+
+- **Admission** (`supervisor/admission.rs`, pure). Every reservation is
+  admitted whole or not at all against aggregate accounting: memory within
+  `memory.total_bytes` less the monitor's parser, and descriptors within the
+  process's soft descriptor limit (read afresh each time, so a raised limit
+  admits more) less `resources.descriptor_headroom`. Each holder holds one
+  reservation, so a release counts once however many clients use it.
+  - Before the dynamic loader opens a release: its configured
+    `resources.release_bytes` and `resources.descriptors_per_load`, and the
+    load thread's stack (`resources.stack_bytes`, which that thread gets),
+    held until the load returns. A refused release whose handle the loader
+    never opened (missing, missing a dependency, of another architecture, or
+    no load thread) is freed; any other handle and its reservation stay
+    until exit.
+  - Relaxed pre-load qualification (confirmed 2026-11-08): once loaded, the
+    release's qualified requirements come from its bootstrap. Qualified
+    workers above `resources.max_workers_per_client`, or a qualified instance
+    allocation the library's share of `memory.client_bytes` cannot hold
+    beside its queues and one frame, reject the release explicitly and for
+    good, before any create. Otherwise its reservation is raised to the
+    greater of configured and qualified before any create; a raise that does
+    not fit leaves it resource-blocked with its handle loaded.
+  - Before each create: the library's share of `memory.client_bytes`, the
+    owner's stack and each qualified worker's stack (each the greater of
+    `resources.stack_bytes` and the qualified stack) and the greater of
+    `resources.descriptors_per_client` and the qualified instance
+    descriptors, held until the instance is destroyed and its owner joined,
+    so partially started instances stay counted.
+  - The bytes admission holds are counted beside the parser, unapplied
+    reports and every model when history is kept within
+    `memory.total_bytes` (#119's pressure policy).
+- **Resource-blocked rows.** A session admission refuses, or whose release
+  it refuses, shows `Awaiting resources` in the not-connected group, sorted
+  by when it entered that condition (a changed reason keeps that time), with
+  what is short in the top row's error slot. It is reconsidered at most once
+  per `retry.admission_ms`, never in a busy loop; freed capacity admits it at
+  its next reconsideration.
+- **Fair starts** (`supervisor/queue.rs`, pure). First starts run newest
+  created first, then ascending session ID; after
+  `scheduling.newer_start_burst` newer starts the oldest waiting eligible one
+  has its turn. Passive retries wait in their own lane in arrival order, and
+  the lanes take turns when both have a session ready (owner decision on
+  #120). A session whose release is still loading, or that waits out its
+  admission interval, is passed over and keeps its place, so a stalled
+  release holds up no other release's sessions. A Kill-only instance for a
+  resource-blocked row would be admitted at the head of the queue (owner
+  decision on #120); #117 builds Delete, which needs it.
+- **Slow loads.** A load running past `deadlines.load_ms` is logged once as
+  `client library loading slowly` and its waiting rows, still Starting, show
+  `library loading slowly` in the top row's error slot; it is never aborted
+  (owner decision on #120). On glibc a stalled load also holds up every new
+  thread (the loader's TLS lock), so meanwhile no new client or discovery
+  probe starts, even of a loaded release; running clients, the selector and
+  exit carry on. Whether to keep threads ready for that is an open owner
+  question on #120.
+- **Not yet:** `discovery.stall_ms` is not applied; mandatory identity
+  exhaustion has no coordinated failure (it needs #118's fail-stop); model
+  growth, renderer, search, toast and identity state are not reserved at
+  admission; and the operating system's thread limit is met only as a
+  failed thread start (Unavailable, retried passively).
 
 ## Paste, mouse and focus (#111)
 
@@ -847,7 +915,7 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Host too small | `Terminal too small` | `screen.rs` |
 | Placeholder | `This session is being viewed elsewhere.`, `Press <key> to take control` | `screen.rs` |
 | Selected without a connected client | `No terminal content is available.`, then the row status | `screen.rs` |
-| Row and top-row statuses (#107) | `Needs attention`, `Acknowledged`, `Running`, `Idle`, `Succeeded`, `Failed (exit <code>)`, `Failed (signal <number>)`, `Starting`, `Unavailable`, `Disconnected` | `registry.rs` |
+| Row and top-row statuses (#107; `Awaiting resources` #120) | `Needs attention`, `Acknowledged`, `Running`, `Idle`, `Succeeded`, `Failed (exit <code>)`, `Failed (signal <number>)`, `Starting`, `Awaiting resources`, `Unavailable`, `Disconnected` | `registry.rs` |
 | Top-row control (#108) | `Acquiring`, `Restoring`, `Controlling`, `Not controlling`, `Ended` | `terminal.rs` |
 | Top-row control slot while the canvas is scrolled back into history (#112, owner decision 2026-11-16) | `History` | `screen.rs` |
 | Canvas, above the oldest history row kept once older rows were discarded (#112; the glossary's truncation notice, owner decision 2026-11-16) | `[climon2: older session scrollback was discarded]` | `screen.rs` |
@@ -868,6 +936,9 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Top row's error slot: a client failed after its delivery congestion outlasted `deadlines.delivery_stall_ms` (#119) | `delivery congestion lasted past <N> ms` | `supervisor.rs` |
 | Top row's error slot: an update the session's model refused, its client dropped and retried (#119) | `terminal model over its limit: <needed> bytes needed, <limit> allowed` | `terminal.rs` |
 | Top row's error slot, and `Not reconnecting: <why>` over the retained cache: a session whose connection generations are exhausted (#119) | `connection generations are exhausted` | `supervisor.rs` |
+| Top row's error slot: a resource-blocked row, what admission found short (#120) | `not enough memory: <needed> bytes needed, <available> bytes available`, `not enough file descriptors: <needed> needed, <available> available` | `supervisor/admission.rs` |
+| Top row's error slot, and `Not reconnecting: <why>`: a release whose qualified requirements the limits never admit (#120) | `the release needs <n> worker threads for each client; monitor.limits.resources.max_workers_per_client allows <m>`, `the release needs <n> bytes for each client library; its share of monitor.limits.memory.client_bytes is <m>` | `supervisor/admission.rs` |
+| Top row's error slot: a row whose release has loaded past `deadlines.load_ms` (#120, owner wording 2026-11-16) | `library loading slowly` | `registry.rs` |
 | Top row's error slot: a request after the client's last request ID (#119) | `the client's request IDs are exhausted` (after `Input not sent (<N> bytes; earlier input was accepted): ` for input) | `supervisor.rs`, `terminal.rs` |
 
 ## Specification mapping
@@ -1035,6 +1106,14 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | REC-01, COM-05 (pure supplement over the fake library): a failure is retried in the next generation only after the old instance is destroyed and its owner joined, with backoff doubling to the cap, from the start again after an open; permanent rejections, invalid configuration, known outcomes and unconfirmed cleanup retry nothing, scarce resources are retried, also a client the monitor stopped itself, and an Open refusal is Unavailable with the refusal; a missing library is loaded again when due, a wrong release never; a session proven gone is never retried, a retry already scheduled dropped; each loader refusal, create refusal and terminal evidence's retry class (#116) | `a_failed_client_is_retried_after_its_cleanup_in_a_fresh_generation`, `rejections_known_outcomes_and_unconfirmed_cleanup_retry_nothing`, `a_missing_library_is_loaded_again_when_its_retry_is_due`, `a_session_proven_gone_is_never_retried`, `a_scheduled_retry_is_dropped_once_its_session_is_gone`, `only_a_refusal_a_later_load_may_not_repeat_is_retried` (`src/supervisor.rs`), `create_refusals_and_terminal_evidence_say_whether_to_retry` (`src/supervisor/client.rs`) |
 | REC-01 (pure supplement): the delay doubles from `retry.initial_ms` to `retry.cap_ms` (at the cap and one doubling past it), saturating; jitter over the whole spread at its ends and one past, within the cap; fresh random values (#116) | `the_delay_doubles_from_its_start_to_its_cap`, `jitter_spreads_each_delay_either_way_within_the_cap`, `each_random_value_is_fresh` (`src/supervisor/backoff.rs`) |
 | REC-02 (pure supplement): rows keep recovery through a retry's Starting, never a first start; a reconnect clears recovery and the old stale status (#107's review); rejection replaces retrying; a gone session stops recovery for good, not for connected or final rows; the last applied content is retained read-only across generations, none before one; only rows neither connected nor final show it; the placeholder, history or no content under the overlay; the overlays (one wider than the canvas clipped) and diagnostic; the wheel scrolls read-only history on its normal screen only (#116) | `recovery_follows_a_lost_client_until_it_reconnects_or_its_session_is_gone` (`src/registry.rs`), `the_last_applied_content_is_retained_read_only` (`src/terminal.rs`), `a_selected_row_without_a_view_shows_the_placeholder_its_history_or_no_content`, `only_a_row_neither_connected_nor_final_shows_its_retained_history`, `the_wheel_scrolls_read_only_history_only_on_its_normal_screen` (`src/lib.rs`), `a_lost_session_shows_its_history_read_only_under_its_overlay` (`src/screen.rs`) |
+| DSC-02 (Monitor), LIM-06 (Monitor, start case): stalled newer starts with one start slot and a burst of one start newest first with the oldest's turn after each newer start; every session started; the selector lists them and prefix+x exits meanwhile (#120) | `stalled_newer_starts_give_the_oldest_session_its_turn_while_the_monitor_responds` (e2e) |
+| DSC-02, LIM-06 (pure supplement): newest first with ascending ID ties; the oldest's turn after exactly the burst, not before; continuous newer arrivals never starve the oldest; retries in arrival order alternate with first starts; ineligible sessions (stalled release, admission interval) keep their place and block no other (#120) | `first_starts_run_newest_first_with_ascending_id_ties`, `the_oldest_gets_a_turn_after_each_burst_of_newer_starts`, `continuous_newer_arrivals_never_starve_the_oldest`, `retries_and_first_starts_take_turns`, `ineligible_sessions_keep_their_place_and_block_no_other` (`src/supervisor/queue.rs`) |
+| DSC-02 (Fault: one release stalled), Linux amendment, `deadlines.load_ms` owner decision: a FIFO-stalled load shows `library loading slowly`, never aborted; the loaded release's running client still reports, the selector and exit respond; once the open returns the release is refused and a session created meanwhile starts (#120) | `a_stalled_release_load_is_reported_and_never_holds_up_the_monitor` (e2e); `a_slow_load_is_reported_and_never_blocks_a_loaded_release` (`src/supervisor.rs`) |
+| LIM-04 (Monitor, Fault: memory), relaxed qualification (raised reservation), Awaiting resources rows (not-connected order, Enter read-only with condition and diagnostic, never acquired, placeholder once admitted until the take-control key acquires) (#120) | `a_resource_blocked_session_awaits_resources_until_capacity_is_freed` (e2e) |
+| LIM-04 (Monitor, Fault: operating-system limits): the soft descriptor limit less the headroom bounds admission; raising it admits the blocked session (#120, Linux) | `the_operating_system_descriptor_limit_bounds_admission_until_it_rises` (e2e); `the_descriptor_headroom_below_the_os_limit_bounds_admission` (`src/supervisor.rs`) |
+| LIM-04 (pure supplement): reservations at capacity and one past, for memory and descriptors; one reservation per holder (shared release counted once, raised in place, kept when a raise fails); release and load thread together or neither; freeing; configured, loader, qualified (greater) and per-instance amounts; partially started instances held until joined; a blocked session admitted once capacity is freed; the release reserved before load and raised before create at the boundary, its handle loaded once (#120) | `a_reservation_is_admitted_at_its_capacity_and_refused_one_past_it`, `each_holder_counts_once_until_freed`, `holdings_reserved_together_are_admitted_whole_or_not_at_all`, `a_release_reserves_its_configured_amount_then_the_greater_qualified_one`, `an_instance_reserves_its_share_stacks_and_descriptors` (`src/supervisor/admission.rs`), `a_session_admission_cannot_reserve_is_resource_blocked_until_capacity_is_freed`, `a_release_is_raised_to_its_qualified_reservation_before_any_create` (`src/supervisor.rs`) |
+| LIM-01 (Monitor), relaxed qualification: qualified workers above `resources.max_workers_per_client` and a library share too small for the qualified instance allocation rejected explicitly, at the limit and one past, before any create (#120) | `too_many_qualified_workers_is_an_explicit_rejection_before_any_create` (e2e); `too_many_qualified_workers_is_an_explicit_rejection` (`src/supervisor.rs`), `unsupported_release_requirements_are_rejected_explicitly` (`src/supervisor/admission.rs`) |
+| Awaiting resources rows (pure supplement): label, not-connected order by entry time kept across reasons, diagnostic, settled for the startup wait, never eligible or the attention target; loading slowly keeps Starting and awaited (#120) | `awaiting_resources_rows_are_settled_and_never_chosen` (`src/registry.rs`) |
 | #74 risk proof: plain and hooked sibling binaries without nested builds | `cargo_builds_the_plain_or_hooked_monitor_binary_for_its_tests` (`tests/build.rs`, plain and hooked runs); fixtures `workspace_binaries_contain_test_hooks`; xtask `release_check_builds_unhooked_binaries_in_a_private_target` |
 | #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`; Linux `linux_packaging_rejects_a_non_x86_64_or_hooked_monitor`; macOS `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
 
@@ -1044,10 +1123,10 @@ host, which leaves the session viewed (pure supplement only, `a_toast_is_dismiss
 copy (a host manual check), INP-04's disconnect case in the middle of a
 paste or gesture (the selection stays on the lost session, so nothing
 else could receive the rest, and a reconnect replays none of it),
-Delete in the selector (#117) and its line in the key introduction, Enter on Awaiting resources rows (#120),
-Awaiting resources
-ending initial collection (#120), resource admission and fairness, including newest-first starts
-across discovery batches, and `discovery.stall_ms` (#120), a session
+Delete in the selector (#117) and its line in the key introduction,
+`discovery.stall_ms` and mandatory identity exhaustion's coordinated failure
+(#120's open questions; the latter needs #118), new clients of a loaded
+release during a stalled load on glibc (#120's open question), a session
 dropped at its memory limit and retried (#119), the fail-stop after an
 unconfirmed shutdown or cleanup (#118), and the universal archive's runtime on both architectures, which
 only CI's `dist` and `archive` jobs build and execute.
