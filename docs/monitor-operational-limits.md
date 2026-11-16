@@ -79,9 +79,16 @@ the current model (the 32 KiB reserve and both screens, 4,850,887 bytes) and
 the first 1000-row history chunk, which holds its recent page and is admitted
 at the first scroll (12,115,200 bytes), beside the monitor's one shared vte
 parser (2,097,152 bytes,
-[#166](https://github.com/jackgeek/climon2/issues/166)). `memory.total_bytes`
-must hold all three, 19,063,239 bytes; `memory.client_bytes` the model and
-page, 16,966,087 bytes, since the parser is the monitor's, not a client's;
+[#166](https://github.com/jackgeek/climon2/issues/166)).
+`memory.client_bytes` is split between the session's client library and its
+terminal model ([#119](https://github.com/jackgeek/climon2/issues/119)): the
+library's `client_bytes` is its request and event queues, one wire frame
+and its 1,048,576-byte instance allocation (3,407,872 bytes by default,
+which must fit `memory.client_bytes`), and the model may hold the rest,
+never a second allowance. `memory.total_bytes` must hold the parser, the
+model and page and the library's share, 22,471,111 bytes by default;
+`memory.client_bytes` the model, page and library share, 20,373,959 bytes
+by default, since the parser is the monitor's, not a client's;
 `memory.history_bytes_total`, then `history_bytes_per_session`, must hold
 the page. Each total is checked before the budgets it contains, so a refusal
 names the limit to raise, with both byte counts. `exec` does not make this
@@ -91,7 +98,8 @@ The check guarantees admission, not restoration. A restoration is staged in a
 second model beside the current one, whose first history chunk never yields
 to it, and a restoration carries history, so it admits its own first chunk:
 staging one at 500x200 needs room for both models, at least 33,932,174 bytes
-in a client's budget and, with the parser, 36,029,326 in the total (ADR
+in the model's share of a client's budget and, with the parser, 36,029,326
+in the total beside the library's share (ADR
 0007's 32.36 MiB per staged pair), more once the current model's history has
 grown. Limits below that admit the largest session but cannot stage its
 restoration, which follows every monitor-mode geometry change

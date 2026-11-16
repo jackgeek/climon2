@@ -344,17 +344,19 @@ fn cfg01_hints_and_bell_are_independent_booleans() {
 /// CFG-01 (Contract): every setting accepts the lower limit of its range,
 /// except where the rules between settings forbid it: each event allowance
 /// must exceed its progress reserve, so its smallest valid value is 2, and
-/// the event bytes must fit the aggregate queue, client and total budgets.
+/// the event bytes must fit the aggregate queue, client and total budgets;
+/// the client budget, and the total containing it, must hold the client
+/// library's share: one request byte, two event bytes, a one-byte frame and
+/// its 1,048,576-byte instance allocation (#119).
 #[test]
 fn cfg01_every_setting_accepts_the_lower_limit_of_its_range() {
     let settings: Vec<_> = FIELDS
         .iter()
         .map(|(path, kind)| match *path {
-            "queues.event_bytes"
-            | "queues.event_records"
-            | "memory.total_bytes"
-            | "memory.client_bytes"
-            | "memory.queue_bytes_total" => (*path, json!(2)),
+            "memory.total_bytes" | "memory.client_bytes" => (*path, json!(1_048_580)),
+            "queues.event_bytes" | "queues.event_records" | "memory.queue_bytes_total" => {
+                (*path, json!(2))
+            }
             _ => (*path, json!(kind.min)),
         })
         .collect();
@@ -665,7 +667,7 @@ fn cfg01_client_queues_fit_the_queue_and_client_budgets() {
     let roomy_client = at("memory.client_bytes", TOTAL);
     for queue in ["request_bytes", "event_bytes"] {
         let path = format!("queues.{queue}");
-        accepted(&[at(&path, budget)]);
+        accepted(&[roomy_client.clone(), at(&path, budget)]);
         assert!(
             refused(&[roomy_client.clone(), at(&path, budget + 1)]).contains(&format!(
                 "monitor.limits.queues.{queue} (67108865) may not exceed monitor.limits.memory.queue_bytes_total (67108864)"
@@ -677,6 +679,33 @@ fn cfg01_client_queues_fit_the_queue_and_client_budgets() {
             ))
         );
     }
+}
+
+/// LIM-01 (Monitor: the client budget split, #119): the client library's
+/// share of a client's budget, its request and event queues, one wire frame
+/// and its 1,048,576-byte instance allocation (3,407,872 bytes by default),
+/// fits that budget: accepted at the limit, refused one byte short, and an
+/// overflowing share is refused rather than wrapped.
+#[test]
+fn lim01_the_client_library_share_fits_the_client_budget() {
+    let small_history = at("memory.history_bytes_per_session", 1);
+    accepted(&[small_history.clone(), at("memory.client_bytes", 3_407_872)]);
+    assert!(
+        refused(&[small_history, at("memory.client_bytes", 3_407_871)]).contains(
+            "the client library's share (monitor.limits.queues.request_bytes + monitor.limits.queues.event_bytes + monitor.limits.payload.wire_frame_bytes + its 1048576-byte instance allocation) (3407872) may not exceed monitor.limits.memory.client_bytes (3407871)"
+        )
+    );
+    let overflowing = [
+        ("memory.total_bytes", json!(u64::MAX)),
+        ("memory.client_bytes", json!(u64::MAX - 1)),
+        ("memory.queue_bytes_total", json!(u64::MAX)),
+        ("queues.event_bytes", json!(u64::MAX - 1)),
+    ];
+    assert!(refused(&overflowing).contains(&format!(
+        "its 1048576-byte instance allocation) ({}) may not exceed monitor.limits.memory.client_bytes ({})",
+        u64::MAX,
+        u64::MAX - 1
+    )));
 }
 
 /// CFG-01 (Contract): each progress reserve sits inside its event allowance
@@ -807,11 +836,14 @@ const LARGEST: MandatoryAllocation = MandatoryAllocation {
     recent_page: 12_115_200,
 };
 
-/// The current model and recent page together, which a client's budget holds.
-const MODEL_AND_PAGE: u64 = 16_966_087;
+/// The current model and recent page together, and beside them the client
+/// library's default share of the client's budget: 262,144 request bytes,
+/// 1,048,576 event bytes, one 1,048,576-byte wire frame and its
+/// 1,048,576-byte instance allocation (#119). A client's budget holds them.
+const MODEL_AND_PAGE: u64 = 16_966_087 + 3_407_872;
 
 /// The parser too, which the aggregate budget holds once beside them.
-const WITH_PARSER: u64 = 19_063_239;
+const WITH_PARSER: u64 = MODEL_AND_PAGE + 2_097_152;
 
 /// Whether the limits holding `settings` hold [`LARGEST`].
 fn hold(settings: &[(&str, Value)]) -> Result<(), ConfigError> {
@@ -850,22 +882,23 @@ fn cfg01_the_total_holds_the_parser_and_the_largest_current_model_and_recent_pag
     assert_eq!(
         hold(&total_of(WITH_PARSER - 1)),
         short(
-            "the parser and the current model and recent page of a 500x200 session (19063239) may not exceed monitor.limits.memory.total_bytes (19063238)"
+            "the parser and the current model and recent page of a 500x200 session and its client library's share (22471111) may not exceed monitor.limits.memory.total_bytes (22471110)"
         )
     );
 }
 
-/// CFG-01 (Contract): each client's budget holds one session's mandatory
-/// allocation at the largest session geometry too: its current model and
-/// recent page together, accepted at the limit and refused one byte short
-/// under the default total.
+/// CFG-01 (Contract), LIM-01 (Monitor: the client budget split, #119): each
+/// client's budget holds one session's mandatory allocation at the largest
+/// session geometry too: its current model and recent page together beside
+/// the client library's share, accepted at the limit and refused one byte
+/// short under the default total.
 #[test]
 fn cfg01_the_client_budget_holds_the_largest_current_model_and_recent_page() {
     assert_eq!(hold(&[at("memory.client_bytes", MODEL_AND_PAGE)]), Ok(()));
     assert_eq!(
         hold(&[at("memory.client_bytes", MODEL_AND_PAGE - 1)]),
         short(
-            "the current model and recent page of a 500x200 session (16966087) may not exceed monitor.limits.memory.client_bytes (16966086)"
+            "the current model and recent page of a 500x200 session and its client library's share (20373959) may not exceed monitor.limits.memory.client_bytes (20373958)"
         )
     );
 }
@@ -1114,8 +1147,11 @@ fn native_fields(limits: &climon2_core::native::Limits) -> [u64; 27] {
 /// `scheduling.probes` and `discovery` bounds, and its start lanes
 /// `scheduling.loads` and `scheduling.starts`, bounded at exit by
 /// `deadlines.shutdown_ms`, and each session's terminal model
-/// `memory.client_bytes` and `history.max_rows` (#108). Expected values are the
-/// documented defaults with one setting of each kind changed.
+/// `history.max_rows` (#108). `memory.client_bytes` is split: the library
+/// gets its request and event queues, one wire frame and its 1,048,576-byte
+/// instance allocation, 3,407,872 bytes by default, and the model the rest
+/// (LIM-01 Monitor, #119). Expected values are the documented defaults with
+/// one setting of each kind changed.
 #[test]
 fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
     let text = limits(&[
@@ -1145,7 +1181,7 @@ fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
     assert_eq!(
         native_fields(&limits.library()),
         [
-            33_554_432, 262_144, 1_048_576, 65_536, 65_536, 64, 1024, 32, 5, 16, 65_536, 17,
+            3_407_872, 262_144, 1_048_576, 65_536, 65_536, 64, 1024, 32, 5, 16, 65_536, 17,
             1_048_576, 16_384, 2048, 4096, 8192, 0, 5000, 10_000, 5000, 60_000, 5000, 4321, 10_000,
             10_000, 0,
         ]
@@ -1165,7 +1201,7 @@ fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
     let lanes = limits.lanes();
     assert_eq!((lanes.loads, lanes.starts, lanes.shutdown_ms), (4, 6, 7000));
     let model = limits.model();
-    assert_eq!((model.bytes, model.history_rows), (33_554_432, 250));
+    assert_eq!((model.bytes, model.history_rows), (30_146_560, 250));
     let retry = limits.retry();
     assert_eq!(
         (retry.initial_ms, retry.cap_ms, retry.jitter_percent),

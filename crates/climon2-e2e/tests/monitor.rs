@@ -345,10 +345,12 @@ fn installed_monitor_refuses_every_invalid_configuration_before_the_terminal_cha
 
 /// One 500x200 session's mandatory allocation, as documented in
 /// docs/monitor-operational-limits.md: its 4,850,887-byte current model and
-/// the 12,115,200-byte history chunk that holds its recent page, and beside
-/// them, in the aggregate budget only, the monitor's one 2 MiB parser (#166).
-const MODEL_AND_PAGE: u64 = 16_966_087;
-const WITH_PARSER: u64 = 19_063_239;
+/// the 12,115,200-byte history chunk that holds its recent page, beside its
+/// client library's 3,407,872-byte default share of the client's budget
+/// (#119), and beside them, in the aggregate budget only, the monitor's one
+/// 2 MiB parser (#166).
+const MODEL_AND_PAGE: u64 = 20_373_959;
+const WITH_PARSER: u64 = 22_471_111;
 const PAGE: u64 = 12_115_200;
 
 /// Memory limits of `total` bytes, `client` bytes per client, `history`
@@ -368,9 +370,11 @@ fn memory([total, client, history, per_session]: [u64; 4]) -> String {
     .to_string()
 }
 
-/// CFG-01 (Monitor): limits that cannot hold one session's mandatory
-/// allocation at the largest session geometry, 500x200, beside the monitor's
-/// one parser, are refused like every other invalid configuration: one byte
+/// CFG-01 (Monitor), LIM-01 (Monitor: the client budget split, #119):
+/// limits that cannot hold one session's mandatory allocation at the
+/// largest session geometry, 500x200, beside its client library's share
+/// and the monitor's one parser, are refused like every other invalid
+/// configuration: one byte
 /// short of the total, a client's
 /// budget, the history total or a session's history budget, the monitor
 /// prints one diagnostic naming that limit and exits with the climon2 error
@@ -384,11 +388,11 @@ fn installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model()
     for (limits, expected) in [
         (
             [WITH_PARSER - 1, MODEL_AND_PAGE, PAGE, PAGE],
-            "the parser and the current model and recent page of a 500x200 session (19063239) may not exceed monitor.limits.memory.total_bytes (19063238)",
+            "the parser and the current model and recent page of a 500x200 session and its client library's share (22471111) may not exceed monitor.limits.memory.total_bytes (22471110)",
         ),
         (
             [WITH_PARSER, MODEL_AND_PAGE - 1, PAGE, PAGE],
-            "the current model and recent page of a 500x200 session (16966087) may not exceed monitor.limits.memory.client_bytes (16966086)",
+            "the current model and recent page of a 500x200 session and its client library's share (20373959) may not exceed monitor.limits.memory.client_bytes (20373958)",
         ),
         (
             [WITH_PARSER, MODEL_AND_PAGE, PAGE - 1, PAGE - 1],
