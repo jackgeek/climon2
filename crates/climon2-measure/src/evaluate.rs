@@ -39,6 +39,13 @@ pub enum Probe {
 }
 
 impl Probe {
+    /// Whether its latency is a designed timing (NOT-02's 400 ms draw and
+    /// 2700 ms to the end of the fade, STA-02's ten quiet seconds), recorded
+    /// beside that timing instead of checked for stalls.
+    pub fn paced(self) -> bool {
+        matches!(self, Self::ToastText | Self::ToastGone | Self::Sampler)
+    }
+
     /// Whether PERF-01 sets the 100 ms 99th-percentile target for it.
     pub fn targeted(self) -> bool {
         matches!(
@@ -181,7 +188,7 @@ pub fn latency_findings(probe: Probe, latencies: &Latencies) -> Vec<Finding> {
             .iter()
             .filter(|&&sample| sample >= STALL)
             .count();
-        if count > 0 {
+        if count > 0 && !probe.paced() {
             findings.push(Finding::Stalls {
                 probe,
                 count,
@@ -333,6 +340,23 @@ mod tests {
                 worst: Duration::from_millis(300)
             }]
         );
+    }
+
+    /// Toast animation and status sampling take their designed time, which
+    /// is not a stall; a try of theirs that never completed still counts.
+    #[test]
+    fn designed_timings_are_not_stalls() {
+        for probe in [Probe::ToastText, Probe::ToastGone, Probe::Sampler] {
+            assert_eq!(latency_findings(probe, &latencies(&[407, 2709, 11110])), []);
+            let timed_out = Latencies {
+                samples: Vec::new(),
+                timeouts: 1,
+            };
+            assert_eq!(
+                latency_findings(probe, &timed_out),
+                [Finding::TimedOut { probe, count: 1 }]
+            );
+        }
     }
 
     /// A try that never completed is reported, with or without samples.

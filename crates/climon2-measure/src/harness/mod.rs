@@ -17,7 +17,7 @@ use crate::{
 use candidate::{Candidate, Session, User};
 use climon2_platform::library::Loader;
 use climon2_test_term::{HostSignal, Options, Terminal};
-use sampler::{Baseline, Sampler, Watched};
+use sampler::{Baseline, Sampler, Streaks, Watched};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -172,23 +172,30 @@ fn signal(daemons: &[i32], signal: libc::c_int) {
     }
 }
 
-/// Polls until `expected` of `daemons` have a client, or none more for
-/// [`SETTLE`]: how many connected, and when since `start` (the clients'
-/// spawning) the last one did.
+/// Polls until `expected` of `daemons` hold a client's connection, or none
+/// more for [`SETTLE`]: how many, and when since `start` (the clients'
+/// spawning) the last of them connected.
 fn connected(
     baseline: Baseline,
     daemons: &[i32],
     expected: u32,
     start: Instant,
 ) -> (u32, Duration) {
-    let (mut count, mut last) = (0, Duration::ZERO);
+    let mut streaks = Streaks::default();
+    let (mut count, mut last, mut changed) = (0, Duration::ZERO, Duration::ZERO);
     loop {
-        let now = baseline.count(daemons);
-        if now > count {
-            (count, last) = (now, start.elapsed());
+        let at = start.elapsed();
+        streaks.observe(
+            at,
+            daemons.iter().map(|&pid| (pid, baseline.connected(pid))),
+        );
+        let held = streaks.held(at);
+        if held.len() as u32 > count {
+            count = held.len() as u32;
+            last = held.iter().map(|(_, began)| *began).max().unwrap_or(last);
+            changed = at;
         }
-        let elapsed = start.elapsed();
-        if count >= expected || elapsed >= SETUP || elapsed >= last + SETTLE {
+        if count >= expected || at >= SETUP || at >= changed + SETTLE {
             return (count, last);
         }
         thread::sleep(Duration::from_millis(10));
@@ -995,13 +1002,8 @@ fn new_arrival(
 
 /// From `start` until a client is connected to `session`.
 fn arrival(baseline: Baseline, session: &Session, start: Instant) -> Option<Duration> {
-    while start.elapsed() < SETUP {
-        if baseline.connected(session.daemon) {
-            return Some(start.elapsed());
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    None
+    let (count, began) = connected(baseline, &[session.daemon], 1, start);
+    (count == 1).then_some(began)
 }
 
 fn arrive(

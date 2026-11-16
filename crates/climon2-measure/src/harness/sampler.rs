@@ -35,20 +35,19 @@ pub struct Sampled {
 
 /// The descriptors a session daemon holds with no client connected; each
 /// connected client adds its connection.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Baseline(pub u32);
 
 impl Baseline {
-    /// The most descriptors any of `daemons` holds now, before any client.
+    /// The descriptors most of `daemons` hold now, before any client: one
+    /// still answering the CLI that started it holds one more.
     pub fn of(daemons: &[i32]) -> Self {
-        Self(
+        Self(mode(
             daemons
                 .iter()
                 .filter_map(|&pid| sample::sample(pid))
-                .map(|sample| sample.descriptors)
-                .max()
-                .unwrap_or(0),
-        )
+                .map(|sample| sample.descriptors),
+        ))
     }
 
     /// Whether a client is connected to `daemon`.
@@ -59,6 +58,49 @@ impl Baseline {
     /// How many of `daemons` have a client connected.
     pub fn count(self, daemons: &[i32]) -> u32 {
         daemons.iter().filter(|&&pid| self.connected(pid)).count() as u32
+    }
+}
+
+/// The most frequent value, the least of equally frequent ones; 0 for none.
+pub fn mode(values: impl IntoIterator<Item = u32>) -> u32 {
+    let mut counts: BTreeMap<u32, usize> = BTreeMap::new();
+    for value in values {
+        *counts.entry(value).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .max_by(|(a, ca), (b, cb)| ca.cmp(cb).then(b.cmp(a)))
+        .map_or(0, |(value, _)| value)
+}
+
+/// How long a daemon must hold a client's connection, sample after sample,
+/// for it to count: discovery's hello probes connect only briefly.
+pub const HOLD: Duration = Duration::from_millis(300);
+
+/// Each daemon's current run of samples above its baseline.
+#[derive(Debug, Default)]
+pub struct Streaks(BTreeMap<i32, Duration>);
+
+impl Streaks {
+    /// Records whether each daemon was above its baseline at `at`.
+    pub fn observe(&mut self, at: Duration, daemons: impl IntoIterator<Item = (i32, bool)>) {
+        for (daemon, above) in daemons {
+            if above {
+                self.0.entry(daemon).or_insert(at);
+            } else {
+                self.0.remove(&daemon);
+            }
+        }
+    }
+
+    /// The daemons whose connection has been held for [`HOLD`] at `at`,
+    /// each with when it began.
+    pub fn held(&self, at: Duration) -> Vec<(i32, Duration)> {
+        self.0
+            .iter()
+            .filter(|(_, began)| at.saturating_sub(**began) >= HOLD)
+            .map(|(&daemon, &began)| (daemon, began))
+            .collect()
     }
 }
 
@@ -84,6 +126,7 @@ impl Sampler {
         let handle = thread::spawn(move || {
             let start = Instant::now();
             let mut sampled = Sampled::default();
+            let mut streaks = Streaks::default();
             loop {
                 let now = shared.lock().expect("watched").clone();
                 let at = start.elapsed();
@@ -91,8 +134,18 @@ impl Sampler {
                     .clients
                     .push(tick(at, sample::descendants(&now.clients)));
                 sampled.daemons.push(tick(at, now.daemons.iter().copied()));
-                let backlog = now.expected.saturating_sub(baseline.count(&now.daemons));
-                sampled.backlog_max = sampled.backlog_max.max(backlog);
+                streaks.observe(
+                    at,
+                    now.daemons
+                        .iter()
+                        .map(|&pid| (pid, baseline.connected(pid))),
+                );
+                // A connection counts only once held, so no backlog is
+                // known before then.
+                if at >= HOLD {
+                    let backlog = now.expected.saturating_sub(streaks.held(at).len() as u32);
+                    sampled.backlog_max = sampled.backlog_max.max(backlog);
+                }
                 if stopping.load(Ordering::Relaxed) {
                     return sampled;
                 }
@@ -120,5 +173,35 @@ impl Sampler {
     pub fn finish(self) -> Sampled {
         self.stop.store(true, Ordering::Relaxed);
         self.handle.join().unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One daemon still answering its CLI holds one more descriptor than
+    /// the rest; ties go to the fewer.
+    #[test]
+    fn the_baseline_is_what_most_daemons_hold() {
+        assert_eq!(mode([10, 10, 11, 10, 9]), 10);
+        assert_eq!(mode([11, 10]), 10);
+        assert_eq!(mode([]), 0);
+    }
+
+    /// A connection counts once held for 300 ms, sample after sample, from
+    /// when it began; a brief probe, or a gap, never counts.
+    #[test]
+    fn only_a_connection_held_for_300_ms_counts() {
+        let ms = Duration::from_millis;
+        let mut streaks = Streaks::default();
+        streaks.observe(ms(0), [(1, true), (2, true)]);
+        streaks.observe(ms(10), [(1, true), (2, false)]);
+        streaks.observe(ms(20), [(1, true), (2, true)]);
+        assert_eq!(streaks.held(ms(299)), []);
+        assert_eq!(streaks.held(ms(300)), [(1, ms(0))]);
+        assert_eq!(streaks.held(ms(320)), [(1, ms(0)), (2, ms(20))]);
+        streaks.observe(ms(330), [(1, false)]);
+        assert_eq!(streaks.held(ms(400)), [(2, ms(20))]);
     }
 }
