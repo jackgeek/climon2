@@ -23,8 +23,13 @@ pub(crate) enum Found {
 pub(crate) enum ClientEvent {
     /// Monitor Open succeeded, selecting `status-v1` or not.
     Opened { status: bool },
-    /// A passive retry started a fresh client for the session.
+    /// The session waits for, or a passive retry started, a fresh client.
     Starting,
+    /// The session is resource-blocked (#120): admission cannot reserve
+    /// its client, or its release, yet; with why.
+    AwaitingResources(String),
+    /// Its release has been loading longer than `deadlines.load_ms`.
+    LoadingSlowly,
     /// Whether the client that is over is retried.
     Recovery(Recovery),
     /// The client cannot serve this session, with why.
@@ -51,6 +56,10 @@ pub(crate) enum Recovery {
     /// (owner decision on #116, 2026-11-16).
     Gone,
 }
+
+/// The top row's error slot for a row whose release is loading slowly
+/// (owner decision on #120, 2026-11-16).
+const LOADING_SLOWLY: &str = "library loading slowly";
 
 /// What a daemon reports about its session over a connected client.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -156,6 +165,10 @@ enum Connection {
     /// No client: discovery has not proven the session live.
     None,
     Starting,
+    /// Starting, its release loading slowly.
+    LoadingSlowly,
+    /// Resource-blocked, awaiting its client, with why (#120).
+    AwaitingResources(String),
     Connected {
         status: bool,
     },
@@ -164,12 +177,23 @@ enum Connection {
 }
 
 impl Connection {
+    /// Whether moving to `next` enters another condition: a
+    /// resource-blocked row whose reason changes stays blocked since it
+    /// was first blocked.
+    fn entered(&self, next: &Self) -> bool {
+        match (self, next) {
+            (Self::AwaitingResources(_), Self::AwaitingResources(_)) => false,
+            (current, next) => current != next,
+        }
+    }
+
     /// The not-connected label of a row with no current status and no final
     /// outcome. A client opened with `status-v1` is still Starting until its
     /// Initial metadata reports the status; one without it is Unavailable.
     fn label(&self) -> &'static str {
         match self {
-            Self::Starting | Self::Connected { status: true } => "Starting",
+            Self::Starting | Self::LoadingSlowly | Self::Connected { status: true } => "Starting",
+            Self::AwaitingResources(_) => "Awaiting resources",
             Self::Disconnected => "Disconnected",
             Self::None | Self::Connected { status: false } | Self::Unavailable(_) => "Unavailable",
         }
@@ -258,9 +282,19 @@ impl Row {
             self.status = None;
             self.recovery = None;
         }
-        if self.connection != connection {
-            self.connection = connection;
+        if self.connection.entered(&connection) {
             self.since = now;
+        }
+        self.connection = connection;
+    }
+
+    /// Why the row waits, for the top row's error slot: resource-blocked,
+    /// or its release loading slowly (#120).
+    fn condition(&self) -> Option<&str> {
+        match &self.connection {
+            Connection::AwaitingResources(why) => Some(why),
+            Connection::LoadingSlowly => Some(LOADING_SLOWLY),
+            _ => None,
         }
     }
 
@@ -269,7 +303,9 @@ impl Row {
     fn starting(&self) -> bool {
         let waiting = matches!(
             self.connection,
-            Connection::Starting | Connection::Connected { status: true }
+            Connection::Starting
+                | Connection::LoadingSlowly
+                | Connection::Connected { status: true }
         );
         waiting && self.recovery.is_none() && self.standing().0 == Group::Disconnected
     }
@@ -481,6 +517,12 @@ impl Registry {
         self.rows.get(id)?.recovery.as_ref()
     }
 
+    /// Why `id`'s row waits for its client, if it is resource-blocked or
+    /// its release is loading slowly (#120).
+    pub(crate) fn condition(&self, id: &SessionId) -> Option<&str> {
+        self.rows.get(id)?.condition()
+    }
+
     /// Records whether the latest pass reached every entry.
     pub(crate) fn pass(&mut self, incomplete: Option<String>) {
         self.incomplete = incomplete;
@@ -553,9 +595,11 @@ fn connection(event: ClientEvent) -> Option<Connection> {
     match event {
         ClientEvent::Opened { status } => Some(Connection::Connected { status }),
         ClientEvent::Unavailable(why) => Some(Connection::Unavailable(why)),
+        ClientEvent::AwaitingResources(why) => Some(Connection::AwaitingResources(why)),
         event => {
             let plain = [
                 (ClientEvent::Starting, Connection::Starting),
+                (ClientEvent::LoadingSlowly, Connection::LoadingSlowly),
                 (ClientEvent::Ended, Connection::Disconnected),
             ];
             let mut plain = plain.into_iter();
@@ -1049,6 +1093,62 @@ mod tests {
         }
         registry.client(&key, titled(Some("t")), at(9));
         assert_eq!(registry.rows()[0].since, at(5));
+    }
+
+    /// Awaiting resources rows (#120; LIM-04 Monitor, confirmed
+    /// not-connected scenario): labelled `Awaiting resources`, they sort in
+    /// the not-connected group by when they entered their condition, which
+    /// a changed reason does not move, and carry that reason for the top
+    /// row. They are settled, not starting, for the startup wait, Enter
+    /// selects them without acquiring, and they are never the initial
+    /// selection or the attention target, even with a stale status that
+    /// needs attention. A release loading slowly keeps its rows Starting,
+    /// still awaited, with `library loading slowly`.
+    #[test]
+    fn awaiting_resources_rows_are_settled_and_never_chosen() {
+        let mut registry = Registry::new(None);
+        let blocked = opened(&mut registry, (1, "blocked"), true, 1);
+        registry.client(&blocked, episode(State::NeedsAttention, 2), at(2));
+        assert_eq!(registry.attention(), Some(blocked.clone()));
+        registry.client(&blocked, ClientEvent::Ended, at(3));
+        let slow = metadata(&id(2), "2026-11-13T10:00:00.000Z", "slow", &[]);
+        let slow = registry.discovered(slow, Found::Live, at(3)).unwrap();
+        let slow = slow.session_id;
+        let later = metadata(&id(3), "2026-11-13T10:00:00.000Z", "later", &[]);
+        let later = registry.discovered(later, Found::Live, at(3)).unwrap();
+        let later = later.session_id;
+        let short = |why: &str| ClientEvent::AwaitingResources(why.into());
+        registry.client(&blocked, ClientEvent::Starting, at(4));
+        registry.client(&blocked, short("not enough memory: 2 bytes needed"), at(5));
+        registry.client(&later, short("not enough memory: 1 bytes needed"), at(6));
+        registry.client(
+            &later,
+            short("not enough file descriptors: 1 needed"),
+            at(7),
+        );
+        registry.client(&slow, ClientEvent::LoadingSlowly, at(8));
+        assert_eq!(
+            shown(&registry),
+            [
+                "Starting|slow",
+                "Awaiting resources|later",
+                "Awaiting resources|blocked"
+            ]
+        );
+        assert_eq!(registry.rows()[1].since, at(6));
+        assert_eq!(
+            registry.condition(&later),
+            Some("not enough file descriptors: 1 needed")
+        );
+        assert_eq!(registry.condition(&slow), Some("library loading slowly"));
+        assert!(!registry.starting(&blocked) && !registry.starting(&later));
+        assert!(registry.starting(&slow));
+        assert_eq!(registry.kind(&blocked), Some(Kind::Unconnected));
+        assert_eq!(registry.eligible(), None);
+        assert_eq!(registry.attention(), None);
+        registry.client(&later, ClientEvent::Starting, at(9));
+        assert_eq!(registry.condition(&later), None);
+        assert!(registry.starting(&later));
     }
 
     /// REC-01, REC-02 (pure supplement; #107's review; owner decisions on
