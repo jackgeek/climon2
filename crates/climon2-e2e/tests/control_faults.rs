@@ -11,132 +11,6 @@ mod support;
 use serde_json::{Value, json};
 use support::{Package, control::*, library::CHARGE, passive::*};
 
-/// What the fake daemon advertises: the real one's families, focus too.
-const ADVERTISED: [&str; 8] = [
-    "attach",
-    "kill",
-    "state-v1",
-    "client-startup-v1",
-    "daemon-wire-v1",
-    "monitor-v1",
-    "title-v1",
-    "focus-v1",
-];
-/// What an interactive Open of `interactive` selects from it.
-const ATTACHED: [&str; 3] = ["daemon-wire-v1", "title-v1", "focus-v1"];
-const PERIOD: u64 = 2;
-
-fn counter(value: u64) -> String {
-    value.to_string()
-}
-
-fn granted(period: u64, restoration: u64, reason: &str) -> Value {
-    send(
-        0x46,
-        json!({
-            "period": counter(period),
-            "restoration_id": counter(restoration),
-            "geometry": { "cols": 80, "rows": 24 },
-            "reason": reason,
-        }),
-    )
-}
-
-fn begin(period: u64, restoration: u64) -> Value {
-    send(
-        0x48,
-        json!({
-            "period": counter(period),
-            "restoration_id": counter(restoration),
-            "geometry": { "cols": 80, "rows": 24 },
-        }),
-    )
-}
-
-fn complete(period: u64, restoration: u64) -> Value {
-    send(
-        0x4a,
-        json!({ "period": counter(period), "restoration_id": counter(restoration) }),
-    )
-}
-
-fn revoked(period: u64, restoration: u64, reason: &str) -> Value {
-    send(
-        0x47,
-        json!({
-            "period": counter(period),
-            "restoration_id": counter(restoration),
-            "reason": reason,
-        }),
-    )
-}
-
-fn geometry(period: u64, cols: u64, rows: u64) -> Value {
-    send(
-        0x4b,
-        json!({ "period": counter(period), "geometry": { "cols": cols, "rows": rows } }),
-    )
-}
-
-/// A binary Display: two big-endian counters, then the bytes `hex`.
-fn shown(period: u64, restoration: u64, hex: &str) -> Value {
-    json!({ "send": { "type": 0x49, "hex": format!("{period:016x}{restoration:016x}{hex}") } })
-}
-
-/// The fake daemon's Response to the latest request of `kind`.
-fn answered(kind: &str, outcome: &str, result: Value, error: Value) -> Value {
-    response(&format!("${kind}"), outcome, result, error)
-}
-
-/// An attach as a real daemon sends it: Response, Initial metadata, then the
-/// grant of period 2, restoration 2 at 80x24, its restoration with the
-/// Display `41`, and the complete.
-fn attach_records(selected: &[&str]) -> Vec<Value> {
-    vec![
-        opened(selected),
-        initial(json!("t")),
-        granted(PERIOD, 2, "attach"),
-        begin(PERIOD, 2),
-        shown(PERIOD, 2, "41"),
-        complete(PERIOD, 2),
-    ]
-}
-
-/// A fake daemon that attaches with `ATTACHED`, answers a Leave detaching,
-/// and does `then` after each request of the kinds it names.
-fn attached_peer(then: Value) -> Value {
-    let mut peer = json!({
-        "hello": { "json": { "capabilities": ADVERTISED } },
-        "open": attach_records(&ATTACHED),
-        "leave": [leave_answer("ok", true, Value::Null)],
-    });
-    for (kind, actions) in then.as_object().unwrap() {
-        peer[kind] = actions.clone();
-    }
-    peer
-}
-
-/// One instance's steps: create against `peer` with `startup`, Open
-/// interactively, run, and drain through the attach's Restoration complete
-/// (labelled `attached-<name>`), then `then`.
-fn attached(name: &str, peer: Value, startup: Value, then: &[Value]) -> Vec<Value> {
-    let mut steps = vec![
-        json!({ "do": "create", "peer": peer, "startup": startup }),
-        json!({ "do": "submit", "request": interactive(1, 80, 24) }),
-        json!({ "do": "run" }),
-        json!({ "do": "drain", "until": { "tag": RESTORATION_COMPLETE },
-                "as": format!("attached-{name}") }),
-    ];
-    steps.extend(then.iter().cloned());
-    steps
-        .into_iter()
-        .map(|mut step| {
-            step["instance"] = json!(name);
-            step
-        })
-        .collect()
-}
-
 /// Each control request under the authority the attach granted.
 fn commands(id: u64) -> [(&'static str, Value); 5] {
     [
@@ -146,33 +20,6 @@ fn commands(id: u64) -> [(&'static str, Value); 5] {
         ("ready", ready(id, 1, CURRENT)),
         ("focus", focus(id, 1, CURRENT, 1)),
     ]
-}
-
-/// Where each instance's `finish` step is, by name, as steps are added.
-struct Plan {
-    steps: Vec<Value>,
-    finishes: Vec<(String, usize)>,
-}
-
-impl Plan {
-    fn new() -> Self {
-        Self {
-            steps: Vec::new(),
-            finishes: Vec::new(),
-        }
-    }
-
-    /// Adds an instance's steps, then its `finish`.
-    fn add(&mut self, name: &str, steps: Vec<Value>) {
-        self.steps.extend(steps);
-        self.finishes.push((name.to_owned(), self.steps.len()));
-        self.steps.push(json!({ "do": "finish", "instance": name }));
-    }
-
-    fn run(self, package: &Package) -> (Value, Vec<(String, usize)>) {
-        let root = root(package);
-        (script(package, &root, json!(self.steps)), self.finishes)
-    }
 }
 
 /// COM-02 and COM-03 Library control cases, local rejection: `submit`
@@ -1189,6 +1036,7 @@ fn installed_library_fails_a_stalled_delivery_without_timing_out_its_commands() 
         "chunk_bytes": chunk,
         "metadata_record_bytes": metadata,
         "event_bytes": reserve + one_display + CHARGE,
+        "progress_bytes": 1,
         "operation_ms": 1000,
         "delivery_stall_ms": 2000,
     });
@@ -1235,6 +1083,7 @@ fn installed_library_times_commands_out_again_once_waiting_records_are_queued() 
     let limits = json!({
         "chunk_bytes": 1,
         "event_records": 7,
+        "progress_records": 1,
         "operation_ms": 300,
         "delivery_stall_ms": 1000,
     });

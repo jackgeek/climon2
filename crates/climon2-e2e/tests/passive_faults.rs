@@ -925,7 +925,7 @@ fn installed_library_reports_lost_and_late_answers_truthfully_without_replay() {
                     title_changed(json!("x")),
                     send(0x4d, daemon_error("internal_error")),
                 ] }),
-                json!({ "limits": { "event_records": 3 } }),
+                json!({ "limits": { "event_records": 3, "progress_records": 1 } }),
                 &alone,
             ),
             drained: None,
@@ -1249,7 +1249,7 @@ fn installed_library_never_raises_sigpipe_in_its_embedder() {
         "open": [opened(&SELECTED), initial(json!("t")), title_changed(json!("x")), "close"],
     });
     let steps = json!([
-        { "do": "create", "peer": gone, "startup": { "limits": { "event_records": 2 } } },
+        { "do": "create", "peer": gone, "startup": { "limits": { "event_records": 2, "progress_records": 1 } } },
         { "do": "submit", "request": open(1, &REQUIRED, &["title-v1"]) },
         { "do": "run" },
         { "do": "await_snapshot", "gauge": "event_records", "value": 2 },

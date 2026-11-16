@@ -692,14 +692,16 @@ fn installed_library_create_rejects_invalid_settings_and_diagnostics_without_han
     package.assert_clean();
 }
 
-/// LIB-03 Library: limits are effective values the release can honour, or
-/// `CM1_UNSUPPORTED_LIMIT`, never silently raised or lowered: every limit
+/// LIB-03 and LIM-01 Library: limits are effective values the release can
+/// honour, or `CM1_UNSUPPORTED_LIMIT`, never silently raised or lowered: every limit
 /// but `max_workers` must be nonzero, `client_bytes` must cover the
 /// described instance allocation and `max_workers` the described workers,
 /// each exactly at its bound, and `drain_payload_bytes` must hold a whole
 /// record of `metadata_record_bytes`, at that bound too (owner decision 4 on
 /// #93: no delivery ever holds one oversized record), and a whole Display of
-/// `chunk_bytes`, at that bound too (#94). With no descriptor
+/// `chunk_bytes`, at that bound too (#94). The progress reserve, in bytes
+/// and records, fits inside the event allowance, at that bound too, and one
+/// past it is refused (LIM-01, #99). With no descriptor
 /// left for the notification descriptor and the waker, or for the log file
 /// after them, create fails with `CM1_RESOURCE_LIMIT`, no handles and no log
 /// file; one more descriptor is enough.
@@ -778,6 +780,30 @@ fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descri
             "",
         ),
         (
+            "progress_bytes over event_bytes",
+            limits(json!({ "event_bytes": 4096, "progress_bytes": 4097 })),
+            UNSUPPORTED_LIMIT,
+            "unsupported_limit",
+        ),
+        (
+            "progress_bytes at event_bytes",
+            limits(json!({ "event_bytes": 4096, "progress_bytes": 4096 })),
+            SUCCESS,
+            "",
+        ),
+        (
+            "progress_records over event_records",
+            limits(json!({ "event_records": 16, "progress_records": 17 })),
+            UNSUPPORTED_LIMIT,
+            "unsupported_limit",
+        ),
+        (
+            "progress_records at event_records",
+            limits(json!({ "event_records": 16, "progress_records": 16 })),
+            SUCCESS,
+            "",
+        ),
+        (
             "every limit at one",
             limits(json!({
                 "request_bytes": 1, "event_bytes": 1, "progress_bytes": 1, "drain_payload_bytes": 1,
@@ -822,7 +848,7 @@ fn installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descri
         }
     }
     let report = creates(&package, &root, &cases);
-    assert_eq!(report["cases"].as_array().unwrap().len(), 13 + 25);
+    assert_eq!(report["cases"].as_array().unwrap().len(), 17 + 25);
     assert!(!unopened.exists(), "a failed create leaves no log file");
     assert!(opened.exists());
     package.assert_clean();

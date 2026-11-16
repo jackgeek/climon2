@@ -233,7 +233,8 @@ fn limits(limits: native::Limits) -> Result<native::Limits, Failure> {
 /// `max_workers` may be zero), and leaves room for this release's own
 /// requirements: its instance allocation and its workers. A delivery holds
 /// a whole record of `metadata_record_bytes`, or a Display of `chunk_bytes`
-/// (#94), so none is ever oversized.
+/// (#94), so none is ever oversized. The progress reserve is reserved
+/// inside the event allowance, never added on top (#99).
 fn honoured(limits: &native::Limits) -> bool {
     let values = [
         limits.client_bytes,
@@ -262,9 +263,17 @@ fn honoured(limits: &native::Limits) -> bool {
         limits.cleanup_ms.into(),
         limits.start_ms.into(),
     ];
-    !values.contains(&0)
-        && limits.drain_payload_bytes >= limits.metadata_record_bytes.into()
-        && limits.drain_payload_bytes >= limits.chunk_bytes.into()
-        && limits.client_bytes >= REQUIREMENTS.instance_bytes
-        && limits.max_workers >= REQUIREMENTS.workers
+    // Each pair is what must fit, then what it must fit within.
+    let within = [
+        (
+            limits.metadata_record_bytes.into(),
+            limits.drain_payload_bytes,
+        ),
+        (limits.chunk_bytes.into(), limits.drain_payload_bytes),
+        (limits.progress_bytes, limits.event_bytes),
+        (limits.progress_records.into(), limits.event_records.into()),
+        (REQUIREMENTS.instance_bytes, limits.client_bytes),
+        (REQUIREMENTS.workers.into(), limits.max_workers.into()),
+    ];
+    !values.contains(&0) && within.into_iter().all(|(need, limit)| need <= limit)
 }
