@@ -74,7 +74,7 @@ fn rejections() -> Vec<(Value, (u64, &'static str))> {
         (killing(json!({ "dangling": 0 })), invalid),
         (killing(json!([""])), invalid),
         (killing(json!(["title-v1", "title-v1"])), invalid),
-        (killing(json!(["progress-v1"])), unrelayed),
+        (killing(json!(["x-later-v9"])), unrelayed),
     ];
     // Set viewing and Acknowledge naming no authority (#95); their other
     // rejections are in `status_faults.rs`, the control requests' in
