@@ -3,23 +3,26 @@
 **Status: developer-confirmed specification for
 [Define automated monitor acceptance criteria](https://github.com/jackgeek/climon2/issues/62),
 not implementation or executed acceptance evidence.** The
-[monitor](../GLOSSARY.md#sessions) exists only as the empty walking skeleton of
-[#74](https://github.com/jackgeek/climon2/issues/74); new daemon wire remains
+[monitor](../GLOSSARY.md#sessions) is the walking skeleton of
+[#74](https://github.com/jackgeek/climon2/issues/74) with discovery, passive
+clients and the basic selector of
+[#106](https://github.com/jackgeek/climon2/issues/106), whose Monitor-layer
+cases are mapped in the monitor README; new daemon wire remains
 unimplemented. Packaged
 [client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
 description ([#75](https://github.com/jackgeek/climon2/issues/75)), their
 local instance lifecycle
 ([#85](https://github.com/jackgeek/climon2/issues/85)), passive monitor
 connections ([#93](https://github.com/jackgeek/climon2/issues/93)) and control
-and display ([#94](https://github.com/jackgeek/climon2/issues/94)), but no
-monitor loads them yet. The Library layer's
+and display ([#94](https://github.com/jackgeek/climon2/issues/94)), which the
+monitor loads (#106). The Library layer's
 [second-release fixture](../GLOSSARY.md#testing)
 ([#97](https://github.com/jackgeek/climon2/issues/97)) runs both releases'
 libraries in one process, against sessions of each release's own daemon, for
 LIB-01 and LIB-03. Headless
 creation is implemented; its HDL-01 Contract cases and its Monitor-layer cases
 through the packaged CLI are mapped in the daemon and packaged-test READMEs,
-while the case that needs a running monitor waits for it. Resolving this
+and its monitor-row case in the monitor README. Resolving this
 specification does not pass a [release gate](../GLOSSARY.md#testing).
 
 This document specifies evidence for the agreed thread-based Ratatui monitor.
