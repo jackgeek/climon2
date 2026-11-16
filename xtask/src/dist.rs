@@ -43,7 +43,7 @@ fn build_payload(root: &Path) -> io::Result<BuiltPayload> {
     let scratch = tempfile::Builder::new()
         .prefix("dist-")
         .tempdir_in(root.join("target"))?;
-    let build = scratch.path().join("build");
+    let build = release::production_directory(root)?;
     for target in platform.targets {
         for (package, _) in release::PACKAGES {
             release::build(root, &build, package, Some(target))?;
