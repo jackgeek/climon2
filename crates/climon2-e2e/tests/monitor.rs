@@ -1729,6 +1729,30 @@ enum Answer {
     Serve(std::sync::Arc<Vec<Act>>),
     /// As [`Answer::Serve`], without advertising `focus-v1`.
     Unfocused(std::sync::Arc<Vec<Act>>),
+    /// As [`Answer::Serve`], each client taking its turn's acts and
+    /// recording that it was served and each request it sent after them.
+    Turns(std::sync::Arc<Turns>),
+}
+
+/// Each client's acts in turn, the last list for every later client.
+struct Turns {
+    taken: std::sync::atomic::AtomicUsize,
+    acts: Vec<Vec<Act>>,
+}
+
+impl Turns {
+    fn new(acts: Vec<Vec<Act>>) -> Answer {
+        Answer::Turns(std::sync::Arc::new(Self {
+            taken: std::sync::atomic::AtomicUsize::new(0),
+            acts,
+        }))
+    }
+
+    /// The next client's acts.
+    fn next(&self) -> Vec<Act> {
+        let turn = self.taken.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.acts[turn.min(self.acts.len() - 1)].clone()
+    }
 }
 
 /// What a serving fake daemon does after a client's Open, as the daemon
@@ -1738,6 +1762,8 @@ enum Act {
     /// A frame of `code` with a JSON body, in which the string `"$open"` is
     /// the Open's request ID.
     Send(u8, Value),
+    /// A frame of `code` with this binary body.
+    Raw(u8, Vec<u8>),
     /// Wait until this file exists, for at most [`TIMEOUT`].
     Await(PathBuf),
     /// Hang up.
@@ -1755,6 +1781,10 @@ enum Heard {
     HangingUp,
     /// The peer hung up a silent connection.
     Closed,
+    /// A turn-taking fake read a client's Open and began its turn.
+    Served,
+    /// After its acts, a turn-taking fake read a request with this code.
+    Request(u8),
 }
 
 /// Every fake daemon's record of one test: when, which session, what.
@@ -1870,6 +1900,12 @@ fn answer_once(
                 serve(connection, acts);
             }
         }
+        Answer::Turns(turns) => {
+            let families = [Family::MonitorV1, Family::TitleV1, Family::StatusV1];
+            if hello(connection, id, families) {
+                serve_heard(connection, || turns.next(), Some((ear, id)));
+            }
+        }
         Answer::Hello(answered) => {
             let _ = hello(connection, answered, [Family::MonitorV1]);
             if connection.read(&mut [0; 1]).is_ok_and(|read| read > 0) {
@@ -1927,11 +1963,25 @@ fn hello(
 /// Serves one client: reads its Open, performs `acts`, then answers its
 /// Leave and hangs up.
 fn serve(connection: &mut std::os::unix::net::UnixStream, acts: &[Act]) {
+    serve_heard(connection, || acts.to_vec(), None);
+}
+
+/// [`serve`] with the acts `acts` gives once the Open is read, recording
+/// in `heard`, if given, the Open and every later request.
+fn serve_heard(
+    connection: &mut std::os::unix::net::UnixStream,
+    acts: impl FnOnce() -> Vec<Act>,
+    heard: Option<(&Ear, &'static str)>,
+) {
     use climon2_core::wire::{Frame, FrameLimit, read_frame, write_frame};
     let limit = FrameLimit::new(1_048_576).unwrap();
     let Ok(Some(open)) = read_frame(connection, limit) else {
         return;
     };
+    if let Some((ear, id)) = heard {
+        hear(ear, id, Heard::Served);
+    }
+    let acts = acts();
     // The client stays until it leaves or the monitor exits.
     let _ = connection.set_read_timeout(None);
     let open: Value = serde_json::from_slice(open.body()).unwrap();
@@ -1940,9 +1990,12 @@ fn serve(connection: &mut std::os::unix::net::UnixStream, acts: &[Act]) {
         let body = body.to_string().replace("\"$open\"", &request);
         write_frame(connection, &Frame::new(code, body.into_bytes()), limit).is_ok()
     };
-    for act in acts {
+    for act in &acts {
         let sent = match act {
             Act::Send(code, body) => send(connection, *code, body),
+            Act::Raw(code, body) => {
+                write_frame(connection, &Frame::new(*code, body.clone()), limit).is_ok()
+            }
             Act::Await(path) => {
                 let deadline = Instant::now() + TIMEOUT;
                 while !path.exists() && Instant::now() < deadline {
@@ -1957,6 +2010,9 @@ fn serve(connection: &mut std::os::unix::net::UnixStream, acts: &[Act]) {
         }
     }
     while let Ok(Some(frame)) = read_frame(connection, limit) {
+        if let Some((ear, id)) = heard {
+            hear(ear, id, Heard::Request(frame.code()));
+        }
         if frame.code() == LEAVE {
             let leave: Value = serde_json::from_slice(frame.body()).unwrap();
             let left = json!({
@@ -5066,6 +5122,293 @@ fn a_disconnect_discards_a_pending_prefix() {
     assert_eq!(terminal.title().as_deref(), Some(TITLE));
     // A real listing reclaims the killed daemon's stale metadata.
     assert_eq!(package.list().len(), 1);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Over a lost session's retained history, while a passive retry is
+/// scheduled or running (#116).
+const RECONNECTING: &str = "Reconnecting...";
+/// A lost session's daemon proven gone (owner decision on #116).
+const GONE: &str = "Session no longer exists";
+
+/// The requests each client of fake `id` sent after its turn's acts, by
+/// turn, as `ear` recorded them.
+fn requests_by_turn(ear: &Ear, id: &str) -> Vec<Vec<u8>> {
+    let mut turns: Vec<Vec<u8>> = Vec::new();
+    for (_, heard_by, heard) in ear.lock().unwrap().iter() {
+        match heard {
+            Heard::Served if *heard_by == id => turns.push(Vec::new()),
+            Heard::Request(code) if *heard_by == id => turns.last_mut().unwrap().push(*code),
+            _ => {}
+        }
+    }
+    turns
+}
+
+/// How many client instances the monitor `pid` made for session `id`: its
+/// library logs, apart from any other process's, such as `climon2 kill`'s.
+fn instances(package: &Package, id: &str, pid: i32) -> usize {
+    let infix = format!("-{pid}-");
+    let logs = library_logs(package, id);
+    logs.iter()
+        .filter(|log| log.to_string_lossy().contains(&infix))
+        .count()
+}
+
+/// Waits until a whole frame's top row ends with the slots `status` and
+/// `control` (and the sessions hint) and its rows satisfy `rows`.
+fn read_only_frame(
+    terminal: &Terminal,
+    (status, control): (&str, &str),
+    what: &str,
+    rows: impl Fn(&[&str]) -> bool,
+) {
+    let slots = format!(" | {status:<18} | {control:<15} | {SESSIONS_HINT}");
+    whole_frame_shows(terminal, what, |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        lines.len() == usize::from(ROWS) && lines[0].ends_with(&slots) && rows(&lines)
+    });
+}
+
+/// The middle canvas row of a 30-row host holds only `overlay`, centred.
+fn overlaid_by(lines: &[&str], overlay: &str) -> bool {
+    let middle = lines.get(15).copied().unwrap_or_default();
+    let start = (usize::from(COLS) - overlay.len() - 2) / 2 + 1;
+    middle
+        .get(start..)
+        .is_some_and(|rest| rest.trim_end() == overlay)
+}
+
+/// REC-01 (Monitor, Fault: transport loss), REC-02 (Monitor, Fault: full
+/// history, reconnecting while scheduled and running, placeholder after the
+/// reconnect), COM-03 and COM-05 (Monitor cases: indeterminate work never
+/// replayed, a fresh attempt sees no old delivery), DSC-05 (Monitor, Fault:
+/// loss keeps the selection) and Enter on disconnected and unconnected
+/// Starting rows (derived scenarios), against a fake daemon: its first
+/// client is granted control by succession in the background and restored,
+/// then selected, so the monitor's Acquire is left unanswered, and the
+/// connection is lost. The row stays selected, Disconnected, its retained
+/// history read-only under exactly `Reconnecting...` while the retry is
+/// scheduled, and still while the retry runs and the row is Starting.
+/// Typed keys reach no session. Once the new client opens, the overlay and
+/// the cache give way to the non-controller placeholder: the second client
+/// was never sent the Acquire, Ready or any input, only its Leave at exit.
+#[test]
+fn a_lost_connection_keeps_its_history_read_only_until_a_passive_reconnect() {
+    const ID: &str = "0d5c0000-0000-4000-8000-0000000000d1";
+    let package = Package::new();
+    without_introduction(&package);
+    // The fake never answers a request: operations wait as long as the
+    // test may.
+    limits_config(
+        &package,
+        json!({
+            "retry": {"initial_ms": 300, "cap_ms": 300, "jitter_percent": 0},
+            "deadlines": {"operation_ms": 600_000},
+        }),
+    );
+    let home = package.isolation.home();
+    let authority = json!({"period": "1", "restoration_id": "1"});
+    let geometry = json!({"cols": 120, "rows": 29});
+    let mut display = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1].to_vec();
+    display.extend(b"CACHED-LINE\r\nsecond");
+    let first = vec![
+        opened_selecting(false, false),
+        initial_metadata("Kept", None, None),
+        Act::Send(
+            0x46,
+            json!({"period": "1", "restoration_id": "1", "geometry": geometry, "reason": "successor"}),
+        ),
+        Act::Send(
+            0x48,
+            json!({"period": "1", "restoration_id": "1", "geometry": geometry}),
+        ),
+        Act::Raw(0x49, display),
+        Act::Send(0x4a, authority),
+        Act::Await(home.join("drop")),
+        Act::Close,
+    ];
+    let later = vec![
+        Act::Await(home.join("answer")),
+        opened_selecting(false, false),
+        initial_metadata("Kept", None, None),
+    ];
+    let ear = Ear::default();
+    let fake = FakeDaemon::start(
+        &package,
+        ID,
+        "2099-01-01T00:00:00.000Z",
+        Turns::new(vec![first, later]),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Unavailable", "Kept");
+    // Reopened over its row, the selector highlights it.
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Kept");
+    let cached =
+        |lines: &[&str]| lines[1].starts_with("CACHED-LINE") && lines[2].trim_end() == "second";
+    read_only_frame(
+        &terminal,
+        ("Unavailable", "Restoring"),
+        "the background restoration",
+        cached,
+    );
+    fs::write(home.join("drop"), b"").unwrap();
+    read_only_frame(
+        &terminal,
+        ("Disconnected", NOT_CONTROLLING),
+        "the retained history, reconnecting",
+        |lines| cached(lines) && overlaid_by(lines, RECONNECTING),
+    );
+    // The retry's client is held at its Open, still Starting.
+    let deadline = Instant::now() + TIMEOUT;
+    while heard(&ear, Heard::Served).len() < 2 {
+        assert!(
+            Instant::now() < deadline,
+            "the retry never reached the daemon"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    read_only_frame(
+        &terminal,
+        ("Starting", NOT_CONTROLLING),
+        "the retained history while the retry is held",
+        |lines| cached(lines) && overlaid_by(lines, RECONNECTING),
+    );
+    terminal.send("typed\r").unwrap();
+    fs::write(home.join("answer"), b"").unwrap();
+    read_only_frame(
+        &terminal,
+        ("Unavailable", NOT_CONTROLLING),
+        "the placeholder after the reconnect",
+        |lines| {
+            lines.iter().any(|line| line.trim() == VIEWED_ELSEWHERE)
+                && !lines
+                    .iter()
+                    .any(|line| line.contains("CACHED") || line.contains(RECONNECTING))
+        },
+    );
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    let turns = requests_by_turn(&ear, ID);
+    assert_eq!(turns.len(), 2, "{turns:?}");
+    // The first client was held in its acts until it was lost; the second
+    // was sent nothing but its Leave at exit: no Acquire, Ready or input.
+    assert_eq!(turns[1], [LEAVE]);
+    drop(fake);
+    package.assert_clean();
+}
+
+/// REC-02 (Monitor: full history, cache loss to a gone daemon), REC-01
+/// (Monitor: a definitive outcome and a gone daemon stop retry), HDL-01
+/// (Monitor case), COM-06 (Monitor: a known outcome survives, the loss is
+/// never completion), DSC-05 (Monitor: loss and completion keep the
+/// selection; with every row final or gone the monitor stays open and
+/// keeps discovering) and Enter on final rows (derived scenario): after an
+/// empty start, Lost is selected and acquired, writes forty lines and its
+/// daemon is killed. Lost stays selected with its retained history
+/// read-only under exactly `Reconnecting...` while retries run, then, once
+/// discovery proves its daemon gone, under `Session no longer exists`,
+/// which its top row's error slot also says, and retries stop. A wheel
+/// notch scrolls the read-only history. `climon2 kill` from another
+/// terminal ends Ended, which stays listed Failed with its signal; Enter
+/// selects it read-only with no terminal content, the monitor never having
+/// controlled it, and it is never retried. A session created then still
+/// appears.
+#[test]
+fn killed_and_ended_sessions_stay_read_only_and_are_never_retried() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({"retry": {"initial_ms": 100, "cap_ms": 100}}),
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    let lost = headless(&package, &watched("Lost"), "finish");
+    ready_at(&mut terminal, "Lost", RUNNING, "29 120");
+    emit(&package, "Lost", &numbered(1..=40));
+    frame_rows(&terminal, &controlled("Lost", RUNNING), &[(29, "line40")]);
+    let ended = headless(&package, &watched("Ended"), "finish");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Ended"));
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    kill(Pid::from_raw(daemon_of(&package, &lost)), Signal::SIGKILL).unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !contains(&terminal.received(), RECONNECTING.as_bytes()) {
+        assert!(Instant::now() < deadline, "never reconnecting");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let history = |lines: &[&str], first: &str| {
+        lines[1].starts_with(first) && lines[29].starts_with("line40")
+    };
+    let gone = |status: &str| {
+        let label = format!("Lost | {GONE}");
+        session_top_row(
+            usize::from(COLS),
+            &label,
+            &[status, NOT_CONTROLLING, SESSIONS_HINT],
+        )
+    };
+    whole_frame_shows(&terminal, "the gone session's history", |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        if lines.len() != usize::from(ROWS) {
+            return false;
+        }
+        let top = [gone("Disconnected"), gone("Unavailable")];
+        top.iter().any(|top| lines[0] == top)
+            && history(&lines, "line12")
+            && overlaid_by(&lines, GONE)
+    });
+    let monitor = monitor_process(&package).0;
+    let logs = instances(&package, &lost, monitor);
+    terminal.send(WHEEL_UP).unwrap();
+    whole_frame_shows(&terminal, "the scrolled history", |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        if lines.len() != usize::from(ROWS) {
+            return false;
+        }
+        lines[0].contains(" | History ")
+            && lines[1].starts_with("line11")
+            && overlaid_by(&lines, GONE)
+    });
+
+    support::kill_session(&package, &ended);
+    terminal.send("\x1ds").unwrap();
+    // The selector opens on its first row, the final one.
+    shows_row(&mut terminal, "║Failed (signal 1) Ended");
+    terminal.send("\r").unwrap();
+    whole_frame_shows(&terminal, "Ended read-only", |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        if lines.is_empty() {
+            return false;
+        }
+        let top = session_top_row(
+            usize::from(COLS),
+            "Ended",
+            &["Failed (signal 1)", "Ended", SESSIONS_HINT],
+        );
+        lines[0] == top
+            && lines.iter().any(|line| line.trim() == NO_CONTENT)
+            && lines.iter().any(|line| line.trim() == "Failed (signal 1)")
+    });
+    headless(&package, &watched("Later"), "finish");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "Later");
+    // Retrying would make another library log at least every 100 ms.
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(instances(&package, &lost, monitor), logs);
+    assert_eq!(instances(&package, &ended, monitor), 1);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    // A real listing reclaims the killed daemon's stale metadata.
+    package.list();
     finish_sessions(&package, "finish");
     package.assert_clean();
 }
