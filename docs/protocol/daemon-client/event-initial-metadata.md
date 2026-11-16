@@ -74,7 +74,6 @@ final status that agrees with `command_result`. Without it, `status` is
 unavailable. `progress` is always unavailable for now. `command_result` is null until the command's
 result is final, then that result, which the connections open at that
 moment received as [Command final](event-command-final.md#implemented-behavior);
-a connection that receives the result here receives no Command final,
-unless the initial-attachment deadline then ends the session: it then
-receives the held result as Command final once
+a connection that receives the result here receives it as its one Command
+final only when the session ends, however it ends
 ([#259](https://github.com/jackgeek/climon2/issues/259)).

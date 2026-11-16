@@ -122,28 +122,30 @@ transition, and none follows it: the result stops activity and attention
 observation, so the drained last output, a later deadline, Set viewing or
 Acknowledge changes nothing. A normal exit keeps its raw status and a signal its
 number, with a null `name`: exit 143 and signal 15 stay apart. A later Open
-gets the result in its [Initial metadata](event-initial-metadata.md), and no
-Command final follows it, except as the next paragraph says; learning the
-same result again sends nothing.
+gets the result in its [Initial metadata](event-initial-metadata.md), and
+its own Command final only when the session ends (next paragraph); learning
+the same result again sends nothing.
 After a command exits by itself, the session goes on after Command final
 until its [controller](../../../GLOSSARY.md#attachment-and-control) confirmed
 [Ready](request-ready.md) and the initial attachment had its chance: until
 then an interactive Open still attaches and [Acquire](request-acquire.md)
 is still granted.
 
-An ordinary session whose command exits before anything attached holds that
-exit for its initial attachment, and stays `starting`, until its five-second
-initial-attachment deadline. When that deadline ends the session, nothing
-having attached, the daemon sends Command final with the held result to every
-connection still open that has not received one: each that opened after the
-result was final, and so learned it only from its Initial metadata, gets it
-now, with the final status if it selected `status-v1`. A connection that was
-open when the result became final already received its Command final and gets
-no second one, so every opened connection gets exactly one. Their streams then
-end (owner decision on
-[#259](https://github.com/jackgeek/climon2/issues/259)). A session that ends
-any other way after such an Open, for example once a later attachment
-confirmed Ready, sends that connection no Command final.
+While the session goes on after Command final, it holds the result. An
+ordinary session whose command exits before anything attached, for example,
+holds it for its initial attachment and stays `starting` until its
+five-second initial-attachment deadline. However the session then ends, the
+daemon sends Command final with the held result to every connection still
+open that has not received one: each that opened after the result was final,
+and so learned it only from its Initial metadata, gets it as the session
+ends, with the final status if it selected `status-v1`. That covers the
+initial-attachment deadline, a [Kill](request-kill.md) during the hold, and
+an attachment that arrived after the exit confirming Ready, which receives
+it before its control ends with the session. A connection that was open when
+the result became final already received its Command final and gets no
+second one, so every opened connection gets exactly one, never none and
+never two (owner decisions on
+[#259](https://github.com/jackgeek/climon2/issues/259)).
 
 Command final does not wait for
 [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts). A
