@@ -541,7 +541,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// A changed effective status reaches every connection that selected
     /// `status-v1`, in order and whatever the control state.
-    fn report_status(&mut self, changed: Option<Status>) {
+    pub(super) fn report_status(&mut self, changed: Option<Status>) {
         let Some(status) = changed else {
             return;
         };

@@ -181,8 +181,9 @@ order (3 bytes accepted), nothing otherwise, and newly enabled reporting
 (`Fed::focus_enabled`) queues the known state once with the daemon's
 terminal replies.
 
-Activity and attention (`src/status.rs`, #91) follow the
-[session status mechanics](../../docs/session-status.md) in heuristic mode.
+Activity and attention (`src/status.rs`, #91 and #92) follow the
+[session status mechanics](../../docs/session-status.md) in all three
+detection modes: heuristic, explicit and fallback.
 A pure detector holds both state machines; every event takes the turn's
 clock reading, and its random source is injected. The loop reads the clock
 once at the start of each turn, so accepted input (revision-1 Input and
@@ -210,8 +211,28 @@ terminal once the application turns focus reporting on, is not user input;
 query replies never arrive, since the daemon alone answers queries. The published result
 gives the final status, carried by Command final, and stops observation.
 Set viewing records the controller's latest viewing for its control period;
-Acknowledge needs it true. Detection mode is heuristic only: #92 adds the
-explicit and fallback modes, and #98 notification signals, both through
+Acknowledge needs it true.
+
+The loop also feeds the command's output through `Vt::feed_observed`, and
+`status::interpret` (`src/status/signals.rs`) parses each observed sequence
+once, in stream order: an OSC 7501 capability query (`?`) is answered with
+`status::QUERY_REPLY` among the daemon's terminal replies and drives
+nothing; a valid root report (Program Status Protocol 0.4 validation; any
+report with an `id` drives nothing, so no child record is kept), an OSC 133
+`A`, `B`, `C` or `D`, and a full reset (`ESC c`) are `Signal`s for
+`Detector::signal`, which samples the terminal as of the signal when it
+needs a fresh baseline; their changes are reported after the read's live
+output. Root `working` is agent work without a deadline, which a user
+window's end restores while the explicit scope's root record says so; root
+`idle`, `done`, `blocked` and `error` request attention; `error` and `clear`
+start the 10,000 ms fallback quiet deadline, which changed characters, a
+changed title or a resize restart (never agent work), which a fresh root
+report or shell boundary ends, and whose expiry resumes heuristics without
+attention. `A`, `C` and `D` retire the scope to idle heuristics with a fresh
+baseline; `A` excludes prompt rendering from heuristics until `B` or `C`;
+`B` only rebases. A full reset rebases heuristics and acts as `clear` in
+explicit or fallback detection; a soft reset is not a signal. The VT strips
+every OSC from host output. #98 adds notification signals through
 `Detector::request_attention`.
 
 The daemon keeps the command's result as its wait status gives it
@@ -446,7 +467,9 @@ from the wire reference. The `script` fixture mode sets titles on command
 raw sequences (`print`, with `\e` for ESC) and fully coloured rows
 (`colors`), and ends with `exit`, `exit N` or `signal N`;
 the `silent` mode runs `sleep 120`, which prints nothing at all (the
-libtest fixture prints its harness lines); the `focus-record` mode records its input and turns focus reporting on and
+libtest fixture prints its harness lines); the `status-query-record` mode
+records its input and, after the first read, prints an OSC 7501 capability
+query and a device-attributes query; the `focus-record` mode records its input and turns focus reporting on and
 off on command; the `close-terminal` mode closes its terminal, so the daemon
 reads the end of its output, and runs on until `finish` appears, then exits
 3.
@@ -476,7 +499,15 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | STA-01 and STA-02 (Contract, initial silence): a command silent from startup (`silent`, `sleep 120`) reports nothing at any sample through 15,000 ms and stays idle and cleared | `a_session_silent_from_startup_stays_idle_and_cleared` |
 | STA-01 (Contract, same-turn dispatch, turn barrier): an Input received while the daemon is held and served in the turn whose clock ends the user window re-arms it first: no idle, then idle two seconds later | `input_comes_before_a_timer_due_in_the_same_turn` |
 | STA-08 (Contract and Fault, private client): focus reports forwarded as Input leave pending attention while reaching the application; the application's queries never reach the client, so no reply can; typed bytes clear it | `focus_reports_and_terminal_queries_never_clear_attention` |
-| STA-01, STA-02, STA-07 and LIM-05 (pure, injected clock and random source): every transition and dispatch rule of both machines, initial silence, the sampling delay range and focus-report input | the 15 `status::tests` unit tests in `src/status.rs` |
+| STA-01, STA-02, STA-07 and LIM-05 (pure, injected clock and random source): every transition and dispatch rule of both machines, initial silence, the sampling delay range and focus-report input | the 15 heuristic `status::tests` unit tests in `src/status.rs` |
+| STA-03 (Contract, controllable clock): a capability query and child reports neither activate explicit detection nor aggregate; root `working` stays running silently past 40 s; root `done`/`error`/`idle` request attention, repeats coalesce, acknowledgement re-arms, and `done` is no completion; observed sequences never reach host output | `root_reports_drive_explicit_detection_while_children_and_queries_do_not` |
+| STA-03 and STA-05 (Contract, controllable clock): the user window's end restores remembered root `working` only in the current explicit scope; `D` retires it | `user_window_expiry_restores_explicit_working_only_in_its_scope` |
+| STA-03 (Contract, `status-query-record`): the daemon answers an OSC 7501 capability query itself, with every state and kind, before the engine's device-attributes reply | `program_status_queries_are_answered_locally_in_order` |
+| STA-04 (Contract, controllable clock): root `clear` and `error` start the 10,000 ms fallback quiet deadline; characters, title and resize each restart it a millisecond before it, never as agent work; it ends at exactly ten seconds of quiet without attention and heuristics resume; the user window stays independent | `error_and_clear_start_the_fallback_quiet_deadline` |
+| STA-04 (Contract, controllable clock): a full reset rebases heuristics, keeping an agent deadline, and acts as `clear` in explicit detection; a soft reset changes nothing; a shell boundary and a fresh root report end the grace; the command's exit during it is completed | `resets_reports_markers_and_the_final_exit_end_or_keep_detection_as_specified` |
+| STA-05 (Contract, controllable clock): `A`, `C` and `D` (with an exit status) retire the scope with no attention, final status or deadline left; prompt rendering after `A` is no activity while input and root reports still apply; `C` and `B` end the exclusion, `B` with a fresh baseline; observed sequences never reach host output | `shell_markers_retire_scopes_and_exclude_prompt_rendering` |
+| STA-03, STA-04 and STA-05 (pure, injected clock and random source): root-only report effects, coalescing and remembered working; the fallback grace's restarts, exact expiry, independence from input and its ends; full resets; shell boundaries, prompt exclusion and what they keep; no signal after the final status | 9 further `status::tests` unit tests and `a_final_result_stops_observation_and_rejects_late_events` in `src/status.rs` |
+| STA-03 and STA-05 (pure, upstream validation): root reports of each state, queries, child reports, malformed pairs, unknown states, every limit at the bound and one past, base64 text values, and OSC 133 markers | the 6 `status::signals::tests` unit tests in `src/status/signals.rs` |
 | CTL-05 (Contract and Fault, stale authority from a raw peer): Input, Resize and Ready under an earlier period or a superseded restoration are `stale_period` or `stale_restoration`; Ready needs the complete current restoration; late authority never re-enables input | `stale_and_superseded_authority_is_rejected_and_never_re_enables_input`, `ready_needs_the_complete_current_restoration` |
 | INP-03 (Contract): bracketed-paste bytes reach the application exactly; an open application paste is closed when admission ends; a focus report never lands inside a paste that earlier Input requests carry | `bracketed_paste_is_exact_and_an_open_paste_is_closed_when_admission_ends`, `focus_reports_follow_the_input_accepted_before_them` |
 | TRM-02 (Contract): the daemon alone answers session queries; titles stay inert text and title-looking output stays text | `session_queries_are_answered_by_the_daemon_alone`, `titles_reach_an_attachment_as_inert_text` |

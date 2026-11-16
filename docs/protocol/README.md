@@ -257,14 +257,16 @@ not update its timestamp.
 
 The agreed revision interprets [OSC](TERMS.md#osc) 7501 program status,
 OSC 133 shell lifecycle, and OSC 9/99/777 notification/progress signals in daemon
-core before host-output filtering. This is planned behavior, not an implemented
-parser or plugin contract. External sequence framing and validation belong to
-their upstream references:
+core before host-output filtering. The session daemon implements the OSC 7501
+and OSC 133 rows below, including the local capability reply
+([#92](https://github.com/jackgeek/climon2/issues/92)); the OSC 9/99/777 rows
+are planned, and none of this is a plugin contract. External sequence framing
+and validation belong to their upstream references:
 
 | Program/daemon interaction | Direction | Reference and local policy |
 |---|---|---|
 | OSC 7501 root/child reports and clearing | Program -> daemon | [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status); [root-only effects and fallback](../session-status.md#explicit-program-status-and-fallback). |
-| OSC 7501 [capability](../../GLOSSARY.md#sessions) query/reply | Program -> daemon -> program | Same upstream reference; daemon replies locally, and a query does not activate explicit detection. |
+| OSC 7501 [capability](../../GLOSSARY.md#sessions) query/reply | Program -> daemon -> program | Same upstream reference; daemon replies locally, and a query does not activate explicit detection. The reply is `ESC ] 7501 ; ? : states=idle,working,done,blocked,error : kinds=permission,question,auth ESC \` (without spaces), in order with the daemon's other terminal replies. |
 | OSC 133 prompt/command markers | Shell -> daemon | [Shell integration](https://learn.microsoft.com/en-us/windows/terminal/tutorials/shell-integration); [scope retirement and prompt exclusion](../session-status.md#shell-boundaries-and-prompt-rendering). |
 | OSC 9 text notification | Program -> daemon | [iTerm2 sequences](https://iterm2.com/documentation-escape-codes.html); [notification policy](../session-status.md#notification-and-progress-signals). |
 | OSC 9 progress/control operations | Program -> daemon | [ConEmu sequences](https://conemu.github.io/en/AnsiEscapeCodes.html#ConEmu_specific_OSC); progress is metadata, not attention. |

@@ -116,6 +116,11 @@ records. The monitor (#106), the library-host fixture and xtask release checks
 use it; the client executable does not yet. Test-only loader fixtures consume the
 platform crate as dev-dependencies.
 
+**Current (#155):** the CLI, the client executable and the monitor share
+their start-up and failure rules instead of copying them; no edge changes.
+They return `climon2-core`'s `failure::Failure` and find the climon2 home and
+their install layout through `climon2-platform`'s `home` module.
+
 **Current (#97):** `climon2-second-release` is the test-only
 [second-release fixture](../GLOSSARY.md#testing). Its library compiles
 `climon2-client`'s library source as a package of its own version, so it

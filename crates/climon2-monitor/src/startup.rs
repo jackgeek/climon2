@@ -7,15 +7,13 @@ use crate::{Error, preference::Preference};
 use climon2_core::{
     VersionName,
     config::{ConfigError, ConfigSource, MandatoryAllocation, MonitorConfig},
+    exit::CLIMON2_ERROR,
     layout::{ExecutableHome, ExecutableLayout, HomeLayout, VersionBinary},
     protocol::TerminalSize,
 };
-use climon2_platform::{logging::LogFile, runtime, terminal};
+use climon2_platform::{home, logging::LogFile, terminal};
 use climon2_vt::{Geometry, Mandatory, Model, Parser};
-use std::{
-    io,
-    path::{Path, PathBuf},
-};
+use std::{io, path::Path};
 
 /// A validated start: nothing has touched the host terminal yet.
 pub(crate) struct Startup {
@@ -31,16 +29,17 @@ pub(crate) struct Startup {
 
 impl Startup {
     pub(crate) fn read() -> Result<Self, Error> {
-        terminal::require_ttys().map_err(|_| Error::new("climon2 monitor needs a terminal"))?;
-        let home = home().map_err(Error::new)?;
-        let log = LogFile::monitor(&home).map_err(Error::new)?;
+        terminal::require_ttys()
+            .map_err(|_| Error::new(CLIMON2_ERROR, "climon2 monitor needs a terminal"))?;
+        let home = home::canonical()?;
+        let log = LogFile::monitor(&home)?;
         Self::configured(&home, log)
     }
 
     fn configured(home: &Path, log: LogFile) -> Result<Self, Error> {
-        let logged = |error: io::Error| Error::new(error).logged(log.path());
+        let logged = |error: io::Error| Error::from(error).logged(log.path());
         let installed = installed().map_err(logged)?;
-        let home = HomeLayout::resolve(Some(home.as_os_str()), Path::new("/"))
+        let home = HomeLayout::at(home)
             .map_err(io::Error::other)
             .map_err(logged)?;
         let config = configuration(&home).map_err(logged)?;
@@ -55,20 +54,10 @@ impl Startup {
     }
 }
 
-/// The climon2 home, resolved, created and canonicalized exactly as the CLI does.
-fn home() -> io::Result<PathBuf> {
-    let user_home = std::env::var_os("HOME").unwrap_or_default();
-    let override_value = std::env::var_os("CLIMON2_HOME");
-    let layout = HomeLayout::resolve(override_value.as_deref(), Path::new(&user_home))
-        .map_err(io::Error::other)?;
-    runtime::canonical_home(layout.root())
-}
-
 /// The version folder this monitor runs from, found exactly as the CLI finds
 /// its own executable home.
 fn installed() -> io::Result<ExecutableLayout> {
-    let executable = std::env::current_exe()?.canonicalize()?;
-    ExecutableLayout::from_binary_path(&executable, VersionBinary::Monitor).map_err(|error| {
+    home::executable_layout(VersionBinary::Monitor)?.map_err(|error| {
         io::Error::other(format!("cannot find the climon2 executable home: {error}"))
     })
 }
