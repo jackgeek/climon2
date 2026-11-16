@@ -144,7 +144,7 @@ fn eviction_moves_the_view_to_the_notice_above_the_oldest_row() {
 /// TRM-05 (crate case): clearing history (`CSI 3 J`) under a scrolled view
 /// leaves nothing to show but the live screen, and so does a full reset.
 #[test]
-fn clearing_history_returns_a_scrolled_view_return_live() {
+fn clearing_history_returns_a_scrolled_view_to_live() {
     for clear in ["\x1b[3J", "\x1bc"] {
         let mut model = printed(100, 6);
         model.scroll(3);
