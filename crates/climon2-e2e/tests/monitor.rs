@@ -5068,6 +5068,83 @@ fn a_disconnect_discards_a_pending_prefix() {
     package.assert_clean();
 }
 
+/// Waits until the host's mouse tracking is the monitor's own button-event
+/// tracking (1002), or with `level` 1000 click-only or 1003 any-event
+/// tracking, as the bytes the monitor wrote set it.
+fn host_tracks(terminal: &Terminal, level: u16) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let modes = terminal.modes();
+        let tracking = (modes.mouse, modes.mouse_drag, modes.mouse_motion);
+        let expected = (true, level == 1002, level == 1003);
+        if tracking == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "host mouse tracking {tracking:?}, not {level}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// INP-05 (Monitor; owner decision on #111): the host mirrors the mouse
+/// tracking level of the application taking input, so an application
+/// asking for any-event tracking (1003) gets motion with no button held,
+/// and one asking for clicks only (1000) gets no drags from the host. The
+/// host returns to the monitor's own button-event tracking (1002) while
+/// the application reports nothing, while the selector covers it, and
+/// while another client's takeover has it, and mirrors it again once it
+/// takes input again; leaving restores the baseline.
+#[test]
+fn the_host_mirrors_the_application_mouse_tracking_level() {
+    let package = Package::new();
+    without_introduction(&package);
+    let id = headless(&package, &watched("Track"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Track", RUNNING, "29 120");
+    host_tracks(&terminal, 1002);
+    set_modes(
+        &package,
+        &terminal,
+        "Track",
+        b"\x1b[?1003h\x1b[?1006h",
+        "T3",
+    );
+    host_tracks(&terminal, 1003);
+    terminal.send("\x1b[<35;6;4M").unwrap();
+    received_by(&package, "Track", b"\x1b[<35;6;3M");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "║Running Track");
+    host_tracks(&terminal, 1002);
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    host_tracks(&terminal, 1003);
+    set_modes(
+        &package,
+        &terminal,
+        "Track",
+        b"\x1b[?1003l\x1b[?1000h",
+        "T1",
+    );
+    host_tracks(&terminal, 1000);
+    set_modes(&package, &terminal, "Track", b"\x1b[?1000l", "T0");
+    host_tracks(&terminal, 1002);
+    set_modes(&package, &terminal, "Track", b"\x1b[?1003h", "T4");
+    host_tracks(&terminal, 1003);
+    let other = attach(&package, &id);
+    shows(&mut terminal, &placeholder_screen("Track", RUNNING));
+    host_tracks(&terminal, 1002);
+    detach(other);
+    ready_at(&mut terminal, "Track", RUNNING, "29 120");
+    host_tracks(&terminal, 1003);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
 /// INP-05 (Monitor: application, chrome and selector cases) and INP-04
 /// (Monitor: a modal in the middle of a gesture): with button-event
 /// tracking in SGR form, a click below the top row reaches the application

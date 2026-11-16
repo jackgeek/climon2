@@ -108,7 +108,10 @@ client's input queue refuses partway shows `Paste truncated`; the rest is
 discarded and the application is sent the end marker (owner decision on
 #111). Mouse reports are hit-tested and translated below the top row, in
 the application's reporting mode and encoding; chrome and overlay events
-stay local, and each gesture keeps the target where it began. With
+stay local, and each gesture keeps the target where it began. The host's
+mouse tracking mirrors the level (1000, 1002 or 1003) of the application
+whose canvas is shown uncovered, otherwise the monitor's own button-event
+tracking (owner decision on #111). With
 `focus-v1`, [Focus](monitor-client/request-focus.md) follows selection,
 modal UI and host focus reports, once per change and once more for each
 newly ready restoration; without it no Focus is sent. Both that and a host

@@ -480,9 +480,14 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   reporting mode asks (1000 presses, releases and the wheel; 1002 also
   motion with a button held; 1003 any motion) and in its encoding (SGR;
   UTF-8, coordinates up to 2015; or single bytes, values up to 223, where a
-  release is button 3), and nothing it cannot encode. The host keeps
-  button-event tracking, so an application asking for any-motion tracking
-  receives motion only while a button is held. The wheel over an application
+  release is button 3), and nothing it cannot encode. The host mirrors the
+  tracking level of the application whose canvas is shown uncovered (owner
+  decision on #111): click-only (1000), button-event (1002) or any-event
+  (1003), switched in `screen.rs` beside the keypad mode by resetting the
+  old mode and setting the new one. While that application reports nothing,
+  a modal covers it, another session or no session is shown, or the host is
+  too small, the host is in the monitor's own button-event tracking (1002),
+  as it entered; leaving resets every mode. The wheel over an application
   that does not report the mouse scrolls nothing yet (#112).
 - **Host focus.** The host's focus reports bypass keys and set whether the
   host has focus, assumed until it reports otherwise. A host that never
@@ -652,6 +657,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | INP-04 (Monitor, Fault): revocation in the middle of a paste (the rest discarded even once ready again after a hand-back), revocation with a prefix pending (the take-control key then takes control), a new restoration from a host resize in the middle of a paste (the end marker once that restoration is ready, before later keys; owner decision on #111), and a too-small host in the middle of a paste (the end marker at once; the rest discarded once there is room again) | `a_target_change_discards_the_rest_of_a_paste_and_a_pending_prefix` (e2e) |
 | INP-04 (Monitor, Fault: disconnect): the selected session's daemon killed with a prefix pending discards the prefix, so the next key is no exit and reaches no other session | `a_disconnect_discards_a_pending_prefix` (e2e) |
 | INP-05 (Monitor: application, chrome and selector cases), INP-04 (Monitor: a modal in the middle of a gesture): clicks, a drag onto the top row and the wheel translated; a gesture begun on the top row stays local; the selector opening mid-drag discards the rest; selector clicks reach no application; single-byte encoding; reporting off | `mouse_events_reach_the_application_translated_and_keep_their_gesture` (e2e) |
+| INP-05 (Monitor; owner decision on #111): the host mirrors the application's mouse tracking level (1003, 1000), back to the monitor's own (1002) while the application reports nothing, the selector covers it or another client's takeover has it, and again once it takes input | `the_host_mirrors_the_application_mouse_tracking_level` (e2e), `the_host_mouse_tracking_is_written_when_it_changes` (`src/screen.rs`) |
 | FOC-01 (Monitor: application focus): focus follows menus, host focus and switching, once per change, the current focus once when reporting is enabled | `application_focus_follows_selection_menus_and_host_focus_once_each` (e2e) |
 | FOC-02 (Monitor; owner decisions on #111): a host that never reports focus leaves sessions usable, and a session without `focus-v1` shows nothing about it in its top row | `without_focus_support_sessions_stay_usable_and_nothing_is_shown` (e2e) |
 | INP-01 (pure input-router supplement): the global actions with default and custom prefixes; a doubled prefix; unknown suffixes; a lone prefix waits | `the_prefix_and_lowercase_s_x_j_or_question_mark_are_the_global_actions`, `a_doubled_prefix_is_one_literal_prefix`, `an_unknown_suffix_is_the_prefix_and_that_key`, `a_lone_prefix_waits_indefinitely` (`src/router.rs`) |
@@ -671,8 +677,7 @@ Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), selector clicks and
 the wheel in the selector, and paste into search (#113), the wheel over
 history and alternate scroll (#112), toasts and their gestures (INP-05's
 toast cases, #115), viewing and host focus's effect on it (#114), FOC-01's
-history and toast cases (#112, #115), any-motion mouse tracking without a
-button held (the host keeps button-event tracking), FOC-02's host-native
+history and toast cases (#112, #115), FOC-02's host-native
 copy (a host manual check), INP-04's disconnect case in the middle of a
 paste or gesture (the selection stays on the lost session, so nothing
 else could receive the rest; #116 owns its recovery), global actions from the history screen (#116), HLP-02 over the selector (#113), selector
