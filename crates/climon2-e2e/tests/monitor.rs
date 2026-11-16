@@ -6717,13 +6717,10 @@ fn representative_status_sequences_show_the_right_row_states() {
     headless(&package, &watched("Seq"), "finish");
     ready_at(&mut terminal, "Seq", RUNNING, "29 120");
     headless(&package, &watched("Other"), "finish");
+    // The host hears that Other needs attention, without the selector,
+    // whose cancelling would acknowledge Seq.
     report_state(&package, "Other", "idle");
-    terminal.send("\x1ds").unwrap();
-    listed_with(&terminal, ATTENTION, "Other");
-    // prefix+j from the selector would leave Other selected; Escape does
-    // not, and Seq needs no attention to acknowledge yet.
-    terminal.send(ESCAPE).unwrap();
-    selector_closed(&terminal);
+    host_heard(&mut terminal, &[WORKING, BLOCKED]);
     let osc = |state: &str| format!("\x1b]7501;state={state}\x1b\\").into_bytes();
     reported(
         &mut terminal,
