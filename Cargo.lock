@@ -258,6 +258,19 @@ name = "climon2-launcher"
 version = "0.1.0"
 
 [[package]]
+name = "climon2-measure"
+version = "0.1.0"
+dependencies = [
+ "climon2-core",
+ "climon2-platform",
+ "climon2-test-term",
+ "libc",
+ "portable-pty",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "climon2-monitor"
 version = "0.1.0"
 dependencies = [
