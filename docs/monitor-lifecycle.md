@@ -1,6 +1,6 @@
 # Monitor lifecycle, exit and failure
 
-**Status: agreed specification, almost entirely unimplemented.** This resolves
+**Status: agreed specification, partly implemented (below).** This resolves
 [Define monitor exit and failure behavior](https://github.com/jackgeek/climon2/issues/61)
 within [the monitor planning map](https://github.com/jackgeek/climon2/issues/57).
 It amends the earlier selector/history and session-management scope decisions.
@@ -16,14 +16,17 @@ Read the [domain glossary](../GLOSSARY.md), [status mechanics](session-status.md
 **Implemented with packaged evidence:** the empty
 [monitor](../GLOSSARY.md#sessions) of [#74](https://github.com/jackgeek/climon2/issues/74),
 and headless creation and lifetime of [#78](https://github.com/jackgeek/climon2/issues/78),
-specified [below](#headless-creation-and-existing-cli-kill). The monitor
-discovers no sessions and shows its empty state until it exits. Prefix+x exits
-0; a catchable SIGINT, SIGTERM or SIGHUP exits with signal-style status; a
-render failure or a failed or hung-up host input exits with the climon2 error
-code. Every one of these exits restores the host terminal's modes and termios
-before any diagnostic. Keyboard Ctrl+C is not an exit. Discovery, clients and
-their shutdown, Leave, the root attention `clear`, new wire and native
-interfaces remain unimplemented.
+specified [below](#headless-creation-and-existing-cli-kill). Later tickets added discovery, clients and recovery (see the
+[monitor README](../crates/climon2-monitor/README.md)).
+[Coordinated shutdown](#coordinated-shutdown) and the [exit status](#exit-status)
+are **implemented with packaged evidence** by
+[#118](https://github.com/jackgeek/climon2/issues/118): one deadline that
+includes settling accepted input (owner decision on #118), separate
+evidence per instance, the `Exiting: waiting for N sessions` screen, the
+root attention `clear` after host restoration and before any diagnostic,
+nothing printed on a clean exit, and the bounded fail-stop; the
+[monitor README](../crates/climon2-monitor/README.md#exit-and-coordinated-shutdown-118)
+documents the exit statuses. Keyboard Ctrl+C is not an exit.
 
 ## Monitor and selection lifetime
 

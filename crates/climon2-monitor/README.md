@@ -15,8 +15,9 @@ help (#105), session discovery, passive clients and the basic selector
 control and painting of the selected session (#108), the input router that
 sends typed keys to it (#109), and switching, revocation, taking control back
 and Enter on Starting and Unavailable rows (#110), initial selection
-(#266), paste, mouse and focus (#111), and disconnection, read-only history
-and passive recovery (#116). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
+(#266), paste, mouse and focus (#111), disconnection, read-only history
+and passive recovery (#116), and coordinated shutdown with a truthful exit
+status (#118). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
 
 ## Startup, before the host terminal changes
 
@@ -265,17 +266,7 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   condition (below, #108 and #110). While rows exist, nothing is
   selected and the selector is closed, the body reads `No session selected.`
   above the key hint.
-- **Exit** first waits until every input chunk an open client accepted is
-  answered, at most `deadlines.operation_ms` (owner decision on #109), so
-  keys typed with prefix+x reach their session and a stuck session holds
-  exit no longer than one operation may take. It then asks the supervisor
-  to shut every instance down and keeps
-  draining until each has ended, its handles are released and its owner is
-  joined, for at most `deadlines.shutdown_ms` (and one tick), then releases
-  the host. An instance unconfirmed by then is logged (`client shutdown
-  unconfirmed at its deadline`) and left to process exit: its owner never
-  destroys it while its handles may be unreleased. The fail-stop that
-  should follow arrives with #118.
+- **Exit** is the coordinated shutdown [below](#exit-and-coordinated-shutdown-118).
 
 ## Selection, control and painting (#108)
 
@@ -480,7 +471,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   Nothing is retried once the client delivered the command's final outcome
   (the library also says none then), or once destroy failed, when worker
   cleanup cannot be confirmed: that row says `cannot confirm the client's
-  cleanup: <error>` and is never replaced (the fail-stop is #118's).
+  cleanup: <error>` and is never replaced; its unconfirmed cleanup makes
+  the monitor's exit a fail-stop (#118, below).
 - **Passive retry.** A retry waits until the old instance's deliveries and
   handles are released, its run has returned and its owner has destroyed it
   and been joined, then a backoff (`supervisor/backoff.rs`): from
@@ -610,25 +602,91 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   Like a host that never reports focus, this limitation is documented here
   only; nothing on screen says so (owner decision on #111).
 
-## Exit
+## Exit and coordinated shutdown (#118)
 
-Prefix+x exits 0; catchable SIGINT, SIGTERM and SIGHUP take the same path with
-status 128 + signal. The monitor writes the documented normal-shell baseline
-(from `climon2-vt`) on its alternate screen and leaves that screen last, so the
-shell's cursor returns. Termios is restored afterwards, and only then does main
-print a diagnostic. A render or host-input failure therefore still releases the
-host first and exits 125. The general log records
-`monitor started version=<folder>`, then
+Prefix+x and the catchable SIGINT, SIGTERM and SIGHUP take one path
+(`lib.rs`, `supervisor.rs`, `shutdown.rs`, `failstop.rs`):
+
+1. Application input, acquisition, discovery and retries stop at once:
+   nothing read after prefix+x is routed (keys read before it in the same
+   read reach the session first), discovery starts no pass after the
+   current one, and the supervisor schedules no start or retry.
+2. One deadline, `deadlines.shutdown_ms` from the exit request, bounds the
+   rest. The supervisor first waits until every input chunk an open client
+   accepted is answered, at most `deadlines.operation_ms` and inside the
+   same deadline (owner decisions on #109 and #118), then asks every
+   instance to shut down at once, again each round, passive, controlling,
+   partially started and failing alike, so a slow one holds up no other.
+   It keeps draining and releasing deliveries, releases each instance's
+   handles once it is over, lets its owner destroy it and joins that owner,
+   and joins every release load thread; the UI thread stops discovery and
+   joins its thread once its pass ends.
+3. Meanwhile the host is still read: input, repeated prefix+x and further
+   signals are discarded and never restart the deadline or change the
+   status. The screen reads `Exiting: waiting for N sessions` (`1 session`
+   for one; owner decision on #118), the sessions shutdown still waits for.
+4. The host is restored: the documented normal-shell baseline (from
+   `climon2-vt`) on the monitor's alternate screen, which it then leaves,
+   so the shell's cursor returns, then the root OSC 7501 `clear`
+   (`ESC ] 7501;state=clear ESC \`), then termios. Only then is any
+   diagnostic printed; nothing is printed on a clean exit (owner decision
+   on #118). A watchdog bounds this final phase by
+   `deadlines.final_host_ms`: a host that cannot be restored by then ends
+   the whole process with the climon2 error code, logged as `final host
+   restoration unfinished`, never described as restored.
+
+Each kind of evidence is kept on its own and logged per instance, content
+free (`client shutdown evidence session=<id> leave=… detached=… closed=…
+failed=… workers=… released=… destroyed=… joined=…`): the daemon's answer
+to Leave and whether it detached an attachment, connection closure and the
+client outcome from the library's terminal evidence, worker cleanup from
+run's report, handle release, destroy and the owner thread's join. None
+stands in for another.
+
+**Exit statuses.** The monitor never returns a session's own exit status.
+
+- **0** after prefix+x, and **128 + signal** (130, 143, 129) after a
+  catchable signal, only when every current Leave is confirmed or not
+  required, every instance is cleaned up and joined, and the host is
+  restored. A session's command failing, a client error resolved on its
+  row and an earlier loss whose instance is already cleaned up do not
+  fail it.
+- **125**, the climon2 error code, with one diagnostic after the host is
+  restored: a render, host input or host output failure (which also takes
+  this path), and a client whose connection may have been active when
+  shutdown began but whose Leave was rejected, failed or lost, whose client
+  failed, or that ended with no terminal evidence: `monitor shutdown
+  unconfirmed: session <id>: <what>`.
+- **125 by fail-stop** when cleanup cannot be confirmed: an instance not
+  cleaned up and joined by the deadline, one whose worker cleanup or
+  destroy failed (now or earlier in the run), a release load or discovery
+  pass still running. The monitor restores the host, sends the root clear
+  and prints the same one-line diagnostic, naming each session and what
+  is unconfirmed, then ends the whole process with `_exit`: it never kills
+  a thread, unloads a library, runs library destructors under running
+  client code, or claims a join, release or detach that did not happen.
+
+A native crash or abort in a client library ends the whole monitor and
+every client it hosts, with no cleanup promise, and so do uncatchable
+signals. Ordinary sessions then keep their own leave policy: the daemon
+treats the lost clients as it treats any client that disappears, and
+nothing promises an ordinary session survives; headless sessions allow zero
+clients.
+
+The general log records `monitor started version=<folder>`, then
 `monitor configuration effective=<JSON>` with every effective setting in the
 file's shape, then `monitor preference unusable problem=<reason>` if the
 preference file could not be used, `monitor preference saved
 suppressed=<bool>` or `monitor preference not saved problem=<reason>` for each
-save, and `monitor stopped status=<n>` or `monitor failed error=<diagnostic>`,
+save, the shutdown evidence above, `shutdown work unfinished work=<what>`,
+and `monitor stopped status=<n>` or `monitor failed error=<diagnostic>`,
 never terminal content or input.
 
-With `test-hooks` only, `CLIMON2_MONITOR_FAULT=draw` makes drawing fail, and
-`CLIMON2_MONITOR_FAULT=poll` makes the kernel reject the wait for host input by
-giving it no descriptor table. `cargo xtask test` first runs
+With `test-hooks` only, `CLIMON2_MONITOR_FAULT=draw` makes drawing fail,
+`CLIMON2_MONITOR_FAULT=poll` makes the kernel reject the wait for host input
+by giving it no descriptor table, `CLIMON2_MONITOR_FAULT=discovery` stalls
+discovery before its first pass for good, and `CLIMON2_MONITOR_FAULT=release`
+stalls the host's release for good. `cargo xtask test` first runs
 `cargo test -p climon2-monitor --test build` alone, which builds the plain
 binary; the workspace tests that follow unify `test-hooks` through
 `climon2-test-term` into the same sibling path.
@@ -660,6 +718,8 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Over a not-connected row's retained history or its no-content state while a passive retry is scheduled or running (#116) | `Reconnecting...` | `screen.rs` |
 | Over the same once recovery is permanently rejected (#116) | `Not reconnecting: <diagnostic>` | `screen.rs` |
 | Over the same, and in the top row's error slot, once discovery proved the session's daemon gone (#116, owner decision 2026-11-16) | `Session no longer exists` | `screen.rs` |
+| The whole host while shutdown waits (#118, owner decision 2026-11-16) | `Exiting: waiting for <N> sessions`; for one, `Exiting: waiting for 1 session` | `screen.rs` |
+| After exit, on the shell, with the climon2 error code (#118; only on failure, owner decision 2026-11-16) | `climon2: error: monitor shutdown unconfirmed: <part>; <part>… (logs: <path>)`, each part `session <id>: <what>, …` or `<work> unfinished`; `<what>` among `Leave rejected`, `Leave failed`, `Leave unconfirmed`, `client failed: <error>`, `connection closure unconfirmed`, `no terminal evidence`, `handles not released`, `run not returned`, `worker cleanup unconfirmed: <why>`, `not destroyed`, `not destroyed: <error>`, `thread not joined`; `<work>` among `release <version> load`, `discovery pass`, `client supervisor` | `shutdown.rs`, `failstop.rs` |
 | Top row's error slot: a lost or failed client's diagnostic (#116, owner decision 2026-11-16) | the library's or loader's own message, or the monitor's: `cannot poll the client: <error>`, `cannot drain the client: <error>`, `the client stopped without terminal evidence`, `the client stopped before it opened`, `cannot confirm the client's cleanup: <error>` | `supervisor.rs` |
 
 ## Specification mapping
@@ -692,7 +752,15 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | DSC-01 (Monitor, start order): bounded starts newest created first, ascending ID ties, each after the previous one failed, as the fake daemons heard them | `clients_start_one_at_a_time_newest_first_with_ascending_id_ties` (e2e) |
 | DSC-03 (Monitor, cadence): immediate first pass, each later pass a second after the previous one ended, no overlap, the selector opened during a pass | `discovery_passes_start_a_second_after_the_previous_one_ends_without_overlap` (e2e) |
 | Client supervisor (Fault), LIB-05 (Monitor, Fault): a failed notification lookup, a run failing without terminal evidence, or a failed drain ends that instance cleanly (deliveries and handles released, destroyed) and frees its start slot | `a_failed_notification_lookup_ends_its_client_cleanly_and_frees_its_start_slot`, `a_failed_run_without_terminal_evidence_ends_its_client_cleanly_and_frees_its_start_slot`, `a_failed_drain_ends_its_client_cleanly_and_frees_its_start_slot` (`src/supervisor.rs`) |
-| Client supervisor (Fault): exit is bounded by `deadlines.shutdown_ms`, logs any client it could not confirm, and never destroys an instance with unreleased handles; a refused release is loaded once and its sessions are Unavailable | `exit_is_bounded_and_never_destroys_an_instance_with_unreleased_handles`, `a_refused_release_is_loaded_once_and_its_sessions_are_unavailable` (`src/supervisor.rs`) |
+| Client supervisor (Fault), EXT-02 (Fault, #118): exit lasts until `deadlines.shutdown_ms` and no longer, says whom it waits for, logs any client it could not confirm, and never destroys or claims an instance with unreleased handles; a refused release is loaded once and its sessions are Unavailable | `exit_is_bounded_and_never_destroys_an_instance_with_unreleased_handles`, `a_refused_release_is_loaded_once_and_its_sessions_are_unavailable` (`src/supervisor.rs`) |
+| EXT-01 (Monitor, Fault; #118): one shutdown asks passive, partially started, failing, stalled and unreleasable instances at once; each kind of evidence (Leave, client outcome, closure, worker cleanup, release, destroy, join) proven alone; a lost Leave fails the exit, unconfirmed cleanup fail-stops it, naming exactly what | `shutdown_asks_every_instance_at_once_and_proves_each_kind_of_evidence_alone` (`src/supervisor.rs`) |
+| EXT-02 and LIB-06 (Fault, #118): a release load still running at the deadline is reported unfinished, never joined | `a_load_unfinished_at_the_deadline_is_reported_and_never_joined` (`src/supervisor.rs`) |
+| EXT-01, EXT-02, EXT-04 and LIB-06 (pure supplements, #118): the verdict over separate evidence (clean, failed, fail-stop) and its diagnostic; Leave codes; terminal evidence and run reports read each kind alone; an earlier failure leads the diagnostic; the exit screen's count | `confirmed_or_unneeded_leaves_with_complete_cleanup_are_clean`, `an_unconfirmed_current_leave_fails_the_exit_naming_it`, `unconfirmed_cleanup_or_unfinished_work_is_a_fail_stop_naming_each_piece`, `leave_codes_read_as_their_leave` (`src/shutdown.rs`), `terminal_evidence_proves_each_kind_of_departure_evidence_alone`, `only_a_successful_run_or_a_complete_report_confirms_worker_cleanup` (`src/supervisor/client.rs`), `a_shutdown_failure_follows_any_earlier_failure` (`src/lib.rs`), `the_exit_screen_counts_the_sessions_it_waits_for` (`src/screen.rs`) |
+| EXT-01, EXT-03 (orderly exit) and EXT-04 (Monitor, #118): prefix+x leaves a passive and a controlling client on one path, each kind of evidence logged alone, the controlling Leave detaching; exit 0 with the host restored and cleared, nothing printed, though the command never exits 0 | `exit_leaves_every_client_and_records_each_kind_of_evidence_alone` (e2e) |
+| EXT-02 and LIB-06 (Monitor, Fault; #118): a Leave never answered stalls past the deadline; the exit screen counts the session; repeated prefix+x and signals neither restart the deadline nor reach the shell; the host is restored and cleared, then a fail-stop with 125 names what is unconfirmed, claiming no join | `a_stalled_leave_fail_stops_at_the_deadline_however_often_exit_is_repeated` (e2e) |
+| EXT-02 and LIB-06 (Fault; #118; hooked): worker cleanup past `cleanup_ms` and a busy destroy fail-stop without claiming them; a discovery pass that never ends fail-stops at the deadline; a host release that never ends exits 125 after `final_host_ms`, never described as restored | `unconfirmed_worker_cleanup_fail_stops_without_claiming_it`, `debug_hook_stalled_discovery_fail_stops_at_the_deadline`, `debug_hook_unfinished_host_restoration_fails_after_the_final_host_allowance` (e2e, hooked only) |
+| LIB-06 (Monitor, Fault; #118; hooked library): a native abort in a client library, in this disposable monitor process, ends the whole monitor (134) | `a_native_abort_in_a_client_library_ends_the_whole_monitor` (e2e, hooked only) |
+| EXT-04 (Monitor, #118): an earlier transport loss, cleaned up and reconnected, does not fail the later clean exit | `a_lost_connection_keeps_its_history_read_only_until_a_passive_reconnect` (e2e) |
 | Client supervisor: `scheduling.starts` at its bound starts that many clients and holds the next session (no client, no log directory) until one opens | `client_starts_never_exceed_the_start_lane` (`src/supervisor.rs`) |
 | Client supervisor: terminal evidence before Open's response makes the row Unavailable with its message, or a stated reason when it is empty | `terminal_evidence_before_open_says_why_the_session_is_unavailable` (`src/supervisor.rs`) |
 | Own-session scenario (confirmed 2026-11-08; hidden, owner decision on #110), DSC-06 (Monitor), HDL-01 (Monitor rows), CTL-01 (controlled elsewhere), TRM-06 (wide labels), SEL-01 (cell-safe clipping): the own session is never listed and gets no client, while nested and controlled sessions appear | `the_own_session_is_hidden_while_nested_and_controlled_sessions_appear` (e2e) |
@@ -762,7 +830,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | INP-01, INP-02, TRM-02 (Monitor), COM-04 (Monitor, typed), EXT-03 (Monitor, Ctrl+C): typed bytes reach the selected session exactly, binary, invalid UTF-8 and Ctrl+C included; one literal prefix for a doubled one, both bytes for d, h, r, J and the take-control key, nothing for prefix+j, replies and reports; identical when split into ten reads; cursor and keypad keys follow the application's modes and the host keypad follows it | `typed_bytes_reach_the_selected_session_exactly_however_reads_split` (e2e) |
 | INP-01 (Monitor, live and too-small screens), spec #73 Routing: prefix+? and prefix+s from a live session, their keys never reach it; on a too-small host input is discarded, never buffered, prefix+s still opens the selector and prefix+x still exits | `global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffered` (e2e) |
 | INP-02, HLP-02 (Monitor, Escape; owner decisions on #105, #106 and #109): a cursor key split right after its Escape or after its introducer never closes the selector or key introduction; a lone Escape closes it when the next key arrives, which reaches the session; Escape then a key in one read closes the selector or key introduction and the key reaches the session, painted first | `split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both` (e2e), `only_closing_the_last_modal_reveals_the_canvas` (`src/lib.rs`) |
-| Spec #73 exit (owner decision on #109): keys read with prefix+x reach the session before shutdown; a stuck session holds exit at most the operation deadline (plus the shutdown deadline) | `typed_bytes_reach_the_selected_session_exactly_however_reads_split`, `a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline` (e2e); `stopping_waits_for_accepted_input_at_most_the_operation_deadline` (`src/supervisor.rs`) |
+| Spec #73 exit (owner decisions on #109 and #118): keys read with prefix+x reach the session before shutdown; a stuck session holds exit at most the operation deadline, inside the shutdown deadline; EXT-02 and EXT-04 (#118): its connection failing during shutdown with no confirmed Leave exits 125 naming it | `typed_bytes_reach_the_selected_session_exactly_however_reads_split`, `a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline` (e2e); `stopping_waits_for_accepted_input_at_most_the_operation_deadline` (`src/supervisor.rs`) |
 | COM-03 (Monitor, queue full), COM-04 (Monitor, chunks): a refused chunk is shown with the bytes not sent, earlier input accepted; only accepted input arrives | `a_full_input_queue_is_shown_and_only_accepted_input_arrives` (e2e) |
 | INP-03 (Monitor), COM-04 (Monitor, paste cases): pastes exact, binary, prefix commands, nested and broken markers included, with application markers only while it has bracketed paste on, off and on again; a pending prefix as one literal before the paste, none pending after it; markers split across reads | `pastes_reach_the_selected_session_exactly_with_markers_only_when_it_asks` (e2e) |
 | INP-03 (Monitor, Fault; owner decision on #111), COM-04 (Monitor, paste chunks): a paste refused partway shows `Paste truncated`, its later read is discarded, and the application gets the start marker, whole chunks and the end marker before the next key | `a_paste_refused_partway_is_truncated_and_its_application_gets_the_end_marker` (e2e) |
@@ -796,7 +864,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | #74 risk proof: plain and hooked sibling binaries without nested builds | `cargo_builds_the_plain_or_hooked_monitor_binary_for_its_tests` (`tests/build.rs`, plain and hooked runs); fixtures `workspace_binaries_contain_test_hooks`; xtask `release_check_builds_unhooked_binaries_in_a_private_target` |
 | #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`; Linux `linux_packaging_rejects_a_non_x86_64_or_hooked_monitor`; macOS `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
 
-Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), selector clicks and
+Not yet claimed: selector clicks and
 the wheel in the selector, and paste into search (#113), toasts and their gestures (INP-05's
 toast cases, #115), viewing and host focus's effect on it (#114), FOC-01's
 toast cases (#115), FOC-02's host-native
@@ -807,6 +875,5 @@ search and footer (#113), Enter on Awaiting resources rows (#120),
 Awaiting resources
 ending initial collection (#120), resource admission and fairness, including newest-first starts
 across discovery batches, and `discovery.stall_ms` (#120), a session
-dropped at its memory limit and retried (#119), the fail-stop after an
-unconfirmed shutdown or cleanup (#118), and the universal archive's runtime on both architectures, which
+dropped at its memory limit and retried (#119), and the universal archive's runtime on both architectures, which
 only CI's `dist` and `archive` jobs build and execute.
