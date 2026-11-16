@@ -595,10 +595,15 @@ impl Monitor {
 
     /// Applies a client's control and display report to its terminal,
     /// submitting the Ready that follows an applied restoration, then
-    /// keeps the selected controller's size.
+    /// keeps the selected controller's size. An update the terminal's model
+    /// refused drops the session's client, to be retried passively, while
+    /// its last safe content stays read-only (#119).
     fn present(&mut self, id: &SessionId, presentation: Presentation) {
-        let ready =
-            terminal(&mut self.terminals, self.model, id).present(&mut self.parser, presentation);
+        let terminal = terminal(&mut self.terminals, self.model, id);
+        let ready = terminal.present(&mut self.parser, presentation);
+        if let Some(why) = terminal.take_rejection() {
+            self.supervisor.drop_client(id.clone(), why);
+        }
         self.request(id, ready);
         self.resize();
     }

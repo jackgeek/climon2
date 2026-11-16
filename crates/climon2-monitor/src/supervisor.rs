@@ -120,6 +120,7 @@ enum Command {
     Start(Box<SessionMetadata>),
     Request(SessionId, Request),
     Forget(SessionId),
+    Drop(SessionId, String),
     Shutdown,
 }
 
@@ -163,6 +164,13 @@ impl Supervisor {
     /// (owner decision on #116, 2026-11-16).
     pub(crate) fn forget(&self, id: SessionId) {
         let _ = self.commands.send(Command::Forget(id));
+    }
+
+    /// `id`'s terminal model refused an update (#119): its open client is
+    /// failed with `why` and retried passively, like any client the monitor
+    /// stops itself (owner decision on #119, 2026-11-16).
+    pub(crate) fn drop_client(&self, id: SessionId, why: String) {
+        let _ = self.commands.send(Command::Drop(id, why));
     }
 
     /// Waits for accepted input to be answered (at most
@@ -390,6 +398,7 @@ impl State {
             Command::Start(metadata) => self.wait(*metadata),
             Command::Request(id, request) => self.submit(&id, request),
             Command::Forget(id) => self.forget(id),
+            Command::Drop(id, why) => self.fail(&id, why),
             Command::Shutdown => return false,
         }
         true
@@ -2793,6 +2802,55 @@ mod tests {
             .map(|(_, event)| event)
             .collect();
         assert!(!reports.contains(&ClientEvent::Starting), "{reports:?}");
+    }
+
+    /// LIM-03 (Monitor, Fault: rejected updates; owner decision on #119,
+    /// 2026-11-16): a session whose model refused an update has its client
+    /// dropped, reported Unavailable with the model's error, and retried
+    /// passively in a fresh generation once the old instance is destroyed;
+    /// dropping it again once it is no longer open changes nothing.
+    #[test]
+    fn a_client_dropped_at_its_memory_limit_is_retried_passively() {
+        let id = session(25, 1);
+        let quick = Backoff {
+            initial_ms: 0,
+            cap_ms: 0,
+            jitter_percent: 0,
+        };
+        let limits = climon2_core::config::Limits::default().library();
+        let mut supervised = retrying(1, 20_000, fake_library(), (limits, quick));
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+        let opened = ClientEvent::Opened { status: false };
+        assert_eq!(next(supervisor), (id.clone(), opened.clone()));
+        let why = "terminal model over its limit: 9 bytes needed, 8 allowed";
+        supervisor.drop_client(id.clone(), why.into());
+        supervisor.drop_client(id.clone(), "again".into());
+        let reports = reports_until(supervisor, |reports| {
+            reports
+                .get(&id)
+                .is_some_and(|events| events.contains(&opened))
+        });
+        assert_eq!(
+            reports[&id],
+            [
+                ClientEvent::Unavailable(why.into()),
+                ClientEvent::Recovery(Recovery::Retrying(why.into())),
+                ClientEvent::Starting,
+                opened,
+            ]
+        );
+        let created = guid(&id);
+        assert_eq!(
+            seen(&created)[..3],
+            [
+                Seen::Created,
+                Seen::Destroyed(native::SUCCESS),
+                Seen::OwnerExited
+            ]
+        );
+        supervisor.stop();
+        assert_eq!(generations(&id), [1, 2]);
     }
 
     /// Owner decision on #116 (2026-11-16): once discovery proves a

@@ -221,6 +221,9 @@ pub(crate) struct Terminal {
     /// A restoration was ever applied: the model holds terminal content,
     /// kept as a read-only cache once control or the connection ends.
     cached: bool,
+    /// Why the model refused an update since the monitor last asked: the
+    /// session's client is dropped, its cache kept read-only (#119).
+    rejection: Option<String>,
 }
 
 impl Terminal {
@@ -239,6 +242,7 @@ impl Terminal {
             unacknowledged: false,
             cut: None,
             cached: false,
+            rejection: None,
         }
     }
 
@@ -432,13 +436,24 @@ impl Terminal {
         }
     }
 
+    /// An update the model refused is shown as the error, and the
+    /// session's client is to be dropped for it.
     fn rejected(&mut self, fed: Result<(), Rejected>) {
         if let Err(rejected) = fed {
-            self.error = Some(format!(
+            let why = format!(
                 "terminal model over its limit: {} bytes needed, {} allowed",
                 rejected.needed, rejected.limit
-            ));
+            );
+            self.error = Some(why.clone());
+            self.rejection = Some(why);
         }
+    }
+
+    /// Why the model refused an update since the last call, if it did: the
+    /// monitor drops the session's client, which is retried passively, and
+    /// keeps the model's last safe content read-only (#119).
+    pub(crate) fn take_rejection(&mut self) -> Option<String> {
+        self.rejection.take()
     }
 
     /// Whether the frame now painted on the host shows this terminal's
@@ -1410,6 +1425,69 @@ mod tests {
         );
         assert_eq!(terminal.present(&mut parser, Presentation::Complete), None);
         assert!(terminal.view().is_none());
+        assert_eq!(
+            terminal.take_rejection().as_deref(),
+            terminal.error(),
+            "the refused restoration drops the client"
+        );
+        assert_eq!(terminal.take_rejection(), None);
+    }
+
+    /// The text of `view`'s normal-screen row `index`, narrow characters
+    /// only, trailing blanks trimmed.
+    fn row_text(view: &View<'_>, index: usize) -> String {
+        let climon2_vt::view::Screen::Normal { rows, .. } = view.screen() else {
+            panic!("the normal screen");
+        };
+        let text: String = rows
+            .get(index)
+            .unwrap()
+            .cells()
+            .filter_map(|cell| match cell.content {
+                climon2_vt::view::Content::Narrow(glyph) => Some(glyph.character),
+                _ => None,
+            })
+            .collect();
+        text.trim_end().to_owned()
+    }
+
+    /// LIM-03 (pure supplement, rejected updates): output the model's limit
+    /// refuses drops the session's client once, with the error it shows, and
+    /// keeps the last safe content as the read-only cache once control ends;
+    /// nothing after the refusal reaches it. Output within the limit drops
+    /// nothing.
+    #[test]
+    fn refused_output_drops_the_client_once_and_keeps_the_last_safe_cache() {
+        let mut parser = Parser::new();
+        let mandatory = Model::mandatory(geometry(10, 3), 1000);
+        // Room for the blank model and the restoration staged beside it,
+        // and 40,000 bytes more; once applied, the restored model alone
+        // leaves under 80,000 bytes free: one combining mark fits, 10,000
+        // (16 bytes each kept, and 72 at most while each is added) do not.
+        let limits = Limits {
+            bytes: 2 * mandatory.current_model + 40_000,
+            history_rows: 1000,
+        };
+        let held = authority(2, 3);
+        let mut terminal = Terminal::new(limits);
+        terminal.present(&mut parser, Presentation::Granted(held, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Begin(held, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Display(b"safe".to_vec()));
+        terminal.present(&mut parser, Presentation::Complete);
+        terminal.present(&mut parser, Presentation::Display("e\u{301}".into()));
+        assert_eq!(terminal.take_rejection(), None);
+        assert_eq!(terminal.error(), None);
+        let marks = "\u{301}".repeat(10_000);
+        terminal.present(&mut parser, Presentation::Display(marks.into()));
+        let why = terminal.take_rejection().expect("the client is dropped");
+        assert!(why.starts_with("terminal model over its limit: "), "{why}");
+        assert_eq!(terminal.error(), Some(why.as_str()));
+        assert_eq!(terminal.take_rejection(), None);
+        terminal.present(&mut parser, Presentation::Display(b"\r\nlater".to_vec()));
+        terminal.present(&mut parser, Presentation::Ended);
+        let cached = terminal.retained().expect("the cache is retained");
+        assert_eq!(row_text(&cached, 0), "safee");
+        assert_eq!(row_text(&cached, 1), "", "nothing after the refusal");
     }
 
     /// TRM-05 (pure supplement): the wheel scrolls the model's history and
