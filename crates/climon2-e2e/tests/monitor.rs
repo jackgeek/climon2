@@ -3321,14 +3321,41 @@ fn daemon_of(package: &Package, id: &str) -> i32 {
     i32::try_from(metadata["daemon_pid"].as_i64().unwrap()).unwrap()
 }
 
-/// `c2 attach` to session `id` on its own host, once it shows the
-/// session's `RAW`.
+/// `c2 attach` to the [`watched`] session `id` on its own host, once it is
+/// ready: keys typed then reach the session. Its grant resizes the session
+/// to the host, and the session writes that size only after the
+/// restoration's snapshot, so the line arrives as live output, which the
+/// client shows only after its restoration ended.
 fn attach(package: &Package, id: &str) -> Terminal {
     let mut attach = package.command("c2");
     attach.args(["attach", id]);
     let mut attach = Terminal::spawn(attach, ROWS, COLS).unwrap();
-    attach.wait_for_text("RAW", TIMEOUT).unwrap();
+    attached_ready(&mut attach);
     attach
+}
+
+/// Waits until the attached client `attach`, granted control on its own
+/// host, shows the [`watched`] session's `SIZE` line for that host: live
+/// output, as the session was another size before the grant.
+fn attached_ready(attach: &mut Terminal) {
+    let line = format!("SIZE {ROWS} {COLS}");
+    attach
+        .wait_for_screen(TIMEOUT, |screen| {
+            let mut rows = screen.lines();
+            rows.next().is_some_and(|row| row.starts_with("RAW"))
+                && rows.next().is_some_and(|row| row.starts_with(&line))
+        })
+        .unwrap();
+}
+
+/// Waits until the attached client `attach`, after its placeholder, shows
+/// the [`watched`] session again: a grant's restoration, painted.
+fn restored(attach: &mut Terminal) {
+    attach
+        .wait_for_screen(TIMEOUT, |screen| {
+            screen.starts_with("RAW") && !screen.contains(VIEWED_ELSEWHERE)
+        })
+        .unwrap();
 }
 
 /// Detaches the attached client `attach`, which exits 0.
@@ -3465,6 +3492,9 @@ fn a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key() {
     // title itself is checked.
     support::assert_released(&package, &mut terminal, 0);
     assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    // The monitor's exit handed Alpha back to the attached client, whose
+    // grant resized it back to that client's host.
+    attached_ready(&mut other);
     detach(other);
     finish_sessions(&package, "finish");
     package.assert_clean();
@@ -3672,9 +3702,10 @@ const TIMED_OUT: &str = "Taken | the session daemon did not answer in time";
 
 /// DSC-05 (Monitor, Fault: failed acquisition and loss): with a session's
 /// daemon stopped, Enter selects it and its Acquire times out, which also
-/// ends that client. The selection stays on it, showing the failure,
+/// ends that client. The selection stays on it, showing the failure, and
 /// typed keys reach no session (not the one the monitor still controls in
-/// the background), and the client that controls it keeps control.
+/// the background). The resumed daemon still serves that Acquire, so the
+/// client that controls the session loses control and gets it back.
 #[test]
 fn a_failed_acquisition_keeps_the_selection_and_redirects_no_input() {
     let package = Package::new();
@@ -3714,13 +3745,17 @@ fn a_failed_acquisition_keeps_the_selection_and_redirects_no_input() {
     });
     terminal.send("k").unwrap();
     kill(Pid::from_raw(daemon), Signal::SIGCONT).unwrap();
+    // The timeout left the Acquire's outcome indeterminate, not failed: the
+    // resumed daemon serves it before it sees that connection closed. The
+    // other client loses control to it, then gets control back with a new
+    // restoration, which discards keys typed before it ends.
+    other
+        .wait_for_bytes(VIEWED_ELSEWHERE.as_bytes(), TIMEOUT)
+        .unwrap();
+    restored(&mut other);
+    // Live output follows the restoration, so the other client is ready.
     say(&package, "Taken");
     other.wait_for_text("RAW SAID", TIMEOUT).unwrap();
-    assert!(
-        !other.screen().contains(VIEWED_ELSEWHERE),
-        "{}",
-        other.screen()
-    );
     assert!(terminal.row(0).starts_with(TIMED_OUT));
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, &format!("║{STATUS}  Alpha"));
@@ -3774,6 +3809,8 @@ fn the_take_control_key_acquires_on_a_too_small_host() {
     // and prefix+x exits from the placeholder.
     other.send("\x14").unwrap();
     shows(&mut terminal, &placeholder_screen("Alpha"));
+    // Its grant resized Alpha back to its host, after its restoration.
+    attached_ready(&mut other);
     terminal.send("\x1dx").unwrap();
     support::assert_released(&package, &mut terminal, 0);
     assert_eq!(terminal.title().as_deref(), Some(TITLE));
