@@ -10,7 +10,13 @@
 mod support;
 
 use serde_json::{Value, json};
-use support::{Package, control::*, passive::*};
+use std::{path::Path, thread, time::Duration};
+use support::{
+    Package,
+    control::*,
+    library::{observe_within, scenario_command},
+    passive::*,
+};
 
 const MAX: u64 = u64::MAX;
 
@@ -393,7 +399,9 @@ fn installed_library_serves_protected_records_from_the_progress_reserve() {
         json!({ "do": "drain", "until": { "display": "43" }, "as": "waited" }),
         json!({ "do": "shutdown" }),
     ];
-    let limits = json!({ "limits": { "event_records": 4, "progress_records": 2 } });
+    // The next Display waits until a release, never long enough to stall.
+    let limits = json!({ "limits": {
+        "event_records": 4, "progress_records": 2, "delivery_stall_ms": 30_000 } });
     let mut plan = Plan::new();
     plan.add("a", attached("a", peer, limits, &then));
     let steps = plan.steps.clone();
@@ -421,100 +429,204 @@ fn restoring_peer(steps: Vec<Value>) -> Value {
     peer
 }
 
-/// `count` Displays of the restoration, each followed by `pause` ms.
-fn paced(count: usize, pause: u64) -> Vec<Value> {
+/// The restoration stall deadline of every case: many times the longest
+/// pause between the fake daemon's Displays (250 ms), so load cannot make
+/// a paced restoration stall.
+const STALL_MS: u64 = 5_000;
+
+/// How long a restoration case's host may take: the longest case lasts
+/// about 15 s unloaded.
+const HOST_BOUND: Duration = Duration::from_secs(60);
+
+/// `count` Displays of the restoration, each followed by 250 ms.
+fn paced(count: usize) -> Vec<Value> {
     (0..count)
-        .flat_map(|_| [shown(PERIOD, 2, "41"), json!({ "pause_ms": pause })])
+        .flat_map(|_| [shown(PERIOD, 2, "41"), json!({ "pause_ms": 250 })])
         .collect()
 }
 
-/// A restoration whose deadline expired: its records up to the failure,
-/// then the library's `timeout` naming `deadline`, and terminal evidence
-/// failed with a passive retry.
-fn assert_restoration_expired(report: &Value, steps: &[Value], name: &str, deadline: &str) {
-    let records = drained(report, steps, &format!("attached-{name}"));
-    let last = records.last().unwrap();
-    assert_diagnostic(last, 1, ORIGIN_LIBRARY, "timeout");
-    let message = last["diagnostic"]["message"].as_str().unwrap();
-    assert!(message.contains(deadline), "{name}: {message}");
-    assert_eq!(
-        tags(&records[..4]),
-        [RESPONSE, INITIAL_METADATA, GRANTED, RESTORATION_BEGIN]
-    );
-    assert!(
-        records[4..records.len() - 1]
-            .iter()
-            .all(|record| record["tag"] == DISPLAY)
-    );
+/// Two Title changed records, 4 s and 8 s after what went before: the
+/// second comes 3 s past `STALL_MS` after the restoration's last Display.
+fn titled_later() -> [Value; 4] {
+    let pause = json!({ "pause_ms": 4_000 });
+    [
+        pause.clone(),
+        title_changed(json!("a")),
+        pause,
+        title_changed(json!("b")),
+    ]
+}
+
+/// One restoration deadline case: the fake daemon's records after the
+/// beginning, `restoration_total_ms`, what the host drains in turn (each
+/// within the host's 10 s bound) and the tags of every record it drains,
+/// or none for Displays, however many, then the diagnostic.
+struct Restoration {
+    name: &'static str,
+    records: Vec<Value>,
+    total_ms: u64,
+    drains: Vec<Value>,
+    expected: Option<Vec<u64>>,
+}
+
+/// The tags of an attach's records before its restoration's first
+/// Display, then `displays` Displays, then `after`.
+fn restored_tags(displays: usize, after: &[u64]) -> Vec<u64> {
+    let mut tags = vec![RESPONSE, INITIAL_METADATA, GRANTED, RESTORATION_BEGIN];
+    tags.extend([DISPLAY].repeat(displays));
+    tags.extend(after);
+    tags
+}
+
+fn until_tag(tag: u64) -> Value {
+    json!({ "tag": tag })
 }
 
 /// LIM-01 Library and Fault (`restoration_stall_ms` and
 /// `restoration_total_ms`): a restoration is timed from its beginning
-/// until its complete. Displays 600 ms apart keep a 1,500 ms stall deadline
-/// from expiring over 2,400 ms, each queued Display restarting it, and the
-/// restoration completes; one that stops after a Display fails the
-/// connection with library `timeout` at the stall deadline. Displays
-/// 400 ms apart complete within a 2,500 ms total deadline, and go on past
-/// it fail the same way at the total deadline though no gap stalls.
-/// Either failure calls for a passive retry, and the records before it
-/// stay delivered.
+/// until its complete or a revocation. With a 5 s stall deadline, 28
+/// Displays 250 ms apart keep a restoration alive for 7 s, each queued
+/// Display restarting the deadline, and it completes; one that stops after
+/// a Display fails the connection with library `timeout` at the stall
+/// deadline. With a 6 s total deadline, a restoration of two such
+/// Displays completes, and one of forty, going on past it, fails the same
+/// way at the total deadline though no gap stalls. Either failure calls
+/// for a passive retry, and the records before it stay delivered. Once a
+/// restoration completes, or is revoked, its deadlines no longer apply:
+/// the connection outlives the stall deadline by 3 s with no Display, and
+/// the attachment detaches cleanly.
 #[test]
 fn installed_library_bounds_a_restoration_by_its_stall_and_total_deadlines() {
     let package = Package::new();
-    let deadlines = json!({ "limits": {
-        "restoration_stall_ms": 1500, "restoration_total_ms": 2500 } });
-    let completed = |mut steps: Vec<Value>| {
-        steps.push(complete(PERIOD, 2));
-        restoring_peer(steps)
+    let completed = |displays: usize, after: &[Value]| {
+        let mut records = paced(displays);
+        records.push(complete(PERIOD, 2));
+        records.extend(after.iter().cloned());
+        records
     };
-    let mut stopped = paced(1, 0);
+    let mut stopped = paced(1);
     stopped.push(json!("hold"));
-    let groups = [
-        [
-            ("stall-within", completed(paced(4, 600))),
-            ("stall-past", restoring_peer(stopped)),
-        ],
-        [
-            ("total-within", completed(paced(4, 400))),
-            ("total-past", restoring_peer(paced(12, 400))),
-        ],
+    let mut revoked_early = paced(1);
+    revoked_early.push(revoked(PERIOD, 2, "takeover"));
+    revoked_early.extend(titled_later());
+    let complete_tag = until_tag(RESTORATION_COMPLETE);
+    let titled = [until_tag(TITLE), until_tag(TITLE)];
+    let cases = [
+        Restoration {
+            name: "stall-within",
+            records: completed(28, &titled_later()),
+            total_ms: 60_000,
+            drains: [
+                vec![json!({ "tag": DISPLAY, "count": 14 }), complete_tag.clone()],
+                titled.to_vec(),
+            ]
+            .concat(),
+            expected: Some(restored_tags(28, &[RESTORATION_COMPLETE, TITLE, TITLE])),
+        },
+        Restoration {
+            name: "stall-past",
+            records: stopped,
+            total_ms: 60_000,
+            drains: vec![complete_tag.clone()],
+            expected: Some(restored_tags(1, &[DIAGNOSTIC])),
+        },
+        Restoration {
+            name: "total-within",
+            records: completed(2, &[]),
+            total_ms: 6_000,
+            drains: vec![complete_tag.clone()],
+            expected: Some(restored_tags(2, &[RESTORATION_COMPLETE])),
+        },
+        Restoration {
+            name: "total-past",
+            records: paced(40),
+            total_ms: 6_000,
+            drains: vec![complete_tag],
+            expected: None,
+        },
+        Restoration {
+            name: "revoked",
+            records: revoked_early,
+            total_ms: 60_000,
+            drains: [vec![until_tag(REVOKED)], titled.to_vec()].concat(),
+            expected: Some(restored_tags(1, &[REVOKED, TITLE, TITLE])),
+        },
     ];
-    for cases in groups {
-        let mut plan = Plan::new();
-        for (name, peer) in cases {
-            let then = if name.ends_with("within") {
-                vec![json!({ "do": "shutdown" })]
-            } else {
-                vec![json!({ "do": "wait_run" })]
-            };
-            plan.add(name, attached(name, peer, deadlines.clone(), &then));
+    let root = root(&package);
+    thread::scope(|scope| {
+        let hosts: Vec<_> = (cases.iter())
+            .map(|case| (case, scope.spawn(|| run_restoration(&package, &root, case))))
+            .collect();
+        for (case, host) in hosts {
+            let (records, terminal) = host.join().unwrap();
+            assert_restoration(case, &records, &terminal);
         }
-        let steps = plan.steps.clone();
-        let (report, finishes) = plan.run(&package);
-        for (name, finish) in &finishes {
-            assert_restoration(&report, &steps, (name, *finish));
-        }
-        assert_all_released(&report["ledger"]);
-    }
+    });
 }
 
-/// One restoration case's outcome: one `within` its deadline completes and
-/// the attachment detaches; one `past` it fails with `timeout` naming the
-/// deadline its name starts with.
-fn assert_restoration(report: &Value, steps: &[Value], (name, finish): (&str, usize)) {
-    let (_, terminal) = finished(step(report, finish));
-    if name.ends_with("within") {
-        let records = drained(report, steps, &format!("attached-{name}"));
-        assert_eq!(tags(&records).last(), Some(&RESTORATION_COMPLETE), "{name}");
-        assert_detached(terminal, 1);
-        return;
+/// Runs one restoration case in a host of its own, beside the others: its
+/// instance attaches, drains in turn, then shuts down within its deadlines
+/// or waits for the run past them. The records it drained, its terminal
+/// evidence.
+fn run_restoration(package: &Package, root: &Path, case: &Restoration) -> (Vec<Value>, Value) {
+    let limits = json!({ "limits": {
+        "restoration_stall_ms": STALL_MS, "restoration_total_ms": case.total_ms } });
+    let peer = restoring_peer(case.records.clone());
+    let mut steps = vec![
+        json!({ "do": "create", "peer": peer, "startup": limits }),
+        json!({ "do": "submit", "request": interactive(1, 80, 24) }),
+        json!({ "do": "run" }),
+    ];
+    let labels: Vec<String> = (0..case.drains.len())
+        .map(|index| format!("{}-{index}", case.name))
+        .collect();
+    for (until, label) in case.drains.iter().zip(&labels) {
+        steps.push(json!({ "do": "drain", "until": until, "as": label }));
     }
-    let deadline = if name.starts_with("stall") {
-        "restoration_stall_ms"
-    } else {
-        "restoration_total_ms"
+    let past = case.name.ends_with("past");
+    steps.push(json!({ "do": if past { "wait_run" } else { "shutdown" } }));
+    let mut plan = Plan::new();
+    plan.add(
+        case.name,
+        steps
+            .into_iter()
+            .map(|mut step| {
+                step["instance"] = json!(case.name);
+                step
+            })
+            .collect(),
+    );
+    let input = json!({ "root": root.to_str().unwrap(), "steps": plan.steps });
+    let report = observe_within(scenario_command(package, "script", &input), HOST_BOUND);
+    assert_all_released(&report["ledger"]);
+    let records = (labels.iter())
+        .flat_map(|label| drained(&report, &plan.steps, label))
+        .collect();
+    let terminal = finished(step(&report, plan.finishes[0].1)).1.clone();
+    (records, terminal)
+}
+
+/// One restoration case's outcome: exactly its records; then, within its
+/// deadlines or ended by a revocation, a clean detach, or, past a
+/// deadline, `timeout` naming the deadline its name starts with, and a
+/// passive retry.
+fn assert_restoration(case: &Restoration, records: &[Value], terminal: &Value) {
+    let name = case.name;
+    let displays = records.len().saturating_sub(5);
+    let expected =
+        (case.expected.clone()).unwrap_or_else(|| restored_tags(displays, &[DIAGNOSTIC]));
+    assert_eq!(tags(records), expected, "{name}: {records:#?}");
+    if !name.ends_with("past") {
+        return assert_detached(terminal, 1);
+    }
+    let last = records.last().unwrap();
+    assert_diagnostic(last, 1, ORIGIN_LIBRARY, "timeout");
+    let message = last["diagnostic"]["message"].as_str().unwrap();
+    let deadline = match name {
+        "stall-past" => "restoration_stall_ms",
+        _ => "restoration_total_ms",
     };
-    assert_restoration_expired(report, steps, name, deadline);
+    assert!(message.contains(deadline), "{name}: {message}");
     assert_terminal(
         terminal,
         1,
