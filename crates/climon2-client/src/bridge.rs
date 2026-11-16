@@ -296,9 +296,10 @@ struct Bridge {
     role: Role,
     /// A complete restoration, waiting for `Ready`.
     restored: Option<Authority>,
-    /// Whether the latest grant was an explicit attach or takeover whose
-    /// readiness has not yet acknowledged pending attention (#102).
-    acknowledging: bool,
+    /// The latest grant's authority while it was an explicit attach or
+    /// takeover whose readiness has not yet acknowledged pending attention
+    /// (#102).
+    acknowledging: Option<Authority>,
     /// The command's status, once its final result is known.
     known: Option<u32>,
     pending_detach: bool,
@@ -345,7 +346,7 @@ pub fn run(
         output: Pending::default(),
         role: Role::Restoring(None),
         restored: None,
-        acknowledging: false,
+        acknowledging: None,
         known: None,
         pending_detach: false,
         closing: None,
@@ -588,7 +589,7 @@ impl Bridge {
                 authority,
                 explicit,
             } => {
-                self.acknowledging = explicit;
+                self.acknowledging = explicit.then_some(authority);
                 self.enter(Role::Restoring(Some(authority)));
             }
             Event::Restoring(authority) => self.enter(Role::Restoring(Some(authority))),
@@ -717,7 +718,7 @@ impl Bridge {
         self.filter.role_changed();
         self.held(authority, Held::Confirm(Confirm::Ready));
         self.held(authority, Held::Viewing(true));
-        if std::mem::take(&mut self.acknowledging) {
+        if self.acknowledging.take().is_some() {
             self.held(authority, Held::Confirm(Confirm::Acknowledge));
         }
         self.role = Role::Controlling(authority);
