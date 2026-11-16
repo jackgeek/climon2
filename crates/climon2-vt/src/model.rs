@@ -187,6 +187,21 @@ impl Model {
         self.view().screen_text()
     }
 
+    /// Scroll the current model's normal-screen view `rows` back into its
+    /// history (forward, toward the live screen, when negative), as far as
+    /// its oldest row, or the truncation notice above it when older rows
+    /// were discarded, and no further than the live screen. Nothing scrolls
+    /// while the alternate screen is active. Output keeps a scrolled view
+    /// anchored on the rows it shows ([`View::scrolled`]).
+    pub fn scroll(&mut self, rows: isize) {
+        self.current.scroll(rows);
+    }
+
+    /// Return the current model's view to the live screen.
+    pub fn to_live(&mut self) {
+        self.current.to_live();
+    }
+
     /// What the current model shows, for painting.
     pub fn view(&self) -> View<'_> {
         self.current.view()

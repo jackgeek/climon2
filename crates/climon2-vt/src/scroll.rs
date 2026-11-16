@@ -49,6 +49,12 @@ impl Region {
         }
     }
 
+    /// Whether the region starts at the top row: only such a region scrolls
+    /// rows into history.
+    pub(crate) fn at_top(self) -> bool {
+        self.top
+    }
+
     /// Whether line feeds and wraps from `line` can push rows into history:
     /// only a region that starts at the top row pushes them, and only from
     /// within it.

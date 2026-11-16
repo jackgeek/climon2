@@ -5,7 +5,7 @@ use crate::geometry::Geometry;
 use alacritty_terminal::{
     Grid, Term,
     event::{Event, EventListener},
-    grid::Dimensions,
+    grid::{Dimensions, Scroll},
     term::{Config, Osc52, TermMode, cell::Cell},
     vte::ansi::{CursorStyle, Handler, NamedPrivateMode, PrivateMode, Processor, Timeout},
 };
@@ -140,6 +140,28 @@ impl<L: EventListener> Core<L> {
     /// History rows the normal screen holds, when it is the active screen.
     pub(crate) fn normal_history(&self) -> Option<usize> {
         (!self.alternate()).then(|| self.term.grid().history_size())
+    }
+
+    /// Start counting the rows the next step pushes into the active
+    /// screen's history. The engine moves a display scrolled back into
+    /// history back by every row it pushes there, up to the history's
+    /// limit, and by every row a scroll region below the top row scrolls,
+    /// so the caller counts only for a region that starts at the top row.
+    /// The display is never shown: it starts one row back, since the engine
+    /// moves no display at the live screen, and needs a row of history.
+    pub(crate) fn count_pushes(&mut self) {
+        let grid = self.term.grid_mut();
+        grid.scroll_display(Scroll::Bottom);
+        grid.scroll_display(Scroll::Delta(1));
+    }
+
+    /// The rows pushed since [`Core::count_pushes`], at most one less than
+    /// the history's limit; the display returns to the live screen.
+    pub(crate) fn pushed(&mut self) -> usize {
+        let grid = self.term.grid_mut();
+        let pushed = grid.display_offset().saturating_sub(1);
+        grid.scroll_display(Scroll::Bottom);
+        pushed
     }
 
     pub(crate) fn active(&self) -> &Grid<Cell> {

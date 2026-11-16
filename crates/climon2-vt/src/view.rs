@@ -34,15 +34,56 @@ pub struct View<'a> {
     history_limit: usize,
     /// Whether that history is truncated.
     truncated: bool,
+    /// How far the normal screen's view is scrolled back.
+    scrolled: usize,
+    synchronizing: bool,
 }
 
 impl<'a> View<'a> {
-    pub(crate) fn new(core: &'a Core<VoidListener>, history_limit: usize, truncated: bool) -> Self {
+    pub(crate) fn new(
+        core: &'a Core<VoidListener>,
+        history_limit: usize,
+        truncated: bool,
+        scrolled: usize,
+        synchronizing: bool,
+    ) -> Self {
         Self {
             core,
             history_limit,
             truncated,
+            scrolled,
+            synchronizing,
         }
+    }
+
+    /// Whether the application's synchronized update (`CSI ? 2026 h`) is
+    /// open: the screen may be half drawn until its end (`CSI ? 2026 l`) or
+    /// a full reset. The session daemon ends an update its controller still
+    /// has open once vte's 150 ms timeout passes, so a monitor model's
+    /// update ends then too.
+    pub fn synchronizing(&self) -> bool {
+        self.synchronizing
+    }
+
+    /// How many rows the normal screen's view is scrolled back into its
+    /// history: 0 for the live screen, and for the alternate screen, which
+    /// never shows history. Its top row is then the history row that many
+    /// rows above the screen's top row, or, one row past the oldest row of a
+    /// truncated history, the truncation notice above that row. Output
+    /// keeps a scrolled view anchored on the rows it shows: each row pushed
+    /// into history moves it back one. When the rows it shows are
+    /// discarded (evicted beyond `Limits::history_rows`, refused by the
+    /// allocation bound, shortened), it moves to the notice above the oldest
+    /// row retained, never to the live screen; when the history is cleared,
+    /// to the live screen. A count of the rows one engine step pushes stops
+    /// one below the engine's history limit (1000 rows a chunk), so a step
+    /// that pushes that many may leave a view anchored on the oldest row
+    /// below the notice instead.
+    pub fn scrolled(&self) -> usize {
+        if self.core.alternate() {
+            return 0;
+        }
+        self.scrolled
     }
 
     /// The active screen, top row first; the normal screen comes with its
