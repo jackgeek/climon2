@@ -658,7 +658,9 @@ impl Monitor {
         // Beside the models: the one parser, every unapplied report and
         // every admitted reservation (#120).
         let reserved = within(self.supervisor.reserved());
-        let fixed = Parser::BYTES + self.supervisor.backlog() + reserved;
+        let fixed = [Parser::BYTES, self.supervisor.backlog(), reserved]
+            .into_iter()
+            .sum();
         let caches = self.caches();
         pressure::relieve(&mut self.terminals, &caches, fixed, budgets);
     }

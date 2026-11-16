@@ -669,20 +669,20 @@ impl State {
     fn release(&mut self, version: &VersionName, now: Instant) {
         match self.releases.get(version) {
             None => self.load(version, now),
-            Some(Release::Blocked {
-                until,
-                library: None,
-                ..
-            }) if *until <= now => self.load(version, now),
-            Some(Release::Blocked {
-                until,
-                library: Some(library),
-                ..
-            }) if *until <= now => {
+            Some(Release::Blocked { until, library, .. }) if passed(*until, now) => {
                 let library = *library;
-                self.qualify(version, library, now);
+                self.reconsider(version, library, now);
             }
             Some(_) => {}
+        }
+    }
+
+    /// A resource-blocked release once its interval has passed: loaded if
+    /// it never was, otherwise qualified again.
+    fn reconsider(&mut self, version: &VersionName, library: Option<Loaded>, now: Instant) {
+        match library {
+            None => self.load(version, now),
+            Some(library) => self.qualify(version, library, now),
         }
     }
 
@@ -737,6 +737,8 @@ impl State {
                 self.spawn_owner(functions, instance.owner_stack, entry.metadata);
             }
             Err(why) => {
+                let id = &entry.metadata.session_id;
+                tracing::info!(session = %id, %why, "client resource-blocked");
                 entry.blocked = Some((why, now + self.interval()));
                 self.queue.put(entry);
             }
@@ -765,9 +767,11 @@ impl State {
     fn slow(&mut self, now: Instant) {
         let bound = Duration::from_millis(self.context.lanes.load_ms.into());
         for (version, release) in &mut self.releases {
-            if let Release::Loading { since, slow } = release
-                && !*slow
-                && now.checked_duration_since(*since + bound).is_some()
+            if let Release::Loading {
+                since,
+                slow: slow @ false,
+            } = release
+                && passed(*since + bound, now)
             {
                 *slow = true;
                 tracing::warn!(%version, "client library loading slowly");
@@ -852,6 +856,7 @@ impl State {
     /// `version`'s release is resource-blocked with why, `library` once
     /// loaded; reconsidered after the admission interval.
     fn block(&mut self, version: &VersionName, why: String, library: Option<Loaded>, now: Instant) {
+        tracing::info!(%version, %why, "client library resource-blocked");
         let until = now + self.interval();
         let blocked = Release::Blocked {
             why,
@@ -1327,7 +1332,12 @@ fn startable(releases: &BTreeMap<VersionName, Release>, entry: &Entry, now: Inst
         && entry
             .blocked
             .as_ref()
-            .is_none_or(|(_, until)| *until <= now)
+            .is_none_or(|(_, until)| passed(*until, now))
+}
+
+/// Whether `now` has reached `until`.
+fn passed(until: Instant, now: Instant) -> bool {
+    now.checked_duration_since(until).is_some()
 }
 
 /// Why a waiting session waits, as its row shows it: resource-blocked,
@@ -1356,8 +1366,8 @@ fn waiting(condition: Option<Condition>) -> ClientEvent {
 /// reads as none left, so nothing more is admitted.
 fn descriptor_limit() -> u64 {
     let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
+        rlim_cur: u64::MIN,
+        rlim_max: u64::MIN,
     };
     // SAFETY: getrlimit writes only `limit`.
     unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
@@ -3617,6 +3627,94 @@ mod tests {
                 .all(|failure| retry(failure) == Retry::Permanent)
         );
         assert_eq!(Refusal::Thread("no thread".into()).retry(), Retry::Passive);
+        let unqualified = Refusal::Unqualified("too many workers".into());
+        assert_eq!(unqualified.retry(), Retry::Permanent);
+        assert_eq!(unqualified.message(), "too many workers");
+    }
+
+    /// LIM-04 (pure supplement; #120): a refused release whose handle the
+    /// dynamic loader never opened frees its reservation, as does a load
+    /// thread that never started; any other handle stays loaded until exit,
+    /// and its release's configured reservation with it.
+    #[test]
+    fn only_a_handle_the_loader_opened_keeps_its_reservation() {
+        let opened = |failure| Refusal::Library(failure, String::new()).opened();
+        let closed = [
+            Failure::MissingLibrary,
+            Failure::MissingDependency,
+            Failure::IncompatibleArchitecture,
+        ];
+        let open = [
+            Failure::BootstrapFailure,
+            Failure::SubstitutedImage,
+            Failure::MissingSymbol,
+            Failure::UnsupportedRevision,
+            Failure::WrongRelease,
+            Failure::MalformedDescription,
+        ];
+        assert!(closed.into_iter().all(|failure| !opened(failure)));
+        assert!(open.into_iter().all(opened));
+        assert!(!Refusal::Thread(String::new()).opened());
+        assert!(Refusal::Unqualified(String::new()).opened());
+        for (test, failure, kept) in [
+            (1, Failure::MissingLibrary, 0),
+            (2, Failure::WrongRelease, RELEASE),
+        ] {
+            let id = session(45, test);
+            let load: Load = Box::new(move |_| Err(Refusal::Library(failure, "no".into())));
+            let mut supervised = adjusted(8, load, |_| {});
+            let supervisor = &mut supervised.supervisor;
+            supervisor.start_client(metadata(&id, "2026-11-16T10:00:00.000Z"));
+            let unavailable = ClientEvent::Unavailable("no".into());
+            assert_eq!(next(supervisor), (id, unavailable));
+            supervisor.stop();
+            assert_eq!(supervisor.reserved(), kept);
+        }
+    }
+
+    /// LIM-04 and the admission rate limit (#120): a resource-blocked
+    /// session or release is reconsidered at most once per
+    /// `retry.admission_ms`, never in a loop: with an interval of an hour,
+    /// capacity freed meanwhile admits nothing, and each was blocked once.
+    #[test]
+    fn blocked_work_is_reconsidered_at_most_once_per_admission_interval() {
+        let [first, second] = [session(46, 1), session(46, 2)];
+        let drops = Script {
+            drops: true,
+            ..Script::default()
+        };
+        script(&first, drops);
+        let mut supervised = adjusted(8, fake_library(), |context| {
+            context.admission.total_bytes = RELEASE + INSTANCE + 1000;
+            context.outside = 1000;
+            context.admission.admission_ms = 3_600_000;
+        });
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&first, "2026-11-16T10:00:02.000Z"));
+        supervisor.start_client(metadata(&second, "2026-11-16T10:00:01.000Z"));
+        until(|world| world.seen.contains(&(guid(&first), Seen::OwnerExited)));
+        // Ten ticks: an earlier reconsideration would have started it.
+        thread::sleep(Duration::from_millis(200));
+        supervisor.stop();
+        assert!(!supervised.started(&second));
+        let log = supervised.log();
+        assert_eq!(log.matches("client resource-blocked").count(), 1, "{log}");
+        let id = session(46, 3);
+        let mut blocked = adjusted(8, fake_library(), |context| {
+            context.admission.release_bytes = 1 << 20;
+            context.admission.total_bytes = RELEASE - 1;
+            context.admission.admission_ms = 3_600_000;
+        });
+        blocked
+            .supervisor
+            .start_client(metadata(&id, "2026-11-16T10:00:00.000Z"));
+        let (_, event) = next(&blocked.supervisor);
+        assert!(matches!(event, ClientEvent::AwaitingResources(_)));
+        thread::sleep(Duration::from_millis(200));
+        blocked.supervisor.stop();
+        let log = blocked.log();
+        let once = "client library resource-blocked";
+        assert_eq!(log.matches(once).count(), 1, "{log}");
     }
 
     /// What one instance of the fake (the shipped library's requirements)

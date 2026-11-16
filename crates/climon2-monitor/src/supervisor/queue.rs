@@ -66,7 +66,8 @@ impl Queue {
             burst,
             newer: 0,
             retry_next: false,
-            arrivals: 0,
+            // Only the order of arrivals matters, not where they start.
+            arrivals: u64::MIN,
         }
     }
 
@@ -115,15 +116,19 @@ impl Queue {
         let retry = self
             .eligible(Lane::Retry, &eligible)
             .min_by_key(|key| self.waiting[key].arrival);
-        let key = match (firsts.is_empty(), retry) {
-            (true, None) => return None,
-            (false, Some(retry)) if self.retry_next => retry,
-            (true, Some(retry)) => retry,
-            (false, _) => self.first(&firsts),
-        };
+        let key = self.choose(&firsts, retry)?;
         let entry = self.waiting.remove(&key)?;
         self.retry_next = entry.lane == Lane::First;
         Some(entry)
+    }
+
+    /// The retry when it has its turn or no first start is eligible,
+    /// otherwise a first start, if any.
+    fn choose(&mut self, firsts: &[Key], retry: Option<Key>) -> Option<Key> {
+        let retry_turn = self.retry_next || firsts.is_empty();
+        retry
+            .filter(|_| retry_turn)
+            .or_else(|| (!firsts.is_empty()).then(|| self.first(firsts)))
     }
 
     /// The keys of `lane`'s eligible sessions, newest created first.
@@ -249,11 +254,11 @@ mod tests {
         queue.push(at(1, 1), Lane::First);
         queue.push(at(2, 2), Lane::First);
         queue.push(at(3, 3), Lane::First);
-        queue.push(at(9, 9), Lane::Retry);
         queue.push(at(8, 8), Lane::Retry);
-        queue.push(at(7, 7), Lane::Retry);
         queue.push(at(6, 6), Lane::Retry);
-        assert_eq!(order(&mut queue, all), [3, 9, 2, 8, 1, 7, 6]);
+        queue.push(at(9, 9), Lane::Retry);
+        queue.push(at(7, 7), Lane::Retry);
+        assert_eq!(order(&mut queue, all), [3, 8, 2, 6, 1, 9, 7]);
         queue.push(at(5, 5), Lane::Retry);
         queue.push(at(4, 4), Lane::First);
         assert_eq!(order(&mut queue, all), [4, 5]);
