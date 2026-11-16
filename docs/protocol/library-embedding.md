@@ -20,12 +20,21 @@ shared loader that the [monitor](../../GLOSSARY.md#sessions) and the
 [client executable](../../GLOSSARY.md#sessions) both use is implemented
 ([#84](https://github.com/jackgeek/climon2/issues/84)): it performs the
 [lookup](#artifact-and-dependency-lookup), the load-failure classification and
-the description validation below, and keeps every handle it opens. The client
-executable's kill mode loads its own version folder's library through it and
-submits Kill through the function table
-([#100](https://github.com/jackgeek/climon2/issues/100)); test tooling uses it
-too. Loading by the monitor, and by the client executable for ordinary attach,
-is not implemented. The
+the description validation below, and keeps every handle it opens. The monitor
+uses it ([#106](https://github.com/jackgeek/climon2/issues/106)): it loads each
+session's exact-release library once per release on a worker thread, creates,
+runs and destroys each passive client's instance on that instance's own owner
+thread, submits monitor-mode Open, polls the borrowed notification
+descriptors, drains and releases every delivery, and on exit requests
+shutdown of every instance and waits up to `deadlines.shutdown_ms` for each to
+end, its handles to be released and its owner to be joined. An instance
+unconfirmed by then is reported and left, never destroyed, to process exit:
+the monitor does not claim it joined. The client executable's kill mode loads
+its own version folder's library through it and submits Kill through the
+function table ([#100](https://github.com/jackgeek/climon2/issues/100)); test
+tooling uses it too. Admission, recovery, acquisition and fail-stop remain
+unimplemented, and the client executable does not load the library for
+ordinary attach yet. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
 requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)
 adds x86-64 GNU/Linux. [Native revision 1](monitor-client/core-v1.md), confirmed in

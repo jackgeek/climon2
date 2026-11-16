@@ -261,11 +261,15 @@ name = "climon2-monitor"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-discovery",
  "climon2-platform",
  "climon2-vt",
  "libc",
  "ratatui",
+ "serde_json",
+ "tempfile",
  "tracing",
+ "unicode-width",
 ]
 
 [[package]]
