@@ -14,7 +14,10 @@ use climon2_core::{
     metadata::SessionMetadata,
     native::{self, Call, Communication, Control, Created, Drained as Out, Instance, RunReport},
 };
-use climon2_platform::library::{Functions, Library, Loader};
+use climon2_platform::{
+    library::{Functions, Library, Loader},
+    logging::library_log_name,
+};
 use std::{
     io,
     mem::MaybeUninit,
@@ -23,6 +26,7 @@ use std::{
     slice,
     sync::mpsc::{self, Receiver, Sender},
     thread::{self, JoinHandle},
+    time::SystemTime,
 };
 
 /// The executable's fixed `cm1_limits` (spec #73, Client executable): the
@@ -75,23 +79,39 @@ fn own_library() -> io::Result<(&'static Library, VersionName)> {
     Ok((library.map_err(io::Error::other)?, layout.version().clone()))
 }
 
-/// An instance of this release's library for the session `metadata` (read
-/// from `path`) describes, under `home`. The library never interprets
-/// Input, so the instance gets no keys: the executable routes them.
+/// What the client tells its library about the session besides its
+/// metadata.
+pub(crate) struct Session<'a> {
+    /// Where the metadata was read.
+    pub(crate) metadata: &'a Path,
+    /// The client's own session log, beside which the library writes its own.
+    pub(crate) log: &'a Path,
+    /// The client's `CLIMON2_LOG` filter, if one was given.
+    pub(crate) filter: Option<&'a str>,
+}
+
+/// An instance of this release's library for the session `metadata`
+/// describes, under `home`, logging into a new file of its own beside the
+/// client's session log with the client's filter. The library never
+/// interprets Input, so the instance gets no keys: the executable routes
+/// them.
 pub(crate) fn session_instance(
     metadata: &SessionMetadata,
-    path: &Path,
+    session: &Session,
     home: &Path,
 ) -> io::Result<Embedded> {
     let (library, release) = own_library()?;
     let socket = Path::new(metadata.socket_path.as_str());
+    let log = library_log_name(SystemTime::now(), std::process::id())?;
     let startup = Startup {
         session: metadata.session_id.bytes(),
         release,
-        metadata: path.to_owned(),
+        metadata: session.metadata.to_owned(),
         home: home.to_owned(),
         runtime: socket.parent().unwrap_or(socket).to_owned(),
         settings: native::Settings::default(),
+        log: session.log.with_file_name(log),
+        filter: session.filter.unwrap_or(default_filter()).to_owned(),
     };
     Embedded::start(library, startup)
 }
@@ -105,10 +125,14 @@ pub(crate) struct Startup {
     pub(crate) home: PathBuf,
     pub(crate) runtime: PathBuf,
     pub(crate) settings: native::Settings,
+    /// The library's own log file, created new.
+    pub(crate) log: PathBuf,
+    /// A `CLIMON2_LOG` filter for that log.
+    pub(crate) filter: String,
 }
 
 impl Startup {
-    /// The native startup, borrowing these inputs; no library file log.
+    /// The native startup, borrowing these inputs.
     fn native(&self) -> native::Startup {
         native::Startup {
             session_id: native::Guid {
@@ -122,11 +146,11 @@ impl Startup {
             settings: self.settings,
             diagnostics: native::Diagnostics {
                 log_path: native::OptionalPath {
-                    present: 0,
+                    present: 1,
                     reserved: 0,
-                    value: path(Path::new("")),
+                    value: path(&self.log),
                 },
-                filter: bytes(default_filter().as_bytes()),
+                filter: bytes(self.filter.as_bytes()),
             },
             limits: LIMITS,
         }
@@ -150,6 +174,7 @@ fn path(path: &Path) -> native::Path {
 
 /// A library error, copied before the next call can reuse its text.
 pub(crate) struct NativeError {
+    /// Who failed: the library, the daemon or the connection's bytes.
     pub(crate) origin: u32,
     pub(crate) code: String,
     pub(crate) message: String,
@@ -240,6 +265,13 @@ struct Handles {
 // SAFETY: the communication and control handles are thread-safe (core-v1).
 unsafe impl Send for Handles {}
 
+/// Whether more can arrive from an instance's stream.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stream {
+    Open,
+    Ended,
+}
+
 /// One running instance of the executable's own library.
 pub(crate) struct Embedded {
     functions: Functions,
@@ -290,17 +322,17 @@ impl Embedded {
 
     /// One turn: drains once, visiting a delivery's records before it is
     /// released, or, with nothing to drain, waits until the instance
-    /// signals work or `milliseconds` pass. True once the instance's stream
-    /// has ended: nothing more will arrive.
+    /// signals work or `milliseconds` pass. The stream is ended once
+    /// nothing more will arrive.
     pub(crate) fn turn(
         &self,
         visit: &mut dyn FnMut(&native::Record),
         milliseconds: i32,
-    ) -> io::Result<bool> {
+    ) -> io::Result<Stream> {
         match self.drain_once(visit)? {
-            Drained::Delivered => Ok(false),
-            Drained::Ended(_) => Ok(true),
-            Drained::Empty => self.wait(milliseconds).map(|()| false),
+            Drained::Delivered => Ok(Stream::Open),
+            Drained::Ended(_) => Ok(Stream::Ended),
+            Drained::Empty => self.wait(milliseconds).map(|()| Stream::Open),
         }
     }
 

@@ -1,4 +1,4 @@
-//! Library-layer test host (#75, #84, #85): loads one version's client
+//! Library-layer test host (#75, #84, #85, #180): loads one version's client
 //! library from a climon2 executable home through the shared validated loader
 //! (`climon2_platform::library`) and prints what it observed as one JSON
 //! object.
@@ -15,18 +15,26 @@
 //! environment.
 //! `climon2-library-host <home> <version> <scenario> <json>` drives instances
 //! through one scenario (`lifecycle`, `create`, `fault`, `workers`,
-//! `independence`, `ambient`, `race` or `script`) with the instrumentation
-//! every Library-layer test shares: caller startup and request memory the
-//! library can neither keep nor free (`startup`, `requests`), an ownership
-//! ledger and a timeline of every call and its thread (`abi`), descriptor and
-//! process-state probes (`probe`), and a fake daemon peer (`peer`), the
+//! `independence`, `ambient`, `race`, `bystander`, `successive`, `script` or,
+//! on x86-64 GNU/Linux, `allocation`) with the instrumentation every
+//! Library-layer test shares: caller startup and request memory the library
+//! can neither keep nor free (`startup`, `requests`), an ownership ledger and
+//! a timeline of every call and its thread (`abi`), descriptor and
+//! process-state probes (`probe`), a fake daemon peer (`peer`), the
 //! adversarial fixture `script` scenarios can connect to instead of a real
-//! session daemon.
+//! session daemon, and, on x86-64 GNU/Linux, the host's own count of the heap
+//! the library holds (`heap`).
 
 #[path = "library/abi.rs"]
 mod abi;
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[path = "library/accounting.rs"]
+mod accounting;
 #[path = "library/faults.rs"]
 mod faults;
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[path = "library/heap.rs"]
+mod heap;
 #[path = "library/isolation.rs"]
 mod isolation;
 #[path = "library/peer.rs"]
@@ -255,7 +263,11 @@ fn drive(
         "independence" => isolation::independence(&setup),
         "ambient" => isolation::ambient(&setup),
         "race" => isolation::race(&setup),
+        "bystander" => isolation::bystander(&setup),
+        "successive" => isolation::successive(&setup),
         "script" => script::script(&setup),
+        #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+        "allocation" => accounting::allocation(&setup),
         _ => panic!("unknown scenario {name}"),
     };
     if let Some(object) = report.as_object_mut() {

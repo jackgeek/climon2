@@ -102,7 +102,12 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> 
         .dispatch(filter.as_deref())
         .map_err(|error| failure(error, logs))?;
     tracing::dispatcher::with_default(&dispatch, || {
-        supervised(&metadata, &path, operation)
+        let session = embedded::Session {
+            metadata: &path,
+            log: log.path(),
+            filter: filter.as_deref(),
+        };
+        supervised(&metadata, &session, operation)
             .map_err(|error| session_failure(error, &metadata, logs))
     })
 }
@@ -138,22 +143,22 @@ fn read_metadata(path: &Path) -> io::Result<SessionMetadata> {
 /// Panics are logged without their payload and reported as one generic failure.
 fn supervised(
     metadata: &SessionMetadata,
-    path: &Path,
+    session: &embedded::Session,
     operation: StartupEnvelope,
 ) -> io::Result<u32> {
     std::panic::set_hook(Box::new(|_| tracing::error!("client panic")));
     std::panic::catch_unwind(|| match operation {
-        StartupEnvelope::Attach(settings) => attach(metadata, path, settings),
-        StartupEnvelope::Kill => kill(metadata, path),
+        StartupEnvelope::Attach(settings) => attach(metadata, session, settings),
+        StartupEnvelope::Kill => kill(metadata, session),
     })
     .unwrap_or_else(|_| Err(io::Error::other("client panicked")))
 }
 
 /// Kill mode, through this release's client library: success only on
 /// confirmed termination; a termination signal wins over any outcome.
-fn kill(metadata: &SessionMetadata, path: &Path) -> io::Result<u32> {
+fn kill(metadata: &SessionMetadata, session: &embedded::Session) -> io::Result<u32> {
     let signals = terminal::Signals::client()?;
-    let result = kill::run(metadata, path, &home()?, &signals);
+    let result = kill::run(metadata, session, &home()?, &signals);
     if let Some(signal) = signals.termination_signal() {
         return Ok(128 + signal);
     }
@@ -173,9 +178,13 @@ fn session_failure(error: io::Error, metadata: &SessionMetadata, logs: Option<&P
 
 /// Ordinary attach, through this release's client library; a termination
 /// signal before the bridge starts wins over any outcome.
-fn attach(metadata: &SessionMetadata, path: &Path, settings: ClientSettings) -> io::Result<u32> {
+fn attach(
+    metadata: &SessionMetadata,
+    session: &embedded::Session,
+    settings: ClientSettings,
+) -> io::Result<u32> {
     let state = Terminal::new()?;
-    let result = connection(&state, metadata, path);
+    let result = connection(&state, metadata, session);
     if let Some(signal) = state.signals.termination_signal() {
         return Ok(128 + signal);
     }
@@ -186,11 +195,11 @@ fn attach(metadata: &SessionMetadata, path: &Path, settings: ClientSettings) -> 
 fn connection(
     state: &Terminal,
     metadata: &SessionMetadata,
-    path: &Path,
+    session: &embedded::Session,
 ) -> io::Result<bridge::Opened> {
     tracing::debug!("opening the attachment");
     let size = terminal::size(&state.input)?;
-    let attachment = attachment::Attachment::open(metadata, path, &home()?, size)?;
+    let attachment = attachment::Attachment::open(metadata, session, &home()?, size)?;
     let backlog = attachment.opened(&state.signals)?;
     tracing::debug!("client attached");
     Ok(bridge::Opened {

@@ -69,6 +69,7 @@ flowchart TB
         library_host -->|"loads through the shared loader; calls through the C ABI"| library
         library_host -->|"hello probes for a session's state"| daemon
         library -->|"daemon wire revision 1 to the host's fake daemon peer"| library_host
+        library -->|"allocates through its exported glibc malloc family; x86-64 GNU/Linux tests only"| library_host
         tests -->|"loads through the shared loader in release-check and Fault-layer tests"| library_stand_in
         tests -->|"loads through the shared loader in release-check tests"| second_library
         library_host -->|"loads beside the release under test through the shared loader"| second_library
@@ -116,7 +117,14 @@ relay control and display (#94). The library host fixture drives those instances
 through the function table, with the test-hooks library's fault injection,
 as the Library layer's instrumented host. It also serves a clearly labelled
 fake daemon peer that the library under test connects to, and probes real
-session daemons' hello state. The Linux library links the GCC
+session daemons' hello state. On x86-64 GNU/Linux the host exports glibc's
+allocation entry points, which the loaded library binds to, so it can count
+the library's heap independently of the library's own allocation accounting
+(#180). The `climon2-client` crate's `#[global_allocator]`, which measures
+that accounting, replaces the allocator of every artifact that links the
+crate: the client library, the client executable and the package's own test
+binaries ([ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)). The
+Linux library links the GCC
 unwinder statically, because no unwinding leaves it, so it needs only glibc's
 libraries and has no soname, RPATH or RUNPATH, as the
 [Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for
@@ -192,10 +200,14 @@ executable loads the library in its own version folder,
 `current`, the working directory or search paths name, and drives one
 instance through the C ABI: an interactive Open and the bridge's Input,
 Resize, Acquire, Ready and Leave for attach, or one Kill; the library speaks
-daemon wire revision 1 to the session daemon. A missing, other-release or
-faulty library fails before any connection. The client executable no longer
-speaks the private post-hello protocol, which session daemons still serve
-until its deletion.
+daemon wire revision 1 to the session daemon. The library instance writes
+its diagnostics to a log file of its own in the session-log directory,
+beside the client's,
+`<climon2 home>/logs/<session-id>/library-<UTC second>-<pid>.log`, since
+spec #73 places each instance's library log in its session's log. A missing,
+other-release or faulty library fails before any connection. The client
+executable no longer speaks the private post-hello protocol, which session
+daemons still serve until its deletion.
 
 **Current (#84):** one validated loader for client libraries is part of
 `climon2-platform`, not a separate artifact; the monitor and the client
@@ -220,7 +232,9 @@ main that serves only 0.0.97 and gives its session's command
 `CLIMON2_SECOND_RELEASE_DAEMON`. The mixed-release Library-layer tests package
 both with this build's other executables as a 0.0.97 release and install it
 with the real installer in a sibling version folder, so that folder's CLI
-starts 0.0.97 sessions served by the fixture's daemon. One library host loads
+starts 0.0.97 sessions served by the fixture's daemon, and its client
+executable, this build's, kills them through that folder's 0.0.97 library
+(#100). One library host loads
 both releases' libraries through the shared loader, and each release's
 instances open passive monitor connections to their own release's daemons.
 xtask's tests run the release checks on the library as 0.0.97's. The

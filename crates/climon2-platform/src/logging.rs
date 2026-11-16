@@ -37,8 +37,12 @@ impl Role {
     /// The log of one process in this role: its role, UTC second and pid, so
     /// it never collides with another process's log in the same directory.
     fn process_log_name(self, at: SystemTime, pid: u32) -> io::Result<String> {
-        Ok(format!("{}-{}-{pid}.log", self.name(), file_stamp(at)?))
+        process_log_name(self.name(), at, pid)
     }
+}
+
+fn process_log_name(name: &str, at: SystemTime, pid: u32) -> io::Result<String> {
+    Ok(format!("{name}-{}-{pid}.log", file_stamp(at)?))
 }
 
 pub struct LogFile {
@@ -66,6 +70,13 @@ fn file_stamp(at: SystemTime) -> io::Result<String> {
 /// Every client invocation gets its own log; a name collision is an ordinary failure.
 pub fn client_log_name(at: SystemTime, pid: u32) -> io::Result<String> {
     Role::Client.process_log_name(at, pid)
+}
+
+/// The client library's own log for one client invocation, beside the
+/// client's in the session-log directory: named like it, by its UTC second
+/// and pid, under `library`.
+pub fn library_log_name(at: SystemTime, pid: u32) -> io::Result<String> {
+    process_log_name("library", at, pid)
 }
 
 fn session_log_name(role: Role) -> io::Result<String> {

@@ -305,15 +305,15 @@ pub(crate) struct Attachment {
 
 impl Attachment {
     /// Opens an interactive attachment at `size` to the session `metadata`
-    /// (read from `path`) describes. A library that is missing, of another
+    /// describes. A library that is missing, of another
     /// release or faulty fails here, before any connection.
     pub(crate) fn open(
         metadata: &SessionMetadata,
-        path: &Path,
+        session: &embedded::Session,
         home: &Path,
         size: TerminalSize,
     ) -> io::Result<Self> {
-        let instance = embedded::session_instance(metadata, path, home)?;
+        let instance = embedded::session_instance(metadata, session, home)?;
         let required = [bytes(CORE)];
         instance.submit(&open(size, &required))?;
         Ok(Self {
