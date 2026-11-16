@@ -288,14 +288,8 @@ impl Monitor {
             .as_ref()
             .and_then(|id| rows.iter().find(|row| &row.id == id));
         let session = row.and_then(|row| {
-            let id = &row.id;
-            let kind = self.registry.kind(id)?;
-            let shown = Shown {
-                kind,
-                finished: self.registry.finished(id),
-                recovery: self.registry.recovery(id),
-            };
-            Some(selected(row, shown, self.terminals.get(id)))
+            let shown = shown(&self.registry, &row.id)?;
+            Some(selected(row, shown, self.terminals.get(&row.id)))
         });
         let scene = Scene {
             introduction: &self.introduction,
@@ -615,27 +609,18 @@ impl Monitor {
     /// A vertical wheel notch, with no modal open, scrolls the selected
     /// session's read-only history a row (#116), as it does a live one.
     fn inspect(&mut self, mouse: Mouse) {
-        let Some(id) = self.selected.clone().filter(|_| !self.covered()) else {
-            return;
-        };
-        let Some(kind) = self.registry.kind(&id) else {
-            return;
-        };
-        let terminal = self.terminals.get(&id);
-        let finished = self.registry.finished(&id);
-        let notch = retained(kind, finished, terminal).and_then(|view| {
-            // Nothing reaches the application: its own mouse reporting
-            // does not apply.
-            let modes = Modes {
-                mouse_reporting: MouseReporting::Off,
-                ..view.modes()
-            };
-            let alternate = matches!(view.screen(), vt::Screen::Alternate { .. });
-            mouse::wheel(mouse, &modes, alternate)
-        });
-        if let Some(Wheel::History(rows)) = notch {
+        if let Some((id, rows)) = self.scrolls(mouse) {
             self.terminal(&id).scroll(rows);
         }
+    }
+
+    /// The selected session whose read-only history `mouse` scrolls, with
+    /// no modal open, and by how many rows.
+    fn scrolls(&self, mouse: Mouse) -> Option<(SessionId, isize)> {
+        let id = self.selected.as_ref().filter(|_| !self.covered())?;
+        let shown = shown(&self.registry, id)?;
+        let view = retained(shown.kind, shown.finished, self.terminals.get(id))?;
+        inspected(mouse, &view).map(|rows| (id.clone(), rows))
     }
 
     fn keyed(&mut self, routed: Routed, typed: &mut Vec<u8>) -> io::Result<Option<Ending>> {
@@ -797,6 +782,31 @@ fn terminal<'a>(
         .or_insert_with(|| Terminal::new(model))
 }
 
+/// The rows a mouse report scrolls read-only history `view` by: a vertical
+/// wheel notch over its normal screen, as over a live one whose
+/// application does not report the mouse; nothing on its alternate screen,
+/// as nothing reaches the application.
+fn inspected(mouse: Mouse, view: &vt::View<'_>) -> Option<isize> {
+    let modes = Modes {
+        mouse_reporting: MouseReporting::Off,
+        ..view.modes()
+    };
+    let alternate = matches!(view.screen(), vt::Screen::Alternate { .. });
+    match mouse::wheel(mouse, &modes, alternate)? {
+        Wheel::History(rows) => Some(rows),
+        Wheel::Key(_) | Wheel::Nothing => None,
+    }
+}
+
+/// What `registry` says of `id`'s row beyond its view, if it has one.
+fn shown<'a>(registry: &'a Registry, id: &SessionId) -> Option<Shown<'a>> {
+    Some(Shown {
+        kind: registry.kind(id)?,
+        finished: registry.finished(id),
+        recovery: registry.recovery(id),
+    })
+}
+
 /// What the registry says of a selected row beyond its view.
 struct Shown<'a> {
     kind: Kind,
@@ -923,8 +933,8 @@ fn incomplete(progress: &Progress) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Canvas, Control, Kind, Presentation, Recovery, Shown, Terminal, control, placeholder,
-        retained, revealed, terminal, without_view,
+        Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, control, inspected,
+        placeholder, retained, revealed, terminal, without_view,
     };
 
     const CONTROLS: [Control; 5] = [
@@ -1049,5 +1059,40 @@ mod tests {
         assert!(!revealed(true, true));
         assert!(!revealed(false, true));
         assert!(!revealed(false, false));
+    }
+
+    /// REC-02 and TRM-05 (pure supplement, #116): a vertical wheel notch
+    /// scrolls read-only history a row, up going back, on its normal screen
+    /// whatever mouse reporting its application left on; nothing on its
+    /// alternate screen, even with alternate scroll; any other report
+    /// nothing.
+    #[test]
+    fn the_wheel_scrolls_read_only_history_only_on_its_normal_screen() {
+        let model = |bytes: &[u8]| {
+            let mut model = climon2_vt::Model::new(
+                climon2_vt::Geometry::for_host(10, 3).unwrap(),
+                climon2_vt::Limits {
+                    bytes: 64 << 20,
+                    history_rows: 200,
+                },
+            )
+            .unwrap();
+            model.feed(&mut climon2_vt::Parser::new(), bytes).unwrap();
+            model
+        };
+        let report = |code| Mouse {
+            code,
+            column: 1,
+            row: 2,
+            released: false,
+        };
+        let reporting = model(b"\x1b[?1000h");
+        assert_eq!(inspected(report(64), &reporting.view()), Some(1));
+        assert_eq!(inspected(report(65), &reporting.view()), Some(-1));
+        assert_eq!(inspected(report(0), &reporting.view()), None);
+        let alternate = model(b"\x1b[?1049h\x1b[?1007h");
+        assert_eq!(inspected(report(64), &alternate.view()), None);
+        let alternate = model(b"\x1b[?1049h");
+        assert_eq!(inspected(report(64), &alternate.view()), None);
     }
 }

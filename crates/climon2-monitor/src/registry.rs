@@ -370,10 +370,7 @@ impl Registry {
         let id = metadata.session_id.clone();
         let own = self.own.as_ref() == Some(&id);
         if own || matches!(found, Found::Stale) {
-            self.rows.retain(|key, row| *key != id || row.connected);
-            if let Some(row) = self.rows.get_mut(&id) {
-                row.gone();
-            }
+            self.gone(&id);
             return None;
         }
         let row = self
@@ -385,6 +382,15 @@ impl Registry {
             row.connect(Connection::Starting, now);
             metadata
         })
+    }
+
+    /// `id`'s session is proven gone, or is this monitor's own: a row never
+    /// connected is dropped, and one that was stops recovering.
+    fn gone(&mut self, id: &SessionId) {
+        self.rows.retain(|key, row| key != id || row.connected);
+        if let Some(row) = self.rows.get_mut(id) {
+            row.gone();
+        }
     }
 
     /// Records what `id`'s client reported.
@@ -469,10 +475,17 @@ impl Registry {
 fn connection(event: ClientEvent) -> Option<Connection> {
     match event {
         ClientEvent::Opened { status } => Some(Connection::Connected { status }),
-        ClientEvent::Starting => Some(Connection::Starting),
         ClientEvent::Unavailable(why) => Some(Connection::Unavailable(why)),
-        ClientEvent::Ended => Some(Connection::Disconnected),
-        _ => None,
+        event => {
+            let plain = [
+                (ClientEvent::Starting, Connection::Starting),
+                (ClientEvent::Ended, Connection::Disconnected),
+            ];
+            let mut plain = plain.into_iter();
+            plain
+                .find(|(plain, _)| *plain == event)
+                .map(|(_, connection)| connection)
+        }
     }
 }
 
@@ -924,6 +937,8 @@ mod tests {
         }
         assert_eq!(registry.recovery(&connected), None);
         assert_eq!(registry.recovery(&finished), None);
+        assert!(registry.finished(&finished));
+        assert!(!registry.finished(&lost) && !registry.finished(&connected));
         assert_eq!(registry.kind(&unopened.session_id), None);
         assert_eq!(
             shown(&registry),

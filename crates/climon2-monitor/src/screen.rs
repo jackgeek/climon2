@@ -338,29 +338,36 @@ impl Screen {
     ) -> Option<HostCursor> {
         match canvas {
             Canvas::View(view) => return self.view(id, view, buffer, underlines),
-            Canvas::Placeholder => {
-                let lines: Vec<_> = std::iter::once(VIEWED_ELSEWHERE)
-                    .chain(self.takeover.as_deref())
-                    .collect();
-                centred(&lines, buffer, below);
-            }
             Canvas::Retained(view, recovery) => {
                 painted(view, buffer, underlines);
                 if let Some(recovery) = recovery {
                     banner(&overlay(recovery), buffer, below);
                 }
             }
-            Canvas::NoContent(condition, recovery) => {
-                let overlay = recovery.map(overlay);
-                let lines: Vec<_> = [NO_CONTENT, condition]
-                    .into_iter()
-                    .chain(overlay.as_deref())
-                    .collect();
+            text => {
+                let lines = self.text(text);
+                let lines: Vec<_> = lines.iter().map(String::as_str).collect();
                 centred(&lines, buffer, below);
             }
-            Canvas::Nothing => {}
         }
         None
+    }
+
+    /// The lines a canvas with no view says, centred: the placeholder with
+    /// any takeover hint, or no content, the condition and any overlay.
+    fn text(&self, canvas: &Canvas<'_>) -> Vec<String> {
+        match canvas {
+            Canvas::Placeholder => std::iter::once(VIEWED_ELSEWHERE)
+                .chain(self.takeover.as_deref())
+                .map(str::to_owned)
+                .collect(),
+            Canvas::NoContent(condition, recovery) => [NO_CONTENT, condition]
+                .map(str::to_owned)
+                .into_iter()
+                .chain(recovery.map(overlay))
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 }
 
@@ -949,6 +956,9 @@ mod tests {
             ]
         );
         assert_eq!(history(None), ["two", "three", "four", "five", "six"]);
+        let long = Recovery::Rejected("x".repeat(60));
+        let clipped = format!(" Not reconnecting: {}", "x".repeat(31));
+        assert_eq!(history(Some(&long))[2], clipped, "clipped to the canvas");
         assert_eq!(
             history(Some(&Recovery::Gone))[2],
             format!("{:<13}Session no longer exists", "four")

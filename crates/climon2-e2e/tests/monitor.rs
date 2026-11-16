@@ -1744,7 +1744,7 @@ struct Turns {
 }
 
 impl Turns {
-    fn new(acts: Vec<Vec<Act>>) -> Answer {
+    fn answer(acts: Vec<Vec<Act>>) -> Answer {
         Answer::Turns(std::sync::Arc::new(Self {
             taken: std::sync::atomic::AtomicUsize::new(0),
             acts,
@@ -5246,7 +5246,7 @@ fn a_lost_connection_keeps_its_history_read_only_until_a_passive_reconnect() {
         &package,
         ID,
         "2099-01-01T00:00:00.000Z",
-        Turns::new(vec![first, later]),
+        Turns::answer(vec![first, later]),
         &ear,
     );
     let mut terminal = outer(&package, "c2 monitor");
@@ -5521,7 +5521,7 @@ fn failed_clients_retry_with_backoff_until_repaired_or_rejected_for_good() {
         &package,
         FLAKY,
         "2099-01-01T00:00:01.000Z",
-        Turns::new(vec![vec![Act::Close]]),
+        Turns::answer(vec![vec![Act::Close]]),
         &ear,
     );
     let deadline = Instant::now() + TIMEOUT;

@@ -395,10 +395,10 @@ impl State {
         true
     }
 
-    /// Retries of a session proven gone stop, now and later.
+    /// Retries of a session proven gone stop: one scheduled is dropped,
+    /// and none is scheduled again.
     fn forget(&mut self, id: SessionId) {
         self.retrying.remove(&id);
-        self.waiting.retain(|(_, waiting), _| *waiting != id);
         self.forgotten.insert(id);
     }
 
@@ -650,22 +650,20 @@ impl State {
     }
 
     /// Each retry whose backoff has passed starts again: a fresh client
-    /// waits for its start, its release loaded again if a later load could
-    /// succeed.
+    /// waits for its start, its release loaded again if it was refused
+    /// (only a refusal a later load may not repeat is ever retried).
     fn due(&mut self) {
         let now = Instant::now();
         let due: Vec<_> = self
             .retrying
             .iter()
-            .filter(|(_, (at, _))| *at <= now)
+            .filter(|(_, (at, _))| now.checked_duration_since(*at).is_some())
             .map(|(id, _)| id.clone())
             .collect();
         for id in due {
             let (_, metadata) = self.retrying.remove(&id).expect("a due retry");
             let version = &metadata.climon2_version;
-            if let Some(Release::Refused(refusal)) = self.releases.get(version)
-                && refusal.retry() == Retry::Passive
-            {
+            if let Some(Release::Refused(_)) = self.releases.get(version) {
                 self.releases.remove(version);
             }
             self.tell(&id, ClientEvent::Starting);
@@ -758,12 +756,15 @@ impl State {
             ClientEvent::Opened { .. } => {
                 self.attempts.remove(id);
             }
-            ClientEvent::Report(Report::Final(_)) => {
-                if let Some(instance) = self.instances.get_mut(id) {
-                    instance.finished = true;
-                }
-            }
+            ClientEvent::Report(Report::Final(_)) => self.finished(id),
             _ => {}
+        }
+    }
+
+    /// The command's final outcome came through `id`'s instance.
+    fn finished(&mut self, id: &SessionId) {
+        if let Some(instance) = self.instances.get_mut(id) {
+            instance.finished = true;
         }
     }
 
@@ -993,6 +994,8 @@ mod tests {
         drops: bool,
         /// Destroy fails, as with worker cleanup unconfirmed.
         destroy_fails: bool,
+        /// Open is refused, and the stream ends with terminal evidence.
+        refuses_open: bool,
     }
 
     /// What the observer saw of one session's instance.
@@ -1283,6 +1286,9 @@ mod tests {
         let let_go = |world: &World| world.unstalled.contains(&fake.id);
         let shutdown = || fake.state().shutdown;
         wait_while(|world| fake.script.opens_late && !let_go(world) && !shutdown());
+        if fake.script.refuses_open {
+            return fake.push(Item::Delivery(vec![answer(OPEN_ID, true)]));
+        }
         fake.push(Item::Delivery(opened()));
         if fake.script.presents {
             fake.push(Item::Delivery(presentation()));
@@ -2431,6 +2437,18 @@ mod tests {
             .collect()
     }
 
+    /// The delays `log` says the supervisor scheduled for `id`'s retries.
+    fn scheduled(log: &str, id: &SessionId) -> Vec<u64> {
+        let session = format!("session={id}");
+        log.lines()
+            .filter(|line| line.contains("client retry scheduled") && line.contains(&session))
+            .map(|line| {
+                let delay = line.split("delay_ms=").nth(1).unwrap();
+                delay.split_whitespace().next().unwrap().parse().unwrap()
+            })
+            .collect()
+    }
+
     /// The connection generation each of `id`'s instances was created in.
     fn generations(id: &SessionId) -> Vec<u64> {
         let id = guid(id);
@@ -2508,7 +2526,8 @@ mod tests {
         lives.push(Seen::Created);
         assert_eq!(seen(&guid(&id)), lives);
         let (created, exited) = (times(&id, Seen::Created), times(&id, Seen::OwnerExited));
-        for (index, least) in [100, 200, 300, 100].into_iter().enumerate() {
+        let delays = [100, 200, 300, 100];
+        for (index, least) in delays.into_iter().enumerate() {
             let waited = created[index + 1] - exited[index];
             assert!(
                 waited >= Duration::from_millis(least),
@@ -2517,18 +2536,29 @@ mod tests {
             assert!(waited < Duration::from_secs(10), "{index}: {waited:?}");
         }
         supervisor.stop();
+        assert_eq!(scheduled(&supervised.log(), &id), delays);
     }
 
     /// REC-01 (Monitor, Fault: permanent rejection and invalid
     /// configuration; a known final outcome), LIB-05 (cleanup that cannot
     /// be confirmed): a client the library rejects permanently, a create
     /// refusing its limits, a client whose final outcome is known before it
-    /// is lost and one whose destroy fails are never retried; a create
-    /// refused for want of resources is retried and opens.
+    /// is lost and one whose destroy fails are never retried, nor one whose
+    /// Open the daemon refused and whose evidence says so for good, which
+    /// is Unavailable with the refusal; a create refused for want of
+    /// resources and a client the monitor stopped itself (its notification
+    /// lookup failed) are retried and open.
     #[test]
     fn rejections_known_outcomes_and_unconfirmed_cleanup_retry_nothing() {
-        let [rejected, limited_, finished, unclean, scarce] =
-            [1, 2, 3, 4, 5].map(|index| session(21, index));
+        let [
+            rejected,
+            limited_,
+            finished,
+            unclean,
+            scarce,
+            unpolled,
+            refusing,
+        ] = [1, 2, 3, 4, 5, 6, 7].map(|index| session(21, index));
         let ends = |retry| Script {
             ends_unopened: Some(b"daemon unsupported_capability"),
             retry,
@@ -2556,15 +2586,28 @@ mod tests {
             &scarce,
             &[refused(native::RESOURCE_LIMIT), Script::default()],
         );
+        let lookup_fails = Script {
+            notification_fails: true,
+            ..Script::default()
+        };
+        scripts(&unpolled, &[lookup_fails, Script::default()]);
+        let refuses = Script {
+            refuses_open: true,
+            retry: native::RETRY_PERMANENT,
+            ..Script::default()
+        };
+        script(&refusing, refuses);
         let quick = Backoff {
             initial_ms: 0,
             cap_ms: 0,
             jitter_percent: 0,
         };
         let limits = climon2_core::config::Limits::default().library();
-        let mut supervised = retrying(5, 20_000, fake_library(), (limits, quick));
+        let mut supervised = retrying(7, 20_000, fake_library(), (limits, quick));
         let supervisor = &mut supervised.supervisor;
-        let all = [&rejected, &limited_, &finished, &unclean, &scarce];
+        let all = [
+            &rejected, &limited_, &finished, &unclean, &scarce, &unpolled, &refusing,
+        ];
         for (index, id) in all.iter().enumerate() {
             supervisor.start_client(metadata(id, &format!("2026-11-13T10:00:0{index}.000Z")));
         }
@@ -2574,10 +2617,12 @@ mod tests {
                 reports.get(id).is_some_and(|events| events.contains(event))
             };
             let rejection = ClientEvent::Recovery(Recovery::Rejected(unconfirmed_why.into()));
-            has(&scarce, &ClientEvent::Opened { status: false })
+            let opened = ClientEvent::Opened { status: false };
+            has(&scarce, &opened)
+                && has(&unpolled, &opened)
                 && has(&finished, &ClientEvent::Ended)
                 && has(&unclean, &rejection)
-                && [&rejected, &limited_]
+                && [&rejected, &limited_, &refusing]
                     .iter()
                     .all(|id| reports.get(*id).is_some_and(|events| events.len() == 2))
         });
@@ -2618,33 +2663,59 @@ mod tests {
                 ClientEvent::Opened { status: false },
             ]
         );
-        for id in [&finished, &unclean] {
+        let polled = "cannot poll the client: internal_error: no notification";
+        assert_eq!(
+            reports[&unpolled],
+            [
+                unavailable(polled),
+                retried(polled),
+                ClientEvent::Starting,
+                ClientEvent::Opened { status: false },
+            ]
+        );
+        assert_eq!(
+            reports[&refusing],
+            [
+                unavailable("stale"),
+                rejection("the client stopped before it opened")
+            ]
+        );
+        for id in [&finished, &unclean, &refusing] {
             let id = guid(id);
             until(|world| world.seen.contains(&(id, Seen::OwnerExited)));
         }
         supervisor.stop();
-        for id in [&rejected, &limited_, &finished, &unclean] {
+        for id in [&rejected, &limited_, &finished, &unclean, &refusing] {
             assert_eq!(generations(id), [1], "{id}");
         }
-        assert_eq!(generations(&scarce), [1, 2]);
+        for id in [&scarce, &unpolled] {
+            assert_eq!(generations(id), [1, 2], "{id}");
+        }
     }
 
     /// REC-01 (Monitor, Fault: missing library, then a repaired
-    /// installation): a release refused for a reason a later load may not
-    /// have is loaded again once its session's retry is due, and its
-    /// session then opens.
+    /// installation; a wrong release): a release refused for a reason a
+    /// later load may not have is loaded again once its session's retry is
+    /// due, and its session then opens; a release refused for good is
+    /// loaded once and its session never retried.
     #[test]
     fn a_missing_library_is_loaded_again_when_its_retry_is_due() {
-        let id = session(22, 1);
-        let loads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let [id, wrong] = [session(22, 1), session(22, 2)];
+        let loads = std::sync::Arc::new(Mutex::new(Vec::new()));
         let counted = std::sync::Arc::clone(&loads);
-        let repaired: Load =
-            Box::new(
-                move |_| match counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
-                    0 => Err(Refusal::Library(Failure::MissingLibrary, "missing".into())),
-                    _ => Ok(&FAKE),
-                },
-            );
+        let repaired: Load = Box::new(move |version| {
+            let mut loads = counted.lock().unwrap();
+            loads.push(version.to_string());
+            let earlier = loads
+                .iter()
+                .filter(|loaded| *loaded == version.as_str())
+                .count();
+            match (version.as_str(), earlier) {
+                ("0.0.2", _) => Err(Refusal::Library(Failure::WrongRelease, "wrong".into())),
+                (_, 1) => Err(Refusal::Library(Failure::MissingLibrary, "missing".into())),
+                _ => Ok(&FAKE),
+            }
+        });
         let quick = Backoff {
             initial_ms: 0,
             cap_ms: 0,
@@ -2653,12 +2724,14 @@ mod tests {
         let limits = climon2_core::config::Limits::default().library();
         let mut supervised = retrying(1, 20_000, repaired, (limits, quick));
         let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(versioned(&wrong, "2026-11-13T10:00:01.000Z", "0.0.2"));
         supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
         let opened = ClientEvent::Opened { status: false };
         let reports = reports_until(supervisor, |reports| {
-            reports
+            let opened = reports
                 .get(&id)
-                .is_some_and(|events| events.contains(&opened))
+                .is_some_and(|events| events.contains(&opened));
+            opened && reports.get(&wrong).is_some_and(|events| events.len() == 2)
         });
         assert_eq!(
             reports[&id],
@@ -2669,8 +2742,57 @@ mod tests {
                 opened,
             ]
         );
+        assert_eq!(
+            reports[&wrong],
+            [
+                ClientEvent::Unavailable("wrong".into()),
+                ClientEvent::Recovery(Recovery::Rejected("wrong".into())),
+            ]
+        );
         supervisor.stop();
-        assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let mut loads = loads.lock().unwrap().clone();
+        loads.sort();
+        assert_eq!(loads, ["0.0.2", "0.1.0", "0.1.0"]);
+    }
+
+    /// Owner decision on #116 (2026-11-16): discovery proving a session
+    /// gone drops the retry already scheduled for it.
+    #[test]
+    fn a_scheduled_retry_is_dropped_once_its_session_is_gone() {
+        let id = session(24, 1);
+        let failing = Script {
+            ends_unopened: Some(b"transport io_error: refused"),
+            retry: native::RETRY_PASSIVE,
+            ..Script::default()
+        };
+        script(&id, failing);
+        let backoff = Backoff {
+            initial_ms: 100,
+            cap_ms: 100,
+            jitter_percent: 0,
+        };
+        let limits = climon2_core::config::Limits::default().library();
+        let mut supervised = retrying(1, 20_000, fake_library(), (limits, backoff));
+        supervised
+            .supervisor
+            .start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+        let deadline = Instant::now() + WAIT;
+        while scheduled(&supervised.log(), &id).is_empty() {
+            assert!(Instant::now() < deadline, "no retry was scheduled");
+            thread::sleep(Duration::from_millis(5));
+        }
+        let supervisor = &mut supervised.supervisor;
+        supervisor.forget(id.clone());
+        // Three times the backoff: a retry still scheduled would start.
+        thread::sleep(Duration::from_millis(300));
+        supervisor.stop();
+        assert_eq!(generations(&id), [1]);
+        let reports: Vec<_> = supervisor
+            .reports
+            .try_iter()
+            .map(|(_, event)| event)
+            .collect();
+        assert!(!reports.contains(&ClientEvent::Starting), "{reports:?}");
     }
 
     /// Owner decision on #116 (2026-11-16): once discovery proves a
