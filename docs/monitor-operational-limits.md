@@ -73,23 +73,28 @@ These are ceilings, not instructions to preallocate every client's maximum.
 
 The monitor checks the mandatory current model and recent page at startup,
 before the host terminal changes, for one [session](../GLOSSARY.md#sessions)
-at the largest supported geometry, 500x200, as `climon2-vt` charges a blank
+at the largest supported geometry, 500x200, as `climon2-vt` charges a
 terminal model there
 ([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)):
-the current model (vte's 2 MiB buffer, the 32 KiB reserve and both screens,
-6,948,039 bytes) and the first 1000-row history chunk, which holds its recent
-page (12,115,200 bytes). `memory.total_bytes`, then `memory.client_bytes`,
-must each hold both, 19,063,239 bytes; `memory.history_bytes_total`, then
-`history_bytes_per_session`, must hold the page. Each total is checked before
-the budgets it contains, so a refusal names the limit to raise, with both
-byte counts. `exec` does not make this check: only the monitor has
-terminal models.
+the current model (the 32 KiB reserve and both screens, 4,850,887 bytes) and
+the first 1000-row history chunk, which holds its recent page and is admitted
+at the first scroll (12,115,200 bytes), beside the monitor's one shared vte
+parser (2,097,152 bytes,
+[#166](https://github.com/jackgeek/climon2/issues/166)). `memory.total_bytes`
+must hold all three, 19,063,239 bytes; `memory.client_bytes` the model and
+page, 16,966,087 bytes, since the parser is the monitor's, not a client's;
+`memory.history_bytes_total`, then `history_bytes_per_session`, must hold
+the page. Each total is checked before the budgets it contains, so a refusal
+names the limit to raise, with both byte counts. `exec` does not make this
+check: only the monitor has terminal models.
 
 The check guarantees admission, not restoration. A restoration is staged in a
 second model beside the current one, whose first history chunk never yields
-to it, so staging one at 500x200 needs room for both models: at least
-38,126,478 bytes (ADR 0007's 36.36 MiB), more once the current model's history
-has grown. Limits below that admit the largest session but cannot stage its
+to it, and a restoration carries history, so it admits its own first chunk:
+staging one at 500x200 needs room for both models, at least 33,932,174 bytes
+in a client's budget and, with the parser, 36,029,326 in the total (ADR
+0007's 32.36 MiB per staged pair), more once the current model's history has
+grown. Limits below that admit the largest session but cannot stage its
 restoration, which follows every monitor-mode geometry change
 ([#89](https://github.com/jackgeek/climon2/issues/89)).
 
@@ -123,7 +128,7 @@ An illustrative override is:
   "monitor": {
     "limits": {
       "memory": {
-        "total_bytes": 536870912,
+        "total_bytes": 603979776,
         "client_bytes": 67108864,
         "history_bytes_per_session": 16777216,
         "history_bytes_total": 268435456,
@@ -148,7 +153,7 @@ enforced yet. It does not modify daemon `scrollback.max_rows`.
 
 | Field | Default |
 |---|---:|
-| `memory.total_bytes` | 536870912 (512 MiB) |
+| `memory.total_bytes` | 603979776 (576 MiB) |
 | `memory.client_bytes` | 67108864 (64 MiB per client/session, including its monitor model) |
 | `memory.history_bytes_per_session` | 16777216 (16 MiB) |
 | `memory.history_bytes_total` | 268435456 (256 MiB) |
@@ -202,7 +207,12 @@ rows if fewer exist. Preserve current normal/alternate-screen state separately.
 Never completely erase that page merely to admit another session.
 No history is fabricated for a passive client that never received display data.
 
-The protected page/current model become admission obligations. Shortening history
+The protected page/current model become admission obligations. In
+`climon2-vt` the page's obligation arises at the normal screen's first
+scroll, when the model admits its first history chunk, rather than when the
+model is created: a model that never scrolled holds no history storage, and
+the first scroll is rejected, keeping the page, if its chunk cannot fit
+([#166](https://github.com/jackgeek/climon2/issues/166)). Shortening history
 does not remove a row, release
 [control](../GLOSSARY.md#attachment-and-control), or turn partial restoration into
 [readiness](../GLOSSARY.md#protocol-and-plugin-concepts).
@@ -247,14 +257,25 @@ ones; the owner accepted that evidence, with the measured reserve, as the
 risk proof. The owner also decided that a monitor-mode geometry change is
 always followed by a restoration at that geometry (a wire amendment that
 [#89](https://github.com/jackgeek/climon2/issues/89) makes), and how
-per-model cost is to meet PERF-01
-([#166](https://github.com/jackgeek/climon2/issues/166)). #83's read-only
-history view labels truncation: rows beyond the row ceiling or released under
-pressure, and, as the owner decided, a full history that output could have
-overrun once growth was capped or refused, because the engine does not report
-the rows it discards there
+per-model cost is to meet PERF-01.
+[#166](https://github.com/jackgeek/climon2/issues/166) implements that in
+`climon2-vt`: one `Parser` per monitor, whose 2 MiB buffer the monitor
+counts once, and the first history chunk admitted only at the first scroll.
+The owner then raised the default `memory.total_bytes` from 512 MiB to
+576 MiB and scoped PERF-01's 100 sessions to geometries up to 200x60
+(2026-11-15). At 576 MiB this holds 4,734, 979 and 124 models at 80x24,
+200x60 and 500x200 before they scroll, and 280, 109 and 35 once they hold
+their first chunk; 500x200 records that measured capacity instead of 100
+sessions
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)).
+#83's read-only history view labels truncation: rows beyond the row ceiling
+or released under pressure, and, as the owner decided, a full history that
+output could have overrun once growth was capped or refused, because the
+engine does not report the rows it discards there
 ([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#read-only-views-for-painting)).
-The monitor's own budgets and pressure policies above remain unimplemented.
+The monitor does not yet keep models or use the shared parser
+([#108](https://github.com/jackgeek/climon2/issues/108)), and its own budgets
+and pressure policies above remain unimplemented.
 
 ## Queues and transfers
 
@@ -553,8 +574,11 @@ crash exposure and ordinary leave policy. Incomplete cleanup is never successful
 detach; protected history does not authorize unloading running code.
 
 Require reproducible CPU/memory, startup/load and sustained-display measurements
-for 1, 10 and 100 live sessions, one release and ten mixed releases where
-applicable, at 80x24 and 200x60, plus 500x200 boundary geometry.
+for 1, 10 and 100 live sessions at 80x24 and 200x60, one release and ten mixed
+releases where applicable, plus the 500x200 boundary geometry at 1 and 10
+sessions and its measured capacity, about 35 sessions with history and 124
+before any scroll at the default 576 MiB (owner, 2026-11-15,
+[#166](https://github.com/jackgeek/climon2/issues/166)).
 Cover passive idle, controlling background output, cold/warm loading, restoration/
 switching, selected sustained display, reconnect storms, continuous arrivals and
 stalled newer starts. Measure snapshot comparison/allocation and retained

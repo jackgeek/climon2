@@ -20,6 +20,8 @@ pub const UNSUPPORTED_OPERATION: u64 = 3;
 pub const INVALID_REQUEST_ID: u64 = 4;
 pub const FULL: u64 = 5;
 pub const CLOSED: u64 = 6;
+/// `CM1_RELEASE_MISMATCH`.
+pub const RELEASE_MISMATCH: u64 = 14;
 pub const ORIGIN_LIBRARY: u64 = 1;
 pub const ORIGIN_DAEMON: u64 = 2;
 pub const ORIGIN_TRANSPORT: u64 = 3;
