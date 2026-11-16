@@ -19,7 +19,7 @@ use climon2_core::{
     hello::{SessionState, advertise_revision1},
     protocol::{Frame, HANGUP_GRACE, HelloReply, PROTOCOL_VERSION, PTY_DRAIN_CAP, TerminalSize},
     title::default_title,
-    wire::{CommandResult, Counter, GrantReason, OperationalCode, RevocationReason},
+    wire::{CommandResult, Counter, GrantReason, RevocationReason},
 };
 use climon2_platform::{
     peer,
@@ -732,7 +732,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn attachment_effect(&mut self, effect: Effect) {
         match effect {
             Effect::Admit { conn } => self.admit(conn.0),
-            Effect::Refuse { conn, code } => self.refuse(conn.0, code),
             Effect::Convert { conn } => self.convert(conn.0),
             other => self.input_effect(other),
         }
@@ -764,15 +763,16 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn departure_effect(&mut self, effect: Effect) {
         match effect {
-            Effect::AcceptDetach { conn } => self.terminal(conn.0),
             Effect::Disconnect { conn } => self.remove_connection(conn.0),
+            Effect::EndAttachment { conn } => {
+                self.report_revocation(conn.0, RevocationReason::SessionEnding);
+            }
             other => self.result_effect(other),
         }
     }
 
     fn result_effect(&mut self, effect: Effect) {
         match effect {
-            Effect::EndAttachment { conn } => self.ending(conn.0),
             Effect::ConfirmKill { conn, end } => self.confirm_kill(conn.0, &end),
             Effect::Finish => self.finish(),
             other => self.grant_effect(other),
@@ -875,11 +875,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.admitted(id);
     }
 
-    fn refuse(&mut self, id: u64, code: OperationalCode) {
-        self.refused(id, code);
-        self.terminal(id);
-    }
-
     fn enable_input(&mut self, id: u64) {
         if let Some(delivery) = self.deliveries.get_mut(&id) {
             delivery.ready();
@@ -927,21 +922,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         if let Some(request_id) = self.kill_request(id) {
             self.answer_kill(id, request_id, end);
         }
-    }
-
-    /// The session ended: control an attachment still holds ends with it,
-    /// then its stream.
-    fn ending(&mut self, id: u64) {
-        self.report_revocation(id, RevocationReason::SessionEnding);
-        self.terminal(id);
-    }
-
-    /// Stops a connection's session output; its stream ends once flushed.
-    fn terminal(&mut self, id: u64) {
-        if let Some(connection) = self.connections.get_mut(&id) {
-            connection.close_after_flush();
-        }
-        self.remove_delivery(id);
     }
 
     // Connection bookkeeping.

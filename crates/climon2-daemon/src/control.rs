@@ -107,14 +107,6 @@ pub struct Acquisition {
 pub enum Effect {
     /// An attachment was admitted: answer its Open.
     Admit { conn: ConnectionId },
-    /// Reject an attachment, without effects, because the session is
-    /// terminating (`session_terminating`) or no new control period and
-    /// restoration can be issued (`resource_limit`): reject its Open, which
-    /// ends its stream.
-    Refuse {
-        conn: ConnectionId,
-        code: OperationalCode,
-    },
     /// A passive monitor connection became an attachment, by its Acquire or
     /// a promotion: its output is canonical from its grant, which follows.
     Convert { conn: ConnectionId },
@@ -148,9 +140,6 @@ pub enum Effect {
     /// A takeover ended this attachment's control: report the revocation;
     /// send no further session output to this attachment.
     Revoke { conn: ConnectionId },
-    /// This attachment's departure was accepted: send it no further session
-    /// output.
-    AcceptDetach { conn: ConnectionId },
     /// Close this attachment; it has already been treated as lost.
     Disconnect { conn: ConnectionId },
     /// Resize the PTY and the virtual terminal to this session geometry.
@@ -165,8 +154,7 @@ pub enum Effect {
     /// Remove metadata and the socket, keeping connections open; then report
     /// [`Control::cleanup_finished`] or [`Control::authoritative_failure`].
     Cleanup,
-    /// The session ended: this attachment's control ends with it, and its
-    /// stream closes.
+    /// The session ended: this attachment's control ends with it.
     EndAttachment { conn: ConnectionId },
     /// Answer a kill requester with how the session ended.
     ConfirmKill { conn: ConnectionId, end: SessionEnd },
@@ -574,27 +562,25 @@ impl Control {
         self.controlling(conn)?.authorize(requested, needs)
     }
 
-    /// An accepted attach request, granted at once. Each connection attaches
-    /// at most once.
-    pub fn attach(&mut self, conn: ConnectionId, size: TerminalSize) -> Vec<Effect> {
+    /// An attach request: admitted and granted at once, or refused without
+    /// effects because the session is terminating (`session_terminating`)
+    /// or no new control period and restoration can be issued
+    /// (`resource_limit`). Each connection attaches at most once.
+    pub fn attach(
+        &mut self,
+        conn: ConnectionId,
+        size: TerminalSize,
+    ) -> Result<Vec<Effect>, OperationalCode> {
         let attachment = Attachment {
             conn,
             host: size.initial(),
             target: Target::Host,
         };
         let Stage::Open(open) = &mut self.stage else {
-            return vec![Effect::Refuse {
-                conn,
-                code: OperationalCode::SessionTerminating,
-            }];
+            return Err(OperationalCode::SessionTerminating);
         };
-        let Some(fresh) = self.grants.issued.next_grant() else {
-            return vec![Effect::Refuse {
-                conn,
-                code: OperationalCode::ResourceLimit,
-            }];
-        };
-        open.attach(attachment, fresh, &mut self.grants)
+        let fresh = (self.grants.issued.next_grant()).ok_or(OperationalCode::ResourceLimit)?;
+        Ok(open.attach(attachment, fresh, &mut self.grants))
     }
 
     /// A passive monitor connection registered: never an attachment, nor
@@ -918,10 +904,6 @@ mod tests {
         }
     }
 
-    fn refuse(conn: ConnectionId, code: OperationalCode) -> Effect {
-        Refuse { conn, code }
-    }
-
     /// The largest counter value; none follows it.
     const LAST: u64 = u64::MAX;
 
@@ -963,7 +945,7 @@ mod tests {
 
     fn with_attachments(mut control: Control, conns: &[ConnectionId]) -> Control {
         for conn in conns {
-            let authority = granted(control.attach(*conn, host()));
+            let authority = granted(control.attach(*conn, host()).unwrap());
             control.apply_pending();
             restore(&mut control, *conn, authority);
         }
@@ -994,7 +976,7 @@ mod tests {
     fn the_first_attach_is_admitted_and_granted_at_once() {
         let mut control = ordinary(host());
         assert_eq!(
-            control.attach(A, host()),
+            control.attach(A, host()).unwrap(),
             [Admit { conn: A }, grant(A, (1, 1), host(), Attach)]
         );
         assert_eq!(control.snapshot(), state(Attached, 1, true));
@@ -1006,7 +988,7 @@ mod tests {
     fn a_grant_applies_the_attaching_host_size_before_its_snapshot() {
         let mut control = ordinary(host());
         assert_eq!(
-            control.attach(A, size(100, 30)),
+            control.attach(A, size(100, 30)).unwrap(),
             [Admit { conn: A }, grant(A, (1, 1), size(100, 30), Attach)]
         );
         assert_eq!(
@@ -1022,7 +1004,7 @@ mod tests {
     fn an_attach_without_a_size_uses_80x24() {
         let mut control = ordinary(size(100, 30));
         assert_eq!(
-            control.attach(A, size(0, 0)),
+            control.attach(A, size(0, 0)).unwrap(),
             [Admit { conn: A }, grant(A, (1, 1), host(), Attach)]
         );
         assert_eq!(control.apply_pending(), [ResizeSession { size: host() }]);
@@ -1031,7 +1013,7 @@ mod tests {
     #[test]
     fn input_is_admitted_only_after_ready_for_the_complete_current_restoration() {
         let mut control = ordinary(host());
-        let authority = granted(control.attach(A, host()));
+        let authority = granted(control.attach(A, host()).unwrap());
         assert_eq!(control.ready(A, authority.restoration), NONE);
         control.restored(A, authority);
         assert_eq!(control.controlling(A), controlling(1, 1, RESTORED));
@@ -1051,7 +1033,7 @@ mod tests {
     #[test]
     fn only_the_current_restoration_of_the_controller_completes() {
         let mut control = ordinary(host());
-        let current = granted(control.attach(A, host()));
+        let current = granted(control.attach(A, host()).unwrap());
         control.restored(B, current);
         control.restored(A, authority(1, 2));
         control.restored(A, authority(2, 1));
@@ -1063,7 +1045,7 @@ mod tests {
     #[test]
     fn a_stale_or_foreign_ready_is_ignored() {
         let mut control = session(&[A]);
-        let authority = granted(control.attach(B, host()));
+        let authority = granted(control.attach(B, host()).unwrap());
         control.restored(B, authority);
         assert_eq!(control.ready(B, Restoration(1)), NONE);
         assert_eq!(control.ready(A, Restoration(2)), NONE);
@@ -1088,7 +1070,7 @@ mod tests {
     fn an_attach_takes_control_from_a_ready_controller() {
         let mut control = session(&[A]);
         assert_eq!(
-            control.attach(B, host()),
+            control.attach(B, host()).unwrap(),
             [
                 Admit { conn: B },
                 DiscardPendingInput { conn: A },
@@ -1107,10 +1089,10 @@ mod tests {
     #[test]
     fn revoking_a_controller_that_was_never_ready_closes_no_paste() {
         let mut control = ordinary(host());
-        control.attach(A, host());
+        control.attach(A, host()).unwrap();
         control.apply_pending();
         assert_eq!(
-            control.attach(B, host()),
+            control.attach(B, host()).unwrap(),
             [
                 Admit { conn: B },
                 Release { conn: A },
@@ -1124,11 +1106,11 @@ mod tests {
     fn attaches_in_one_iteration_are_each_granted_and_the_last_wins() {
         let mut control = ordinary(host());
         assert_eq!(
-            control.attach(A, host()),
+            control.attach(A, host()).unwrap(),
             [Admit { conn: A }, grant(A, (1, 1), host(), Attach)]
         );
         assert_eq!(
-            control.attach(B, host()),
+            control.attach(B, host()).unwrap(),
             [
                 Admit { conn: B },
                 Release { conn: A },
@@ -1216,7 +1198,7 @@ mod tests {
             authorized(2, 2, true)
         );
 
-        let restoring = granted(control.attach(C, host()));
+        let restoring = granted(control.attach(C, host()).unwrap());
         assert_eq!(
             control.authorize(C, restoring, Needs::Control),
             authorized(3, 3, false)
@@ -1302,7 +1284,6 @@ mod tests {
                 DiscardPendingInput { conn: A },
                 ClosePaste,
                 Release { conn: A },
-                AcceptDetach { conn: A },
                 grant(C, (5, 5), host(), HandBack)
             ]
         );
@@ -1349,7 +1330,7 @@ mod tests {
     #[test]
     fn a_non_controlling_detach_needs_no_second_release() {
         let mut control = session(&[A, B]);
-        assert_eq!(control.detach(A), [AcceptDetach { conn: A }]);
+        assert_eq!(control.detach(A), NONE);
         assert_eq!(control.apply_pending(), NONE);
         assert!(control.admits_input(B));
         assert_eq!(control.snapshot(), state(Attached, 1, true));
@@ -1367,7 +1348,7 @@ mod tests {
     #[test]
     fn the_final_explicit_detach_keeps_the_session_detached_at_its_last_size() {
         let mut control = ordinary(host());
-        let authority = granted(control.attach(A, size(100, 30)));
+        let authority = granted(control.attach(A, size(100, 30)).unwrap());
         control.apply_pending();
         restore(&mut control, A, authority);
         assert_eq!(
@@ -1376,7 +1357,6 @@ mod tests {
                 DiscardPendingInput { conn: A },
                 ClosePaste,
                 Release { conn: A },
-                AcceptDetach { conn: A }
             ]
         );
         assert_eq!(control.snapshot(), state(Detached, 0, false));
@@ -1390,7 +1370,7 @@ mod tests {
         let mut control = session(&[A]);
         control.detach(A);
         assert_eq!(
-            control.attach(B, host()),
+            control.attach(B, host()).unwrap(),
             [Admit { conn: B }, grant(B, (2, 2), host(), Attach)]
         );
         assert_eq!(control.apply_pending(), NONE);
@@ -1411,14 +1391,13 @@ mod tests {
     #[test]
     fn leaving_an_open_session_is_a_detach() {
         let mut control = session(&[A, B]);
-        assert_eq!(control.leave(A), [AcceptDetach { conn: A }]);
+        assert_eq!(control.leave(A), NONE);
         assert_eq!(
             control.leave(B),
             [
                 DiscardPendingInput { conn: B },
                 ClosePaste,
                 Release { conn: B },
-                AcceptDetach { conn: B }
             ]
         );
         assert_eq!(control.snapshot(), state(Detached, 0, false));
@@ -1438,11 +1417,8 @@ mod tests {
         );
         assert_eq!(control.controlling(C), Err(OperationalCode::NotAttached));
         assert_eq!(control.leave(C), NONE);
-        assert_eq!(
-            control.leave(B),
-            [Release { conn: B }, AcceptDetach { conn: B }]
-        );
-        assert_eq!(control.leave(A), [AcceptDetach { conn: A }]);
+        assert_eq!(control.leave(B), [Release { conn: B }]);
+        assert_eq!(control.leave(A), NONE);
         assert_eq!(control.leave(A), NONE);
         assert_eq!(control.controlling(A), Err(OperationalCode::NotAttached));
         assert_eq!(control.snapshot(), state(Terminating, 0, false));
@@ -1475,7 +1451,6 @@ mod tests {
                 DiscardPendingInput { conn: A },
                 ClosePaste,
                 Release { conn: A },
-                AcceptDetach { conn: A }
             ]
         );
         assert_eq!(control.snapshot(), state(Detached, 0, false));
@@ -1619,7 +1594,7 @@ mod tests {
     #[test]
     fn a_resize_before_readiness_replaces_the_restoration_within_the_period() {
         let mut control = ordinary(host());
-        let first = granted(control.attach(A, host()));
+        let first = granted(control.attach(A, host()).unwrap());
         control.apply_pending();
         control.restored(A, first);
         control.resize(A, size(100, 30)).unwrap();
@@ -1650,7 +1625,7 @@ mod tests {
     fn a_host_only_resize_before_readiness_replaces_the_restoration() {
         let mut control = ordinary(size(600, 300));
         assert_eq!(
-            control.attach(A, size(600, 300)),
+            control.attach(A, size(600, 300)).unwrap(),
             [Admit { conn: A }, grant(A, (1, 1), size(600, 300), Attach)]
         );
         assert_eq!(control.apply_pending(), NONE);
@@ -1668,7 +1643,7 @@ mod tests {
     #[test]
     fn a_resize_to_the_restored_size_before_readiness_keeps_the_restoration() {
         let mut control = ordinary(host());
-        let authority = granted(control.attach(A, host()));
+        let authority = granted(control.attach(A, host()).unwrap());
         control.apply_pending();
         control.resize(A, host()).unwrap();
         assert_eq!(control.apply_pending(), NONE);
@@ -1678,7 +1653,7 @@ mod tests {
     #[test]
     fn a_non_controller_resize_keeps_the_restoring_controllers_restoration() {
         let mut control = session(&[A]);
-        let authority = granted(control.attach(B, host()));
+        let authority = granted(control.attach(B, host()).unwrap());
         control.apply_pending();
         control.resize(A, size(100, 30)).unwrap();
         assert_eq!(control.apply_pending(), NONE);
@@ -1728,7 +1703,7 @@ mod tests {
     #[test]
     fn a_restoration_deadline_loses_the_restoring_controller() {
         let mut control = session(&[A]);
-        let authority = granted(control.attach(B, host()));
+        let authority = granted(control.attach(B, host()).unwrap());
         control.restored(B, authority);
         assert_eq!(
             control.restore_deadline(B, authority),
@@ -1740,7 +1715,7 @@ mod tests {
     #[test]
     fn a_restoration_deadline_of_the_only_attachment_begins_shutdown() {
         let mut control = ordinary(host());
-        let authority = granted(control.attach(A, host()));
+        let authority = granted(control.attach(A, host()).unwrap());
         assert_eq!(
             control.restore_deadline(A, authority),
             [Disconnect { conn: A }, BeginShutdown]
@@ -1753,7 +1728,7 @@ mod tests {
         assert_eq!(ordinary(host()).restore_deadline(A, authority(1, 1)), NONE);
         let mut control = session(&[A]);
         assert_eq!(control.restore_deadline(A, authority(1, 1)), NONE);
-        let current = granted(control.attach(B, host()));
+        let current = granted(control.attach(B, host()).unwrap());
         assert_eq!(control.restore_deadline(A, current), NONE);
         assert_eq!(control.restore_deadline(B, authority(1, 1)), NONE);
         assert_eq!(control.restore_deadline(B, authority(2, 1)), NONE);
@@ -1787,7 +1762,7 @@ mod tests {
         control.kill(K);
         assert_eq!(
             control.attach(C, host()),
-            [refuse(C, OperationalCode::SessionTerminating)]
+            Err(OperationalCode::SessionTerminating)
         );
         assert_eq!(control.detach(B), NONE);
         assert_eq!(control.detach(A), NONE);
@@ -1873,7 +1848,7 @@ mod tests {
         );
         assert_eq!(
             control.attach(C, host()),
-            [refuse(C, OperationalCode::SessionTerminating)]
+            Err(OperationalCode::SessionTerminating)
         );
         assert_eq!(control.snapshot(), state(Terminating, 2, true));
         assert_eq!(control.command_exited(exit(4)), NONE);
@@ -1930,7 +1905,7 @@ mod tests {
         assert_eq!(control.kill(K), [confirmed(K, ended(exit(5)))]);
         assert_eq!(
             control.attach(C, host()),
-            [refuse(C, OperationalCode::SessionTerminating)]
+            Err(OperationalCode::SessionTerminating)
         );
     }
 
@@ -1943,7 +1918,7 @@ mod tests {
         );
         assert_eq!(
             control.attach(C, host()),
-            [refuse(C, OperationalCode::SessionTerminating)]
+            Err(OperationalCode::SessionTerminating)
         );
         assert_eq!(control.kill(K), NONE);
         assert_eq!(control.command_exited(signal(1)), [Cleanup]);
@@ -2083,19 +2058,14 @@ mod tests {
 
     /// The effects of a ready controller's deliberate detach, before
     /// succession.
-    fn detached(conn: ConnectionId) -> [Effect; 4] {
-        [
-            DiscardPendingInput { conn },
-            ClosePaste,
-            Release { conn },
-            AcceptDetach { conn },
-        ]
+    fn detached(conn: ConnectionId) -> [Effect; 3] {
+        [DiscardPendingInput { conn }, ClosePaste, Release { conn }]
     }
 
     #[test]
     fn a_registration_acquires_only_by_its_own_acquire_at_the_session_geometry() {
         let mut control = ordinary(host());
-        let first = granted(control.attach(A, size(100, 30)));
+        let first = granted(control.attach(A, size(100, 30)).unwrap());
         control.apply_pending();
         restore(&mut control, A, first);
         control.detach(A);
@@ -2173,10 +2143,7 @@ mod tests {
             control.acquire(M),
             (Err(OperationalCode::SessionTerminating), Vec::new())
         );
-        assert_eq!(
-            control.leave(A),
-            [Release { conn: A }, AcceptDetach { conn: A }]
-        );
+        assert_eq!(control.leave(A), [Release { conn: A }]);
         assert_eq!(control.snapshot(), state(Terminating, 0, false));
     }
 
@@ -2254,11 +2221,11 @@ mod tests {
     fn the_last_counters_are_issued_then_an_attach_is_refused_without_effects() {
         let mut control = issued(LAST - 1, LAST - 1);
         assert_eq!(
-            control.attach(A, host()),
+            control.attach(A, host()).unwrap(),
             [Admit { conn: A }, grant(A, (LAST, LAST), host(), Attach)]
         );
-        let refused = refuse(B, OperationalCode::ResourceLimit);
-        assert_eq!(control.attach(B, host()), [refused]);
+        let refused = Err(OperationalCode::ResourceLimit);
+        assert_eq!(control.attach(B, host()), refused);
         assert_eq!(control.snapshot(), state(Attached, 1, true));
         assert_eq!(control.controlling(A), controlling(LAST, LAST, RESTORING));
         assert_eq!(control.controlling(B), Err(OperationalCode::NotAttached));
@@ -2270,8 +2237,8 @@ mod tests {
     #[test]
     fn an_exhausted_restoration_counter_refuses_a_grant_with_periods_left() {
         let mut control = issued(7, LAST);
-        let refused = refuse(A, OperationalCode::ResourceLimit);
-        assert_eq!(control.attach(A, host()), [refused]);
+        let refused = Err(OperationalCode::ResourceLimit);
+        assert_eq!(control.attach(A, host()), refused);
         assert_eq!(control.snapshot(), state(Starting, 0, false));
     }
 
@@ -2306,7 +2273,10 @@ mod tests {
     #[test]
     fn a_resize_that_needs_a_new_restoration_is_refused_once_none_remains() {
         let mut control = issued(5, LAST - 2);
-        assert_eq!(granted(control.attach(A, host())), authority(6, LAST - 1));
+        assert_eq!(
+            granted(control.attach(A, host()).unwrap()),
+            authority(6, LAST - 1)
+        );
         control.apply_pending();
         assert_eq!(control.resize(A, size(100, 30)), Ok(()));
         let replaced = Restore {
@@ -2343,8 +2313,11 @@ mod tests {
     #[test]
     fn once_exhausted_only_the_controllers_resize_is_refused() {
         let mut control = issued(LAST - 2, LAST - 2);
-        control.attach(A, host());
-        assert_eq!(granted(control.attach(B, host())), authority(LAST, LAST));
+        control.attach(A, host()).unwrap();
+        assert_eq!(
+            granted(control.attach(B, host()).unwrap()),
+            authority(LAST, LAST)
+        );
         control.apply_pending();
         assert_eq!(control.resize(A, size(100, 30)), Ok(()));
         assert_eq!(
@@ -2382,7 +2355,7 @@ mod tests {
     #[test]
     fn once_exhausted_a_departing_controller_hands_back_nothing_and_the_rest_fail() {
         let mut control = with_attachments(issued(LAST - 2, LAST - 2), &[A, B]);
-        let detached = [Release { conn: B }, AcceptDetach { conn: B }];
+        let detached = [Release { conn: B }];
         let failed = [Disconnect { conn: A }];
         let effects = [ended_admission(B).as_slice(), &detached, &failed].concat();
         assert_eq!(control.detach(B), effects);
@@ -2405,8 +2378,8 @@ mod tests {
     fn once_exhausted_no_registration_is_promoted_and_the_leave_policy_applies() {
         let mut control = with_attachments(issued(LAST - 1, LAST - 1), &[A]);
         control.register(M);
-        let detached = [Release { conn: A }, AcceptDetach { conn: A }];
-        assert_eq!(control.detach(A), [ended_admission(A), detached].concat());
+        let detached = [ended_admission(A).to_vec(), vec![Release { conn: A }]].concat();
+        assert_eq!(control.detach(A), detached);
         assert_eq!(control.snapshot(), state(Detached, 0, false));
         let refused = (Err(OperationalCode::ResourceLimit), Vec::new());
         assert_eq!(control.acquire(M), refused);

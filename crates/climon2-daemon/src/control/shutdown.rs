@@ -34,13 +34,12 @@ impl Members {
     /// An accepted departure: the presentation a member still has is released
     /// before the departure is confirmed.
     fn leave(&mut self, conn: ConnectionId) -> Vec<Effect> {
-        let effects = match (self.presenting == Some(conn), self.released.contains(&conn)) {
-            (true, _) => vec![Effect::Release { conn }, Effect::AcceptDetach { conn }],
-            (false, true) => vec![Effect::AcceptDetach { conn }],
-            (false, false) => Vec::new(),
-        };
+        let presenting = self.presenting == Some(conn);
         self.lost(conn);
-        effects
+        if presenting {
+            return vec![Effect::Release { conn }];
+        }
+        Vec::new()
     }
 
     /// The session ended: the presentation the controller still has is
