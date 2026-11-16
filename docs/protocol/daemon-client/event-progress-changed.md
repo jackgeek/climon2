@@ -48,9 +48,9 @@ Related: [Command final](event-command-final.md).
 The [session daemon](../../../GLOSSARY.md#sessions) reads
 [OSC](../TERMS.md#osc) 9;4 reports in the command's output before filtering,
 `ESC ] 9 ; 4 [; state [; percent]] ST`, and none reaches
-[host](../../../GLOSSARY.md#sessions) output. A state is one of the digits 0
-(none) to 4 and is none when missing; a percentage is decimal digits from 0
-to 100. A report with any other state or percentage, more parameters, or
+[host](../../../GLOSSARY.md#sessions) output. A state is decimal digits from 0
+(none) to 4, leading zeros allowed, and is none when missing; a percentage is
+decimal digits from 0 to 100. A report with any other state or percentage, more parameters, or
 `normal` (1) without a percentage changes nothing. Progress starts at none.
 None clears the indicator and the cached number; normal, error and paused
 with a percentage report it and cache it; indeterminate ignores a supplied

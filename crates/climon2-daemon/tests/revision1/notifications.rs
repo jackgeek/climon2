@@ -96,8 +96,9 @@ fn nothing_observed_displayed(attached: &Attached) {
 /// needs_attention before its record, and the others join that episode,
 /// which each record carries. OSC 9;4 progress never requests attention:
 /// it reports normal 50, indeterminate, then paused with the cached 50.
-/// Incomplete OSC 99 chunks, an OSC 99 query, other OSC 777 commands and
-/// other OSC 9 control operations report nothing. Every record reaches, in
+/// Incomplete OSC 99 chunks, an OSC 99 query, an OSC 99 notification of
+/// auxiliary data alone, other OSC 777 commands and other OSC 9 control
+/// operations report nothing. Every record reaches, in
 /// the same order, a passive monitor connection, an attachment revoked by
 /// takeover and a monitor controlling in the background, before its Ready;
 /// a connection that selected only `status-v1` receives the status alone.
@@ -122,6 +123,7 @@ fn notifications_and_progress_reach_every_subscribed_role_in_order() {
         r"\e]9;4;3\e\",
         r"\e]99;i=n:d=0;Tit\e\",
         r"\e]99;p=?;\e\",
+        r"\e]99;i=icon:p=icon;png\e\",
         r"\e]777;precmd\e\",
         r"\e]9;1;100\e\",
         r"\e]99;i=n:p=body;Body\e\",

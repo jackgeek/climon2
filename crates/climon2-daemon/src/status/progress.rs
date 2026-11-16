@@ -141,7 +141,8 @@ mod tests {
     }
 
     /// STA-06 (pure, OSC 9;4 syntax): states 0 to 4 with or without a
-    /// percentage from 0 to 100; no state at all is none; `normal` needs
+    /// percentage from 0 to 100, each in decimal digits that may have
+    /// leading zeros; no state at all is none; `normal` needs
     /// its percentage, while none and indeterminate accept one.
     #[test]
     fn valid_progress_reports() {
@@ -153,6 +154,7 @@ mod tests {
             ("1;0", Normal, Some(0)),
             ("1;100", Normal, Some(100)),
             ("1;050", Normal, Some(50)),
+            ("01;5", Normal, Some(5)),
             ("2", Error, None),
             ("2;", Error, None),
             ("2;7", Error, Some(7)),
