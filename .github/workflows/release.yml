@@ -12,6 +12,15 @@ jobs:
     uses: ./.github/workflows/check.yml
     with:
       mutate_all: true
+  # PERF-01 measurement of a release candidate's exact artifacts (#121). It
+  # never gates publishing: a missed target is a failed Measure case needing
+  # the owner's written disposition, and #122 blocks qualification until then.
+  measure:
+    needs: verify
+    if: contains(github.ref_name, '-rc.')
+    uses: ./.github/workflows/measure.yml
+    with:
+      candidate_built: true
   publish:
     needs: verify
     runs-on: macos-15
