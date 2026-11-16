@@ -866,7 +866,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn finish(&mut self) {
         self.finish_deadline
-            .get_or_insert_with(|| Instant::now() + PTY_DRAIN_CAP);
+            .get_or_insert_with(|| flush_deadline(Instant::now()));
     }
 
     fn admit(&mut self, id: u64) {
@@ -1008,6 +1008,12 @@ fn finished_at(deadline: Option<Instant>, now: Instant, drained: impl FnOnce() -
     deadline.is_some_and(|deadline| super::passed(deadline, now) || drained())
 }
 
+/// Final flushing after the session finishes at `finishing` is bounded to one
+/// further second.
+fn flush_deadline(finishing: Instant) -> Instant {
+    finishing + PTY_DRAIN_CAP
+}
+
 /// Only a session still awaiting its initial attachment keeps an early command exit for
 /// that attachment, and only until its initial deadline. A headless session is never
 /// `Starting`, so it never holds one.
@@ -1017,7 +1023,7 @@ fn holds_exit(lifecycle: Lifecycle, initial_deadline: Instant, now: Instant) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{finished_at, holds_exit};
+    use super::{finished_at, flush_deadline, holds_exit};
     use crate::control::Control;
     use climon2_core::{lifetime::Lifetime, protocol::TerminalSize};
     use std::time::{Duration, Instant};
@@ -1053,5 +1059,18 @@ mod tests {
         assert!(!finished_at(Some(later), now, || false), "draining");
         assert!(finished_at(Some(later), now, || true), "drained early");
         assert!(finished_at(Some(now), now, || false), "deadline reached");
+    }
+
+    /// Final flushing is bounded to one further second after the session
+    /// finishes: a connection that has not drained keeps it up until then,
+    /// and no longer.
+    #[test]
+    fn final_flushing_lasts_one_further_second() {
+        let finishing = Instant::now();
+        let deadline = Some(flush_deadline(finishing));
+        let almost = finishing + Duration::from_millis(999);
+        assert!(!finished_at(deadline, almost, || false), "still flushing");
+        let second = finishing + Duration::from_secs(1);
+        assert!(finished_at(deadline, second, || false), "bound reached");
     }
 }
