@@ -450,7 +450,7 @@ pub(crate) fn truncate(text: &str, cells: usize) -> Cow<'_, str> {
 /// The leading part of `text` that fits `cells` display cells, never
 /// splitting a wide character; zero-width characters stay with the
 /// character before them.
-fn clip(text: &str, cells: usize) -> &str {
+pub(crate) fn clip(text: &str, cells: usize) -> &str {
     let mut used = 0;
     for (index, character) in text.char_indices() {
         used += character.width().unwrap_or_default();
