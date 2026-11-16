@@ -87,6 +87,23 @@ fn general_log_name(role: Role, at: SystemTime, pid: u32) -> io::Result<String> 
     }
 }
 
+/// Where the monitor's library instance for session `id` logs: a new
+/// `library-<stamp>-<pid>.log` in that session's private log directory, which
+/// this creates, named apart from the monitor's own general log. The library
+/// creates the file itself.
+pub fn library_log(home: &Path, id: &SessionId) -> io::Result<PathBuf> {
+    let logs = home.join("logs");
+    crate::runtime::private_directory(&logs)?;
+    let directory = logs.join(id.as_str());
+    crate::runtime::private_directory(&directory)?;
+    let name = format!(
+        "library-{}-{}.log",
+        file_stamp(SystemTime::now())?,
+        std::process::id()
+    );
+    Ok(directory.join(name))
+}
+
 impl LogFile {
     fn open(directory: &Path, name: &str, role: Role) -> io::Result<Self> {
         crate::runtime::private_directory(directory)?;
