@@ -24,15 +24,15 @@ use StatusState::{Acknowledged, Idle, NeedsAttention, Running};
 const LAST_EPISODE: u64 = u64::MAX;
 
 /// A passive monitor connection that selected `status-v1` and `title-v1`.
-struct Watcher {
-    stream: UnixStream,
+pub(super) struct Watcher {
+    pub(super) stream: UnixStream,
     request: u64,
 }
 
 impl Watcher {
     /// Opens with request 1, and returns the status its Initial metadata
     /// reports, which must be available.
-    fn open(session: &Session) -> (Self, Status) {
+    pub(super) fn open(session: &Session) -> (Self, Status) {
         let mut stream = peer(session);
         let optional = ["status-v1", "title-v1"];
         request(&mut stream, &open(1, &[], &optional, Mode::Monitor));
@@ -55,13 +55,13 @@ impl Watcher {
     }
 
     /// The next record is the Status changed of `expected`.
-    fn changed(&mut self, expected: &Status) {
+    pub(super) fn changed(&mut self, expected: &Status) {
         assert_eq!(message(&mut self.stream), status_changed(expected.clone()));
     }
 
     /// Nothing is queued for this connection: a rejected request sent now
     /// is answered next.
-    fn quiet(&mut self) {
+    pub(super) fn quiet(&mut self) {
         self.request += 1;
         let authority = AuthorityIds {
             period: counter(1),
@@ -77,14 +77,14 @@ impl Watcher {
 
     /// The command ended with `result` at `ms`: its Command final, with
     /// the final status, is the next record, and the stream then ends.
-    fn ended(&mut self, result: &climon2_core::wire::CommandResult, ms: u64) {
+    pub(super) fn ended(&mut self, result: &climon2_core::wire::CommandResult, ms: u64) {
         assert_eq!(message(&mut self.stream), command_final_at(result, ms));
         assert_closed(&mut self.stream);
     }
 }
 
 /// The next record after any Display is the Status changed of `expected`.
-fn changed(attached: &mut Attached, expected: &Status) {
+pub(super) fn changed(attached: &mut Attached, expected: &Status) {
     assert_eq!(
         attached.next_after_display(),
         status_changed(expected.clone())
@@ -92,7 +92,11 @@ fn changed(attached: &mut Attached, expected: &Status) {
 }
 
 /// Every connection in `watchers` and the attachment receive `expected`.
-fn all_changed(attached: &mut Attached, watchers: &mut [&mut Watcher], expected: &Status) {
+pub(super) fn all_changed(
+    attached: &mut Attached,
+    watchers: &mut [&mut Watcher],
+    expected: &Status,
+) {
     changed(attached, expected);
     for watcher in watchers {
         watcher.changed(expected);
@@ -111,7 +115,7 @@ fn quiet(attached: &mut Attached) {
 }
 
 /// Neither the attachment nor any of `watchers` has anything queued.
-fn all_quiet(attached: &mut Attached, watchers: &mut [&mut Watcher]) {
+pub(super) fn all_quiet(attached: &mut Attached, watchers: &mut [&mut Watcher]) {
     quiet(attached);
     for watcher in watchers {
         watcher.quiet();
@@ -120,7 +124,7 @@ fn all_quiet(attached: &mut Attached, watchers: &mut [&mut Watcher]) {
 
 /// Input of `payload` is accepted, and its acceptance is preceded by the
 /// Status changed of `status` when it changes the effective status.
-fn typed(attached: &mut Attached, payload: &[u8], status: Option<&Status>) {
+pub(super) fn typed(attached: &mut Attached, payload: &[u8], status: Option<&Status>) {
     let request_id = attached.next();
     let input = Input {
         request_id,
@@ -149,12 +153,12 @@ fn viewing_as(attached: &mut Attached, authority: AuthorityIds, viewing: bool) -
     })
 }
 
-fn viewing(attached: &mut Attached, viewing: bool) -> Outcome {
+pub(super) fn viewing(attached: &mut Attached, viewing: bool) -> Outcome {
     let authority = attached.authority();
     viewing_as(attached, authority, viewing)
 }
 
-fn viewing_ok(changed: bool, viewing: bool) -> Outcome {
+pub(super) fn viewing_ok(changed: bool, viewing: bool) -> Outcome {
     Outcome::Ok(Success::Viewing { changed, viewing })
 }
 
@@ -179,7 +183,7 @@ fn acknowledgement(changed: bool) -> Outcome {
 
 /// Acknowledge changes the status to `status`, whose Status changed
 /// precedes the changed success.
-fn acknowledged(attached: &mut Attached, status: &Status) {
+pub(super) fn acknowledged(attached: &mut Attached, status: &Status) {
     let request_id = attached.next();
     let acknowledge = Acknowledge {
         request_id,
@@ -192,7 +196,7 @@ fn acknowledged(attached: &mut Attached, status: &Status) {
 
 /// Prints `text` as a line and waits until the controller displayed it, so
 /// the daemon has read it before the clock moves.
-fn shown(session: &Session, attached: &mut Attached, text: &str) {
+pub(super) fn shown(session: &Session, attached: &mut Attached, text: &str) {
     crate::script(session, &format!("text {text}"));
     attached.until_displayed(text.as_bytes(), 1);
 }
@@ -200,7 +204,7 @@ fn shown(session: &Session, attached: &mut Attached, text: &str) {
 /// Prints `bytes` (`\e` for ESC) followed by a colour change that alters no
 /// character, `ESC [ 38;5;N m`, and waits until the controller displayed
 /// that marker.
-fn printed(session: &Session, attached: &mut Attached, bytes: &str, marker: u8) {
+pub(super) fn printed(session: &Session, attached: &mut Attached, bytes: &str, marker: u8) {
     crate::script(session, &format!("print {bytes}\\e[38;5;{marker}m"));
     attached.until_displayed(format!("\x1b[38;5;{marker}m").as_bytes(), 1);
 }
@@ -208,7 +212,7 @@ fn printed(session: &Session, attached: &mut Attached, bytes: &str, marker: u8) 
 /// A clocked `script` session with a ready interactive attachment and a
 /// watching monitor, both selecting `status-v1`; both start idle at the
 /// daemon's initialization time.
-fn watched(session: &Session) -> (Attached, Watcher) {
+pub(super) fn watched(session: &Session) -> (Attached, Watcher) {
     let attached = ready_attachment(session, &["status-v1"]);
     let (watcher, initial) = Watcher::open(session);
     assert_eq!(initial, status(Idle, 0, None));
@@ -217,7 +221,7 @@ fn watched(session: &Session) -> (Attached, Watcher) {
 
 /// Ends a `script` session at clock `ms` through its command's exit zero:
 /// completed, reported by Command final, never as Status changed.
-fn completed(
+pub(super) fn completed(
     mut session: Session,
     attached: &mut Attached,
     watchers: &mut [&mut Watcher],
@@ -517,7 +521,7 @@ fn only_changed_characters_or_title_are_activity_at_controlled_deadlines() {
 }
 
 /// A ready controller's Resize, accepted, then its actual geometry.
-fn resized(attached: &mut Attached, cols: u32, rows: u32) {
+pub(super) fn resized(attached: &mut Attached, cols: u32, rows: u32) {
     assert_eq!(
         attached.resize(cols, rows),
         Outcome::Ok(Success::ResizeAccepted {})

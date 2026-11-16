@@ -7,6 +7,15 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
 
 - `runtime::canonical_home(&Path) -> io::Result<PathBuf>` creates and
   canonicalizes the resolved absolute home **once per invocation**.
+- `home` is where every executable finds its homes (#155), so the CLI, the
+  client executable and the monitor share one rule for each:
+  `home::named()` is the climon2 home the environment names (`CLIMON2_HOME`,
+  else `.climon2` in `HOME`; absolute; nothing touched), `home::canonical()`
+  that home created and canonicalized through `canonical_home`, and
+  `home::executable_layout(VersionBinary)` the install layout around the
+  running executable's real path. Its outer error is the system failing to
+  name the executable; its inner `ContractError`, a path outside any version
+  folder, so a caller can word that refusal itself.
 - `RuntimeDirectory::prepare(&canonical_home)` creates/checks the core-derived
   `/tmp/climon2-<euid>-<hash8>` directory. `path()` and
   `socket_path(&SessionId)` expose its paths; the socket limit is 103 bytes.
@@ -153,6 +162,14 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
 
 `tests/runtime.rs`: `issue18_private_directory_refuses_symlink_file_and_permissive_mode_without_repair`,
 `issue18_home_is_created_then_canonicalized_and_socket_is_private_and_authenticated`.
+
+`tests/home.rs` (#155) runs each case in a child of the test binary, with
+the environment or path under test:
+`issue155_the_environment_names_the_climon2_home`,
+`issue155_the_canonical_climon2_home_is_created_and_resolved`,
+`issue155_an_executable_finds_its_layout_from_its_own_path` (a hard link of
+the test binary in a version folder), and
+`issue155_an_executable_outside_a_version_folder_has_no_layout`.
 
 `tests/process.rs`: `issue26_identity_uses_start_time_and_refuses_zero_or_pid_reuse`,
 `issue19_waitpid_preserves_exit_and_real_signal_status`,

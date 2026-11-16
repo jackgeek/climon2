@@ -69,6 +69,10 @@ session-wide episode domain cannot advance: the daemon reports
 require, by rejecting every later [Acknowledge](request-acknowledge.md#implemented-behavior)
 with that code, and logs it. Accepted Input holding only focus reports
 (`ESC [ I`, `ESC [ O`), which a host terminal sends on its own, is not user
-input and clears nothing. Output-driven detection (OSC 7501, OSC 133) arrives with
-[#92](https://github.com/jackgeek/climon2/issues/92), and notification
-signals with [#98](https://github.com/jackgeek/climon2/issues/98).
+input and clears nothing. Root [OSC](../TERMS.md#osc) 7501 program-status reports and OSC 133
+shell markers in the command's output also change activity and attention
+([#92](https://github.com/jackgeek/climon2/issues/92)), as the
+[status mechanics](../../session-status.md#explicit-program-status-and-fallback)
+specify: each change they cause is reported here the same way, in the order
+the program wrote them. Notification signals arrive with
+[#98](https://github.com/jackgeek/climon2/issues/98).
