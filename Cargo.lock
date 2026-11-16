@@ -226,6 +226,7 @@ dependencies = [
  "climon2-install",
  "climon2-second-release",
  "climon2-test-term",
+ "libc",
  "nix 0.31.3",
  "portable-pty",
  "serde_json",
