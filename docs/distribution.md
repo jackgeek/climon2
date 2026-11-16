@@ -73,17 +73,16 @@ Local qualification measures mutation load before mutation, even when no
 changed source needs mutation. The ticket gate (`cargo xtask check`) runs one
 round and mutates only added or changed functions; the full gate
 (`cargo xtask check --full`, run before a feature branch merges to `main`)
-runs five rounds and mutates whole changed files. After warming the
-mutation build and timing one unloaded run, each round runs 8 unchanged
-full-workspace test suites concurrently. As in mutation, each suite uses a
-private warm-build copy and its own session. Zero failures are required, and no
-suite may outlive the mutator's timeout (10 times the unloaded run): the
-mutator counts either as a killed mutant, which could hide a survivor. The
-timeout catches stalled full-workspace suites, the stage that certifies a
-survivor; a surviving mutant's staged run is longer, and its earlier stages
-(library tests, then its crate's integration tests) each have their own stage
-timeout of 10 times one unloaded run, at least 2 s, measured just before
-mutation. Passing therefore cannot rule out every mutant timeout. No test is
+runs five rounds and mutates whole changed files. First, unloaded in the warm
+mutation build, each target's earlier mutant stages (library tests, then its
+crate's integration tests) are timed once; each stage timeout is 10 times its
+run, at least 2 s. After timing one unloaded full-workspace run, each round
+runs 8 suites concurrently, each in a private warm-build copy and its own
+session. Each suite rehearses a mutant's run on the unchanged workspace: the
+earlier stages in order under their stage timeouts, then the full workspace,
+all within the mutator's timeout (10 times the unloaded full-workspace run).
+Zero failures are required, and no stage may outlive its timeout: the mutator
+counts either as a killed mutant, which could hide a survivor. No test is
 retried. A failing
 round stops qualification and names each failing test and test target with its
 failed-suite count. Every run's log remains under `target/flake-logs/` in a

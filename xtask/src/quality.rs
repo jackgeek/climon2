@@ -25,7 +25,8 @@ const TICKET_MUTATION_LOAD_ROUNDS: &str = "1";
 /// A mutant's test run times out, counting as killed, after this multiple of the baseline run;
 /// each earlier test stage likewise after this multiple of its own baseline run.
 const MUTATION_TIMEOUT_FACTOR: &str = "10";
-/// Each earlier test stage's timeout, measured before mutation and read by its workers.
+/// Each earlier test stage's timeout, measured before the load rounds that rehearse it and
+/// read by the mutation workers.
 const STAGE_TIMEOUTS: &str = "target/mutation-stage-timeouts.json";
 /// Owner-set maximum CRAP score for every shipped function (#21, amended to 5).
 pub(crate) const CRAP_THRESHOLD: &str = "5";
@@ -624,15 +625,25 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
         .args(["--use-existing-coverage", "--threshold", CRAP_THRESHOLD])
         .args(&scored))?;
     let workers = scope.workers()?;
+    // Unloaded and warm: before the load rounds that rehearse them and any mutation worker.
+    let stage_timeouts = root.join(STAGE_TIMEOUTS);
+    let paths: Vec<_> = targets.iter().map(|target| &target.path).collect();
+    run(own_targets(&mut python_script(root, "test-mutation.py"))
+        .arg(MUTATION_TIMEOUT_FACTOR)
+        .arg(&stage_timeouts)
+        .args(paths))?;
     if let Some(rounds) = scope.load_rounds() {
-        run(python_script(root, "check-mutation-load.py").args([
-            "--workers",
-            &workers,
-            "--rounds",
-            rounds,
-            "--timeout-factor",
-            MUTATION_TIMEOUT_FACTOR,
-        ]))?;
+        run(python_script(root, "check-mutation-load.py")
+            .args([
+                "--workers",
+                &workers,
+                "--rounds",
+                rounds,
+                "--timeout-factor",
+                MUTATION_TIMEOUT_FACTOR,
+                "--stage-timeouts",
+            ])
+            .arg(&stage_timeouts))?;
     }
     if targets.is_empty() {
         eprintln!("No changed shipped Rust source to mutate.");
@@ -644,23 +655,13 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
         return Ok(());
     }
     verify_worker_baseline(root, &sources)?;
-    mutate(root, &workers, run)
+    mutate(root, &workers, run, &stage_timeouts)
 }
 
 /// One mutator run for every target, so the full-workspace baseline runs once.
-fn mutate(root: &Path, workers: &str, run_plan: RunPlan) -> io::Result<()> {
+/// Its workers apply `stage_timeouts`, measured for at least every target.
+fn mutate(root: &Path, workers: &str, run_plan: RunPlan, stage_timeouts: &Path) -> io::Result<()> {
     clear_mutation_history(root)?;
-    let paths: Vec<_> = run_plan
-        .targets
-        .into_iter()
-        .map(|target| target.path)
-        .collect();
-    // Unloaded and warm, before any mutation worker starts.
-    let stage_timeouts = root.join(STAGE_TIMEOUTS);
-    run(own_targets(&mut python_script(root, "test-mutation.py"))
-        .arg(MUTATION_TIMEOUT_FACTOR)
-        .arg(&stage_timeouts)
-        .args(&paths))?;
     let mut mutation = mutation_command(root);
     mutation
         .env("CLIMON2_MUTATION_STAGE_TIMEOUTS", stage_timeouts)
@@ -673,7 +674,7 @@ fn mutate(root: &Path, workers: &str, run_plan: RunPlan) -> io::Result<()> {
     if let Some(lines) = &run_plan.lines {
         mutation.args(["--lines", &joined(lines)]);
     }
-    run(mutation.args(paths))
+    run(mutation.args(run_plan.targets.into_iter().map(|target| target.path)))
 }
 
 /// Removes the mutator's per-file history, so no outcome of an earlier run is carried forward and
@@ -1483,12 +1484,12 @@ esac
         }
     }
 
-    /// Gate speed-up (#73, 2026-11-16): just before mutating, with no load running, each
-    /// target's earlier test stages are timed with the mutator's timeout factor, and the mutator's
-    /// workers get those stage timeouts.
+    /// Gate speed-up (#73, 2026-11-16): each target's earlier test stages are timed once with
+    /// the mutator's timeout factor, after coverage and before anything loads the host; the load
+    /// rounds rehearse those stage timeouts and the mutator's workers apply them.
     #[cfg(unix)]
     #[test]
-    fn mutation_runs_with_stage_timeouts_measured_unloaded_just_before_it() {
+    fn stage_timeouts_are_measured_once_before_load_and_used_by_load_and_mutation() {
         for scope in ["ticket", "full", "host", "native"] {
             let run = run_gate(Gate {
                 scope,
@@ -1498,12 +1499,11 @@ esac
             });
             assert!(run.success, "{scope}: {}", run.output);
             let stages = run.started("stages").unwrap();
-            assert!(
-                run.started("baseline").unwrap() < stages,
-                "{:?}",
-                run.events
-            );
-            assert_eq!(stages + 1, run.started("mutation-stage-timeouts").unwrap());
+            let measurements = run
+                .events
+                .iter()
+                .filter(|event| event.starts_with("stages "));
+            assert_eq!(measurements.count(), 1, "{:?}", run.events);
             // `stages TIMEOUT_FACTOR STAGE_TIMEOUTS SOURCE...`
             let measured: Vec<_> = run.events[stages].split(' ').skip(1).collect();
             assert_eq!(measured[0], run.option("mutation", "--timeout-factor"));
@@ -1512,23 +1512,37 @@ esac
                 file.ends_with("target/mutation-stage-timeouts.json"),
                 "{file}"
             );
+            if let Some(load) = run.started("load") {
+                assert!(stages < load, "{:?}", run.events);
+                assert_eq!(run.option("load", "--stage-timeouts"), file);
+            } else {
+                assert!(matches!(scope, "host" | "native"), "{scope}");
+            }
+            assert!(
+                stages < run.started("baseline").unwrap(),
+                "{:?}",
+                run.events
+            );
+            let mutation = run.started("mutation").unwrap();
             assert_eq!(
-                run.events[stages + 1],
+                run.events[mutation - 1],
                 format!("mutation-stage-timeouts {file}")
             );
-            let mutation = &run.events[run.started("mutation").unwrap()];
-            let mutated: Vec<_> = mutation
+            let mutated: Vec<_> = run.events[mutation]
                 .split(' ')
                 .skip_while(|word| !word.starts_with("crates/"))
                 .collect();
-            assert_eq!(measured[2..], mutated[..], "{mutation}");
+            assert_eq!(measured[2..], mutated[..], "{:?}", run.events);
         }
+        // Without a target, load still rehearses the full workspace with no earlier stage.
         let run = run_gate(Gate {
             scope: "ticket",
             ..Gate::default()
         });
         assert!(run.success, "{}", run.output);
-        assert_eq!(run.started("stages"), None, "{:?}", run.events);
+        let stages = run.started("stages").unwrap();
+        assert_eq!(run.events[stages].split(' ').count(), 3, "{:?}", run.events);
+        assert!(stages < run.started("load").unwrap(), "{:?}", run.events);
     }
 
     /// #21 isolation amendment: a reported kill cannot stand in for the selected binary.
