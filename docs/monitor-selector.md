@@ -36,9 +36,11 @@ known to be final is acquired, and a Starting row or an Unavailable row
 without a connected client is selected without acquiring
 ([#110](https://github.com/jackgeek/climon2/issues/110)); disconnected and
 final rows wait for [#116](https://github.com/jackgeek/climon2/issues/116). Nothing else this
-document specifies is implemented: no search or separator, initial
-selection ([#266](https://github.com/jackgeek/climon2/issues/266)), key-hint
-footer, Delete, toasts or bell.
+document specifies is implemented: no search or separator, key-hint
+footer, Delete, toasts or bell. Initial selection
+([#266](https://github.com/jackgeek/climon2/issues/266)) selects and
+acquires a row at startup without closing an open selector or moving its
+highlight.
 The [throwaway prototype](https://github.com/jackgeek/climon2/pull/72) is a
 primary source, not monitor implementation or real daemon/client acceptance.
 Use the [terminal contract](protocol/terminal-integration.md) and

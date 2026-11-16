@@ -12,10 +12,11 @@ the [daemon's contract tests](../crates/climon2-daemon/README.md#daemon-wire-rev
 notification and progress signals remain unimplemented. The monitor shows
 each row's effective status or final outcome and orders rows as
 [below](#reporting-ordering-and-initial-selection)
-([#107](https://github.com/jackgeek/climon2/issues/107)), with the evidence
-in the [monitor's scenario table](../crates/climon2-monitor/README.md#specification-mapping);
-its initial selection remains unimplemented
-([#266](https://github.com/jackgeek/climon2/issues/266)). It supersedes the earlier two-state activity heuristic,
+([#107](https://github.com/jackgeek/climon2/issues/107)), and makes the
+initial selection after a bounded collection
+([#266](https://github.com/jackgeek/climon2/issues/266)), with the evidence
+in the [monitor's scenario table](../crates/climon2-monitor/README.md#specification-mapping).
+It supersedes the earlier two-state activity heuristic,
 title-plugin requirement, creation-time monitor ordering, and
 [attention](../GLOSSARY.md#status-and-attention) rules in
 [startup/discovery](https://github.com/jackgeek/climon2/issues/59).

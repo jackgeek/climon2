@@ -13,9 +13,9 @@ control and painting of [#108](https://github.com/jackgeek/climon2/issues/108),
 the input router of [#109](https://github.com/jackgeek/climon2/issues/109) and
 the switching, revocation and take-control key of
 [#110](https://github.com/jackgeek/climon2/issues/110),
-whose Monitor-layer cases are mapped in the monitor README; initial
-selection, moved from #107 to
-[#266](https://github.com/jackgeek/climon2/issues/266), is not implemented.
+and the initial selection of
+[#266](https://github.com/jackgeek/climon2/issues/266), moved there from
+#107, whose Monitor-layer cases are mapped in the monitor README.
 The daemon wire is partly implemented. Packaged
 [client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
 description ([#75](https://github.com/jackgeek/climon2/issues/75)), their
