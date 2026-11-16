@@ -45,6 +45,7 @@ flowchart TB
         fixtures["climon2-fixtures"]
         xtask["xtask"]
         second["climon2-second-release"]
+        measure["climon2-measure"]
     end
 
     cli -.->|"dev"| test_term
@@ -75,6 +76,9 @@ flowchart TB
     second --> core
     second --> daemon
     second --> platform
+    measure --> core
+    measure --> platform
+    measure --> test_term
 
 ```
 
@@ -135,6 +139,13 @@ behind a thin main with that version compiled in. `climon2-e2e` and `xtask`
 consume the package as dev-dependencies only so that Cargo builds its
 `cdylib`; no code links it. The developer accepted this package on
 2026-11-15 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
+
+**Current (#121):** `climon2-measure` is the test-only PERF-01 measurement
+harness that `cargo xtask measure` runs (by Cargo, not as a dependency, so
+`xtask` gains no edge). It consumes `core` for session metadata,
+`platform`'s shared loader to read the candidate library's embedded
+requirements, and `climon2-test-term`'s emulated host terminals; it measures
+an installed candidate archive's executables and never links them.
 
 **Current (#106):** the monitor loads version-matched client libraries
 in-process through the shared loader, with one owner thread per

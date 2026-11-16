@@ -415,6 +415,14 @@ _Avoid_: Sanity test, canary
 A check that must pass before a version can be released.
 _Avoid_: Quality gate, CI check
 
+**Measurement job**:
+The PERF-01 run of the test-only `climon2-measure` harness on a release candidate's exact archives, on hosted macOS arm64, macOS x86_64 and Ubuntu runners; a missed target is recorded as a failed Measure case needing the owner's written disposition, never as a failed build.
+_Avoid_: Benchmark, perf test
+
+**Standalone baseline**:
+One `climon2 attach` per session, each in its own terminal, doing the work a Measure case gives the monitor; the comparison every PERF-01 case reports.
+_Avoid_: Control group, fewer-process savings
+
 **Ticket gate**:
 `cargo xtask check`: the local qualification for one change, which mutates only the functions it adds or changes and measures mutation load for one round.
 _Avoid_: Fast gate, quick check
