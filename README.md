@@ -459,9 +459,10 @@ the warm build (copy-on-write where supported). As in mutation, each suite has
 its own session. A suite fails the measurement if any test fails or if it
 outlives the mutator's timeout (10 times the unloaded run, at least 2 s),
 because the mutator would count either outcome as a killed mutant and hide a
-survivor. A surviving mutant's run also stages library and crate tests within
-that timeout, so this catches stalled suites rather than every possible mutant
-timeout. A failure under load is a test defect; nothing is retried. The
+survivor. These suites are the full-workspace stage that certifies a survivor;
+earlier stages have their own timeouts (below), which the load rounds do not
+time separately, so this catches stalled suites rather than every possible
+mutant timeout. A failure under load is a test defect; nothing is retried. The
 measurement stops after the failing round and names each failing test and test
 target with the number of suites it failed in. It then lists their logs. Logs
 from every run remain in a unique directory under `target/flake-logs/`. Worker
@@ -470,7 +471,17 @@ one left.
 Each mutant first runs workspace library tests, then its crate's integration
 tests. A failing stage stops immediately; every mutant that passes both still
 runs the full workspace before it can count as a survivor. The unchanged
-baseline always runs the full workspace. Workers receive private copies of
+baseline always runs the full workspace. Just before mutating, with no load
+running, the gate times each earlier stage of every target once in the warm
+build and writes their **stage timeouts** (10 times each unloaded run, at
+least 2 s) to `target/mutation-stage-timeouts.json`. A mutant builds each
+earlier stage, then runs its tests under that stage's timeout; a stage that
+outlives it kills the run's whole process group, so the mutant counts as
+killed, as with the mutator's timeout. A test that hangs a mutant's library
+stage therefore frees its worker in seconds instead of after 10 full-workspace
+runs. The full workspace has no stage timeout: the mutator's timeout for the
+whole command (10 times the unchanged full-workspace run) still bounds it.
+Workers receive private copies of
 its warm build artifacts (copy-on-write where supported), rather than
 rebuilding dependencies from scratch for every changed file.
 `CLIMON2_MUTATION_BASE` selects the changed-source comparison (default `HEAD`).

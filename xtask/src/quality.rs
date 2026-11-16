@@ -22,8 +22,11 @@ const MUTATION_WORKERS: &str = "8";
 const MUTATION_LOAD_ROUNDS: &str = "5";
 /// Rounds of the ticket gate's mutation-load measurement (`cargo xtask check`).
 const TICKET_MUTATION_LOAD_ROUNDS: &str = "1";
-/// A mutant's test run times out, counting as killed, after this multiple of the baseline run.
+/// A mutant's test run times out, counting as killed, after this multiple of the baseline run;
+/// each earlier test stage likewise after this multiple of its own baseline run.
 const MUTATION_TIMEOUT_FACTOR: &str = "10";
+/// Each earlier test stage's timeout, measured before mutation and read by its workers.
+const STAGE_TIMEOUTS: &str = "target/mutation-stage-timeouts.json";
 /// Owner-set maximum CRAP score for every shipped function (#21, amended to 5).
 pub(crate) const CRAP_THRESHOLD: &str = "5";
 const SHIPPED: &[&str] = &[
@@ -309,13 +312,17 @@ fn tool(root: &Path, name: &str) -> Command {
     command
 }
 
-fn mutation_command(root: &Path) -> Command {
-    let mut command = tool(root, "mutator");
-    // Each overlay owns this relative target; inherited build paths must not re-share it.
+/// Each mutation build owns its relative target; inherited build paths must not re-share it.
+fn own_targets(command: &mut Command) -> &mut Command {
     command
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("CARGO_BUILD_TARGET_DIR")
         .env_remove("CARGO_BUILD_BUILD_DIR")
+}
+
+fn mutation_command(root: &Path) -> Command {
+    let mut command = tool(root, "mutator");
+    own_targets(&mut command)
         .env(
             "CLIMON2_MUTATION_PYTHON",
             tool_root(root).join("venv/bin/python"),
@@ -643,17 +650,34 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
 /// One mutator run for every target, so the full-workspace baseline runs once.
 fn mutate(root: &Path, workers: &str, run_plan: RunPlan) -> io::Result<()> {
     clear_mutation_history(root)?;
+    let paths: Vec<_> = run_plan
+        .targets
+        .into_iter()
+        .map(|target| target.path)
+        .collect();
+    // Unloaded and warm, before any mutation worker starts.
+    let stage_timeouts = root.join(STAGE_TIMEOUTS);
+    run(own_targets(&mut python_script(root, "test-mutation.py"))
+        .args([
+            "--timeout-factor",
+            MUTATION_TIMEOUT_FACTOR,
+            "--stage-timeouts",
+        ])
+        .arg(&stage_timeouts)
+        .args(&paths))?;
     let mut mutation = mutation_command(root);
-    mutation.args([
-        "--use-existing-coverage",
-        "--mutate-all",
-        "--max-workers",
-        workers,
-    ]);
+    mutation
+        .env("CLIMON2_MUTATION_STAGE_TIMEOUTS", stage_timeouts)
+        .args([
+            "--use-existing-coverage",
+            "--mutate-all",
+            "--max-workers",
+            workers,
+        ]);
     if let Some(lines) = &run_plan.lines {
         mutation.args(["--lines", &joined(lines)]);
     }
-    run(mutation.args(run_plan.targets.into_iter().map(|target| target.path)))
+    run(mutation.args(paths))
 }
 
 /// Removes the mutator's per-file history, so no outcome of an earlier run is carried forward and
@@ -685,11 +709,7 @@ fn python_script(root: &Path, script: &str) -> Command {
 }
 
 fn verify_worker_baseline(root: &Path, sources: &[PathBuf]) -> io::Result<()> {
-    run(python_script(root, "check-mutation-workspace.py")
-        .args(sources)
-        .env_remove("CARGO_TARGET_DIR")
-        .env_remove("CARGO_BUILD_TARGET_DIR")
-        .env_remove("CARGO_BUILD_BUILD_DIR"))
+    run(own_targets(&mut python_script(root, "check-mutation-workspace.py")).args(sources))
 }
 
 pub fn probe(root: &Path) -> io::Result<()> {
@@ -1224,8 +1244,13 @@ case "$*" in
         ;;
     *'-m mutator'*)
         if [ -e .metrics/mutate ]; then echo stale-history >> "$events"; fi
+        printf 'mutation-stage-timeouts %s\n' "$CLIMON2_MUTATION_STAGE_TIMEOUTS" >> "$events"
         shift 2
         printf 'mutation %s\n' "$*" >> "$events"
+        ;;
+    *test-mutation.py*)
+        shift 3
+        printf 'stages %s\n' "$*" >> "$events"
         ;;
 esac
 "#,
@@ -1460,6 +1485,58 @@ esac
                 run.events
             );
         }
+    }
+
+    /// Gate speed-up (#73, 2026-11-16): just before mutating, with no load running, each
+    /// target's earlier test stages are timed with the mutator's timeout factor, and the mutator's
+    /// workers get those stage timeouts.
+    #[cfg(unix)]
+    #[test]
+    fn mutation_runs_with_stage_timeouts_measured_unloaded_just_before_it() {
+        for scope in ["ticket", "full", "host", "native"] {
+            let run = run_gate(Gate {
+                scope,
+                changed: true,
+                added: scope == "ticket",
+                ..Gate::default()
+            });
+            assert!(run.success, "{scope}: {}", run.output);
+            let stages = run.started("stages").unwrap();
+            assert!(
+                run.started("baseline").unwrap() < stages,
+                "{:?}",
+                run.events
+            );
+            assert_eq!(stages + 1, run.started("mutation-stage-timeouts").unwrap());
+            assert_eq!(
+                run.option("stages", "--timeout-factor"),
+                run.option("mutation", "--timeout-factor")
+            );
+            let file = run.option("stages", "--stage-timeouts");
+            assert!(
+                file.ends_with("target/mutation-stage-timeouts.json"),
+                "{file}"
+            );
+            assert_eq!(
+                run.events[stages + 1],
+                format!("mutation-stage-timeouts {file}")
+            );
+            let targets = &run.events[stages];
+            let mutation = &run.events[run.started("mutation").unwrap()];
+            let mutated = mutation
+                .split(' ')
+                .skip_while(|word| !word.starts_with("crates/"));
+            assert!(
+                targets.ends_with(&format!(" {}", mutated.collect::<Vec<_>>().join(" "))),
+                "{targets} / {mutation}"
+            );
+        }
+        let run = run_gate(Gate {
+            scope: "ticket",
+            ..Gate::default()
+        });
+        assert!(run.success, "{}", run.output);
+        assert_eq!(run.started("stages"), None, "{:?}", run.events);
     }
 
     /// #21 isolation amendment: a reported kill cannot stand in for the selected binary.

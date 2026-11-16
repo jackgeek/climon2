@@ -4,7 +4,9 @@ The pinned mutator counts a mutant as killed when its test run fails, or outlive
 `timeout factor x the unloaded baseline run` (never less than two seconds), and it
 starts every test run in its own session (mutator `engine._apply_selected` and
 `runner.CommandRunner.run`). Each suite here runs the same way, so any suite that
-fails or outlives that timeout could have hidden a surviving mutant.
+fails or outlives that timeout could have hidden a surviving mutant. A suite here is
+the full-workspace stage of `test-mutation.py`, the only stage that certifies a
+survivor and the only one with no stage timeout of its own.
 """
 
 import argparse

@@ -79,8 +79,12 @@ full-workspace test suites concurrently. As in mutation, each suite uses a
 private warm-build copy and its own session. Zero failures are required, and no
 suite may outlive the mutator's timeout (10 times the unloaded run): the
 mutator counts either as a killed mutant, which could hide a survivor. The
-timeout catches stalled suites; a surviving mutant's staged run is longer, so
-passing cannot rule out every mutant timeout. No test is retried. A failing
+timeout catches stalled full-workspace suites, the stage that certifies a
+survivor; a surviving mutant's staged run is longer, and its earlier stages
+(library tests, then its crate's integration tests) each have their own stage
+timeout of 10 times one unloaded run, at least 2 s, measured just before
+mutation. Passing therefore cannot rule out every mutant timeout. No test is
+retried. A failing
 round stops qualification and names each failing test and test target with its
 failed-suite count. Every run's log remains under `target/flake-logs/` in a
 unique directory. `cargo xtask mutate`, including macOS native-only CI, does
