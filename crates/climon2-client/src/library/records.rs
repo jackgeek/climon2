@@ -7,7 +7,10 @@ use super::{
     failure::{Fault, bytes},
     families::Selection,
 };
-use climon2_core::{native, wire};
+use climon2_core::{
+    native,
+    wire::{self, AuthorityIds, Counter, Geometry, GrantReason, RevocationReason},
+};
 use std::mem;
 
 /// Bytes every record is charged before its variable data: a delivered
@@ -25,16 +28,19 @@ const TOKEN: u64 = mem::size_of::<native::Bytes>() as u64;
 const NO_RECORD: native::Record = unsafe { mem::zeroed() };
 const NO_ERROR: native::Error = unsafe { mem::zeroed() };
 const NO_COMMAND: native::OptionalCommand = unsafe { mem::zeroed() };
+// SAFETY: every field is an integer, for which zero is valid, and zero is
+// "unavailable".
+const NO_STATUS: native::AvailableStatus = unsafe { mem::zeroed() };
 
 /// One record, as the library holds it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Event {
     /// One accepted request's outcome.
     Response(Response),
-    /// The atomic Initial metadata after a successful Open.
+    /// What the session reports about itself.
     Metadata(Metadata),
-    /// A Title changed, by value; never unavailable.
-    Title(Title),
+    /// A control, restoration or display record (#94).
+    Presentation(Presentation),
     /// An explicit error the stream reports, such as a connection failure.
     Diagnostic(Fault),
 }
@@ -44,7 +50,47 @@ pub(super) struct Response {
     /// The caller's public request ID.
     pub(super) id: u64,
     pub(super) outcome: Outcome,
-    pub(super) answer: Answer,
+    /// Its active result, if it carries one.
+    pub(super) answer: Option<Answer>,
+}
+
+/// Session metadata records.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Metadata {
+    /// The atomic Initial metadata after a successful Open.
+    Initial(Initial),
+    /// A Title changed, by value; never unavailable.
+    Title(Title),
+    /// The command's final result, after an Initial metadata that did not
+    /// know it (#94): status stays unavailable.
+    Final(Command),
+}
+
+/// What the daemon presents to the role it controls, under immutable
+/// period and restoration identities.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Presentation {
+    /// Control granted: a new period and its restoration, at the session's
+    /// effective geometry.
+    Granted(AuthorityIds, Geometry, GrantReason),
+    /// Control revoked under the authority it ends.
+    Revoked(AuthorityIds, RevocationReason),
+    /// What the held period shows.
+    Screen(Screen),
+}
+
+/// The records of a held period: its restorations, terminal bytes and
+/// geometry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Screen {
+    /// A restoration's beginning, at the geometry its bytes use.
+    Begin(AuthorityIds, Geometry),
+    /// Nonempty exact terminal bytes, of a restoration or live.
+    Display(AuthorityIds, Box<[u8]>),
+    /// Every Display of the restoration was sent.
+    Complete(AuthorityIds),
+    /// The session's effective geometry in a period.
+    Geometry(Counter, Geometry),
 }
 
 /// A response's outcome: success, or a non-success with the error that
@@ -93,7 +139,7 @@ impl Response {
         Self {
             id,
             outcome,
-            answer: Answer::None,
+            answer: None,
         }
     }
 }
@@ -101,7 +147,6 @@ impl Response {
 /// A response's active result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Answer {
-    None,
     Opened {
         connection: [u8; 16],
         selected: Selection,
@@ -109,8 +154,71 @@ pub(super) enum Answer {
     Left {
         detached: bool,
     },
+    /// What the response knows of the command's end.
+    Ending(Ending),
+    /// A command's result (#94).
+    Done(Done),
+}
+
+/// What a response knows of the command's end.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Ending {
     /// An initial role rejection's known command result.
     KnownFinal(Command),
+    /// What a Kill learned of termination: the command result, if known,
+    /// and the daemon's cleanup, `CM1_CLEANUP_*` (#96).
+    Termination {
+        command: Option<Command>,
+        cleanup: u32,
+    },
+}
+
+impl Ending {
+    /// Whether it makes the command's final result known.
+    pub(super) fn concludes(&self) -> bool {
+        self.command().is_some()
+    }
+
+    fn command(&self) -> Option<&Command> {
+        match self {
+            Self::KnownFinal(command) => Some(command),
+            Self::Termination { command, .. } => command.as_ref(),
+        }
+    }
+
+    /// Writes its result tag and active result into `response`.
+    fn native(&self, response: &mut native::Response) {
+        match self {
+            Self::KnownFinal(command) => {
+                response.result_tag = native::KNOWN_FINAL;
+                response.result.known_final = command.native();
+            }
+            Self::Termination { command, cleanup } => {
+                response.result_tag = native::TERMINATION;
+                response.result.termination = native::Termination {
+                    command_result: optional(command.as_ref()),
+                    cleanup: *cleanup,
+                    reserved: 0,
+                };
+            }
+        }
+    }
+}
+
+/// What a command did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Done {
+    /// Input accepted, all of its bytes.
+    Input(u32),
+    Resized,
+    /// Acquire's or Ready's authority result, under its native result tag.
+    Authority(u32, wire::AuthorityResult),
+    /// Focus: whether it changed, the state, and the bytes forwarded.
+    Focus {
+        changed: bool,
+        focused: bool,
+        bytes: u32,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -123,7 +231,7 @@ pub(super) enum Title {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Metadata {
+pub(super) struct Initial {
     pub(super) title: Title,
     pub(super) command: Option<Command>,
 }
@@ -198,6 +306,21 @@ impl Title {
 }
 
 impl Event {
+    /// The record as records of at most `chunk` bytes each (#94): a
+    /// Display's bytes in order, under its authority; any other record
+    /// whole.
+    pub(super) fn split(self, chunk: usize) -> Vec<Self> {
+        match self {
+            Self::Presentation(Presentation::Screen(Screen::Display(ids, bytes))) => bytes
+                .chunks(chunk)
+                .map(|part| {
+                    Self::Presentation(Presentation::Screen(Screen::Display(ids, Box::from(part))))
+                })
+                .collect(),
+            event => vec![event],
+        }
+    }
+
     /// What the record costs the event allowance: the record and every
     /// buffer it owns.
     pub(super) fn charge(&self) -> u64 {
@@ -208,11 +331,48 @@ impl Event {
     pub(super) fn payload(&self) -> u64 {
         match self {
             Self::Response(response) => response.bytes(),
-            Self::Metadata(metadata) => {
-                metadata.title.bytes() + metadata.command.as_ref().map_or(0, Command::bytes)
+            Self::Metadata(metadata) => metadata.bytes(),
+            Self::Presentation(presentation) => presentation.bytes(),
+            Self::Diagnostic(fault) => fault.bytes(),
+        }
+    }
+}
+
+impl Metadata {
+    fn bytes(&self) -> u64 {
+        match self {
+            Self::Initial(initial) => {
+                initial.title.bytes() + initial.command.as_ref().map_or(0, Command::bytes)
             }
             Self::Title(title) => title.bytes(),
-            Self::Diagnostic(fault) => fault.bytes(),
+            Self::Final(command) => command.bytes(),
+        }
+    }
+
+    /// Its tag and data, pointing into its own text.
+    fn native(&self) -> (u32, native::RecordData) {
+        match self {
+            Self::Initial(initial) => (
+                native::INITIAL_METADATA,
+                native::RecordData {
+                    metadata: initial.native(),
+                },
+            ),
+            Self::Title(title) => (
+                native::TITLE,
+                native::RecordData {
+                    title: title.native(),
+                },
+            ),
+            Self::Final(command) => (
+                native::FINAL,
+                native::RecordData {
+                    r#final: native::Final {
+                        command_result: command.native(),
+                        status: NO_STATUS,
+                    },
+                },
+            ),
         }
     }
 }
@@ -220,8 +380,8 @@ impl Event {
 impl Response {
     fn bytes(&self) -> u64 {
         let answer = match &self.answer {
-            Answer::Opened { selected, .. } => TOKEN * selected.families().count() as u64,
-            Answer::KnownFinal(command) => command.bytes(),
+            Some(Answer::Opened { selected, .. }) => TOKEN * selected.families().count() as u64,
+            Some(Answer::Ending(ending)) => ending.command().into_iter().map(Command::bytes).sum(),
             _ => 0,
         };
         answer + self.outcome.fault().map_or(0, Fault::bytes)
@@ -281,22 +441,134 @@ fn record(
             record.data.response = response.native(tokens);
         }
         Event::Metadata(metadata) => {
-            record.tag = native::INITIAL_METADATA;
-            record.data.metadata = metadata.native();
-        }
-        Event::Title(title) => {
-            record.tag = native::TITLE;
-            record.data.title = title.native();
+            (record.tag, record.data) = metadata.native();
         }
         Event::Diagnostic(fault) => {
             record.tag = native::DIAGNOSTIC;
             record.data.diagnostic = fault.error();
         }
+        Event::Presentation(presentation) => {
+            (record.tag, record.data) = presentation.native();
+        }
     }
     record
 }
 
-impl Metadata {
+fn geometry(geometry: Geometry) -> native::Geometry {
+    native::Geometry {
+        cols: geometry.cols.get(),
+        rows: geometry.rows.get(),
+    }
+}
+
+fn barrier(ids: AuthorityIds) -> native::Barrier {
+    native::Barrier {
+        period: ids.period.get(),
+        restoration_id: ids.restoration_id.get(),
+    }
+}
+
+fn granted(reason: GrantReason) -> u32 {
+    match reason {
+        GrantReason::Attach => native::ATTACH,
+        GrantReason::Acquire => native::TAKE_CONTROL,
+        GrantReason::HandBack => native::HAND_BACK,
+        GrantReason::Successor => native::SUCCESSOR,
+    }
+}
+
+fn revoked(reason: RevocationReason) -> u32 {
+    match reason {
+        RevocationReason::Takeover => native::TAKEOVER,
+        RevocationReason::SessionEnding => native::SESSION_ENDING,
+    }
+}
+
+impl Presentation {
+    /// The bytes it owns: a Display's.
+    fn bytes(&self) -> u64 {
+        match self {
+            Self::Screen(Screen::Display(_, bytes)) => bytes.len() as u64,
+            _ => 0,
+        }
+    }
+
+    /// Its tag and data, pointing into its own bytes.
+    fn native(&self) -> (u32, native::RecordData) {
+        match self {
+            Self::Granted(ids, size, reason) => (
+                native::GRANTED,
+                native::RecordData {
+                    granted: native::Granted {
+                        period: ids.period.get(),
+                        restoration_id: ids.restoration_id.get(),
+                        geometry: geometry(*size),
+                        reason: granted(*reason),
+                        reserved: 0,
+                    },
+                },
+            ),
+            Self::Revoked(ids, reason) => (
+                native::REVOKED,
+                native::RecordData {
+                    revoked: native::Revoked {
+                        period: ids.period.get(),
+                        restoration_id: ids.restoration_id.get(),
+                        reason: revoked(*reason),
+                        reserved: 0,
+                    },
+                },
+            ),
+            Self::Screen(screen) => screen.native(),
+        }
+    }
+}
+
+impl Screen {
+    fn native(&self) -> (u32, native::RecordData) {
+        match self {
+            Self::Begin(ids, size) => (
+                native::RESTORATION_BEGIN,
+                native::RecordData {
+                    restoration: native::Restoration {
+                        period: ids.period.get(),
+                        restoration_id: ids.restoration_id.get(),
+                        geometry: geometry(*size),
+                    },
+                },
+            ),
+            Self::Display(ids, bytes) => (
+                native::DISPLAY,
+                native::RecordData {
+                    display: native::Display {
+                        authority: barrier(*ids),
+                        bytes: native::Bytes {
+                            data: bytes.as_ptr(),
+                            length: bytes.len() as u64,
+                        },
+                    },
+                },
+            ),
+            Self::Complete(ids) => (
+                native::RESTORATION_COMPLETE,
+                native::RecordData {
+                    barrier: barrier(*ids),
+                },
+            ),
+            Self::Geometry(period, size) => (
+                native::GEOMETRY,
+                native::RecordData {
+                    geometry: native::GeometryEvent {
+                        period: period.get(),
+                        geometry: geometry(*size),
+                    },
+                },
+            ),
+        }
+    }
+}
+
+impl Initial {
     /// Status and progress stay explicitly unavailable: `status-v1` and
     /// `progress-v1` are never selected yet.
     fn native(&self) -> native::Metadata {
@@ -304,16 +576,18 @@ impl Metadata {
         // (null) is valid, and zero is "unavailable".
         let mut metadata: native::Metadata = unsafe { mem::zeroed() };
         metadata.title = self.title.native();
-        metadata.command_result =
-            self.command
-                .as_ref()
-                .map_or(NO_COMMAND, |command| native::OptionalCommand {
-                    present: u32::from(true),
-                    reserved: 0,
-                    value: command.native(),
-                });
+        metadata.command_result = optional(self.command.as_ref());
         metadata
     }
+}
+
+/// An optional command result's native view: absent is all zero.
+fn optional(command: Option<&Command>) -> native::OptionalCommand {
+    command.map_or(NO_COMMAND, |command| native::OptionalCommand {
+        present: u32::from(true),
+        reserved: 0,
+        value: command.native(),
+    })
 }
 
 impl Response {
@@ -324,25 +598,71 @@ impl Response {
         response.request_id = self.id;
         response.outcome = self.outcome.code();
         response.error = self.outcome.fault().map_or(NO_ERROR, Fault::error);
-        match &self.answer {
-            Answer::None => {}
-            Answer::Opened {
+        if let Some(answer) = &self.answer {
+            answer.native(&mut response, tokens);
+        }
+        response
+    }
+}
+
+impl Answer {
+    /// Writes its result tag and active result into `response`.
+    fn native(&self, response: &mut native::Response, tokens: &mut Vec<Box<[native::Bytes]>>) {
+        match self {
+            Self::Opened {
                 connection,
                 selected,
             } => {
                 response.result_tag = native::OPENED;
                 response.result.opened = opened(*connection, *selected, tokens);
             }
-            Answer::Left { detached } => {
+            Self::Left { detached } => {
                 response.result_tag = native::LEFT;
                 response.result.attachment_detached = u8::from(*detached);
             }
-            Answer::KnownFinal(command) => {
-                response.result_tag = native::KNOWN_FINAL;
-                response.result.known_final = command.native();
+            Self::Ending(ending) => ending.native(response),
+            Self::Done(done) => done.native(response),
+        }
+    }
+}
+
+impl Done {
+    /// Writes its result tag and active result into `response`, whose
+    /// other bytes stay zero.
+    fn native(self, response: &mut native::Response) {
+        match self {
+            Self::Input(accepted_bytes) => {
+                response.result_tag = native::INPUT_ACCEPTED;
+                response.result.accepted_bytes = accepted_bytes;
+            }
+            Self::Resized => response.result_tag = native::RESIZE_ACCEPTED,
+            Self::Authority(tag, result) => {
+                response.result_tag = tag;
+                response.result.authority = authority(&result);
+            }
+            Self::Focus {
+                changed,
+                focused,
+                bytes,
+            } => {
+                response.result_tag = native::FOCUS_RESULT;
+                response.result.flag = native::FlagResult {
+                    changed: u8::from(changed),
+                    value: u8::from(focused),
+                    reserved: [0; 2],
+                    accepted_bytes: bytes,
+                };
             }
         }
-        response
+    }
+}
+
+fn authority(result: &wire::AuthorityResult) -> native::AuthorityResult {
+    native::AuthorityResult {
+        changed: u8::from(result.changed),
+        reserved: [0; 7],
+        period: result.authority.period.get(),
+        restoration_id: result.authority.restoration_id.get(),
     }
 }
 
