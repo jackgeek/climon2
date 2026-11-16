@@ -167,6 +167,13 @@ impl<T> Default for Gestures<T> {
 }
 
 impl<T: PartialEq + Clone> Gestures<T> {
+    /// Whether no gesture is under way, so the next report is hit-tested
+    /// afresh: a toast that appeared meanwhile never takes a gesture begun
+    /// before it (#115).
+    pub(crate) fn idle(&self) -> bool {
+        self.open.is_none()
+    }
+
     /// Where `mouse` goes, given the target taking application input now
     /// and its shown area: the application cell to report it at, or none
     /// when the monitor keeps it. A press begins a gesture, owned by the
@@ -441,16 +448,21 @@ mod tests {
     /// found. The application's drag that strays onto the top row or
     /// outside its area is reported at the nearest cell; a gesture the
     /// monitor owns stays its own over the application; the release ends
-    /// each.
+    /// each, and a gesture is under way from its press to its release only
+    /// (#115: what a toast hit-tests).
     #[test]
     fn each_gesture_keeps_the_target_its_press_found() {
         let target = Some((&1, AREA));
         let mut gestures = Gestures::default();
+        assert!(gestures.idle());
         assert_eq!(gestures.route(press(3, 3), target), cell(3, 2));
+        assert!(!gestures.idle());
         assert_eq!(gestures.route(drag(30, 1), target), cell(10, 1));
         assert_eq!(gestures.route(drag(0, 40), target), cell(1, 5));
         assert_eq!(gestures.route(release(4, 1), target), cell(4, 1));
+        assert!(gestures.idle());
         assert_eq!(gestures.route(drag(3, 3), target), cell(3, 2));
+        assert!(gestures.idle());
         assert_eq!(gestures.route(press(3, 1), target), None);
         assert_eq!(gestures.route(drag(3, 3), target), None);
         assert_eq!(gestures.route(mouse(64, 3, 3, false), target), None);

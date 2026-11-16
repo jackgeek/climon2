@@ -6,6 +6,7 @@ use crate::{
     paint::{ANSI, Frame, HostCursor, Underlines, paint},
     registry::{View, truncate},
     selector::Selector,
+    toast::{LANE, Toasts},
 };
 use climon2_core::{SessionId, keys::ControlKey, protocol::TerminalSize};
 use climon2_vt::view::{self as vt, Content, CursorShape, Modes, MouseReporting, Underline};
@@ -19,6 +20,7 @@ use ratatui::{
 use std::{
     io::{self, Write},
     num::NonZeroU16,
+    time::Instant,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -113,6 +115,9 @@ pub(crate) struct Scene<'a> {
     pub(crate) late: bool,
     /// Prefix+j's notice that no session needs attention, while it shows.
     pub(crate) notice: Option<&'a str>,
+    /// The toasts, over everything else, as they look at `now`.
+    pub(crate) toasts: &'a Toasts,
+    pub(crate) now: Instant,
     pub(crate) session: Option<Session<'a>>,
 }
 
@@ -199,6 +204,16 @@ impl Screen {
         Rect::new(0, top, self.size.cols, self.size.rows - top)
     }
 
+    /// Where the selector is drawn: the overlay rows above the toasts'
+    /// lane (owner decision on #115).
+    pub(crate) fn menu(&self) -> Rect {
+        let overlay = self.overlay();
+        Rect {
+            height: overlay.height.saturating_sub(LANE),
+            ..overlay
+        }
+    }
+
     /// Paints `scene` unless its frame is the one painted.
     pub(crate) fn show(&mut self, scene: &Scene<'_>) -> io::Result<()> {
         let frame = self.frame(scene);
@@ -226,7 +241,8 @@ impl Screen {
 
     /// The permanent top row, and below it the selected session's canvas or
     /// the body, under the selector and then the key introduction while they
-    /// are open. Too small a host shows only why, in the top row.
+    /// are open, and any toast over them all. Too small a host shows only
+    /// why, in the top row.
     fn frame(&mut self, scene: &Scene<'_>) -> Frame {
         let area = Rect::new(0, 0, self.size.cols, self.size.rows);
         let mut buffer = Buffer::empty(area);
@@ -253,8 +269,9 @@ impl Screen {
                 None
             }
         };
-        let search = scene.selector.render(scene.rows, below, &mut buffer);
+        let search = scene.selector.render(scene.rows, self.menu(), &mut buffer);
         scene.introduction.render(below, &mut buffer);
+        scene.toasts.render(scene.now, below, &mut buffer);
         let modes = self.followed(scene);
         Frame {
             buffer,
