@@ -8,8 +8,8 @@
 mod support;
 
 use climon2_test_term::{
-    AnsiColor, Color, CursorShape, InputTerminal, Modes, Mouse, MouseButton, Terminal, Underline,
-    Width, bin_path,
+    AnsiColor, Color, CursorShape, HostSignal, InputTerminal, Modes, Mouse, MouseButton, Terminal,
+    Underline, Width, bin_path,
 };
 use nix::{
     sys::signal::{Signal, kill},
@@ -69,19 +69,53 @@ fn outer_sized(package: &Package, command: &str, cols: u16) -> Terminal {
 fn assert_released(package: &Package, terminal: &mut Terminal, status: i32) {
     support::assert_released(package, terminal, status);
     assert_title_untouched(terminal);
+    assert_host_reports(terminal, true);
     assert!(terminal.screen().contains("BEFORE-MONITOR"));
 }
 
-/// The outer shell titled the host once; nothing else ever sent an OSC.
+/// The outer shell titled the host once; nothing but the monitor's own
+/// attention reports ([`assert_host_reports`]) ever sent another OSC.
 fn assert_title_untouched(terminal: &Terminal) {
     assert_eq!(terminal.title().as_deref(), Some(TITLE));
     let received = terminal.received();
-    assert_eq!(
-        received
-            .windows(2)
-            .filter(|window| window == b"\x1b]")
-            .count(),
-        1
+    let others = received
+        .windows(OSC_7501.len())
+        .enumerate()
+        .filter(|(_, window)| window.starts_with(b"\x1b]") && *window != OSC_7501)
+        .count();
+    assert_eq!(others, 1);
+    assert_host_reports(terminal, false);
+}
+
+/// The start of an OSC 7501 report.
+const OSC_7501: &[u8] = b"\x1b]7501;";
+/// The monitor's root OSC 7501 reports (docs/protocol/monitor-host).
+const BLOCKED: &[u8] = b"\x1b]7501;state=blocked:kind=question:app=climon2-monitor\x1b\\";
+const WORKING: &[u8] = b"\x1b]7501;state=working:app=climon2-monitor\x1b\\";
+const CLEAR: &[u8] = b"\x1b]7501;state=clear\x1b\\";
+
+/// NOT-04 (Monitor, every scenario that checks its host): the host heard
+/// only the monitor's own root OSC 7501 reports, never a session's report or
+/// bell: its initial state and then changes only, with no heartbeat, and
+/// once `released`, the root clear last. A monitor that never started told
+/// the host nothing.
+fn assert_host_reports(terminal: &Terminal, released: bool) {
+    let signals = terminal.host_signals();
+    let clear = HostSignal::Osc7501(CLEAR.to_vec());
+    let reports = signals.strip_suffix(std::slice::from_ref(&clear));
+    assert!(
+        !released || reports.is_some() || signals.is_empty(),
+        "{signals:?}"
+    );
+    let reports = reports.unwrap_or(&signals);
+    let states = [WORKING, BLOCKED].map(|report| HostSignal::Osc7501(report.to_vec()));
+    assert!(
+        reports.iter().all(|report| states.contains(report)),
+        "{signals:?}"
+    );
+    assert!(
+        reports.windows(2).all(|pair| pair[0] != pair[1]),
+        "{signals:?}"
     );
 }
 
@@ -568,7 +602,8 @@ fn expected_screen(rows: u16, cols: u16, prefix: &str) -> String {
 }
 
 /// The key introduction's dialog as the selector document specifies it: the
-/// configured `prefix` followed by x, s and ?, the selector's keys (#113), the
+/// configured `prefix` followed by x, s, j (owner decision on #114) and ?,
+/// the selector's keys (#113), the
 /// Don't show again checkbox,
 /// any `problem` with the saved choice, and the Continue action that Enter
 /// takes, in a box titled Keys with one column of space inside its border.
@@ -576,6 +611,7 @@ fn key_introduction(prefix: &str, checked: bool, problem: Option<&str>) -> Vec<S
     let mut lines = vec![
         format!("{prefix} then x  Exit the monitor"),
         format!("{prefix} then s  Open the session list"),
+        format!("{prefix} then j  Jump to the session that needs attention"),
         format!("{prefix} then ?  Show this dialog"),
         String::new(),
         "In the session list:".to_owned(),
@@ -646,7 +682,16 @@ fn opened_on(terminal: &mut Terminal, expected: &str) {
 /// Whether `output` ends where a monitor frame ends: its closing SGR 0, or
 /// the cursor shown after it. Neither occurs inside a frame, whose cells
 /// set SGR as `0;...` and whose cursor is hidden while they are written.
+/// The monitor's attention reports (#114) follow the frame they were
+/// learned with, so they may end the output after it.
 fn frame_ended(output: &[u8]) -> bool {
+    let mut output = output;
+    while let Some(rest) = [WORKING, BLOCKED]
+        .iter()
+        .find_map(|report| output.strip_suffix(*report))
+    {
+        output = rest;
+    }
     output.ends_with(b"\x1b[0m") || output.ends_with(b"\x1b[?25h")
 }
 
@@ -4325,8 +4370,9 @@ fn a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key() {
 /// after an empty start, keeps control in the background once Beta is
 /// selected, and its row turns Needs attention when it reports `idle`;
 /// Beta's row, its canvas covered by the open selector, turns Needs
-/// attention when Beta reports `idle`, as does its top row once the
-/// selector closes. After another client's attach takes Alpha over and
+/// attention when Beta reports `idle`; cancelling the selector back to Beta
+/// acknowledges it once ready (SEL-03, STA-08; #114), so its top row turns
+/// Acknowledged. After another client's attach takes Alpha over and
 /// acknowledges its attention, its revoked row turns Acknowledged, then
 /// Needs attention again when Alpha reports `done`.
 #[test]
@@ -4350,7 +4396,7 @@ fn status_keeps_updating_for_background_covered_and_revoked_rows() {
     listed_with(&terminal, "Needs attention", "Beta");
     terminal.send(ESCAPE).unwrap();
     selector_closed(&terminal);
-    ready_at(&mut terminal, "Beta", "Needs attention", "29 120");
+    ready_at(&mut terminal, "Beta", "Acknowledged", "29 120");
 
     // Ready on its own host once Alpha, resized for it, says so live; its
     // attach acknowledged Alpha's pending attention (#102).
@@ -6295,6 +6341,117 @@ fn resizes_under_continuous_output_show_only_coherent_frames() {
     terminal.send("\x1dx").unwrap();
     support::assert_released(&package, &mut terminal, 0);
     assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+const ATTENTION: &str = "Needs attention";
+const ACKNOWLEDGED: &str = "Acknowledged";
+/// What prefix+j says when no session qualifies (owner decision on #114).
+const NO_ATTENTION: &str = "No sessions need attention";
+
+/// Waits until a whole frame shows `text` anywhere.
+fn frame_contains(terminal: &Terminal, text: &str) {
+    whole_frame_shows(terminal, text, |screen| screen.contains(text));
+}
+
+/// Waits until a whole frame no longer shows `text` anywhere.
+fn frame_lacks(terminal: &Terminal, text: &str) {
+    whole_frame_shows(terminal, text, |screen| !screen.contains(text));
+}
+
+/// Opens the selector, waits until it lists `label` with `status`, and
+/// cancels it again with Escape.
+fn glance(terminal: &mut Terminal, status: &str, label: &str) {
+    terminal.send("\x1ds").unwrap();
+    listed_with(terminal, status, label);
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(terminal);
+}
+
+/// NOT-03 (Monitor and Fault), INP-01 (Monitor, prefix+j from the empty,
+/// selector, help, placeholder and live screens) and STA-08 (Monitor, jump
+/// case), against real daemons: prefix+j picks the connected session that
+/// needs attention with the newest change at the keypress, closes any
+/// overlay, takes control only when the monitor does not hold it, and
+/// acknowledges it once ready. From the empty screen nothing qualifies, so
+/// the body says `No sessions need attention` until it disappears (3 s,
+/// owner decision on #114). Alpha is the initial selection; Beta, then
+/// Gamma report `idle`, and from the open selector prefix+j jumps to Gamma,
+/// the newer, acquiring it, then from Gamma's live screen to Beta, as Gamma
+/// is acknowledged; from the key introduction to Alpha once it reports
+/// `done`, controlled in the background, so never acquired again. Another
+/// client's attach takes Alpha over, and from Alpha's placeholder prefix+j
+/// jumps to Gamma once Gamma reports `done`; then, once Alpha reports
+/// `blocked` while the other client shows it, prefix+j takes Alpha back.
+/// Beta's daemon killed after Beta reported `done` leaves it Disconnected,
+/// which never qualifies, so prefix+j keeps Alpha selected and says so in
+/// the top row's error slot. Each jump's acknowledgement shows only once
+/// its session is ready, never refused.
+#[test]
+fn prefix_j_jumps_to_the_newest_connected_attention_and_acknowledges_it_once_ready() {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    terminal.send("\x1dj").unwrap();
+    shows(
+        &mut terminal,
+        &empty_monitor(ROWS, COLS, &[NO_ATTENTION, "Press Ctrl+] then x to exit."]),
+    );
+    frame_contains(&terminal, EMPTY);
+
+    let alpha = headless(&package, &watched("Alpha"), "finish");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    let beta = headless(&package, &watched("Beta"), "finish");
+    headless(&package, &watched("Gamma"), "finish");
+    terminal.send("\x1ds").unwrap();
+    report_state(&package, "Beta", "idle");
+    listed_with(&terminal, ATTENTION, "Beta");
+    report_state(&package, "Gamma", "idle");
+    listed_with(&terminal, ATTENTION, "Gamma");
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Gamma", ACKNOWLEDGED, "29 120");
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Beta", ACKNOWLEDGED, "29 120");
+
+    report_state(&package, "Alpha", "done");
+    glance(&mut terminal, ATTENTION, "Alpha");
+    terminal.send("\x1d?").unwrap();
+    shows_row(&mut terminal, "Exit the monitor");
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Alpha", ACKNOWLEDGED, "29 120");
+
+    let mut other = attach(&package, &alpha);
+    shows(&mut terminal, &placeholder_screen("Alpha", ACKNOWLEDGED));
+    report_state(&package, "Gamma", "done");
+    glance(&mut terminal, ATTENTION, "Gamma");
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Gamma", ACKNOWLEDGED, "29 120");
+    report_state(&package, "Alpha", "blocked");
+    glance(&mut terminal, ATTENTION, "Alpha");
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Alpha", ACKNOWLEDGED, "29 120");
+    other.wait_for_text(VIEWED_ELSEWHERE, TIMEOUT).unwrap();
+
+    report_state(&package, "Beta", "done");
+    glance(&mut terminal, ATTENTION, "Beta");
+    kill(Pid::from_raw(daemon_of(&package, &beta)), Signal::SIGKILL).unwrap();
+    glance(&mut terminal, "Disconnected", "Beta");
+    terminal.send("\x1dj").unwrap();
+    let noticed = session_top_row(
+        usize::from(COLS),
+        &format!("Alpha | {NO_ATTENTION}"),
+        &[ACKNOWLEDGED, CONTROLLING, SESSIONS_HINT],
+    );
+    top_row_is(&mut terminal, &noticed);
+    top_row_is(&mut terminal, &controlled("Alpha", ACKNOWLEDGED));
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    detach(other);
+    let detached =
+        serde_json::json!({"lifecycle": "detached", "attachments": 0, "controlled": false});
+    listed_as(&package, "Alpha", &detached);
     finish_sessions(&package, "finish");
     package.assert_clean();
 }

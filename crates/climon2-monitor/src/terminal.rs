@@ -35,6 +35,12 @@ pub(crate) enum Request {
     /// The application's desired keyboard focus (`focus-v1`), under ready
     /// authority: non-user, never input.
     Focus(Authority, bool),
+    /// Whether the monitor views the session (`status-v1`; #114): true
+    /// only under ready authority.
+    Viewing(Authority, bool),
+    /// Acknowledges pending attention, after an explicit action, once the
+    /// session is viewed (`status-v1`; #114).
+    Acknowledge(Authority),
 }
 
 /// Part of a paste, as the application receives it.
@@ -89,6 +95,9 @@ pub(crate) enum Presentation {
     Answered(Request, Result<(), String>),
     /// The client opened with application focus (`focus-v1`) selected.
     Focusable,
+    /// The client opened with `status-v1` selected: viewing and
+    /// acknowledgement can be reported (#114).
+    Viewable,
     /// The client's connection ended.
     Ended,
 }
@@ -198,6 +207,11 @@ pub(crate) struct Terminal {
     /// The application focus last submitted, with the authority it was
     /// submitted under.
     focused: Option<(Authority, bool)>,
+    /// The client opened with `status-v1`, until it ends.
+    viewable: bool,
+    /// The viewing last submitted, with the authority it was submitted
+    /// under.
+    viewed: Option<(Authority, bool)>,
     /// A bracketed paste cut short under this authority: its application is
     /// owed the end marker.
     cut: Option<Authority>,
@@ -214,6 +228,8 @@ impl Terminal {
             error: None,
             focusable: false,
             focused: None,
+            viewable: false,
+            viewed: None,
             cut: None,
         }
     }
@@ -245,6 +261,7 @@ impl Terminal {
         match presentation {
             Presentation::Answered(request, answer) => self.answered(request, answer),
             Presentation::Focusable => self.focusable = true,
+            Presentation::Viewable => self.viewable = true,
             other => self.control_changed(other),
         }
     }
@@ -349,15 +366,22 @@ impl Terminal {
             | Request::Resize(authority, _)
             | Request::Input(authority, _)
             | Request::Paste(authority, _)
-            | Request::Focus(authority, _) => {
+            | Request::Focus(authority, _)
+            | Request::Viewing(authority, _)
+            | Request::Acknowledge(authority) => {
                 self.held.is_some_and(|held| held.authority == authority)
             }
         }
     }
 
+    /// A superseded Resize is sent again under the current authority, and a
+    /// superseded viewing report again if the current viewing differs from
+    /// the daemon's.
     fn superseded(&mut self, request: &Request) {
-        if let (Request::Resize(..), Some(held)) = (request, self.held.as_mut()) {
-            held.resized = None;
+        match (request, self.held.as_mut()) {
+            (Request::Resize(..), Some(held)) => held.resized = None,
+            (Request::Viewing(..), _) => self.viewed = None,
+            _ => {}
         }
     }
 
@@ -386,7 +410,9 @@ impl Terminal {
         } else {
             self.held = None;
             self.acquiring = false;
-            self.focusable &= *presentation != Presentation::Ended;
+            let open = *presentation != Presentation::Ended;
+            self.focusable &= open;
+            self.viewable &= open;
         }
         if let Some(model) = self.model.as_mut() {
             model.discard();
@@ -451,6 +477,25 @@ impl Terminal {
         (ready && self.focused != Some(wanted)).then(|| {
             self.focused = Some(wanted);
             Request::Focus(held.authority, desired)
+        })
+    }
+
+    /// The Set viewing to submit so the daemon's viewing for this control
+    /// period is `desired` (spec #73, "Viewing"): only with `status-v1`,
+    /// under the current authority, on each change. A control period starts
+    /// not viewing, as the daemon's does; a new restoration in it keeps the
+    /// value reported.
+    pub(crate) fn viewing(&mut self, desired: bool) -> Option<Request> {
+        let held = self
+            .held
+            .filter(|_| self.viewable && self.finished.is_none())?;
+        let reported = self
+            .viewed
+            .filter(|(authority, _)| authority.same_period(held.authority))
+            .is_some_and(|(_, viewing)| viewing);
+        (reported != desired).then(|| {
+            self.viewed = Some((held.authority, desired));
+            Request::Viewing(held.authority, desired)
         })
     }
 
@@ -1097,6 +1142,65 @@ mod tests {
             Presentation::Answered(Request::Ready(held), Ok(())),
         );
         assert_eq!(unsupported.focus(true), None);
+    }
+
+    /// FOC-01 and STA-08 (pure supplement, #114): with `status-v1`, Set
+    /// viewing is submitted under the current authority on each change,
+    /// never twice for the same value. A control period starts not viewing,
+    /// so nothing is sent for false until true was; a new restoration keeps
+    /// the value reported, a refusal under a superseded authority sends the
+    /// current value again, and a refusal under the current one is shown.
+    /// Nothing is submitted without `status-v1` (which ends with the
+    /// client), without control or once the command ended. An Acknowledge's
+    /// refusal shows as any other.
+    #[test]
+    fn viewing_is_reported_on_each_change_within_a_control_period() {
+        let mut parser = Parser::new();
+        let held = authority(2, 3);
+        let mut terminal = restored(b"x");
+        let ready = |held| Presentation::Answered(Request::Ready(held), Ok(()));
+        terminal.present(&mut parser, ready(held));
+        assert_eq!(terminal.viewing(true), None);
+        terminal.present(&mut parser, Presentation::Viewable);
+        assert_eq!(terminal.viewing(false), None);
+        assert_eq!(terminal.viewing(true), Some(Request::Viewing(held, true)));
+        assert_eq!(terminal.viewing(true), None);
+        let newer = authority(2, 4);
+        terminal.present(&mut parser, Presentation::Begin(newer, geometry(10, 3)));
+        assert_eq!(terminal.viewing(true), None);
+        assert_eq!(
+            terminal.viewing(false),
+            Some(Request::Viewing(newer, false))
+        );
+        assert_eq!(terminal.viewing(false), None);
+        terminal.present(&mut parser, Presentation::Complete);
+        terminal.present(&mut parser, ready(newer));
+        assert_eq!(terminal.viewing(true), Some(Request::Viewing(newer, true)));
+        let refused = |request, error: &str| Presentation::Answered(request, Err(error.into()));
+        terminal.present(&mut parser, refused(Request::Viewing(held, true), "stale"));
+        assert_eq!(terminal.error(), None);
+        assert_eq!(terminal.viewing(true), Some(Request::Viewing(newer, true)));
+        assert_eq!(terminal.viewing(true), None);
+        terminal.present(
+            &mut parser,
+            refused(Request::Acknowledge(newer), "not viewing"),
+        );
+        assert_eq!(terminal.error(), Some("not viewing"));
+        let next = authority(3, 1);
+        terminal.present(&mut parser, Presentation::Granted(next, geometry(10, 3)));
+        assert_eq!(terminal.viewing(false), None);
+        assert_eq!(terminal.viewing(true), Some(Request::Viewing(next, true)));
+        terminal.present(&mut parser, Presentation::Final);
+        assert_eq!(terminal.viewing(false), None);
+        let mut ended = restored(b"x");
+        ended.present(&mut parser, Presentation::Viewable);
+        ended.present(&mut parser, Presentation::Revoked);
+        assert_eq!(ended.viewing(true), None);
+        ended.present(&mut parser, Presentation::Granted(next, geometry(10, 3)));
+        assert_eq!(ended.viewing(true), Some(Request::Viewing(next, true)));
+        ended.present(&mut parser, Presentation::Ended);
+        ended.present(&mut parser, Presentation::Granted(next, geometry(10, 3)));
+        assert_eq!(ended.viewing(true), None);
     }
 
     /// INP-04 (pure supplement; owner decision on #111): a bracketed paste

@@ -7,6 +7,7 @@
 //! pass's clients are ready, it selects and acquires the first eligible row
 //! (#266).
 
+mod attention;
 mod discovery;
 #[cfg(feature = "test-hooks")]
 mod hooks;
@@ -25,7 +26,9 @@ mod selector;
 mod startup;
 mod supervisor;
 mod terminal;
+mod toast;
 
+use attention::{Deferred, HostReport, Next, Notice};
 use climon2_core::{SessionId, protocol::TerminalSize};
 use climon2_discovery::{Batch, Incomplete, Outcome, Progress};
 use climon2_vt::{
@@ -50,6 +53,7 @@ use std::{
 };
 use supervisor::{Context, Load, Refusal, Supervisor};
 use terminal::{Authority, Control, Paste, Presentation, Request, Terminal};
+use toast::Toasts;
 
 /// A one-line diagnostic that the thin main prints, after the host is
 /// restored, with the climon2 error code.
@@ -88,12 +92,24 @@ fn monitor(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io
 }
 
 /// Owns the host until an ending, and releases it before any diagnostic.
+/// A monitor that started told the host its attention state, so the host
+/// hears the root clear once released (#114), even after a failure.
 fn owned(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io::Result<u32> {
     let (mut host, size) = Host::enter()?;
-    let served = Monitor::start(size, startup, dispatch, filter)
-        .and_then(|monitor| monitor.serve(&mut host));
+    let monitor = Monitor::start(size, startup, dispatch, filter);
+    let reported = monitor.is_ok();
+    let served = monitor.and_then(|monitor| monitor.serve(&mut host));
     let released = host.release();
-    served.and_then(|ending| released.map(|()| ending.status()))
+    let cleared = cleared(reported);
+    served.and_then(|ending| released.and(cleared).map(|()| ending.status()))
+}
+
+/// The root clear, once the host heard an attention report.
+fn cleared(reported: bool) -> io::Result<()> {
+    if reported {
+        return host::write_host(attention::CLEAR);
+    }
+    Ok(())
 }
 
 /// The monitor's own enclosing session, if it runs inside one.
@@ -142,6 +158,14 @@ struct Monitor {
     /// What received application input after the last read; a change
     /// before the next read is a target change.
     context: InputContext,
+    /// The acknowledgement an explicit action deferred until its target is
+    /// viewed (#114).
+    acknowledging: Option<Deferred>,
+    /// Prefix+j's notice that no session needs attention.
+    notice: Notice,
+    /// The attention state the host last heard.
+    host_report: HostReport,
+    toasts: Toasts,
 }
 
 /// A session under the authority it takes input with.
@@ -208,6 +232,10 @@ impl Monitor {
             gestures: Gestures::default(),
             host_focused: true,
             context: InputContext::default(),
+            acknowledging: None,
+            notice: Notice::default(),
+            host_report: HostReport::default(),
+            toasts: Toasts,
         };
         monitor.show().map(|()| monitor)
     }
@@ -304,9 +332,71 @@ impl Monitor {
                 .progress(&self.registry)
                 .map(|progress| progress.to_string()),
             late: self.initial.late(&self.registry),
+            notice: self.notice.text(Instant::now()),
             session,
         };
-        self.screen.show(&scene)
+        self.screen.show(&scene)?;
+        self.attend()
+    }
+
+    /// Once a frame is painted (spec #73, "Viewing, focus, acknowledgement
+    /// and host signals"; #114): each daemon hears whether the monitor
+    /// views its session, a deferred acknowledgement is submitted once its
+    /// target is viewed, after that viewing, and the host hears whether any
+    /// connected session needs attention.
+    fn attend(&mut self) -> io::Result<()> {
+        let viewed = self.viewed().cloned();
+        for (id, terminal) in &mut self.terminals {
+            if let Some(request) = terminal.viewing(viewed.as_ref() == Some(id)) {
+                self.supervisor.request(id.clone(), request);
+            }
+        }
+        self.acknowledge(viewed.is_some());
+        let pending = self.registry.attention().is_some();
+        self.host_report
+            .report(pending)
+            .map_or(Ok(()), host::write_host)
+    }
+
+    /// The selected session while the monitor views it: its target takes
+    /// input (controlling, ready, painted uncovered with room, not ended),
+    /// its view is live, the host has focus (assumed until it reports
+    /// otherwise) and no toast covers it.
+    fn viewed(&self) -> Option<&SessionId> {
+        let (id, terminal, _) = self.target()?;
+        let live = terminal.view().is_some_and(|view| view.scrolled() == 0);
+        (live && self.host_focused && !self.toasts.cover(id)).then_some(id)
+    }
+
+    /// Advances a deferred acknowledgement against the selected target as
+    /// this frame left it: submitted once `viewing`, kept while not, dropped
+    /// once the target context changed.
+    fn acknowledge(&mut self, viewing: bool) {
+        let Some(deferred) = self.acknowledging.take() else {
+            return;
+        };
+        let id = self.selected.as_ref();
+        let terminal = id.and_then(|id| self.terminals.get(id));
+        let target = attention::Target {
+            id,
+            covered: self.covered(),
+            control: control(terminal),
+            authority: terminal.and_then(Terminal::authority),
+            viewing,
+        };
+        match deferred.next(&target) {
+            Next::Wait(deferred) => self.acknowledging = Some(deferred),
+            Next::Submit(id, authority) => {
+                self.supervisor.request(id, Request::Acknowledge(authority));
+            }
+            Next::Cancel => {}
+        }
+    }
+
+    /// An explicit action on the selected session acknowledges its pending
+    /// attention once it is viewed (#114).
+    fn defer_acknowledgement(&mut self) {
+        self.acknowledging = self.selected.clone().map(Deferred::new);
     }
 
     /// What each terminal owes its application before the frame: the end
@@ -366,11 +456,15 @@ impl Monitor {
     /// without acquiring. Disconnected and final rows are ignored until
     /// #116, which owns their retained history. This monitor's own session
     /// has no row (owner decision on #110).
+    /// Enter on a connected row also dismisses a toast covering it and
+    /// acknowledges its attention once viewed (#114).
     fn enter(&mut self, id: SessionId) {
         match self.registry.kind(&id) {
             Some(Kind::Connected) => {
+                self.toasts.dismiss(&id);
                 self.choose(id.clone());
                 self.acquire(&id);
+                self.defer_acknowledgement();
             }
             Some(Kind::Unconnected) => self.choose(id),
             Some(Kind::Retained) | None => {}
@@ -686,19 +780,44 @@ impl Monitor {
 
     /// Prefix+x ends the monitor. Prefix+? opens the key introduction, and
     /// prefix+s the selector unless the modal key introduction is open;
-    /// prefix+j's jump arrives with #114.
+    /// prefix+j jumps from anywhere.
     fn action(&mut self, action: Action) -> Option<Ending> {
         match action {
             Action::Exit => return Some(Ending::Exit),
             Action::KeyIntroduction => self.introduction.open(),
+            Action::Jump => self.jump(),
             Action::SessionList if !self.introduction.is_open() => {
                 let area = self.screen.overlay();
                 self.selector
                     .open(&self.registry.rows(), self.selected.as_ref(), area);
             }
-            _ => {}
+            Action::SessionList => {}
         }
         None
+    }
+
+    /// Prefix+j (spec #73, "Attention jump target"; #114): the connected
+    /// session that needs attention with the newest daemon change at the
+    /// keypress. The jump closes every overlay and dismisses a toast
+    /// covering it, selects it, takes control only while the monitor
+    /// neither holds nor is acquiring it, shows its live view and
+    /// acknowledges its attention once viewed. With none, the selection
+    /// stays and `No sessions need attention` shows for a while.
+    fn jump(&mut self) {
+        let Some(id) = self.registry.attention() else {
+            self.notice.show(Instant::now());
+            return;
+        };
+        self.notice.clear();
+        self.introduction.close();
+        self.toasts.dismiss(&id);
+        self.choose(id.clone());
+        if self.control(&id) == Control::NotControlling {
+            self.acquire(&id);
+        }
+        self.resize();
+        self.terminal(&id).return_live();
+        self.defer_acknowledgement();
     }
 
     /// Input no application takes goes to [`Monitor::modal_input`]. When it
@@ -745,11 +864,15 @@ impl Monitor {
         }
     }
 
-    /// Input for the open selector; Enter acts on the row it chose.
+    /// Input for the open selector; Enter acts on the row it chose, and
+    /// cancelling back to the selected session acknowledges its attention
+    /// once viewed (Confirmed 2026-11-08; #114).
     fn selector_input(&mut self, input: &Routed) {
         let area = self.screen.overlay();
-        if let Some(id) = self.selector.input(input, &self.registry.rows(), area) {
-            self.enter(id);
+        match self.selector.input(input, &self.registry.rows(), area) {
+            Some(id) => self.enter(id),
+            None if !self.selector.is_open() => self.defer_acknowledgement(),
+            None => {}
         }
     }
 }
