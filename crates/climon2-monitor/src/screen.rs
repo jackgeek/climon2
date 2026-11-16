@@ -159,6 +159,12 @@ impl Screen {
         })
     }
 
+    /// Where overlays are drawn: every row below the top row.
+    pub(crate) fn overlay(&self) -> Rect {
+        let top = TOP_ROW.min(self.size.rows);
+        Rect::new(0, top, self.size.cols, self.size.rows - top)
+    }
+
     /// Paints `scene` unless its frame is the one painted.
     pub(crate) fn show(&mut self, scene: &Scene<'_>) -> io::Result<()> {
         let frame = self.frame(scene);
@@ -189,13 +195,9 @@ impl Screen {
     fn frame(&self, scene: &Scene<'_>) -> Frame {
         let area = Rect::new(0, 0, self.size.cols, self.size.rows);
         let mut buffer = Buffer::empty(area);
+        let below = self.overlay();
         let top = Rect {
-            height: TOP_ROW.min(area.height),
-            ..area
-        };
-        let below = Rect {
-            y: top.bottom(),
-            height: area.height - top.height,
+            height: below.y,
             ..area
         };
         let cursor = match (self.desire(), &scene.session) {
@@ -214,11 +216,11 @@ impl Screen {
                 None
             }
         };
-        scene.selector.render(scene.rows, below, &mut buffer);
+        let search = scene.selector.render(scene.rows, below, &mut buffer);
         scene.introduction.render(below, &mut buffer);
         Frame {
             buffer,
-            cursor: cursor.filter(|_| !scene.covered()),
+            cursor: shown_cursor(scene, cursor, search),
             keypad: self.keypad(scene),
         }
     }
@@ -265,6 +267,21 @@ impl Screen {
         }
         None
     }
+}
+
+/// The host cursor: the search's while the selector is open, otherwise the
+/// selected session's; none while the key introduction covers them.
+fn shown_cursor(
+    scene: &Scene<'_>,
+    session: Option<HostCursor>,
+    search: Option<HostCursor>,
+) -> Option<HostCursor> {
+    let cursor = if scene.selector.is_open() {
+        search
+    } else {
+        session
+    };
+    cursor.filter(|_| !scene.introduction.is_open())
 }
 
 /// The body's state with nothing selected: the startup progress while the
