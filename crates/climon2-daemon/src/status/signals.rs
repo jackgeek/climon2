@@ -247,7 +247,6 @@ mod tests {
     };
     use climon2_core::wire::{NotificationSource, Percent, ProgressState};
     use climon2_vt::Signal as Observed;
-    use std::borrow::Cow;
 
     /// What the OSC string `body` means, in a sequence of `length` bytes.
     fn sized(body: &str, length: usize) -> Option<Interpreted<'_>> {
@@ -447,7 +446,19 @@ mod tests {
             id: id.map(str::as_bytes),
             done,
             part,
-            payload: Cow::Borrowed(payload.as_bytes()),
+            base64: false,
+            payload: payload.as_bytes(),
+        })))
+    }
+
+    /// A completing title chunk whose payload is base64, still encoded.
+    fn base64_chunk(payload: &'static str) -> Option<Interpreted<'static>> {
+        Some(Interpreted::Notify(Parsed::Chunk(Chunk {
+            id: None,
+            done: true,
+            part: Part::Title,
+            base64: true,
+            payload: payload.as_bytes(),
         })))
     }
 
@@ -516,9 +527,10 @@ mod tests {
 
     /// STA-06 (pure, OSC 99): metadata pairs set the identifier,
     /// completion, payload type and base64 encoding, with title and
-    /// completion the defaults and unknown keys ignored; icons and buttons
-    /// are auxiliary data. Queries, close and liveness requests, unknown
-    /// payload types, invalid values, identifiers or base64, and a missing
+    /// completion the defaults and unknown keys ignored; a base64 payload
+    /// stays encoded, valid or not, for the assembly to decode; icons and
+    /// buttons are auxiliary data. Queries, close and liveness requests,
+    /// unknown payload types, invalid values or identifiers, and a missing
     /// payload are nothing.
     #[test]
     fn osc_99_chunks_carry_their_metadata() {
@@ -528,7 +540,9 @@ mod tests {
             chunk(Some("a-1_+.Z"), false, Part::Body, "B;c")
         );
         assert_eq!(osc("99;d=1:p=title;T"), chunk(None, true, Part::Title, "T"));
-        assert_eq!(osc("99;e=1;SGk="), chunk(None, true, Part::Title, "Hi"));
+        assert_eq!(osc("99;e=1;SGk="), base64_chunk("SGk="));
+        assert_eq!(osc("99;e=1;SGV"), base64_chunk("SGV"));
+        assert_eq!(osc("99;e=1;!!"), base64_chunk("!!"));
         assert_eq!(
             osc("99;e=0:x=1:u=2;SGk="),
             chunk(None, true, Part::Title, "SGk=")
@@ -547,7 +561,6 @@ mod tests {
             "99;d=2;x",
             "99;d;x",
             "99;e=2;x",
-            "99;e=1;!!",
             "99;i=a b;x",
             "99;i=;x",
             "99;i=a/b;x",

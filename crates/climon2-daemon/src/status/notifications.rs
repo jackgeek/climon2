@@ -5,9 +5,9 @@
 //! [OSC 777](https://codeberg.org/dnkl/foot/src/branch/master/doc/foot-ctlseqs.7.scd)
 //! `notify` subset and
 //! [OSC 99](https://sw.kovidgoyal.net/kitty/desktop-notifications/) chunks.
-//! Text stays raw bytes here; the assembly makes it inert UTF-8.
+//! Text stays raw bytes here, base64 still encoded; the assembly decodes
+//! it and makes it inert UTF-8.
 use climon2_core::wire::NotificationSource;
-use std::borrow::Cow;
 
 /// What a notification sequence carries.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,13 +24,15 @@ pub enum Parsed<'a> {
 }
 
 /// One OSC 99 chunk: its notification's identifier, whether it completes
-/// that notification, what its payload is, and the payload, decoded.
+/// that notification, what its payload is, whether the payload is base64,
+/// and the payload as it arrived.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Chunk<'a> {
     pub id: Option<&'a [u8]>,
     pub done: bool,
     pub part: Part,
-    pub payload: Cow<'a, [u8]>,
+    pub base64: bool,
+    pub payload: &'a [u8],
 }
 
 /// What an OSC 99 chunk's payload is.
@@ -81,10 +83,10 @@ fn split_once(text: &[u8], delimiter: u8) -> (&[u8], Option<&[u8]>) {
 /// colon-separated `key=value` pairs. `i` is the identifier, `d=0` leaves
 /// the notification incomplete (`d=1`, the default, completes it), `p`
 /// names the payload (`title`, the default, `body`, or auxiliary `icon`
-/// and `buttons`) and `e=1` makes it base64. Queries (`p=?`), `close` and
-/// `alive` are no notification data. A missing payload, an invalid value,
-/// identifier or base64 payload, and an unknown payload type discard the
-/// chunk; unknown keys are ignored.
+/// and `buttons`) and `e=1` makes it base64, which the assembly decodes.
+/// Queries (`p=?`), `close` and `alive` are no notification data. A
+/// missing payload, an invalid value or identifier, and an unknown payload
+/// type discard the chunk; unknown keys are ignored.
 pub fn osc99(parameters: &[u8]) -> Option<Parsed<'_>> {
     let (metadata, payload) = split_once(parameters, b';');
     let metadata = metadata
@@ -181,17 +183,11 @@ impl<'a> Metadata<'a> {
 
     /// The chunk carrying `payload`, when it is notification data.
     fn chunk(self, payload: &'a [u8]) -> Option<Parsed<'a>> {
-        let part = self.part?;
-        let payload = if self.base64 {
-            use base64::Engine;
-            Cow::Owned(super::signals::BASE64.decode(payload).ok()?)
-        } else {
-            Cow::Borrowed(payload)
-        };
         Some(Parsed::Chunk(Chunk {
             id: self.id,
             done: self.done,
-            part,
+            part: self.part?,
+            base64: self.base64,
             payload,
         }))
     }

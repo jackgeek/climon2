@@ -1,8 +1,9 @@
 //! Logical notifications: complete OSC 9 and OSC 777 sequences, and OSC 99
 //! chunks assembled under the session's notification assembly limits, made
-//! inert UTF-8 within the release-constant text and record bounds. An
-//! oversized notification is ignored, never truncated; overflow and expiry
-//! log a diagnostic and complete nothing.
+//! inert UTF-8 within the release-constant text and record bounds. OSC 99
+//! base64 is joined as it arrives and decoded once, at completion. An
+//! oversized or undecodable notification is ignored, never truncated;
+//! overflow and expiry log a diagnostic and complete nothing.
 use super::notifications::{Chunk, Parsed, Part};
 use climon2_core::{
     config::Assembly,
@@ -80,11 +81,66 @@ fn within(text: &Option<String>, bytes: usize) -> bool {
     text.as_ref().is_none_or(|text| text.len() <= bytes)
 }
 
+/// One title or body as its chunks carried it: runs of plain and of base64
+/// bytes, a chunk joining the run before it when both have one encoding.
+#[derive(Default)]
+struct Carried(Vec<(bool, Vec<u8>)>);
+
+impl Carried {
+    /// The bytes it holds, base64 still encoded.
+    fn held(&self) -> u64 {
+        self.0.iter().map(|(_, run)| run.len() as u64).sum()
+    }
+
+    fn push(&mut self, base64: bool, payload: &[u8]) {
+        match self.0.last_mut() {
+            Some((encoded, run)) if *encoded == base64 => run.extend_from_slice(payload),
+            _ => self.0.push((base64, payload.to_vec())),
+        }
+    }
+
+    /// Its text, each base64 run decoded once; none when one does not
+    /// decode.
+    fn decoded(self) -> Option<Vec<u8>> {
+        self.0
+            .into_iter()
+            .try_fold(Vec::new(), |mut text, (base64, run)| {
+                if base64 {
+                    decode(&run, &mut text)?;
+                } else {
+                    text.extend(run);
+                }
+                Some(text)
+            })
+    }
+}
+
+/// Decodes joined base64 onto `text`. Padding ends one chunk's encoding,
+/// so what follows it starts a new one.
+fn decode(encoded: &[u8], text: &mut Vec<u8>) -> Option<()> {
+    use base64::Engine;
+    encoded
+        .chunk_by(|before, after| !(*before == b'=' && *after != b'='))
+        .try_for_each(|piece| super::signals::BASE64.decode_vec(piece, text).ok())
+}
+
+/// The bytes `chunk` adds to its assembly: none for auxiliary data, which
+/// is not kept.
+fn carried(chunk: &Chunk<'_>) -> u64 {
+    match chunk.part {
+        Part::Title | Part::Body => chunk.payload.len() as u64,
+        Part::Auxiliary => 0,
+    }
+}
+
+/// A decoded title and body, each when present.
+type Decoded = (Option<Vec<u8>>, Option<Vec<u8>>);
+
 /// The title and the body an OSC 99 notification assembled so far.
 #[derive(Default)]
 struct Text {
-    title: Option<Vec<u8>>,
-    body: Option<Vec<u8>>,
+    title: Option<Carried>,
+    body: Option<Carried>,
 }
 
 impl Text {
@@ -93,32 +149,27 @@ impl Text {
         [&self.title, &self.body]
             .into_iter()
             .flatten()
-            .map(|text| text.len() as u64)
+            .map(Carried::held)
             .sum()
     }
 
-    /// The text `part` adds to and its bound; none for auxiliary data.
-    fn slot(&mut self, part: Part) -> Option<(&mut Option<Vec<u8>>, usize)> {
-        match part {
-            Part::Title => Some((&mut self.title, TITLE_BYTES)),
-            Part::Body => Some((&mut self.body, BODY_BYTES)),
-            Part::Auxiliary => None,
-        }
+    /// Keeps `chunk`'s title or body; auxiliary data is not kept.
+    fn add(&mut self, chunk: &Chunk<'_>) {
+        let slot = match chunk.part {
+            Part::Title => &mut self.title,
+            Part::Body => &mut self.body,
+            Part::Auxiliary => return,
+        };
+        slot.get_or_insert_default()
+            .push(chunk.base64, chunk.payload);
     }
 
-    /// Adds `chunk`'s text when the result stays within its bound and the
-    /// chunk within `budget`; false when it would not.
-    fn add(&mut self, chunk: &Chunk<'_>, budget: u64) -> bool {
-        let Some((slot, bound)) = self.slot(chunk.part) else {
-            return true;
-        };
-        let length = slot.as_ref().map_or(0, Vec::len) + chunk.payload.len();
-        let fits = length <= bound && chunk.payload.len() as u64 <= budget;
-        if fits {
-            slot.get_or_insert_default()
-                .extend_from_slice(&chunk.payload);
-        }
-        fits
+    /// The decoded title and body, each when present; none when either
+    /// does not decode.
+    fn decoded(self) -> Option<Decoded> {
+        let decoded =
+            |part: Option<Carried>| part.map_or(Some(None), |part| part.decoded().map(Some));
+        Some((decoded(self.title)?, decoded(self.body)?))
     }
 }
 
@@ -140,31 +191,32 @@ impl Pending {
         }
     }
 
+    /// The bytes it holds: its identifier and its text as it arrived.
     fn held(&self) -> u64 {
-        self.text.as_ref().map_or(0, Text::held)
+        let id = self.id.as_deref().map_or(0, <[u8]>::len) as u64;
+        id + self.text.as_ref().map_or(0, Text::held)
     }
 
-    /// Adds `chunk`'s text, or discards the notification when the text
-    /// would pass its bound or, unless the chunk completes it, the `room`
-    /// the other assemblies leave.
+    /// Adds `chunk`'s text, or, unless the chunk completes it, discards
+    /// the notification when it would hold more than the `room` the other
+    /// assemblies leave.
     fn add(&mut self, chunk: &Chunk<'_>, room: u64) {
+        let held = self.held() + carried(chunk);
         let Some(text) = &mut self.text else {
             return;
         };
-        let budget = if chunk.done {
-            u64::MAX
+        if chunk.done || held <= room {
+            text.add(chunk);
         } else {
-            room.saturating_sub(text.held())
-        };
-        if !text.add(chunk, budget) {
-            tracing::warn!("a notification assembly passed its bounds and was discarded");
+            tracing::warn!("a notification assembly passed its byte limit and was discarded");
             self.text = None;
         }
     }
 
-    /// The notification it completes, unless it was discarded.
+    /// The notification it completes, unless it was discarded or its
+    /// base64 does not decode.
     fn complete(self) -> Option<Notified> {
-        let Text { title, body } = self.text?;
+        let (title, body) = self.text?.decoded().or_else(undecodable)?;
         Notified::new(
             NotificationSource::Osc99,
             self.id.as_deref(),
@@ -172,6 +224,12 @@ impl Pending {
             body.as_deref(),
         )
     }
+}
+
+/// A completed notification whose base64 does not decode: ignored whole.
+fn undecodable<T>() -> Option<T> {
+    tracing::warn!("a notification's base64 did not decode; it was ignored");
+    None
 }
 
 /// The session's incomplete OSC 99 notifications, under its fixed limits.
@@ -265,7 +323,7 @@ mod tests {
         config::Assembly,
         wire::{Counter, Notification, NotificationSource},
     };
-    use std::{borrow::Cow, time::Duration};
+    use std::time::Duration;
 
     use NotificationSource::{Osc9, Osc99, Osc777};
 
@@ -296,8 +354,25 @@ mod tests {
             id: id.map(str::as_bytes),
             done,
             part,
-            payload: Cow::Borrowed(payload),
+            base64: false,
+            payload,
         })
+    }
+
+    /// A chunk whose payload is base64.
+    fn encoded<'a>(id: Option<&'a str>, done: bool, part: Part, payload: &'a [u8]) -> Parsed<'a> {
+        Parsed::Chunk(Chunk {
+            id: id.map(str::as_bytes),
+            done,
+            part,
+            base64: true,
+            payload,
+        })
+    }
+
+    /// The base64 title chunk that completes notification `x` alone.
+    fn encoded_chunk(payload: &str) -> Parsed<'_> {
+        encoded(Some("x"), true, Part::Title, payload.as_bytes())
     }
 
     /// An incomplete title chunk of notification `id`.
@@ -500,18 +575,20 @@ mod tests {
     }
 
     /// LIM-01 (pure, assembly bytes at the limit and one past): incomplete
-    /// assemblies hold 40 text bytes together; a chunk that would hold one
-    /// more discards its notification, whose later chunks complete nothing
-    /// and whose bytes are freed. A completing chunk is not held, so it
-    /// may pass the budget.
+    /// assemblies hold 40 bytes together, counting each identifier and each
+    /// payload as it arrived, base64 still encoded, but no auxiliary data.
+    /// A chunk that would hold one more discards its notification, whose
+    /// later chunks complete nothing and whose text is freed; an identifier
+    /// alone can pass the limit. A completing chunk is not held, so it may
+    /// pass the budget.
     #[test]
     fn incomplete_assemblies_are_bounded_in_bytes() {
         let mut assembler = limited();
         let mut fed = |parsed| record(assembler.notification(at(0), parsed));
-        assert_eq!(fed(open("a", &[b'a'; 30])), None);
-        assert_eq!(fed(open("b", &[b'b'; 11])), None);
-        assert_eq!(fed(chunk(Some("b"), true, Part::Body, b"late")), None);
+        assert_eq!(fed(open("a", &[b'a'; 29])), None);
         assert_eq!(fed(open("b", &[b'b'; 10])), None);
+        assert_eq!(fed(chunk(Some("b"), true, Part::Body, b"late")), None);
+        assert_eq!(fed(open("b", &[b'b'; 9])), None);
         let long = "c".repeat(50);
         assert_eq!(
             fed(chunk(Some("c"), true, Part::Body, long.as_bytes())),
@@ -519,35 +596,115 @@ mod tests {
         );
         assert_eq!(
             fed(close("a")),
-            notification(Osc99, Some("a"), Some(&"a".repeat(30)), None)
+            notification(Osc99, Some("a"), Some(&"a".repeat(29)), None)
         );
         assert_eq!(
             fed(close("b")),
-            notification(Osc99, Some("b"), Some(&"b".repeat(10)), None)
+            notification(Osc99, Some("b"), Some(&"b".repeat(9)), None)
         );
-        assert_eq!(fed(open("d", &[b'd'; 40])), None);
+
+        assert_eq!(fed(open("d", &[b'd'; 39])), None);
         assert_eq!(fed(open("e", b"")), None);
-        assert_eq!(fed(open("e", b"e")), None);
         assert_eq!(fed(close("e")), None);
+        assert_eq!(fed(chunk(Some("d"), false, Part::Auxiliary, b"icon")), None);
         assert_eq!(
             fed(close("d")),
-            notification(Osc99, Some("d"), Some(&"d".repeat(40)), None)
+            notification(Osc99, Some("d"), Some(&"d".repeat(39)), None)
         );
+
+        let unnamed = "n".repeat(40);
+        assert_eq!(
+            fed(chunk(None, false, Part::Title, unnamed.as_bytes())),
+            None
+        );
+        assert_eq!(
+            fed(chunk(None, true, Part::Body, b"")),
+            notification(Osc99, None, Some(&unnamed), Some(""))
+        );
+
+        let abc = "YWJj".repeat(9);
+        assert_eq!(
+            fed(encoded(Some("f"), false, Part::Title, abc.as_bytes())),
+            None
+        );
+        assert_eq!(fed(open("f", b"xyz")), None);
+        assert_eq!(
+            fed(close("f")),
+            notification(Osc99, Some("f"), Some(&("abc".repeat(9) + "xyz")), None)
+        );
+        let abc = "YWJj".repeat(10);
+        assert_eq!(
+            fed(encoded(Some("g"), false, Part::Title, abc.as_bytes())),
+            None
+        );
+        assert_eq!(fed(close("g")), None);
     }
 
-    /// LIM-01 (pure, assembly bytes): a discarded notification holds no
-    /// bytes, so the others may use the whole budget.
+    /// LIM-01 (pure, assembly bytes): a discarded notification holds only
+    /// its identifier, so the others may use the rest of the budget, at the
+    /// limit and not one byte past it.
     #[test]
-    fn discarded_assemblies_hold_no_bytes() {
+    fn discarded_assemblies_hold_only_their_identifiers() {
         let mut assembler = limited();
         let mut fed = |parsed| record(assembler.notification(at(0), parsed));
-        assert_eq!(fed(open("a", &[b'a'; 41])), None);
-        assert_eq!(fed(open("b", &[b'b'; 40])), None);
+        assert_eq!(fed(open("a", &[b'a'; 40])), None);
+        assert_eq!(fed(open("b", &[b'b'; 39])), None);
+        assert_eq!(fed(close("b")), None);
+        assert_eq!(fed(open("b", &[b'b'; 38])), None);
         assert_eq!(fed(close("a")), None);
         assert_eq!(
             fed(close("b")),
-            notification(Osc99, Some("b"), Some(&"b".repeat(40)), None)
+            notification(Osc99, Some("b"), Some(&"b".repeat(38)), None)
         );
+    }
+
+    /// STA-06 (pure, OSC 99 base64): base64 chunks of one title or body
+    /// join before they are decoded once, at completion, so a split inside
+    /// a four-character group or a multi-byte character, padding at the
+    /// end of each chunk, and plain chunks between encoded ones all
+    /// decode. Base64 that does not decode at completion ignores the
+    /// whole notification.
+    #[test]
+    fn osc_99_base64_decodes_once_joined() {
+        let mut assembler = limited();
+        let mut fed = |parsed| record(assembler.notification(at(0), parsed));
+        let hello = notification(Osc99, Some("s"), Some("Hello"), None);
+        assert_eq!(fed(encoded(Some("s"), false, Part::Title, b"SGV")), None);
+        assert_eq!(fed(encoded(Some("s"), true, Part::Title, b"sbG8=")), hello);
+        let padded = notification(Osc99, Some("p"), Some("Hi!"), Some("H\u{20ac}"));
+        assert_eq!(fed(encoded(Some("p"), false, Part::Title, b"SGk=")), None);
+        assert_eq!(fed(encoded(Some("p"), false, Part::Body, b"SA==")), None);
+        assert_eq!(fed(encoded(Some("p"), false, Part::Body, b"4o")), None);
+        assert_eq!(fed(encoded(Some("p"), false, Part::Body, b"Ks")), None);
+        assert_eq!(fed(encoded(Some("p"), true, Part::Title, b"IQ==")), padded);
+        let mixed = notification(Osc99, Some("m"), Some("abc"), None);
+        assert_eq!(fed(open("m", b"a")), None);
+        assert_eq!(fed(encoded(Some("m"), false, Part::Title, b"Yg==")), None);
+        assert_eq!(fed(chunk(Some("m"), true, Part::Title, b"c")), mixed);
+        assert_eq!(fed(encoded(Some("v"), true, Part::Title, b"!!")), None);
+        assert_eq!(fed(open("w", b"Fine")), None);
+        assert_eq!(fed(encoded(Some("w"), true, Part::Body, b"SGV")), None);
+    }
+
+    /// LIM-01 (pure, release-constant bounds on decoded text): a base64
+    /// title decoding to 4,096 UTF-8 bytes is kept, though its encoding is
+    /// longer; one decoding to 4,097 is ignored.
+    #[test]
+    fn base64_text_is_bounded_once_decoded() {
+        use base64::Engine;
+        let euros = |bytes: usize| "\u{20ac}".repeat(bytes / 3) + &"e".repeat(bytes % 3);
+        let encode = |text: &str| base64::engine::general_purpose::STANDARD.encode(text);
+        let mut assembler = limited();
+        let mut fed = |text: &str| {
+            let encoded = encode(text);
+            record(assembler.notification(at(0), encoded_chunk(&encoded)))
+        };
+        let title = euros(4_096);
+        assert_eq!(
+            fed(&title),
+            notification(Osc99, Some("x"), Some(&title), None)
+        );
+        assert_eq!(fed(&euros(4_097)), None);
     }
 
     /// LIM-01 (pure, assembly lifetime at the limit and one past): an

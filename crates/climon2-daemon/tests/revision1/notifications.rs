@@ -166,14 +166,14 @@ fn notifications_and_progress_reach_every_subscribed_role_in_order() {
 }
 
 /// LIM-01 (Contract, exec-provided assembly limits): a daemon started with
-/// two assemblies of 40 text bytes, each living one second, applies them
-/// at the limit and one past. Two incomplete OSC 99 notifications holding
-/// 40 bytes together are kept; a third one's chunk is dropped, so its
-/// completion is empty and reports nothing, and one more byte discards the
-/// notification it would join, whose completion reports nothing. Completed
-/// 999 ms after its first chunk, a notification requests attention and
-/// carries its 30 assembled bytes; one completed 1,000 ms after its first
-/// chunk has expired and reports nothing.
+/// two assemblies of 40 bytes, each living one second, applies them at the
+/// limit and one past. Two incomplete OSC 99 notifications holding 40 bytes
+/// together, their one-byte identifiers included, are kept; a third one's
+/// chunk is dropped, so its completion is empty and reports nothing, and
+/// one more byte discards the notification it would join, whose completion
+/// reports nothing. Completed 999 ms after its first chunk, a notification
+/// requests attention and carries its 29 assembled bytes; one completed
+/// 1,000 ms after its first chunk has expired and reports nothing.
 #[test]
 fn exec_provided_assembly_limits_apply_at_the_limit_and_one_past() {
     let limits = [
@@ -193,8 +193,8 @@ fn exec_provided_assembly_limits_apply_at_the_limit_and_one_past() {
     let running = status(Running, 1_500, None);
     assert_eq!(attached.next_after_display(), status_changed(running));
 
-    let a = "a".repeat(30);
-    let held = format!(r"\e]99;i=a:d=0;{a}\e\\e]99;i=b:d=0;bbbbbbbbbb\e\\e]99;i=c:d=0;C\e\");
+    let a = "a".repeat(29);
+    let held = format!(r"\e]99;i=a:d=0;{a}\e\\e]99;i=b:d=0;bbbbbbbbb\e\\e]99;i=c:d=0;C\e\");
     printed(&session, &mut attached, &held, 1);
     let refused = concat!(r"\e]99;i=c;\e\", r"\e]99;i=b:d=0;b\e\", r"\e]99;i=b;B\e\");
     printed(&session, &mut attached, refused, 2);
@@ -218,8 +218,9 @@ fn exec_provided_assembly_limits_apply_at_the_limit_and_one_past() {
 }
 
 /// An OSC 99 notification `id` whose title and body are `title` and
-/// `body`, sent as base64 chunks of at most 2,048 bytes each, so chunk
-/// boundaries split multi-byte characters.
+/// `body`, sent as base64 chunks of at most 2,048 bytes each, encoded one
+/// by one with their padding, so chunk boundaries split multi-byte
+/// characters and padding falls inside the joined base64.
 fn chunked(id: &str, title: &[u8], body: &[u8]) -> String {
     let mut sequences = String::new();
     for (part, text) in [("title", title), ("body", body)] {
@@ -240,8 +241,10 @@ fn euros(bytes: usize) -> String {
 /// (Contract, inert text): a notification title of 4,096 UTF-8 bytes and a
 /// body of 8,192, multi-byte characters filling both and split across
 /// OSC 99 chunks, arrive whole; a title or a body one byte longer is
-/// ignored, not truncated. Invalid UTF-8 is replaced, and OSC 9 and OSC 777
-/// text join the pending episode. No observed sequence reaches host output.
+/// ignored, not truncated. Base64 split inside a four-character group
+/// decodes once joined, base64 that does not decode at completion reports
+/// nothing, invalid UTF-8 is replaced, and OSC 9 and OSC 777 text join the
+/// pending episode. No observed sequence reaches host output.
 #[test]
 fn notification_titles_and_bodies_are_bounded_and_inert() {
     let session = clocked("script");
@@ -261,12 +264,17 @@ fn notification_titles_and_bodies_are_bounded_and_inert() {
 
     let others = concat!(
         r"\e]99;i=x:e=1;b2v/\e\",
+        r"\e]99;i=s:d=0:e=1;SGV\e\",
+        r"\e]99;i=s:e=1;sbG8=\e\",
+        r"\e]99;i=v:e=1;SGV\e\",
         r"\e]9;nine\e\",
         r"\e]777;notify;seven\e\"
     );
     printed(&session, &mut attached, others, 3);
     let replaced = notification(Osc99, Some("x"), Some("ok\u{fffd}"), None, Some(1));
     assert_eq!(attached.next_after_display(), replaced);
+    let joined = notification(Osc99, Some("s"), Some("Hello"), None, Some(1));
+    assert_eq!(attached.next_after_display(), joined);
     let nine = notification(Osc9, None, None, Some("nine"), Some(1));
     assert_eq!(attached.next_after_display(), nine);
     let seven = notification(Osc777, None, Some("seven"), None, Some(1));

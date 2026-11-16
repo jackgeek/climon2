@@ -75,13 +75,22 @@ in the command's output before filtering, and none reaches
   same identifier, or none, concatenate their title and body bytes until a
   completing chunk; auxiliary data completes a notification that has text but
   never makes one. Queries (`p=?`), `close` and `alive` are ignored, as are
-  chunks with an invalid value, identifier or base64 payload, an unknown
-  payload type or no payload; unknown keys are ignored.
+  chunks with an invalid value or identifier, an unknown payload type or no
+  payload; unknown keys are ignored.
+- OSC 99 base64 is joined as it arrives and decoded once, when the
+  notification completes ([#98](https://github.com/jackgeek/climon2/issues/98)
+  owner decision), so both splits the reference allows decode: chunks encoded
+  one by one, each padded, and one encoding cut anywhere, even inside a
+  four-character group. Padding ends one encoding, and the base64 after it
+  starts a new one; plain chunks between base64 ones keep their place. A
+  notification whose base64 does not decode then is ignored whole. For
+  example `99;i=s:d=0:e=1;SGV` then `99;i=s:e=1;sbG8=` make the title
+  `Hello`.
 
 Text is made [UTF-8](../TERMS.md#unicode-and-utf-8), invalid bytes replaced
 by U+FFFD. A notification whose title and body are both missing or empty is
 ignored. So is one whose title exceeds 4,096 UTF-8 bytes, whose body exceeds
-8,192, or whose record, measured with the longest episode identifier, would
+8,192 (measured after base64 decoding), or whose record, measured with the longest episode identifier, would
 exceed the 16,384-byte metadata record bound: it is never truncated. These
 bounds are release constants.
 
@@ -89,15 +98,19 @@ Incomplete OSC 99 notifications are bounded by the session's notification
 assembly limits, which `exec` passes to the daemon from its validated
 configuration and which stay fixed for the session's lifetime:
 `payload.assembly_records` incomplete notifications at once, holding at most
-`payload.assembly_bytes` of text together, each for `deadlines.assembly_ms`
-from its first chunk (see the
+`payload.assembly_bytes` together, each for `deadlines.assembly_ms` from its
+first chunk (see the
 [operational limits](../../monitor-operational-limits.md#payloads-and-parser-state)).
-A chunk that would open one notification too many is dropped; a chunk that
-would pass a text bound, or that an incomplete notification cannot hold within
-the byte budget, discards that notification, whose later chunks complete
-nothing; at the end of its lifetime an incomplete notification expires. Each
-logs a diagnostic, and none completes a notification. A completing chunk is
-not held, so only the text bounds apply to it.
+An incomplete notification holds its identifier and its title and body bytes
+as they arrived, base64 still encoded, but no auxiliary data
+([#98](https://github.com/jackgeek/climon2/issues/98) owner decision). A
+chunk that would open one notification too many is dropped; a chunk that an
+incomplete notification cannot hold within the byte limit, its identifier
+included, discards that notification, whose later chunks complete nothing and
+which then holds only its identifier; at the end of its lifetime an
+incomplete notification expires. Each logs a diagnostic, and none completes a
+notification. A completing chunk is not held, so only the text bounds, checked
+when the notification completes, apply to it.
 
 Each recognized notification requests
 [attention](../../../GLOSSARY.md#status-and-attention) first. When that
