@@ -1615,6 +1615,30 @@ fn shows_row(terminal: &mut Terminal, text: &str) {
     });
 }
 
+/// Whether the packaged binaries are an exact release archive's, which has
+/// no test hooks.
+fn archive() -> bool {
+    env::var_os("CLIMON2_E2E_ARCHIVE").is_some()
+}
+
+/// The status a real session whose title or screen changed shows once it
+/// has settled. Hooked daemons read the status clock [`headless`] gives
+/// them, which nothing advances, so it stays Idle. A release archive's
+/// daemon has no such hook: its heuristic sees the change, and ten quiet
+/// seconds later requests attention, which stays without user input.
+fn settled() -> &'static str {
+    if archive() { "Needs attention" } else { "Idle" }
+}
+
+/// The start of a selector row showing `status` and `title`, its status
+/// column as wide as the widest of `status` and `others`.
+fn row(others: &[&str], status: &str, title: &str) -> String {
+    let width = others
+        .iter()
+        .fold(status.len(), |widest, other| widest.max(other.len()));
+    format!("║{status:width$} {title}")
+}
+
 /// DSC-03 (Monitor, including its selection case), CTL-01 (Monitor),
 /// COM-01 (Monitor), LIB-01 (Monitor) and HDL-01 (Monitor rows), with the
 /// empty-start scenario (confirmed 2026-11-08): a monitor started on an
@@ -1624,7 +1648,9 @@ fn shows_row(terminal: &mut Terminal, text: &str) {
 /// it and is never acquired. Each session gets one passive client, reused
 /// across later passes: one start and one library log in its own session
 /// log directory. A connected row shows the status its daemon reports
-/// through `status-v1`, Idle, never a fabricated one (#107); its title
+/// through `status-v1`, never a fabricated one (#107): Idle, or once a
+/// release archive's daemon has seen its title change, Needs attention
+/// ([`settled`]); its title
 /// arrives through `title-v1`, and an untitled session shows its command
 /// and arguments. On Linux the monitor maps exactly the session version's
 /// `libclimon2_client.so`.
@@ -1635,12 +1661,16 @@ fn sessions_appear_as_they_are_created_each_with_one_passive_client() {
     let mut terminal = outer(&package, "c2 monitor");
     opened(&mut terminal);
     let titled = headless(&package, "printf '\\033]2;Alpha\\007'", "finish");
-    let alpha = controlled("Alpha", STATUS);
+    let alpha = controlled("Alpha", settled());
     top_row_is(&mut terminal, &alpha);
+    // Its screen and title never change, so it stays Idle on any clock.
     let untitled = headless(&package, ": untitled", "finish");
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║Idle /bin/bash -c : untitled");
-    shows_row(&mut terminal, "║Idle Alpha");
+    shows_row(
+        &mut terminal,
+        &row(&[settled()], "Idle", "/bin/bash -c : untitled"),
+    );
+    shows_row(&mut terminal, &row(&["Idle"], settled(), "Alpha"));
     terminal.send(ESCAPE).unwrap();
     top_row_is(&mut terminal, &alpha);
     for id in [&titled, &untitled] {
@@ -2265,11 +2295,15 @@ fn the_own_session_is_hidden_while_nested_and_controlled_sessions_appear() {
     });
     terminal.send("\x1ds").unwrap();
     // The host's screen text follows each wide character with its covered cell.
-    shows_row(&mut terminal, "║Idle Nested 日 本 ");
-    shows_row(&mut terminal, "║Idle Elsewhere");
-    shows_row(&mut terminal, "║Idle /bin/bash -c c2 exec --headless");
+    for title in [
+        "Nested 日 本 ",
+        "Elsewhere",
+        "/bin/bash -c c2 exec --headless",
+    ] {
+        shows_row(&mut terminal, &row(&[], settled(), title));
+    }
     headless(&package, &titled_hold("Later"), "finish");
-    shows_row(&mut terminal, "║Idle Later");
+    shows_row(&mut terminal, &row(&[], settled(), "Later"));
     // Every pass so far is shown: four rows, and none is the monitor's own.
     let rows: Vec<_> = terminal
         .screen()
@@ -2552,8 +2586,13 @@ fn sized_to(package: &Package, title: &str, expected: &[&str]) {
 /// cursor where the application left it. Later output is painted live. A
 /// session created later never moves the selection, and the monitor
 /// controls the session.
+/// Its statuses come from the daemons' frozen status clock, a test hook
+/// release archives lack, so it returns early in archive mode.
 #[test]
 fn the_initial_selection_is_acquired_and_painted_live() {
+    if archive() {
+        return;
+    }
     let package = Package::new();
     without_introduction(&package);
     let script = r#"printf '\033]2;Paint\007plain \033[31mred\033[0m \033[1;44mbold\033[0m \xe7\x95\x8ce\xcc\x81\r\n\033[3;5H'; until [ -e "$HOME/more" ] || [ "$SECONDS" -ge 120 ]; do sleep 0.05; done; printf 'MORE'"#;
@@ -2636,8 +2675,14 @@ fn the_initial_selection_is_acquired_and_painted_live() {
 /// the monitor never asks the host anything, never forwards a session's
 /// bytes (its queries and a title it sets) to the host, and shows the title
 /// only as an inert label, so the host title stays the outer shell's.
+/// Its statuses, and so its initial selection, come from the daemons'
+/// frozen status clock, a test hook release archives lack, so it returns
+/// early in archive mode.
 #[test]
 fn only_the_daemon_answers_session_queries_and_no_session_byte_reaches_the_host() {
+    if archive() {
+        return;
+    }
     let package = Package::new();
     without_introduction(&package);
     let script = r#"printf '\033]2;Queries\007\033[6n'; IFS= read -rs -t 10 -d R reply; printf 'GOT %s\r\n\033[c' "${reply#*[}""#;
@@ -2672,8 +2717,14 @@ fn only_the_daemon_answers_session_queries_and_no_session_byte_reaches_the_host(
 /// its height less one, which the daemon clamps to 500x200; the session's
 /// bottom-right cell, written by absolute position at its own geometry,
 /// lands there below the top row; and the margins beyond it stay blank.
+/// Its statuses, and so its initial selection, come from the daemons'
+/// frozen status clock, a test hook release archives lack, so it returns
+/// early in archive mode.
 #[test]
 fn the_selected_session_fills_the_host_below_one_top_row_at_its_effective_geometry() {
+    if archive() {
+        return;
+    }
     let hosts: [(u16, u16, (u16, u16)); 4] = [
         (24, 80, (23, 80)),
         (60, 200, (59, 200)),
@@ -2779,8 +2830,14 @@ fn shows_too_small(terminal: &mut Terminal, rows: u16, cols: u16) {
 /// each recovery resizes the selected session to the host less its top
 /// row. The client and control survive throughout, and prefix+x still exits
 /// while too small.
+/// Its statuses, and so its initial selection, come from the daemons'
+/// frozen status clock, a test hook release archives lack, so it returns
+/// early in archive mode.
 #[test]
 fn a_host_too_small_for_a_session_says_so_sends_no_resize_and_recovers() {
+    if archive() {
+        return;
+    }
     let package = Package::new();
     without_introduction(&package);
     headless(&package, &sized("Small"), "finish");
@@ -2855,8 +2912,14 @@ fn without_key_hints_the_top_row_shows_no_hint() {
 /// (#110), so its now-cached screen never shows. The session's screen then changes
 /// while the other client controls it; Enter takes control back, and only
 /// the new restoration is painted, never the cache.
+/// Its statuses, and so its initial selection, come from the daemons'
+/// frozen status clock, a test hook release archives lack, so it returns
+/// early in archive mode.
 #[test]
 fn a_revoked_session_shows_no_cached_output_until_enter_takes_control_again() {
+    if archive() {
+        return;
+    }
     let package = Package::new();
     without_introduction(&package);
     let script = "printf '\\033]2;Taken\\007VISIBLE\\r\\n'; \
@@ -3139,8 +3202,14 @@ fn global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffer
 /// the uncovered session is painted before the rest of the read is
 /// routed), as does a key read after a lone Escape. No other dialog key
 /// reaches the session, and prefix+x exits from the selector (INP-01).
+/// Its statuses, and so its initial selection, come from the daemons'
+/// frozen status clock, a test hook release archives lack, so it returns
+/// early in archive mode.
 #[test]
 fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
+    if archive() {
+        return;
+    }
     let package = Package::new();
     without_introduction(&package);
     headless(&package, &titled_hold("Other"), "finish");
@@ -3271,8 +3340,14 @@ fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
 /// never answered, and the monitor still exits with status 0 within the
 /// one-second operation deadline plus the two-second shutdown deadline
 /// (and a few seconds' margin for the host's release).
+/// Its statuses, and so its initial selection, come from the daemons'
+/// frozen status clock, a test hook release archives lack, so it returns
+/// early in archive mode.
 #[test]
 fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
+    if archive() {
+        return;
+    }
     let package = Package::new();
     without_introduction(&package);
     limits_config(
@@ -3515,8 +3590,14 @@ fn placeholder_screen(label: &str, status: &str) -> String {
 /// take-control key then acquires Alpha and is consumed; once the monitor
 /// controls Alpha it is ordinary input. Beta, background throughout, then
 /// receives only what is typed once it is selected again.
+/// Its statuses, and so its initial selection, come from the daemons'
+/// frozen status clock, a test hook release archives lack, so it returns
+/// early in archive mode.
 #[test]
 fn a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key() {
+    if archive() {
+        return;
+    }
     let package = Package::new();
     without_introduction(&package);
     headless(&package, &watched("Beta"), "finish");
@@ -3781,8 +3862,14 @@ fn read_only_shows(terminal: &Terminal, status: &str, control: &str, lines: &[&s
 /// typed keys reach no session, not even the one the monitor controls in
 /// the background. Once the Starting row's client connects, it shows the
 /// non-controller placeholder until the take-control key acquires it.
+/// Its statuses, and so its initial selection, come from the daemons'
+/// frozen status clock, a test hook release archives lack, so it returns
+/// early in archive mode.
 #[test]
 fn enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires() {
+    if archive() {
+        return;
+    }
     const HELD: &str = "0d5c0000-0000-4000-8000-0000000000c1";
     let package = Package::new();
     without_introduction(&package);
@@ -3896,8 +3983,14 @@ fn enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires
 /// the session already controlled, so the daemon starts no new
 /// restoration, and the model built in the background is painted at once,
 /// output written since included; only now is the session resized.
+/// Its statuses, and so its initial selection, come from the daemons'
+/// frozen status clock, a test hook release archives lack, so it returns
+/// early in archive mode.
 #[test]
 fn promotion_keeps_a_background_model_without_selection_resize_or_input() {
+    if archive() {
+        return;
+    }
     let package = Package::new();
     without_introduction(&package);
     let promoted = headless(&package, &watched("Promoted"), "finish");
@@ -3948,8 +4041,14 @@ const TIMED_OUT: &str = "Taken | the session daemon did not answer in time";
 /// typed keys reach no session (not the one the monitor still controls in
 /// the background). The resumed daemon still serves that Acquire, so the
 /// client that controls the session loses control and gets it back.
+/// Its statuses, and so its initial selection, come from the daemons'
+/// frozen status clock, a test hook release archives lack, so it returns
+/// early in archive mode.
 #[test]
 fn a_failed_acquisition_keeps_the_selection_and_redirects_no_input() {
+    if archive() {
+        return;
+    }
     let package = Package::new();
     without_introduction(&package);
     let taken = headless(&package, &watched("Taken"), "finish");
@@ -4084,8 +4183,14 @@ fn hold(hold: &Path) {
 /// answers the departing client, before the hold begins. Once the daemon
 /// reads again, the restoration becomes ready, the session is sized to the
 /// host as it is then, and keys reach it.
+/// Its statuses, and so its initial selection, come from the daemons'
+/// frozen status clock, a test hook release archives lack, so it returns
+/// early in archive mode.
 #[test]
 fn keys_and_resizes_during_a_restoration_reach_no_session() {
+    if archive() {
+        return;
+    }
     let package = Package::new();
     without_introduction(&package);
     // Ready is held for as long as the test holds the daemon.
@@ -4215,9 +4320,14 @@ fn highlights(terminal: &Terminal, row: usize) {
 /// its terminal status time, and each stays once its session has ended. A
 /// hidden change (working under pending attention) moves nothing, even with
 /// its daemon's clock moved past a newer attention row's time. A status
-/// change that moves the highlighted row keeps the highlight on it.
+/// change that moves the highlighted row keeps the highlight on it. The
+/// daemons' status clock is a test hook, which release archives lack, so
+/// this returns early in archive mode.
 #[test]
 fn real_sessions_show_their_effective_status_and_final_outcomes_in_order() {
+    if archive() {
+        return;
+    }
     let package = Package::new();
     without_introduction(&package);
     let mut clocks = BTreeMap::new();
