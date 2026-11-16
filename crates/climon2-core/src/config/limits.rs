@@ -390,6 +390,18 @@ pub struct Backoff {
     pub jitter_percent: u32,
 }
 
+/// The monitor's own memory budgets (`memory`) its pressure policy keeps
+/// to (#119).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoryLimits {
+    /// `memory.total_bytes`: everything the monitor tracks.
+    pub total_bytes: u64,
+    /// `memory.history_bytes_per_session`: one session's history.
+    pub history_bytes_per_session: u64,
+    /// `memory.history_bytes_total`: every session's history together.
+    pub history_bytes_total: u64,
+}
+
 /// The monitor UI's cadence (`ui`): frames a second and the work quanta.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Cadence {
@@ -485,6 +497,20 @@ impl Limits {
             initial_ms,
             cap_ms,
             jitter_percent,
+        }
+    }
+
+    pub fn memory(&self) -> MemoryLimits {
+        let Memory {
+            total_bytes,
+            history_bytes_per_session,
+            history_bytes_total,
+            ..
+        } = self.0.memory;
+        MemoryLimits {
+            total_bytes,
+            history_bytes_per_session,
+            history_bytes_total,
         }
     }
 

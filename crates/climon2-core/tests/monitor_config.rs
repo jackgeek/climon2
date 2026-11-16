@@ -1176,6 +1176,9 @@ fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
         ("retry.cap_ms", json!(4000)),
         ("retry.jitter_percent", json!(35)),
         ("ui.fps", json!(12)),
+        ("memory.total_bytes", json!(500_000_000)),
+        ("memory.history_bytes_total", json!(200_000_000)),
+        ("memory.history_bytes_per_session", json!(20_000_000)),
         ("ui.client_quantum_ms", json!(3)),
         ("ui.background_quantum_ms", json!(9)),
     ])
@@ -1210,6 +1213,15 @@ fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
     assert_eq!(
         (retry.initial_ms, retry.cap_ms, retry.jitter_percent),
         (250, 4000, 35)
+    );
+    let memory = limits.memory();
+    assert_eq!(
+        (
+            memory.total_bytes,
+            memory.history_bytes_per_session,
+            memory.history_bytes_total
+        ),
+        (500_000_000, 20_000_000, 200_000_000)
     );
     let cadence = limits.cadence();
     assert_eq!(

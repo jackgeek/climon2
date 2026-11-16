@@ -19,6 +19,7 @@ mod keys;
 mod mouse;
 mod paint;
 mod preference;
+mod pressure;
 mod registry;
 mod router;
 mod screen;
@@ -174,6 +175,13 @@ struct Monitor {
     bell: bool,
     /// When the next frame may be painted: at most `ui.fps` a second.
     frames: cadence::Frames,
+    /// Client reports waiting to be applied, in fair turns within the work
+    /// quanta (#119).
+    work: cadence::Work<SessionId, ClientEvent>,
+    /// The memory budgets history is kept within (#119).
+    memory: climon2_core::config::MemoryLimits,
+    /// When each session was last inspected: painted selected.
+    inspected: BTreeMap<SessionId, Instant>,
 }
 
 /// A session under the authority it takes input with.
@@ -247,6 +255,9 @@ impl Monitor {
             toasts: Toasts::new(jump),
             bell: config.settings().bell,
             frames: cadence::Frames::new(limits.cadence().fps),
+            work: work(limits.cadence()),
+            memory: limits.memory(),
+            inspected: BTreeMap::new(),
         };
         monitor.show().map(|()| monitor)
     }
@@ -274,8 +285,9 @@ impl Monitor {
         let ending = self.handle(event)?;
         if ending.is_none() {
             self.collect();
+            self.relieve();
             self.retarget();
-            self.show()?;
+            self.frame()?;
         }
         Ok(ending)
     }
@@ -316,16 +328,27 @@ impl Monitor {
         }
     }
 
-    /// Paints the current scene when it differs from what the screen shows,
-    /// once a frame is due (at most `ui.fps` a second, #119): one not due
-    /// is skipped, and the next step's paints the scene as it is then.
+    /// Each step's frame, once one is due (at most `ui.fps` a second,
+    /// #119): one not due is skipped, and a later step's paints the scene
+    /// as it is then. Frames an action needs at once (a revealed canvas
+    /// that the rest of a read may type into, a resize) are painted when
+    /// they happen and count toward the cadence.
+    fn frame(&mut self) -> io::Result<()> {
+        if self.frames.due(Instant::now()) {
+            return self.show();
+        }
+        Ok(())
+    }
+
+    /// Paints the current scene when it differs from what the screen shows.
     /// Each terminal first learns whether this frame shows its applied
     /// restoration, so its control and input readiness describe the frame
     /// being painted.
     fn show(&mut self) -> io::Result<()> {
         let now = Instant::now();
-        if !self.frames.due(now) {
-            return Ok(());
+        self.frames.painted(now);
+        if let Some(id) = self.selected.clone() {
+            self.inspected.insert(id, now);
         }
         self.menus();
         let began = self.toasts.frame(now, self.screen.overlay());
@@ -617,8 +640,54 @@ impl Monitor {
         self.resize();
     }
 
-    /// Applies what discovery and the supervisor reported since the last
-    /// event, asking for a client for each session that now needs one.
+    /// Keeps history within its budgets (#119): each session's within
+    /// `memory.history_bytes_per_session`, shortening its own, then all
+    /// histories together within `history_bytes_total` and everything the
+    /// monitor tracks within `total_bytes`, shortening caches in the
+    /// pressure order ([`pressure::order`]). No cache ever gives up the
+    /// chunk holding its newest page.
+    fn relieve(&mut self) {
+        let per_session = within(self.memory.history_bytes_per_session);
+        for terminal in self.terminals.values_mut() {
+            while terminal.history_bytes() > per_session && terminal.shorten() {}
+        }
+        for id in pressure::order(&self.caches()) {
+            while self.pressed() && self.terminals.get_mut(&id).is_some_and(Terminal::shorten) {}
+        }
+    }
+
+    /// Whether the histories together, or everything tracked, exceed their
+    /// budgets.
+    fn pressed(&self) -> bool {
+        let histories: usize = self.terminals.values().map(Terminal::history_bytes).sum();
+        histories > within(self.memory.history_bytes_total)
+            || self.tracked() > within(self.memory.total_bytes)
+    }
+
+    /// What the monitor tracks: its one parser, every terminal model with
+    /// its staging, and every report not yet processed.
+    fn tracked(&self) -> usize {
+        let models: usize = self.terminals.values().map(Terminal::footprint).sum();
+        Parser::BYTES + models + self.supervisor.backlog()
+    }
+
+    /// Every terminal's cache as the pressure policy sees it.
+    fn caches(&self) -> Vec<pressure::Cache<SessionId>> {
+        let cache = |id: &SessionId| pressure::Cache {
+            key: id.clone(),
+            retained: self.registry.kind(id) != Some(Kind::Connected),
+            selected: self.selected.as_ref() == Some(id),
+            inspected: self.inspected.get(id).copied(),
+        };
+        self.terminals.keys().map(cache).collect()
+    }
+
+    /// Applies what discovery reported since the last event, asking for a
+    /// client for each session that now needs one, then client reports in
+    /// fair turns: each client's at most `ui.client_quantum_ms` at a time,
+    /// all at most `ui.background_quantum_ms` this turn (#119). The rest
+    /// waits for the next turn, still charged to its client, which is not
+    /// drained meanwhile once its reports fill its allowance.
     fn collect(&mut self) {
         let now = SystemTime::now();
         while let Ok(found) = self.discovery.found.try_recv() {
@@ -631,7 +700,13 @@ impl Monitor {
             }
         }
         while let Ok((id, event)) = self.supervisor.reports.try_recv() {
+            self.work.push(id, event);
+        }
+        self.work.begin(Instant::now());
+        while let Some((id, event)) = self.work.next(Instant::now()) {
+            let bytes = supervisor::footprint(&id, &event);
             self.report(&id, event, now);
+            self.supervisor.processed(&id, bytes);
         }
         self.selector.update(&self.registry.rows());
         self.initialise();
@@ -1175,6 +1250,20 @@ fn first_identifiers() -> supervisor::Identifiers {
 #[cfg(not(feature = "test-hooks"))]
 fn first_identifiers() -> supervisor::Identifiers {
     supervisor::Identifiers::default()
+}
+
+/// A byte budget as a `usize`, saturating.
+fn within(budget: u64) -> usize {
+    usize::try_from(budget).unwrap_or(usize::MAX)
+}
+
+/// Client work in fair turns within the `ui` quanta.
+fn work(cadence: climon2_core::config::Cadence) -> cadence::Work<SessionId, ClientEvent> {
+    let millis = |quantum: u32| Duration::from_millis(quantum.into());
+    cadence::Work::new(
+        millis(cadence.client_quantum_ms),
+        millis(cadence.background_quantum_ms),
+    )
 }
 
 /// The monitor's one validated loader, shared by every release it loads.

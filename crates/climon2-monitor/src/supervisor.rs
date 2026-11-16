@@ -23,6 +23,7 @@
 //! fresh connection generation. Nothing it held is replayed. A permanent
 //! rejection, a known final outcome, a session discovery proved gone and
 //! shutdown retry nothing. Resource admission and fairness arrive with #120.
+mod backlog;
 mod backoff;
 mod client;
 mod owner;
@@ -33,6 +34,8 @@ use crate::{
     registry::ClientEvent,
     terminal::{Presentation, Request},
 };
+use backlog::Backlog;
+pub(crate) use backlog::footprint;
 use client::{Client, Drain, Retry, Stop};
 use climon2_core::{
     SessionId, Timestamp, VersionName,
@@ -147,6 +150,8 @@ enum Command {
 pub(crate) struct Supervisor {
     commands: Sender<Command>,
     pub(crate) reports: Receiver<(SessionId, ClientEvent)>,
+    /// What each client's reports not yet processed hold (#119).
+    backlog: Arc<Backlog>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -154,18 +159,32 @@ impl Supervisor {
     pub(crate) fn start(context: Context, dispatch: tracing::Dispatch) -> std::io::Result<Self> {
         let (commands, received) = mpsc::channel();
         let (report, reports) = mpsc::channel();
+        let backlog = Arc::new(Backlog::default());
+        let held = Arc::clone(&backlog);
         let thread = thread::Builder::new()
             .name("supervisor".into())
             .spawn(move || {
                 tracing::dispatcher::with_default(&dispatch, || {
-                    State::new(context, report).serve(&received);
+                    State::new(context, (report, held)).serve(&received);
                 });
             })?;
         Ok(Self {
             commands,
             reports,
+            backlog,
             thread: Some(thread),
         })
+    }
+
+    /// The bytes every client's reports not yet processed hold together.
+    pub(crate) fn backlog(&self) -> usize {
+        self.backlog.total()
+    }
+
+    /// The UI processed a report of `id`'s that held `bytes`
+    /// ([`footprint`]): its client may be drained into them again.
+    pub(crate) fn processed(&self, id: &SessionId, bytes: usize) {
+        self.backlog.release(id, bytes);
     }
 
     /// Asks for a passive client for `metadata`'s session.
@@ -316,6 +335,14 @@ struct Instance {
 struct State {
     context: Arc<Context>,
     report: Sender<(SessionId, ClientEvent)>,
+    /// What each client's reports the UI has not processed hold: a client
+    /// is drained only while they fit its `queues.event_bytes`.
+    backlog: Arc<Backlog>,
+    /// Since when each congested client has not been drained.
+    congested: BTreeMap<SessionId, Instant>,
+    /// Shutdown has begun: the UI processes nothing more, and every client
+    /// is drained regardless, so shutdown stays serviceable.
+    stopping: bool,
     internal: Sender<Internal>,
     internals: Receiver<Internal>,
     waiting: BTreeMap<(Reverse<Timestamp>, SessionId), SessionMetadata>,
@@ -342,7 +369,10 @@ enum Step {
 }
 
 impl State {
-    fn new(context: Context, report: Sender<(SessionId, ClientEvent)>) -> Self {
+    fn new(
+        context: Context,
+        (report, backlog): (Sender<(SessionId, ClientEvent)>, Arc<Backlog>),
+    ) -> Self {
         let (internal, internals) = mpsc::channel();
         let limits = context.limits;
         let accepted = limits.request_records as usize + limits.operations as usize;
@@ -350,6 +380,9 @@ impl State {
             ledger: accepted,
             context: Arc::new(context),
             report,
+            backlog,
+            congested: BTreeMap::new(),
+            stopping: false,
             internal,
             internals,
             waiting: BTreeMap::new(),
@@ -370,6 +403,7 @@ impl State {
             self.schedule();
             self.poll();
         }
+        self.stopping = true;
         self.settle_input();
         self.shut_down();
     }
@@ -721,12 +755,15 @@ impl State {
         }
     }
 
-    /// Waits one tick on every descriptor, then drains every live instance.
+    /// Waits one tick on the descriptor of every live instance that is not
+    /// congested, then drains each of those; a congested one is failed once
+    /// its congestion outlasts `deadlines.delivery_stall_ms` (#119).
     fn poll(&mut self) {
         let mut table: Vec<_> = self
             .instances
-            .values()
-            .filter_map(|instance| instance.phase.live()?.descriptor)
+            .iter()
+            .filter(|(id, _)| !self.throttled(id))
+            .filter_map(|(_, instance)| instance.phase.live()?.descriptor)
             .map(|fd| libc::pollfd {
                 fd,
                 events: libc::POLLIN,
@@ -741,19 +778,65 @@ impl State {
             .filter(|(_, instance)| instance.phase.live().is_some())
             .map(|(id, _)| id.clone())
             .collect();
+        let now = Instant::now();
         for id in live {
-            self.drain(&id);
+            if self.throttled(&id) {
+                self.congestion(&id, now);
+            } else {
+                self.congested.remove(&id);
+                self.drain_within(&id);
+            }
+        }
+    }
+
+    /// Whether `id`'s reporting client has filled its `queues.event_bytes`
+    /// with reports the UI has not processed: until the UI catches up it is
+    /// not drained, and its records wait in the library. Ownership of what
+    /// was drained moved to the UI, and its accounting with it.
+    fn throttled(&self, id: &SessionId) -> bool {
+        let reporting = self.phase(id).is_some_and(Phase::reporting) && !self.stopping;
+        reporting && self.backlog.held(id) as u64 >= self.context.limits.event_bytes
+    }
+
+    /// `id` is congested at `now`: failed explicitly once that has lasted
+    /// `deadlines.delivery_stall_ms`.
+    fn congestion(&mut self, id: &SessionId, now: Instant) {
+        let since = *self.congested.entry(id.clone()).or_insert(now);
+        let stall = Duration::from_millis(self.context.limits.delivery_stall_ms.into());
+        if now.saturating_duration_since(since) >= stall {
+            self.congested.remove(id);
+            let why = format!("delivery congestion lasted past {} ms", stall.as_millis());
+            self.fail(id, why);
+        }
+    }
+
+    /// Drains `id` until it has nothing more or its reports fill its
+    /// allowance ([`State::throttled`]), reporting every delivery.
+    fn drain_within(&mut self, id: &SessionId) {
+        while !self.throttled(id) && self.drain_one(id) {}
+    }
+
+    /// Drains one delivery of `id`'s, if it is live: whether there may be
+    /// more.
+    fn drain_one(&mut self, id: &SessionId) -> bool {
+        let Some(live) = self.phase(id).and_then(Phase::live) else {
+            return false;
+        };
+        match live.client.drain(id) {
+            Drain::Events(events) => {
+                events.into_iter().for_each(|event| self.event(id, event));
+                true
+            }
+            Drain::Stop(stop) => {
+                self.stop(id, stop);
+                false
+            }
         }
     }
 
     /// Drains `id` until it has nothing more, reporting every delivery.
     fn drain(&mut self, id: &SessionId) {
-        while let Some(live) = self.phase(id).and_then(Phase::live) {
-            match live.client.drain(id) {
-                Drain::Events(events) => events.into_iter().for_each(|event| self.event(id, event)),
-                Drain::Stop(stop) => return self.stop(id, stop),
-            }
-        }
+        while self.drain_one(id) {}
     }
 
     fn stop(&mut self, id: &SessionId, stop: Stop) {
@@ -915,7 +998,9 @@ impl State {
         }
     }
 
+    /// Reports `event` to the UI, charged to `id` until it is processed.
     fn tell(&self, id: &SessionId, event: ClientEvent) {
+        self.backlog.charge(id, &event);
         let _ = self.report.send((id.clone(), event));
     }
 
@@ -2988,6 +3073,91 @@ mod tests {
                 (native::ACQUIRE, u64::MAX, vec![GENERATION]),
             ]
         );
+    }
+
+    /// The bytes one report for `id` with nothing carried holds.
+    fn one_report(id: &SessionId) -> u64 {
+        backlog::footprint(id, &ClientEvent::Ended) as u64
+    }
+
+    /// LIM-02 (Monitor, Fault: delivery congestion), with `event_bytes` the
+    /// footprint of one report: once Open's success is reported and the UI
+    /// has not processed it, the client's reports fill its allowance and it
+    /// is not drained again, so its presentation stays in the library;
+    /// after `deadlines.delivery_stall_ms` (200 ms) of that congestion, it
+    /// is failed explicitly and retried passively.
+    #[test]
+    fn a_client_whose_reports_stay_unprocessed_is_failed_after_its_delivery_stall() {
+        let id = session(28, 1);
+        let presents = Script {
+            presents: true,
+            ..Script::default()
+        };
+        script(&id, presents);
+        let mut limits = climon2_core::config::Limits::default().library();
+        limits.event_bytes = one_report(&id);
+        limits.delivery_stall_ms = 200;
+        let mut supervised = limited(1, 20_000, fake_library(), limits);
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+        let opened = ClientEvent::Opened { status: false };
+        assert_eq!(next(supervisor), (id.clone(), opened));
+        let since = Instant::now();
+        let why = "delivery congestion lasted past 200 ms";
+        assert_eq!(
+            next(supervisor),
+            (id.clone(), ClientEvent::Unavailable(why.into()))
+        );
+        assert!(
+            since.elapsed() >= Duration::from_millis(150),
+            "{:?}",
+            since.elapsed()
+        );
+        assert_eq!(
+            next(supervisor),
+            (
+                id.clone(),
+                ClientEvent::Recovery(Recovery::Retrying(why.into()))
+            )
+        );
+        supervisor.stop();
+    }
+
+    /// LIM-02 (Monitor: capacity accounting at its boundary): with
+    /// `event_bytes` one byte more than a report, and with the UI
+    /// processing each report as it arrives, the client keeps being
+    /// drained: its whole presentation arrives and it is never failed.
+    #[test]
+    fn reports_the_ui_processes_leave_room_to_drain_the_client() {
+        for (test, processes, room) in [(29, false, 1), (30, true, 0)] {
+            let id = session(test, 1);
+            let presents = Script {
+                presents: true,
+                ..Script::default()
+            };
+            script(&id, presents);
+            let mut limits = climon2_core::config::Limits::default().library();
+            limits.event_bytes = one_report(&id) + room;
+            limits.delivery_stall_ms = 200;
+            let mut supervised = limited(1, 20_000, fake_library(), limits);
+            let supervisor = &mut supervised.supervisor;
+            supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+            let mut seen = Vec::new();
+            while !seen.contains(&ClientEvent::Presentation(Presentation::Complete)) {
+                let (_, event) = next(supervisor);
+                if processes {
+                    supervisor.processed(&id, backlog::footprint(&id, &event));
+                }
+                seen.push(event);
+            }
+            assert!(
+                !seen
+                    .iter()
+                    .any(|event| matches!(event, ClientEvent::Unavailable(_))),
+                "{seen:?}"
+            );
+            supervisor.stop();
+        }
     }
 
     /// Owner decision on #116 (2026-11-16): once discovery proves a

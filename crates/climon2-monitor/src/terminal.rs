@@ -605,6 +605,29 @@ impl Terminal {
         self.model.as_ref().filter(|_| shown).map(Model::view)
     }
 
+    /// The allocation the model holds, any staged restoration included
+    /// (#119).
+    pub(crate) fn footprint(&self) -> usize {
+        self.model.as_ref().map_or(0, Model::footprint)
+    }
+
+    /// What the model holds beyond its current model's mandatory allocation:
+    /// its history, with any staged restoration and cell extras, which the
+    /// history budgets bound (#119).
+    pub(crate) fn history_bytes(&self) -> usize {
+        self.model.as_ref().map_or(0, |model| {
+            let rows = self.limits.history_rows;
+            let base = Model::mandatory(model.geometry(), rows).current_model;
+            model.footprint().saturating_sub(base)
+        })
+    }
+
+    /// Gives up the model's oldest history chunk, never the one holding its
+    /// newest page: false once nothing more can go (#119).
+    pub(crate) fn shorten(&mut self) -> bool {
+        self.model.as_mut().is_some_and(Model::shorten_history)
+    }
+
     /// The retained cache, for read-only inspection once the session is no
     /// longer connected (#116): what the last applied restoration and the
     /// output after it left, from any generation; none before one applied.
@@ -1488,6 +1511,40 @@ mod tests {
         let cached = terminal.retained().expect("the cache is retained");
         assert_eq!(row_text(&cached, 0), "safee");
         assert_eq!(row_text(&cached, 1), "", "nothing after the refusal");
+    }
+
+    /// LIM-03 (pure supplement, bounded history): a terminal's footprint is
+    /// its model's, and its history bytes what the model holds beyond its
+    /// current model; shortening gives up history a chunk at a time, oldest
+    /// first, never the chunk holding the newest page, and the view shows
+    /// the truncation. A terminal without a model holds nothing and has
+    /// nothing to give up.
+    #[test]
+    fn history_is_shortened_a_chunk_at_a_time_down_to_its_newest_page() {
+        let mut blank = Terminal::new(LIMITS);
+        assert_eq!((blank.footprint(), blank.history_bytes()), (0, 0));
+        assert!(!blank.shorten());
+        let lines: String = (1..=2500).map(|line| format!("{line}\r\n")).collect();
+        let mut parser = Parser::new();
+        let mut terminal = Terminal::new(Limits {
+            bytes: 64 << 20,
+            history_rows: 3000,
+        });
+        let held = authority(2, 3);
+        terminal.present(&mut parser, Presentation::Granted(held, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Begin(held, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Display(lines.into()));
+        terminal.present(&mut parser, Presentation::Complete);
+        let mandatory = Model::mandatory(geometry(10, 3), 3000);
+        let full = terminal.history_bytes();
+        assert_eq!(full, terminal.footprint() - mandatory.current_model);
+        assert!(full > 2 * mandatory.recent_page, "{full}");
+        assert!(terminal.shorten());
+        assert!(terminal.history_bytes() < full);
+        while terminal.shorten() {}
+        assert!(terminal.history_bytes() >= mandatory.recent_page);
+        let view = terminal.view().unwrap();
+        assert_eq!(row_text(&view, 1), "2500");
     }
 
     /// TRM-05 (pure supplement): the wheel scrolls the model's history and
