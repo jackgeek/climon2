@@ -7,7 +7,9 @@
 #[allow(dead_code)]
 mod support;
 
-use climon2_test_term::{AnsiColor, Color, InputTerminal, Modes, Terminal, Width, bin_path};
+use climon2_test_term::{
+    AnsiColor, Color, InputTerminal, Modes, Mouse, MouseButton, Terminal, Width, bin_path,
+};
 use nix::{
     sys::signal::{Signal, kill},
     unistd::Pid,
@@ -2274,7 +2276,7 @@ fn the_own_session_is_hidden_while_nested_and_controlled_sessions_appear() {
     let rows: Vec<_> = terminal
         .screen()
         .lines()
-        .filter(|row| row.starts_with(" ║") && !row.trim_matches([' ', '║']).is_empty())
+        .filter(|row| row.starts_with(" ║Idle "))
         .map(str::to_owned)
         .collect();
     assert_eq!(rows.len(), 4, "{rows:?}");
@@ -2324,11 +2326,28 @@ fn the_own_session_is_hidden_while_nested_and_controlled_sessions_appear() {
     package.assert_clean();
 }
 
-/// The basic selector over `screen` as SEL-01 specifies it for #106: a
-/// captionless double border one cell in from the rows below the top row,
-/// and each `(status, label)` row with the status column as wide as its
-/// widest status.
+/// The selector's footer with key hints on and the default prefix (owner
+/// decision on #113: only select, cancel and help).
+const FOOTER: &str = "Enter: select  Esc: cancel  Ctrl+] then ?: help";
+
+/// The selector over `screen`, with an empty search and the default
+/// footer, as [`selector_over`] draws it.
 fn with_selector(screen: &str, rows: &[(&str, &str)]) -> String {
+    selector_over(screen, "", rows, Some(FOOTER))
+}
+
+/// The selector over `screen` as SEL-01 specifies it (#106, #113): a
+/// captionless double border one cell in from the rows below the top row;
+/// `search` on its first line; one separator joined with ╟ and ╢; each
+/// `(status, label)` row with the status column as wide as its widest
+/// status; and any `footer` at the bottom inside the border. ASCII text
+/// only: each character is one cell.
+fn selector_over(
+    screen: &str,
+    search: &str,
+    rows: &[(&str, &str)],
+    footer: Option<&str>,
+) -> String {
     let mut lines: Vec<String> = screen.split('\n').map(str::to_owned).collect();
     let (height, width) = (lines.len(), lines[0].chars().count());
     let inner = width - 4;
@@ -2337,14 +2356,20 @@ fn with_selector(screen: &str, rows: &[(&str, &str)]) -> String {
         .map(|(status, _)| status.len())
         .max()
         .unwrap_or(0);
-    let mut boxed = vec![format!(" ╔{}╗ ", "═".repeat(inner))];
-    for index in 0..height - 5 {
+    let mut boxed = vec![
+        format!(" ╔{}╗ ", "═".repeat(inner)),
+        format!(" ║{search:<inner$}║ "),
+        format!(" ╟{}╢ ", "─".repeat(inner)),
+    ];
+    let list = height - 7 - usize::from(footer.is_some());
+    for index in 0..list {
         let text = rows
             .get(index)
             .map(|(state, label)| format!("{state:status$} {label}"))
             .unwrap_or_default();
         boxed.push(format!(" ║{text:<inner$}║ "));
     }
+    boxed.extend(footer.map(|footer| format!(" ║{footer:<inner$}║ ")));
     boxed.push(format!(" ╚{}╝ ", "═".repeat(inner)));
     lines.splice(2..height - 1, boxed);
     lines.join("\n")
@@ -2352,9 +2377,7 @@ fn with_selector(screen: &str, rows: &[(&str, &str)]) -> String {
 
 /// The rows of the open selector's list whose cells are reversed.
 fn highlighted_rows(terminal: &Terminal) -> Vec<usize> {
-    (3..usize::from(ROWS) - 2)
-        .filter(|&row| terminal.cells(row)[2].rendition.inverse)
-        .collect()
+    highlighted_in(terminal, ROWS)
 }
 
 /// SEL-01 (Monitor, basic cases): prefix+s overlays the captionless double
@@ -2384,17 +2407,17 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
     terminal.send("\x1ds").unwrap();
     let open = with_selector(&body, &[("Idle", "C3"), ("Idle", "B2"), ("Idle", "A1")]);
     shows(&mut terminal, &open);
-    assert_eq!(highlighted_rows(&terminal), [3]);
+    assert_eq!(highlighted_rows(&terminal), [5]);
     // Each step's keys end on a row that differs from where the step
     // started, and that no wrapping, dropped or reopening step could reach:
     // Up at the top then Down; Down at the bottom then Up; prefix+s while
     // open, which must not reopen on the first row, then Down.
     for (keys, expected) in [
-        (&b"\x1b[A\x1b[B"[..], 4),
-        (b"\x1b[B", 5),
-        (b"\x1b[B\x1b[A", 4),
-        (b"\x1ds\x1b[B", 5),
-        (b"\x1b[A\x1b[A", 3),
+        (&b"\x1b[A\x1b[B"[..], 6),
+        (b"\x1b[B", 7),
+        (b"\x1b[B\x1b[A", 6),
+        (b"\x1ds\x1b[B", 7),
+        (b"\x1b[A\x1b[A", 5),
     ] {
         terminal.send(keys).unwrap();
         let deadline = Instant::now() + TIMEOUT;
@@ -2434,6 +2457,487 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
         let resized = home.join(format!("{name}.winch")).exists();
         assert_eq!(resized, name == "C3", "{name}");
     }
+    package.assert_clean();
+}
+
+/// The rows of the open selector's list on a host `rows` high whose cells
+/// are reversed.
+fn highlighted_in(terminal: &Terminal, rows: u16) -> Vec<usize> {
+    (3..usize::from(rows) - 2)
+        .filter(|&row| terminal.cells(row)[2].rendition.inverse)
+        .collect()
+}
+
+/// A left click at the host cell `row`, `column`: a press and its release.
+fn click(terminal: &mut Terminal, row: usize, column: usize) {
+    terminal
+        .mouse(Mouse::Press(MouseButton::Left), row, column)
+        .unwrap();
+    terminal
+        .mouse(Mouse::Release(MouseButton::Left), row, column)
+        .unwrap();
+}
+
+/// A blank host `rows` by `cols` with the selector over it, as
+/// [`selector_over`] draws it.
+fn selector_on(
+    (rows, cols): (u16, u16),
+    search: &str,
+    list: &[(&str, &str)],
+    footer: Option<&str>,
+) -> String {
+    let blank = vec![" ".repeat(usize::from(cols)); usize::from(rows)].join("\n");
+    selector_over(&blank, search, list, footer)
+}
+
+/// The selector's rows of `screen`, from its top border to its bottom
+/// border, without the margin columns at either edge, where the selected
+/// session's canvas shows.
+fn boxed(screen: &str) -> Vec<String> {
+    let rows: Vec<_> = screen.split('\n').collect();
+    rows[2..rows.len() - 1]
+        .iter()
+        .map(|row| {
+            let cells = row.chars().count();
+            row.chars().skip(1).take(cells - 2).collect()
+        })
+        .collect()
+}
+
+/// The selector on a blank host `size`, as [`boxed`] shows it.
+fn selector_box(
+    size: (u16, u16),
+    search: &str,
+    list: &[(&str, &str)],
+    footer: Option<&str>,
+) -> Vec<String> {
+    boxed(&selector_on(size, search, list, footer))
+}
+
+/// Waits until a whole frame shows the selector, and whatever covers it,
+/// as `expected` (from [`boxed`]), with its list highlighting exactly the
+/// host rows `highlighted`, on a host `rows` high.
+fn boxed_as(terminal: &Terminal, rows: u16, expected: &[String], highlighted: &[usize]) {
+    whole_frame_shows(terminal, &expected.join("\n"), |screen| {
+        boxed(screen) == expected && highlighted_in(terminal, rows) == highlighted
+    });
+}
+
+/// Waits until a whole frame shows exactly `expected` and the selector's
+/// list highlights exactly the host rows `highlighted`, on the default host.
+fn shows_highlighted(terminal: &Terminal, expected: &str, highlighted: &[usize]) {
+    whole_frame_shows(terminal, expected, |screen| {
+        screen == expected && highlighted_rows(terminal) == highlighted
+    });
+}
+
+/// Selector rows, each its status and label.
+type Rows<'a> = &'a [(&'a str, &'a str)];
+
+/// SEL-01 (Monitor: search line, separator, footer, empty matches) and
+/// SEL-02 (Contract and Monitor: the matcher, editing and paste): the
+/// selector opens with an empty search on the selected session, the
+/// search's cursor at its start. Typed text filters the rows by
+/// `SkimMatcherV2` ordered-subsequence matching over the displayed status,
+/// a space and the label, ignoring case beyond ASCII: a short query keeps
+/// every row containing it, a subsequence, a spaced query, one crossing
+/// from status into label, a Unicode one and wide text each keep exactly
+/// their rows, always in row order, never by score (Build Replica, the
+/// newer, stays above Build, the closer match), and a query nothing matches
+/// empties the list under the footer. Each edit keeps a highlight that
+/// still matches, otherwise highlights the first match. Left, Home and End
+/// move the search's cursor and typing inserts there. A bracketed paste is
+/// one line of search text: its CRLF a space, its prefix byte discarded and
+/// its x inserted, so neither its prefix+x nor its CR acts. Enter then
+/// selects the highlighted row.
+#[test]
+fn the_selector_search_filters_by_status_and_label_in_row_order() {
+    let package = Package::new();
+    without_introduction(&package);
+    for title in ["ÉTÉ 日本", "fox bar", "Build", "Build Replica"] {
+        headless(&package, &titled_hold(title), "finish");
+    }
+    let mut terminal = outer(&package, "c2 monitor");
+    let body = beneath(&controlled("Build Replica", STATUS));
+    top_row_is(&mut terminal, &controlled("Build Replica", STATUS));
+    terminal.send("\x1ds").unwrap();
+    // The host's screen text follows each wide character with its covered
+    // cell.
+    let (replica, build, fox, wide) = (
+        (STATUS, "Build Replica"),
+        (STATUS, "Build"),
+        (STATUS, "fox bar"),
+        (STATUS, "ÉTÉ 日 本 "),
+    );
+    let searched =
+        |search: &str, rows: &[(&str, &str)]| selector_over(&body, search, rows, Some(FOOTER));
+    shows_highlighted(&terminal, &searched("", &[replica, build, fox, wide]), &[5]);
+    cursor_at(&terminal, 3, 2);
+    // Each step: keys typed, the search then shown, the rows it lists and
+    // the search cursor's column.
+    let steps: [(&str, &str, Rows, usize); 7] = [
+        ("b", "b", &[replica, build, fox], 3),
+        ("ld", "bld", &[replica, build], 5),
+        ("\x7f\x7f\x7fo b", "o b", &[fox], 5),
+        ("\x7f\x7f\x7feBu", "eBu", &[replica, build], 5),
+        ("\x7f\x7f\x7fété", "été", &[wide], 5),
+        ("\x7f\x7f\x7f日本", "日 本 ", &[wide], 6),
+        ("\x7f\x7fzzz", "zzz", &[], 5),
+    ];
+    for (typed, search, rows, column) in steps {
+        terminal.send(typed).unwrap();
+        let highlighted: &[usize] = if rows.is_empty() { &[] } else { &[5] };
+        shows_highlighted(&terminal, &searched(search, rows), highlighted);
+        cursor_at(&terminal, 3, column);
+    }
+    terminal.send("\x7f\x7f\x7fbr\x1b[Da").unwrap();
+    shows_highlighted(&terminal, &searched("bar", &[fox]), &[5]);
+    cursor_at(&terminal, 3, 4);
+    terminal.send("\x1b[Ho \x1b[F").unwrap();
+    shows_highlighted(&terminal, &searched("o bar", &[fox]), &[5]);
+    cursor_at(&terminal, 3, 7);
+    terminal.send("\x7f".repeat(5)).unwrap();
+    shows_highlighted(&terminal, &searched("", &[replica, build, fox, wide]), &[7]);
+    terminal.paste("f\x1dx\r\nb").unwrap();
+    shows_highlighted(&terminal, &searched("fx b", &[fox]), &[5]);
+    cursor_at(&terminal, 3, 6);
+    terminal.send("\r").unwrap();
+    top_row_is(&mut terminal, &controlled("fox bar", STATUS));
+    selector_closed(&terminal);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// The narrow host of
+/// [`selector_navigation_mouse_and_wheel_on_narrow_and_large_hosts`], rows
+/// by columns.
+const NARROW: (u16, u16) = (14, 40);
+
+/// SEL-01 (Monitor: narrow and large hosts, scrolling, cell-safe clipping),
+/// SEL-02 (Monitor: navigation, Tab, clicks and the wheel), INP-05 (Monitor,
+/// selector case) and TRM-03 (Monitor, overlay case): on a 40x14 host the
+/// list shows six of eight rows and the footer ends in "…"; a long label
+/// and a wide one end in "…" without splitting a character (owner decision
+/// on #112). Tab and Shift+Tab change nothing; Down, PageDown, PageUp and Up
+/// move the highlight a row or a page, never wrapping, scrolling to keep it
+/// in view. The wheel scrolls the list a row a notch, as far as it goes,
+/// without moving the highlight; a left click on a row only highlights it;
+/// clicks on the search line, the border or the footer, or with the right
+/// button, do nothing. Enter acquires the clicked row; reopened, the
+/// selector highlights it, scrolled into view, and a click outside the box
+/// cancels. Resized to 200x60, the open selector lists every row whole.
+#[test]
+fn selector_navigation_mouse_and_wheel_on_narrow_and_large_hosts() {
+    let package = Package::new();
+    without_introduction(&package);
+    let long = "S1 with a title far too long for this narrow host";
+    let mut titles = vec![long.to_owned(), format!("S2 {}", "日".repeat(20))];
+    titles.extend((3..=8).map(|index| format!("S{index}")));
+    for title in &titles {
+        headless(&package, &titled_hold(title), "finish");
+    }
+    let mut terminal = support::outer(
+        &package,
+        Path::new("/bin/bash"),
+        &format!("printf '\\033]2;{TITLE}\\007'; printf 'BEFORE-MONITOR\\n'; c2 monitor"),
+        NARROW.0,
+        NARROW.1,
+    );
+    let controlled_here =
+        serde_json::json!({"lifecycle": "attached", "attachments": 1, "controlled": true});
+    // Initial selection takes S8, the newest, before the selector opens.
+    listed_as(&package, "]2;S8", &controlled_here);
+    terminal.send("\x1ds").unwrap();
+    let names: Vec<String> = (3..=8).rev().map(|index| format!("S{index}")).collect();
+    let clipped_wide = format!("S2 {}…", "日 ".repeat(13));
+    let mut rows: Vec<(&str, &str)> = names.iter().map(|name| (STATUS, name.as_str())).collect();
+    rows.push((STATUS, &clipped_wide));
+    rows.push((STATUS, "S1 with a title far too long f…"));
+    let footer = Some("Enter: select  Esc: cancel  Ctrl+] …");
+    let window = |first: usize| selector_box(NARROW, "", &rows[first..first + 6], footer);
+    boxed_as(&terminal, NARROW.0, &window(0), &[5]);
+    let steps: [(&[u8], usize, &[usize]); 7] = [
+        (b"\t\x1b[Z", 0, &[5]),
+        (b"\x1b[B\x1b[B", 0, &[7]),
+        (b"\x1b[6~", 2, &[10]),
+        (b"\x1b[6~\x1b[B", 2, &[10]),
+        (b"\x1b[5~", 1, &[5]),
+        (b"\x1b[A", 0, &[5]),
+        (b"\x1b[A", 0, &[5]),
+    ];
+    for (keys, first, highlighted) in steps {
+        terminal.send(keys).unwrap();
+        boxed_as(&terminal, NARROW.0, &window(first), highlighted);
+    }
+    for _ in 0..3 {
+        terminal.mouse(Mouse::WheelDown, 6, 5).unwrap();
+    }
+    boxed_as(&terminal, NARROW.0, &window(2), &[]);
+    click(&mut terminal, 7, 5);
+    boxed_as(&terminal, NARROW.0, &window(2), &[7]);
+    terminal.mouse(Mouse::WheelUp, 6, 5).unwrap();
+    boxed_as(&terminal, NARROW.0, &window(1), &[8]);
+    for (row, column) in [(3, 5), (5, 1), (11, 5)] {
+        click(&mut terminal, row, column);
+    }
+    terminal
+        .mouse(Mouse::Press(MouseButton::Right), 5, 5)
+        .unwrap();
+    terminal
+        .mouse(Mouse::Release(MouseButton::Right), 5, 5)
+        .unwrap();
+    // Down then Up lands back on S4 only if no click moved the highlight.
+    terminal.send("\x1b[B\x1b[A").unwrap();
+    boxed_as(&terminal, NARROW.0, &window(1), &[8]);
+    terminal.send("\r").unwrap();
+    listed_as(&package, "]2;S4", &controlled_here);
+    selector_closed(&terminal);
+    terminal.send("\x1ds").unwrap();
+    boxed_as(&terminal, NARROW.0, &window(0), &[9]);
+    click(&mut terminal, 0, 10);
+    selector_closed(&terminal);
+    terminal.send("\x1ds").unwrap();
+    boxed_as(&terminal, NARROW.0, &window(0), &[9]);
+    terminal.resize(60, 200).unwrap();
+    let full_wide = format!("S2 {}", "日 ".repeat(20));
+    let mut whole: Vec<(&str, &str)> = names.iter().map(|name| (STATUS, name.as_str())).collect();
+    whole.push((STATUS, &full_wide));
+    whole.push((STATUS, long));
+    boxed_as(
+        &terminal,
+        60,
+        &selector_box((60, 200), "", &whole, Some(FOOTER)),
+        &[9],
+    );
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// SEL-02 (Monitor: asynchronous title and status updates) and SEL-03
+/// (Monitor and Fault: reorder and takeover): a highlighted row whose new
+/// title stops matching the search loses the highlight, and matching again
+/// does not bring it back; Enter then selects nothing until Down
+/// highlights the first match. Clearing the search keeps the highlight on
+/// its row; when that row moves above the others (its session reports
+/// working) and another client takes its session over, Enter still selects
+/// and acquires exactly that session, and no selector key reached it.
+#[test]
+fn async_updates_clear_the_highlight_and_enter_pins_the_highlighted_session() {
+    let package = Package::new();
+    without_introduction(&package);
+    let alpha = headless(&package, &watched("Alpha"), "finish");
+    headless(&package, &watched("Beta"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Beta", STATUS, "29 120");
+    terminal.send("\x1dsal").unwrap();
+    let searched = |search: &str, rows: &[(&str, &str)]| {
+        selector_box((ROWS, COLS), search, rows, Some(FOOTER))
+    };
+    let alpha_row = [(STATUS, "Alpha")];
+    boxed_as(&terminal, ROWS, &searched("al", &alpha_row), &[5]);
+    retitle(&package, "Alpha", "Omega");
+    boxed_as(&terminal, ROWS, &searched("al", &[]), &[]);
+    retitle(&package, "Alpha", "Alpha");
+    boxed_as(&terminal, ROWS, &searched("al", &alpha_row), &[]);
+    // Enter selects nothing: the selector stays open over Beta, and the
+    // Down after it highlights the first match.
+    terminal.send("\r\x1b[B").unwrap();
+    boxed_as(&terminal, ROWS, &searched("al", &alpha_row), &[5]);
+    top_row_is(&mut terminal, &controlled("Beta", STATUS));
+    terminal.send("\x7f\x7f").unwrap();
+    let both = [(STATUS, "Beta"), (STATUS, "Alpha")];
+    boxed_as(&terminal, ROWS, &searched("", &both), &[6]);
+    report_state(&package, "Alpha", "working");
+    let moved = [(RUNNING, "Alpha"), (STATUS, "Beta")];
+    boxed_as(&terminal, ROWS, &searched("", &moved), &[5]);
+    let mut other = attach(&package, &alpha);
+    terminal.send("\r").unwrap();
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    other.wait_for_text(VIEWED_ELSEWHERE, TIMEOUT).unwrap();
+    terminal.send("z").unwrap();
+    received_by(&package, "Alpha", b"z");
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    received_by(&package, "Beta", b"");
+    detach(other);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// SEL-03 (Monitor: cancellation and a prefix that consumes Escape) and
+/// INP-05 (Monitor, click outside, owner decision on #113): Escape, or a
+/// click outside the box, cancels the selector after the highlight moved
+/// and the search was edited, leaving the selected session controlled and
+/// the other unacquired, and none of those keys reached a session. With
+/// Ctrl+[ as the prefix the footer never advertises Escape, and a lone
+/// Escape waits as the prefix: the key after it completes no action and
+/// reaches neither the search nor a session, so the selector stays open
+/// with its highlight, and prefix+x still exits.
+#[test]
+fn cancelling_keeps_the_selection_and_an_escape_prefix_cannot_cancel() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &watched("Alpha"), "finish");
+    headless(&package, &watched("Beta"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Beta", STATUS, "29 120");
+    terminal.send("\x1ds\x1b[Ba").unwrap();
+    let rows = [(STATUS, "Beta"), (STATUS, "Alpha")];
+    let searched = selector_box((ROWS, COLS), "a", &rows, Some(FOOTER));
+    boxed_as(&terminal, ROWS, &searched, &[6]);
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    top_row_is(&mut terminal, &controlled("Beta", STATUS));
+    terminal.send("z").unwrap();
+    received_by(&package, "Beta", b"z");
+    terminal.send("\x1ds\x1b[B").unwrap();
+    let typed = [(RUNNING, "Beta"), (STATUS, "Alpha")];
+    let open = selector_box((ROWS, COLS), "", &typed, Some(FOOTER));
+    boxed_as(&terminal, ROWS, &open, &[6]);
+    click(&mut terminal, 29, 60);
+    selector_closed(&terminal);
+    terminal.send("y").unwrap();
+    received_by(&package, "Beta", b"zy");
+    let detached =
+        serde_json::json!({"lifecycle": "detached", "attachments": 0, "controlled": false});
+    listed_as(&package, "Alpha", &detached);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+
+    fs::write(
+        config_file(&package),
+        r#"{"client": {"escape_prefix": "Ctrl+["}}"#,
+    )
+    .unwrap();
+    let mut terminal = outer(&package, "c2 monitor");
+    let top = session_top_row(
+        usize::from(COLS),
+        "Beta",
+        &[RUNNING, CONTROLLING, "Ctrl+[ then s: sessions"],
+    );
+    top_row_is(&mut terminal, &top);
+    terminal.send("\x1bs\x1b[B").unwrap();
+    let footer = Some("Enter: select  Ctrl+[ then ?: help");
+    let open = selector_box((ROWS, COLS), "", &typed, footer);
+    boxed_as(&terminal, ROWS, &open, &[6]);
+    let monitor = monitor_process(&package).0;
+    read_alone(&mut terminal, monitor, b"\x1b");
+    read_alone(&mut terminal, monitor, b"a");
+    terminal.resize(25, 81).unwrap();
+    terminal.resize(ROWS, COLS).unwrap();
+    boxed_as(&terminal, ROWS, &open, &[6]);
+    top_row_is(&mut terminal, &top);
+    terminal.send("\x1bx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    received_by(&package, "Beta", b"zy");
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// HLP-02 (Monitor, over the selector): prefix+? over the selector opens
+/// the key introduction above it, hiding the search's cursor; keys, a
+/// paste and clicks while it is open reach neither the selector nor a
+/// session, while the selected session's output keeps reaching its model.
+/// Enter closes the introduction back to the selector with its search and
+/// highlight as they were and the cursor in the search; Escape then closes
+/// the selector and the session shows the output it wrote meanwhile, still
+/// controlled, the other session never acquired. Prefix+x exits from the
+/// introduction over the selector.
+#[test]
+fn help_over_the_selector_isolates_input_and_restores_search_and_highlight() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &watched("Alpha"), "finish");
+    headless(&package, &watched("Beta"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Beta", STATUS, "29 120");
+    terminal.send("\x1dsa\x1b[B").unwrap();
+    let rows = [(STATUS, "Beta"), (STATUS, "Alpha")];
+    let searched = selector_on((ROWS, COLS), "a", &rows, Some(FOOTER));
+    boxed_as(&terminal, ROWS, &boxed(&searched), &[6]);
+    cursor_at(&terminal, 3, 3);
+    terminal.send("\x1d?").unwrap();
+    let helped = boxed(&overlaid(
+        &searched,
+        &key_introduction("Ctrl+]", true, None),
+    ));
+    boxed_as(&terminal, ROWS, &helped, &[6]);
+    assert!(!terminal.cursor().visible);
+    say(&package, "Beta");
+    terminal.send("b\x1b[A\x7f").unwrap();
+    terminal.paste("c").unwrap();
+    click(&mut terminal, 6, 10);
+    click(&mut terminal, 0, 10);
+    terminal.resize(25, 81).unwrap();
+    terminal.resize(ROWS, COLS).unwrap();
+    boxed_as(&terminal, ROWS, &helped, &[6]);
+    terminal.send("\r").unwrap();
+    boxed_as(&terminal, ROWS, &boxed(&searched), &[6]);
+    cursor_at(&terminal, 3, 3);
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    first_row_starts(&terminal, "RAW SAID");
+    top_row_is(&mut terminal, &controlled("Beta", STATUS));
+    terminal.send("z").unwrap();
+    received_by(&package, "Beta", b"z");
+    let detached =
+        serde_json::json!({"lifecycle": "detached", "attachments": 0, "controlled": false});
+    listed_as(&package, "Alpha", &detached);
+    terminal.send("\x1ds\x1d?").unwrap();
+    whole_frame_shows(&terminal, "the introduction over the selector", |screen| {
+        screen.contains("Exit the monitor") && screen.contains('║')
+    });
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Operational limits (`ui.search_bytes`, Monitor) and SEL-02 (Monitor,
+/// paste): with the limit at 6 bytes, the search takes `abcdé` (6 bytes)
+/// and refuses `f` visibly, the footer saying why until the next key;
+/// typed `é` one byte past the limit is refused whole, as is a paste one
+/// byte past it, while a paste reaching it exactly is taken, its tab a
+/// space. Nothing typed or pasted reaches the session.
+#[test]
+fn search_text_past_its_byte_limit_is_refused_visibly() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(&package, serde_json::json!({"ui": {"search_bytes": 6}}));
+    headless(&package, &watched("Beta"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Beta", STATUS, "29 120");
+    let refused = Some("Search is limited to 6 bytes");
+    let searched =
+        |search: &str, footer: Option<&str>| selector_box((ROWS, COLS), search, &[], footer);
+    let steps: [(&str, &str, Option<&str>, usize); 5] = [
+        ("\x1dsabcdé", "abcdé", Some(FOOTER), 7),
+        ("f", "abcdé", refused, 7),
+        ("\x1b[D", "abcdé", Some(FOOTER), 6),
+        ("\x7f\x1b[Fé", "abcé", refused, 6),
+        ("\x7f", "abc", Some(FOOTER), 5),
+    ];
+    for (typed, search, footer, column) in steps {
+        terminal.send(typed).unwrap();
+        boxed_as(&terminal, ROWS, &searched(search, footer), &[]);
+        cursor_at(&terminal, 3, column);
+    }
+    terminal.paste("xyzw").unwrap();
+    boxed_as(&terminal, ROWS, &searched("abc", refused), &[]);
+    terminal.paste("x\ty").unwrap();
+    boxed_as(&terminal, ROWS, &searched("abcx y", Some(FOOTER)), &[]);
+    cursor_at(&terminal, 3, 8);
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("q").unwrap();
+    received_by(&package, "Beta", b"q");
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
     package.assert_clean();
 }
 
@@ -3150,8 +3654,8 @@ fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
     let monitor = monitor_process(&package).0;
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, &format!("║{STATUS} Other"));
-    assert_eq!(highlighted_rows(&terminal), [3]);
-    for (reads, row) in [([&b"\x1b"[..], b"[B"], 4), ([b"\x1b[", b"A"], 3)] {
+    assert_eq!(highlighted_rows(&terminal), [5]);
+    for (reads, row) in [([&b"\x1b"[..], b"[B"], 6), ([b"\x1b[", b"A"], 5)] {
         for read in reads {
             read_alone(&mut terminal, monitor, read);
         }
@@ -3819,7 +4323,7 @@ fn enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires
     );
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, &format!("║Starting    fake {HELD}"));
-    // Reopened, the selector highlights the held fake's row, the newest.
+    // Reopened, the selector highlights the selected session, Alpha.
     terminal.send(ESCAPE).unwrap();
     selector_closed(&terminal);
     headless(&package, &watched("Slow"), "finish");
@@ -3868,7 +4372,7 @@ fn enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires
     // Both typed to, Slow and Alpha are Running, newest clock first, above
     // any other row.
     whole_frame_shows(&terminal, "Slow and Alpha running", |screen| {
-        let rows: Vec<_> = screen.lines().skip(3).take(2).collect();
+        let rows: Vec<_> = screen.lines().skip(5).take(2).collect();
         rows.len() == 2
             && rows[0].starts_with(&format!(" ║{RUNNING}"))
             && rows[0].contains("Slow")
@@ -4309,9 +4813,9 @@ fn real_sessions_show_their_effective_status_and_final_outcomes_in_order() {
     // The selector opened on whichever row was first then; Up without
     // wrapping brings the highlight to the top.
     terminal.send("\x1b[A".repeat(rows.len())).unwrap();
-    highlights(&terminal, 3);
+    highlights(&terminal, 5);
     terminal.send("\x1b[B".repeat(3)).unwrap();
-    highlights(&terminal, 6);
+    highlights(&terminal, 8);
     step(&package, "running", 2);
     let mut reordered = vec![
         ("Needs attention", "waiting"),
@@ -4321,7 +4825,7 @@ fn real_sessions_show_their_effective_status_and_final_outcomes_in_order() {
     ];
     reordered.extend(finals);
     lists(&mut terminal, &ended, &reordered);
-    highlights(&terminal, 5);
+    highlights(&terminal, 7);
     terminal.send("\x1dx").unwrap();
     // Its many frames can outgrow the oracle's recent bytes, so only the
     // title itself is checked.
@@ -4543,9 +5047,9 @@ fn rows_order_by_status_group_daemon_change_time_and_full_session_id() {
     // The selector opened on whichever row was first then; Up without
     // wrapping brings the highlight to the top.
     terminal.send("\x1b[A".repeat(rows.len())).unwrap();
-    highlights(&terminal, 3);
+    highlights(&terminal, 5);
     terminal.send("\x1b[B".repeat(5)).unwrap();
-    highlights(&terminal, 8);
+    highlights(&terminal, 10);
 
     fs::write(&delayed_go, b"").unwrap();
     rows.pop();
@@ -4559,13 +5063,13 @@ fn rows_order_by_status_group_daemon_change_time_and_full_session_id() {
         &["Needs attention", "Acquiring", SESSIONS_HINT],
     ));
     lists(&mut terminal, &selected, &rows);
-    highlights(&terminal, 9);
+    highlights(&terminal, 11);
 
     fs::write(&idle_go, b"").unwrap();
     rows.remove(6);
     rows.insert(3, ("Running", "idle"));
     lists(&mut terminal, &selected, &rows);
-    highlights(&terminal, 6);
+    highlights(&terminal, 8);
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
     drop(daemons);
