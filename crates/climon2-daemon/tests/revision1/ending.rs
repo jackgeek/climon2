@@ -2,20 +2,23 @@
 //! exits, the final drain, unexpected departures and the hang-up grace,
 //! Kill in its harder cases, PTY write failure and job-control cleanup.
 use super::{
-    assert_closed, assert_killed, command_final, committed_kill, counter, exited,
+    assert_closed, assert_killed, clocked, command_final, committed_kill, counter, exited,
     interactive::{Attached, geometry, ready_attachment},
-    kill, message, open, peer, raw_frame, request, signalled, terminating,
+    kill, message, monitor, open, peer, raw_frame, request, signalled, status,
+    status::Watcher,
+    terminating,
 };
 use crate::{ID, Session};
 use climon2_core::{
     hello::Lifecycle,
     protocol::{ClientMessage, HANGUP_GRACE},
-    wire::{self, CommandResult, Input, Leave, Mode, ServerMessage},
+    wire::{self, CommandResult, Input, Leave, Mode, ServerMessage, StatusState},
 };
 use climon2_platform::process;
 use std::{
     fs,
     io::Write,
+    os::unix::net::UnixStream,
     thread,
     time::{Duration, Instant},
 };
@@ -25,10 +28,11 @@ use std::{
 /// #20 over revision 1, an early exit: the command prints its last bytes
 /// and exits 43 before anything attaches, as passive Opens' Initial
 /// metadata shows once the daemon knows it. An interactive Open made after
-/// that carries the result in its Initial metadata, so no Command final
-/// follows, and its restoration holds the last bytes once. The session still counts it as
-/// its controller and ends only once it confirms Ready: its control then
-/// ends with the session, and both streams close.
+/// that carries the result in its Initial metadata, and its restoration
+/// holds the last bytes once. The session still counts it as its
+/// controller and ends only once it confirms Ready: it then receives the
+/// held result as its one Command final (#259), its control ends with the
+/// session, and its stream closes.
 #[test]
 fn an_early_exit_reaches_a_later_attachment_through_its_restoration() {
     let mut session = Session::start("early");
@@ -41,7 +45,101 @@ fn an_early_exit_reaches_a_later_attachment_through_its_restoration() {
         (Lifecycle::Attached, 1, true)
     );
     attached.confirm_ready();
-    attached.session_ended();
+    attached.ended(&exited(43));
+    session.finish();
+}
+
+/// COM-06 (Contract, every opened connection gets exactly one Command
+/// final), #259: the command exits 43 before anything attaches. A monitor
+/// open at the exit receives the Command final at once; a monitor and an
+/// interactive attachment that open after it learn the result from their
+/// Initial metadata. When the attachment confirms Ready the session ends,
+/// and each of those two receives the held result as Command final, the
+/// attachment before its control ends with the session. The first monitor
+/// receives no second one, and every stream ends.
+#[test]
+fn an_attachment_confirming_ready_publishes_a_held_result_to_every_connection_once() {
+    let mut session = Session::start("script");
+    let (mut earlier, _) = monitor(&session, &[]);
+    crate::issue(&session, "exit 43");
+    assert_eq!(message(&mut earlier), command_final(&exited(43)));
+    let mut later = late_monitor(&session, &exited(43));
+    let mut attached = Attached::open(&session, geometry(91, 37), &[], geometry(91, 37));
+    assert_eq!(attached.initial_result, Some(exited(43)));
+    attached.confirm_ready();
+    attached.ended(&exited(43));
+    assert_eq!(message(&mut later), command_final(&exited(43)));
+    assert_closed(&mut later);
+    assert_closed(&mut earlier);
+    session.finish();
+}
+
+/// COM-06 (Contract, every opened connection gets exactly one Command
+/// final) and COM-03 (Contract, Kill cases), #259: the command exits 43
+/// while only passive monitor connections watch, and a standalone Kill ends
+/// the session while it still holds the exit for its initial attachment.
+/// The monitor open at the exit received the Command final at once and
+/// receives no second one; the monitor that opened after the exit, and
+/// learned the result from its Initial metadata, receives it as Command
+/// final when the session ends. The Kill confirms that result, and every
+/// stream ends.
+#[test]
+fn a_kill_during_the_hold_publishes_the_held_result_to_every_monitor_once() {
+    let mut session = Session::start("script");
+    let (mut earlier, _) = monitor(&session, &[]);
+    crate::issue(&session, "exit 43");
+    assert_eq!(message(&mut earlier), command_final(&exited(43)));
+    let mut later = late_monitor(&session, &exited(43));
+    assert_eq!(
+        crate::advertised_state(&session),
+        (Lifecycle::Starting, 0, false)
+    );
+    let mut killer = committed_kill(&session);
+    assert_killed(&mut killer, &exited(43));
+    assert_eq!(message(&mut later), command_final(&exited(43)));
+    assert_closed(&mut later);
+    assert_closed(&mut earlier);
+    session.finish();
+}
+
+/// A passive monitor connection opened after the command's result was
+/// final: its Initial metadata carries `result`.
+fn late_monitor(session: &Session, result: &CommandResult) -> UnixStream {
+    let mut stream = peer(session);
+    request(&mut stream, &open(1, &[], &[], Mode::Monitor));
+    assert!(matches!(message(&mut stream), ServerMessage::Response(_)));
+    let ServerMessage::InitialMetadata(metadata) = message(&mut stream) else {
+        panic!("no Initial metadata after the Open response");
+    };
+    assert_eq!(metadata.command_result(), Some(result));
+    stream
+}
+
+/// COM-06 (Contract, every opened connection gets exactly one Command
+/// final) and CTL-01 (Contract, watching is not attaching), #259: the
+/// command exits 43 while only passive monitor connections watch, so the
+/// session holds its exit for the initial attachment and stays `starting`.
+/// The monitor that watched before the exit receives the Command final at
+/// once. One that opens after it learns the result in its Initial metadata
+/// (`status-v1`'s final `failed` status) and receives its own Command final,
+/// with that final status, only when the five-second initial deadline ends
+/// the session. No monitor receives a second one, and both streams end.
+#[test]
+fn the_initial_deadline_publishes_a_held_result_to_every_monitor_once() {
+    let mut session = clocked("script");
+    let started = Instant::now();
+    let (mut earlier, _) = monitor(&session, &[]);
+    crate::issue(&session, "exit 43");
+    assert_eq!(message(&mut earlier), command_final(&exited(43)));
+    let (mut later, initial) = Watcher::open(&session);
+    assert_eq!(initial, status(StatusState::Failed, 0, None));
+    assert_eq!(
+        crate::advertised_state(&session),
+        (Lifecycle::Starting, 0, false)
+    );
+    later.ended(&exited(43), 0);
+    assert!(started.elapsed() >= Duration::from_millis(4500));
+    assert_closed(&mut earlier);
     session.finish();
 }
 

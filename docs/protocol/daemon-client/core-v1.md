@@ -329,7 +329,17 @@ waits until no restoration is in progress and no
 [synchronized update](../TERMS.md#synchronized-update) holds output back, so
 those Displays precede it too
 ([#203](https://github.com/jackgeek/climon2/issues/203)); a grant after
-Command final still replays the screen in its restoration.
+Command final still replays the screen in its restoration. A session that
+goes on after Command final holds the result: for example, an ordinary
+session whose command exited before anything attached holds it until its
+five-second initial-attachment deadline, so an attachment can still arrive.
+However the session then ends (that deadline, a Kill, or a later
+attachment confirming Ready), the daemon sends Command final with the held
+result to every open connection that has not received one, such as a
+connection that opened after the exit and learned it from its Initial
+metadata, so every opened connection gets exactly one, never none and never
+two (owner decisions on
+[#259](https://github.com/jackgeek/climon2/issues/259)).
 
 ### Implemented authority checks
 
@@ -560,7 +570,10 @@ leave-policy parity. They also cover exit versus signal in Command final,
 Command final after the command's last output, also when a Kill arrives
 before that output drained, after a restoration in progress and a held
 synchronized update, and still sent once a stalled reader is lost,
-known results in Initial metadata and first-role rejections, no final
+known results in Initial metadata and first-role rejections, the held
+result's Command final, exactly once, to connections that opened before
+and after an early exit, whether the initial-attachment deadline, a Kill or
+a later attachment's Ready ends the session, no final
 without evidence (an unconfirmed hang-up, or the end of the command's output
 while it runs), and standalone Kill: its answer after termination and
 cleanup, Kills of both protocols joining one
