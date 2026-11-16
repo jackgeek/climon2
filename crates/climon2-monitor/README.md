@@ -571,9 +571,13 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   earlier period's cache, otherwise no content and its outcome. A
   connected row, revoked or reconnected, still shows only the placeholder,
   never its cache. Global actions work from every one of these screens.
-- **Not yet:** a session dropped at the memory allocation limit (#119)
-  becomes retried through the same path, and an update the model cannot
-  represent still shows only its error (#119 makes that row read-only).
+- **Rejected updates** (#119; owner decision 2026-11-16). An update a
+  session's model refuses, live output or a restoration, shows `terminal
+  model over its limit: <needed> bytes needed, <limit> allowed` in the top
+  row's error slot and drops its client: the supervisor fails it, the row
+  is Unavailable with that diagnostic, its model keeps the page its
+  accepted output produced, read-only like any retained cache, and the
+  client is retried passively through this path. Other sessions go on.
 
 ## Paste, mouse and focus (#111)
 
@@ -804,6 +808,9 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Over the same once recovery is permanently rejected (#116) | `Not reconnecting: <diagnostic>` | `screen.rs` |
 | Over the same, and in the top row's error slot, once discovery proved the session's daemon gone (#116, owner decision 2026-11-16) | `Session no longer exists` | `screen.rs` |
 | Top row's error slot: a lost or failed client's diagnostic (#116, owner decision 2026-11-16) | the library's or loader's own message, or the monitor's: `cannot poll the client: <error>`, `cannot drain the client: <error>`, `the client stopped without terminal evidence`, `the client stopped before it opened`, `cannot confirm the client's cleanup: <error>` | `supervisor.rs` |
+| Top row's error slot: an update the session's model refused, its client dropped and retried (#119) | `terminal model over its limit: <needed> bytes needed, <limit> allowed` | `terminal.rs` |
+| Top row's error slot, and `Not reconnecting: <why>` over the retained cache: a session whose connection generations are exhausted (#119) | `connection generations are exhausted` | `supervisor.rs` |
+| Top row's error slot: a request after the client's last request ID (#119) | `the client's request IDs are exhausted` (after `Input not sent (<N> bytes; earlier input was accepted): ` for input) | `supervisor.rs`, `terminal.rs` |
 
 ## Specification mapping
 
@@ -891,6 +898,10 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | #94 rule (pure supplement): the view freezes at Command final, only if the period held then had applied a restoration; a finished session gets no Resize; painted is not sticky; the control label ignores visibility | `the_view_freezes_at_the_command_final`, `a_command_final_without_a_live_model_shows_no_view`, `a_finished_session_is_sent_no_resize`, `a_frame_that_stops_showing_the_restoration_closes_input`, `the_control_label_ignores_whether_the_canvas_shows` (`src/terminal.rs`) |
 | CTL-05 (pure supplement): Resize once per grant and desire, never without control; superseded refusals are not errors and a refused Resize is resent; Acquiring and errors | `resize_follows_every_grant_and_each_new_desire_only_while_controlling`, `work_refused_under_a_superseded_restoration_is_not_an_error_and_resize_is_resent`, `acquiring_ends_at_the_grant_or_the_answer_and_errors_are_shown`, `each_control_has_its_label` (`src/terminal.rs`) |
 | LIM-03 (pure supplement): a restoration over the model's limit is an error without Ready | `a_restoration_over_the_model_limit_is_an_error_without_ready` (`src/terminal.rs`) |
+| LIM-03 (Monitor, Fault: rejected updates), LIM-01 (Monitor: the budget split), REC-01, REC-02 (#119): a session over its model's share is dropped Unavailable, its cache read-only, retried passively; others go on | `a_session_over_its_memory_limit_becomes_unavailable_read_only_and_is_retried` (e2e, Fault peers) |
+| LIM-03 (pure supplement, #119): refused output or restoration drops the client once with the error shown, keeping the last safe cache; a dropped client is reported Unavailable and retried passively in a fresh generation once destroyed | `refused_output_drops_the_client_once_and_keeps_the_last_safe_cache`, `a_restoration_over_the_model_limit_is_an_error_without_ready` (`src/terminal.rs`), `a_client_dropped_at_its_memory_limit_is_retried_passively` (`src/supervisor.rs`) |
+| LIM-05 (Monitor, Fault: generation exhaustion; hooked only), REC-02 (#119): the protected cache survives and no attempt follows the last generation | `a_session_whose_generations_are_exhausted_keeps_its_cache_and_stops` (e2e, Fault peers) |
+| LIM-05 (pure supplement over the fake library, #119): generations u64::MAX - 1 and u64::MAX, then rejected for good; request IDs u64::MAX - 1 and u64::MAX, then refused without submitting | `a_session_whose_generations_are_exhausted_is_never_attempted_again`, `requests_after_the_last_request_id_are_refused` (`src/supervisor.rs`) |
 | TRM-01 (pure supplement): exact SGR for the 16 ANSI, palette, direct and default colours, underline colour (colon form, underlined cells only) and renditions; wide and combining text; each cell covers its given width; the cursor | `colours_and_renditions_are_painted_with_their_own_sgr`, `wide_and_combining_text_and_the_cursor_are_painted_in_place`, `each_cell_covers_the_width_it_was_given`, `each_row_starts_with_its_own_cursor_position` (`src/paint.rs`) |
 | TRM-01 (pure supplement; #108's note on #112): each underline style with its own SGR 4 subparameter, single as plain 4, none on a cell not underlined; each style reaches its cell from the model | `each_underline_style_is_painted_with_its_own_sgr` (`src/paint.rs`), `each_underline_style_reaches_its_cell` (`src/screen.rs`) |
 | TRM-01 (pure supplement, synchronized updates): while the session's update is open the canvas painted before it stays, cursor and underline styles included, never for another session or host size; the whole update shows once it ends | `an_open_synchronized_update_keeps_the_last_coherent_canvas` (`src/screen.rs`) |

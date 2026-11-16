@@ -102,6 +102,24 @@ impl Refusal {
     }
 }
 
+/// Where the monitor's own identifiers start (LIM-05): each session's
+/// connection generations at 1, and each instance's request IDs right after
+/// Open's. Test hooks start them near exhaustion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Identifiers {
+    pub(crate) generation: u64,
+    pub(crate) request: u64,
+}
+
+impl Default for Identifiers {
+    fn default() -> Self {
+        Self {
+            generation: 1,
+            request: client::OPEN_ID + 1,
+        }
+    }
+}
+
 /// What every instance's startup shares.
 pub(crate) struct Context {
     pub(crate) load: Load,
@@ -114,6 +132,7 @@ pub(crate) struct Context {
     pub(crate) lanes: Lanes,
     pub(crate) shutdown: Duration,
     pub(crate) retry: Backoff,
+    pub(crate) first: Identifiers,
 }
 
 enum Command {
@@ -283,8 +302,9 @@ struct Instance {
     /// Accepted requests awaiting their answers, by request ID: at most
     /// [`State::ledger`].
     pending: BTreeMap<u64, Request>,
-    /// The next request ID; Open is 1.
-    next: u64,
+    /// The next request ID (Open is 1), none once they are exhausted: they
+    /// never wrap.
+    next: Option<u64>,
     /// Its application input: chunks, pastes and what a truncated paste
     /// owes.
     stream: Stream,
@@ -479,9 +499,11 @@ impl State {
         if instance.pending.len() >= capacity {
             return Err("too many requests are awaiting their answers".to_owned());
         }
-        let request_id = instance.next;
+        let Some(request_id) = instance.next else {
+            return Err("the client's request IDs are exhausted".to_owned());
+        };
         live.client.submit(request_id, &request)?;
-        instance.next += 1;
+        instance.next = request_id.checked_add(1);
         instance.pending.insert(request_id, request);
         Ok(())
     }
@@ -592,11 +614,18 @@ impl State {
     }
 
     /// Starts an instance for `metadata`'s session in its next connection
-    /// generation, the first 1.
+    /// generation, the first 1. Generations never wrap: once a session's
+    /// are exhausted, it is never attempted again (LIM-05).
     fn spawn_owner(&mut self, functions: &'static Functions, metadata: SessionMetadata) {
         let id = metadata.session_id.clone();
+        let latest = self.generations.get(&id);
+        let Some(generation) = latest.map_or(Some(self.context.first.generation), |latest| {
+            latest.checked_add(1)
+        }) else {
+            let why = "connection generations are exhausted".to_owned();
+            return self.unstarted(metadata, why, Retry::Permanent);
+        };
         tracing::info!(session = %id, version = %metadata.climon2_version, "client starting");
-        let generation = self.generations.get(&id).map_or(1, |latest| latest + 1);
         self.generations.insert(id.clone(), generation);
         let (released, release) = mpsc::channel();
         let internal = self.internal.clone();
@@ -615,7 +644,7 @@ impl State {
                     retry: None,
                     finished: false,
                     pending: BTreeMap::new(),
-                    next: client::OPEN_ID + 1,
+                    next: Some(self.context.first.request),
                     stream: Stream::default(),
                     released,
                     owner,
@@ -1701,6 +1730,23 @@ mod tests {
         load: Load,
         (limits, retry): (native::Limits, Backoff),
     ) -> Supervised {
+        starting_at(
+            starts,
+            shutdown_ms,
+            load,
+            (limits, retry),
+            Identifiers::default(),
+        )
+    }
+
+    /// [`retrying`] with the monitor's identifiers starting at `first`.
+    fn starting_at(
+        starts: u32,
+        shutdown_ms: u64,
+        load: Load,
+        (limits, retry): (native::Limits, Backoff),
+        first: Identifiers,
+    ) -> Supervised {
         let directory = tempfile::tempdir().unwrap();
         let home = HomeLayout::resolve(Some(directory.path().as_os_str()), Path::new("/")).unwrap();
         let log = climon2_platform::logging::LogFile::monitor(directory.path()).unwrap();
@@ -1719,6 +1765,7 @@ mod tests {
             },
             shutdown: Duration::from_millis(shutdown_ms),
             retry,
+            first,
         };
         let dispatch = log.dispatch(Some("info")).unwrap();
         let supervisor = Supervisor::start(context, dispatch).unwrap();
@@ -2851,6 +2898,96 @@ mod tests {
         );
         supervisor.stop();
         assert_eq!(generations(&id), [1, 2]);
+    }
+
+    /// LIM-05 (Monitor, Fault: generation exhaustion): connection
+    /// generations strictly increase per session across attempts and never
+    /// wrap. Starting near exhaustion, a session lost twice is created in
+    /// generations u64::MAX - 1 and u64::MAX; its next attempt is never
+    /// started: the row hears it Unavailable and rejected for good because
+    /// its generations are exhausted.
+    #[test]
+    fn a_session_whose_generations_are_exhausted_is_never_attempted_again() {
+        let id = session(26, 1);
+        let lost = Script {
+            drops: true,
+            retry: native::RETRY_PASSIVE,
+            ..Script::default()
+        };
+        script(&id, lost);
+        let quick = Backoff {
+            initial_ms: 0,
+            cap_ms: 0,
+            jitter_percent: 0,
+        };
+        let limits = climon2_core::config::Limits::default().library();
+        let near = Identifiers {
+            generation: u64::MAX - 1,
+            ..Identifiers::default()
+        };
+        let mut supervised = starting_at(1, 20_000, fake_library(), (limits, quick), near);
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+        let exhausted = "connection generations are exhausted";
+        let rejected = ClientEvent::Recovery(Recovery::Rejected(exhausted.into()));
+        let reports = reports_until(supervisor, |reports| {
+            reports
+                .get(&id)
+                .is_some_and(|events| events.contains(&rejected))
+        });
+        let lost = [
+            ClientEvent::Opened { status: false },
+            ClientEvent::Ended,
+            ClientEvent::Recovery(Recovery::Retrying(
+                "the client stopped before it opened".into(),
+            )),
+            ClientEvent::Starting,
+        ];
+        let mut expected: Vec<_> = lost.iter().cycle().take(8).cloned().collect();
+        expected.extend([ClientEvent::Unavailable(exhausted.into()), rejected]);
+        assert_eq!(reports[&id], expected);
+        supervisor.stop();
+        assert_eq!(generations(&id), [u64::MAX - 1, u64::MAX]);
+    }
+
+    /// LIM-05 (Monitor, Fault: request ID exhaustion): an instance's request
+    /// IDs strictly increase and never wrap. Starting near exhaustion,
+    /// requests take IDs u64::MAX - 1 and u64::MAX; the next is refused at
+    /// once because the IDs are exhausted, and nothing more is submitted.
+    #[test]
+    fn requests_after_the_last_request_id_are_refused() {
+        let id = session(27, 1);
+        let limits = climon2_core::config::Limits::default().library();
+        let near = Identifiers {
+            request: u64::MAX - 1,
+            ..Identifiers::default()
+        };
+        let mut supervised = starting_at(1, 20_000, fake_library(), (limits, NEVER), near);
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+        assert_eq!(
+            next(supervisor),
+            (id.clone(), ClientEvent::Opened { status: false })
+        );
+        let accepted = presented(Presentation::Answered(Asked::Acquire, Ok(())));
+        for _ in 0..2 {
+            supervisor.request(id.clone(), Asked::Acquire);
+            assert_eq!(next(supervisor), (id.clone(), accepted.clone()));
+        }
+        supervisor.request(id.clone(), Asked::Acquire);
+        let exhausted = presented(Presentation::Answered(
+            Asked::Acquire,
+            Err("the client's request IDs are exhausted".into()),
+        ));
+        assert_eq!(next(supervisor), (id.clone(), exhausted));
+        supervisor.stop();
+        assert_eq!(
+            submitted(&id),
+            [
+                (native::ACQUIRE, u64::MAX - 1, vec![GENERATION]),
+                (native::ACQUIRE, u64::MAX, vec![GENERATION]),
+            ]
+        );
     }
 
     /// Owner decision on #116 (2026-11-16): once discovery proves a

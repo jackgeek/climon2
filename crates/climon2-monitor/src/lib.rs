@@ -1151,7 +1151,21 @@ fn context(startup: &Startup, filter: String) -> io::Result<Context> {
         lanes,
         shutdown: Duration::from_millis(lanes.shutdown_ms.into()),
         retry: limits.retry(),
+        first: first_identifiers(),
     })
+}
+
+/// Where the monitor's identifiers start: as test hooks ask (LIM-05).
+#[cfg(feature = "test-hooks")]
+fn first_identifiers() -> supervisor::Identifiers {
+    hooks::identifiers(supervisor::Identifiers::default())
+}
+
+/// Where the monitor's identifiers start: connection generations at 1,
+/// request IDs after Open's.
+#[cfg(not(feature = "test-hooks"))]
+fn first_identifiers() -> supervisor::Identifiers {
+    supervisor::Identifiers::default()
 }
 
 /// The monitor's one validated loader, shared by every release it loads.
