@@ -4,7 +4,7 @@ use crate::{
 };
 use climon2_core::{
     config::{AttachConfig, ConfigSource},
-    layout::{ExecutableLayout, HomeLayout, Invocation},
+    layout::{HomeLayout, Invocation},
     metadata::SessionMetadata,
     selector::Selector,
     startup_envelope::{ENVIRONMENT_VARIABLE, StartupEnvelope},
@@ -95,8 +95,7 @@ fn installed(client: &Path, metadata: &SessionMetadata) -> Result<PathBuf, Error
 }
 
 fn client_invocation(home: &Path, metadata: &SessionMetadata) -> io::Result<Invocation> {
-    let executable = std::env::current_exe()?.canonicalize()?;
-    let layout = ExecutableLayout::from_cli_path(&executable).map_err(io::Error::other)?;
+    let layout = crate::executable_layout()?;
     let path = home
         .join("sessions")
         .join(format!("{}.pty", metadata.session_id));
@@ -106,8 +105,7 @@ fn client_invocation(home: &Path, metadata: &SessionMetadata) -> io::Result<Invo
 }
 
 fn attach_config(home: &Path) -> Result<AttachConfig, Error> {
-    let layout =
-        HomeLayout::resolve(Some(home.as_os_str()), Path::new("/")).map_err(io::Error::other)?;
+    let layout = HomeLayout::at(home).map_err(io::Error::other)?;
     ConfigSource::read(&layout)
         .and_then(|source| source.attach())
         .map_err(|error| Error::new(125, error))
