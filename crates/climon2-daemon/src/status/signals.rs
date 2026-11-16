@@ -1,8 +1,13 @@
-//! The terminal signals the detector interprets, parsed once from the
+//! The terminal signals the session daemon interprets, parsed once from the
 //! sequences the session's virtual terminal observed before filtering: OSC
 //! 7501 program status, after the
 //! [Program Status Protocol, revision 0.4](https://www.superlogical.com/rex/docs/build/program-status),
-//! OSC 133 shell markers and full resets.
+//! OSC 133 shell markers and full resets, which drive detection, and the
+//! OSC 9, 99 and 777 notifications and OSC 9;4 progress (#98).
+use super::{
+    notifications::{self, Parsed},
+    progress,
+};
 use climon2_vt::Signal as Observed;
 
 /// A signal that drives detection.
@@ -41,13 +46,17 @@ pub enum Marker {
 }
 
 /// What an observed sequence means to the session daemon.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Interpreted {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Interpreted<'a> {
     /// It drives detection.
     Detect(Signal),
     /// An OSC 7501 capability query, which the daemon answers with
     /// [`QUERY_REPLY`] and which never drives detection.
     Query,
+    /// A valid OSC 9;4 progress report.
+    Progress(progress::Report),
+    /// Notification data: OSC 9 text, OSC 777 `notify` or an OSC 99 chunk.
+    Notify(Parsed<'a>),
 }
 
 /// The daemon's local answer to an OSC 7501 capability query: every state
@@ -81,26 +90,63 @@ const MARKERS: [(&[u8], Marker); 4] = [
 ];
 
 /// Base64 whose padding is optional, but correct when present.
-const BASE64: base64::engine::GeneralPurpose = base64::engine::GeneralPurpose::new(
+pub(super) const BASE64: base64::engine::GeneralPurpose = base64::engine::GeneralPurpose::new(
     &base64::alphabet::STANDARD,
     base64::engine::GeneralPurposeConfig::new()
         .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent),
 );
 
 /// What `observed` means to the session daemon, if anything.
-pub fn interpret(observed: Observed<'_>) -> Option<Interpreted> {
+pub fn interpret(observed: Observed<'_>) -> Option<Interpreted<'_>> {
     match observed {
         Observed::FullReset => Some(Interpreted::Detect(Signal::FullReset)),
         Observed::Osc { body, length } => osc(body, length),
     }
 }
 
-fn osc(body: &[u8], length: usize) -> Option<Interpreted> {
-    if let Some(report) = body.strip_prefix(b"7501;") {
-        return program_status(report, length);
+/// What the parameters after an OSC number mean, given the length of the
+/// whole sequence.
+type Handler = fn(&[u8], usize) -> Option<Interpreted<'_>>;
+
+/// Each OSC the daemon interprets, by the prefix of its body.
+const OSCS: [(&[u8], Handler); 5] = [
+    (b"7501;", program_status),
+    (b"133;", shell),
+    (b"9;", osc9),
+    (b"99;", |parameters, _| {
+        notifications::osc99(parameters).map(Interpreted::Notify)
+    }),
+    (b"777;", |parameters, _| {
+        notifications::osc777(parameters).map(Interpreted::Notify)
+    }),
+];
+
+fn osc(body: &[u8], length: usize) -> Option<Interpreted<'_>> {
+    OSCS.iter()
+        .find_map(|(prefix, handle)| Some(handle(body.strip_prefix(*prefix)?, length)))
+        .flatten()
+}
+
+fn shell(parameters: &[u8], _: usize) -> Option<Interpreted<'_>> {
+    Some(Interpreted::Detect(Signal::Shell(marker(parameters)?)))
+}
+
+/// OSC 9: a progress report, which is a control operation, or else a
+/// text notification.
+fn osc9(parameters: &[u8], _: usize) -> Option<Interpreted<'_>> {
+    if let Some(report) = progress_parameters(parameters) {
+        return progress::report(report).map(Interpreted::Progress);
     }
-    let marker = body.strip_prefix(b"133;").and_then(marker)?;
-    Some(Interpreted::Detect(Signal::Shell(marker)))
+    notifications::osc9(parameters).map(Interpreted::Notify)
+}
+
+/// The parameters of an OSC 9;4 progress report, after `4;`, if it is one.
+fn progress_parameters(parameters: &[u8]) -> Option<&[u8]> {
+    match parameters.strip_prefix(b"4")? {
+        [] => Some(&[]),
+        [b';', rest @ ..] => Some(rest),
+        _ => None,
+    }
 }
 
 /// The marker letter is the first parameter.
@@ -116,7 +162,7 @@ fn lookup<T: Copy>(table: &[(&[u8], T)], name: &[u8]) -> Option<T> {
         .map(|(_, value)| *value)
 }
 
-fn program_status(report: &[u8], length: usize) -> Option<Interpreted> {
+fn program_status(report: &[u8], length: usize) -> Option<Interpreted<'_>> {
     if report == b"?" {
         return Some(Interpreted::Query);
     }
@@ -195,25 +241,31 @@ fn text(encoded: &[u8], max: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{Interpreted, Marker, Report, Signal, interpret};
+    use crate::status::{
+        notifications::{Chunk, Parsed, Part},
+        progress,
+    };
+    use climon2_core::wire::{NotificationSource, Percent, ProgressState};
     use climon2_vt::Signal as Observed;
+    use std::borrow::Cow;
 
     /// What the OSC string `body` means, in a sequence of `length` bytes.
-    fn sized(body: &str, length: usize) -> Option<Interpreted> {
+    fn sized(body: &str, length: usize) -> Option<Interpreted<'_>> {
         interpret(Observed::Osc {
             body: body.as_bytes(),
             length,
         })
     }
 
-    fn osc(body: &str) -> Option<Interpreted> {
+    fn osc(body: &str) -> Option<Interpreted<'_>> {
         sized(body, body.len() + 4)
     }
 
-    fn root(report: Report) -> Option<Interpreted> {
+    fn root(report: Report) -> Option<Interpreted<'static>> {
         Some(Interpreted::Detect(Signal::Root(report)))
     }
 
-    fn shell(marker: Marker) -> Option<Interpreted> {
+    fn shell(marker: Marker) -> Option<Interpreted<'static>> {
         Some(Interpreted::Detect(Signal::Shell(marker)))
     }
 
@@ -368,6 +420,139 @@ mod tests {
             "1330;A",
             "2;title",
             "",
+        ] {
+            assert_eq!(osc(body), None, "{body}");
+        }
+    }
+
+    fn complete(
+        source: NotificationSource,
+        title: Option<&'static str>,
+        body: Option<&'static str>,
+    ) -> Option<Interpreted<'static>> {
+        Some(Interpreted::Notify(Parsed::Complete {
+            source,
+            title: title.map(str::as_bytes),
+            body: body.map(str::as_bytes),
+        }))
+    }
+
+    fn chunk(
+        id: Option<&'static str>,
+        done: bool,
+        part: Part,
+        payload: &'static str,
+    ) -> Option<Interpreted<'static>> {
+        Some(Interpreted::Notify(Parsed::Chunk(Chunk {
+            id: id.map(str::as_bytes),
+            done,
+            part,
+            payload: Cow::Borrowed(payload.as_bytes()),
+        })))
+    }
+
+    fn progress(state: ProgressState, percent: Option<u8>) -> Option<Interpreted<'static>> {
+        let percent = percent.map(|value| Percent::new(value).unwrap());
+        Some(Interpreted::Progress(progress::Report { state, percent }))
+    }
+
+    /// STA-06 (pure, OSC 9): text is a notification body, whatever it
+    /// holds, unless its first parameter is a number: a control operation
+    /// such as progress (`4`), which is no notification. A valid OSC 9;4
+    /// report, abbreviated or not, is progress; an invalid one is nothing.
+    #[test]
+    fn osc_9_is_text_unless_a_numbered_control_operation() {
+        use NotificationSource::Osc9;
+        for (body, text) in [
+            ("9;Build done", "Build done"),
+            ("9;a;1", "a;1"),
+            ("9;4x", "4x"),
+            ("9;", ""),
+            ("9;;5", ";5"),
+        ] {
+            assert_eq!(osc(body), complete(Osc9, None, Some(text)), "{body}");
+        }
+        assert_eq!(osc("9;4"), progress(ProgressState::None, None));
+        assert_eq!(osc("9;4;"), progress(ProgressState::None, None));
+        assert_eq!(osc("9;4;1;50"), progress(ProgressState::Normal, Some(50)));
+        assert_eq!(osc("9;4;4"), progress(ProgressState::Paused, None));
+        for body in [
+            "9;4;1",
+            "9;4;5;1",
+            "9;1;100",
+            "9;12",
+            "9;9;/home",
+            "9",
+            "90;x",
+        ] {
+            assert_eq!(osc(body), None, "{body}");
+        }
+    }
+
+    /// STA-06 (pure, OSC 777): `notify` carries the title up to the first
+    /// `;` and the rest, later semicolons included, as the body; other
+    /// subcommands are nothing.
+    #[test]
+    fn osc_777_notify_splits_title_from_body_at_the_first_delimiter() {
+        use NotificationSource::Osc777;
+        for (body, title, text) in [
+            ("777;notify;T;B;C", "T", Some("B;C")),
+            ("777;notify;T", "T", None),
+            ("777;notify;;B", "", Some("B")),
+            ("777;notify;", "", None),
+        ] {
+            assert_eq!(osc(body), complete(Osc777, Some(title), text), "{body}");
+        }
+        for body in [
+            "777;notify",
+            "777;notify-x;T",
+            "777;precmd",
+            "777;",
+            "7777;notify;T",
+        ] {
+            assert_eq!(osc(body), None, "{body}");
+        }
+    }
+
+    /// STA-06 (pure, OSC 99): metadata pairs set the identifier,
+    /// completion, payload type and base64 encoding, with title and
+    /// completion the defaults and unknown keys ignored; icons and buttons
+    /// are auxiliary data. Queries, close and liveness requests, unknown
+    /// payload types, invalid values, identifiers or base64, and a missing
+    /// payload are nothing.
+    #[test]
+    fn osc_99_chunks_carry_their_metadata() {
+        assert_eq!(osc("99;;Hello"), chunk(None, true, Part::Title, "Hello"));
+        assert_eq!(
+            osc("99;i=a-1_+.Z:d=0:p=body;B;c"),
+            chunk(Some("a-1_+.Z"), false, Part::Body, "B;c")
+        );
+        assert_eq!(osc("99;d=1:p=title;T"), chunk(None, true, Part::Title, "T"));
+        assert_eq!(osc("99;e=1;SGk="), chunk(None, true, Part::Title, "Hi"));
+        assert_eq!(
+            osc("99;e=0:x=1:u=2;SGk="),
+            chunk(None, true, Part::Title, "SGk=")
+        );
+        assert_eq!(osc("99;p=icon;x"), chunk(None, true, Part::Auxiliary, "x"));
+        assert_eq!(
+            osc("99;p=buttons:d=0;x"),
+            chunk(None, false, Part::Auxiliary, "x")
+        );
+        for body in [
+            "99;p=?;",
+            "99;p=close;",
+            "99;p=alive;",
+            "99;p=bogus;x",
+            "99;p=;x",
+            "99;d=2;x",
+            "99;d;x",
+            "99;e=2;x",
+            "99;e=1;!!",
+            "99;i=a b;x",
+            "99;i=;x",
+            "99;i=a/b;x",
+            "99;d=0",
+            "99",
         ] {
             assert_eq!(osc(body), None, "{body}");
         }

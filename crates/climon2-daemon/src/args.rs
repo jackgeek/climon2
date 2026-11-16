@@ -141,7 +141,7 @@ fn locations(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<(PathBuf, 
 fn transport(
     fields: &mut BTreeMap<OsString, OsString>,
 ) -> io::Result<(u32, TerminalSize, (u32, Assembly))> {
-    let limits = (scrollback_rows(fields)?, assembly(fields)?);
+    let limits = limits(fields)?;
     let size = size(fields)?;
     Ok((number(fields, "--readiness-fd")?, size, limits))
 }
@@ -154,9 +154,12 @@ fn assembly(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<Assembly> {
     Assembly::new(records, bytes, lifetime_ms).ok_or_else(invalid)
 }
 
-fn scrollback_rows(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<u32> {
+/// The session's retained history rows and notification assembly limits,
+/// fixed for its lifetime.
+fn limits(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<(u32, Assembly)> {
     let rows = number(fields, "--scrollback-max-rows")?;
-    (rows <= 100_000).then_some(rows).ok_or_else(invalid)
+    let rows = (rows <= 100_000).then_some(rows).ok_or_else(invalid)?;
+    Ok((rows, assembly(fields)?))
 }
 
 fn size(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<TerminalSize> {
