@@ -188,12 +188,7 @@ fn native_request(request_id: u64, request: &Request) -> native::Request {
                 generation: GENERATION,
             },
         ),
-        Request::Ready(held) => (
-            native::READY,
-            native::RequestArgs {
-                authority: native_authority(held),
-            },
-        ),
+        Request::Ready(held) | Request::Focus(held, _) => authorized(request, held),
         Request::Input(held, ref bytes) | Request::Paste(held, Paste { ref bytes, .. }) => (
             native::INPUT,
             native::RequestArgs {
@@ -218,22 +213,31 @@ fn native_request(request_id: u64, request: &Request) -> native::Request {
                 },
             },
         ),
-        Request::Focus(held, focused) => (
-            native::FOCUS,
-            native::RequestArgs {
-                flag: native::Flag {
-                    authority: native_authority(held),
-                    value: u8::from(focused),
-                    reserved: [0; 7],
-                },
-            },
-        ),
     };
     native::Request {
         tag,
         reserved: 0,
         request_id,
         args,
+    }
+}
+
+/// Ready and Focus carry their authority, and Focus its desired value as
+/// a flag.
+fn authorized(request: &Request, held: Authority) -> (u32, native::RequestArgs) {
+    let authority = native_authority(held);
+    match *request {
+        Request::Focus(_, focused) => (
+            native::FOCUS,
+            native::RequestArgs {
+                flag: native::Flag {
+                    authority,
+                    value: u8::from(focused),
+                    reserved: [0; 7],
+                },
+            },
+        ),
+        _ => (native::READY, native::RequestArgs { authority }),
     }
 }
 

@@ -111,6 +111,13 @@ enum Scan {
     /// A control sequence after `ESC` and its introducer (`[` or `O`): its
     /// bytes so far, or none while an overlong one is skipped.
     Sequence(u8, Option<Vec<u8>>),
+    /// Data until its end: never keys.
+    Data(Data),
+}
+
+/// Data the host sends between markers.
+#[derive(Debug)]
+enum Data {
     /// An OSC, DCS, APC or PM string, which only a host reply sends; true just
     /// after an Escape inside it.
     Text(bool),
@@ -123,11 +130,9 @@ enum Scan {
 #[derive(Debug, Eq, PartialEq)]
 enum Token {
     Key(Key),
-    /// A key whose Escape was released already.
-    Rest(Key),
     Pasted(Pasted),
-    Mouse(Mouse),
-    Focus(bool),
+    /// What a key whose Escape was released already, or a report, means.
+    Through(Routed),
 }
 
 const ESC: u8 = 0x1b;
@@ -219,10 +224,8 @@ impl Router {
     fn token(&mut self, token: Token) -> Option<Routed> {
         match token {
             Token::Key(key) => self.key(key),
-            Token::Rest(key) => Some(Routed::Rest(key)),
             Token::Pasted(pasted) => Some(Routed::Paste(self.pasted_after(pasted))),
-            Token::Mouse(mouse) => Some(Routed::Mouse(mouse)),
-            Token::Focus(focused) => Some(Routed::Focus(focused)),
+            Token::Through(routed) => Some(routed),
         }
     }
 
@@ -273,8 +276,15 @@ impl Router {
             Scan::Ground => self.ground(byte, tokens),
             Scan::Escape => self.escaped(byte, tokens),
             Scan::Sequence(introducer, body) => self.sequence(introducer, body, byte, tokens),
-            Scan::Text(escaped) => self.text(escaped, byte, tokens),
-            Scan::Paste(held) => self.pasted(held, byte, tokens),
+            Scan::Data(data) => self.data(data, byte, tokens),
+        }
+    }
+
+    /// A byte of a host reply's string or of a paste.
+    fn data(&mut self, data: Data, byte: u8, tokens: &mut Vec<Token>) {
+        match data {
+            Data::Text(escaped) => self.text(escaped, byte, tokens),
+            Data::Paste(held) => self.pasted(held, byte, tokens),
         }
     }
 
@@ -293,7 +303,7 @@ impl Router {
             b'[' | b'O' => self.scan = Scan::Sequence(byte, Some(Vec::new())),
             b']' | b'P' | b'_' | b'^' => {
                 self.released = false;
-                self.scan = Scan::Text(false);
+                self.scan = Scan::Data(Data::Text(false));
             }
             _ => {
                 if !std::mem::take(&mut self.released) {
@@ -355,7 +365,7 @@ impl Router {
             csi(body)
         };
         if matches!(token, Some(Token::Pasted(_))) {
-            self.scan = Scan::Paste(Vec::new());
+            self.scan = Scan::Data(Data::Paste(Vec::new()));
         }
         let released = std::mem::take(&mut self.released);
         tokens.extend(token.map(|token| rest(token, released)));
@@ -367,7 +377,7 @@ impl Router {
         match (escaped, byte) {
             (_, BEL) | (true, b'\\') => {}
             (true, _) => self.escaped(byte, tokens),
-            (false, _) => self.scan = Scan::Text(byte == ESC),
+            (false, _) => self.scan = Scan::Data(Data::Text(byte == ESC)),
         }
     }
 
@@ -384,7 +394,7 @@ impl Router {
             .unwrap_or(held.len());
         joined(tokens, &held[..at], false);
         held.drain(..at);
-        self.scan = Scan::Paste(held);
+        self.scan = Scan::Data(Data::Paste(held));
     }
 }
 
@@ -433,9 +443,9 @@ fn report(body: &[u8]) -> Option<Token> {
             bytes: Vec::new(),
             ends: false,
         })),
-        b"I" => Some(Token::Focus(true)),
-        b"O" => Some(Token::Focus(false)),
-        _ => mouse::sgr(body).map(Token::Mouse),
+        b"I" => Some(Token::Through(Routed::Focus(true))),
+        b"O" => Some(Token::Through(Routed::Focus(false))),
+        _ => mouse::sgr(body).map(|mouse| Token::Through(Routed::Mouse(mouse))),
     }
 }
 
@@ -461,7 +471,7 @@ fn literal(introducer: u8, body: &[u8], released: bool) -> Token {
 /// `token`, as only its rest when its Escape was released.
 fn rest(token: Token, released: bool) -> Token {
     match token {
-        Token::Key(key) if released => Token::Rest(key),
+        Token::Key(key) if released => Token::Through(Routed::Rest(key)),
         token => token,
     }
 }

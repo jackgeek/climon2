@@ -620,8 +620,8 @@ impl Monitor {
         let open = !self.introduction.is_open() && !self.selector.is_open();
         let id = self.selected.as_ref().filter(|_| open)?;
         let terminal = self.terminals.get(id)?;
-        let authority = terminal.input()?;
-        self.screen.desire().map(|_| (id, terminal, authority))
+        let ready = terminal.input().zip(self.screen.desire());
+        ready.map(|(authority, _)| (id, terminal, authority))
     }
 
     /// Submits the application bytes gathered so far to the target they

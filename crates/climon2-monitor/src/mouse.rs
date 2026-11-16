@@ -44,21 +44,29 @@ enum Kind {
 /// The SGR mouse report in the bytes after `ESC [`, if they are one.
 pub(crate) fn sgr(body: &[u8]) -> Option<Mouse> {
     let (last, fields) = body.strip_prefix(b"<")?.split_last()?;
-    let released = match last {
-        b'M' => false,
-        b'm' => true,
-        _ => return None,
-    };
-    let numbers: Vec<_> = fields.split(|byte| *byte == b';').map(number).collect();
-    match numbers[..] {
-        [Some(code), Some(column), Some(row)] => Some(Mouse {
-            code,
-            column,
-            row,
-            released,
-        }),
+    let released = released(*last)?;
+    let [code, column, row] = numbers(fields)?;
+    Some(Mouse {
+        code,
+        column,
+        row,
+        released,
+    })
+}
+
+/// A report's final byte: `m` for a release, `M` for anything else.
+fn released(last: u8) -> Option<bool> {
+    match last {
+        b'M' => Some(false),
+        b'm' => Some(true),
         _ => None,
     }
+}
+
+/// Exactly three decimal fields, separated by `;`.
+fn numbers(fields: &[u8]) -> Option<[u16; 3]> {
+    let numbers: Option<Vec<_>> = fields.split(|byte| *byte == b';').map(number).collect();
+    numbers?.try_into().ok()
 }
 
 /// A decimal field: digits only.
@@ -197,42 +205,46 @@ fn reported(mouse: Mouse, reporting: MouseReporting) -> bool {
     }
 }
 
-/// The report in `encoding`: SGR keeps the button of a release; the older
-/// encodings say a release with button 3 and add 32 to every value.
+/// The report in `encoding`.
 fn encoded(mouse: Mouse, cell: Cell, encoding: MouseEncoding) -> Option<Vec<u8>> {
-    if encoding == MouseEncoding::Sgr {
-        let last = if mouse.released { 'm' } else { 'M' };
-        let text = format!("\x1b[<{};{};{}{last}", mouse.code, cell.column, cell.row);
-        return Some(text.into_bytes());
+    match encoding {
+        MouseEncoding::Sgr => Some(sgr_report(mouse, cell)),
+        legacy => legacy_report(mouse, cell, legacy),
     }
-    let code = if mouse.released {
+}
+
+/// An SGR report keeps the button of a release.
+fn sgr_report(mouse: Mouse, cell: Cell) -> Vec<u8> {
+    let last = if mouse.released { 'm' } else { 'M' };
+    format!("\x1b[<{};{};{}{last}", mouse.code, cell.column, cell.row).into_bytes()
+}
+
+/// The older encodings add 32 to every value.
+fn legacy_report(mouse: Mouse, cell: Cell, encoding: MouseEncoding) -> Option<Vec<u8>> {
+    let code = u8::try_from(u32::from(legacy_code(mouse)) + OFFSET).ok()?;
+    let column = coordinate(cell.column, encoding)?;
+    let row = coordinate(cell.row, encoding)?;
+    Some([&[ESC, b'[', b'M', code][..], &column, &row].concat())
+}
+
+/// The older encodings say a release as button 3, keeping its modifiers.
+fn legacy_code(mouse: Mouse) -> u16 {
+    if mouse.released {
         mouse.code & MODIFIERS | BUTTON
     } else {
         mouse.code
-    };
-    let mut bytes = vec![
-        ESC,
-        b'[',
-        b'M',
-        u8::try_from(u32::from(code) + OFFSET).ok()?,
-    ];
-    for value in [cell.column, cell.row] {
-        coordinate(value, encoding, &mut bytes)?;
     }
-    Some(bytes)
 }
 
 /// One coordinate plus 32: a single byte, at most 255, or with 1005 a UTF-8
 /// character, at most 2047.
-fn coordinate(value: u16, encoding: MouseEncoding, out: &mut Vec<u8>) -> Option<()> {
+fn coordinate(value: u16, encoding: MouseEncoding) -> Option<Vec<u8>> {
     let value = u32::from(value) + OFFSET;
     if encoding == MouseEncoding::Default {
-        out.push(u8::try_from(value).ok()?);
-        return Some(());
+        return u8::try_from(value).ok().map(|byte| vec![byte]);
     }
     let character = char::from_u32(value).filter(|_| value < 0x800)?;
-    out.extend_from_slice(character.encode_utf8(&mut [0; 4]).as_bytes());
-    Some(())
+    Some(character.encode_utf8(&mut [0; 4]).as_bytes().to_vec())
 }
 
 #[cfg(test)]

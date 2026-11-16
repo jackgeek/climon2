@@ -210,11 +210,18 @@ impl Terminal {
         match presentation {
             Presentation::Complete => return self.complete(),
             Presentation::Display(bytes) => self.display(parser, &bytes),
+            other => self.reported(other),
+        }
+        None
+    }
+
+    /// An answer, `focus-v1` support, or a change of control.
+    fn reported(&mut self, presentation: Presentation) {
+        match presentation {
             Presentation::Answered(request, answer) => self.answered(request, answer),
             Presentation::Focusable => self.focusable = true,
             other => self.control_changed(other),
         }
-        None
     }
 
     /// A grant, a beginning, a new effective geometry or the end of control.
