@@ -8,6 +8,7 @@
 //! (#266).
 
 mod attention;
+mod delete;
 mod discovery;
 #[cfg(feature = "test-hooks")]
 mod hooks;
@@ -35,13 +36,14 @@ use climon2_vt::{
     Limits, Parser,
     view::{self as vt, Modes, MouseReporting},
 };
+use delete::{Asking, Confirmation, Decision};
 use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
 use initial::Initial;
 use introduction::KeyIntroduction;
 use keys::Action;
 use mouse::{Area, Gestures, Mouse, Wheel};
-use registry::{ClientEvent, Kind, Recovery, Registry, Report};
+use registry::{ClientEvent, Kind, Offer, Recovery, Registry, Report, View};
 use router::{Begin, Key, Pasted, Routed, Router};
 use screen::{Canvas, Scene, Screen, Session};
 use selector::Selector;
@@ -130,6 +132,8 @@ struct Monitor {
     introduction: KeyIntroduction,
     registry: Registry,
     selector: Selector,
+    /// The Delete confirmation, while it is open over the selector (#117).
+    deleting: Option<Confirmation>,
     discovery: Discovery,
     supervisor: Supervisor,
     /// The selected session: none until initial selection or the user
@@ -217,6 +221,7 @@ impl Monitor {
             introduction,
             registry: Registry::new(own_session()),
             selector: Selector::new(prefix, hints, search),
+            deleting: None,
             discovery,
             supervisor,
             selected: None,
@@ -325,6 +330,7 @@ impl Monitor {
             introduction: &self.introduction,
             rows: &rows,
             selector: &self.selector,
+            asking: asking(self.deleting.as_ref(), &self.registry, &rows),
             incomplete: self.registry.incomplete(),
             progress: self
                 .initial
@@ -561,6 +567,11 @@ impl Monitor {
         while let Ok((id, event)) = self.supervisor.reports.try_recv() {
             self.report(&id, event, now);
         }
+        let registry = &self.registry;
+        self.deleting = self
+            .deleting
+            .take()
+            .filter(|confirmation| registry.kind(confirmation.target()).is_some());
         self.selector.update(&self.registry.rows());
         self.initialise();
     }
@@ -571,12 +582,28 @@ impl Monitor {
     fn report(&mut self, id: &SessionId, event: ClientEvent, now: SystemTime) {
         match event {
             ClientEvent::Presentation(presentation) => self.present(id, presentation),
+            ClientEvent::Removed => self.dismiss(id),
             event => {
                 if let Some(presentation) = ending(&event) {
                     self.present(id, presentation);
                 }
                 self.registry.client(id, event, now);
             }
+        }
+    }
+
+    /// A confirmed Delete is done (#117): the row is dismissed for the run
+    /// and its retained cache discarded. A selected row's selection falls
+    /// back to the row now at its place, else the one before it, else none,
+    /// and so does the selector's highlight; neither acquires anything.
+    fn dismiss(&mut self, id: &SessionId) {
+        let before = self.registry.rows();
+        self.registry.dismiss(id);
+        self.terminals.remove(id);
+        let after = self.registry.rows();
+        self.selector.dismissed(id, &before, &after);
+        if self.selected.as_ref() == Some(id) {
+            self.selected = delete::fallback(id, &ids(&before), &ids(&after));
         }
     }
 
@@ -824,6 +851,9 @@ impl Monitor {
     /// prefix+s the selector unless the modal key introduction is open;
     /// prefix+j jumps from anywhere.
     fn action(&mut self, action: Action) -> Option<Ending> {
+        if self.deleting.is_some() {
+            return self.confirming(action);
+        }
         match action {
             Action::Exit => return Some(Ending::Exit),
             Action::KeyIntroduction => self.introduction.open(),
@@ -831,6 +861,21 @@ impl Monitor {
             Action::SessionList => self.session_list(),
         }
         None
+    }
+
+    /// Inside the Delete confirmation (owner decision on #117): prefix+x
+    /// exits, prefix+j cancels it and jumps, and prefix+s and prefix+? do
+    /// nothing.
+    fn confirming(&mut self, action: Action) -> Option<Ending> {
+        match action {
+            Action::Exit => Some(Ending::Exit),
+            Action::Jump => {
+                self.deleting = None;
+                self.jump();
+                None
+            }
+            Action::KeyIntroduction | Action::SessionList => None,
+        }
     }
 
     /// Prefix+s opens the selector, unless the modal key introduction is
@@ -912,10 +957,52 @@ impl Monitor {
         }
     }
 
-    /// Input for the open selector; Enter acts on the row it chose, and
+    /// Input for the open selector: the Delete confirmation takes it while
+    /// open, and Delete opens it (#117).
+    fn selector_input(&mut self, input: &Routed) {
+        if self.deleting.is_some() {
+            return self.confirmation_input(input);
+        }
+        if delete::requested(input) {
+            return self.ask();
+        }
+        self.list_input(input);
+    }
+
+    /// Delete opens the confirmation on the highlighted row, unless a
+    /// Delete of it is already under way: repeating it sends nothing.
+    fn ask(&mut self) {
+        let highlighted = self.selector.highlighted(&self.registry.rows());
+        let offered = highlighted.filter(|id| self.registry.offer(id).is_some());
+        self.deleting = offered.map(Confirmation::new);
+    }
+
+    /// Input for the open confirmation. Either decision returns to the
+    /// selector; cancelling sends nothing and never acknowledges attention
+    /// (Confirmed 2026-11-08), and confirming submits what the row offers
+    /// now, its row showing the Delete under way.
+    fn confirmation_input(&mut self, input: &Routed) {
+        let decision = self.deleting.as_mut().and_then(|asked| asked.input(input));
+        if let Some(decision) = decision {
+            self.deleting = None;
+            self.decide(decision);
+        }
+    }
+
+    fn decide(&mut self, decision: Decision) {
+        let Decision::Confirm(id) = decision else {
+            return;
+        };
+        if let Some((metadata, offer)) = self.registry.confirm(&id) {
+            let kill = offer == Offer::TerminateAndRemove;
+            self.supervisor.remove(metadata, kill);
+        }
+    }
+
+    /// Input for the selector's list; Enter acts on the row it chose, and
     /// cancelling back to the selected session acknowledges its attention
     /// once viewed (Confirmed 2026-11-08; #114).
-    fn selector_input(&mut self, input: &Routed) {
+    fn list_input(&mut self, input: &Routed) {
         let area = self.screen.overlay();
         match self.selector.input(input, &self.registry.rows(), area) {
             Some(id) => self.enter(id),
@@ -923,6 +1010,28 @@ impl Monitor {
             None => {}
         }
     }
+}
+
+/// The open Delete confirmation, its row as `rows` show it now and what
+/// `registry` offers for it now.
+fn asking<'a>(
+    confirmation: Option<&'a Confirmation>,
+    registry: &Registry,
+    rows: &'a [View],
+) -> Option<Asking<'a>> {
+    let confirmation = confirmation?;
+    let row = rows.iter().find(|row| &row.id == confirmation.target())?;
+    let offer = registry.offer(&row.id)?;
+    Some(Asking {
+        confirmation,
+        row,
+        offer,
+    })
+}
+
+/// The session IDs of `rows`, in order.
+fn ids(rows: &[View]) -> Vec<&SessionId> {
+    rows.iter().map(|row| &row.id).collect()
 }
 
 /// Whether a key uncovered the canvas: a modal was open before it and none
@@ -975,6 +1084,7 @@ fn shown<'a>(registry: &'a Registry, id: &SessionId) -> Option<Shown<'a>> {
         kind: registry.kind(id)?,
         finished: registry.finished(id),
         recovery: registry.recovery(id),
+        refused: registry.error(id),
     })
 }
 
@@ -984,12 +1094,14 @@ struct Shown<'a> {
     /// Its final outcome is known.
     finished: bool,
     recovery: Option<&'a Recovery>,
+    /// Why a confirmed Delete's Kill was refused or is unconfirmed (#117).
+    refused: Option<&'a str>,
 }
 
 /// The selected row as the top row shows it: its label, its row status
-/// (#107), its control, any error (its terminal's own, otherwise its
-/// recovery's diagnostic, owner decision on #116), and what its canvas
-/// shows.
+/// (#107), its control, any error (why its Delete's Kill fell short, #117,
+/// otherwise its terminal's own, otherwise its recovery's diagnostic, owner
+/// decision on #116), and what its canvas shows.
 fn selected<'a>(
     row: &'a registry::View,
     shown: Shown<'a>,
@@ -1009,7 +1121,10 @@ fn selected<'a>(
         label: &row.label,
         status: &row.status,
         control: control.label(),
-        error: terminal.and_then(Terminal::error).or(diagnostic),
+        error: shown
+            .refused
+            .or_else(|| terminal.and_then(Terminal::error))
+            .or(diagnostic),
         canvas,
     }
 }
@@ -1165,6 +1280,7 @@ mod tests {
                 kind,
                 finished: false,
                 recovery: Some(&retrying),
+                refused: None,
             };
             let view = cached.then(|| model.view());
             shape(without_view(&shown, "Status", control, view))

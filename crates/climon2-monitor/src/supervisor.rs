@@ -3397,7 +3397,7 @@ mod tests {
         supervisor.start_client(metadata(&open, "2026-11-13T10:00:00.000Z"));
         let opened = ClientEvent::Opened { status: false };
         let (reports, _) = reported_until(&supervisor, &open, &opened);
-        assert_eq!(reports, [opened.clone()]);
+        assert_eq!(reports, std::slice::from_ref(&opened));
         supervisor.remove(metadata(&open, "2026-11-13T10:00:00.000Z"), true);
         let (reports, cleaned) = reported_until(&supervisor, &open, &ClientEvent::Removed);
         assert_eq!(
@@ -3590,7 +3590,7 @@ mod tests {
         assert!(cleaned);
         supervisor.start_client(metadata(&held, "2026-11-13T10:00:02.000Z"));
         let (reports, _) = reported_until(supervisor, &held, &opened);
-        assert_eq!(reports, [opened.clone()]);
+        assert_eq!(reports, std::slice::from_ref(&opened));
         let retrying = ClientEvent::Recovery(Recovery::Retrying(
             "the client stopped before it opened".into(),
         ));

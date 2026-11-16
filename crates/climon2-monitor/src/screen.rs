@@ -144,6 +144,8 @@ pub(crate) struct Scene<'a> {
     pub(crate) introduction: &'a KeyIntroduction,
     pub(crate) rows: &'a [View],
     pub(crate) selector: &'a Selector,
+    /// The open Delete confirmation, over the selector (#117).
+    pub(crate) asking: Option<crate::delete::Asking<'a>>,
     /// Why the latest discovery pass was incomplete, if it was.
     pub(crate) incomplete: Option<&'a str>,
     /// The startup progress while the initial collection lasts (#266).
@@ -293,6 +295,9 @@ impl Screen {
             }
         };
         let search = scene.selector.render(scene.rows, below, &mut buffer);
+        if let Some(asking) = &scene.asking {
+            asking.render(below, &mut buffer);
+        }
         scene.introduction.render(below, &mut buffer);
         let modes = self.followed(scene);
         Frame {
@@ -377,7 +382,8 @@ impl Screen {
 }
 
 /// The host cursor: the search's while the selector is open, otherwise the
-/// selected session's; none while the key introduction covers them.
+/// selected session's; none while the key introduction or the Delete
+/// confirmation covers them.
 fn shown_cursor(
     scene: &Scene<'_>,
     session: Option<HostCursor>,
@@ -388,7 +394,7 @@ fn shown_cursor(
     } else {
         session
     };
-    cursor.filter(|_| !scene.introduction.is_open())
+    cursor.filter(|_| !scene.introduction.is_open() && scene.asking.is_none())
 }
 
 impl Screen {
