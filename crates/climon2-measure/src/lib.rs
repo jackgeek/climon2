@@ -5,4 +5,6 @@
 
 pub mod evaluate;
 pub mod matrix;
+pub mod report;
 pub mod sample;
+pub mod workload;
