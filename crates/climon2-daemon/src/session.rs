@@ -16,7 +16,7 @@ use crate::{
         Restoration, SessionEnd,
     },
     pty::Pty,
-    status::{self, Clock, Detector, Now, Sample, Screen, SystemRandom},
+    status::{self, Clock, Detector, Interpreted, Now, Sample, Screen, SystemRandom},
 };
 use climon2_core::{
     hello::{SessionState, advertise_revision1},
@@ -32,7 +32,7 @@ use climon2_platform::{
     runtime::{SocketFreshness, SocketListener, SocketStream},
     terminal::Signals,
 };
-use climon2_vt::{Geometry, Vt, VtConfig};
+use climon2_vt::{Geometry, Signal, Vt, VtConfig};
 use command::{Command, Read, classify};
 use delivery::{Delivery, Out};
 use paste::PasteTracker;
@@ -154,6 +154,26 @@ fn sample(vt: &Vt) -> Sample {
             characters: vt.viewport_characters(),
         },
         title: vt.application_title().map(str::to_owned),
+    }
+}
+
+/// What a sequence observed in the command's output does: a program-status
+/// capability query is answered locally, in order with the terminal's other
+/// replies; a terminal signal drives detection, sampling the terminal as of
+/// its place in the output. Returns the effective status it changed.
+fn observe(
+    detector: &mut Detector<SystemRandom>,
+    now: &Now,
+    vt: &Vt,
+    observed: Signal<'_>,
+    replies: &mut Vec<u8>,
+) -> Option<climon2_core::wire::Status> {
+    match status::interpret(observed)? {
+        Interpreted::Query => {
+            replies.extend_from_slice(status::QUERY_REPLY);
+            None
+        }
+        Interpreted::Detect(signal) => detector.signal(now, signal, || sample(vt)),
     }
 }
 
@@ -455,13 +475,22 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
+    /// Feeds the command's output to the VT; the terminal signals in it
+    /// change the status in order, reported after its live output.
     fn fed(&mut self, bytes: &[u8], now: Instant) {
-        let fed = self.vt.feed(bytes, now);
+        let (detector, moment) = (&mut self.status, &self.moment);
+        let mut changes = Vec::new();
+        let fed = self.vt.feed_observed(bytes, now, |vt, observed, replies| {
+            changes.extend(observe(detector, moment, vt, observed, replies));
+        });
         self.pty_writes.daemon(&fed.replies);
         if fed.focus_enabled {
             self.focus_enabled();
         }
         self.route(fed.live);
+        changes
+            .into_iter()
+            .for_each(|change| self.report_status(Some(change)));
         self.titles(fed.titles);
     }
 
