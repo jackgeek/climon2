@@ -8,6 +8,7 @@ mod headless;
 mod interactive;
 mod limits;
 mod passive;
+mod signals;
 mod startup;
 mod status;
 mod succession;

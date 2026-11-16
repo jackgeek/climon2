@@ -2504,6 +2504,9 @@ fn fixture_child() {
     if mode == "reply-record" {
         record_input("recorded", Some("\x1b[c"));
     }
+    if mode == "status-query-record" {
+        record_input("recorded", Some("\x1b]7501;?\x1b\\\x1b[c"));
+    }
     if mode == "focus-record" {
         record_focus();
     }
