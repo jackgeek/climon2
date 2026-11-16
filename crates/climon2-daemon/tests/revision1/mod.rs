@@ -5,6 +5,7 @@
 mod interactive;
 mod limits;
 mod passive;
+mod signals;
 mod status;
 mod succession;
 mod termination;

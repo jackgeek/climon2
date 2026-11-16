@@ -8,81 +8,23 @@ mod monitor;
 
 use climon2_core::{
     cli::{CliArgs, CommandArgs},
-    layout::HomeLayout,
+    layout::{ExecutableLayout, VersionBinary},
     lifetime::Lifetime,
     selector::Selector,
 };
 use climon2_platform::{
+    home,
     logging::{self, LogFile},
-    runtime,
 };
-use std::{
-    ffi::OsString,
-    fmt, io,
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use std::{ffi::OsString, io, path::Path, time::SystemTime};
 
-#[derive(Debug)]
-pub struct Error {
-    pub code: u32,
-    pub message: String,
-    pub logs: Option<PathBuf>,
-}
+/// How the CLI fails: the thin main prints it and exits with its code.
+pub use climon2_core::failure::Failure as Error;
 
-impl Error {
-    fn new(code: u32, message: impl fmt::Display) -> Self {
-        Self {
-            code,
-            message: message.to_string(),
-            logs: None,
-        }
-    }
-
-    fn logged(mut self, path: &Path) -> Self {
-        if self.logs.is_none() {
-            self.logs = Some(path.to_owned());
-        }
-        self
-    }
-}
-
-impl From<io::Error> for Error {
-    fn from(error: io::Error) -> Self {
-        Self::new(125, error)
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(out, "{}", one_line(&self.message))?;
-        if let Some(logs) = &self.logs {
-            write!(out, " (logs: {})", one_line(&logs.to_string_lossy()))?;
-        }
-        Ok(())
-    }
-}
-
-fn one_line(text: &str) -> String {
-    text.chars()
-        .map(|character| {
-            if character.is_control() {
-                character.escape_default().to_string()
-            } else {
-                character.to_string()
-            }
-        })
-        .collect()
-}
-
-impl std::error::Error for Error {}
-
-fn home() -> io::Result<PathBuf> {
-    let user_home = std::env::var_os("HOME").unwrap_or_default();
-    let override_value = std::env::var_os("CLIMON2_HOME");
-    let layout = HomeLayout::resolve(override_value.as_deref(), Path::new(&user_home))
-        .map_err(io::Error::other)?;
-    runtime::canonical_home(layout.root())
+/// The install layout around this CLI: every sibling it starts, and every
+/// client it execs, is found from it.
+fn executable_layout() -> io::Result<ExecutableLayout> {
+    home::executable_layout(VersionBinary::Cli)?.map_err(io::Error::other)
 }
 
 /// Arguments exclude argv[0]. Success is a final status, except successful
@@ -140,7 +82,7 @@ fn presentation(arguments: &CliArgs) -> String {
 }
 
 fn logged_run(work: Work) -> Result<u32, Error> {
-    let home = home()?;
+    let home = home::canonical()?;
     let general = LogFile::general(&home)?;
     let filter = std::env::var("CLIMON2_LOG").ok();
     let dispatch = general

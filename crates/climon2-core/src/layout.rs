@@ -26,8 +26,14 @@ impl HomeLayout {
             Some(value) => PathBuf::from(value),
             None => user_home.join(".climon2"),
         };
-        absolute(&path)?;
-        Ok(Self(path))
+        Self::at(&path)
+    }
+
+    /// The layout of a climon2 home an invocation has already resolved, such
+    /// as its canonical home: the root is used as it is.
+    pub fn at(root: &Path) -> Result<Self, ContractError> {
+        absolute(root)?;
+        Ok(Self(root.to_owned()))
     }
 
     pub fn root(&self) -> &Path {

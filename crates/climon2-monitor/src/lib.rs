@@ -20,56 +20,11 @@ use keys::{Action, Key, Keys};
 use preference::Preference;
 use screen::Screen;
 use startup::Startup;
-use std::{
-    fmt, io,
-    path::{Path, PathBuf},
-};
+use std::io;
 
 /// A one-line diagnostic that the thin main prints, after the host is
 /// restored, with the climon2 error code.
-#[derive(Debug)]
-pub struct Error {
-    message: String,
-    logs: Option<PathBuf>,
-}
-
-impl Error {
-    fn new(message: impl fmt::Display) -> Self {
-        Self {
-            message: message.to_string(),
-            logs: None,
-        }
-    }
-
-    fn logged(mut self, path: &Path) -> Self {
-        self.logs = Some(path.to_owned());
-        self
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        out.write_str(&one_line(&self.message))?;
-        if let Some(logs) = &self.logs {
-            write!(out, " (logs: {})", one_line(&logs.to_string_lossy()))?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for Error {}
-
-fn one_line(text: &str) -> String {
-    text.chars()
-        .map(|character| {
-            if character.is_control() {
-                character.escape_default().to_string()
-            } else {
-                character.to_string()
-            }
-        })
-        .collect()
-}
+pub use climon2_core::failure::Failure as Error;
 
 /// The CLI execs the monitor with no arguments. Returns the exit status of an
 /// orderly exit: 0 for prefix+x, 128 + signal for a termination signal.
@@ -80,9 +35,9 @@ pub fn run() -> Result<u32, Error> {
     let dispatch = startup
         .log
         .dispatch(filter.as_deref())
-        .map_err(|error| Error::new(error).logged(&log))?;
+        .map_err(|error| Error::from(error).logged(&log))?;
     tracing::dispatcher::with_default(&dispatch, || monitor(startup))
-        .map_err(|error| Error::new(error).logged(&log))
+        .map_err(|error| Error::from(error).logged(&log))
 }
 
 /// Records how the monitor ended: the host terminal may be gone, so a failure
