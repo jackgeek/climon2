@@ -7162,6 +7162,56 @@ fn resizes_under_continuous_output_show_only_coherent_frames() {
     package.assert_clean();
 }
 
+/// How many frames the monitor has painted on `terminal`: each begins by
+/// hiding the host cursor, which nothing else the monitor writes does.
+fn frames_painted(terminal: &Terminal) -> usize {
+    let received = terminal.received();
+    received
+        .windows(6)
+        .filter(|window| window == b"\x1b[?25l")
+        .count()
+}
+
+/// LIM-06 (Monitor: render cadence; #119): with `ui.fps` 5, a selected
+/// session ticking 50 lines a second is painted at most 5 frames a second,
+/// one more for a frame already due when counting began, yet keeps being
+/// painted (its later ticks show); the selector opens, closes and prefix+x
+/// exits while it ticks.
+#[test]
+fn rendering_keeps_to_its_frame_rate_while_input_the_selector_and_exit_respond() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(&package, json!({"ui": {"fps": 5}}));
+    headless(&package, &ticking("Tick"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    let top = controlled("Tick", RUNNING);
+    whole_frame_shows(&terminal, "the first ticks", |screen| {
+        screen.lines().next() == Some(top.as_str()) && screen.contains("\ntick ")
+    });
+    let (before, began) = (frames_painted(&terminal), Instant::now());
+    thread::sleep(Duration::from_secs(2));
+    let (after, elapsed) = (frames_painted(&terminal), began.elapsed());
+    let most = (elapsed.as_secs_f64() * 5.0).floor() as usize + 1;
+    assert!(
+        after - before <= most,
+        "{} frames in {elapsed:?}",
+        after - before
+    );
+    assert!(
+        after - before >= 2,
+        "{} frames in {elapsed:?}",
+        after - before
+    );
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Tick"));
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
 const ATTENTION: &str = "Needs attention";
 const ACKNOWLEDGED: &str = "Acknowledged";
 /// What prefix+j says when no session qualifies (owner decision on #114).

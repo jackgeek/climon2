@@ -8,6 +8,7 @@
 //! (#266).
 
 mod attention;
+mod cadence;
 mod discovery;
 #[cfg(feature = "test-hooks")]
 mod hooks;
@@ -171,6 +172,8 @@ struct Monitor {
     toasts: Toasts,
     /// Whether a toast rings the host bell as it begins (`monitor.bell`).
     bell: bool,
+    /// When the next frame may be painted: at most `ui.fps` a second.
+    frames: cadence::Frames,
 }
 
 /// A session under the authority it takes input with.
@@ -243,6 +246,7 @@ impl Monitor {
             host_report: HostReport::default(),
             toasts: Toasts::new(jump),
             bell: config.settings().bell,
+            frames: cadence::Frames::new(limits.cadence().fps),
         };
         monitor.show().map(|()| monitor)
     }
@@ -312,12 +316,17 @@ impl Monitor {
         }
     }
 
-    /// Paints the current scene when it differs from what the screen shows.
+    /// Paints the current scene when it differs from what the screen shows,
+    /// once a frame is due (at most `ui.fps` a second, #119): one not due
+    /// is skipped, and the next step's paints the scene as it is then.
     /// Each terminal first learns whether this frame shows its applied
     /// restoration, so its control and input readiness describe the frame
     /// being painted.
     fn show(&mut self) -> io::Result<()> {
         let now = Instant::now();
+        if !self.frames.due(now) {
+            return Ok(());
+        }
         self.menus();
         let began = self.toasts.frame(now, self.screen.overlay());
         self.mark_shown();

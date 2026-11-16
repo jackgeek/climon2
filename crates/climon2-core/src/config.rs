@@ -9,7 +9,7 @@ use crate::{
     layout::HomeLayout,
 };
 pub use limits::{
-    Assembly, Backoff, DiscoveryLimits, Lanes, Limits, MandatoryAllocation, ModelLimits,
+    Assembly, Backoff, Cadence, DiscoveryLimits, Lanes, Limits, MandatoryAllocation, ModelLimits,
 };
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,

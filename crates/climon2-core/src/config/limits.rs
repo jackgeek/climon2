@@ -390,6 +390,17 @@ pub struct Backoff {
     pub jitter_percent: u32,
 }
 
+/// The monitor UI's cadence (`ui`): frames a second and the work quanta.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Cadence {
+    /// `ui.fps`: the most frames painted a second.
+    pub fps: u32,
+    /// `ui.client_quantum_ms`: one client's work at a turn.
+    pub client_quantum_ms: u32,
+    /// `ui.background_quantum_ms`: all clients' work at one UI turn.
+    pub background_quantum_ms: u32,
+}
+
 impl Limits {
     /// The effective `cm1_limits` of every library instance, each field from
     /// the setting the native contract names. `client_bytes` is the
@@ -474,6 +485,20 @@ impl Limits {
             initial_ms,
             cap_ms,
             jitter_percent,
+        }
+    }
+
+    pub fn cadence(&self) -> Cadence {
+        let Ui {
+            fps,
+            client_quantum_ms,
+            background_quantum_ms,
+            ..
+        } = self.0.ui;
+        Cadence {
+            fps,
+            client_quantum_ms,
+            background_quantum_ms,
         }
     }
 

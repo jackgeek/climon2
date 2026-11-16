@@ -1151,7 +1151,8 @@ fn native_fields(limits: &climon2_core::native::Limits) -> [u64; 27] {
 /// gets its request and event queues, one wire frame and its 1,048,576-byte
 /// instance allocation, 3,407,872 bytes by default, and the model the rest
 /// (LIM-01 Monitor, #119). Expected values are the documented defaults with
-/// one setting of each kind changed.
+/// one setting of each kind changed. Its UI reads `ui.fps` and the work
+/// quanta (#119).
 #[test]
 fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
     let text = limits(&[
@@ -1174,6 +1175,9 @@ fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
         ("retry.initial_ms", json!(250)),
         ("retry.cap_ms", json!(4000)),
         ("retry.jitter_percent", json!(35)),
+        ("ui.fps", json!(12)),
+        ("ui.client_quantum_ms", json!(3)),
+        ("ui.background_quantum_ms", json!(9)),
     ])
     .to_string();
     let config = monitor(&text).unwrap();
@@ -1206,6 +1210,15 @@ fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
     assert_eq!(
         (retry.initial_ms, retry.cap_ms, retry.jitter_percent),
         (250, 4000, 35)
+    );
+    let cadence = limits.cadence();
+    assert_eq!(
+        (
+            cadence.fps,
+            cadence.client_quantum_ms,
+            cadence.background_quantum_ms
+        ),
+        (12, 3, 9)
     );
     assert_eq!(
         config.take_control_key(),
