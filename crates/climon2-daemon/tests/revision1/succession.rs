@@ -224,7 +224,9 @@ fn a_registration_acquires_after_the_command_final_until_the_session_ends() {
 /// final of the hung-up command, then its stream ends.
 #[test]
 fn watching_does_not_stop_the_initial_attach_rule() {
-    let mut session = Session::start("lines");
+    // The `paste` fixture sleeps rather than reading its terminal, so the
+    // hang-up ends it by SIGHUP, never by a failed read.
+    let mut session = Session::start("paste");
     let started = Instant::now();
     let (mut watching, _) = monitor(&session, &[]);
     assert_eq!(
