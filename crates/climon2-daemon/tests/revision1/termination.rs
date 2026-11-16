@@ -184,13 +184,14 @@ fn a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_j
 
 /// COM-06 (Contract, known-final result) and COM-05 (Contract, Initial
 /// metadata case): once the daemon knows the command's result, a later
-/// Open's Initial metadata carries it and no Command final follows, and a
-/// rejected first role carries it as `known_final`. Here the command exits
-/// while its only controller withholds Ready, so the session lives on.
-/// During the grace of a Kill that follows, an interactive Open is
-/// `session_terminating` and a Kill requiring an unknown family
-/// `unsupported_capability`, each with the result. The Kill then confirms
-/// the same result, and no connection gets a second Command final.
+/// Open's Initial metadata carries it, and a rejected first role carries it
+/// as `known_final`. Here the command exits while its only controller
+/// withholds Ready, so the session lives on. During the grace of a Kill
+/// that follows, an interactive Open is `session_terminating` and a Kill
+/// requiring an unknown family `unsupported_capability`, each with the
+/// result. The Kill then confirms the same result; the monitor that opened
+/// after the exit receives it as its one Command final as the session ends
+/// (#259), and no connection gets a second one.
 #[test]
 fn a_known_result_reaches_later_opens_and_rejected_first_roles() {
     let mut session = Session::start("script");
@@ -244,6 +245,7 @@ fn a_known_result_reaches_later_opens_and_rejected_first_roles() {
     assert_eq!(message(&mut killer), terminated(1, &result));
     assert_closed(&mut killer);
     assert_closed(&mut early);
+    assert_eq!(message(&mut late), command_final(&result));
     assert_closed(&mut late);
     attached.ended(&result);
     session.finish();

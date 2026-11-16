@@ -405,11 +405,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// Nothing more of the command's output is read once it ended, so a
-    /// known result is final.
+    /// known result is final. A result held while the session went on
+    /// reaches, as the session ends, the connections that opened after it.
     fn end_command(&mut self, command: CommandEnd) -> io::Result<()> {
         if let Some(result) = command.known() {
             self.publish(result);
         }
+        self.publish_held();
         self.command = Command::Ended;
         self.react(|control| control.command_exited(command))
     }
@@ -707,16 +709,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
         if self.awaiting(now) {
             return Ok(());
-        }
-        self.exited(result)
-    }
-
-    /// The exited command's end. A session still `starting` here is ended
-    /// by its initial deadline, nothing having attached: the result it held
-    /// for that attachment reaches every connection as Command final first.
-    fn exited(&mut self, result: CommandResult) -> io::Result<()> {
-        if self.control.snapshot().lifecycle == Lifecycle::Starting {
-            self.publish_held(&result);
         }
         self.end_command(CommandEnd::Confirmed(result))
     }

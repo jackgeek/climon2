@@ -767,15 +767,18 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.send_final(result, status, |_| true);
     }
 
-    /// The result an exited command's session held for its initial
-    /// attachment, once the initial deadline ended that session: each
-    /// connection that opened after the Command final went out, and so
-    /// learned the result only from its Initial metadata, receives it as
-    /// Command final now, so every opened connection gets exactly one
-    /// (owner decision on #259).
-    pub(super) fn publish_held(&mut self, result: &CommandResult) {
+    /// The result a session held after its command exited, once the
+    /// session ends, however it ends: each connection that opened after the
+    /// Command final went out, and so learned the result only from its
+    /// Initial metadata, receives it as Command final now, so every opened
+    /// connection gets exactly one (owner decisions on #259). Nothing is
+    /// held when no result was final before this step.
+    pub(super) fn publish_held(&mut self) {
+        let Some(result) = self.command_result.clone() else {
+            return;
+        };
         let status = self.status.status();
-        self.send_final(result, status, |opened| opened.opened_after_final);
+        self.send_final(&result, status, |opened| opened.opened_after_final);
     }
 
     /// Command final of `result` to each opened connection `to` picks, with
