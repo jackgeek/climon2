@@ -56,8 +56,7 @@ fn new_session(home: &Path, general: &LogFile) -> io::Result<(SessionId, LogFile
 }
 
 fn exec_config(home: &Path) -> Result<ExecConfig, Error> {
-    let layout =
-        HomeLayout::resolve(Some(home.as_os_str()), Path::new("/")).map_err(io::Error::other)?;
+    let layout = HomeLayout::at(home).map_err(io::Error::other)?;
     ConfigSource::read(&layout)
         .and_then(|source| source.exec())
         .map_err(|error| Error::new(125, error))
@@ -69,7 +68,7 @@ fn preflight(lifetime: Lifetime) -> io::Result<ExecutableLayout> {
     if lifetime == Lifetime::Ordinary {
         terminal::require_ttys()?;
     }
-    executable_layout()
+    crate::executable_layout()
 }
 
 fn new_session_id() -> io::Result<SessionId> {
@@ -77,11 +76,6 @@ fn new_session_id() -> io::Result<SessionId> {
         .to_string()
         .parse()
         .map_err(io::Error::other)
-}
-
-fn executable_layout() -> io::Result<ExecutableLayout> {
-    let own_exe = std::env::current_exe()?.canonicalize()?;
-    ExecutableLayout::from_cli_path(&own_exe).map_err(io::Error::other)
 }
 
 fn session_log(home: &Path, id: &SessionId, general: &LogFile) -> io::Result<LogFile> {
