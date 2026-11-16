@@ -6,7 +6,9 @@ and the run report for instances that never open a connection
 ([#85](https://github.com/jackgeek/climon2/issues/85)), whose
 [Leave](request-detach.md) is not required, and for
 [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
-([#93](https://github.com/jackgeek/climon2/issues/93)), with the retry and
+([#93](https://github.com/jackgeek/climon2/issues/93)), interactive
+attachments ([#94](https://github.com/jackgeek/climon2/issues/94)), and Kill
+and Command final ([#96](https://github.com/jackgeek/climon2/issues/96)), with the retry and
 Leave evidence its [implemented behavior](core-v1.md#implemented-behavior)
 details.**
 The [client](../../../GLOSSARY.md#sessions) reports instance termination to the

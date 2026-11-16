@@ -15,18 +15,24 @@
 //!   its `release` (default: the release the host was asked for; see
 //!   `releases` below), which every later step of the instance uses;
 //! - `submit`, with a `request` (see `requests`) in caller memory scrambled
-//!   and unmapped as soon as `submit` returns, or a null one;
+//!   and unmapped as soon as `submit` returns, or a null one; in it, the
+//!   strings `"$period"` and `"$restoration"` are the instance's latest
+//!   authority drained so far (from Control granted, Restoration begin, or
+//!   an Acquire or Ready result), and `"$stale_period"` and
+//!   `"$stale_restoration"` the one before it (#94);
 //! - `run`, on the owner thread; `wait_run` for its report;
-//! - `drain`, `until` `{"records": n}`, `{"tag": t}` or `"terminal"`
-//!   (default: once), releasing each delivery unless `keep`, and stopping
-//!   at the first failed drain or at terminal evidence, after which nothing
-//!   more can come;
+//! - `drain`, `until` `{"records": n}`, `{"tag": t}`, `{"response": id}`,
+//!   `{"display": hex}` (the Display bytes drained in this step contain
+//!   them), `{"all": [until, ...]}` or `"terminal"` (default: once),
+//!   releasing each delivery unless `keep`, and stopping at the first failed
+//!   drain or at terminal evidence, after which nothing more can come;
 //! - `observe` and `release` the deliveries kept so far;
 //! - `snapshot`, `notification`, `shutdown`; `await_snapshot` until its
 //!   `gauge` reaches `value`;
 //! - `touch` a `path`; `probe` a `socket`'s hello `state`; `signal` a
-//!   real daemon's `pid` to `stop` or `continue`;
+//!   real daemon's `pid` to `stop`, `continue` or `kill` (#96);
 //! - `await_peer` until it received `frames` frames;
+//! - `destroy` on the owner thread, ahead of `finish` (#96);
 //! - `finish`: run's report, drains to terminal evidence, handle releases,
 //!   destroy and join.
 //!
@@ -65,6 +71,8 @@ struct Instance {
     report: Option<Value>,
     kept: Vec<Drain>,
     peer: Option<Peer>,
+    /// Each distinct `[period, restoration_id]` drained, in order.
+    authorities: Vec<[u64; 2]>,
 }
 
 struct World<'a> {
@@ -143,6 +151,10 @@ impl World<'_> {
             "notification" => json!(api.notification(handles(instance)).0),
             "shutdown" => api.shutdown(handles(instance)),
             "await_peer" => await_peer(instance, step),
+            "destroy" => {
+                let handles = handles(instance);
+                owner(instance).call(move || api.destroy(handles))
+            }
             "finish" => finish(api, instance),
             _ => panic!("unknown step {action}"),
         }
@@ -175,6 +187,7 @@ impl World<'_> {
                 report: None,
                 kept: Vec::new(),
                 peer,
+                authorities: Vec::new(),
             },
         );
         report
@@ -204,11 +217,80 @@ fn submit(api: Api, instance: &Instance, request: &Value) -> Value {
     let built = if request.is_null() {
         std::ptr::null()
     } else {
-        requests::build(&mut arena, request)
+        requests::build(&mut arena, &substituted(instance, request))
     };
     let call = timed(|| api.submit(handles(instance), built));
     arena.scramble_and_unmap();
     call
+}
+
+/// `request` with the instance's drained authorities in place of
+/// `"$period"`, `"$restoration"`, `"$stale_period"` and
+/// `"$stale_restoration"`.
+fn substituted(instance: &Instance, request: &Value) -> Value {
+    let back = |by: usize| {
+        let count = instance.authorities.len();
+        let index = count.checked_sub(by).unwrap_or_else(|| {
+            panic!(
+                "{by} drained authorities needed: {:?}",
+                instance.authorities
+            )
+        });
+        instance.authorities[index]
+    };
+    match request {
+        Value::String(text) => match text.as_str() {
+            "$period" => json!(back(1)[0]),
+            "$restoration" => json!(back(1)[1]),
+            "$stale_period" => json!(back(2)[0]),
+            "$stale_restoration" => json!(back(2)[1]),
+            _ => request.clone(),
+        },
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| substituted(instance, item))
+                .collect(),
+        ),
+        Value::Object(members) => Value::Object(
+            members
+                .iter()
+                .map(|(key, member)| (key.clone(), substituted(instance, member)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// The authority a drained record gives its role, if any.
+fn authority(record: &Value) -> Option<[u64; 2]> {
+    let tag = record["tag"].as_u64()? as u32;
+    let source = match tag {
+        native::GRANTED | native::RESTORATION_BEGIN => &record["presentation"],
+        native::RESPONSE => &record["response"]["result"],
+        _ => return None,
+    };
+    Some([
+        source["period"].as_u64()?,
+        source["restoration_id"].as_u64()?,
+    ])
+}
+
+fn track(instance: &mut Instance, records: &[Value]) {
+    for found in records.iter().filter_map(authority) {
+        if instance.authorities.last() != Some(&found) {
+            instance.authorities.push(found);
+        }
+    }
+}
+
+/// The Display bytes among `records`, as hex.
+fn displayed(records: &[Value]) -> String {
+    records
+        .iter()
+        .filter(|record| record["tag"] == native::DISPLAY)
+        .filter_map(|record| record["presentation"]["bytes"].as_str())
+        .collect()
 }
 
 fn wait_run(instance: &mut Instance) -> Value {
@@ -225,11 +307,24 @@ fn met(until: &Value, drains: &[Value], records: &[Value], terminal: bool) -> bo
     if until == "terminal" {
         return terminal;
     }
+    if let Some(all) = until["all"].as_array() {
+        return all
+            .iter()
+            .all(|until| met(until, drains, records, terminal));
+    }
     if let Some(count) = until["records"].as_u64() {
         return records.len() as u64 >= count;
     }
     if let Some(tag) = until["tag"].as_u64() {
         return records.iter().any(|record| record["tag"] == tag);
+    }
+    if let Some(id) = until["response"].as_u64() {
+        return records
+            .iter()
+            .any(|record| record["response"]["request_id"] == id);
+    }
+    if let Some(hex) = until["display"].as_str() {
+        return displayed(records).contains(hex);
     }
     !drains.is_empty()
 }
@@ -252,6 +347,7 @@ fn drain(api: Api, instance: &mut Instance, step: &Value) -> Value {
         let elapsed = started.elapsed().as_micros() as u64;
         let ok = call["code"] == native::SUCCESS;
         if let Some(found) = drained.observed["records"].as_array() {
+            track(instance, found);
             records.extend(found.iter().cloned());
         }
         terminal |= drained.kind == native::TERMINAL;
@@ -315,12 +411,13 @@ fn touch(step: &Value) -> Value {
     json!("touched")
 }
 
-/// Stops or resumes a process, such as a real session daemon.
+/// Stops, resumes or kills a process, such as a real session daemon.
 fn signal(step: &Value) -> Value {
     let pid = step["pid"].as_i64().expect("a pid") as libc::pid_t;
     let signal = match step["signal"].as_str() {
         Some("stop") => libc::SIGSTOP,
         Some("continue") => libc::SIGCONT,
+        Some("kill") => libc::SIGKILL,
         other => panic!("unknown signal {other:?}"),
     };
     // SAFETY: kill has no memory-safety preconditions.

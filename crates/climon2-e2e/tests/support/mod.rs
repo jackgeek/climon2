@@ -1,3 +1,6 @@
+/// Only the control and display suites use it (#94).
+#[allow(dead_code)]
+pub mod control;
 /// Only the Library-layer suites use it.
 #[allow(dead_code)]
 pub mod library;

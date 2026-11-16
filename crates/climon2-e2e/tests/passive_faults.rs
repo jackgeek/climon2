@@ -85,6 +85,8 @@ fn outcome<'a>(report: &'a Value, index: usize, name: &str) -> (&'a Value, Vec<V
     (step(report, start + 1), records, terminal.clone())
 }
 
+/// REC-01 Fault (startup failure calls for passive retry; missing
+/// revision-1 support or an invalid configuration for none possible) and
 /// COM-01 Fault (missing required support is rejected explicitly
 /// before any role takes effect, support is never inferred from the release,
 /// and incompatible peers are rejected): against fake daemons of this very
@@ -275,7 +277,7 @@ fn installed_library_rejects_an_open_the_session_cannot_honour_before_any_role()
 
 /// COM-01 Fault (optional families intersect three ways, and the selection
 /// must be one the request allows): a daemon advertising `status-v1` and
-/// `focus-v1` but not `title-v1` is asked for no optional family at all,
+/// `progress-v1` but not `title-v1` is asked for no optional family at all,
 /// since the library relays neither and the daemon lacks titles; its Initial
 /// metadata reports the title unavailable, never a fabricated empty one.
 /// A daemon that selects a family the Open did not request, or omits a
@@ -284,7 +286,7 @@ fn installed_library_rejects_an_open_the_session_cannot_honour_before_any_role()
 fn installed_library_selects_only_families_both_sides_support() {
     let package = Package::new();
     let root = root(&package);
-    let advertised = ["daemon-wire-v1", "monitor-v1", "status-v1", "focus-v1"];
+    let advertised = ["daemon-wire-v1", "monitor-v1", "status-v1", "progress-v1"];
     let unavailable = send(
         0x41,
         json!({
@@ -301,7 +303,7 @@ fn installed_library_selects_only_families_both_sides_support() {
     });
     let unrequested = json!({ "open": [opened(&["daemon-wire-v1", "monitor-v1", "status-v1"])] });
     let incomplete = json!({ "open": [opened(&["title-v1"])] });
-    let optional = ["title-v1", "status-v1", "focus-v1"];
+    let optional = ["title-v1", "status-v1", "progress-v1"];
     let steps = json!([
         { "do": "create", "instance": "a", "peer": intersected },
         { "do": "submit", "instance": "a", "request": open(1, &REQUIRED, &optional) },
@@ -358,13 +360,6 @@ fn installed_library_selects_only_families_both_sides_support() {
     package.assert_clean();
 }
 
-/// A fake daemon that opens with `title-v1` and then sends `after`.
-fn opened_then(after: Vec<Value>) -> Value {
-    let mut actions = vec![opened(&SELECTED), initial(json!("t"))];
-    actions.extend(after);
-    json!({ "open": actions })
-}
-
 /// COM-02 Fault (each boundary's framing, types and records,
 /// with their rejection effects): a frame that is not JSON
 /// (`invalid_json`), a request type (`wrong_direction`), an undefined type
@@ -373,8 +368,9 @@ fn opened_then(after: Vec<Value>) -> Value {
 /// prefix), a stream ending inside a frame (`truncated_frame`), a response
 /// for no request (`invalid_request_id`) or with another operation's result,
 /// a title before the Open's response or before the Initial metadata, an
-/// Initial metadata reporting a family nobody selected, or a title when
-/// `title-v1` is not selected (`invalid_record`) each fail the connection:
+/// Initial metadata reporting a family nobody selected, a title when
+/// `title-v1` is not selected, or a Status changed when `status-v1` is not
+/// (`invalid_record`) each fail the connection:
 /// a transport diagnostic, then failed terminal evidence with passive retry,
 /// the connection closed and no Leave needed. A title one byte over
 /// `title_bytes`, or a record one byte over `metadata_record_bytes`, fails
@@ -528,6 +524,20 @@ fn installed_library_fails_the_connection_on_traffic_revision_one_forbids() {
                 json!({ "open": [opened(&REQUIRED), initial_unavailable(), title_changed(json!("x"))] }),
                 json!({}),
                 &untitled,
+            ),
+            transport("invalid_record"),
+            2,
+        ),
+        (
+            case(
+                "status-changed",
+                opened_then(vec![send(
+                    0x43,
+                    json!({ "status": {
+                        "state": "idle", "changed_at": "2026-11-13T00:00:00.000Z", "episode_id": null } }),
+                )]),
+                json!({}),
+                &request,
             ),
             transport("invalid_record"),
             2,
@@ -718,14 +728,18 @@ fn assert_scenarios(package: &Package, root: &Path, scenarios: &[Scenario]) {
 }
 
 /// COM-03 Fault (lost responses produce truthful outcomes, a request that
-/// outlives its deadline reports `timeout`, and nothing is replayed): an
+/// outlives its deadline reports `timeout`, and nothing is replayed) and
+/// REC-01 Fault (transport loss calls for passive retry, a protocol
+/// rejection for none possible): an
 /// Open the daemon never answers within `start_ms` is answered
 /// indeterminate `timeout`, and so is a Leave within `leave_ms`; a
 /// connection lost with an Open or a Leave unanswered gives no fabricated
 /// Response, only failed terminal evidence, which makes the caller's still
 /// unanswered IDs indeterminate (a lost Leave leaves the departure
-/// unconfirmed); once the caller's Leave is sent, or the Initial metadata
-/// reports the command's final result, a failure calls for no retry; a
+/// unconfirmed); once the caller's Leave is sent, a failure calls for no
+/// retry, and once the Initial metadata reports the command's final
+/// result, the daemon's close stops the stream cleanly, with no error and
+/// no retry (owner decision on #94); a
 /// daemon's failed or indeterminate Leave is answered as such and ends the
 /// registration, and a failed one never counts as detaching, whatever
 /// result it knew; a failure's diagnostic is best effort, left out when the
@@ -826,13 +840,9 @@ fn installed_library_reports_lost_and_late_answers_truthfully_without_replay() {
                 &alone,
             ),
             drained: None,
-            records: vec![
-                Expect::Opened(1),
-                Expect::Metadata,
-                Expect::Diagnostic(lost),
-            ],
-            terminal: (CLIENT_FAILED, RETRY_NONE, LEAVE_NOT_REQUIRED),
-            error: Some(lost),
+            records: vec![Expect::Opened(1), Expect::Metadata],
+            terminal: (CLIENT_STOPPED, RETRY_NONE, LEAVE_NOT_REQUIRED),
+            error: None,
             kinds: &["hello", "open"],
         },
         Scenario {
