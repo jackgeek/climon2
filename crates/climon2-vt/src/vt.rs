@@ -6,7 +6,7 @@ use crate::{
     history::Ledger,
     modes::{DIRECT, SHARED, cursor_style, transitions},
     presentation::{Mode, Presentation},
-    render::{cursor, cursors, screen},
+    render::{characters, cursor, cursors, screen},
     restore::{Chunk, PROLOGUE, Restoration, Snapshot, lead},
     sync::Latch,
     title,
@@ -219,6 +219,14 @@ impl Vt {
         self.engine.title()
     }
 
+    /// The active screen's characters as the application shows them now,
+    /// line by line and including blanks: what the session daemon samples
+    /// to notice activity. Rendition, the cursor, history and which screen
+    /// is active are not part of it.
+    pub fn viewport_characters(&self) -> String {
+        characters(self.engine.active())
+    }
+
     fn token(&mut self, token: &Token, now: Instant, fed: &mut Fed) {
         fed.dropped += u32::from(token.kind == Kind::Oversized);
         let policy = classify(token);
@@ -239,7 +247,7 @@ impl Vt {
             self.step(step, clear, replies);
         }
         if clear == Clear::Reset {
-            self.engine.reset_title();
+            self.engine.reset();
         }
     }
 

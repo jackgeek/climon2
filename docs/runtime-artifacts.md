@@ -71,6 +71,7 @@ flowchart TB
         library_host -->|"loads through the shared loader; calls through the C ABI"| library
         library_host -->|"hello probes for a session's state"| daemon
         library -->|"daemon wire revision 1 to the host's fake daemon peer"| library_host
+        library -->|"allocates through its exported glibc malloc family; x86-64 GNU/Linux tests only"| library_host
         tests -->|"loads through the shared loader in release-check and Fault-layer tests"| library_stand_in
         tests -->|"loads through the shared loader in release-check tests"| second_library
         library_host -->|"loads beside the release under test through the shared loader"| second_library
@@ -118,7 +119,14 @@ display arrive with #94. The library host fixture drives those instances
 through the function table, with the test-hooks library's fault injection,
 as the Library layer's instrumented host. It also serves a clearly labelled
 fake daemon peer that the library under test connects to, and probes real
-session daemons' hello state. The Linux library links the GCC
+session daemons' hello state. On x86-64 GNU/Linux the host exports glibc's
+allocation entry points, which the loaded library binds to, so it can count
+the library's heap independently of the library's own allocation accounting
+(#180). The `climon2-client` crate's `#[global_allocator]`, which measures
+that accounting, replaces the allocator of every artifact that links the
+crate: the client library, the client executable and the package's own test
+binaries ([ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)). The
+Linux library links the GCC
 unwinder statically, because no unwinding leaves it, so it needs only glibc's
 libraries and has no soname, RPATH or RUNPATH, as the
 [Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for
