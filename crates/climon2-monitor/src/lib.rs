@@ -390,21 +390,25 @@ impl Monitor {
         let Some(deferred) = self.acknowledging.take() else {
             return;
         };
-        let id = self.selected.as_ref();
-        let terminal = id.and_then(|id| self.terminals.get(id));
-        let target = attention::Target {
-            id,
-            covered: self.covered(),
-            control: control(terminal),
-            authority: terminal.and_then(Terminal::authority),
-            viewing,
-        };
-        match deferred.next(&target) {
+        match deferred.next(&self.attended(viewing)) {
             Next::Wait(deferred) => self.acknowledging = Some(deferred),
             Next::Submit(id, authority) => {
                 self.supervisor.request(id, Request::Acknowledge(authority));
             }
             Next::Cancel => {}
+        }
+    }
+
+    /// The selected target as the frame just painted left it.
+    fn attended(&self, viewing: bool) -> attention::Target<'_> {
+        let id = self.selected.as_ref();
+        let terminal = id.and_then(|id| self.terminals.get(id));
+        attention::Target {
+            id,
+            covered: self.covered(),
+            control: control(terminal),
+            authority: terminal.and_then(Terminal::authority),
+            viewing,
         }
     }
 
@@ -636,12 +640,14 @@ impl Monitor {
     /// Pastes, mouse reports and host focus reports bypass keys.
     fn routed(&mut self, routed: Routed, typed: &mut Vec<u8>) -> io::Result<Option<Ending>> {
         match routed {
-            Routed::Paste(pasted) => self.paste(pasted, typed)?,
-            Routed::Mouse(mouse) => self.mouse(mouse, typed)?,
-            Routed::Focus(focused) => self.host_focused = focused,
-            keyed => return self.keyed(keyed, typed),
+            Routed::Paste(pasted) => self.paste(pasted, typed).map(|()| None),
+            Routed::Mouse(mouse) => self.mouse(mouse, typed).map(|()| None),
+            Routed::Focus(focused) => {
+                self.host_focused = focused;
+                Ok(None)
+            }
+            keyed => self.keyed(keyed, typed),
         }
-        Ok(None)
     }
 
     /// A paste is data for the target that took input when it began, sent
@@ -801,14 +807,20 @@ impl Monitor {
             Action::Exit => return Some(Ending::Exit),
             Action::KeyIntroduction => self.introduction.open(),
             Action::Jump => self.jump(),
-            Action::SessionList if !self.introduction.is_open() => {
-                let area = self.screen.overlay();
-                self.selector
-                    .open(&self.registry.rows(), self.selected.as_ref(), area);
-            }
-            Action::SessionList => {}
+            Action::SessionList => self.session_list(),
         }
         None
+    }
+
+    /// Prefix+s opens the selector, unless the modal key introduction is
+    /// open.
+    fn session_list(&mut self) {
+        if self.introduction.is_open() {
+            return;
+        }
+        let area = self.screen.overlay();
+        self.selector
+            .open(&self.registry.rows(), self.selected.as_ref(), area);
     }
 
     /// Prefix+j (spec #73, "Attention jump target"; #114): the connected
