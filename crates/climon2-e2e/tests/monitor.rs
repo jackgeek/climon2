@@ -2079,7 +2079,15 @@ fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
 
     let own = listed(&package, "c2 monitor");
     let own = own["session_id"].as_str().unwrap();
-    assert!(library_logs(&package, own).is_empty());
+    // The own session's client executable logs its own library use there
+    // (#101), but the monitor's process must have started no client for it.
+    let monitor = format!("-{}.log", monitor_process(&package).0);
+    let logs = library_logs(&package, own);
+    assert!(
+        logs.iter()
+            .all(|log| !log.to_string_lossy().ends_with(&monitor)),
+        "{logs:?}"
+    );
     assert_eq!(listed(&package, "Nested")["depth"], 2);
     assert_eq!(
         listed(&package, "Elsewhere")["state"],
