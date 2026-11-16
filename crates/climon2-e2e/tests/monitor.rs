@@ -6962,6 +6962,111 @@ fn the_wheel_scrolls_anchored_history_and_typing_returns_live() {
     package.assert_clean();
 }
 
+/// LIM-03 (Monitor: history bounded by its bytes, explicit truncation, the
+/// newest page kept; #119): with `memory.history_bytes_per_session` at its
+/// least, the history holding a 500x200 session's page (12,115,200
+/// bytes), a 120x29 session that writes 8,000 lines, far fewer than
+/// `history.max_rows`, keeps only the newest of them: its live page ends
+/// at the last line, and scrolled to its oldest row the view shows the
+/// truncation notice above a line written after the first thousand.
+#[test]
+fn history_past_its_byte_budget_is_discarded_oldest_first_with_its_notice() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({"memory": {"history_bytes_per_session": 12_115_200}}),
+    );
+    headless(&package, &watched("Deep"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Deep", RUNNING, "29 120");
+    let live = controlled("Deep", RUNNING);
+    emit(&package, "Deep", &numbered(1..=8000));
+    frame_rows(&terminal, &live, &[(29, "line8000")]);
+    terminal.send(WHEEL_UP.repeat(8000)).unwrap();
+    let history = session_top_row(
+        usize::from(COLS),
+        "Deep",
+        &[RUNNING, "History", SESSIONS_HINT],
+    );
+    whole_frame_shows(&terminal, "the oldest row kept", |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        let oldest = lines
+            .get(2)
+            .and_then(|line| line.trim_end().strip_prefix("line"));
+        lines.first() == Some(&history.as_str())
+            && lines.get(1).is_some_and(|line| line.starts_with(NOTICE))
+            && oldest
+                .and_then(|number| number.parse::<u32>().ok())
+                .is_some_and(|number| number > 1000)
+    });
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// LIM-06 (Monitor: notification work; #119), NOT-02 (Monitor: the toast
+/// queue under a storm): eight fake sessions each report 25 attention
+/// episodes at once, each under a new title, 200 in all, while the
+/// selector is opened and closed. Every row ends on its last episode, the
+/// toasts stay within the queue's bound (the one shown, three waiting and
+/// `More events occurred. Check sessions list`, so at most five bells),
+/// and prefix+x exits.
+#[test]
+fn a_notification_storm_stays_within_the_toast_bound_while_input_responds() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(&package, json!({"deadlines": {"operation_ms": 120_000}}));
+    let go = package.isolation.home().join("storm.go");
+    let ear = Ear::default();
+    let daemons: Vec<_> = (0..8u8)
+        .map(|index| {
+            let mut storm = vec![Act::Await(go.clone())];
+            for episode in 1..=25u32 {
+                if episode > 1 {
+                    storm.push(episode_status("acknowledged", (episode - 1).into(), 2));
+                }
+                let title = format!("S{index}E{episode}");
+                storm.push(Act::Send(TITLE_CHANGED, json!({"title": title})));
+                storm.push(episode_status("needs_attention", episode.into(), 3));
+            }
+            let answer = with_status(
+                &format!("S{index}"),
+                wire_status("running", &utc(1)),
+                None,
+                storm,
+            );
+            FakeDaemon::start(
+                &package,
+                fake_id(0xf0 + index),
+                "2026-01-01T00:00:00.000Z",
+                answer,
+                &ear,
+            )
+        })
+        .collect();
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "S7");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    fs::write(&go, b"").unwrap();
+    terminal.send("\x1ds").unwrap();
+    for index in 0..8 {
+        listed_with(&terminal, ATTENTION, &format!("S{index}E25"));
+    }
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    let rung = bells(&terminal);
+    assert!((1..=5).contains(&rung), "{rung} bells");
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert!(bells(&terminal) <= 5, "{} bells", bells(&terminal));
+    drop(daemons);
+    package.assert_clean();
+}
+
 /// The top row of the selected, controlled session whose label the host
 /// shows as `label` over `cells` cells (its row text has a wide
 /// character's covered cell as a blank, and no combining mark), in the 55
