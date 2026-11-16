@@ -849,11 +849,17 @@ impl Monitor {
 
     /// Prefix+x ends the monitor. Prefix+? opens the key introduction, and
     /// prefix+s the selector unless the modal key introduction is open;
-    /// prefix+j jumps from anywhere.
+    /// prefix+j jumps from anywhere. The Delete confirmation takes them its
+    /// own way (#117).
     fn action(&mut self, action: Action) -> Option<Ending> {
         if self.deleting.is_some() {
             return self.confirming(action);
         }
+        self.global(action)
+    }
+
+    /// A global action with no Delete confirmation open.
+    fn global(&mut self, action: Action) -> Option<Ending> {
         match action {
             Action::Exit => return Some(Ending::Exit),
             Action::KeyIntroduction => self.introduction.open(),
