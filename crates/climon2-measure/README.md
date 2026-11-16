@@ -125,6 +125,7 @@ per run. `report.json` keeps every latency sample.
 | PERF-01 Measure case record: a miss is a failed case for disposition; defaults that cannot admit | `report::tests::a_missed_target_fails_the_case_and_standalone_runs_set_none`, `defaults_admitting_fewer_than_offered_are_a_finding_for_exact_populations_only`, `the_report_lists_failed_cases_for_disposition_and_every_run` |
 | PERF-01 sampling and attributable components | `sample::tests::usage_sums_processor_time_and_each_ticks_resident_memory`, `a_stat_line_yields_processor_ticks_threads_and_resident_pages`, `smaps_attributes_resident_memory_to_its_components`, `the_running_process_samples_itself` |
 | PERF-01 workload rates; NOT-02 and STA-02 triggers | `workload::tests::*` |
+| Selecting a session by its title, even while a stalled session whose command line also matches the search is selected | `harness::tests::the_row_to_click_is_the_one_labelled_with_the_title` |
 | Command line | `args::tests::*`; xtask `measure::tests::measure_runs_the_release_harness_with_the_given_flags` |
 | Workflow placement (release candidates and dispatch, three runners, not on pull requests, not gating publication) | `xtask/tests/workflows.rs` |
 
