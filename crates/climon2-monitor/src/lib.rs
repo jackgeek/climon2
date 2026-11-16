@@ -277,7 +277,9 @@ impl Monitor {
         let mut hosted = Ok(());
         let mut waiting = Vec::new();
         let mut report = None;
-        while !(report.is_some() && self.discovery.join()) && Instant::now() < deadline {
+        while !(report.is_some() && self.discovery.join())
+            && deadline.checked_duration_since(Instant::now()).is_some()
+        {
             waiting = self.supervisor.waiting().unwrap_or(waiting);
             hosted = hosted.and_then(|()| self.exiting(host, hosting, waiting.len()));
             report = report.or_else(|| self.supervisor.report());
@@ -1028,9 +1030,21 @@ fn incomplete(progress: &Progress) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, control, inspected,
-        placeholder, retained, revealed, terminal, without_view,
+        Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, also, control,
+        inspected, placeholder, retained, revealed, terminal, without_view,
     };
+
+    /// EXT-03 (pure supplement, #118): a shutdown's failure is said after
+    /// any earlier failure, such as a render failure, in one diagnostic.
+    #[test]
+    fn a_shutdown_failure_follows_any_earlier_failure() {
+        let earlier = Err(std::io::Error::other("injected draw failure"));
+        assert_eq!(
+            also(earlier, "monitor shutdown unconfirmed: x").to_string(),
+            "injected draw failure; monitor shutdown unconfirmed: x"
+        );
+        assert_eq!(also(Ok(0), "why").to_string(), "why");
+    }
 
     const CONTROLS: [Control; 5] = [
         Control::Acquiring,

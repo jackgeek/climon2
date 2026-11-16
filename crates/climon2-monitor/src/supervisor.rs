@@ -394,15 +394,15 @@ impl State {
         self.shut_down(deadline)
     }
 
-    /// Stops starts and retries; every instance that has not ended yet may
-    /// have an active connection, so its departure is judged.
+    /// Nothing is scheduled any more, so no start or retry follows. Every
+    /// instance that has not ended yet may have an active connection, so
+    /// its departure is judged; the UI thread learns which it waits for.
     fn begin_shutdown(&mut self) {
         self.shutting = true;
-        self.waiting.clear();
-        self.retrying.clear();
         for instance in self.instances.values_mut() {
             instance.evidence.current = !matches!(instance.phase, Phase::Done);
         }
+        self.tell_waiting();
     }
 
     /// Before shutting down, waits until every input chunk an open client
@@ -416,7 +416,6 @@ impl State {
         while self.input_pending() && Instant::now() < deadline {
             self.internals();
             self.poll();
-            self.tell_waiting();
         }
     }
 
@@ -945,13 +944,7 @@ impl State {
             return;
         };
         let _ = instance.owner.join();
-        let evidence = &mut instance.evidence;
-        evidence.joined = true;
-        evidence.destroyed = Some(destroyed.clone());
-        let cleaned = evidence.workers.clone().unwrap_or(Ok(())).and(destroyed);
-        if self.shutting || cleaned.is_err() {
-            self.ended.push((id.clone(), instance.evidence));
-        }
+        let cleaned = self.joined(id, &mut instance.evidence, destroyed);
         if instance.retry != Some(Retry::Passive) {
             return;
         }
@@ -962,6 +955,24 @@ impl State {
                 self.recover(id, why, Retry::Permanent);
             }
         }
+    }
+
+    /// Records that `id`'s owner, done with `destroyed`, is joined, and
+    /// keeps its evidence if shutdown has begun or its cleanup is
+    /// unconfirmed; whether its worker cleanup and destroy are confirmed.
+    fn joined(
+        &mut self,
+        id: &SessionId,
+        evidence: &mut Evidence,
+        destroyed: Result<(), String>,
+    ) -> Result<(), String> {
+        evidence.joined = true;
+        evidence.destroyed = Some(destroyed.clone());
+        let cleaned = evidence.workers.clone().unwrap_or(Ok(())).and(destroyed);
+        if self.shutting || cleaned.is_err() {
+            self.ended.push((id.clone(), evidence.clone()));
+        }
+        cleaned
     }
 
     /// Records evidence of `id`'s instance.
@@ -1132,6 +1143,8 @@ mod tests {
         leave: Option<u32>,
         /// The client outcome is failed with this message.
         client_fails: Option<&'static [u8]>,
+        /// Releasing the control handle stays busy.
+        release_fails: bool,
     }
 
     /// What the observer saw of one session's instance.
@@ -1707,8 +1720,9 @@ mod tests {
     }
 
     extern "C" fn release_control(control: *mut Control) -> Call {
-        let mut state = fake(control).state();
-        if !state.over {
+        let fake = fake(control);
+        let mut state = fake.state();
+        if !state.over || fake.script.release_fails {
             return busy();
         }
         state.control = true;
@@ -2067,8 +2081,15 @@ mod tests {
     /// fail-stop, named with exactly what is unconfirmed.
     #[test]
     fn shutdown_asks_every_instance_at_once_and_proves_each_kind_of_evidence_alone() {
-        let [passive, partial, lost, unclean, stalled] =
-            [1, 2, 3, 4, 5].map(|index| session(30, index));
+        let [passive, partial, lost, unclean, stalled, unreleased] =
+            [1, 2, 3, 4, 5, 6].map(|index| session(30, index));
+        script(
+            &unreleased,
+            Script {
+                release_fails: true,
+                ..Script::default()
+            },
+        );
         script(
             &partial,
             Script {
@@ -2098,19 +2119,21 @@ mod tests {
                 ..Script::default()
             },
         );
-        let mut supervised = supervisor(5, 1_000, fake_library());
+        let mut supervised = supervisor(6, 1_000, fake_library());
         let supervisor = &mut supervised.supervisor;
-        let all = [&passive, &partial, &lost, &unclean, &stalled];
+        let all = [&passive, &partial, &lost, &unclean, &stalled, &unreleased];
         for (index, id) in all.iter().enumerate() {
             supervisor.start_client(metadata(id, &format!("2026-11-13T10:00:0{index}.000Z")));
         }
         let opened = reports_until(supervisor, |reports| {
             let opened = ClientEvent::Opened { status: false };
-            [&passive, &lost, &unclean, &stalled].iter().all(|id| {
-                reports
-                    .get(*id)
-                    .is_some_and(|events| events.contains(&opened))
-            })
+            [&passive, &lost, &unclean, &stalled, &unreleased]
+                .iter()
+                .all(|id| {
+                    reports
+                        .get(*id)
+                        .is_some_and(|events| events.contains(&opened))
+                })
         });
         assert!(!opened.contains_key(&partial), "{opened:?}");
         until(|world| world.looked_up.contains(&guid(&partial)));
@@ -2159,8 +2182,17 @@ mod tests {
                     ..Evidence::default()
                 },
             ),
+            (
+                unreleased.clone(),
+                Evidence {
+                    released: false,
+                    destroyed: Some(Err("busy: still in use".into())),
+                    ..clean.clone()
+                },
+            ),
         ];
         assert_eq!(report.instances, expected);
+        assert_eq!(supervisor.waiting(), Some(vec![stalled.clone()]));
         assert!(report.unfinished.is_empty(), "{report:?}");
         assert_eq!(
             report.verdict(),
@@ -2169,7 +2201,8 @@ mod tests {
                  session {lost}: Leave unconfirmed, client failed: timeout: leave lost; \
                  session {unclean}: not destroyed: busy: still in use; \
                  session {stalled}: no terminal evidence, handles not released, \
-                 run not returned, not destroyed, thread not joined"
+                 run not returned, not destroyed, thread not joined; \
+                 session {unreleased}: handles not released, not destroyed: busy: still in use"
             ))
         );
         let id = guid(&stalled);
@@ -2633,6 +2666,11 @@ mod tests {
             assert!(took < Duration::from_secs(15), "{took:?}");
             let joined = report.instances.iter().all(|(_, evidence)| evidence.joined);
             assert_eq!(joined, index != 3, "{report:?}");
+            if index == 3 {
+                // The deadline passed while settling input: shutdown said
+                // once whom it waits for.
+                assert_eq!(supervisor.waiting(), Some(vec![id.clone()]));
+            }
             let id = guid(&id);
             until(|world| world.seen.contains(&(id, Seen::OwnerExited)));
         }

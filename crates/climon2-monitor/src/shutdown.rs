@@ -22,13 +22,14 @@ pub(crate) enum Leave {
 impl Leave {
     /// The native Leave code's meaning; an unknown code proves nothing.
     pub(crate) fn of(code: u32) -> Self {
-        match code {
-            native::LEAVE_NOT_REQUIRED => Self::NotRequired,
-            native::LEAVE_CONFIRMED => Self::Confirmed,
-            native::LEAVE_REJECTED => Self::Rejected,
-            native::LEAVE_FAILED => Self::Failed,
-            _ => Self::Indeterminate,
-        }
+        const CODES: [(u32, Leave); 4] = [
+            (native::LEAVE_NOT_REQUIRED, Leave::NotRequired),
+            (native::LEAVE_CONFIRMED, Leave::Confirmed),
+            (native::LEAVE_REJECTED, Leave::Rejected),
+            (native::LEAVE_FAILED, Leave::Failed),
+        ];
+        let known = CODES.into_iter().find(|(known, _)| *known == code);
+        known.map_or(Self::Indeterminate, |(_, leave)| leave)
     }
 
     /// What is wrong with this Leave, if anything.
@@ -76,20 +77,14 @@ pub(crate) struct Evidence {
 impl Evidence {
     /// What of its cleanup is unconfirmed: never claimed without proof.
     fn cleanup(&self) -> Vec<String> {
-        let workers = match &self.workers {
-            None => Some("run not returned".to_owned()),
-            Some(Err(why)) => Some(format!("worker cleanup unconfirmed: {why}")),
-            Some(Ok(())) => None,
-        };
-        let destroyed = match &self.destroyed {
-            None => Some("not destroyed".to_owned()),
-            Some(Err(why)) => Some(format!("not destroyed: {why}")),
-            Some(Ok(())) => None,
-        };
         [
             (!self.released).then(|| "handles not released".to_owned()),
-            workers,
-            destroyed,
+            unconfirmed(
+                &self.workers,
+                "run not returned",
+                "worker cleanup unconfirmed",
+            ),
+            unconfirmed(&self.destroyed, "not destroyed", "not destroyed"),
             (!self.joined).then(|| "thread not joined".to_owned()),
         ]
         .into_iter()
@@ -115,6 +110,16 @@ impl Evidence {
         .into_iter()
         .flatten()
         .collect()
+    }
+}
+
+/// What is unconfirmed of one step: `missing` when it never happened,
+/// `failed` with why when it failed, nothing when it succeeded.
+fn unconfirmed(step: &Option<Result<(), String>>, missing: &str, failed: &str) -> Option<String> {
+    match step {
+        None => Some(missing.to_owned()),
+        Some(Err(why)) => Some(format!("{failed}: {why}")),
+        Some(Ok(())) => None,
     }
 }
 
