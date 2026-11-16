@@ -7939,3 +7939,64 @@ fn a_session_ending_while_asked_is_only_removed_after_its_cleanup() {
     drop((ending, stay));
     package.assert_clean();
 }
+
+/// DEL-01 (Fault: the dialog keeps its session's identity): a Delete
+/// dialog on a session whose client never connected closes, retargeting
+/// nothing, once discovery proves that session gone and drops its row;
+/// keys typed then reach the selector's search.
+#[test]
+fn a_dialog_whose_row_is_dropped_closes_without_retargeting() {
+    const HELD: &str = "0d5c0000-0000-4000-8000-0000000000e6";
+    const STAY: &str = "0d5c0000-0000-4000-8000-0000000000e7";
+    let package = Package::new();
+    without_introduction(&package);
+    let ear = Ear::default();
+    let held = FakeDaemon::start(
+        &package,
+        HELD,
+        "2020-01-01T00:00:01.000Z",
+        Answer::Held(HELD),
+        &ear,
+    );
+    let stay = FakeDaemon::start(
+        &package,
+        STAY,
+        "2020-01-01T00:00:02.000Z",
+        Turns::answer(vec![titled_turn("Stay", Vec::new())]),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    listed_on_reopening(&mut terminal, "Unavailable", "Stay");
+    let label = format!("fake {HELD}");
+    highlight_on(&mut terminal, &label);
+    terminal.send(DELETE).unwrap();
+    asks(
+        &terminal,
+        (&label, Some("Starting")),
+        TERMINATE,
+        CANCEL_FOCUSED,
+    );
+    // Its metadata now names a socket nobody serves: its daemon is gone.
+    fake_metadata(
+        &package,
+        HELD,
+        "2020-01-01T00:00:01.000Z",
+        &package.isolation.home().join("gone.sock"),
+    );
+    whole_frame_shows(&terminal, "the dialog closed with its row", |screen| {
+        !screen.contains(HELD) && !screen.contains("Delete session")
+    });
+    terminal.send("st").unwrap();
+    whole_frame_shows(&terminal, "the search", |screen| {
+        screen
+            .lines()
+            .nth(3)
+            .is_some_and(|line| line.starts_with(" ║st "))
+    });
+    listed_with(&terminal, "Unavailable", "Stay");
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(times_heard(&ear, HELD, Heard::Kill), 0);
+    drop((held, stay));
+    package.assert_clean();
+}
