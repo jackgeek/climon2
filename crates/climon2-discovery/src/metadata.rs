@@ -86,15 +86,35 @@ fn candidates(home: &HomeLayout) -> io::Result<Vec<PathBuf>> {
     }
 }
 
-fn is_metadata(path: &Path) -> bool {
+pub(crate) fn is_metadata(path: &Path) -> bool {
     path.extension().is_some_and(|extension| extension == "pty")
 }
 
 fn read(path: &Path, limits: MetadataLimits) -> Result<SessionMetadata, InvalidReason> {
-    metadata_session_id(path).map_err(InvalidReason::Malformed)?;
-    let bytes = contents(path, limits.file_bytes)?;
-    within_depth(&bytes, limits.json_depth)?;
-    SessionMetadata::from_json(path, &bytes).map_err(InvalidReason::Malformed)
+    read_counted(path, limits).1
+}
+
+/// The entry at `path`, with how many bytes of it were read.
+pub(crate) fn read_counted(
+    path: &Path,
+    limits: MetadataLimits,
+) -> (u64, Result<SessionMetadata, InvalidReason>) {
+    if let Err(error) = metadata_session_id(path) {
+        return (0, Err(InvalidReason::Malformed(error)));
+    }
+    match contents(path, limits.file_bytes) {
+        Ok(bytes) => (bytes.len() as u64, parse(path, &bytes, limits)),
+        Err(reason) => (0, Err(reason)),
+    }
+}
+
+fn parse(
+    path: &Path,
+    bytes: &[u8],
+    limits: MetadataLimits,
+) -> Result<SessionMetadata, InvalidReason> {
+    within_depth(bytes, limits.json_depth)?;
+    SessionMetadata::from_json(path, bytes).map_err(InvalidReason::Malformed)
 }
 
 fn contents(path: &Path, file_bytes: Option<u64>) -> Result<Vec<u8>, InvalidReason> {

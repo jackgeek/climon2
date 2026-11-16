@@ -458,21 +458,21 @@ fn exited_unreaped(pid: u32) {
     }
 }
 
-/// Whether the command `pid` ended, so that its parent can reap it. A
-/// zombie main thread is not enough on Linux: the fixture runs on a thread
-/// of its own, and its exit can leave the main thread a zombie while that
-/// thread is still exiting, with the terminal still open and the command
-/// not yet reapable, so the daemon would still see it running. The command
-/// ended once its zombie main thread is its only thread.
+/// Whether the command `pid` exited, every thread of it, so that its
+/// parent's next wait reaps it. Linux shows a process as a zombie as soon
+/// as its main thread exited, while its other threads may still be
+/// exiting and no wait can reap it yet: the libtest fixture exits from its
+/// test thread. So it also requires that no other thread is left.
 #[cfg(target_os = "linux")]
 fn reapable(pid: u32) -> bool {
     let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
-    let lines: Vec<&str> = status.lines().collect();
-    lines.contains(&"State:\tZ (zombie)") && lines.contains(&"Threads:\t1")
+    status.lines().any(|line| line.starts_with("State:\tZ"))
+        && status.lines().any(|line| line == "Threads:\t1")
 }
 
-/// Whether the command `pid` ended, as `ps` reports its state.
-#[cfg(target_os = "macos")]
+/// Whether the command `pid` exited: macOS makes a process a zombie only
+/// once all its threads exited.
+#[cfg(not(target_os = "linux"))]
 fn reapable(pid: u32) -> bool {
     let output = std::process::Command::new("/bin/ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
