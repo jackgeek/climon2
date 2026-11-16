@@ -7,6 +7,7 @@
 //! an explicit `CM1_INTERNAL_ERROR`; the library's own panic hook is silent, so
 //! nothing reaches the standard streams.
 
+use allocation::Account;
 use climon2_core::native::{
     self, Bytes, Call, Communication, Control, Created, Delivery, Description, Drained, Instance,
     Interface, Metrics, Request, Requirements, RunReport, Startup, Tokens,
@@ -19,6 +20,7 @@ use std::{
     sync::{Arc, LazyLock, Once},
 };
 
+mod allocation;
 mod connection;
 mod failure;
 mod families;
@@ -37,6 +39,7 @@ mod records;
 mod request;
 mod startup;
 mod stream;
+mod warm;
 
 /// The release identity: the version folder name, compiled in.
 const RELEASE: &str = env!("CARGO_PKG_VERSION");
@@ -102,12 +105,15 @@ const NULL: Failure = Failure::new(
     "a required handle or output pointer is null",
 );
 
-static SILENT_PANICS: Once = Once::new();
+static PREPARED: Once = Once::new();
 
-/// The library's panics are contained and reported as results, so its own
-/// panic hook (this image's, not the host's) writes nothing.
-fn silence_panics() {
+/// What the library sets up once, at bootstrap, outside any instance. Its
+/// panics are contained and reported as results, so its own panic hook (this
+/// image's, not the host's) writes nothing. Process-wide dependency state is
+/// created uncharged.
+fn prepare() {
     panic::set_hook(Box::new(|_| {}));
+    warm::process();
 }
 
 /// The `test-hooks` panic point at an exported call's boundary.
@@ -132,7 +138,7 @@ pub unsafe extern "C" fn climon2_client_get_interface(
     description: *mut *const Description,
 ) -> u32 {
     climon2_core::test_hook_marker!();
-    SILENT_PANICS.call_once(silence_panics);
+    PREPARED.call_once(prepare);
     // SAFETY: the caller supplies null or writable storage for one pointer.
     let Some(output) = (unsafe { description.as_mut() }) else {
         return native::INVALID_ARGUMENT;
@@ -225,24 +231,30 @@ unsafe extern "C" fn create(startup: *const Startup, created: *mut Created) -> C
     // SAFETY: the caller supplies null or writable output storage.
     unsafe { clear(created) };
     contained(|| {
-        hook("create");
-        // SAFETY: the caller supplies null or valid pointers.
-        let (Some(startup), Some(created)) =
-            (unsafe { startup.as_ref() }, unsafe { created.as_mut() })
-        else {
-            return Err(NULL);
-        };
-        // SAFETY: the startup's buffers cover their lengths for this call.
-        let startup = unsafe { startup::Startup::parse(startup) }?;
-        let effective_limits = startup.limits;
-        let (owner, communication, control) = instance::create(startup)?;
-        *created = Created {
-            instance: Box::into_raw(owner).cast(),
-            communication: Box::into_raw(communication).cast(),
-            control: Box::into_raw(control).cast(),
-            effective_limits,
-        };
-        Ok(())
+        // Everything the call allocates is the new instance's, from the
+        // start, once the caller's thread is warmed.
+        warm::thread();
+        let account = Account::open();
+        account.charged(|| {
+            hook("create");
+            // SAFETY: the caller supplies null or valid pointers.
+            let (Some(startup), Some(created)) =
+                (unsafe { startup.as_ref() }, unsafe { created.as_mut() })
+            else {
+                return Err(NULL);
+            };
+            // SAFETY: the startup's buffers cover their lengths for this call.
+            let startup = unsafe { startup::Startup::parse(startup) }?;
+            let effective_limits = startup.limits;
+            let (owner, communication, control) = instance::create(startup, account.clone())?;
+            *created = Created {
+                instance: Box::into_raw(owner).cast(),
+                communication: Box::into_raw(communication).cast(),
+                control: Box::into_raw(control).cast(),
+                effective_limits,
+            };
+            Ok(())
+        })
     })
 }
 

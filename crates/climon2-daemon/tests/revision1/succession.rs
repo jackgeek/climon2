@@ -224,7 +224,9 @@ fn a_registration_acquires_after_the_command_final_until_the_session_ends() {
 /// final of the hung-up command, then its stream ends.
 #[test]
 fn watching_does_not_stop_the_initial_attach_rule() {
-    let mut session = Session::start("lines");
+    // The `paste` fixture sleeps rather than reading its terminal, so the
+    // hang-up ends it by SIGHUP, never by a failed read.
+    let mut session = Session::start("paste");
     let started = Instant::now();
     let (mut watching, _) = monitor(&session, &[]);
     assert_eq!(
@@ -377,14 +379,60 @@ fn a_headless_session_promotes_a_monitor_and_outlives_its_loss() {
 /// every frame `queue` wrote in one pass over its connections.
 fn in_one_pass(hold: &Path, queue: impl FnOnce()) {
     fs::write(hold, b"").unwrap();
-    let held = hold.with_extension("held");
+    held_pass(&hold.with_extension("held"));
+    queue();
+    fs::remove_file(hold).unwrap();
+}
+
+/// Waits for the daemon to announce a held pass of its session loop by
+/// creating `held`, the marker the `CLIMON2_DAEMON_HOLD` hook writes.
+fn held_pass(held: &Path) {
     let deadline = Instant::now() + Duration::from_secs(20);
     while !held.exists() {
         assert!(Instant::now() < deadline, "the daemon never held its input");
         std::thread::sleep(Duration::from_millis(5));
     }
-    queue();
-    fs::remove_file(hold).unwrap();
+}
+
+/// Test-hook evidence for the `CLIMON2_DAEMON_HOLD` hook that CTL-04's
+/// overflow race relies on: a held session loop reads no incoming frame. A
+/// request written during a hold stays unanswered through two whole held
+/// passes, each announced after the request was readable, and is answered
+/// once the hold is removed.
+#[test]
+fn a_held_session_loop_reads_no_frame_until_released() {
+    let mut hold = None;
+    let mut session = Session::configured("ignore-hup", |command, home| {
+        hold = Some(home.join("hold"));
+        command.env("CLIMON2_DAEMON_HOLD", home.join("hold"));
+    });
+    let hold = hold.unwrap();
+    let held = hold.with_extension("held");
+    let mut controller = ready_attachment(&session, &[]);
+    let mut unopened = peer(&session);
+    fs::write(&hold, b"").unwrap();
+    held_pass(&held);
+    request(
+        &mut unopened,
+        &Acquire {
+            request_id: counter(1),
+        },
+    );
+    for _ in 0..2 {
+        fs::remove_file(&held).unwrap();
+        held_pass(&held);
+    }
+    unopened.set_nonblocking(true).unwrap();
+    let unread = std::io::Read::read(&mut unopened, &mut [0; 1]).map_err(|error| error.kind());
+    assert_eq!(unread, Err(std::io::ErrorKind::WouldBlock));
+    unopened.set_nonblocking(false).unwrap();
+
+    fs::remove_file(&hold).unwrap();
+    assert_rejected(&mut unopened, 1, "invalid_state");
+    let mut killer = committed_standalone_kill(&session);
+    controller.leave();
+    assert_killed(&mut killer, &signalled(9));
+    session.finish();
 }
 
 /// A session of the `lines` fixture under the `rejection-overflow` and

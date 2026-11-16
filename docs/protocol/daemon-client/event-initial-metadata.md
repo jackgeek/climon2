@@ -1,8 +1,8 @@
 # Initial metadata — `0x41`
 
-**Status: agreed; implemented for the title and a known command result**,
-owned by [#67](https://github.com/jackgeek/climon2/issues/67); status and
-progress arrive with their families.
+**Status: agreed; implemented for the title, the status and a known command
+result**, owned by [#67](https://github.com/jackgeek/climon2/issues/67);
+progress arrives with its family.
 The [session daemon](../../../GLOSSARY.md#sessions) supplies an atomic report
 to the [client](../../../GLOSSARY.md#sessions) after successful Open.
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
@@ -64,8 +64,14 @@ its loop, so no change falls between this record and the first
 precedes the [Control granted](event-control-granted.md) of its
 [attachment](../../../GLOSSARY.md#attachment-and-control), in the same step. With `title-v1` selected, `title` is
 available with the application's title by value: null while unset, `""` when
-set empty. Without it, `title` is unavailable. `status` and `progress` are
-always unavailable for now. `command_result` is null until the command's
+set empty. Without it, `title` is unavailable. With `status-v1` selected
+([#91](https://github.com/jackgeek/climon2/issues/91)), `status` is
+available with the stored effective status, its change time and episode,
+the same values later [Status changed](event-status-changed.md) records
+build on: idle since the daemon's initialization until the first effective
+change, never the connection's own time; once the result is final, the
+final status that agrees with `command_result`. Without it, `status` is
+unavailable. `progress` is always unavailable for now. `command_result` is null until the command's
 result is final, then that result, which the connections open at that
 moment received as [Command final](event-command-final.md#implemented-behavior);
 a connection that receives the result here receives no Command final.
