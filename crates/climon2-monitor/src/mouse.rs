@@ -244,7 +244,7 @@ fn coordinate(value: u16, encoding: MouseEncoding) -> Option<Vec<u8>> {
         return u8::try_from(value).ok().map(|byte| vec![byte]);
     }
     let character = char::from_u32(value).filter(|_| value < 0x800)?;
-    Some(character.encode_utf8(&mut [0; 4]).as_bytes().to_vec())
+    Some(character.to_string().into_bytes())
 }
 
 #[cfg(test)]

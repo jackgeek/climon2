@@ -200,7 +200,7 @@ impl Monitor {
             pasting: None,
             gestures: Gestures::default(),
             host_focused: true,
-            context: (None, false, None),
+            context: InputContext::default(),
         };
         monitor.show().map(|()| monitor)
     }

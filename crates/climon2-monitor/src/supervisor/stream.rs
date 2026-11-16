@@ -340,6 +340,26 @@ mod tests {
         );
     }
 
+    /// INP-03 (Fault): an application that received only the first byte of
+    /// a start marker (one-byte chunks), the least it can receive, is owed
+    /// the rest of it and the end marker; one that received none is owed
+    /// nothing.
+    #[test]
+    fn a_paste_truncated_after_one_byte_of_its_start_marker_owes_the_rest() {
+        for (room, owed) in [(1, &b"[200~\x1b[201~"[..]), (0, b"")] {
+            let mut stream = Stream::default();
+            let mut library = Library::new(room);
+            let paste = part(true, true, b"ab", true);
+            let refused = stream.submit(paste, 1, &mut |request| library.submit(request));
+            assert!(refused.is_some(), "{room}");
+            let received = library.bytes();
+            library.room = usize::MAX;
+            let settled = stream.settle(1, &mut |request| library.submit(request));
+            assert_eq!(settled, Ok(()));
+            assert_eq!(library.bytes(), [&received[..], owed].concat(), "{room}");
+        }
+    }
+
     /// INP-03 (Fault): a truncated paste owes only what its application
     /// lacks: the rest of a start marker cut by the chunk size and the end
     /// marker; the rest of an end marker; nothing when the application
