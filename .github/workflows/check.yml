@@ -207,6 +207,11 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      # Restore the Rust cache before downloading the archive: a partial-match
+      # restore cleans target/, which would delete target/dist.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: archive-${{ matrix.runner }}
       - uses: actions/download-artifact@v4
         with:
           name: release-dist-${{ matrix.platform }}
@@ -281,9 +286,6 @@ jobs:
           else
             echo "First $PLATFORM release: no previous platform archive exists; no synthetic compatibility fixture."
           fi
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: archive-${{ matrix.runner }}
       - name: Build test harnesses and debug siblings without substituting archive binaries
         run: cargo test --workspace --locked --no-run
       - name: Test this exact archive including smoke, vim and less
