@@ -43,8 +43,10 @@ matching in row order, typed and pasted search text within `ui.search_bytes`,
 Up/Down/PageUp/PageDown without wrapping, the highlight rules for edits and
 live updates, row clicks, the wheel, cancelling by a click outside the box
 (owner decision on #113), and the key-hint footer, which names only select,
-cancel and help (owner decision on #113). Nothing else this document
-specifies is implemented: no Delete, toasts or bell. Prefix+j, viewing,
+cancel and help (owner decision on #113). Delete
+([#117](https://github.com/jackgeek/climon2/issues/117)) is implemented as
+[below](#delete-terminate-and-remove). Nothing else this document specifies
+is implemented: no toasts or bell. Prefix+j, viewing,
 acknowledgement and the host attention reports
 ([#114](https://github.com/jackgeek/climon2/issues/114)) are implemented as
 below. Initial selection
@@ -75,9 +77,10 @@ prefix:
 
 Below them it lists the selector's own keys under **In the session list**:
 typing or pasting to search, the search's editing keys, Up/Down/PageUp/PageDown,
-the select and cancel keys (as the footer names them), clicking a row or
-outside the box, and the wheel (owner decision on #113: the footer names only
-select, cancel and help, and help lists everything else).
+the select and cancel keys (as the footer names them), Delete (`Del`, or
+`Del (fn+⌫)` on macOS, owner decision on #117), clicking a row or outside the
+box, and the wheel (owner decision on #113: the footer names only select,
+cancel and help, and help lists everything else).
 
 Provide an initially unchecked **Don't show again** checkbox. Persist the
 selected preference separately from the user's configuration, per climon2 home
@@ -202,6 +205,17 @@ There are no selector create/rename actions.
 
 The [lifecycle decision](monitor-lifecycle.md#selector-delete-terminate-and-remove)
 explicitly reopens the planning map's earlier selector killing/removal exclusion.
+[#117](https://github.com/jackgeek/climon2/issues/117) implements this section
+with these owner decisions: only forward Delete (`CSI 3 ~`) opens the
+confirmation; Tab and Left/Right move its focus, Enter activates and Escape
+cancels; either decision returns to the selector, a confirmed one showing the
+row as pending termination; inside it prefix+x exits, prefix+j cancels it and
+jumps, and prefix+s and prefix+? do nothing; a session whose daemon discovery
+proved gone is offered Remove, as a final one is (owner decision on #116). The
+monitor's own enclosing session is not listed, so Delete never reaches it: spec
+#73's scenario deleting it through a Kill-only instance is dropped (owner
+decision, 2026-11-16). The exact strings are in the
+[monitor README](../crates/climon2-monitor/README.md#on-screen-strings).
 Delete captures the highlighted session's immutable GUID and opens a modal
 showing its title and state. Default to **Cancel**; offer **Terminate and remove**,
 or **Remove** when already final. Cancel/Escape changes nothing and sends nothing.

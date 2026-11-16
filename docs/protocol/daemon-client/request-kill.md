@@ -55,7 +55,10 @@ rediscovery; fallback selection never acquires another session.
 Existing `c2 kill <session>` also terminates
 [headless sessions](../../../GLOSSARY.md#sessions), whose zero-client lifetime
 survives later attachment loss until completion or Kill; that is implemented on
-the current private protocol. The other amendments are unimplemented; operation
+the current private protocol. The
+[monitor](../../../GLOSSARY.md#sessions)'s selector Delete implements the
+modal, removal and [run-local dismissal](../../../GLOSSARY.md#attachment-and-control)
+above ([#117](https://github.com/jackgeek/climon2/issues/117)); operation
 fields/results are unchanged.
 #69 owns agreed deadlines/bounds; [native declarations](../monitor-client/core-v1.md)
 are agreed in #71; the [acceptance matrix](../../monitor-acceptance.md)

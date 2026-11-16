@@ -15,7 +15,7 @@ help (#105), session discovery, passive clients and the basic selector
 control and painting of the selected session (#108), the input router that
 sends typed keys to it (#109), and switching, revocation, taking control back
 and Enter on Starting and Unavailable rows (#110), initial selection
-(#266), paste, mouse and focus (#111), the selector's search, navigation and footer (#113), viewing, acknowledgement, the prefix+j attention jump and the host attention reports (#114), and disconnection, read-only history and passive recovery (#116). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
+(#266), paste, mouse and focus (#111), the selector's search, navigation and footer (#113), viewing, acknowledgement, the prefix+j attention jump and the host attention reports (#114), disconnection, read-only history and passive recovery (#116), and Delete in the selector (#117). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
 
 ## Startup, before the host terminal changes
 
@@ -304,7 +304,9 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
     Escape waits as the prefix and cannot cancel (the accepted limitation).
     Cancelling, by Escape or a click outside, changes neither the selection
     nor control. Opening it never acquires anything. Enter (a typed CR)
-    acts on the highlighted row's condition (below, #108 and #110). Prefix+?
+    acts on the highlighted row's condition (below, #108 and #110), and
+    forward Delete (`ESC [ 3 ~`) asks to terminate or remove it
+    ([below](#delete-in-the-selector-117)). Prefix+?
     opens the key introduction over it, which takes every key, paste and
     click until it closes, leaving the selector's search and highlight as
     they were. While rows exist, nothing is selected and the selector is
@@ -572,6 +574,66 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   becomes retried through the same path, and an update the model cannot
   represent still shows only its error (#119 makes that row read-only).
 
+## Delete in the selector (#117)
+
+- **The confirmation** (`delete.rs`). Forward Delete (`ESC [ 3 ~`) alone,
+  never Backspace (owner decision on #117), opens it over the selector on
+  the highlighted row, unless a Delete of that row is already under way:
+  then it opens nothing, so a repeated Delete never sends a second Kill.
+  It keeps that session's ID whatever the rows do. Its box, titled
+  `Delete session`, centred below the top row, shows the row's label and
+  status as they are now, then `[ Cancel ]`, focused first and reversed,
+  and `[ Terminate and remove ]`, or `[ Remove ]` once the session is final
+  or discovery proved its daemon gone (owner decision on #116). Tab, Left
+  and Right move the focus, Enter activates it and Escape cancels (owner
+  decision on #117); other keys, pastes and mouse reports do nothing, so
+  nothing reaches a session, and the host cursor is hidden. Should
+  discovery drop the row meanwhile (a session never connected, proven
+  gone), the dialog closes. Inside it prefix+x exits the monitor, prefix+j
+  cancels it and jumps (#114), and prefix+s and prefix+? do nothing
+  (owner decision on #117). Either decision returns to the selector.
+  Cancelling sends nothing and never acknowledges attention (Confirmed
+  2026-11-08). The key introduction lists `Del  Delete the highlighted
+  session`, `Del (fn+⌫)` on macOS (owner decision on #117). The monitor's
+  own enclosing session has no row, so it is never deleted (owner decision
+  on #117, amending spec #73).
+- **Confirming** takes the offer as it stands then, so a session that
+  became final while asked is only removed, and the row shows
+  `Terminating` or `Removing` in its status column, in its place, until it
+  goes. Other sessions stay usable throughout.
+- **Kill** (`supervisor.rs`). Terminate and remove submits one Kill,
+  requiring no family as `climon2 kill`'s does, through the session's open
+  client, or, when it has none (a client that failed, is starting, is
+  waiting for a retry or never started), through a Kill-only instance: no
+  Open, its Kill as request 2, never retried, and its row learns nothing
+  of it but the Kill's outcome. Kill-only instances start ahead of every
+  waiting client in the start lane; #120's admission takes them at the
+  head of its queue. While a Kill is wanted or pending, the session's
+  waiting start or retry is held. A Kill's termination result, or a
+  known-final refusal's, is the row's final outcome.
+- **Removal.** The session is removed only once its end is known (from
+  the Kill, or the client's own Initial metadata or Command final) or it
+  needed no Kill, and no instance of it is left: each is asked to stop,
+  its deliveries and handles released, destroyed and its owner joined.
+  Then the row is dismissed for the run (the registry's run-local
+  dismissal: discovery never lists the session again, whatever it finds,
+  and nothing is persisted), and its terminal model and retained history
+  are discarded; nothing else is deleted, its logs included. A selected
+  row's selection falls to the row now at its place, else the one before
+  it, else none, and the open selector's highlight likewise among the
+  rows it lists; neither acquires anything or routes input.
+- **Short of removal.** A refused Kill ends the Delete: the row is back to
+  its status with `Termination refused: <why>`, a retry it held is
+  started again, and Delete may ask again. A failed or lost one (or a
+  client ending before its Kill was answered) keeps the row Terminating
+  with `Termination not confirmed: <why>`; the Kill is never sent again,
+  and only a passive client (the open one, or a retry after a backoff)
+  learns the outcome. A Delete whose instance's cleanup cannot be
+  confirmed stops there with `Termination not confirmed: cannot confirm
+  the client's cleanup: <error>` (the fail-stop is #118's). The top row's
+  error slot shows these first, before the terminal's own error and the
+  recovery diagnostic.
+
 ## Paste, mouse and focus (#111)
 
 - **Paste** (`router.rs`, `supervisor/stream.rs`). The router passes a
@@ -750,6 +812,10 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Selector footer's row, search refused for its length (#113) | `Search is limited to <N> bytes` | `selector.rs` |
 | Selector rows and footer too long for the box (#113, owner decision on #112) | the text that fits, then `…` | `selector.rs` |
 | Top row's error slot, or the body with nothing selected, for 3 seconds after prefix+j finds no session (#114, owner decision 2026-11-16) | `No sessions need attention` | `attention.rs` |
+| Delete confirmation (#117, owner decision: Cancel first and focused) | titled `Delete session`; the row's label and status; `[ Cancel ]`, `[ Terminate and remove ]`, or `[ Remove ]` for a final or gone session | `delete.rs` |
+| Status column and top row while a confirmed Delete is under way (#117) | `Terminating`, `Removing` | `registry.rs` |
+| Top row's error slot after a Kill fell short (#117) | `Termination refused: <why>`, `Termination not confirmed: <why>`; why may be the library's or daemon's message, `the client ended before the Kill was answered` or `cannot confirm the client's cleanup: <error>` | `registry.rs`, `supervisor.rs` |
+| Key introduction, Delete (#117, owner decision: fn+⌫ on macOS) | `Del  Delete the highlighted session`; on macOS `Del (fn+⌫)  Delete the highlighted session` | `selector.rs` |
 
 ## Specification mapping
 
@@ -901,16 +967,24 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | NOT-03, NOT-04, STA-08 (pure supplement): host reports' exact bytes, initial state and changes only; the notice up to 3 seconds and not at them; a deferred acknowledgement submitted once viewed, kept across restorations of its period, cancelled on a context change | `the_host_hears_the_initial_attention_state_and_changes_only`, `the_notice_shows_for_three_seconds`, `a_deferred_acknowledgement_submits_once_its_target_is_viewed`, `a_deferred_acknowledgement_is_cancelled_when_its_target_context_changes` (`src/attention.rs`) |
 | FOC-01, STA-08 (pure supplement): Set viewing on each change within a control period under the current authority, only with `status-v1`; a superseded Acknowledge owed again; Set viewing and Acknowledge as their native requests; Open says `status-v1` was selected | `viewing_is_reported_on_each_change_within_a_control_period`, `an_acknowledge_a_newer_restoration_superseded_is_owed_again` (`src/terminal.rs`), `viewing_and_acknowledge_become_their_native_requests`, `opening_says_whether_focus_and_status_were_selected` (`src/supervisor/client.rs`) |
 | NOT-03 (pure supplement): the notice in the top row's error slot before the session's own error, or in the body before the startup progress | `a_late_collection_shows_in_the_error_slot_unless_the_session_has_its_own`, `the_body_says_the_startup_progress_or_the_state_and_any_incompleteness` (`src/screen.rs`) |
+| DEL-01 (Monitor: default Cancel, nothing sent on cancel, no input leaking out of the dialog, identity), DEL-02 (Monitor: removal only after definitive termination, a gone session's Remove, dismissal against rediscovery of stale metadata over two passes, a non-acquiring fallback, logs kept) (#117; Remove for a gone session, owner decision on #116) | `delete_terminates_or_removes_only_the_confirmed_session` (e2e) |
+| INP-01 and NOT-03 (Monitor, Delete-dialog cases: prefix+s and prefix+? inert, prefix+j cancels and jumps, prefix+x exits), cancelling Delete never acknowledges (confirmed scenario) (#117) | `inside_the_delete_dialog_prefix_j_cancels_and_jumps_and_prefix_x_exits` (e2e) |
+| DEL-01 (Fault: repeated Delete deduplicated, other sessions usable), DEL-02 (Fault: a rejected Kill keeps its row and error) (#117) | `a_held_kill_is_sent_once_and_a_refused_one_keeps_its_row_with_why` (e2e, Fault peers) |
+| DEL-02 (Fault: a lost Kill never replayed, the passive client learns the outcome, cleanup and join before dismissal, dismissal against rediscovery of a still-answering daemon, a fallback never sent Acquire) (#117) | `a_lost_kill_is_never_sent_again_and_removal_waits_for_the_outcome_and_cleanup` (e2e, Fault peers) |
+| DEL-01 (Monitor and Fault: finishing while asked switches to Remove for the same session through a reorder), DEL-02 (Fault: an already-final row's cleanup before dismissal, no Kill) (#117) | `a_session_ending_while_asked_is_only_removed_after_its_cleanup` (e2e, Fault peers) |
+| DEL-01 (Fault: the dialog closes with its dropped row, retargeting nothing) (#117) | `a_dialog_whose_row_is_dropped_closes_without_retargeting` (e2e, Fault peers) |
+| DEL-01, DEL-02 (pure supplement over the fake library): one Kill through an open client or a Kill-only instance (no Open, request 2, its release loaded first), removed only after cleanup and join; a refused Kill (the client's, a Kill-only instance's or its release's) ends the Delete and restarts a held retry; a lost one never resent, learned by a passive retry; a final or gone session removed without a Kill; unconfirmed cleanup and an unanswered Kill reported (#117) | `a_confirmed_kill_removes_its_session_only_after_cleanup`, `a_refused_kill_ends_its_delete_and_a_lost_one_is_never_sent_again`, `a_final_or_gone_session_is_removed_without_a_kill_after_its_cleanup` (`src/supervisor.rs`) |
+| DEL-01, DEL-02 (pure supplement): offers, confirmation, Terminating and Removing, refused and unconfirmed Kills, run-local dismissal; answers' verdicts and a Kill's carried result; Kill requires no family; the dialog's keys, rendering and Delete key; fallback selection and highlight (#117) | `delete_offers_remove_once_final_or_gone_and_dismissal_is_run_local` (`src/registry.rs`), `answers_say_how_they_ended_and_carry_a_kills_command_result`, `a_kill_requires_no_family` (`src/supervisor/client.rs`), `only_forward_delete_asks_for_a_confirmation`, `cancel_has_the_focus_until_tab_or_the_arrows_move_it`, `the_confirmation_shows_the_label_status_and_offer_with_cancel_focused`, `a_removed_row_falls_back_to_its_place_then_the_row_before` (`src/delete.rs`), `a_dismissed_highlighted_row_falls_back_among_the_matching_rows`, `help_lists_every_selector_key_with_the_actual_prefix` (`src/selector.rs`) |
 | #74 risk proof: plain and hooked sibling binaries without nested builds | `cargo_builds_the_plain_or_hooked_monitor_binary_for_its_tests` (`tests/build.rs`, plain and hooked runs); fixtures `workspace_binaries_contain_test_hooks`; xtask `release_check_builds_unhooked_binaries_in_a_private_target` |
 | #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`; Linux `linux_packaging_rejects_a_non_x86_64_or_hooked_monitor`; macOS `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
 
 Not yet claimed: EXT-03's root OSC 7501 `clear` on the fail-stop path (#118), toasts and their gestures (INP-05's
 toast cases, #115), toasts' effect on viewing and their dismissal by prefix+j and Enter (#115; `toast.rs` is the seam), FOC-01's
-toast cases (#115), prefix+j inside the Delete dialog (#117), FOC-02's host-native
+toast cases (#115), FOC-02's host-native
 copy (a host manual check), INP-04's disconnect case in the middle of a
 paste or gesture (the selection stays on the lost session, so nothing
 else could receive the rest, and a reconnect replays none of it),
-Delete in the selector (#117) and its line in the key introduction, Enter on Awaiting resources rows (#120),
+the Kill-only instance's admission for a resource-blocked row (#120; the seam starts it ahead of every waiting client), Enter on Awaiting resources rows (#120),
 Awaiting resources
 ending initial collection (#120), resource admission and fairness, including newest-first starts
 across discovery batches, and `discovery.stall_ms` (#120), a session

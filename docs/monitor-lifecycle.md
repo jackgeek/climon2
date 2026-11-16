@@ -16,7 +16,9 @@ Read the [domain glossary](../GLOSSARY.md), [status mechanics](session-status.md
 **Implemented with packaged evidence:** the empty
 [monitor](../GLOSSARY.md#sessions) of [#74](https://github.com/jackgeek/climon2/issues/74),
 and headless creation and lifetime of [#78](https://github.com/jackgeek/climon2/issues/78),
-specified [below](#headless-creation-and-existing-cli-kill). The monitor
+specified [below](#headless-creation-and-existing-cli-kill), and
+[selector Delete](#selector-delete-terminate-and-remove) of
+[#117](https://github.com/jackgeek/climon2/issues/117). The monitor
 discovers no sessions and shows its empty state until it exits. Prefix+x exits
 0; a catchable SIGINT, SIGTERM or SIGHUP exits with signal-style status; a
 render failure or a failed or hung-up host input exits with the climon2 error
@@ -89,6 +91,13 @@ Recovery needed to learn an indeterminate Kill's outcome remains passive and
 must never replay Kill.
 
 ## Selector Delete: terminate and remove
+
+**Implemented ([#117](https://github.com/jackgeek/climon2/issues/117))** as
+the [monitor README](../crates/climon2-monitor/README.md#delete-in-the-selector-117)
+details. A session whose daemon discovery proved gone is offered Remove alone
+(owner decision on [#116](https://github.com/jackgeek/climon2/issues/116)); the
+monitor's own enclosing session is not listed, so it is never deleted (owner
+decision on #117).
 
 Delete in the session chooser captures the highlighted session's immutable GUID
 and opens a modal confirmation showing its title and state. This explicitly
