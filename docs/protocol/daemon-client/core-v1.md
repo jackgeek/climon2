@@ -55,6 +55,7 @@ unimplemented. The
 [client library](../../../GLOSSARY.md#sessions) speaks this revision for
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
 for control and display ([#94](https://github.com/jackgeek/climon2/issues/94)),
+for `status-v1` ([#95](https://github.com/jackgeek/climon2/issues/95)),
 with Command final, and for standalone Kill
 ([#96](https://github.com/jackgeek/climon2/issues/96)); no other
 [client](../../../GLOSSARY.md#sessions) does yet. The

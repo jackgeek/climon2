@@ -9,7 +9,7 @@ use super::{
 };
 use climon2_core::{
     native,
-    wire::{self, AuthorityIds, Counter, Geometry, GrantReason, RevocationReason},
+    wire::{self, AuthorityIds, Counter, Geometry, GrantReason, RevocationReason, StatusState},
 };
 use std::mem;
 
@@ -31,6 +31,14 @@ const NO_COMMAND: native::OptionalCommand = unsafe { mem::zeroed() };
 // SAFETY: every field is an integer, for which zero is valid, and zero is
 // "unavailable".
 const NO_STATUS: native::AvailableStatus = unsafe { mem::zeroed() };
+
+// The native status codes follow the wire's states in order, from one.
+const _: () = assert!(StatusState::Idle as u32 + 1 == native::IDLE);
+const _: () = assert!(StatusState::Running as u32 + 1 == native::RUNNING);
+const _: () = assert!(StatusState::NeedsAttention as u32 + 1 == native::NEEDS_ATTENTION);
+const _: () = assert!(StatusState::Acknowledged as u32 + 1 == native::ACKNOWLEDGED);
+const _: () = assert!(StatusState::Completed as u32 + 1 == native::COMPLETED);
+const _: () = assert!(StatusState::Failed as u32 + 1 == native::STATUS_FAILED);
 
 /// One record, as the library holds it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,9 +69,12 @@ pub(super) enum Metadata {
     Initial(Initial),
     /// A Title changed, by value; never unavailable.
     Title(Title),
+    /// A Status changed: an effective nonfinal status (#95).
+    Status(Status),
     /// The command's final result, after an Initial metadata that did not
-    /// know it (#94): status stays unavailable.
-    Final(Command),
+    /// know it (#94), and its final status when `status-v1` is selected
+    /// (#95).
+    Final(Command, Option<Status>),
 }
 
 /// What the daemon presents to the role it controls, under immutable
@@ -213,12 +224,67 @@ pub(super) enum Done {
     Resized,
     /// Acquire's or Ready's authority result, under its native result tag.
     Authority(u32, wire::AuthorityResult),
-    /// Focus: whether it changed, the state, and the bytes forwarded.
-    Focus {
+    /// Whether a state the request reported changed.
+    Changed(Changed),
+}
+
+/// The results that say whether something changed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Changed {
+    /// Focus's or Set viewing's (#95), under its native result tag: the
+    /// state now, and the bytes forwarded (none for viewing).
+    Flag {
+        tag: u32,
         changed: bool,
-        focused: bool,
+        value: bool,
         bytes: u32,
     },
+    /// Acknowledge's (#95): whether pending attention became acknowledged.
+    Acknowledged(bool),
+}
+
+/// An effective status, its stored change time, exact, and the episode
+/// only attention carries: held inline, owning no buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Status {
+    state: StatusState,
+    changed_at: [u8; 24],
+    episode: Option<Counter>,
+}
+
+impl From<&wire::Status> for Status {
+    fn from(status: &wire::Status) -> Self {
+        let changed_at = status.changed_at().as_str().as_bytes();
+        Self {
+            state: status.state(),
+            changed_at: changed_at
+                .try_into()
+                .expect("a wire UTC time is 24 ASCII bytes"),
+            episode: status.episode(),
+        }
+    }
+}
+
+impl Status {
+    fn native(self) -> native::Status {
+        native::Status {
+            state: self.state as u32 + 1,
+            episode_present: u32::from(self.episode.is_some()),
+            episode_id: self.episode.map_or(0, Counter::get),
+            changed_at: native::Utc {
+                bytes: self.changed_at,
+            },
+        }
+    }
+}
+
+/// An optional status as native availability: unavailable is all zero.
+fn available(status: Option<Status>) -> native::AvailableStatus {
+    status.map_or(NO_STATUS, |status| native::AvailableStatus {
+        available: 1,
+        reserved: 0,
+        value: status.native(),
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -233,6 +299,8 @@ pub(super) enum Title {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Initial {
     pub(super) title: Title,
+    /// Available exactly when `status-v1` is selected (#95).
+    pub(super) status: Option<Status>,
     pub(super) command: Option<Command>,
 }
 
@@ -345,7 +413,8 @@ impl Metadata {
                 initial.title.bytes() + initial.command.as_ref().map_or(0, Command::bytes)
             }
             Self::Title(title) => title.bytes(),
-            Self::Final(command) => command.bytes(),
+            Self::Status(_) => 0,
+            Self::Final(command, _) => command.bytes(),
         }
     }
 
@@ -364,12 +433,18 @@ impl Metadata {
                     title: title.native(),
                 },
             ),
-            Self::Final(command) => (
+            Self::Status(status) => (
+                native::STATUS,
+                native::RecordData {
+                    status: status.native(),
+                },
+            ),
+            Self::Final(command, status) => (
                 native::FINAL,
                 native::RecordData {
                     r#final: native::Final {
                         command_result: command.native(),
-                        status: NO_STATUS,
+                        status: available(*status),
                     },
                 },
             ),
@@ -569,13 +644,14 @@ impl Screen {
 }
 
 impl Initial {
-    /// Status and progress stay explicitly unavailable: `status-v1` and
-    /// `progress-v1` are never selected yet.
+    /// Progress stays explicitly unavailable: `progress-v1` is never
+    /// selected yet.
     fn native(&self) -> native::Metadata {
         // SAFETY: every field is an integer or a raw pointer, for which zero
         // (null) is valid, and zero is "unavailable".
         let mut metadata: native::Metadata = unsafe { mem::zeroed() };
         metadata.title = self.title.native();
+        metadata.status = available(self.status);
         metadata.command_result = optional(self.command.as_ref());
         metadata
     }
@@ -640,18 +716,33 @@ impl Done {
                 response.result_tag = tag;
                 response.result.authority = authority(&result);
             }
-            Self::Focus {
+            Self::Changed(changed) => changed.native(response),
+        }
+    }
+}
+
+impl Changed {
+    /// Writes its result tag and active result into `response`, whose
+    /// other bytes stay zero.
+    fn native(self, response: &mut native::Response) {
+        match self {
+            Self::Flag {
+                tag,
                 changed,
-                focused,
+                value,
                 bytes,
             } => {
-                response.result_tag = native::FOCUS_RESULT;
+                response.result_tag = tag;
                 response.result.flag = native::FlagResult {
                     changed: u8::from(changed),
-                    value: u8::from(focused),
+                    value: u8::from(value),
                     reserved: [0; 2],
                     accepted_bytes: bytes,
                 };
+            }
+            Self::Acknowledged(changed) => {
+                response.result_tag = native::ACKNOWLEDGEMENT;
+                response.result.changed = u8::from(changed);
             }
         }
     }
