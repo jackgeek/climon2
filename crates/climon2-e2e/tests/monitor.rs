@@ -6741,10 +6741,11 @@ fn toast_shown(terminal: &Terminal, toast: &[String]) {
     toast_shown_with(terminal, toast, |_| true);
 }
 
-/// Waits until a whole frame shows no toast.
+/// Waits until a whole frame shows no toast: not even the last cells of
+/// its border, which erases clockwise, ending with its left side.
 fn no_toast(terminal: &Terminal) {
     whole_frame_shows(terminal, "no toast", |screen| {
-        !screen.contains(['┌', '┐', '└', '┘'])
+        !screen.contains(['┌', '┐', '└', '┘', '─', '│'])
     });
 }
 
@@ -7027,7 +7028,8 @@ fn a_covering_toast_stops_viewing_while_keys_and_drags_still_reach_the_session()
     for name in ["Beta", "Gamma", "Delta"] {
         headless(&package, &watched(name), "finish");
     }
-    glance(&mut terminal, RUNNING, "Delta");
+    // No selector before Alpha's attention: cancelling one would defer an
+    // acknowledgement that could meet it.
     report_state(&package, "Alpha", "idle");
     top_row_is(&mut terminal, &controlled("Alpha", ATTENTION));
     retitle(&package, "Alpha", "Alpha 2");
@@ -7051,7 +7053,7 @@ fn a_covering_toast_stops_viewing_while_keys_and_drags_still_reach_the_session()
     rang(&mut terminal, 3);
     whole_frame_shows(&terminal, "Alpha acknowledged once uncovered", |screen| {
         let top = controlled("Alpha 2", ACKNOWLEDGED);
-        screen.lines().next() == Some(top.as_str()) && !screen.contains(['┌', '└'])
+        screen.lines().next() == Some(top.as_str()) && !screen.contains(['┌', '└', '│'])
     });
     terminal.resize(ROWS, COLS).unwrap();
     ready_at(&mut terminal, "Alpha 2", ACKNOWLEDGED, "29 120");
