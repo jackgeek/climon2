@@ -2,15 +2,17 @@
 //! exits, the final drain, unexpected departures and the hang-up grace,
 //! Kill in its harder cases, PTY write failure and job-control cleanup.
 use super::{
-    assert_closed, assert_killed, command_final, committed_kill, counter, exited,
+    assert_closed, assert_killed, clocked, command_final, committed_kill, counter, exited,
     interactive::{Attached, geometry, ready_attachment},
-    kill, message, open, peer, raw_frame, request, signalled, terminating,
+    kill, message, monitor, open, peer, raw_frame, request, signalled, status,
+    status::Watcher,
+    terminating,
 };
 use crate::{ID, Session};
 use climon2_core::{
     hello::Lifecycle,
     protocol::{ClientMessage, HANGUP_GRACE},
-    wire::{self, CommandResult, Input, Leave, Mode, ServerMessage},
+    wire::{self, CommandResult, Input, Leave, Mode, ServerMessage, StatusState},
 };
 use climon2_platform::process;
 use std::{
@@ -42,6 +44,34 @@ fn an_early_exit_reaches_a_later_attachment_through_its_restoration() {
     );
     attached.confirm_ready();
     attached.session_ended();
+    session.finish();
+}
+
+/// COM-06 (Contract, every opened connection gets exactly one Command
+/// final) and CTL-01 (Contract, watching is not attaching), #259: the
+/// command exits 43 while only passive monitor connections watch, so the
+/// session holds its exit for the initial attachment and stays `starting`.
+/// The monitor that watched before the exit receives the Command final at
+/// once. One that opens after it learns the result in its Initial metadata
+/// (`status-v1`'s final `failed` status) and receives its own Command final,
+/// with that final status, only when the five-second initial deadline ends
+/// the session. No monitor receives a second one, and both streams end.
+#[test]
+fn the_initial_deadline_publishes_a_held_result_to_every_monitor_once() {
+    let mut session = clocked("script");
+    let started = Instant::now();
+    let (mut earlier, _) = monitor(&session, &[]);
+    crate::issue(&session, "exit 43");
+    assert_eq!(message(&mut earlier), command_final(&exited(43)));
+    let (mut later, initial) = Watcher::open(&session);
+    assert_eq!(initial, status(StatusState::Failed, 0, None));
+    assert_eq!(
+        crate::advertised_state(&session),
+        (Lifecycle::Starting, 0, false)
+    );
+    later.ended(&exited(43), 0);
+    assert!(started.elapsed() >= Duration::from_millis(4500));
+    assert_closed(&mut earlier);
     session.finish();
 }
 
