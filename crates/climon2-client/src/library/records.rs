@@ -529,6 +529,15 @@ impl Event {
         CHARGE + self.payload()
     }
 
+    /// The terminal bytes it carries: a Display's, which `snapshot` counts
+    /// as delivered once drained (#99).
+    fn display(&self) -> u64 {
+        match self {
+            Self::Presentation(presentation) => presentation.bytes(),
+            _ => 0,
+        }
+    }
+
     /// The bytes of its variable data.
     pub(super) fn payload(&self) -> u64 {
         match self {
@@ -626,6 +635,11 @@ impl Batch {
 
     pub(super) fn len(&self) -> u32 {
         self.records.len() as u32
+    }
+
+    /// The Display bytes its records carry.
+    pub(super) fn display(&self) -> u64 {
+        self.events.iter().map(Event::display).sum()
     }
 }
 

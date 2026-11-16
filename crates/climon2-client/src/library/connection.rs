@@ -272,17 +272,30 @@ impl<'a> Driver<'a> {
     }
 
     /// Sends a Leave, the caller's or shutdown's: nothing calls for a retry
-    /// after it, whatever its fate.
+    /// after it, whatever its fate. One that cannot be sent is
+    /// [`unsent`](Self::unsent).
     fn send_leave(&mut self, id: Option<u64>) {
-        self.shared.conclude(true);
         let leave_ms = Duration::from_millis(self.shared.limits().leave_ms.into());
         let deadline = Instant::now() + leave_ms;
         let sent = self.connection.as_mut().map(|connection| {
             let frame = self.stream.leave(id, connection.peer.send, deadline);
             frame.map(|frame| connection.link.send(&frame))
         });
-        if let Some(Err(fault)) = sent {
-            self.broken(fault);
+        match sent {
+            Some(Err(fault)) => self.unsent(id, fault),
+            _ => self.shared.conclude(true),
+        }
+    }
+
+    /// A Leave refused before it was sent: the caller's is rejected and the
+    /// role goes on; shutdown's ends the stream with that Leave failed.
+    fn unsent(&mut self, id: Option<u64>, fault: Fault) {
+        match id {
+            Some(id) => self.reject(id, fault),
+            None => {
+                self.departure = Departure::unsent(fault);
+                self.ended = true;
+            }
         }
     }
 
