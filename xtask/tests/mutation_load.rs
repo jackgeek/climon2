@@ -3,7 +3,7 @@
 use std::{
     ffi::OsString,
     fs,
-    os::unix::process::CommandExt,
+    os::unix::{fs::PermissionsExt, process::CommandExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
@@ -286,6 +286,10 @@ fn clean_fixture() {
     fs::write(warm.join("warm-proof"), "warm seed").unwrap();
     let (success, output) = fixture.measure(2, 2);
     assert!(success, "{output}");
+    for round in ["1/2", "2/2"] {
+        let seconds = seconds_after(&output, &format!("round {round}: 0/2 suites failed in "));
+        assert!((0.0..120.0).contains(&seconds), "{output}");
+    }
     let logs = fixture.logs();
     assert_eq!(logs.len(), 6, "{logs:?}");
     for log in logs
@@ -430,7 +434,8 @@ fn a_terminated_measurement_stops_its_suites_and_removes_their_worker_builds() {
         }
         thread::sleep(Duration::from_millis(20));
     };
-    assert!(!status.success());
+    // Like a shell, 128 + SIGTERM.
+    assert_eq!(status.code(), Some(143));
     assert_exited(&suites);
     assert_eq!(fixture.target_entries(), ["flake-logs", "mutation-tests"]);
 }
@@ -711,4 +716,56 @@ fn counts_and_the_timeout_factor_are_validated_at_their_limits() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+/// The number of seconds printed right after `prefix` in `output`.
+fn seconds_after(output: &str, prefix: &str) -> f64 {
+    let start = output
+        .find(prefix)
+        .unwrap_or_else(|| panic!("{prefix}: {output}"))
+        + prefix.len();
+    let digits: String = output[start..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || *character == '.')
+        .collect();
+    digits.parse().unwrap()
+}
+
+/// The mutation timeout is the timeout factor times the unloaded baseline run: a baseline
+/// that sleeps one second with factor ten gives at least ten seconds.
+#[test]
+fn the_mutation_timeout_is_the_factor_times_the_unloaded_baseline() {
+    let fixture = Fixture::new(&format!(
+        "{UNDER_LOAD}#[test]\nfn one_second_unloaded() {{ if !under_load() {{ std::thread::sleep(std::time::Duration::from_secs(1)); }} }}\n"
+    ));
+    let (success, output) = fixture.measure_with_timeout_factor(1, 1, "10");
+    assert!(success, "{output}");
+    let timeout = seconds_after(&output, "the mutation timeout is ");
+    assert!((10.0..60.0).contains(&timeout), "{output}");
+}
+
+/// A worker build that cannot be copied stops the measurement before any round runs.
+#[test]
+fn a_worker_build_that_cannot_be_copied_fails_the_measurement() {
+    let fixture = Fixture::new("");
+    let warm = fixture.root().join("target/mutation-tests");
+    fs::create_dir_all(&warm).unwrap();
+    let unreadable = warm.join("unreadable");
+    fs::write(&unreadable, "").unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+    let (success, output) = fixture.measure(1, 1);
+    assert!(!success, "{output}");
+    let rounds = fixture
+        .logs()
+        .iter()
+        .filter(|log| {
+            log.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("r1-")
+        })
+        .count();
+    assert_eq!(rounds, 0, "{output}");
+    assert_eq!(fixture.target_entries(), ["flake-logs", "mutation-tests"]);
 }
