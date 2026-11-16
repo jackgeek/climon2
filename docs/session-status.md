@@ -4,10 +4,12 @@
 revision on 2026-11-06. The session daemon implements the heuristic detection
 mode, both state machines, effective status, change times and episodes, and
 viewing and acknowledgement
-([#91](https://github.com/jackgeek/climon2/issues/91)), with the evidence in
+([#91](https://github.com/jackgeek/climon2/issues/91)), and the explicit and
+fallback detection modes, OSC 7501 program status, OSC 133 shell boundaries
+and full and soft resets
+([#92](https://github.com/jackgeek/climon2/issues/92)), with the evidence in
 the [daemon's contract tests](../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios);
-explicit and fallback detection, shell boundaries and notification signals
-remain unimplemented. It supersedes the earlier two-state activity heuristic,
+notification and progress signals remain unimplemented. It supersedes the earlier two-state activity heuristic,
 title-plugin requirement, creation-time monitor ordering, and
 [attention](../GLOSSARY.md#status-and-attention) rules in
 [startup/discovery](https://github.com/jackgeek/climon2/issues/59).
@@ -243,6 +245,16 @@ reports and child-subtree clearing affect records, not session activity,
 attention, or detector selection. Do not aggregate child `working`/`blocked`
 into session status. Record validation and lifecycle still follow the
 upstream protocol; unsupported/invalid reports do not become `idle`.
+
+The session daemon implements this
+([#92](https://github.com/jackgeek/climon2/issues/92)). Where the upstream
+reference leaves validation open it chooses: a key over 16 bytes or an `app`
+over 32 bytes discards the report; `msg` and `title` must decode, padding
+optional, to [UTF-8](protocol/TERMS.md#unicode-and-utf-8) within their decoded limits (2,048 and 192 bytes) with no
+control character; and a pair holding `;` or another byte outside the value
+set is skipped like any malformed pair. Because only the root record drives
+detection, it keeps no child records: a report with a well-formed `id` pair changes
+nothing it observes, so it validates neither their `id` nor their other fields.
 
 Apply root reports from any live activity state:
 
