@@ -16,7 +16,7 @@ use climon2_core::{
     hello::{Advertised, HelloExtensions},
     metadata::SessionMetadata,
     protocol::{self, ClientMessage, HelloReply, PROTOCOL_VERSION, ServerMessage},
-    wire::{Advertisement, Frame, FrameLimit, Requested},
+    wire::{Advertisement, Frame, FrameLimit},
 };
 use std::{
     fs::File,
@@ -131,7 +131,7 @@ fn exchange(link: &mut Link, deadline: Instant) -> Result<Frame, Failed> {
 fn peer(frame: &Frame, expected: &Expected, open: &Open) -> Result<Peer, Failed> {
     identity(&reply(frame)?, expected.session)?;
     let advertisement = advertisement(frame)?;
-    supported(advertisement, &open.requested, expected.wire_frame_bytes)
+    supported(advertisement, open, expected.wire_frame_bytes)
 }
 
 /// The frozen reply: a hello frame with its required fields.
@@ -163,11 +163,11 @@ fn advertisement(frame: &Frame) -> Result<Advertisement, Failed> {
 /// The families the Open needs, and frames this instance can receive.
 fn supported(
     advertisement: Advertisement,
-    requested: &Requested,
+    open: &Open,
     wire_frame_bytes: u32,
 ) -> Result<Peer, Failed> {
     require(
-        families::supports(&advertisement, requested),
+        families::supports(&advertisement, open.mode, &open.requested),
         UNSUPPORTED_FAMILY,
     )?;
     let limits = advertisement.limits();

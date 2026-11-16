@@ -253,9 +253,107 @@ fn response(response: &native::Response) -> Value {
             json!({ "attachment_detached": unsafe { response.result.attachment_detached } })
         }
         native::KNOWN_FINAL => command(unsafe { &response.result.known_final }),
+        native::INPUT_ACCEPTED => {
+            json!({ "accepted_bytes": unsafe { response.result.accepted_bytes } })
+        }
+        native::ACQUIRED | native::READY_RESULT => {
+            let authority = unsafe { response.result.authority };
+            json!({
+                "changed": authority.changed,
+                "reserved": authority.reserved,
+                "period": authority.period,
+                "restoration_id": authority.restoration_id,
+            })
+        }
+        native::FOCUS_RESULT => {
+            let flag = unsafe { response.result.flag };
+            json!({
+                "changed": flag.changed,
+                "value": flag.value,
+                "reserved": flag.reserved,
+                "accepted_bytes": flag.accepted_bytes,
+            })
+        }
         _ => Value::Null,
     };
     value
+}
+
+fn geometry(geometry: native::Geometry) -> Value {
+    json!([geometry.cols, geometry.rows])
+}
+
+/// Exact bytes as hex: never text, so NUL and invalid UTF-8 show as they
+/// are.
+fn binary(bytes: native::Bytes) -> Value {
+    if bytes.data.is_null() {
+        return json!({ "null": true, "length": bytes.length });
+    }
+    // SAFETY: a nonnull buffer covers its length until its delivery's release.
+    json!(hex(unsafe {
+        std::slice::from_raw_parts(bytes.data, bytes.length as usize)
+    }))
+}
+
+/// A control, restoration or display record's active member.
+fn presentation(record: &Record) -> Option<Value> {
+    // SAFETY (each arm): the tag names the active member.
+    Some(match record.tag {
+        native::GRANTED => {
+            let granted = unsafe { record.data.granted };
+            json!({
+                "period": granted.period,
+                "restoration_id": granted.restoration_id,
+                "geometry": geometry(granted.geometry),
+                "reason": granted.reason,
+                "reserved": granted.reserved,
+            })
+        }
+        native::REVOKED => {
+            let revoked = unsafe { record.data.revoked };
+            json!({
+                "period": revoked.period,
+                "restoration_id": revoked.restoration_id,
+                "reason": revoked.reason,
+                "reserved": revoked.reserved,
+            })
+        }
+        native::RESTORATION_BEGIN => {
+            let begin = unsafe { record.data.restoration };
+            json!({
+                "period": begin.period,
+                "restoration_id": begin.restoration_id,
+                "geometry": geometry(begin.geometry),
+            })
+        }
+        native::DISPLAY => {
+            let display = unsafe { record.data.display };
+            json!({
+                "period": display.authority.period,
+                "restoration_id": display.authority.restoration_id,
+                "bytes": binary(display.bytes),
+            })
+        }
+        native::RESTORATION_COMPLETE => {
+            let barrier = unsafe { record.data.barrier };
+            json!({ "period": barrier.period, "restoration_id": barrier.restoration_id })
+        }
+        native::GEOMETRY => {
+            let actual = unsafe { record.data.geometry };
+            json!({ "period": actual.period, "geometry": geometry(actual.geometry) })
+        }
+        _ => return None,
+    })
+}
+
+fn finished(finished: &native::Final) -> Value {
+    json!({
+        "command_result": command(&finished.command_result),
+        "status": {
+            "available": finished.status.available,
+            "reserved": finished.status.reserved,
+        },
+    })
 }
 
 fn metadata(metadata: &native::Metadata) -> Value {
@@ -295,7 +393,12 @@ pub fn record(record: &Record) -> Value {
         native::RESPONSE => value["response"] = response(unsafe { &record.data.response }),
         native::INITIAL_METADATA => value["metadata"] = metadata(unsafe { &record.data.metadata }),
         native::TITLE => value["title"] = title(unsafe { &record.data.title }),
-        _ => {}
+        native::FINAL => value["final"] = finished(unsafe { &record.data.r#final }),
+        _ => {
+            if let Some(presented) = presentation(record) {
+                value["presentation"] = presented;
+            }
+        }
     }
     value
 }
