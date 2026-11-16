@@ -3382,9 +3382,17 @@ fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
     const WIDE: u16 = 250;
     let package = Package::new();
     without_introduction(&package);
+    // ab and cd stay unanswered while the daemon is stopped, and an
+    // operation past `deadlines.operation_ms` fails the connection: the
+    // deadline must outlast the test's steps until it resumes the daemon,
+    // even on a loaded host.
     limits_config(
         &package,
-        serde_json::json!({"transfer": {"chunk_bytes": 2}, "queues": {"operations": 2}}),
+        serde_json::json!({
+            "transfer": {"chunk_bytes": 2},
+            "queues": {"operations": 2},
+            "deadlines": {"operation_ms": 120_000},
+        }),
     );
     headless(&package, &recorder("Keys"), "finish");
     let daemon = package.metadata().daemon_pid;
