@@ -139,18 +139,18 @@ def run():
 
 def measure(root, cargo, timeout_factor, output, sources):
     command = cargo_test(cargo)
-    subprocess.run(command + ["--no-run"], cwd=root, check=True)
+    subprocess.run(command + ["--no-run"], check=True)
     timeouts = {}
     for source in sources:
         for selection in early_stages(root / source):
             if name(selection) in timeouts:
                 continue
             started = time.monotonic()
-            subprocess.run(command + selection, cwd=root, check=True)
+            subprocess.run(command + selection, check=True)
             seconds = time.monotonic() - started
             timeouts[name(selection)] = max(MINIMUM_TIMEOUT, timeout_factor * seconds)
             print(f"Stage `{name(selection)}` took {seconds:.1f}s unloaded.", flush=True)
-    output.write_text(json.dumps(timeouts, indent=2) + "\n")
+    output.write_text(json.dumps(timeouts))
 
 
 def main(arguments):

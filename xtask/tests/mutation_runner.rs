@@ -11,7 +11,8 @@ use std::{
 };
 
 /// A stand-in for Cargo: journals each call by stage, sleeps `MUTATION_RUNNER_SLEEP_<stage>`
-/// seconds in a test run (never in a `--no-run` build), fails `MUTATION_RUNNER_FAILURE` and
+/// seconds in a test run (never in a `--no-run` build), fails `MUTATION_RUNNER_FAILURE` (a
+/// stage, or `build-<stage>` for its build) and
 /// hangs `MUTATION_RUNNER_HANG` after recording its process ID.
 const CARGO: &str = r#"#!/bin/sh
 if [ "$MUTATION_RUNNER_OVERLAY" = yes ]; then
@@ -24,7 +25,11 @@ case " $* " in
     *) stage=full ;;
 esac
 case " $* " in
-    *" --no-run "*) printf 'build-%s %s\n' "$stage" "$*" >> "$MUTATION_RUNNER_JOURNAL"; exit 0 ;;
+    *" --no-run "*)
+        printf 'build-%s %s\n' "$stage" "$*" >> "$MUTATION_RUNNER_JOURNAL"
+        if [ "build-$stage" = "$MUTATION_RUNNER_FAILURE" ]; then exit 1; fi
+        exit 0
+        ;;
 esac
 printf '%s %s\n' "$stage" "$*" >> "$MUTATION_RUNNER_JOURNAL"
 if [ "$stage" = "$MUTATION_RUNNER_HANG" ]; then
@@ -59,11 +64,7 @@ impl Fixture {
             .status()
             .unwrap();
         assert!(copied.success());
-        fs::set_permissions(
-            temp.path().join("cargo"),
-            fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
+        fs::set_permissions(temp.path().join("cargo"), fs::Permissions::from_mode(0o755)).unwrap();
         Self {
             temp,
             environment: Vec::new(),
@@ -317,8 +318,16 @@ fn a_hung_stage_is_killed_with_its_process_group_at_its_own_timeout() {
         let run = fixture.run(&fixture.workspace(true));
         assert!(!run.status.success(), "{hung}: {}", run.output);
         assert_eq!(run.stages(), stages, "{hung}");
-        assert!(run.seconds >= limit, "{hung}: cut early at {}s", run.seconds);
-        assert!(run.seconds < limit + 10.0, "{hung}: cut at {}s", run.seconds);
+        assert!(
+            run.seconds >= limit,
+            "{hung}: cut early at {}s",
+            run.seconds
+        );
+        assert!(
+            run.seconds < limit + 10.0,
+            "{hung}: cut at {}s",
+            run.seconds
+        );
         assert!(
             run.output.contains("stage timeout"),
             "{hung}: {}",
@@ -392,12 +401,25 @@ fn measurement_times_each_earlier_stage_once_in_the_warm_build() {
     assert_eq!(timeouts["--test terminal"], 2.0);
 }
 
-/// A stage that fails unmutated has no baseline, so the measurement fails instead.
+/// A warm build or stage that fails unmutated has no baseline, so the measurement fails.
 #[test]
-fn measurement_fails_when_an_unmutated_stage_fails() {
-    let fixture = Fixture::new().with("MUTATION_RUNNER_FAILURE", "integration");
-    fixture.add_crate(fixture.root(), "example");
-    let (run, timeouts) = fixture.measure("10", &["crates/example/src/lib.rs"]);
-    assert!(!run.status.success(), "{}", run.output);
-    assert!(!timeouts.exists());
+fn measurement_fails_when_the_unmutated_build_or_a_stage_fails() {
+    for failure in ["build-full", "integration"] {
+        let fixture = Fixture::new().with("MUTATION_RUNNER_FAILURE", failure);
+        fixture.add_crate(fixture.root(), "example");
+        let (run, timeouts) = fixture.measure("10", &["crates/example/src/lib.rs"]);
+        assert!(!run.status.success(), "{failure}: {}", run.output);
+        assert!(!timeouts.exists(), "{failure}");
+    }
+}
+
+/// A mutant that does not compile is killed by its stage's build, before any test runs.
+#[test]
+fn a_failed_stage_build_kills_the_mutant_without_running_tests() {
+    let fixture = Fixture::new()
+        .with("MUTATION_RUNNER_FAILURE", "build-unit")
+        .timeouts(&[("--lib", 2.0)]);
+    let run = fixture.run(&fixture.workspace(true));
+    assert_eq!(run.status.code(), Some(1), "{}", run.output);
+    assert_eq!(run.stages(), ["build-unit"]);
 }
