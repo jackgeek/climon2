@@ -8,7 +8,7 @@ use climon2_core::{
     VersionName,
     config::{ConfigError, ConfigSource, MandatoryAllocation, MonitorConfig},
     exit::CLIMON2_ERROR,
-    layout::{HomeLayout, VersionBinary},
+    layout::{ExecutableHome, ExecutableLayout, HomeLayout, VersionBinary},
     protocol::TerminalSize,
 };
 use climon2_platform::{home, logging::LogFile, terminal};
@@ -19,6 +19,10 @@ use std::{io, path::Path};
 pub(crate) struct Startup {
     pub(crate) log: LogFile,
     pub(crate) version: VersionName,
+    /// The canonical climon2 home, whose sessions the monitor discovers.
+    pub(crate) home: HomeLayout,
+    /// Where each session's exact-release client library is loaded from.
+    pub(crate) executable: ExecutableHome,
     pub(crate) config: MonitorConfig,
     pub(crate) preference: Preference,
 }
@@ -34,28 +38,28 @@ impl Startup {
 
     fn configured(home: &Path, log: LogFile) -> Result<Self, Error> {
         let logged = |error: io::Error| Error::from(error).logged(log.path());
-        let version = installed_version().map_err(logged)?;
+        let installed = installed().map_err(logged)?;
         let home = HomeLayout::at(home)
             .map_err(io::Error::other)
             .map_err(logged)?;
         let config = configuration(&home).map_err(logged)?;
         Ok(Self {
             log,
-            version,
-            config,
+            version: installed.version().clone(),
             preference: Preference::read(&home),
+            home,
+            executable: installed.home(),
+            config,
         })
     }
 }
 
 /// The version folder this monitor runs from, found exactly as the CLI finds
 /// its own executable home.
-fn installed_version() -> io::Result<VersionName> {
-    home::executable_layout(VersionBinary::Monitor)?
-        .map(|layout| layout.version().clone())
-        .map_err(|error| {
-            io::Error::other(format!("cannot find the climon2 executable home: {error}"))
-        })
+fn installed() -> io::Result<ExecutableLayout> {
+    home::executable_layout(VersionBinary::Monitor)?.map_err(|error| {
+        io::Error::other(format!("cannot find the climon2 executable home: {error}"))
+    })
 }
 
 /// The one configuration snapshot: the client bindings, whose escape prefix
