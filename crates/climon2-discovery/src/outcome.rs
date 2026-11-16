@@ -104,6 +104,15 @@ pub(crate) fn probe_all(
     })
 }
 
+/// Probes one session, cleaning it up only as `stale` says.
+pub(crate) fn probe_one(
+    home: &HomeLayout,
+    metadata: SessionMetadata,
+    stale: StaleMetadata,
+) -> Outcome {
+    probe(metadata, Removal { stale, home })
+}
+
 /// Whether a pass removes stale metadata, and the home it removes it from: all that only a
 /// stale session's cleanup needs.
 #[derive(Clone, Copy)]

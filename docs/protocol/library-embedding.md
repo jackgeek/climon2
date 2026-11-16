@@ -27,8 +27,17 @@ ordinary attach ([#101](https://github.com/jackgeek/climon2/issues/101)),
 with its viewing and acknowledgement
 ([#102](https://github.com/jackgeek/climon2/issues/102)), and
 kill ([#100](https://github.com/jackgeek/climon2/issues/100)) through the
-function table; test tooling uses it too. Loading by the monitor is not
-implemented. The
+function table; test tooling uses it too. The monitor
+uses it ([#106](https://github.com/jackgeek/climon2/issues/106)): it loads each
+session's exact-release library once per release on a worker thread, creates,
+runs and destroys each passive client's instance on that instance's own owner
+thread, submits monitor-mode Open, polls the borrowed notification
+descriptors, drains and releases every delivery, and on exit requests
+shutdown of every instance and waits up to `deadlines.shutdown_ms` for each to
+end, its handles to be released and its owner to be joined. An instance
+unconfirmed by then is reported and left, never destroyed, to process exit:
+the monitor does not claim it joined. Admission, recovery, acquisition and
+fail-stop by the monitor remain unimplemented. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
 requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)
 adds x86-64 GNU/Linux. [Native revision 1](monitor-client/core-v1.md), confirmed in

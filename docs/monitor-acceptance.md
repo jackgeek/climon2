@@ -3,8 +3,11 @@
 **Status: developer-confirmed specification for
 [Define automated monitor acceptance criteria](https://github.com/jackgeek/climon2/issues/62),
 not implementation or executed acceptance evidence.** The
-[monitor](../GLOSSARY.md#sessions) exists only as the empty walking skeleton of
-[#74](https://github.com/jackgeek/climon2/issues/74); new daemon wire remains
+[monitor](../GLOSSARY.md#sessions) is the walking skeleton of
+[#74](https://github.com/jackgeek/climon2/issues/74) with discovery, passive
+clients and the basic selector of
+[#106](https://github.com/jackgeek/climon2/issues/106), whose Monitor-layer
+cases are mapped in the monitor README; new daemon wire remains
 unimplemented. Packaged
 [client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
 description ([#75](https://github.com/jackgeek/climon2/issues/75)), their
@@ -14,9 +17,9 @@ connections ([#93](https://github.com/jackgeek/climon2/issues/93)), control
 and display ([#94](https://github.com/jackgeek/climon2/issues/94)), status,
 viewing and acknowledgement
 ([#95](https://github.com/jackgeek/climon2/issues/95)), and Command final and
-Kill ([#96](https://github.com/jackgeek/climon2/issues/96)),
-but no monitor loads them yet; the client executable loads its own release's
-library for `climon2 kill`
+Kill ([#96](https://github.com/jackgeek/climon2/issues/96)); the monitor loads
+them for passive connections (#106), and the client executable loads its own
+release's library for `climon2 kill`
 ([#100](https://github.com/jackgeek/climon2/issues/100)), the LIB-01 and LIB-02
 executable cases, and for ordinary attach
 ([#101](https://github.com/jackgeek/climon2/issues/101)), the COM-01 Monitor
@@ -29,7 +32,7 @@ libraries in one process, against sessions of each release's own daemon, for
 LIB-01 and LIB-03. Headless
 creation is implemented; its HDL-01 Contract cases and its Monitor-layer cases
 through the packaged CLI are mapped in the daemon and packaged-test READMEs,
-while the case that needs a running monitor waits for it. Resolving this
+and its monitor-row case in the monitor README. Resolving this
 specification does not pass a [release gate](../GLOSSARY.md#testing).
 
 This document specifies evidence for the agreed thread-based Ratatui monitor.
