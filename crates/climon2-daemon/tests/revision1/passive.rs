@@ -159,7 +159,7 @@ fn monitor_open_selects_supported_families_then_reports_initial_metadata() {
 
 /// Attaches and detaches through the private protocol, so the session has
 /// no attachment and outlives its initial-attachment deadline.
-fn detached(session: &Session) {
+pub(super) fn detached(session: &Session) {
     let mut client = session.attach();
     session.wait_marker(&mut client);
     crate::send(&mut client, ClientMessage::Detach);
@@ -170,7 +170,7 @@ fn detached(session: &Session) {
 }
 
 /// Ends a `script` fixture session through its command's own exit.
-fn end_script(mut session: Session) {
+pub(super) fn end_script(mut session: Session) {
     crate::issue(&session, "exit");
     session.finish();
 }
@@ -278,19 +278,19 @@ fn a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata() {
     end_script(session);
 }
 
-/// CTL-03 (Contract, title case) and the derived release-constant title
-/// bound: the longest title a title sequence can carry arrives whole: 4,094
-/// UTF-8 bytes, because the existing 4,096-byte token body includes the
-/// sequence's `2;`. A longer one, at or one past the documented 4,096 bytes,
-/// is ignored, never truncated.
+/// CTL-03 (Contract, title case) and LIM-01 (Contract and Fault, the
+/// derived release-constant title bound at the limit and one past): a
+/// title of the documented 4,096 UTF-8 bytes arrives whole, its sequence's
+/// `2;` not counted against it; one of 4,097 or 4,098 bytes is ignored,
+/// never truncated.
 #[test]
 fn an_oversized_title_is_ignored_never_truncated() {
     let session = Session::start("script");
     detached(&session);
     let (mut monitor, _) = monitor(&session, &["title-v1"]);
-    crate::script(&session, "title-bytes 4094");
-    assert_eq!(title_changed(&mut monitor), Some("é".repeat(2047)));
-    for bytes in [4095, 4096, 4097] {
+    crate::script(&session, "title-bytes 4096");
+    assert_eq!(title_changed(&mut monitor), Some("é".repeat(2048)));
+    for bytes in [4097, 4098] {
         crate::script(&session, &format!("title-bytes {bytes}"));
     }
     crate::script(&session, "title after");
@@ -545,7 +545,8 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
     end_controlled(session, controlling);
 }
 
-/// COM-02 (Contract, oversized frames): a request frame exactly at the
+/// COM-02 (Contract, oversized frames) and LIM-01 (Contract, the frame
+/// bound at the limit and one past): a request frame exactly at the
 /// advertised 1,048,576-byte limit is served; on a revision-1 stream one byte
 /// more is `frame_too_large`, decided from its prefix before any body
 /// arrives.

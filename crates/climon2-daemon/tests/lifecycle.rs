@@ -2667,8 +2667,9 @@ fn record_lines() -> ! {
 /// acknowledges each in `acks`: `rows A B` prints numbered rows, `same N`
 /// prints `N` identical rows and `clear` erases the scrollback. Title commands
 /// set the window title: `title TEXT`, `title-empty`, `title-bytes N` (N
-/// UTF-8 bytes, `é` repeated) and `titles A B` (`t-A` through `t-B` in one
-/// write); `text TEXT` prints TEXT as a line, `colors N` prints `N` rows
+/// UTF-8 bytes, `é` repeated), `titles A B` (`t-A` through `t-B` in one
+/// write) and `long-titles A B` (the same, each padded with `x` to 4,000
+/// bytes); `text TEXT` prints TEXT as a line, `colors N` prints `N` rows
 /// whose every cell changes colour, `print TEXT` prints TEXT with each `\e`
 /// replaced by ESC and no line end, `reset` is `ESC c`, and `exit` ends the
 /// fixture with status 0, `exit N` with status `N` and `signal N` by signal
@@ -2712,6 +2713,13 @@ fn follow_script() -> ! {
                 ["titles", first, last] => {
                     for title in first.parse::<u32>().unwrap()..=last.parse().unwrap() {
                         write!(out, "\x1b]2;t-{title}\x07").unwrap();
+                    }
+                }
+                ["long-titles", first, last] => {
+                    for title in first.parse::<u32>().unwrap()..=last.parse().unwrap() {
+                        let head = format!("t-{title}-");
+                        let padding = "x".repeat(4000 - head.len());
+                        write!(out, "\x1b]2;{head}{padding}\x07").unwrap();
                     }
                 }
                 ["title", ..] => write!(out, "\x1b]2;{}\x07", &command["title ".len()..]).unwrap(),

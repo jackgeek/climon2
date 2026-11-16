@@ -36,7 +36,6 @@ const NOT_VIEWING: &str = "the latest reported viewing is not true";
 const EPISODES_EXHAUSTED: &str = "the session's attention episode identifiers are exhausted";
 const UNSUPPORTED_GEOMETRY: &str = "the geometry exceeds the supported terminal size";
 const EMPTY_INPUT: &str = "Input carries no bytes";
-const TERMINATING: &str = "the session is terminating";
 const CLEANUP_INCOMPLETE: &str = "the session's termination or cleanup did not complete";
 
 /// What hello advertises: only the families this daemon implements.
@@ -252,12 +251,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
-    /// An interactive Open refused because the session is terminating: it
-    /// has no effects, and its stream ends.
-    pub(super) fn refused(&mut self, id: u64) {
+    /// An interactive Open refused with `code`, because the session is
+    /// terminating or no new control period and restoration can be issued:
+    /// it has no effects, and its stream ends.
+    pub(super) fn refused(&mut self, id: u64, code: OperationalCode) {
         if let Some(request_id) = self.open_request(id) {
-            let error = error(OperationalCode::SessionTerminating, TERMINATING);
-            self.reject_role(id, request_id, error);
+            self.reject_role(id, request_id, refusal(code));
         }
     }
 
@@ -397,9 +396,9 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             let error = error(OperationalCode::InvalidGeometry, UNSUPPORTED_GEOMETRY);
             return self.reject_with(id, resize.request_id, error);
         };
-        self.control.resize(ConnectionId(id), host);
-        let accepted = Success::ResizeAccepted {};
-        self.respond(id, resize.request_id, Outcome::Ok(accepted));
+        let recorded = self.control.resize(ConnectionId(id), host);
+        let accepted = recorded.map(|()| Success::ResizeAccepted {});
+        self.answer(id, resize.request_id, accepted);
     }
 
     /// Ready confirms the complete current restoration; once ready again it

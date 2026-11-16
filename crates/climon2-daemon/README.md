@@ -85,7 +85,8 @@ states. Incremental nonblocking decoding enforces an absolute two-second hello
 deadline and bounded frames, and reads no further than the frame it is
 decoding. Up to 64 concurrent connections are admitted;
 a further connection is closed unanswered. Each connection's outgoing queue is
-capped at 16 MiB. Restoration prefixes are produced incrementally, whenever less
+capped at 16 MiB, each queued frame charging its allocation and its place in
+the queue until it is written whole. Restoration prefixes are produced incrementally, whenever less
 than 1 MiB is queued, while live output waits behind them; a controller whose
 pending live output plus queued bytes would exceed 16 MiB, or any connection
 that accepts none of its queued bytes for five seconds, is treated as lost. A
@@ -145,6 +146,28 @@ and Set viewing and Acknowledge unless it selected `status-v1`, then
 Open or on a standalone Kill's connection, which leave nothing to convert.
 Registrations share the
 connection cap, the 16 MiB queue and the five-second no-progress loss.
+
+Every revision-1 connection shares these bounds (#90): it counts toward
+the 64 connections, and output that would take its queue past 16 MiB (each
+queued frame charges its allocation and its 32-byte place in the queue
+until it is written whole, so even empty frames are bounded), or a
+queue that accepts nothing for five seconds, loses it at once: its stream
+just closes, so a slow peer reads a gap-free prefix of its records and then
+the end, while every other connection, the PTY and control go on. The
+largest frame either way is the advertised 1,048,576 bytes
+(`connection::frame_limit`), and titles are at most 4,096 bytes, so a
+metadata record stays within 16,384 bytes. Request IDs, control periods and
+restoration IDs never wrap: the last request ID,
+18,446,744,073,709,551,615, can be served but no request follows it, and
+once the last period or restoration ID is issued (`control::Issued`, which
+hands out a `Fresh` pair only while both can advance), work that needs a
+new one is refused before its effects with `resource_limit`: an
+interactive Open, a private attach (`Error` "attach refused:
+resource_limit"), an Acquire by anyone but the controller and a Resize
+whose restoration would need a new ID. No registration is then promoted,
+and a departing controller hands back to nobody: each remaining attachment
+is explicitly failed (its connection closes), since the hello `state`
+cannot describe attachments without a controller.
 
 An interactive Open attaches an ordinary **interactive attachment**: the same
 attachment, control and leave policy as a private-protocol attach, which it
@@ -494,7 +517,8 @@ from the wire reference. The `script` fixture mode sets titles on command
 (`title`, `title-empty`, `title-bytes`, `titles`, `reset`), prints `text`,
 raw sequences (`print`, with `\e` for ESC) and fully coloured rows
 (`colors`), and ends with `exit`, `exit N` or `signal N`;
-the `silent` mode runs `sleep 120`, which prints nothing at all (the
+its `long-titles A B` sets `t-A` through `t-B` each padded with `x` to 4,000
+bytes; the `silent` mode runs `sleep 120`, which prints nothing at all (the
 libtest fixture prints its harness lines); the `status-query-record` mode
 records its input and, after the first read, prints an OSC 7501 capability
 query and a device-attributes query; the `focus-record` mode records its input and turns focus reporting on and
@@ -545,6 +569,10 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | CTL-05 (Contract and Fault, stale authority from a raw peer): Input, Resize and Ready under an earlier period or a superseded restoration are `stale_period` or `stale_restoration`; Ready needs the complete current restoration; late authority never re-enables input | `stale_and_superseded_authority_is_rejected_and_never_re_enables_input`, `ready_needs_the_complete_current_restoration` |
 | INP-03 (Contract): bracketed-paste bytes reach the application exactly; an open application paste is closed when admission ends; a focus report never lands inside a paste that earlier Input requests carry | `bracketed_paste_is_exact_and_an_open_paste_is_closed_when_admission_ends`, `focus_reports_follow_the_input_accepted_before_them` |
 | TRM-02 (Contract): the daemon alone answers session queries; titles stay inert text and title-looking output stays text | `session_queries_are_answered_by_the_daemon_alone`, `titles_reach_an_attachment_as_inert_text` |
+| LIM-01 (Contract, queue bound): a monitor reading far slower than about 20 MB of titles arrive, though it makes progress throughout, is failed at its 16 MiB queue bound: its stream ends after a gap-free prefix, while another monitor receives every title, the fixture's output is read and a probe is answered; one behind by about 12 MB, within the bound, receives every title; unit cases: the queue holds exactly 16 MiB of frames and their per-frame overhead (524,288 empty frames) and refuses one byte more, and written or replaced frames release their charge | `a_monitor_falling_behind_beyond_its_queue_bound_is_failed_alone`, `a_monitor_behind_within_its_queue_bound_receives_every_title`, `connection::tests::the_output_queue_holds_sixteen_mebibytes_of_frames_and_their_overhead`, `connection::tests::written_and_replaced_frames_release_their_charge` (unit) |
+| LIM-01 (Contract, existing bounds on revision 1): 64 revision-1 connections are served and a 65th is closed unanswered; a stalled monitor frees its slot only after five seconds without progress; a revision-1 controller withholding Ready is lost at the 30 s restoration deadline and promotes the registered monitor (the size-scaled part is the unit test `session::delivery::tests::the_deadline_allows_a_second_per_four_mebibytes_of_prefix`); a stalled restoration reader is lost after five seconds | `revision1_connections_share_the_cap_and_a_stalled_monitor_is_lost_after_five_seconds`, `a_revision1_controller_withholding_ready_is_lost_at_the_restoration_deadline`, `a_stalled_restoration_holds_command_final_only_until_its_reader_is_lost` |
+| LIM-01 (Contract and Fault, frame and text bounds): a request at 1,048,576 bytes is served and one byte more refused; a 1,048,576-byte server frame is queued and one byte more never sent; a title of 4,096 bytes arrives whole and one past it is ignored, never truncated; the most escaped title fits a 16,384-byte metadata record as Title changed and Initial metadata | `a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal`, `connection::tests::a_server_frame_over_the_limit_is_never_queued` (unit), `an_oversized_title_is_ignored_never_truncated`, `the_most_escaped_title_fits_a_metadata_record` |
+| LIM-05 (Contract and Fault, `CLIMON2_DAEMON_ISSUED` hook): the last control period and restoration ID are issued, then an interactive Open (its stream ends), a private attach and an Acquire by a non-controlling attachment or a registration are refused with `resource_limit` without effects, while the controller's own Acquire is a no-op; its Leave hands back to nobody, so the other attachment's stream ends and the registration is not promoted; a monitor-mode Resize takes the last restoration ID and the next one needing a new ID is `resource_limit`, as is an interactive Open with periods left; the last request ID is served and nothing follows it, one past it is `invalid_request_id`; pure decisions for each refusal, hand-back and promotion | `the_last_control_period_is_issued_then_new_control_is_refused_without_effects`, `the_last_restoration_id_is_issued_then_a_resize_needing_another_is_refused`, `the_last_request_id_is_served_and_no_request_follows_it`, `control::tests::the_last_counters_are_issued_then_an_attach_is_refused_without_effects` and the other `control::tests` exhaustion cases (unit) |
 | FOC-01 (Contract): Focus emits no duplicates, newly enabled reporting receives the current state, and new readiness synchronizes the latest intent without replay; a focus report follows the Input accepted before it, however the requests were read | `focus_reaches_the_application_once_per_change_and_resynchronizes_on_new_readiness`, `focus_reports_follow_the_input_accepted_before_them` |
 
 Every wait for a daemon is bounded: `Session::finish`, its drop and
@@ -606,6 +634,9 @@ releases frames it wrote on several connections into one pass
 (`a_held_session_loop_reads_no_frame_until_released` shows a held loop reads
 nothing: a request stays unanswered through two held passes, then is answered
 once the hold is removed).
+`CLIMON2_DAEMON_ISSUED=<period>,<restoration>` starts the session as if
+these were the control period and restoration ID issued last, so a test
+reaches their exhaustion.
 These fault
 branches and the extra generic fixture binary are absent from ordinary release
 builds. The ignored libtest function is a subprocess fixture, not a skipped
