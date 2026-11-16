@@ -1137,6 +1137,9 @@ fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
         ("discovery.metadata_file_bytes", json!(4096)),
         ("discovery.metadata_depth", json!(9)),
         ("history.max_rows", json!(250)),
+        ("retry.initial_ms", json!(250)),
+        ("retry.cap_ms", json!(4000)),
+        ("retry.jitter_percent", json!(35)),
     ])
     .to_string();
     let config = monitor(&text).unwrap();
@@ -1165,6 +1168,11 @@ fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
     assert_eq!((lanes.loads, lanes.starts, lanes.shutdown_ms), (4, 6, 7000));
     let model = limits.model();
     assert_eq!((model.bytes, model.history_rows), (33_554_432, 250));
+    let retry = limits.retry();
+    assert_eq!(
+        (retry.initial_ms, retry.cap_ms, retry.jitter_percent),
+        (250, 4000, 35)
+    );
     assert_eq!(
         config.take_control_key(),
         Some(ControlKey::from_name("Ctrl+T").unwrap())
