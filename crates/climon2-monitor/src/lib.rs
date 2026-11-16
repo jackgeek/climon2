@@ -11,6 +11,7 @@ mod attention;
 mod cadence;
 mod delete;
 mod discovery;
+mod failstop;
 #[cfg(feature = "test-hooks")]
 mod hooks;
 mod host;
@@ -26,6 +27,7 @@ mod router;
 mod screen;
 mod search;
 mod selector;
+mod shutdown;
 mod startup;
 mod supervisor;
 mod terminal;
@@ -50,10 +52,13 @@ use registry::{ClientEvent, Kind, Offer, Recovery, Registry, Report, View};
 use router::{Begin, Key, Pasted, Routed, Router};
 use screen::{Canvas, Scene, Screen, Session};
 use selector::Selector;
+use shutdown::Verdict;
 use startup::Startup;
 use std::{
     collections::BTreeMap,
     io, mem,
+    path::Path,
+    thread,
     time::{Duration, Instant, SystemTime},
 };
 use supervisor::{Context, Load, Refusal, Supervisor};
@@ -65,7 +70,10 @@ use toast::Toasts;
 pub use climon2_core::failure::Failure as Error;
 
 /// The CLI execs the monitor with no arguments. Returns the exit status of an
-/// orderly exit: 0 for prefix+x, 128 + signal for a termination signal.
+/// orderly exit: 0 for prefix+x, 128 + signal for a termination signal,
+/// never a session's own status. An exit whose cleanup cannot be confirmed
+/// never returns: it fail-stops the process with the climon2 error code
+/// (#118).
 pub fn run() -> Result<u32, Error> {
     let startup = Startup::read()?;
     let log = startup.log.path().to_owned();
@@ -98,17 +106,33 @@ fn monitor(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io
     Ok(status)
 }
 
-/// Owns the host until an ending, and releases it before any diagnostic.
-/// A monitor that started told the host its attention state, so the host
-/// hears the root clear once released (#114), even after a failure.
+/// One wait for host input during shutdown, and how long shutdown waits
+/// past its deadline for the supervisor's last round.
+const TICK: Duration = Duration::from_millis(20);
+
+/// Owns the host until an ending, shuts every client down, and releases the
+/// host before any diagnostic, all within `deadlines.final_host_ms` of the
+/// shutdown's end (#118). A monitor that started told the host its
+/// attention state, so the host hears the root clear once released (#114),
+/// even after a failure.
 fn owned(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io::Result<u32> {
+    let lanes = startup.config.settings().limits.lanes();
+    let final_host = Duration::from_millis(lanes.final_host_ms.into());
+    let log = startup.log.path().to_owned();
     let (mut host, size) = Host::enter()?;
     let monitor = Monitor::start(size, startup, dispatch, filter);
     let reported = monitor.is_ok();
-    let served = monitor.and_then(|monitor| monitor.serve(&mut host));
+    let (served, verdict) = match monitor {
+        Ok(monitor) => monitor.serve(&mut host),
+        Err(error) => (Err(error), Verdict::Clean),
+    };
+    let watchdog = failstop::Watchdog::arm(final_host, dispatch.clone());
     let released = host.release();
     let cleared = cleared(reported);
-    served.and_then(|ending| released.and(cleared).map(|()| ending.status()))
+    let status = served.and_then(|ending| released.and(cleared).map(|()| ending.status()));
+    let status = judged(status, verdict, &log);
+    watchdog.disarm();
+    status
 }
 
 /// The root clear, once the host heard an attention report.
@@ -117,6 +141,23 @@ fn cleared(reported: bool) -> io::Result<()> {
         return host::write_host(attention::CLEAR);
     }
     Ok(())
+}
+
+/// The exit a shutdown's `verdict` leaves: an unconfirmed departure fails
+/// it, and unconfirmed cleanup fail-stops the whole process, either way
+/// with any earlier failure's diagnostic first.
+fn judged(status: io::Result<u32>, verdict: Verdict, log: &Path) -> io::Result<u32> {
+    match verdict {
+        Verdict::Clean => status,
+        Verdict::Failed(why) => Err(also(status, &why)),
+        Verdict::FailStop(why) => failstop::stop(&also(status, &why), log),
+    }
+}
+
+/// `why`, after the failure `status` holds, if any.
+fn also(status: io::Result<u32>, why: &str) -> io::Error {
+    let earlier = status.err().map(|error| format!("{error}; "));
+    io::Error::other(format!("{}{why}", earlier.unwrap_or_default()))
 }
 
 /// The monitor's own enclosing session, if it runs inside one.
@@ -267,12 +308,59 @@ impl Monitor {
         monitor.show().map(|()| monitor)
     }
 
-    /// Acts on host events until an ending, then shuts every client down.
-    /// Consuming the monitor drops its screen before the host is released.
-    fn serve(mut self, host: &mut Host) -> io::Result<Ending> {
+    /// Acts on host events until an ending, or a failure of the host or
+    /// rendering, then shuts down: why it ended, and what the shutdown
+    /// proved. Consuming the monitor drops its screen before the host is
+    /// released.
+    fn serve(mut self, host: &mut Host) -> (io::Result<Ending>, Verdict) {
         let ending = self.events(host);
-        self.supervisor.stop();
-        ending
+        let (hosted, report) = self.shut_down(host, ending.is_ok());
+        report.log();
+        (
+            ending.and_then(|ending| hosted.map(|()| ending)),
+            report.verdict(),
+        )
+    }
+
+    /// The coordinated shutdown (#118): application input, acquisition,
+    /// discovery and retries stop at once, and the supervisor shuts every
+    /// client down concurrently, until one deadline that nothing restarts.
+    /// Meanwhile the exit screen counts the sessions it waits for, and host
+    /// input is read and discarded: repeated exits and signals do nothing.
+    /// A host that failed is left alone. Returns whether the host still
+    /// worked, and what shutdown proved, discovery's end included.
+    fn shut_down(&mut self, host: &mut Host, hosting: bool) -> (io::Result<()>, shutdown::Report) {
+        let deadline = self.supervisor.shut_down() + TICK;
+        self.discovery.stop();
+        let mut hosted = Ok(());
+        let mut waiting = Vec::new();
+        let mut report = None;
+        while !(report.is_some() && self.discovery.join())
+            && deadline.checked_duration_since(Instant::now()).is_some()
+        {
+            waiting = self.supervisor.waiting().unwrap_or(waiting);
+            hosted = hosted.and_then(|()| self.exiting(host, hosting, waiting.len()));
+            report = report.or_else(|| self.supervisor.report());
+        }
+        let mut report = report.unwrap_or_else(|| unfinished(waiting));
+        if !self.discovery.join() {
+            report.unfinished.push("discovery pass".to_owned());
+        }
+        (hosted, report)
+    }
+
+    /// One round of the exit screen: painted, then one wait for host
+    /// input, whose resizes alone count; without a working host, one tick.
+    fn exiting(&mut self, host: &mut Host, hosting: bool, waiting: usize) -> io::Result<()> {
+        if !hosting {
+            thread::sleep(TICK);
+            return Ok(());
+        }
+        self.screen.exiting(waiting)?;
+        if let Event::Resize(size) = host.next()? {
+            self.screen.resize(size);
+        }
+        Ok(())
     }
 
     fn events(&mut self, host: &mut Host) -> io::Result<Ending> {
@@ -1338,6 +1426,16 @@ fn placeholder(kind: Kind, control: Control) -> bool {
     kind == Kind::Connected && control == Control::NotControlling
 }
 
+/// What shutdown knows when the supervisor itself never finished: nothing
+/// is confirmed of the sessions it last waited for.
+fn unfinished(waiting: Vec<SessionId>) -> shutdown::Report {
+    let evidence = shutdown::Evidence::default;
+    shutdown::Report {
+        instances: waiting.into_iter().map(|id| (id, evidence())).collect(),
+        unfinished: vec!["client supervisor".to_owned()],
+    }
+}
+
 /// What the supervisor's instances share, from the started configuration.
 fn context(startup: &Startup, filter: String) -> io::Result<Context> {
     let config = &startup.config;
@@ -1421,9 +1519,21 @@ fn incomplete(progress: &Progress) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, control, inspected,
-        placeholder, retained, revealed, terminal, without_view,
+        Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, also, control,
+        inspected, placeholder, retained, revealed, terminal, without_view,
     };
+
+    /// EXT-03 (pure supplement, #118): a shutdown's failure is said after
+    /// any earlier failure, such as a render failure, in one diagnostic.
+    #[test]
+    fn a_shutdown_failure_follows_any_earlier_failure() {
+        let earlier = Err(std::io::Error::other("injected draw failure"));
+        assert_eq!(
+            also(earlier, "monitor shutdown unconfirmed: x").to_string(),
+            "injected draw failure; monitor shutdown unconfirmed: x"
+        );
+        assert_eq!(also(Ok(0), "why").to_string(), "why");
+    }
 
     const CONTROLS: [Control; 5] = [
         Control::Acquiring,

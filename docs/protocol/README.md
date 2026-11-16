@@ -183,7 +183,7 @@ false.
 |---|---|---|
 | Root `blocked`, `kind=question` | Connected pending attention exists | [Attention report](monitor-host/report-attention.md). |
 | Root `working` | Monitoring continues without pending attention | [Monitoring report](monitor-host/report-monitoring.md). |
-| Root `clear` | Orderly exit cleanup | [Clear report](monitor-host/report-clear.md). |
+| Root `clear` | Orderly exit cleanup; attempted before a fail-stop | [Clear report](monitor-host/report-clear.md). |
 | Bell | Each toast first begins drawing, if configured on | [Bell](monitor-host/bell.md). |
 
 Upstream framing/field/record limits and unknown-key behavior apply.

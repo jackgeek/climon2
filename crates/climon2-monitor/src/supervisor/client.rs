@@ -2,6 +2,7 @@
 //! place the supervisor reads the client library's records.
 use crate::{
     registry::{Answer, ClientEvent, Final, Outcome, Recovery, Report, State, Status, Verdict},
+    shutdown::{self, Leave},
     terminal::{Authority, Paste, Presentation, Request},
 };
 use climon2_core::{
@@ -77,9 +78,9 @@ pub(super) enum Drain {
 
 pub(super) enum Stop {
     Empty,
-    /// Terminal evidence, with its error message (empty when stopped) and
-    /// whether it is retried.
-    Terminal(String, Retry),
+    /// Terminal evidence, with its error message (empty when stopped),
+    /// whether it is retried and what it proves of the departure (#118).
+    Terminal(String, Retry, shutdown::Terminal),
     /// The drain call failed.
     Failed(String),
 }
@@ -188,7 +189,8 @@ impl Client {
                 // SAFETY: terminal evidence lives until destroy.
                 let terminal = unsafe { *drained.terminal };
                 let retry = Retry::of(terminal.retry);
-                Drain::Stop(Stop::Terminal(text(terminal.error.message), retry))
+                let message = text(terminal.error.message);
+                Drain::Stop(Stop::Terminal(message, retry, evidence(&terminal)))
             }
             _ => Drain::Stop(Stop::Empty),
         }
@@ -204,8 +206,9 @@ impl Client {
         events
     }
 
-    /// Releases both caller handles; the stream must be over.
-    pub(super) fn release(self, id: &SessionId) {
+    /// Releases both caller handles; the stream must be over. Whether both
+    /// were released is evidence of its own (#118).
+    pub(super) fn release(self, id: &SessionId) -> Result<(), String> {
         // SAFETY: nothing else uses these handles any more.
         let calls = unsafe {
             [
@@ -213,9 +216,11 @@ impl Client {
                 (self.functions.release_control)(self.control),
             ]
         };
-        for call in calls {
-            warn(id, "handle release failed", checked(call));
+        let released = calls.map(checked);
+        for call in released.clone() {
+            warn(id, "handle release failed", call);
         }
+        released.into_iter().collect()
     }
 }
 
@@ -480,11 +485,35 @@ pub(super) fn checked(call: Call) -> Result<(), String> {
     if call.code == native::SUCCESS {
         return Ok(());
     }
-    Err(format!(
-        "{}: {}",
-        text(call.error.code),
-        text(call.error.message)
-    ))
+    Err(error(&call.error))
+}
+
+/// What terminal evidence proves: its client outcome (failed with its
+/// error), Leave, detachment and closure, each on its own.
+fn evidence(terminal: &native::Terminal) -> shutdown::Terminal {
+    let failed = terminal.client_outcome != native::CLIENT_STOPPED;
+    shutdown::Terminal {
+        failed: failed.then(|| error(&terminal.error)),
+        leave: Leave::of(terminal.leave),
+        detached: terminal.attachment_detached != 0,
+        closed: terminal.connection_closed != 0,
+    }
+}
+
+/// A native error as the monitor shows it: its code, then its message.
+fn error(error: &native::Error) -> String {
+    format!("{}: {}", text(error.code), text(error.message))
+}
+
+/// What run's report says of its workers: cleaned up after a successful
+/// run, or as the report says after a failed one (#118). Anything but
+/// complete cleanup is unconfirmed.
+pub(super) fn workers(ran: &Result<(), String>, report: &native::RunReport) -> Result<(), String> {
+    match (ran, report.workers_cleanup) {
+        (Ok(()), _) | (Err(_), native::CLEANUP_COMPLETE) => Ok(()),
+        (Err(_), native::CLEANUP_INCOMPLETE) => Err("worker cleanup incomplete".to_owned()),
+        (Err(_), _) => Err("worker cleanup unknown".to_owned()),
+    }
 }
 
 /// Create's refusal and whether it is retried: invalid arguments or
@@ -999,6 +1028,80 @@ mod tests {
             unsafe { slice(input.bytes.data, input.bytes.length) },
             b"pasted"
         );
+    }
+
+    /// EXT-01 (pure supplement, #118): terminal evidence proves its client
+    /// outcome (failed with its error), Leave, detachment and closure, each
+    /// on its own and as the header defines them.
+    #[test]
+    fn terminal_evidence_proves_each_kind_of_departure_evidence_alone() {
+        let terminal = |outcome, leave, detached, closed| native::Terminal {
+            generation: 1,
+            client_outcome: outcome,
+            retry: native::RETRY_NONE,
+            leave,
+            attachment_detached: detached,
+            connection_closed: closed,
+            reserved: [0; 2],
+            error: native::Error {
+                origin: native::ORIGIN_DAEMON,
+                reserved: 0,
+                code: bytes(b"timeout"),
+                message: bytes(b"no answer"),
+            },
+        };
+        let stopped = terminal(native::CLIENT_STOPPED, native::LEAVE_CONFIRMED, 1, 1);
+        assert_eq!(
+            evidence(&stopped),
+            shutdown::Terminal {
+                failed: None,
+                leave: Leave::Confirmed,
+                detached: true,
+                closed: true,
+            }
+        );
+        let failed = terminal(native::CLIENT_FAILED, native::LEAVE_INDETERMINATE, 0, 0);
+        assert_eq!(
+            evidence(&failed),
+            shutdown::Terminal {
+                failed: Some("timeout: no answer".into()),
+                leave: Leave::Indeterminate,
+                detached: false,
+                closed: false,
+            }
+        );
+    }
+
+    /// EXT-02 and LIB-06 (pure supplement, #118): a successful run cleaned
+    /// up its workers; after a failed one only a report of complete
+    /// cleanup confirms it, and incomplete or unknown cleanup never does.
+    #[test]
+    fn only_a_successful_run_or_a_complete_report_confirms_worker_cleanup() {
+        let report = |workers_cleanup| native::RunReport {
+            workers_cleanup,
+            // SAFETY: an all-zero terminal is a valid plain value.
+            ..unsafe { std::mem::zeroed() }
+        };
+        let failed = Err("internal_error: run failed".to_owned());
+        let cases = [
+            (Ok(()), 0, Ok(())),
+            (failed.clone(), native::CLEANUP_COMPLETE, Ok(())),
+            (
+                failed.clone(),
+                native::CLEANUP_INCOMPLETE,
+                Err("worker cleanup incomplete"),
+            ),
+            (
+                failed.clone(),
+                native::CLEANUP_UNKNOWN,
+                Err("worker cleanup unknown"),
+            ),
+            (failed, 0, Err("worker cleanup unknown")),
+        ];
+        for (ran, code, expected) in cases {
+            let expected = expected.map_err(str::to_owned);
+            assert_eq!(workers(&ran, &report(code)), expected, "{code}");
+        }
     }
 
     /// REC-01 (pure supplement): create's refusal of invalid arguments or

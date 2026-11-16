@@ -41,3 +41,11 @@ pub(crate) fn identifiers(
         request: first("CLIMON2_MONITOR_FIRST_REQUEST", defaults.request),
     }
 }
+
+/// Stalls the selected point for good: a thread that never finishes, for
+/// the fail-stop (#118).
+pub(crate) fn stall(point: &str) {
+    while selected(point) {
+        std::thread::park();
+    }
+}

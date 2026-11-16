@@ -152,10 +152,6 @@ impl Queue {
         self.newer = [self.newer + 1, 0][usize::from(index == oldest)];
         firsts[index].clone()
     }
-
-    pub(super) fn clear(&mut self) {
-        self.waiting.clear();
-    }
 }
 
 fn key(metadata: &SessionMetadata) -> Key {
@@ -285,7 +281,8 @@ mod tests {
         queue.put(picked);
         let taken = queue.take(|entry| entry.blocked.is_some());
         assert_eq!(taken.iter().map(index).collect::<Vec<_>>(), [2]);
-        queue.clear();
+        let rest = queue.take(|_| true);
+        assert_eq!(rest.iter().map(index).collect::<Vec<_>>(), [3]);
         assert!(queue.pick(all).is_none());
     }
 }

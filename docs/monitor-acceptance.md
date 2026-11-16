@@ -16,7 +16,9 @@ the switching, revocation and take-control key of
 and the initial selection of
 [#266](https://github.com/jackgeek/climon2/issues/266), moved there from
 #107, and the disconnection, read-only history and passive recovery of
-[#116](https://github.com/jackgeek/climon2/issues/116), whose Monitor-layer
+[#116](https://github.com/jackgeek/climon2/issues/116), and the coordinated
+shutdown and exit status of
+[#118](https://github.com/jackgeek/climon2/issues/118), whose Monitor-layer
 cases are mapped in the monitor README.
 The daemon wire is partly implemented. Packaged
 [client libraries](../GLOSSARY.md#sessions) implement their bootstrap and

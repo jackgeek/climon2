@@ -383,6 +383,9 @@ pub struct Lanes {
     pub load_ms: u32,
     /// `deadlines.shutdown_ms`: how long clients may take to shut down.
     pub shutdown_ms: u32,
+    /// `deadlines.final_host_ms`: how long the final host restoration and
+    /// diagnostics may take after it.
+    pub final_host_ms: u32,
 }
 
 /// What admission reserves before each release load and each instance's
@@ -573,6 +576,7 @@ impl Limits {
             newer_start_burst: self.0.scheduling.newer_start_burst,
             load_ms: self.0.deadlines.load_ms,
             shutdown_ms: self.0.deadlines.shutdown_ms,
+            final_host_ms: self.0.deadlines.final_host_ms,
         }
     }
 

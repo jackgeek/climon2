@@ -52,6 +52,7 @@ mod stream;
 use crate::registry::{Answer, Final, Outcome, Report, Termination, Verdict};
 use crate::{
     registry::ClientEvent,
+    shutdown::{self, Evidence},
     terminal::{Presentation, Request},
 };
 use admission::{Capacity, Holder, Ledger};
@@ -196,7 +197,8 @@ enum Command {
     Request(SessionId, Request),
     Drop(SessionId, String),
     Retire(Retirement),
-    Shutdown,
+    /// Shut down by this deadline.
+    Shutdown(Instant),
 }
 
 /// Why a session's clients come to an end.
@@ -207,6 +209,16 @@ enum Retirement {
     Delete(Box<SessionMetadata>, bool),
 }
 
+/// What the supervisor thread shares with the UI thread: its reports,
+/// their backlog (#119), the bytes admission holds (#120) and which
+/// sessions shutdown still waits for (#118).
+struct Shared {
+    report: Sender<(SessionId, ClientEvent)>,
+    backlog: Arc<Backlog>,
+    reserved: Arc<AtomicU64>,
+    waits: Sender<Vec<SessionId>>,
+}
+
 /// The running supervisor, as the UI thread holds it.
 pub(crate) struct Supervisor {
     commands: Sender<Command>,
@@ -215,28 +227,41 @@ pub(crate) struct Supervisor {
     backlog: Arc<Backlog>,
     /// The bytes every admitted reservation holds (#120).
     reserved: Arc<AtomicU64>,
-    thread: Option<JoinHandle<()>>,
+    /// The sessions shutdown still waits for, each round.
+    waiting: Receiver<Vec<SessionId>>,
+    /// `deadlines.shutdown_ms`.
+    shutdown: Duration,
+    thread: Option<JoinHandle<shutdown::Report>>,
 }
 
 impl Supervisor {
     pub(crate) fn start(context: Context, dispatch: tracing::Dispatch) -> std::io::Result<Self> {
         let (commands, received) = mpsc::channel();
         let (report, reports) = mpsc::channel();
+        let (waits, waiting) = mpsc::channel();
+        let shutdown = context.shutdown;
         let backlog = Arc::new(Backlog::default());
         let reserved = Arc::new(AtomicU64::new(0));
-        let shared = (report, Arc::clone(&backlog), Arc::clone(&reserved));
+        let shared = Shared {
+            report,
+            backlog: Arc::clone(&backlog),
+            reserved: Arc::clone(&reserved),
+            waits,
+        };
         let thread = thread::Builder::new()
             .name("supervisor".into())
             .spawn(move || {
                 tracing::dispatcher::with_default(&dispatch, || {
-                    State::new(context, shared).serve(&received);
-                });
+                    State::new(context, shared).serve(&received)
+                })
             })?;
         Ok(Self {
             commands,
             reports,
             backlog,
             reserved,
+            waiting,
+            shutdown,
             thread: Some(thread),
         })
     }
@@ -290,17 +315,31 @@ impl Supervisor {
         let _ = self.commands.send(Command::Drop(id, why));
     }
 
-    /// Waits for accepted input to be answered (at most
-    /// `deadlines.operation_ms`), then shuts every client down, waiting at
-    /// most `deadlines.shutdown_ms` (and
-    /// one tick) for their terminal evidence, released handles and joined
-    /// owners. Instances unconfirmed by then are logged and left, never
-    /// destroyed, to process exit; the fail-stop arrives with #118.
-    pub(crate) fn stop(&mut self) {
-        let _ = self.commands.send(Command::Shutdown);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+    /// Begins the coordinated shutdown (#118), which must end by the
+    /// deadline returned, `deadlines.shutdown_ms` from now: retries and
+    /// starts stop, accepted input is answered (at most
+    /// `deadlines.operation_ms`, inside the same deadline; owner decision on
+    /// #118), then every instance is asked to shut down, concurrently, and
+    /// drained until it has ended, its handles are released and its owner
+    /// is joined. Instances unconfirmed by the deadline are left, never
+    /// destroyed, to the fail-stop.
+    pub(crate) fn shut_down(&self) -> Instant {
+        let deadline = Instant::now() + self.shutdown;
+        let _ = self.commands.send(Command::Shutdown(deadline));
+        deadline
+    }
+
+    /// The sessions shutdown last said it waits for, if it said anything
+    /// since this was last asked.
+    pub(crate) fn waiting(&self) -> Option<Vec<SessionId>> {
+        self.waiting.try_iter().last()
+    }
+
+    /// What the shutdown proved, once the supervisor thread has finished
+    /// and is joined; none while it runs, or once taken.
+    pub(crate) fn report(&mut self) -> Option<shutdown::Report> {
+        let thread = self.thread.take_if(|thread| thread.is_finished())?;
+        Some(thread.join().unwrap_or_default())
     }
 }
 
@@ -310,8 +349,8 @@ enum Internal {
     /// The handles exist, with the first request's refusal, if refused.
     Published(SessionId, Client, Option<String>),
     /// Run returned, or create failed, with why if it failed and whether
-    /// that is retried.
-    Stopped(SessionId, Result<(), (String, Retry)>),
+    /// that is retried, and what its report says of its workers.
+    Stopped(SessionId, Result<(), (String, Retry)>, Result<(), String>),
     /// The owner is done, with whether it destroyed the instance.
     OwnerDone(SessionId, Result<(), String>),
 }
@@ -471,6 +510,8 @@ struct Instance {
     /// Tells the owner its handles are released, so it may destroy.
     released: Sender<()>,
     owner: JoinHandle<()>,
+    /// What is known of its end, each kind of evidence on its own (#118).
+    evidence: Evidence,
 }
 
 struct State {
@@ -509,16 +550,24 @@ struct State {
     /// The most requests one instance's pending ledger holds: every request
     /// its library may have accepted, queued or under way.
     ledger: usize,
+    /// Each release load under way, on its own thread.
+    loads: Vec<(VersionName, JoinHandle<()>)>,
+    /// The evidence of each instance that ended during shutdown, and of
+    /// each earlier one whose cleanup is unconfirmed.
+    ended: Vec<(SessionId, Evidence)>,
+    /// Where shutdown says which sessions it still waits for.
+    waits: Sender<Vec<SessionId>>,
 }
 
 impl State {
     fn new(
         context: Context,
-        (report, backlog, reserved): (
-            Sender<(SessionId, ClientEvent)>,
-            Arc<Backlog>,
-            Arc<AtomicU64>,
-        ),
+        Shared {
+            report,
+            backlog,
+            reserved,
+            waits,
+        }: Shared,
     ) -> Self {
         let (internal, internals) = mpsc::channel();
         let limits = context.limits;
@@ -543,29 +592,48 @@ impl State {
             forgotten: BTreeSet::new(),
             removing: BTreeMap::new(),
             killing: BTreeMap::new(),
+            loads: Vec::new(),
+            ended: Vec::new(),
+            waits,
         }
     }
 
     /// Rounds of commands, internal events, scheduling, then a bounded poll
-    /// and drains, until shutdown or the UI thread is gone.
-    fn serve(mut self, commands: &Receiver<Command>) {
-        while self.commands(commands) {
+    /// and drains, until shutdown (at once if the UI thread is gone), then
+    /// the shutdown and what it proved.
+    fn serve(mut self, commands: &Receiver<Command>) -> shutdown::Report {
+        let deadline = loop {
+            if let Some(deadline) = self.commands(commands) {
+                break deadline;
+            }
             self.internals();
             self.schedule();
             self.poll();
-        }
+        };
+        self.begin_shutdown();
+        self.settle_input(deadline);
+        self.shut_down(deadline)
+    }
+
+    /// Nothing is scheduled any more, so no start or retry follows. Every
+    /// instance that has not ended yet may have an active connection, so
+    /// its departure is judged; the UI thread learns which it waits for.
+    fn begin_shutdown(&mut self) {
         self.stopping = true;
-        self.settle_input();
-        self.shut_down();
+        for instance in self.instances.values_mut() {
+            instance.evidence.current = !matches!(instance.phase, Phase::Done);
+        }
+        self.tell_waiting();
     }
 
     /// Before shutting down, waits until every input chunk an open client
     /// accepted is answered, at most `deadlines.operation_ms` (owner decision
-    /// on #109): typed keys read with prefix+x still reach their session, and
+    /// on #109) and never past the shutdown `deadline` (owner decision on
+    /// #118): typed keys read with prefix+x still reach their session, and
     /// a stuck one holds exit no longer than one operation may take.
-    fn settle_input(&mut self) {
+    fn settle_input(&mut self, deadline: Instant) {
         let bound = Duration::from_millis(self.context.limits.operation_ms.into());
-        let deadline = Instant::now() + bound;
+        let deadline = deadline.min(Instant::now() + bound);
         while self.input_pending() && Instant::now() < deadline {
             self.internals();
             self.poll();
@@ -583,30 +651,31 @@ impl State {
         })
     }
 
-    /// Takes every pending command; false once shutdown is asked for.
-    fn commands(&mut self, commands: &Receiver<Command>) -> bool {
+    /// Takes every pending command; once shutdown is asked for, its
+    /// deadline, which is now if the UI thread is gone.
+    fn commands(&mut self, commands: &Receiver<Command>) -> Option<Instant> {
         loop {
             match commands.try_recv() {
                 Ok(command) => {
-                    if !self.command(command) {
-                        return false;
+                    if let Some(deadline) = self.command(command) {
+                        return Some(deadline);
                     }
                 }
-                Err(error) => return error == TryRecvError::Empty,
+                Err(error) => return (error == TryRecvError::Disconnected).then(Instant::now),
             }
         }
     }
 
-    /// Acts on one command; false for shutdown.
-    fn command(&mut self, command: Command) -> bool {
+    /// Acts on one command; a shutdown's deadline.
+    fn command(&mut self, command: Command) -> Option<Instant> {
         match command {
             Command::Start(metadata) => self.wait(*metadata),
             Command::Request(id, request) => self.submit(&id, request),
             Command::Drop(id, why) => self.fail(&id, why),
             Command::Retire(retirement) => self.retire(retirement),
-            Command::Shutdown => return false,
+            Command::Shutdown(deadline) => return Some(deadline),
         }
-        true
+        None
     }
 
     fn retire(&mut self, retirement: Retirement) {
@@ -940,9 +1009,12 @@ impl State {
 
     fn internal(&mut self, internal: Internal) {
         match internal {
-            Internal::Loaded(version, loaded) => self.loaded(version, loaded),
+            Internal::Loaded(version, loaded) => {
+                self.join_load(&version);
+                self.loaded(version, loaded);
+            }
             Internal::Published(id, client, refused) => self.published(&id, client, refused),
-            Internal::Stopped(id, ran) => self.stopped(&id, ran),
+            Internal::Stopped(id, ran, workers) => self.stopped(&id, ran, workers),
             Internal::OwnerDone(id, destroyed) => self.owner_done(&id, destroyed),
         }
     }
@@ -1172,8 +1244,21 @@ impl State {
                 let loaded = (context.load)(&loading);
                 let _ = internal.send(Internal::Loaded(loading, loaded));
             });
-        if let Err(error) = spawned {
-            self.loaded(version, Err(Refusal::Thread(error.to_string())));
+        match spawned {
+            Ok(thread) => self.loads.push((version, thread)),
+            Err(error) => self.loaded(version, Err(Refusal::Thread(error.to_string()))),
+        }
+    }
+
+    /// `version`'s load thread has said its last: join it (#118).
+    fn join_load(&mut self, version: &VersionName) {
+        let (done, loading) = std::mem::take(&mut self.loads)
+            .into_iter()
+            .partition(|(loaded, _)| loaded == version);
+        self.loads = loading;
+        let done: Vec<_> = done;
+        for (_, thread) in done {
+            let _ = thread.join();
         }
     }
 
@@ -1284,6 +1369,7 @@ impl State {
                     stream: Stream::default(),
                     released,
                     owner,
+                    evidence: Evidence::default(),
                 };
                 self.instances.insert(id.clone(), instance);
                 self.started(&id, role);
@@ -1383,6 +1469,7 @@ impl State {
         let lookup = client.notification();
         let descriptor = lookup.as_ref().ok().copied();
         self.set(id, Phase::Opening(Live { client, descriptor }));
+        self.evidence(id, |evidence| evidence.published = true);
         tracing::info!(session = %id, "client published");
         if let Err(error) = lookup {
             self.fail(id, format!("cannot poll the client: {error}"));
@@ -1481,7 +1568,10 @@ impl State {
     fn stop(&mut self, id: &SessionId, stop: Stop) {
         match stop {
             Stop::Empty => {}
-            Stop::Terminal(message, retry) => self.terminal(id, message, retry),
+            Stop::Terminal(message, retry, terminal) => {
+                self.evidence(id, |evidence| evidence.terminal = Some(terminal));
+                self.terminal(id, message, retry);
+            }
             Stop::Failed(error) => self.fail(id, format!("cannot drain the client: {error}")),
         }
     }
@@ -1589,7 +1679,13 @@ impl State {
     /// Run returned, or create failed: whatever is left to drain is
     /// drained, and an instance still not over ends here, retried passively
     /// unless create's refusal was permanent.
-    fn stopped(&mut self, id: &SessionId, ran: Result<(), (String, Retry)>) {
+    fn stopped(
+        &mut self,
+        id: &SessionId,
+        ran: Result<(), (String, Retry)>,
+        workers: Result<(), String>,
+    ) {
+        self.evidence(id, |evidence| evidence.workers = Some(workers));
         self.drain(id);
         let (why, retry) = ran.err().unwrap_or_else(|| {
             let why = "the client stopped without terminal evidence";
@@ -1607,9 +1703,8 @@ impl State {
         let Some(phase) = self.phase(id) else {
             return;
         };
-        if let Some(live) = phase.live() {
-            live.client.release(id);
-        }
+        let released = phase.live().map_or(Ok(()), |live| live.client.release(id));
+        self.evidence(id, |evidence| evidence.released = released.is_ok());
         self.set(id, Phase::Done);
         if let Some(instance) = self.instances.get(id) {
             let _ = instance.released.send(());
@@ -1621,22 +1716,25 @@ impl State {
     }
 
     /// The owner destroyed its instance, or could not, and is joined: only
-    /// then may a passive retry be scheduled. One whose cleanup cannot be
-    /// confirmed is never replaced (the fail-stop is #118's).
+    /// then may a passive retry be scheduled. One whose worker cleanup or
+    /// destroy cannot be confirmed is never replaced, and its evidence is
+    /// kept for the exit's fail-stop (#118), as is every instance's that
+    /// ends during shutdown.
     fn owner_done(&mut self, id: &SessionId, destroyed: Result<(), String>) {
-        let Some(instance) = self.instances.remove(id) else {
+        let Some(mut instance) = self.instances.remove(id) else {
             return;
         };
         let _ = instance.owner.join();
         self.admitted.free(&Holder::Instance(id.clone()));
+        let cleaned = self.joined(id, &mut instance.evidence, destroyed);
         if let Some(removal) = self.removing.get_mut(id) {
             removal.resume |= instance.retry == Some(Retry::Passive);
-            return self.cleaned(id, destroyed);
+            return self.cleaned(id, cleaned);
         }
         if instance.retry != Some(Retry::Passive) {
             return;
         }
-        match destroyed {
+        match cleaned {
             Ok(()) => self.backoff(instance.metadata),
             Err(error) => {
                 let why = format!("cannot confirm the client's cleanup: {error}");
@@ -1663,6 +1761,31 @@ impl State {
         self.advance(id);
     }
 
+    /// Records that `id`'s owner, done with `destroyed`, is joined, and
+    /// keeps its evidence if shutdown has begun or its cleanup is
+    /// unconfirmed; whether its worker cleanup and destroy are confirmed.
+    fn joined(
+        &mut self,
+        id: &SessionId,
+        evidence: &mut Evidence,
+        destroyed: Result<(), String>,
+    ) -> Result<(), String> {
+        evidence.joined = true;
+        evidence.destroyed = Some(destroyed.clone());
+        let cleaned = evidence.workers.clone().unwrap_or(Ok(())).and(destroyed);
+        if self.stopping || cleaned.is_err() {
+            self.ended.push((id.clone(), evidence.clone()));
+        }
+        cleaned
+    }
+
+    /// Records evidence of `id`'s instance.
+    fn evidence(&mut self, id: &SessionId, record: impl FnOnce(&mut Evidence)) {
+        if let Some(instance) = self.instances.get_mut(id) {
+            record(&mut instance.evidence);
+        }
+    }
+
     fn phase(&self, id: &SessionId) -> Option<Phase> {
         self.instances.get(id).map(|instance| instance.phase)
     }
@@ -1679,30 +1802,57 @@ impl State {
         let _ = self.report.send((id.clone(), event));
     }
 
-    /// Asks every instance to stop, again each round so that late
-    /// publishers hear it too, and drains until each has ended and its owner
-    /// is joined, or `deadlines.shutdown_ms` passes. Dropping the state then
-    /// closes every unconfirmed owner's release channel, so it never
-    /// destroys an instance whose handles may be unreleased.
-    fn shut_down(mut self) {
-        self.queue.clear();
-        let deadline = Instant::now() + self.context.shutdown;
-        while !self.instances.is_empty()
+    /// Asks every instance to stop, concurrently and again each round so
+    /// that late publishers hear it too, and drains until each has ended
+    /// and its owner is joined and every load has finished, or `deadline`
+    /// passes. Dropping the state then closes every unconfirmed owner's
+    /// release channel, so it never destroys an instance whose handles may
+    /// be unreleased.
+    fn shut_down(mut self, deadline: Instant) -> shutdown::Report {
+        self.ask_shutdown();
+        while !(self.instances.is_empty() && self.loads.is_empty())
             && deadline.checked_duration_since(Instant::now()).is_some()
         {
-            let live = self
-                .instances
-                .values()
-                .filter_map(|instance| instance.phase.live());
-            live.for_each(|live| live.client.shutdown());
             self.internals();
             self.poll();
+            self.tell_waiting();
+            self.ask_shutdown();
         }
         if !self.instances.is_empty() {
             tracing::error!(
                 clients = self.instances.len(),
                 "client shutdown unconfirmed at its deadline"
             );
+        }
+        self.proven()
+    }
+
+    /// Asks every live instance to shut down: idempotent, and asked even
+    /// when settling input took the whole deadline.
+    fn ask_shutdown(&self) {
+        let live = self.instances.values();
+        live.filter_map(|instance| instance.phase.live())
+            .for_each(|live| live.client.shutdown());
+    }
+
+    /// Tells the UI thread which sessions shutdown still waits for.
+    fn tell_waiting(&self) {
+        let _ = self.waits.send(self.instances.keys().cloned().collect());
+    }
+
+    /// Every ended and still unconfirmed instance's evidence, and the
+    /// loads still under way.
+    fn proven(self) -> shutdown::Report {
+        let mut instances = self.ended;
+        let unconfirmed = self.instances.into_iter();
+        instances.extend(unconfirmed.map(|(id, instance)| (id, instance.evidence)));
+        instances.sort_by(|(one, _), (other, _)| one.cmp(other));
+        let loads = self.loads.iter();
+        shutdown::Report {
+            instances,
+            unfinished: loads
+                .map(|(version, _)| format!("release {version} load"))
+                .collect(),
         }
     }
 }
@@ -1811,6 +1961,7 @@ mod tests {
     //! needs: each destroy's result and when its owner thread exits.
     use super::{client::OPEN_ID, *};
     use crate::registry::{Final, Outcome, Recovery, Report};
+    use crate::shutdown::{Leave, Terminal as Departed};
     use crate::terminal::{Authority, Request as Asked};
     use climon2_core::protocol::TerminalSize;
     use climon2_core::{
@@ -1875,6 +2026,12 @@ mod tests {
         presents_after_kill: bool,
         /// Destroy waits until the test lets it go.
         destroy_waits: bool,
+        /// The terminal evidence's Leave code, when not confirmed.
+        leave: Option<u32>,
+        /// The client outcome is failed with this message.
+        client_fails: Option<&'static [u8]>,
+        /// Releasing the control handle stays busy.
+        release_fails: bool,
     }
 
     /// How the fake answers a Kill (#117).
@@ -2120,14 +2277,21 @@ mod tests {
             state: Mutex::default(),
             terminal: Terminal {
                 generation: GENERATION,
-                client_outcome: native::CLIENT_STOPPED,
+                client_outcome: [native::CLIENT_STOPPED, native::CLIENT_FAILED]
+                    [usize::from(script.client_fails.is_some())],
                 retry: script.retry,
-                leave: native::LEAVE_CONFIRMED,
+                leave: script.leave.unwrap_or(native::LEAVE_CONFIRMED),
                 attachment_detached: 0,
                 connection_closed: 1,
                 reserved: [0; 2],
                 error: Error {
-                    message: bytes_of(script.ends_unopened.unwrap_or_default()),
+                    code: bytes_of(script.client_fails.map_or(b"", |_| b"timeout")),
+                    message: bytes_of(
+                        script
+                            .client_fails
+                            .or(script.ends_unopened)
+                            .unwrap_or_default(),
+                    ),
                     ..no_error()
                 },
             },
@@ -2168,10 +2332,12 @@ mod tests {
         vec![record]
     }
 
-    extern "C" fn run(instance: *mut Instance, _out: *mut RunReport) -> Call {
+    extern "C" fn run(instance: *mut Instance, out: *mut RunReport) -> Call {
         let fake = fake(instance);
         if fake.script.run_fails {
             fake.state().over = true;
+            // SAFETY: the owner passes an output struct.
+            unsafe { (*out).workers_cleanup = native::CLEANUP_COMPLETE };
             return failure(native::INTERNAL_ERROR, b"internal_error", b"run failed");
         }
         let opened = fake.state().opened;
@@ -2521,8 +2687,9 @@ mod tests {
     }
 
     extern "C" fn release_control(control: *mut Control) -> Call {
-        let mut state = fake(control).state();
-        if !state.over {
+        let fake = fake(control);
+        let mut state = fake.state();
+        if !state.over || fake.script.release_fails {
             return busy();
         }
         state.control = true;
@@ -2721,6 +2888,7 @@ mod tests {
                 newer_start_burst: 8,
                 load_ms: 10_000,
                 shutdown_ms: 0,
+                final_host_ms: 0,
             },
             shutdown: Duration::from_millis(shutdown_ms),
             retry,
@@ -2736,6 +2904,21 @@ mod tests {
             directory,
             supervisor,
             log: log.path().to_owned(),
+        }
+    }
+
+    impl Supervisor {
+        /// Shuts down and waits, at most [`WAIT`], for what that proved.
+        fn stop(&mut self) -> shutdown::Report {
+            self.shut_down();
+            let deadline = Instant::now() + WAIT;
+            loop {
+                if let Some(report) = self.report() {
+                    return report;
+                }
+                assert!(Instant::now() < deadline, "the supervisor never finished");
+                thread::sleep(Duration::from_millis(1));
+            }
         }
     }
 
@@ -2791,7 +2974,14 @@ mod tests {
                 Seen::OwnerExited
             ]
         );
-        supervisor.stop();
+        let report = supervisor.stop();
+        let (_, evidence) = report
+            .instances
+            .iter()
+            .find(|(id, _)| *id == healthy)
+            .unwrap();
+        assert!(evidence.current && evidence.joined, "{evidence:?}");
+        assert_eq!(report.verdict(), shutdown::Verdict::Clean);
         assert_eq!(
             seen(&guid(&healthy)),
             [
@@ -2861,10 +3051,13 @@ mod tests {
         assert_eq!(why, "cannot drain the client: internal_error: drain failed");
     }
 
-    /// Client supervisor (Fault, #106; shutdown bound): an instance that ignores
-    /// shutdown never holds exit past `deadlines.shutdown_ms`, and it is never
-    /// destroyed while its handles are unreleased: its owner leaves it to process
-    /// exit (#118 owns the fail-stop), and the monitor log says so.
+    /// Client supervisor (Fault, #106; shutdown bound), EXT-02 (Fault, #118):
+    /// an instance that ignores shutdown holds exit until
+    /// `deadlines.shutdown_ms` and never past it, while shutdown says it
+    /// waits for that session; it is never destroyed while its handles are
+    /// unreleased: its owner leaves it to the fail-stop, its evidence
+    /// claims no terminal evidence, release, destroy or join, and the
+    /// monitor log says so.
     #[test]
     fn exit_is_bounded_and_never_destroys_an_instance_with_unreleased_handles() {
         let stalled = session(3, 1);
@@ -2883,8 +3076,18 @@ mod tests {
             (stalled.clone(), ClientEvent::Opened { status: false })
         );
         let started = Instant::now();
-        supervisor.stop();
-        assert!(started.elapsed() < Duration::from_secs(10));
+        let report = supervisor.stop();
+        let took = started.elapsed();
+        assert!(took >= Duration::from_millis(200), "{took:?}");
+        assert!(took < Duration::from_secs(10), "{took:?}");
+        assert_eq!(supervisor.waiting(), Some(vec![stalled.clone()]));
+        let unconfirmed = Evidence {
+            current: true,
+            published: true,
+            ..Evidence::default()
+        };
+        assert_eq!(report.instances, [(stalled.clone(), unconfirmed)]);
+        assert!(report.unfinished.is_empty(), "{report:?}");
         let log = supervised.log();
         assert!(log.contains(&format!("{UNCONFIRMED} clients=1")), "{log}");
         let id = guid(&stalled);
@@ -2893,6 +3096,181 @@ mod tests {
         });
         until(|world| world.seen.contains(&(id, Seen::OwnerExited)));
         assert_eq!(seen(&id), [Seen::Created, Seen::OwnerExited]);
+    }
+
+    /// EXT-01 (Monitor, Fault; #118): shutdown asks every instance at once,
+    /// passive, partially started (Open not yet answered), failing and
+    /// stalled alike, so one stalled instance holds up no other, and
+    /// proves each kind of evidence of each on its own: the terminal
+    /// evidence's Leave, client outcome and closure, worker cleanup, handle
+    /// release, destroy and the owner thread's join. A lost Leave fails
+    /// the exit; a failed destroy and the stalled instance make it a
+    /// fail-stop, named with exactly what is unconfirmed.
+    #[test]
+    fn shutdown_asks_every_instance_at_once_and_proves_each_kind_of_evidence_alone() {
+        let [passive, partial, lost, unclean, stalled, unreleased] =
+            [1, 2, 3, 4, 5, 6].map(|index| session(48, index));
+        script(
+            &unreleased,
+            Script {
+                release_fails: true,
+                ..Script::default()
+            },
+        );
+        script(
+            &partial,
+            Script {
+                opens_late: true,
+                ..Script::default()
+            },
+        );
+        script(
+            &lost,
+            Script {
+                leave: Some(native::LEAVE_INDETERMINATE),
+                client_fails: Some(b"leave lost"),
+                ..Script::default()
+            },
+        );
+        script(
+            &unclean,
+            Script {
+                destroy_fails: true,
+                ..Script::default()
+            },
+        );
+        script(
+            &stalled,
+            Script {
+                stalls: true,
+                ..Script::default()
+            },
+        );
+        let mut supervised = supervisor(6, 1_000, fake_library());
+        let supervisor = &mut supervised.supervisor;
+        let all = [&passive, &partial, &lost, &unclean, &stalled, &unreleased];
+        for (index, id) in all.iter().enumerate() {
+            supervisor.start_client(metadata(id, &format!("2026-11-13T10:00:0{index}.000Z")));
+        }
+        let opened = reports_until(supervisor, |reports| {
+            let opened = ClientEvent::Opened { status: false };
+            [&passive, &lost, &unclean, &stalled, &unreleased]
+                .iter()
+                .all(|id| {
+                    reports
+                        .get(*id)
+                        .is_some_and(|events| events.contains(&opened))
+                })
+        });
+        assert!(!opened.contains_key(&partial), "{opened:?}");
+        until(|world| world.looked_up.contains(&guid(&partial)));
+        let report = supervisor.stop();
+        let confirmed = Departed {
+            failed: None,
+            leave: Leave::Confirmed,
+            detached: false,
+            closed: true,
+        };
+        let clean = Evidence {
+            current: true,
+            published: true,
+            terminal: Some(confirmed.clone()),
+            workers: Some(Ok(())),
+            released: true,
+            destroyed: Some(Ok(())),
+            joined: true,
+        };
+        let expected = [
+            (passive.clone(), clean.clone()),
+            (partial.clone(), clean.clone()),
+            (
+                lost.clone(),
+                Evidence {
+                    terminal: Some(Departed {
+                        failed: Some("timeout: leave lost".into()),
+                        leave: Leave::Indeterminate,
+                        ..confirmed
+                    }),
+                    ..clean.clone()
+                },
+            ),
+            (
+                unclean.clone(),
+                Evidence {
+                    destroyed: Some(Err("busy: still in use".into())),
+                    ..clean.clone()
+                },
+            ),
+            (
+                stalled.clone(),
+                Evidence {
+                    current: true,
+                    published: true,
+                    ..Evidence::default()
+                },
+            ),
+            (
+                unreleased.clone(),
+                Evidence {
+                    released: false,
+                    destroyed: Some(Err("busy: still in use".into())),
+                    ..clean.clone()
+                },
+            ),
+        ];
+        assert_eq!(report.instances, expected);
+        assert_eq!(supervisor.waiting(), Some(vec![stalled.clone()]));
+        assert!(report.unfinished.is_empty(), "{report:?}");
+        assert_eq!(
+            report.verdict(),
+            shutdown::Verdict::FailStop(format!(
+                "monitor shutdown unconfirmed: \
+                 session {lost}: Leave unconfirmed, client failed: timeout: leave lost; \
+                 session {unclean}: not destroyed: busy: still in use; \
+                 session {stalled}: no terminal evidence, handles not released, \
+                 run not returned, not destroyed, thread not joined; \
+                 session {unreleased}: handles not released, not destroyed: busy: still in use"
+            ))
+        );
+        let id = guid(&stalled);
+        changed(&mut world(), |world| {
+            world.unstalled.insert(id);
+        });
+        until(|world| world.seen.contains(&(id, Seen::OwnerExited)));
+    }
+
+    /// EXT-02 (Fault, #118): a release load still under way at the
+    /// shutdown deadline is reported unfinished, never joined or claimed,
+    /// which makes the exit a fail-stop; it may finish later.
+    #[test]
+    fn a_load_unfinished_at_the_deadline_is_reported_and_never_joined() {
+        let (finish, finished) = mpsc::channel::<()>();
+        let (start, started) = mpsc::channel::<()>();
+        let held = std::sync::Mutex::new((start, finished));
+        let stalls: Load = Box::new(move |_| {
+            let held = held.lock().unwrap();
+            let _ = held.0.send(());
+            let _ = held.1.recv();
+            Ok(FAKE_LIBRARY)
+        });
+        let id = session(49, 1);
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = supervisor(1, 200, stalls);
+        supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+        started.recv_timeout(WAIT).unwrap();
+        let report = supervisor.stop();
+        assert!(report.instances.is_empty(), "{report:?}");
+        assert_eq!(report.unfinished, ["release 0.1.0 load"]);
+        assert_eq!(
+            report.verdict(),
+            shutdown::Verdict::FailStop(
+                "monitor shutdown unconfirmed: release 0.1.0 load unfinished".into()
+            )
+        );
+        finish.send(()).unwrap();
     }
 
     /// Client supervisor (Fault, #106; one shared load attempt per release;
@@ -3268,7 +3646,10 @@ mod tests {
     /// Spec #73 exit (#109, owner decision): stopping first waits until every
     /// accepted input chunk is answered, at most `deadlines.operation_ms`, so a
     /// stuck session's unanswered input holds shutdown for the bound and no
-    /// longer; answered input holds it not at all.
+    /// longer; answered input holds it not at all. EXT-02 (owner decision on
+    /// #118): that wait counts inside `deadlines.shutdown_ms`, so a shorter
+    /// shutdown deadline ends it, and the instance is still asked to shut
+    /// down, but is left unconfirmed.
     #[test]
     fn stopping_waits_for_accepted_input_at_most_the_operation_deadline() {
         let held = Authority {
@@ -3276,7 +3657,12 @@ mod tests {
             period: 9,
             restoration: 9,
         };
-        for (index, silent, operation_ms) in [(1, true, 400), (2, false, 30_000)] {
+        let cases = [
+            (1, true, 400, 1_000),
+            (2, false, 30_000, 1_000),
+            (3, true, 30_000, 400),
+        ];
+        for (index, silent, operation_ms, shutdown_ms) in cases {
             let id = session(10, index);
             script(
                 &id,
@@ -3291,7 +3677,7 @@ mod tests {
                 mut supervisor,
                 directory: _home,
                 ..
-            } = limited(1, 1_000, fake_library(), limits);
+            } = limited(1, shutdown_ms, fake_library(), limits);
             supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
             assert_eq!(
                 next(&supervisor),
@@ -3299,12 +3685,21 @@ mod tests {
             );
             supervisor.request(id.clone(), Asked::Input(held, b"z".to_vec()));
             let started = Instant::now();
-            supervisor.stop();
+            let report = supervisor.stop();
             let took = started.elapsed();
             if silent {
                 assert!(took >= Duration::from_millis(400), "{took:?}");
             }
             assert!(took < Duration::from_secs(15), "{took:?}");
+            let joined = report.instances.iter().all(|(_, evidence)| evidence.joined);
+            assert_eq!(joined, index != 3, "{report:?}");
+            if index == 3 {
+                // The deadline passed while settling input: shutdown said
+                // once whom it waits for.
+                assert_eq!(supervisor.waiting(), Some(vec![id.clone()]));
+            }
+            let id = guid(&id);
+            until(|world| world.seen.contains(&(id, Seen::OwnerExited)));
         }
     }
 
@@ -3703,7 +4098,20 @@ mod tests {
             let id = guid(id);
             until(|world| world.seen.contains(&(id, Seen::OwnerExited)));
         }
-        supervisor.stop();
+        let report = supervisor.stop();
+        let (_, earlier) = report
+            .instances
+            .iter()
+            .find(|(id, _)| *id == unclean)
+            .unwrap();
+        assert!(!earlier.current && earlier.joined, "{earlier:?}");
+        assert_eq!(earlier.destroyed, Some(Err("busy: still in use".into())));
+        assert_eq!(
+            report.verdict(),
+            shutdown::Verdict::FailStop(format!(
+                "monitor shutdown unconfirmed: session {unclean}: not destroyed: busy: still in use"
+            ))
+        );
         for id in [&rejected, &limited_, &finished, &unclean, &refusing] {
             assert_eq!(generations(id), [1], "{id}");
         }

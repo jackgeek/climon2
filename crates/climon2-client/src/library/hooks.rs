@@ -5,6 +5,8 @@
 //!   each named exported call, the first time it is made (`bootstrap` is
 //!   `climon2_client_get_interface`), or at `receive`, as a running
 //!   connection handles a frame from its daemon;
+//! - `abort:<call>[,<call>...]` aborts the whole process at the same points,
+//!   a native crash no instance can contain (#118);
 //! - `worker` makes `run` start one worker that ends with its stream;
 //! - `stall-cleanup` makes `run` start one worker whose cleanup never ends;
 //! - `joined-worker` makes `run` start one worker that briefly holds a block
@@ -27,10 +29,15 @@ fn fault() -> String {
 
 pub(super) fn panic_at(call: &'static str) {
     let fault = fault();
-    let selected = fault
-        .strip_prefix("panic:")
-        .is_some_and(|calls| calls.split(',').any(|name| name == call));
-    if selected && first(call) {
+    let named = |kind: &str| {
+        fault
+            .strip_prefix(kind)
+            .is_some_and(|calls| calls.split(',').any(|name| name == call))
+    };
+    if named("abort:") {
+        std::process::abort();
+    }
+    if named("panic:") && first(call) {
         panic!("CLIMON2_LIBRARY_FAULT panic at {call}");
     }
 }
