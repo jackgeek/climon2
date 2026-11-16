@@ -22,7 +22,8 @@ connected is dropped once its session is proven gone. Known gap: Escape closes t
 ends a host read, so an Escape followed by other bytes in the same read does
 not; the input router of [#109](https://github.com/jackgeek/climon2/issues/109)
 (INP-02) closes it. Nothing else this document specifies is
-implemented: no search or separator, Enter, initial selection, key-hint
+implemented: no search or separator, Enter, initial selection
+([#266](https://github.com/jackgeek/climon2/issues/266)), key-hint
 footer, Delete, toasts or bell.
 The [throwaway prototype](https://github.com/jackgeek/climon2/pull/72) is a
 primary source, not monitor implementation or real daemon/client acceptance.

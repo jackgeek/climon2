@@ -9,7 +9,8 @@ clients and the basic selector of
 [#106](https://github.com/jackgeek/climon2/issues/106) and the row statuses,
 final outcomes and status order of
 [#107](https://github.com/jackgeek/climon2/issues/107), whose Monitor-layer
-cases are mapped in the monitor README; #107's initial selection is not
+cases are mapped in the monitor README; initial selection, moved from #107
+to [#266](https://github.com/jackgeek/climon2/issues/266), is not
 implemented. Packaged
 [client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
 description ([#75](https://github.com/jackgeek/climon2/issues/75)), their

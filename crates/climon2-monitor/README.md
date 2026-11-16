@@ -12,7 +12,7 @@ executables of one release is not frozen. The library boundary is
 This is the #74 walking skeleton of spec #73, with its key introduction and
 help (#105), session discovery, passive clients and the basic selector
 (#106), and row statuses, final outcomes and status order (#107). Nothing is
-selected or acquired yet: #107's initial selection and #108's Enter.
+selected or acquired yet: initial selection (#266) and #108's Enter.
 
 ## Startup, before the host terminal changes
 
@@ -276,7 +276,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | Own-session scenario (confirmed 2026-11-08), DSC-06 (Monitor), HDL-01 (Monitor rows), CTL-01 (controlled elsewhere), TRM-06 (wide labels), SEL-01 (cell-safe clipping) | `the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear` (e2e) |
 | SEL-01 (Monitor, basic cases): border, columns, highlight, Up/Down without wrap, Escape, no application resize or acquisition | `the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing` (e2e) |
 | DSC-03 (pure registry supplement): one client request per live session; rows tied on their entry time in ascending full session ID | `live_sessions_need_one_client_each` (`src/registry.rs`) |
-| DSC-01 (Monitor, status order), COM-06 (Monitor labels), STA-07 (Monitor, hidden change), DSC-05 (Monitor, reorder case): real sessions at known daemon clock times show Needs attention, Running, Idle, Failed (signal 15), Failed (exit 143) and Succeeded in group and daemon-time order, finals kept after their sessions end; working under pending attention moves nothing; a reorder keeps the highlighted row | `real_sessions_show_their_effective_status_and_final_outcomes_in_order` (e2e) |
+| DSC-01 (Monitor, status order), COM-06 (Monitor labels), STA-07 (Monitor, hidden change), DSC-05 (Monitor, reorder case): real sessions at known daemon clock times show Needs attention, Running, Idle, Failed (signal 15), Failed (exit 143) and Succeeded in group and daemon-time order, finals kept after their sessions end; working under pending attention moves nothing, even with its daemon clock moved past a newer attention row's time; a reorder keeps the highlighted row | `real_sessions_show_their_effective_status_and_final_outcomes_in_order` (e2e) |
 | DSC-01 (Monitor, status order: every status group, a tied change time broken by ascending full session ID, never creation order, delayed Initial metadata Starting until it arrives), DSC-05 (Monitor, reorder case: a row moving in above the highlight, and the highlighted row's own status change) | `rows_order_by_status_group_daemon_change_time_and_full_session_id` (e2e, Fault peers) |
 | Not-connected rows (confirmed 2026-11-08), final rows without a status time (derived), STA-07 (Monitor, disconnection case): This monitor, Unavailable (no `status-v1`, uncertain) and Disconnected after every status and final row, newest condition first; a lost connection never shows its stale status or a fabricated outcome; untimed finals from Initial metadata and Command final sort by when learned, between newer and older daemon times | `not_connected_rows_and_untimed_finals_sort_by_when_the_monitor_recorded_them` (e2e, Fault peers) |
 | DSC-01 status order, STA-07 (pure supplement): group, newest daemon change time, ascending full session ID; only a new change time moves a row; stale status of a disconnected row | `rows_order_by_group_then_newest_daemon_change_then_session_id` (`src/registry.rs`) |
@@ -310,8 +310,8 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), application input such
 as Ctrl+C (#109), mouse and focus report classification (#109) and their
 routing to applications (#111), HLP-02 over the selector (#113), selector
-search, footer and Enter (#108, #113), initial selection (#107, which
-acquires through #108) and the CTL-03 status-value case (deferred to #107
+search, footer and Enter (#108, #113), initial selection (#266, moved
+from #107; it acquires through #108) and the CTL-03 status-value case (deferred to #107
 from #110; background, covered and revoked rows need #108's control), resource admission and fairness, including newest-first starts
 across discovery batches, and `discovery.stall_ms` (#120), passive retry
 (#116), an Escape that does not end its host read closing the selector
