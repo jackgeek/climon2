@@ -70,6 +70,13 @@ enum Scan {
     /// A control sequence after `ESC` and its introducer (`[` or `O`): its
     /// bytes so far, or none while an overlong one is skipped.
     Sequence(u8, Option<Vec<u8>>),
+    /// Bytes that are data until their end, never keys.
+    Data(Data),
+}
+
+/// Data the scan passes over until its end.
+#[derive(Debug)]
+enum Data {
     /// An OSC, DCS, APC or PM string, which only a host reply sends; true just
     /// after an Escape inside it.
     Text(bool),
@@ -217,8 +224,15 @@ impl Router {
             Scan::Ground => self.ground(byte, tokens),
             Scan::Escape => self.escaped(byte, tokens),
             Scan::Sequence(introducer, body) => self.sequence(introducer, body, byte, tokens),
-            Scan::Text(escaped) => self.text(escaped, byte, tokens),
-            Scan::Paste(matched) => self.pasted(matched, byte),
+            Scan::Data(data) => self.data(data, byte, tokens),
+        }
+    }
+
+    /// A byte of a host reply's string or of a paste.
+    fn data(&mut self, data: Data, byte: u8, tokens: &mut Vec<Token>) {
+        match data {
+            Data::Text(escaped) => self.text(escaped, byte, tokens),
+            Data::Paste(matched) => self.pasted(matched, byte),
         }
     }
 
@@ -237,7 +251,7 @@ impl Router {
             b'[' | b'O' => self.scan = Scan::Sequence(byte, Some(Vec::new())),
             b']' | b'P' | b'_' | b'^' => {
                 self.released = false;
-                self.scan = Scan::Text(false);
+                self.scan = Scan::Data(Data::Text(false));
             }
             _ => {
                 if !std::mem::take(&mut self.released) {
@@ -299,7 +313,7 @@ impl Router {
             csi(body)
         };
         if token == Some(Token::Paste) {
-            self.scan = Scan::Paste(0);
+            self.scan = Scan::Data(Data::Paste(0));
         }
         let released = std::mem::take(&mut self.released);
         tokens.extend(token.map(|token| rest(token, released)));
@@ -311,7 +325,7 @@ impl Router {
         match (escaped, byte) {
             (_, BEL) | (true, b'\\') => {}
             (true, _) => self.escaped(byte, tokens),
-            (false, _) => self.scan = Scan::Text(byte == ESC),
+            (false, _) => self.scan = Scan::Data(Data::Text(byte == ESC)),
         }
     }
 
@@ -325,7 +339,7 @@ impl Router {
             usize::from(byte == ESC)
         };
         if matched < PASTE_END.len() {
-            self.scan = Scan::Paste(matched);
+            self.scan = Scan::Data(Data::Paste(matched));
         }
     }
 }
