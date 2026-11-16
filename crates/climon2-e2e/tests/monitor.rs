@@ -1462,15 +1462,51 @@ fn with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction(
 
 /// A headless session running `script` in bash: its full session ID. Each
 /// script holds until `$HOME/<finish>` exists, giving up after two minutes,
-/// so a failed test leaves nothing running for long.
+/// so a failed test leaves nothing running for long. Its daemon reads the
+/// status clock [`clock`] gives it.
 fn headless(package: &Package, script: &str, finish: &str) -> String {
+    let at = clock(package, None);
+    headless_on(package, script, finish, &at)
+}
+
+/// The [`T0`] of the daemons' controllable status clock,
+/// 2027-01-15T08:00:00.000Z.
+const T0: u64 = 1_800_000_000_000;
+
+/// A new controllable status clock for one session's daemon, set to
+/// `millis` after [`T0`], or by default one second later than the clock
+/// made before it, starting a second after [`T0`]: so idle sessions sort
+/// newest created first. Nothing advances it, so no heuristic sample ever
+/// changes a session's status; only what its application reports does, at
+/// the clock's time.
+fn clock(package: &Package, millis: Option<u64>) -> PathBuf {
+    let home = package.isolation.home();
+    let made = fs::read_dir(home)
+        .unwrap()
+        .filter(|entry| {
+            // Not the `.ack` files the daemons write beside their clocks.
+            let name = entry.as_ref().unwrap().file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("clock-") && !name.contains('.')
+        })
+        .count() as u64;
+    let path = home.join(format!("clock-{made}"));
+    let millis = millis.unwrap_or((made + 1) * 1000);
+    fs::write(&path, (T0 + millis).to_string()).unwrap();
+    path
+}
+
+/// [`headless`], with the daemon reading its status clock from `clock`.
+fn headless_on(package: &Package, script: &str, finish: &str, clock: &Path) -> String {
     let script = format!(
         "{script}\nuntil [ -e \"$HOME/{finish}\" ] || [ \"$SECONDS\" -ge 120 ]; do sleep 0.05; done"
     );
-    let output = support::scripted(
+    let output = support::scripted_with(
         package,
         "c2",
         &["exec", "--headless", "/bin/bash", "-c", &script],
+        std::process::Stdio::piped(),
+        &[("CLIMON2_DAEMON_CLOCK", clock)],
     );
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
@@ -1536,9 +1572,10 @@ fn shows_row(terminal: &mut Terminal, text: &str) {
 /// headless sessions as they are created, without being asked. Each gets one
 /// passive client, reused across later passes: one start and one library log
 /// in its own session log directory. Passive clients never attach or take
-/// control. The daemon advertises no `status-v1`, so a connected row shows
-/// Unavailable, never a fabricated status; its title arrives through
-/// `title-v1`, and an untitled session shows its command and arguments. On
+/// control. A connected row shows the status its daemon reports through
+/// `status-v1`, Idle, never a fabricated one (#107); its title arrives
+/// through `title-v1`, and an untitled session shows its command and
+/// arguments. On
 /// Linux the monitor maps exactly the session version's
 /// `libclimon2_client.so`.
 #[test]
@@ -1557,9 +1594,9 @@ fn sessions_appear_as_they_are_created_each_with_one_passive_client() {
         ),
     );
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║Unavailable Alpha");
+    shows_row(&mut terminal, "║Idle Alpha");
     let untitled = headless(&package, ": untitled", "finish");
-    shows_row(&mut terminal, "║Unavailable /bin/bash -c : untitled");
+    shows_row(&mut terminal, "║Idle /bin/bash -c : untitled");
     for id in [&titled, &untitled] {
         let logs = library_logs(&package, id);
         assert_eq!(logs.len(), 1, "{logs:?}");
@@ -1824,7 +1861,7 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║Unavailable Live");
+    shows_row(&mut terminal, "║Idle        Live");
     shows_row(
         &mut terminal,
         "║Unavailable fake 0d5c0000-0000-4000-8000-0000000000f2",
@@ -1852,14 +1889,14 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
         "Discovery incomplete: cannot list sessions: Permission denied (os error 13)",
     );
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║Unavailable Live");
+    shows_row(&mut terminal, "║Idle        Live");
     terminal.send("\x1b").unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains("Discovery incomplete"))
         .unwrap();
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║Unavailable Live");
+    shows_row(&mut terminal, "║Idle        Live");
     // A complete pass has reported every batch, the stale session's included.
     assert!(
         !terminal.screen().contains("0000000000f4"),
@@ -2036,6 +2073,7 @@ fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
     let package = Package::new();
     without_introduction(&package);
     let mut elsewhere = package.command("c2");
+    elsewhere.env("CLIMON2_DAEMON_CLOCK", clock(&package, None));
     elsewhere.args(["exec", "/bin/bash", "-c", &titled_hold("Elsewhere")]);
     let mut elsewhere = Terminal::spawn(elsewhere, ROWS, COLS).unwrap();
     // The controlled session's metadata, not a listing that could race its
@@ -2061,11 +2099,11 @@ fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, "║This monitor /bin/bash -c c2 monitor ");
     // The host's screen text follows each wide character with its covered cell.
-    shows_row(&mut terminal, "║Unavailable  Nested 日 本 ");
-    shows_row(&mut terminal, "║Unavailable  Elsewhere");
+    shows_row(&mut terminal, "║Idle         Nested 日 本 ");
+    shows_row(&mut terminal, "║Idle         Elsewhere");
     shows_row(
         &mut terminal,
-        "║Unavailable  /bin/bash -c c2 exec --headless",
+        "║Idle         /bin/bash -c c2 exec --headless",
     );
     // Wide labels, and the long one clipped to the list, keep the border
     // whole once the frame is painted: one snapshot may land mid-paint.
@@ -2078,7 +2116,15 @@ fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
 
     let own = listed(&package, "c2 monitor");
     let own = own["session_id"].as_str().unwrap();
-    assert!(library_logs(&package, own).is_empty());
+    // The own session's client executable logs its own library use there
+    // (#101), but the monitor's process must have started no client for it.
+    let monitor = format!("-{}.log", monitor_process(&package).0);
+    let logs = library_logs(&package, own);
+    assert!(
+        logs.iter()
+            .all(|log| !log.to_string_lossy().ends_with(&monitor)),
+        "{logs:?}"
+    );
     assert_eq!(listed(&package, "Nested")["depth"], 2);
     assert_eq!(
         listed(&package, "Elsewhere")["state"],
@@ -2154,14 +2200,7 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
     terminal.send("\x1ds").unwrap();
-    let open = with_selector(
-        &body,
-        &[
-            ("Unavailable", "C3"),
-            ("Unavailable", "B2"),
-            ("Unavailable", "A1"),
-        ],
-    );
+    let open = with_selector(&body, &[("Idle", "C3"), ("Idle", "B2"), ("Idle", "A1")]);
     shows(&mut terminal, &open);
     assert_eq!(highlighted_rows(&terminal), [3]);
     // Each step's keys end on a row that differs from where the step
@@ -2208,5 +2247,155 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
             "{name} was resized"
         );
     }
+    package.assert_clean();
+}
+
+/// Bash that titles its session `name`, then runs each of `steps` once
+/// `$HOME/<name>.<n>` exists, `n` counting from 1, giving up after two
+/// minutes.
+fn stepped(name: &str, steps: &[&str]) -> String {
+    let mut script = format!("printf '\\033]2;{name}\\007'");
+    for (step, action) in (1..).zip(steps) {
+        script.push_str(&format!(
+            "\nuntil [ -e \"$HOME/{name}.{step}\" ] || [ \"$SECONDS\" -ge 120 ]; do sleep 0.05; done; {action}"
+        ));
+    }
+    script
+}
+
+/// Lets the session [`stepped`] named `name` take its step `step`.
+fn step(package: &Package, name: &str, step: u32) {
+    fs::write(package.isolation.home().join(format!("{name}.{step}")), b"").unwrap();
+}
+
+/// A root OSC 7501 program status report of `state`, as bash prints it.
+fn report(state: &str) -> String {
+    format!("printf '\\033]7501;state={state}\\033\\\\'")
+}
+
+/// Waits until the rows of the open selector are exactly `rows`, over the
+/// body of a monitor that has rows and nothing selected.
+fn lists(terminal: &mut Terminal, rows: &[(&str, &str)]) {
+    let body = empty_monitor(
+        ROWS,
+        COLS,
+        &["No session selected.", "Press Ctrl+] then x to exit."],
+    );
+    let expected = with_selector(&body, rows);
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| screen == expected)
+        .unwrap_or_else(|_| panic!("expected:\n{expected}\nshown:\n{}", terminal.screen()));
+}
+
+/// Waits until the open selector highlights exactly the host row `row`.
+fn highlights(terminal: &Terminal, row: usize) {
+    let deadline = Instant::now() + TIMEOUT;
+    while highlighted_rows(terminal) != [row] {
+        assert!(
+            Instant::now() < deadline,
+            "highlighted {:?}, not {row}",
+            highlighted_rows(terminal)
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// DSC-01 (Monitor, status order), COM-06 (Monitor labels), STA-07
+/// (Monitor) and DSC-05 (Monitor, reorder case), with real sessions whose
+/// daemons' status clocks stand at known times: rows show the effective
+/// status the daemon reports, Needs attention, Running and Idle, and sort by
+/// group, then by the daemon's change time, newest first. A command that
+/// exits 0 shows Succeeded; one that exits 143 shows Failed (exit 143) and
+/// one killed by SIGTERM Failed (signal 15), each after the status rows by
+/// its terminal status time, and each stays once its session has ended. A
+/// hidden change (working under pending attention) moves nothing. A status
+/// change that moves the highlighted row keeps the highlight on it.
+#[test]
+fn real_sessions_show_their_effective_status_and_final_outcomes_in_order() {
+    let package = Package::new();
+    without_introduction(&package);
+    let sessions: [(&str, u64, &[&str]); 6] = [
+        (
+            "attention",
+            1000,
+            &[
+                &report("idle"),
+                &format!("{}; printf '\\033]2;attention 2\\007'", report("working")),
+            ],
+        ),
+        ("running", 2000, &[&report("working"), &report("clear")]),
+        ("idle", 3000, &[]),
+        ("succeeded", 4000, &["exit 0"]),
+        ("exit 143", 5000, &["exit 143"]),
+        ("signal", 6000, &["kill -TERM $$"]),
+    ];
+    for (name, millis, steps) in sessions {
+        let at = clock(&package, Some(millis));
+        headless_on(&package, &stepped(name, steps), "finish", &at);
+    }
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    terminal.send("\x1ds").unwrap();
+    lists(
+        &mut terminal,
+        &[
+            ("Idle", "signal"),
+            ("Idle", "exit 143"),
+            ("Idle", "succeeded"),
+            ("Idle", "idle"),
+            ("Idle", "running"),
+            ("Idle", "attention"),
+        ],
+    );
+    step(&package, "attention", 1);
+    step(&package, "running", 1);
+    lists(
+        &mut terminal,
+        &[
+            ("Needs attention", "attention"),
+            ("Running", "running"),
+            ("Idle", "signal"),
+            ("Idle", "exit 143"),
+            ("Idle", "succeeded"),
+            ("Idle", "idle"),
+        ],
+    );
+    for name in ["succeeded", "exit 143", "signal"] {
+        step(&package, name, 1);
+    }
+    let finals = [
+        ("Failed (signal 15)", "signal"),
+        ("Failed (exit 143)", "exit 143"),
+        ("Succeeded", "succeeded"),
+    ];
+    let mut rows = vec![
+        ("Needs attention", "attention"),
+        ("Running", "running"),
+        ("Idle", "idle"),
+    ];
+    rows.extend(finals);
+    lists(&mut terminal, &rows);
+    // The hidden change comes before the title change on the same
+    // connection, so any status it caused has arrived once the title shows.
+    step(&package, "attention", 2);
+    rows[0] = ("Needs attention", "attention 2");
+    lists(&mut terminal, &rows);
+
+    terminal.send("\x1b[B\x1b[B").unwrap();
+    highlights(&terminal, 5);
+    step(&package, "running", 2);
+    let mut reordered = vec![
+        ("Needs attention", "attention 2"),
+        ("Idle", "idle"),
+        ("Idle", "running"),
+    ];
+    reordered.extend(finals);
+    lists(&mut terminal, &reordered);
+    highlights(&terminal, 4);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
     package.assert_clean();
 }
