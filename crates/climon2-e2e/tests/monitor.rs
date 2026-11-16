@@ -14,6 +14,7 @@ use nix::{
 };
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     env, fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -2398,13 +2399,15 @@ fn highlights(terminal: &Terminal, row: usize) {
 /// exits 0 shows Succeeded; one that exits 143 shows Failed (exit 143) and
 /// one killed by SIGTERM Failed (signal 15), each after the status rows by
 /// its terminal status time, and each stays once its session has ended. A
-/// hidden change (working under pending attention) moves nothing. A status
+/// hidden change (working under pending attention) moves nothing, even with
+/// its daemon's clock moved past a newer attention row's time. A status
 /// change that moves the highlighted row keeps the highlight on it.
 #[test]
 fn real_sessions_show_their_effective_status_and_final_outcomes_in_order() {
     let package = Package::new();
     without_introduction(&package);
-    let sessions: [(&str, u64, &[&str]); 6] = [
+    let mut clocks = BTreeMap::new();
+    let sessions: [(&str, u64, &[&str]); 7] = [
         (
             "attention",
             1000,
@@ -2413,6 +2416,7 @@ fn real_sessions_show_their_effective_status_and_final_outcomes_in_order() {
                 &format!("{}; printf '\\033]2;attention 2\\007'", report("working")),
             ],
         ),
+        ("waiting", 1500, &[&report("idle")]),
         ("running", 2000, &[&report("working"), &report("clear")]),
         ("idle", 3000, &[]),
         ("succeeded", 4000, &["exit 0"]),
@@ -2422,6 +2426,7 @@ fn real_sessions_show_their_effective_status_and_final_outcomes_in_order() {
     for (name, millis, steps) in sessions {
         let at = clock(&package, Some(millis));
         headless_on(&package, &stepped(name, steps), "finish", &at);
+        clocks.insert(name, at);
     }
     let mut terminal = outer(&package, "c2 monitor");
     terminal
@@ -2436,14 +2441,17 @@ fn real_sessions_show_their_effective_status_and_final_outcomes_in_order() {
             ("Idle", "succeeded"),
             ("Idle", "idle"),
             ("Idle", "running"),
+            ("Idle", "waiting"),
             ("Idle", "attention"),
         ],
     );
-    step(&package, "attention", 1);
-    step(&package, "running", 1);
+    for name in ["attention", "waiting", "running"] {
+        step(&package, name, 1);
+    }
     lists(
         &mut terminal,
         &[
+            ("Needs attention", "waiting"),
             ("Needs attention", "attention"),
             ("Running", "running"),
             ("Idle", "signal"),
@@ -2461,33 +2469,38 @@ fn real_sessions_show_their_effective_status_and_final_outcomes_in_order() {
         ("Succeeded", "succeeded"),
     ];
     let mut rows = vec![
+        ("Needs attention", "waiting"),
         ("Needs attention", "attention"),
         ("Running", "running"),
         ("Idle", "idle"),
     ];
     rows.extend(finals);
     lists(&mut terminal, &rows);
-    // The hidden change comes before the title change on the same
-    // connection, so any status it caused has arrived once the title shows.
+    // Past waiting's attention time, any status the hidden change caused
+    // would move the row above it. The hidden change comes before the title
+    // change on the same connection, so any such status has arrived once the
+    // title shows.
+    fs::write(&clocks["attention"], (T0 + 2500).to_string()).unwrap();
     step(&package, "attention", 2);
-    rows[0] = ("Needs attention", "attention 2");
+    rows[1] = ("Needs attention", "attention 2");
     lists(&mut terminal, &rows);
 
     // The selector opened on whichever row was first then; Up without
     // wrapping brings the highlight to the top.
     terminal.send("\x1b[A".repeat(rows.len())).unwrap();
     highlights(&terminal, 3);
-    terminal.send("\x1b[B\x1b[B").unwrap();
-    highlights(&terminal, 5);
+    terminal.send("\x1b[B".repeat(3)).unwrap();
+    highlights(&terminal, 6);
     step(&package, "running", 2);
     let mut reordered = vec![
+        ("Needs attention", "waiting"),
         ("Needs attention", "attention 2"),
         ("Idle", "idle"),
         ("Idle", "running"),
     ];
     reordered.extend(finals);
     lists(&mut terminal, &reordered);
-    highlights(&terminal, 4);
+    highlights(&terminal, 5);
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
