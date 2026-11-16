@@ -345,6 +345,7 @@ impl Monitor {
     /// target is viewed, after that viewing, and the host hears whether any
     /// connected session needs attention.
     fn attend(&mut self) -> io::Result<()> {
+        self.reacknowledge();
         let viewed = self.viewed().cloned();
         for (id, terminal) in &mut self.terminals {
             if let Some(request) = terminal.viewing(viewed.as_ref() == Some(id)) {
@@ -356,6 +357,20 @@ impl Monitor {
         self.host_report
             .report(pending)
             .map_or(Ok(()), host::write_host)
+    }
+
+    /// An acknowledgement that a newer restoration of its control period
+    /// superseded, as a resize can bring, is deferred again while its
+    /// session stays selected. Reselecting a session is an explicit action
+    /// that defers one anyway.
+    fn reacknowledge(&mut self) {
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+        let owed = self.terminals.get_mut(&id);
+        if owed.is_some_and(Terminal::take_unacknowledged) {
+            self.acknowledging = Some(Deferred::new(id));
+        }
     }
 
     /// The selected session while the monitor views it: its target takes

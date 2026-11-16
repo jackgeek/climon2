@@ -212,6 +212,9 @@ pub(crate) struct Terminal {
     /// The viewing last submitted, with the authority it was submitted
     /// under.
     viewed: Option<(Authority, bool)>,
+    /// An Acknowledge was refused because a newer restoration of its
+    /// control period superseded it: it is owed again.
+    unacknowledged: bool,
     /// A bracketed paste cut short under this authority: its application is
     /// owed the end marker.
     cut: Option<Authority>,
@@ -230,6 +233,7 @@ impl Terminal {
             focused: None,
             viewable: false,
             viewed: None,
+            unacknowledged: false,
             cut: None,
         }
     }
@@ -374,13 +378,17 @@ impl Terminal {
         }
     }
 
-    /// A superseded Resize is sent again under the current authority, and a
+    /// A superseded Resize is sent again under the current authority, a
     /// superseded viewing report again if the current viewing differs from
-    /// the daemon's.
+    /// the daemon's, and an Acknowledge a newer restoration of its control
+    /// period superseded (a resize brings one) is owed again.
     fn superseded(&mut self, request: &Request) {
         match (request, self.held.as_mut()) {
             (Request::Resize(..), Some(held)) => held.resized = None,
             (Request::Viewing(..), _) => self.viewed = None,
+            (Request::Acknowledge(authority), Some(held)) => {
+                self.unacknowledged = held.authority.same_period(*authority);
+            }
             _ => {}
         }
     }
@@ -497,6 +505,12 @@ impl Terminal {
             self.viewed = Some((held.authority, desired));
             Request::Viewing(held.authority, desired)
         })
+    }
+
+    /// Whether an Acknowledge is owed again since the last call
+    /// ([`Terminal::superseded`]).
+    pub(crate) fn take_unacknowledged(&mut self) -> bool {
+        std::mem::take(&mut self.unacknowledged)
     }
 
     /// A bracketed paste sent under `authority` was cut short by a target
@@ -1186,6 +1200,7 @@ mod tests {
             refused(Request::Acknowledge(newer), "not viewing"),
         );
         assert_eq!(terminal.error(), Some("not viewing"));
+        assert!(!terminal.take_unacknowledged());
         let next = authority(3, 1);
         terminal.present(&mut parser, Presentation::Granted(next, geometry(10, 3)));
         assert_eq!(terminal.viewing(false), None);
@@ -1201,6 +1216,31 @@ mod tests {
         ended.present(&mut parser, Presentation::Ended);
         ended.present(&mut parser, Presentation::Granted(next, geometry(10, 3)));
         assert_eq!(ended.viewing(true), None);
+    }
+
+    /// STA-08 (pure supplement, #114): an Acknowledge refused because a newer
+    /// restoration of its control period superseded it, as a resize brings,
+    /// is owed again, once; one refused under an earlier control period, or
+    /// once control ended, or accepted, is not.
+    #[test]
+    fn an_acknowledge_a_newer_restoration_superseded_is_owed_again() {
+        let mut parser = Parser::new();
+        let held = authority(2, 3);
+        let mut terminal = restored(b"x");
+        let answered = |held, answer| Presentation::Answered(Request::Acknowledge(held), answer);
+        terminal.present(&mut parser, answered(held, Ok(())));
+        assert!(!terminal.take_unacknowledged());
+        let newer = authority(2, 4);
+        terminal.present(&mut parser, Presentation::Begin(newer, geometry(10, 3)));
+        terminal.present(&mut parser, answered(held, Err("stale".into())));
+        assert_eq!(terminal.error(), None);
+        assert!(terminal.take_unacknowledged());
+        assert!(!terminal.take_unacknowledged());
+        terminal.present(&mut parser, answered(authority(1, 9), Err("stale".into())));
+        assert!(!terminal.take_unacknowledged());
+        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.present(&mut parser, answered(newer, Err("stale".into())));
+        assert!(!terminal.take_unacknowledged());
     }
 
     /// INP-04 (pure supplement; owner decision on #111): a bracketed paste
