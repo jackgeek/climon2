@@ -64,10 +64,10 @@ probe tokens are uppercase, so only the terminal's echo can show them.
 | Scenario | What happens in the window (once a second unless stated) |
 |---|---|
 | passive-idle | Nothing; only sampling. |
-| background-output | Input probe on `s001`; selector and Escape every 5 s; every 5 s `s002` reports attention (bell, toast text shown, toast gone), then works again. |
+| background-output | Input probe on `s001`; selector and Escape every 5 s; every 5 s the next unselected session that has not yet done so reports attention (bell, toast text shown, toast gone), then works again: a monitor toasts each attention episode once. |
 | cold-warm-loading | The client(s) start, until every session is connected, then exit (prefix+x) or detach, repeatedly; the first start is cold. |
 | restoration-switching | Select the next session through the selector's search and Enter, until its chrome title and restored start line show; selector and Escape every 5 s. |
-| selected-sustained-output | Selector and Escape; once, a heuristic `h001` retitles itself and falls silent, until its attention toast shows (STA-02). Typed input is not probed: its echo scrolls away between frames. |
+| selected-sustained-output | Selector and Escape; at the start a heuristic session `h001` arrives, titled, and falls silent, until its attention toast shows (STA-02). Typed input is not probed: its echo scrolls away between frames. |
 | reconnect-storm | Every 15 s from the fifth: every daemon stopped for 3 s (selector probed meanwhile), then resumed, until typed input echoes (recovery); input probes otherwise. |
 | continuous-arrivals | Every 2 s a new session `aNNN`, until a client is connected to it (standalone: a new attach for it); input probes. |
 | stalled-newer-starts | A tenth more newer sessions (at least one) are stopped from the start; input probes; selector every 5 s. |

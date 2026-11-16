@@ -23,7 +23,7 @@ pub struct Workload {
     pub title: String,
     /// Output bytes per second.
     pub rate: u32,
-    /// A FIFO whose lines ask for output ([`answer`]).
+    /// A FIFO whose lines ask for a status report ([`answer`]).
     pub attention: Option<PathBuf>,
     /// Report nothing, so the daemon's own heuristic sets the status.
     pub heuristic: bool,
@@ -45,13 +45,11 @@ pub fn report(state: &str) -> Vec<u8> {
 }
 
 /// What the application writes for a line read from its FIFO: `attention`
-/// and `working` report that status, `title` retitles the session
-/// `<title>-changed`.
-pub fn answer(line: &str, title: &str) -> Option<Vec<u8>> {
+/// and `working` report that status.
+pub fn answer(line: &str) -> Option<Vec<u8>> {
     match line.trim() {
         "attention" => Some(report("blocked")),
         "working" => Some(report("working")),
-        "title" => Some(format!("\x1b]2;{title}-changed\x07").into_bytes()),
         _ => None,
     }
 }
@@ -76,8 +74,7 @@ pub fn run(workload: &Workload) -> io::Result<()> {
         thread::spawn(move || write_at(rate));
     }
     if let Some(fifo) = workload.attention.clone() {
-        let title = workload.title.clone();
-        thread::spawn(move || attend(&fifo, &title));
+        thread::spawn(move || attend(&fifo));
     }
     let mut discarded = [0; 4096];
     while io::stdin().read(&mut discarded)? > 0 {}
@@ -104,11 +101,11 @@ fn write_at(rate: u32) -> io::Result<()> {
 
 /// Writes what each line of the FIFO asks for, reopening it after each
 /// writer closes it.
-fn attend(fifo: &PathBuf, title: &str) -> io::Result<()> {
+fn attend(fifo: &PathBuf) -> io::Result<()> {
     loop {
         let reader = io::BufReader::new(fs::File::open(fifo)?);
         for line in reader.lines() {
-            if let Some(bytes) = answer(&line?, title) {
+            if let Some(bytes) = answer(&line?) {
                 let mut out = io::stdout();
                 out.write_all(&bytes)?;
                 out.flush()?;
@@ -142,23 +139,18 @@ mod tests {
         );
     }
 
-    /// Attention is a blocked question; working clears it; title retitles
-    /// the session.
+    /// Attention is a blocked question; working clears it.
     #[test]
-    fn the_fifo_asks_for_attention_working_or_a_new_title() {
+    fn the_fifo_asks_for_attention_or_working() {
         assert_eq!(
-            answer("attention\n", "s002"),
+            answer("attention\n"),
             Some(b"\x1b]7501;state=blocked:kind=question:app=climon2-measure\x1b\\".to_vec())
         );
         assert_eq!(
-            answer("working", "s002"),
+            answer("working"),
             Some(b"\x1b]7501;state=working:app=climon2-measure\x1b\\".to_vec())
         );
-        assert_eq!(
-            answer("title", "h001"),
-            Some(b"\x1b]2;h001-changed\x07".to_vec())
-        );
-        assert_eq!(answer("other", "s002"), None);
+        assert_eq!(answer("title"), None);
     }
 
     /// A session opens with its title and start line, and reports working

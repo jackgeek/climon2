@@ -37,8 +37,9 @@ const ESCAPE: &str = "\x1b\x1b[I";
 const ALTERNATE_OFF: &[u8] = b"\x1b[?1049l";
 /// The selector's top-left corner.
 const SELECTOR: &[u8] = "╔".as_bytes();
-/// The hint every attention toast's text holds with the default prefix.
-const TOAST_HINT: &str = "jump to attention";
+/// What every attention toast's text holds with the default prefix, even
+/// ellipsized in a 32-column toast.
+const TOAST_HINT: &str = "then j: jump";
 /// A bound for starting, readiness and exit.
 const SETUP: Duration = Duration::from_secs(60);
 /// A probe that takes longer than this is a timeout.
@@ -219,6 +220,7 @@ struct Fleet {
     stalled: Vec<i32>,
     baseline: Baseline,
     notes: Vec<String>,
+    attended: usize,
 }
 
 impl Fleet {
@@ -234,8 +236,17 @@ impl Fleet {
         self.sessions.iter().map(|session| session.daemon).collect()
     }
 
-    fn titled(&self, title: &str) -> Option<&Session> {
-        self.sessions.iter().find(|session| session.title == title)
+    /// The next session with an attention FIFO that has not yet reported
+    /// attention: a monitor toasts each attention episode once.
+    fn unattended(&mut self) -> Option<Session> {
+        let session = self
+            .sessions
+            .iter()
+            .filter(|session| session.fifo.is_some())
+            .nth(self.attended)?
+            .clone();
+        self.attended += 1;
+        Some(session)
     }
 }
 
@@ -261,9 +272,9 @@ impl Bench {
     }
 
     /// The case's sessions: s001 (selected, at the selected rate), the rest
-    /// at the background rate, s002 with an attention FIFO for background
-    /// output; a heuristic h001 for selected sustained output (STA-02); and
-    /// for stalled newer starts, a tenth more newer sessions, stopped.
+    /// at the background rate, each with an attention FIFO for background
+    /// output; and for stalled newer starts, a tenth more newer sessions,
+    /// stopped.
     fn fleet(&self, case: &Case, limits: Option<&Value>) -> io::Result<Fleet> {
         let user = User::new(&self.candidate, limits)?;
         let mut fleet = Fleet {
@@ -272,6 +283,7 @@ impl Bench {
             stalled: Vec::new(),
             baseline: Baseline(0),
             notes: Vec::new(),
+            attended: 0,
         };
         let rates = case.scenario.rates();
         let offered = case.population.offered();
@@ -281,7 +293,7 @@ impl Bench {
             } else {
                 rates.background
             };
-            let attention = index == 2 && case.scenario == Scenario::BackgroundOutput;
+            let attention = index >= 2 && case.scenario == Scenario::BackgroundOutput;
             let session = fleet.user.start(
                 &self.measure,
                 &format!("s{index:03}"),
@@ -290,13 +302,6 @@ impl Bench {
                 false,
             )?;
             fleet.sessions.push(session);
-        }
-        if case.scenario == Scenario::SustainedOutput {
-            let session = fleet.user.start(&self.measure, "h001", 0, true, true)?;
-            fleet.sessions.push(session);
-            fleet
-                .notes
-                .push("one more session, h001, is heuristic for the STA-02 sampler probe".into());
         }
         if case.scenario == Scenario::StalledNewerStarts {
             let stalled = (offered / 10).max(1);
@@ -490,16 +495,15 @@ impl Bench {
                     selector(terminal, probes);
                 }
                 if second % 5 == 3
-                    && let Some(session) = fleet.titled("s002")
+                    && let Some(session) = fleet.unattended()
                 {
-                    attention(terminal, session, probes)?;
+                    attention(terminal, &session, probes)?;
                 }
             }
             Scenario::SustainedOutput => {
-                if second == 0
-                    && let Some(session) = fleet.titled("h001")
-                {
-                    probes.record(Probe::Sampler, status_sampler(terminal, session)?);
+                if second == 0 {
+                    let sampled = status_sampler(self, fleet, sampler, terminal)?;
+                    probes.record(Probe::Sampler, sampled);
                 }
                 selector(terminal, probes);
             }
@@ -720,6 +724,7 @@ impl Bench {
             stalled: Vec::new(),
             baseline: Baseline(0),
             notes: Vec::new(),
+            attended: 0,
         };
         let session = unseen.user.start(&self.measure, "b001", 0, false, false)?;
         let baseline = Baseline::of(&[session.daemon]);
@@ -730,6 +735,7 @@ impl Bench {
             stalled: Vec::new(),
             baseline,
             notes: Vec::new(),
+            attended: 0,
         };
         let mut terminal = self.spawn(case, &fleet, &["monitor"])?;
         terminal.wait_for_text("No sessions to show.", SETUP)?;
@@ -892,7 +898,7 @@ fn exit(terminal: &mut Terminal) -> Option<Duration> {
     released
 }
 
-/// s002 reports attention: until the host bell of its toast (attention
+/// An unselected session reports attention: until the host bell of its toast (attention
 /// presentation), until the toast's text shows and until it is gone
 /// (NOT-02); then it works again.
 fn attention(terminal: &mut Terminal, session: &Session, probes: &mut Probes) -> io::Result<()> {
@@ -922,15 +928,25 @@ fn attention(terminal: &mut Terminal, session: &Session, probes: &mut Probes) ->
     ask(session, "working")
 }
 
-/// The heuristic session retitles itself and falls silent: until its
-/// attention toast shows (STA-02, the daemon's sampler under load).
-fn status_sampler(terminal: &mut Terminal, session: &Session) -> io::Result<Option<Duration>> {
+/// A new heuristic session, h001, titles itself and falls silent: from its
+/// creation until its attention toast shows, ten quiet seconds and the
+/// daemon's sampling later (STA-02, the sampler under load).
+fn status_sampler(
+    bench: &Bench,
+    fleet: &mut Fleet,
+    sampler: &Sampler,
+    terminal: &mut Terminal,
+) -> io::Result<Option<Duration>> {
     let start = Instant::now();
-    ask(session, "title")?;
-    let label = format!("{}-changed", session.title);
+    let session = fleet.user.start(&bench.measure, "h001", 0, false, true)?;
+    sampler.add_session(session.daemon);
+    fleet.sessions.push(session);
+    fleet
+        .notes
+        .push("a heuristic session, h001, arrives at the window's start for STA-02".into());
     Ok(terminal
         .wait_for_screen(SAMPLER, |screen| {
-            screen.contains(TOAST_HINT) && screen.contains(&label)
+            screen.contains(TOAST_HINT) && screen.contains("h001")
         })
         .ok()
         .map(|()| start.elapsed()))
@@ -1075,7 +1091,7 @@ fn environment(candidate: &Candidate, window: Duration) -> Environment {
                 "workload",
                 "sessions of climon2-measure's workload: background output 720 B/s per \
                  unselected session, selected sustained output 262144 B/s, otherwise silent; \
-                 all report OSC 7501 working except the heuristic h001"
+                 all report OSC 7501 working except the heuristic h001 (STA-02)"
                     .to_owned(),
             ),
             ("duration", window),
