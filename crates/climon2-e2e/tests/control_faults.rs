@@ -1280,3 +1280,60 @@ fn installed_library_times_commands_out_again_once_waiting_records_are_queued() 
     );
     assert_all_released(&report["ledger"]);
 }
+
+/// LIB-04 Fault (control and screen records are charged their header
+/// twice and only the bytes they own): with an attach's records, a
+/// Geometry and a Control revoked (`session_ending`) all still queued, the
+/// event queue holds exactly eight records' headers plus the Open's
+/// selected token array, the Initial metadata's one-byte title and the
+/// Display's one byte; a grant, beginning, complete, Geometry or
+/// revocation owns nothing. The revocation reaches the caller with its
+/// reserved field zero, as the native header requires.
+#[test]
+fn installed_library_charges_presentation_records_only_the_display_bytes_they_own() {
+    let package = Package::new();
+    let mut records = attach_records(&ATTACHED);
+    records.extend([
+        geometry(PERIOD, 90, 25),
+        revoked(PERIOD, 2, "session_ending"),
+    ]);
+    let mut peer = attached_peer(json!({}));
+    peer["open"] = json!(records);
+    let steps = vec![
+        json!({ "do": "create", "peer": peer }),
+        json!({ "do": "submit", "request": interactive(1, 80, 24) }),
+        json!({ "do": "run" }),
+        json!({ "do": "await_snapshot", "gauge": "event_records", "value": 8, "as": "queued" }),
+        json!({ "do": "drain", "until": { "records": 8 }, "as": "drained" }),
+        json!({ "do": "shutdown" }),
+        json!({ "do": "finish" }),
+    ];
+    let report = script(&package, &root(&package), json!(steps));
+    let queued = &labelled(&report, &steps, "queued")["output"];
+    assert_eq!(queued["event_records"], 8, "{queued:#}");
+    assert_eq!(
+        queued["event_bytes"],
+        8 * CHARGE + 3 * TOKEN + 1 + 1,
+        "{queued:#}"
+    );
+    let drained = drained(&report, &steps, "drained");
+    assert_eq!(
+        tags(&drained),
+        [
+            RESPONSE,
+            INITIAL_METADATA,
+            GRANTED,
+            RESTORATION_BEGIN,
+            DISPLAY,
+            RESTORATION_COMPLETE,
+            GEOMETRY,
+            REVOKED
+        ],
+        "{drained:#?}"
+    );
+    let ended = presented(&drained[7], REVOKED, 1);
+    assert_eq!(ids(ended), [PERIOD, 2], "{ended:#}");
+    assert_eq!(ended["reason"], SESSION_ENDING, "{ended:#}");
+    assert_eq!(ended["reserved"], 0, "{ended:#}");
+    assert_all_released(&report["ledger"]);
+}

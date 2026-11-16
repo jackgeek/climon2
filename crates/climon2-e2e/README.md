@@ -98,6 +98,14 @@ mapping it scrambles and unmaps as soon as `create` returns, an ownership
 ledger shows how every handle and delivery was released, a timeline records
 each call's thread, and probes compare the process's environment, working
 directory, signals and standard streams and the notification descriptor.
+On x86-64 GNU/Linux the host also counts the library's heap (#180): it
+defines glibc's `malloc`, `calloc`, `realloc`, `free` and `posix_memalign`,
+exported dynamically, so the loaded library binds to them. Each allocating
+entry is a naked function that passes on its return address, and the host
+records each block the library image's own code allocated until it is freed;
+glibc's internal blocks are never the library's. macOS binds a library to its
+system allocator directly, so there the tests check exact self-consistency
+instead: each instance's own changes return exactly to their earlier values.
 Expected values come from the native header and contract. Fault cases select
 the hooked library's `CLIMON2_LIBRARY_FAULT` and return early in archive
 mode, whose release library has no hooks; every other case runs against the
@@ -210,10 +218,14 @@ sessions in `tests/headless.rs`.
 | LIB-03 Library: failed creates return no handles and leave no descriptor: null arguments, mismatched release, generation, native paths (non-UTF-8 kept, `PATH_MAX` bound) | `installed_library_create_rejects_invalid_identity_and_paths_without_handles` |
 | LIB-03 Library: client keys, log path and `CLIMON2_LOG` filter | `installed_library_create_rejects_invalid_settings_and_diagnostics_without_handles` |
 | LIB-03 Library: limits it cannot honour, each at its bound (`drain_payload_bytes` must hold a `metadata_record_bytes` record and a `chunk_bytes` Display), never raised or lowered; no descriptor left for the notification and waker descriptors or for the log file (`CM1_RESOURCE_LIMIT`, no log file), one more is enough | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` |
-| LIB-03 Library and Fault: copies survive unmapped caller memory; lossless native paths; two instances' homes, settings, logs and allocations stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` |
+| LIB-03 Library and Fault: copies survive unmapped caller memory; lossless native paths; two instances' homes, settings and logs stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` |
 | LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` |
 | LIB-04 Library and Fault, Linux `eventfd`: borrowed descriptor, counted once; a scheduled race in which polling sees the stream end while the handle is used before shutdown and after the end, every call succeeding with the same descriptor | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` |
-| LIB-04 Fault: allocator pairing, a delivery charged until released | `installed_library_charges_a_delivery_until_it_is_released` |
+| LIB-04 Fault: allocator pairing, a delivery charged until released, the release returning exactly what the drain charged | `installed_library_charges_a_delivery_until_it_is_released` |
+| LIM-02 and LIB-03 Library, x86-64 GNU/Linux: `snapshot`'s current and peak allocation equal the host's own count of the library's heap, after create and once ended, one call at a time after a warm-up lifecycle on the same threads, with logging on (its dispatcher included) and off, and with a `joined-worker` whose `chunk_bytes` block sets the peak (the peaks differ by more than nothing and at most one thread handle, which the standard library allocates outside every allocator) | `installed_library_snapshot_counts_every_allocation_its_instance_holds` |
+| LIM-02 and LIB-03 Library, x86-64 GNU/Linux: an instance that opens a passive monitor connection to a fake daemon peer, shuts down after its Response and drains to terminal evidence keeping its deliveries: current allocation equals the host's count with both records unreleased, and the peak the connection set equals the host's, with logging on and off | `installed_library_snapshot_counts_a_passive_connections_allocation` |
+| LIB-03 Library: while `a` lives, a whole lifecycle of `b` leaves `a`'s current and peak allocation exactly unchanged | `installed_library_instances_never_change_each_others_allocation` |
+| LIB-03 Library: successive instances on one owner thread whose startups differ only in the home's length differ by exactly that many bytes, current and peak | `installed_library_charges_successive_instances_only_for_their_own_differences` |
 | LIB-04 Fault: the failure diagnostic only within `event_bytes`, at and one under the bound | `installed_library_queues_the_failure_diagnostic_only_within_event_bytes` |
 | LIB-05 Fault: injected panic at the bootstrap and `create` | `installed_library_contains_a_panic_at_the_bootstrap_or_create` |
 | LIB-05 and LIB-04 Fault: injected panic at `submit`, `notification`, `snapshot`, `drain`, `shutdown` and `run` stops the instance, with no retry from `shutdown` on; a delivery held past terminal evidence alone keeps communication and destroy busy | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` |
@@ -278,6 +290,7 @@ before it.
 | COM-03 Library and Fault, Command final (minimal, #94): `CM1_FINAL` exit or signal with its name, status unavailable, the close a clean stop with retry none (inside a frame still `truncated_frame`; meeting a Leave, indeterminate); second, after a known result (agreeing or contradicting), early or with a status `invalid_record` | `installed_library_relays_one_command_final_after_the_initial_metadata` (`control_faults.rs`) |
 | COM-03 Library and Fault, backpressure: a Display waiting for `event_bytes` room stops `operation_ms`; `delivery_stall_ms` fails the connection `delivery_stalled`, retry passive, the held-back Ready unanswered | `installed_library_fails_a_stalled_delivery_without_timing_out_its_commands` (`control_faults.rs`) |
 | COM-03 Library and Fault: once waiting records are queued no stall deadline remains, and a Ready times out at `operation_ms` | `installed_library_times_commands_out_again_once_waiting_records_are_queued` (`control_faults.rs`) |
+| LIB-04 Fault, control and screen records: each charged its header twice and only a Display's bytes beside it; Control revoked (`session_ending`) delivered with its reserved field zero | `installed_library_charges_presentation_records_only_the_display_bytes_they_own` (`control_faults.rs`) |
 
 ### Library layer: status, viewing and acknowledgement (`tests/status*.rs`, #95)
 

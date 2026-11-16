@@ -141,8 +141,8 @@ any registration kept: `invalid_state` before any Open, `not_attached` on a
 registration or a standalone Kill's connection. Focus is
 `unsupported_capability` unless the connection's Open selected `focus-v1`,
 and Set viewing and Acknowledge unless it selected `status-v1`, then
-`not_attached` on a registration. Acquire is `invalid_state` before any Open
-or on a standalone Kill's connection, which leave nothing to convert.
+`not_attached` on a registration. Acquire is `invalid_state` before any
+Open or on a standalone Kill's connection, which leave nothing to convert.
 Registrations share the
 connection cap, the 16 MiB queue and the five-second no-progress loss.
 
@@ -571,7 +571,10 @@ passive monitor connection overflow its output queue, so the connection is
 lost inside the pass that read its request. `CLIMON2_DAEMON_HOLD=<path>` makes
 the session loop read no incoming frame while `<path>` exists, announcing each
 held pass by creating `<path>` with its extension replaced by `.held`; a test
-releases frames it wrote on several connections into one pass.
+releases frames it wrote on several connections into one pass
+(`a_held_session_loop_reads_no_frame_until_released` shows a held loop reads
+nothing: a request stays unanswered through two held passes, then is answered
+once the hold is removed).
 These fault
 branches and the extra generic fixture binary are absent from ordinary release
 builds. The ignored libtest function is a subprocess fixture, not a skipped
