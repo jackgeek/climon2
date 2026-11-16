@@ -69,6 +69,12 @@ prefix:
 | prefix+s | Open the session list |
 | prefix+? | Show this dialog |
 
+Below them it lists the selector's own keys under **In the session list**:
+typing or pasting to search, the search's editing keys, Up/Down/PageUp/PageDown,
+the select and cancel keys (as the footer names them), clicking a row or
+outside the box, and the wheel (owner decision on #113: the footer names only
+select, cancel and help, and help lists everything else).
+
 Provide an initially unchecked **Don't show again** checkbox. Persist the
 selected preference separately from the user's configuration, per climon2 home
 across monitor restarts and releases. Closing without checking it keeps automatic

@@ -459,16 +459,55 @@ fn visible(layout: &Layout) -> usize {
 }
 
 /// The footer's key hints with `prefix` (owner decision on #113: only
-/// select, cancel and help): Enter is named as the prefix twice when it is
-/// the prefix, and Escape is not named when the prefix consumes it.
+/// select, cancel and help).
 fn key_hints(prefix: ControlKey) -> String {
-    let select = if prefix.byte() == ENTER {
+    let cancel = ["", "  Esc: cancel"][usize::from(escape_cancels(prefix))];
+    format!(
+        "{}: select{cancel}  {prefix} then ?: help",
+        select_key(prefix)
+    )
+}
+
+/// The selector's keys as the key introduction lists them, under their own
+/// heading (owner decision on #113: the footer names only select, cancel
+/// and help, and help lists everything else).
+pub(crate) fn help(prefix: ControlKey) -> Vec<String> {
+    let mut lines: Vec<String> = [
+        "In the session list:",
+        "Type or paste  Search by status and title",
+        "Left, Right, Home, End, Backspace  Edit the search",
+        "Up, Down, PageUp, PageDown  Move the highlight",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    lines.push(format!(
+        "{}  Select the highlighted session",
+        select_key(prefix)
+    ));
+    lines.extend(escape_cancels(prefix).then(|| "Esc  Cancel".to_owned()));
+    lines.extend(
+        [
+            "Click a row  Highlight it",
+            "Click outside  Cancel",
+            "Wheel  Scroll the list",
+        ]
+        .map(str::to_owned),
+    );
+    lines
+}
+
+/// What selects: Enter, or the prefix twice when Enter is the prefix.
+fn select_key(prefix: ControlKey) -> String {
+    if prefix.byte() == ENTER {
         format!("{prefix} then {prefix}")
     } else {
         "Enter".to_owned()
-    };
-    let cancel = ["  Esc: cancel", ""][usize::from(prefix.byte() == ESC)];
-    format!("{select}: select{cancel}  {prefix} then ?: help")
+    }
+}
+
+/// Whether a bare Escape cancels: not when the prefix consumes it.
+fn escape_cancels(prefix: ControlKey) -> bool {
+    prefix.byte() != ESC
 }
 
 /// The separator across `area`'s width, on its row if it has one.
@@ -718,6 +757,40 @@ mod tests {
         assert_eq!(
             footer("Ctrl+]", true, Rect::new(0, 0, 50, 8)),
             ["a", "Enter: select  Esc: cancel  Ctrl+] then ?: he…"]
+        );
+    }
+
+    /// HLP-02 and SEL-02 (pure supplement; owner decision on #113, "help
+    /// lists everything else"): the key introduction lists the selector's
+    /// keys under their own heading, naming Enter as the prefix twice when it
+    /// is the prefix and leaving out Escape when the prefix consumes it.
+    #[test]
+    fn help_lists_every_selector_key_with_the_actual_prefix() {
+        let help = |prefix: &str| help(ControlKey::from_name(prefix).unwrap());
+        let lines = |select: &str, cancel: &[&str]| {
+            let mut lines = vec![
+                "In the session list:".to_owned(),
+                "Type or paste  Search by status and title".to_owned(),
+                "Left, Right, Home, End, Backspace  Edit the search".to_owned(),
+                "Up, Down, PageUp, PageDown  Move the highlight".to_owned(),
+                format!("{select}  Select the highlighted session"),
+            ];
+            lines.extend(cancel.iter().map(|line| (*line).to_owned()));
+            lines.extend(
+                [
+                    "Click a row  Highlight it",
+                    "Click outside  Cancel",
+                    "Wheel  Scroll the list",
+                ]
+                .map(str::to_owned),
+            );
+            lines
+        };
+        assert_eq!(help("Ctrl+]"), lines("Enter", &["Esc  Cancel"]));
+        assert_eq!(help("Ctrl+["), lines("Enter", &[]));
+        assert_eq!(
+            help("Ctrl+M"),
+            lines("Ctrl+M then Ctrl+M", &["Esc  Cancel"])
         );
     }
 

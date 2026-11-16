@@ -567,7 +567,8 @@ fn expected_screen(rows: u16, cols: u16, prefix: &str) -> String {
 }
 
 /// The key introduction's dialog as the selector document specifies it: the
-/// configured `prefix` followed by x, s and ?, the Don't show again checkbox,
+/// configured `prefix` followed by x, s and ?, the selector's keys (#113), the
+/// Don't show again checkbox,
 /// any `problem` with the saved choice, and the Continue action that Enter
 /// takes, in a box titled Keys with one column of space inside its border.
 fn key_introduction(prefix: &str, checked: bool, problem: Option<&str>) -> Vec<String> {
@@ -576,11 +577,28 @@ fn key_introduction(prefix: &str, checked: bool, problem: Option<&str>) -> Vec<S
         format!("{prefix} then s  Open the session list"),
         format!("{prefix} then ?  Show this dialog"),
         String::new(),
+        "In the session list:".to_owned(),
+        "Type or paste  Search by status and title".to_owned(),
+        "Left, Right, Home, End, Backspace  Edit the search".to_owned(),
+        "Up, Down, PageUp, PageDown  Move the highlight".to_owned(),
+    ];
+    // Enter as the prefix selects when typed twice; Escape as the prefix
+    // cannot cancel (owner decision on #113: help lists the selector's keys).
+    lines.push(match prefix {
+        "Ctrl+M" => "Ctrl+M then Ctrl+M  Select the highlighted session".to_owned(),
+        _ => "Enter  Select the highlighted session".to_owned(),
+    });
+    lines.extend((prefix != "Ctrl+[").then(|| "Esc  Cancel".to_owned()));
+    lines.extend([
+        "Click a row  Highlight it".to_owned(),
+        "Click outside  Cancel".to_owned(),
+        "Wheel  Scroll the list".to_owned(),
+        String::new(),
         format!(
             "[{}] Don't show again (Space)",
             if checked { 'x' } else { ' ' }
         ),
-    ];
+    ]);
     lines.extend(problem.map(str::to_owned));
     lines.extend([String::new(), "Continue (Enter)".to_owned()]);
     let width = lines.iter().map(|line| line.chars().count()).max().unwrap();
