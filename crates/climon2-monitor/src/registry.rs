@@ -23,6 +23,10 @@ pub(crate) enum Found {
 pub(crate) enum ClientEvent {
     /// Monitor Open succeeded, selecting `status-v1` or not.
     Opened { status: bool },
+    /// A passive retry started a fresh client for the session.
+    Starting,
+    /// Whether the client that is over is retried.
+    Recovery(Recovery),
     /// The client cannot serve this session, with why.
     Unavailable(String),
     /// The connected client's connection ended.
@@ -33,6 +37,19 @@ pub(crate) enum ClientEvent {
     Presentation(Presentation),
     /// A request's answer, matched to its request by the supervisor.
     Answer(u64, Result<(), String>),
+}
+
+/// Where recovery of a row's lost or failed client stands (spec #73,
+/// Client supervisor, "Recovery").
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Recovery {
+    /// A passive retry is scheduled or running, after this diagnostic.
+    Retrying(String),
+    /// Recovery stopped for good: rejected permanently, with why.
+    Rejected(String),
+    /// Discovery proved the session's daemon gone, so nothing retries it
+    /// (owner decision on #116, 2026-11-16).
+    Gone,
 }
 
 /// What a daemon reports about its session over a connected client.
@@ -156,6 +173,8 @@ struct Row {
     /// status change time, otherwise when the monitor learned it. It
     /// survives disconnection.
     ended: Option<(Outcome, SystemTime)>,
+    /// Recovery of its lost or failed client, until a client opens.
+    recovery: Option<Recovery>,
 }
 
 impl Row {
@@ -168,6 +187,7 @@ impl Row {
             title: None,
             status: None,
             ended: None,
+            recovery: None,
         }
     }
 
@@ -206,22 +226,28 @@ impl Row {
         literal(&self.title.clone().unwrap_or_else(fallback))
     }
 
+    /// A new connection ends recovery and drops the old connection's stale
+    /// status: only the new client's reports are current (#107's review).
     fn connect(&mut self, connection: Connection, now: SystemTime) {
-        self.connected |= matches!(connection, Connection::Connected { .. });
+        if matches!(connection, Connection::Connected { .. }) {
+            self.connected = true;
+            self.status = None;
+            self.recovery = None;
+        }
         if self.connection != connection {
             self.connection = connection;
             self.since = now;
         }
     }
 
-    /// Whether the row awaits its client: no status or outcome yet, and a
-    /// client starting or opened with `status-v1`.
+    /// Whether the row awaits its first client: no status or outcome yet,
+    /// and a client starting or opened with `status-v1`, not a retry.
     fn starting(&self) -> bool {
         let waiting = matches!(
             self.connection,
             Connection::Starting | Connection::Connected { status: true }
         );
-        waiting && self.standing().0 == Group::Disconnected
+        waiting && self.recovery.is_none() && self.standing().0 == Group::Disconnected
     }
 
     /// What Enter does on this row, and what its canvas shows without a view.
@@ -234,10 +260,12 @@ impl Row {
     }
 
     /// A report changes what the row shows, a connection event its
-    /// connection; control, display and answers are never row state.
+    /// connection, and recovery news its recovery, unless the session is
+    /// gone; control, display and answers are never row state.
     fn apply(&mut self, event: ClientEvent, now: SystemTime) {
         match event {
             ClientEvent::Report(report) => self.learn(report, now),
+            ClientEvent::Recovery(recovery) => self.recover(recovery),
             event => {
                 if let Some(connection) = connection(event) {
                     self.connect(connection, now);
@@ -260,6 +288,21 @@ impl Row {
         }
     }
 
+    fn recover(&mut self, recovery: Recovery) {
+        if self.recovery != Some(Recovery::Gone) {
+            self.recovery = Some(recovery);
+        }
+    }
+
+    /// Discovery proved the session gone: a row not connected and not
+    /// known final stops recovering.
+    fn gone(&mut self) {
+        let connected = matches!(self.connection, Connection::Connected { .. });
+        if !connected && self.ended.is_none() {
+            self.recovery = Some(Recovery::Gone);
+        }
+    }
+
     /// Keeps a nonempty title; an empty or unset one changes nothing.
     fn retitle(&mut self, title: Option<String>) {
         if let Some(title) = title.filter(|title| !title.is_empty()) {
@@ -278,8 +321,8 @@ pub(crate) enum Kind {
     /// Starting, or Unavailable with no connected client: selected
     /// but never acquired, with no terminal content to show.
     Unconnected,
-    /// Disconnected or known final: its retained history arrives with #116;
-    /// until then Enter ignores it.
+    /// Disconnected or known final: selected, never acquired, showing its
+    /// retained history read-only.
     Retained,
 }
 
@@ -328,6 +371,9 @@ impl Registry {
         let own = self.own.as_ref() == Some(&id);
         if own || matches!(found, Found::Stale) {
             self.rows.retain(|key, row| *key != id || row.connected);
+            if let Some(row) = self.rows.get_mut(&id) {
+                row.gone();
+            }
             return None;
         }
         let row = self
@@ -351,6 +397,18 @@ impl Registry {
     /// What Enter does on `id`'s row, if there is one.
     pub(crate) fn kind(&self, id: &SessionId) -> Option<Kind> {
         self.rows.get(id).map(Row::kind)
+    }
+
+    /// Whether `id`'s final outcome is known.
+    pub(crate) fn finished(&self, id: &SessionId) -> bool {
+        self.rows.get(id).is_some_and(|row| row.ended.is_some())
+    }
+
+    /// Where recovery of `id`'s client stands, if it lost or failed one.
+    /// [`Recovery::Gone`] is also #117's seam: Delete offers Remove alone
+    /// for such a row, as for a final one (owner decision on #116).
+    pub(crate) fn recovery(&self, id: &SessionId) -> Option<&Recovery> {
+        self.rows.get(id)?.recovery.as_ref()
     }
 
     /// Records whether the latest pass reached every entry.
@@ -411,6 +469,7 @@ impl Registry {
 fn connection(event: ClientEvent) -> Option<Connection> {
     match event {
         ClientEvent::Opened { status } => Some(Connection::Connected { status }),
+        ClientEvent::Starting => Some(Connection::Starting),
         ClientEvent::Unavailable(why) => Some(Connection::Unavailable(why)),
         ClientEvent::Ended => Some(Connection::Disconnected),
         _ => None,
@@ -809,12 +868,79 @@ mod tests {
         assert_eq!(registry.rows()[0].since, at(5));
     }
 
+    /// REC-01, REC-02 (pure supplement; #107's review; owner decisions on
+    /// #116): a lost client's row keeps its recovery, with its diagnostic,
+    /// through a retry's Starting, which is no first start and makes the
+    /// row unconnected; a reconnect ends recovery and drops the old
+    /// connection's stale status until the new client reports one. A
+    /// permanent rejection replaces retrying. Discovery proving the session
+    /// gone stops recovery for good, the row staying, but changes nothing
+    /// for a connected or final row, and drops a row never connected.
+    #[test]
+    fn recovery_follows_a_lost_client_until_it_reconnects_or_its_session_is_gone() {
+        let mut registry = Registry::new(None);
+        let lost = opened(&mut registry, (1, "lost"), true, 1);
+        let retrying = |why: &str| ClientEvent::Recovery(Recovery::Retrying(why.into()));
+        registry.client(&lost, status(State::Running, 5), at(2));
+        registry.client(&lost, ClientEvent::Ended, at(3));
+        registry.client(&lost, retrying("reset"), at(3));
+        assert_eq!(shown(&registry), ["Disconnected|lost"]);
+        assert_eq!(registry.kind(&lost), Some(Kind::Retained));
+        registry.client(&lost, ClientEvent::Starting, at(4));
+        assert_eq!(shown(&registry), ["Starting|lost"]);
+        assert_eq!(registry.kind(&lost), Some(Kind::Unconnected));
+        assert!(!registry.starting(&lost));
+        assert_eq!(
+            registry.recovery(&lost),
+            Some(&Recovery::Retrying("reset".into()))
+        );
+        registry.client(&lost, ClientEvent::Opened { status: true }, at(5));
+        assert_eq!(shown(&registry), ["Starting|lost"]);
+        assert!(registry.starting(&lost));
+        assert_eq!(registry.recovery(&lost), None);
+        registry.client(&lost, status(State::Idle, 6), at(6));
+        assert_eq!(shown(&registry), ["Idle|lost"]);
+        registry.client(&lost, ClientEvent::Ended, at(7));
+        registry.client(&lost, retrying("reset"), at(7));
+        let rejected = Recovery::Rejected("unsupported_capability".into());
+        registry.client(&lost, ClientEvent::Recovery(rejected.clone()), at(8));
+        assert_eq!(registry.recovery(&lost), Some(&rejected));
+        let gone = |registry: &mut Registry, suffix, command| {
+            let session = metadata(&id(suffix), "2026-11-13T10:00:00.000Z", command, &[]);
+            registry.discovered(session, Found::Stale, at(9));
+        };
+        gone(&mut registry, 1, "lost");
+        registry.client(&lost, retrying("reset"), at(10));
+        assert_eq!(registry.recovery(&lost), Some(&Recovery::Gone));
+        let connected = opened(&mut registry, (2, "connected"), true, 1);
+        let finished = opened(&mut registry, (3, "finished"), true, 1);
+        registry.client(&finished, ended(Outcome::Exit(0), None), at(2));
+        registry.client(&finished, ClientEvent::Ended, at(3));
+        let unopened = metadata(&id(4), "2026-11-13T10:00:00.000Z", "unopened", &[]);
+        let unopened = registry.discovered(unopened, Found::Live, at(1)).unwrap();
+        registry.client(&unopened.session_id, retrying("missing"), at(2));
+        for (suffix, command) in [(2, "connected"), (3, "finished"), (4, "unopened")] {
+            gone(&mut registry, suffix, command);
+        }
+        assert_eq!(registry.recovery(&connected), None);
+        assert_eq!(registry.recovery(&finished), None);
+        assert_eq!(registry.kind(&unopened.session_id), None);
+        assert_eq!(
+            shown(&registry),
+            [
+                "Succeeded|finished",
+                "Disconnected|lost",
+                "Starting|connected"
+            ]
+        );
+    }
+
     /// Enter (spec #73, Session registry; #108, #110, pure supplement): a
     /// connected row not known to be final, with or without `status-v1`, is
     /// connected (selected and acquired); a Starting row and an Unavailable
     /// row without a connected client, uncertain or failed, are unconnected
     /// (selected without acquiring); Disconnected and final rows are retained
-    /// (#116); an unknown row has none.
+    /// (selected read-only, #116); an unknown row has none.
     /// Control and display change nothing.
     #[test]
     fn enter_kinds_follow_each_row_condition() {

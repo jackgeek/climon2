@@ -201,6 +201,9 @@ pub(crate) struct Terminal {
     /// A bracketed paste cut short under this authority: its application is
     /// owed the end marker.
     cut: Option<Authority>,
+    /// A restoration was ever applied: the model holds terminal content,
+    /// kept as a read-only cache once control or the connection ends.
+    cached: bool,
 }
 
 impl Terminal {
@@ -215,6 +218,7 @@ impl Terminal {
             focusable: false,
             focused: None,
             cut: None,
+            cached: false,
         }
     }
 
@@ -316,6 +320,7 @@ impl Terminal {
                 painted: false,
             };
             held.live = true;
+            self.cached = true;
             self.error = None;
             Request::Ready(held.authority)
         })
@@ -524,6 +529,13 @@ impl Terminal {
         let live = self.held.is_some_and(|held| held.live);
         let shown = self.finished.unwrap_or(live);
         self.model.as_ref().filter(|_| shown).map(Model::view)
+    }
+
+    /// The retained cache, for read-only inspection once the session is no
+    /// longer connected (#116): what the last applied restoration and the
+    /// output after it left, from any generation; none before one applied.
+    pub(crate) fn retained(&self) -> Option<View<'_>> {
+        self.model.as_ref().filter(|_| self.cached).map(Model::view)
     }
 }
 
@@ -752,6 +764,55 @@ mod tests {
             );
             assert_eq!(screen(&terminal).unwrap(), ["live", "", ""]);
         }
+    }
+
+    /// REC-02 (pure supplement, #116): a terminal keeps its last applied
+    /// restoration, and the output after it, as a read-only cache once its
+    /// control or connection ends, from one generation to the next; a
+    /// terminal that never applied one, staged or not, has no cache.
+    #[test]
+    fn the_last_applied_content_is_retained_read_only() {
+        let mut parser = Parser::new();
+        let retained = |terminal: &Terminal| {
+            let view = terminal.retained()?;
+            let climon2_vt::view::Screen::Normal { rows, .. } = view.screen() else {
+                panic!("the normal screen");
+            };
+            let first = rows.iter().next()?;
+            let text: String = first
+                .cells()
+                .filter_map(|cell| match cell.content {
+                    climon2_vt::view::Content::Narrow(glyph) => Some(glyph.character),
+                    _ => None,
+                })
+                .collect();
+            Some(text.trim_end().to_owned())
+        };
+        let mut never = Terminal::new(LIMITS);
+        assert_eq!(retained(&never), None);
+        let held = authority(2, 3);
+        never.present(&mut parser, Presentation::Granted(held, geometry(10, 3)));
+        never.present(&mut parser, Presentation::Begin(held, geometry(10, 3)));
+        never.present(&mut parser, Presentation::Display(b"staged".to_vec()));
+        never.present(&mut parser, Presentation::Ended);
+        assert_eq!(retained(&never), None);
+        let mut terminal = restored(b"cache");
+        terminal.present(&mut parser, Presentation::Display(b" more".to_vec()));
+        terminal.present(&mut parser, Presentation::Ended);
+        assert!(terminal.view().is_none());
+        assert_eq!(retained(&terminal).as_deref(), Some("cache more"));
+        let fresh = Authority {
+            generation: 2,
+            period: 1,
+            restoration: 1,
+        };
+        terminal.present(&mut parser, Presentation::Granted(fresh, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Begin(fresh, geometry(10, 3)));
+        terminal.present(&mut parser, Presentation::Display(b"next".to_vec()));
+        assert_eq!(retained(&terminal).as_deref(), Some("cache more"));
+        terminal.present(&mut parser, Presentation::Complete);
+        terminal.present(&mut parser, Presentation::Revoked);
+        assert_eq!(retained(&terminal).as_deref(), Some("next"));
     }
 
     /// #94 and the #89 notes: a finished session's view freezes at its

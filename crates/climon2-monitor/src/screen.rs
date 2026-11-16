@@ -4,7 +4,7 @@ use crate::{
     introduction::KeyIntroduction,
     keys::EXIT,
     paint::{ANSI, Frame, HostCursor, Underlines, paint},
-    registry::{View, truncate},
+    registry::{Recovery, View, truncate},
     selector::Selector,
 };
 use climon2_core::{SessionId, keys::ControlKey, protocol::TerminalSize};
@@ -40,6 +40,12 @@ const VIEWED_ELSEWHERE: &str = "This session is being viewed elsewhere.";
 /// A selected session with no terminal content to show (spec #73,
 /// "Placeholders and states").
 const NO_CONTENT: &str = "No terminal content is available.";
+/// Over a lost session's retained history while a passive retry is
+/// scheduled or running (spec #73, "Placeholders and states").
+const RECONNECTING: &str = "Reconnecting...";
+/// A lost session's daemon proven gone (owner decision on #116,
+/// 2026-11-16): its error overlay and diagnostic.
+const GONE: &str = "Session no longer exists";
 /// The smallest host that shows a session (owner decision, 2026-11-14):
 /// any host under four rows or five columns is too small.
 const MIN_HOST_ROWS: u16 = 4;
@@ -83,20 +89,53 @@ pub(crate) enum Canvas<'a> {
     /// Connected and not controlled by this monitor: viewed elsewhere,
     /// never its cached output.
     Placeholder,
-    /// Selected without a connected client: no terminal content, and its
-    /// condition.
-    NoContent(&'a str),
-    /// Nothing to show yet: acquiring, before the first restoration, or a
-    /// retained session (#116).
+    /// Not connected, its retained history read-only (#116), under the
+    /// overlay its recovery calls for.
+    Retained(vt::View<'a>, Option<&'a Recovery>),
+    /// Selected without a connected client and with no retained history:
+    /// no terminal content, its condition and the overlay its recovery
+    /// calls for.
+    NoContent(&'a str, Option<&'a Recovery>),
+    /// Nothing to show yet: acquiring, before the first restoration.
     Nothing,
 }
 
 impl Canvas<'_> {
+    /// The live or frozen view, which the host follows.
     fn view(&self) -> Option<&vt::View<'_>> {
         match self {
             Self::View(view) => Some(view),
             _ => None,
         }
+    }
+
+    /// Any view painted, read-only history included.
+    fn painted(&self) -> Option<&vt::View<'_>> {
+        match self {
+            Self::View(view) | Self::Retained(view, _) => Some(view),
+            _ => None,
+        }
+    }
+}
+
+/// What the top row's error slot and the read-only view say of a row's
+/// recovery: its diagnostic, or that its daemon is gone (owner decision on
+/// #116, 2026-11-16).
+pub(crate) fn diagnostic(recovery: &Recovery) -> &str {
+    match recovery {
+        Recovery::Retrying(why) | Recovery::Rejected(why) => why,
+        Recovery::Gone => GONE,
+    }
+}
+
+/// The overlay over a lost session's retained history or its no-content
+/// state: exactly `Reconnecting...` while a retry is scheduled or running,
+/// otherwise why recovery stopped.
+fn overlay(recovery: &Recovery) -> String {
+    match recovery {
+        Recovery::Retrying(_) => RECONNECTING.to_owned(),
+        Recovery::Rejected(why) => format!("Not reconnecting: {why}"),
+        Recovery::Gone => GONE.to_owned(),
     }
 }
 
@@ -305,7 +344,20 @@ impl Screen {
                     .collect();
                 centred(&lines, buffer, below);
             }
-            Canvas::NoContent(condition) => centred(&[NO_CONTENT, condition], buffer, below),
+            Canvas::Retained(view, recovery) => {
+                painted(view, buffer, underlines);
+                if let Some(recovery) = recovery {
+                    banner(&overlay(recovery), buffer, below);
+                }
+            }
+            Canvas::NoContent(condition, recovery) => {
+                let overlay = recovery.map(overlay);
+                let lines: Vec<_> = [NO_CONTENT, condition]
+                    .into_iter()
+                    .chain(overlay.as_deref())
+                    .collect();
+                centred(&lines, buffer, below);
+            }
             Canvas::Nothing => {}
         }
         None
@@ -376,6 +428,16 @@ fn centred(lines: &[&str], buffer: &mut Buffer, area: Rect) {
     Paragraph::new(lines)
         .centered()
         .render(area.centered_vertically(height), buffer);
+}
+
+/// `text` reversed, with a space either side, on the middle row of `area`
+/// and centred across it: an overlay that leaves the rest in view.
+fn banner(text: &str, buffer: &mut Buffer, area: Rect) {
+    let text = format!(" {text} ");
+    let width = (text.width() as u16).min(area.width);
+    let x = area.x + (area.width - width) / 2;
+    let y = area.y + area.height / 2;
+    buffer.set_stringn(x, y, text, width.into(), Style::new().reversed());
 }
 
 /// The host mouse tracking an application with `reporting` asks for: none
@@ -462,7 +524,7 @@ fn session_row(
 fn control<'a>(session: &Session<'a>) -> &'a str {
     let scrolled = session
         .canvas
-        .view()
+        .painted()
         .is_some_and(|view| view.scrolled() > 0);
     if scrolled { HISTORY } else { session.control }
 }
@@ -848,7 +910,7 @@ mod tests {
         assert_eq!(shown(None, true, &Canvas::Placeholder), alone);
         assert_eq!(shown(Some(0x14), false, &Canvas::Placeholder), alone);
         assert_eq!(
-            shown(Some(0x14), true, &Canvas::NoContent("Starting")),
+            shown(Some(0x14), true, &Canvas::NoContent("Starting", None)),
             [
                 "",
                 "",
@@ -861,6 +923,76 @@ mod tests {
             shown(Some(0x14), true, &Canvas::Nothing),
             ["", "", "", "", ""]
         );
+    }
+
+    /// REC-02 (pure supplement; owner decisions on #116): a lost session's
+    /// retained history is painted read-only, with no cursor, under exactly
+    /// `Reconnecting...` while a retry is scheduled or running, why
+    /// recovery stopped once rejected, or that the session no longer
+    /// exists; with no history, the no-content state carries the same
+    /// overlay under its condition. The top row's error slot gets the
+    /// diagnostic, and the control slot says `History` once scrolled back.
+    #[test]
+    fn a_lost_session_shows_its_history_read_only_under_its_overlay() {
+        let mut model = model(50, 5, b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix");
+        let retrying = Recovery::Retrying("transport io_error: reset".into());
+        let rejected = Recovery::Rejected("unsupported_capability".into());
+        let history = |recovery| shown(None, true, &Canvas::Retained(model.view(), recovery));
+        assert_eq!(
+            history(Some(&retrying)),
+            [
+                "two",
+                "three",
+                &format!("{:<17}Reconnecting...", "four"),
+                "five",
+                "six"
+            ]
+        );
+        assert_eq!(history(None), ["two", "three", "four", "five", "six"]);
+        assert_eq!(
+            history(Some(&Recovery::Gone))[2],
+            format!("{:<13}Session no longer exists", "four")
+        );
+        let none = |recovery| shown(None, true, &Canvas::NoContent("Disconnected", recovery));
+        let centred =
+            |text: &str| format!("{:>width$}", text, width = (50 + text.len()).div_ceil(2));
+        let content = |overlay: &str| {
+            vec![
+                String::new(),
+                "         No terminal content is available.".to_owned(),
+                centred("Disconnected"),
+                centred(overlay),
+                String::new(),
+            ]
+        };
+        assert_eq!(none(Some(&retrying)), content("Reconnecting..."));
+        assert_eq!(
+            none(Some(&rejected)),
+            content("Not reconnecting: unsupported_capability")
+        );
+        assert_eq!(
+            none(Some(&Recovery::Gone)),
+            content("Session no longer exists")
+        );
+        assert_eq!(diagnostic(&retrying), "transport io_error: reset");
+        assert_eq!(diagnostic(&rejected), "unsupported_capability");
+        assert_eq!(diagnostic(&Recovery::Gone), "Session no longer exists");
+        model.scroll(1);
+        let session = Session {
+            id: &id(),
+            label: "Lost",
+            status: "Disconnected",
+            control: "Not controlling",
+            error: Some(diagnostic(&retrying)),
+            canvas: Canvas::Retained(model.view(), Some(&retrying)),
+        };
+        let area = Rect::new(0, 0, 90, 1);
+        let mut buffer = Buffer::empty(area);
+        session_row(&mut buffer, area, &session, session.error, None);
+        let top: String = (0..90).map(|x| buffer[(x, 0)].symbol()).collect();
+        let label = "Lost | transport io_error: reset";
+        let expected = format!("{label:<51} | {:<18} | {:<15}", "Disconnected", "History");
+        assert_eq!(top, expected);
     }
 
     /// DSC-01 (initial-selection case, pure supplement) and the owner's

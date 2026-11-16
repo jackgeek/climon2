@@ -1,8 +1,7 @@
 //! One instance's caller handles and what draining them reports: the only
 //! place the supervisor reads the client library's records.
-use super::owner::GENERATION;
 use crate::{
-    registry::{ClientEvent, Final, Outcome, Report, State, Status},
+    registry::{ClientEvent, Final, Outcome, Recovery, Report, State, Status},
     terminal::{Authority, Paste, Presentation, Request},
 };
 use climon2_core::{
@@ -20,12 +19,46 @@ const STATUS: &str = "status-v1";
 const FOCUS: &str = "focus-v1";
 
 /// An instance's caller handles, published by its owner thread, with the
-/// release's calls.
+/// release's calls and the connection generation it was created with.
 #[derive(Clone, Copy)]
 pub(super) struct Client {
     pub(super) functions: &'static Functions,
     pub(super) communication: *mut Communication,
     pub(super) control: *mut Control,
+    pub(super) generation: u64,
+}
+
+/// Whether a client that is over is retried: its terminal evidence's
+/// retry, or the monitor's own when the monitor stopped it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Retry {
+    None,
+    /// Recoverable: a fresh instance after a backoff.
+    Passive,
+    /// Rejected for good: a missing revision-1 interface or capability,
+    /// or invalid configuration.
+    Permanent,
+}
+
+impl Retry {
+    /// The terminal evidence's retry class; anything but passive or
+    /// permanent retries nothing.
+    fn of(evidence: u32) -> Self {
+        match evidence {
+            native::RETRY_PASSIVE => Self::Passive,
+            native::RETRY_PERMANENT => Self::Permanent,
+            _ => Self::None,
+        }
+    }
+
+    /// What the row learns of it after `why`, if it is retried or rejected.
+    pub(super) fn recovery(self, why: String) -> Option<Recovery> {
+        match self {
+            Self::None => None,
+            Self::Passive => Some(Recovery::Retrying(why)),
+            Self::Permanent => Some(Recovery::Rejected(why)),
+        }
+    }
 }
 
 // SAFETY: both handles are documented thread-safe for the calls made on them.
@@ -41,8 +74,9 @@ pub(super) enum Drain {
 
 pub(super) enum Stop {
     Empty,
-    /// Terminal evidence, with its error message (empty when stopped).
-    Terminal(String),
+    /// Terminal evidence, with its error message (empty when stopped) and
+    /// whether it is retried.
+    Terminal(String, Retry),
     /// The drain call failed.
     Failed(String),
 }
@@ -121,7 +155,7 @@ impl Client {
 
     /// Submits `request` as `request_id` under the opened generation.
     pub(super) fn submit(&self, request_id: u64, request: &Request) -> Result<(), String> {
-        let request = native_request(request_id, request);
+        let request = native_request(request_id, request, self.generation);
         // SAFETY: a live communication handle and a complete request whose
         // input bytes outlive the call, which copies them.
         checked(unsafe { (self.functions.submit)(self.communication, &request) })
@@ -139,10 +173,12 @@ impl Client {
         let drained = unsafe { drained.assume_init() };
         match drained.kind {
             native::DELIVERY => Drain::Events(self.delivery(id, &drained)),
-            // SAFETY: terminal evidence lives until destroy.
-            native::TERMINAL => Drain::Stop(Stop::Terminal(text(unsafe {
-                (*drained.terminal).error.message
-            }))),
+            native::TERMINAL => {
+                // SAFETY: terminal evidence lives until destroy.
+                let terminal = unsafe { *drained.terminal };
+                let retry = Retry::of(terminal.retry);
+                Drain::Stop(Stop::Terminal(text(terminal.error.message), retry))
+            }
             _ => Drain::Stop(Stop::Empty),
         }
     }
@@ -179,15 +215,11 @@ fn read(id: &SessionId, record: &native::Record) -> Vec<ClientEvent> {
         .map_or_else(Vec::new, |(_, reader)| reader(id, record))
 }
 
-/// The native request for `request`, borrowing its input bytes.
-fn native_request(request_id: u64, request: &Request) -> native::Request {
+/// The native request for `request` in `generation`, borrowing its input
+/// bytes.
+fn native_request(request_id: u64, request: &Request, generation: u64) -> native::Request {
     let (tag, args) = match *request {
-        Request::Acquire => (
-            native::ACQUIRE,
-            native::RequestArgs {
-                generation: GENERATION,
-            },
-        ),
+        Request::Acquire => (native::ACQUIRE, native::RequestArgs { generation }),
         Request::Ready(held) | Request::Focus(held, _) => authorized(request, held),
         Request::Input(held, ref bytes) | Request::Paste(held, Paste { ref bytes, .. }) => (
             native::INPUT,
@@ -390,6 +422,20 @@ pub(super) fn checked(call: Call) -> Result<(), String> {
         text(call.error.code),
         text(call.error.message)
     ))
+}
+
+/// Create's refusal and whether it is retried: invalid arguments or
+/// configuration, an unsupported revision or limit and a release mismatch
+/// are permanent; anything else, such as exhausted resources, passive.
+pub(super) fn created(call: Call) -> Result<(), (String, Retry)> {
+    const PERMANENT: [u32; 4] = [
+        native::INVALID_ARGUMENT,
+        native::UNSUPPORTED_REVISION,
+        native::UNSUPPORTED_LIMIT,
+        native::RELEASE_MISMATCH,
+    ];
+    let retry = [Retry::Passive, Retry::Permanent][usize::from(PERMANENT.contains(&call.code))];
+    checked(call).map_err(|why| (why, retry))
 }
 
 /// Logs a failed call that changes nothing for the caller.
@@ -686,7 +732,7 @@ mod tests {
             restoration: 6,
         };
         for (focused, value) in [(true, 1), (false, 0)] {
-            let request = native_request(9, &Request::Focus(held, focused));
+            let request = native_request(9, &Request::Focus(held, focused), 1);
             assert_eq!((request.tag, request.request_id), (native::FOCUS, 9));
             // SAFETY: the tag names the active member.
             let flag = unsafe { request.args.flag };
@@ -708,7 +754,7 @@ mod tests {
             ends: true,
         };
         let paste = Request::Paste(held, paste);
-        let request = native_request(10, &paste);
+        let request = native_request(10, &paste, 1);
         assert_eq!(request.tag, native::INPUT);
         // SAFETY: the tag names the active member, whose bytes `paste` holds.
         let input = unsafe { request.args.input };
@@ -718,5 +764,58 @@ mod tests {
             unsafe { slice(input.bytes.data, input.bytes.length) },
             b"pasted"
         );
+    }
+
+    /// REC-01 (pure supplement): create's refusal of invalid arguments or
+    /// configuration, an unsupported revision or limit, or another release
+    /// is permanent; any other, such as exhausted resources, passive; the
+    /// terminal evidence's retry is read as it says, anything else as none.
+    #[test]
+    fn create_refusals_and_terminal_evidence_say_whether_to_retry() {
+        let call = |code| Call {
+            code,
+            reserved: 0,
+            error: native::Error {
+                origin: native::ORIGIN_LIBRARY,
+                reserved: 0,
+                code: Bytes {
+                    data: b"code".as_ptr(),
+                    length: 4,
+                },
+                message: Bytes {
+                    data: b"why".as_ptr(),
+                    length: 3,
+                },
+            },
+        };
+        let permanent = [
+            native::INVALID_ARGUMENT,
+            native::UNSUPPORTED_REVISION,
+            native::UNSUPPORTED_LIMIT,
+            native::RELEASE_MISMATCH,
+        ];
+        for code in permanent {
+            assert_eq!(
+                created(call(code)),
+                Err(("code: why".into(), Retry::Permanent))
+            );
+        }
+        for code in [native::RESOURCE_LIMIT, native::INTERNAL_ERROR] {
+            assert_eq!(
+                created(call(code)),
+                Err(("code: why".into(), Retry::Passive))
+            );
+        }
+        assert_eq!(created(call(native::SUCCESS)), Ok(()));
+        let evidence = [
+            (native::RETRY_NONE, Retry::None),
+            (native::RETRY_PASSIVE, Retry::Passive),
+            (native::RETRY_PERMANENT, Retry::Permanent),
+            (0, Retry::None),
+        ];
+        for (retry, expected) in evidence {
+            assert_eq!(Retry::of(retry), expected);
+        }
+        assert_eq!(Retry::None.recovery("why".into()), None);
     }
 }

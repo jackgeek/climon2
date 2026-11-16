@@ -3,7 +3,7 @@
 //! supervisor has released every handle.
 use super::{
     Context, Internal,
-    client::{Client, OPEN_ID, checked, warn},
+    client::{self, Client, OPEN_ID, Retry, checked, warn},
 };
 use climon2_core::{
     SessionId,
@@ -29,13 +29,14 @@ const OPTIONAL: [&str; 5] = [
     "progress-v1",
     "focus-v1",
 ];
-pub(super) const GENERATION: u64 = 1;
 
 /// An instance's whole life on its owner thread. The supervisor hears
 /// `Published` once the handles exist, `Stopped` once run returned (or
-/// create failed), and `OwnerDone` last. A closed `released` channel means
-/// the supervisor gave up at its shutdown deadline: the handles may still be
-/// unreleased, so the instance is left to process exit, never destroyed.
+/// create failed), and `OwnerDone` last, with whether destroy succeeded
+/// (with nothing created, there was nothing to destroy). A closed
+/// `released` channel means the supervisor gave up at its shutdown
+/// deadline: the handles may still be unreleased, so the instance is left
+/// to process exit, never destroyed.
 pub(super) fn owner(
     functions: &'static Functions,
     startup: &StartupData,
@@ -46,10 +47,10 @@ pub(super) fn owner(
     let mut created = MaybeUninit::<Created>::zeroed();
     let native = startup.native();
     // SAFETY: a complete startup whose buffers outlive the call.
-    let result = checked(unsafe { (functions.create)(&native, created.as_mut_ptr()) });
-    if let Err(error) = result {
-        let _ = internal.send(Internal::Stopped(id.clone(), Err(error)));
-        let _ = internal.send(Internal::OwnerDone(id));
+    let result = client::created(unsafe { (functions.create)(&native, created.as_mut_ptr()) });
+    if let Err(refused) = result {
+        let _ = internal.send(Internal::Stopped(id.clone(), Err(refused)));
+        let _ = internal.send(Internal::OwnerDone(id, Ok(())));
         return;
     }
     // SAFETY: a successful create initialized the output.
@@ -58,6 +59,7 @@ pub(super) fn owner(
         functions,
         communication: created.communication,
         control: created.control,
+        generation: startup.generation,
     };
     if let Err(error) = submit_open(&client) {
         tracing::warn!(session = %id, %error, "monitor open not accepted");
@@ -68,16 +70,18 @@ pub(super) fn owner(
     let mut report = MaybeUninit::<native::RunReport>::zeroed();
     // SAFETY: the instance created on this thread and an output struct.
     let ran = checked(unsafe { (functions.run)(created.instance, report.as_mut_ptr()) });
+    let ran = ran.map_err(|why| (why, Retry::Passive));
     let _ = internal.send(Internal::Stopped(id.clone(), ran));
-    if released.recv().is_ok() {
-        // SAFETY: run returned and the supervisor released every handle.
-        warn(
-            &id,
-            "client destroy failed",
-            checked(unsafe { (functions.destroy)(created.instance) }),
-        );
-    }
-    let _ = internal.send(Internal::OwnerDone(id));
+    let destroyed = released
+        .recv()
+        .map_err(|_| "its handles may still be in use".to_owned())
+        .and_then(|()| {
+            // SAFETY: run returned and the supervisor released every handle.
+            let destroyed = checked(unsafe { (functions.destroy)(created.instance) });
+            warn(&id, "client destroy failed", destroyed.clone());
+            destroyed
+        });
+    let _ = internal.send(Internal::OwnerDone(id, destroyed));
 }
 
 /// Submits monitor Open (request 1): `daemon-wire-v1` and `monitor-v1`
@@ -124,10 +128,16 @@ pub(super) struct StartupData {
     filter: Vec<u8>,
     settings: native::Settings,
     limits: native::Limits,
+    /// This attempt's connection generation: fresh for every retry.
+    generation: u64,
 }
 
 impl StartupData {
-    pub(super) fn new(context: &Context, metadata: &SessionMetadata) -> std::io::Result<Self> {
+    pub(super) fn new(
+        context: &Context,
+        metadata: &SessionMetadata,
+        generation: u64,
+    ) -> std::io::Result<Self> {
         let id = &metadata.session_id;
         let log = climon2_platform::logging::library_log(context.home.root(), id)?;
         let guid: Guid = id.as_str().parse().map_err(std::io::Error::other)?;
@@ -151,6 +161,7 @@ impl StartupData {
                 reserved: 0,
             },
             limits: context.limits,
+            generation,
         })
     }
 
@@ -164,7 +175,7 @@ impl StartupData {
             session_id: native::Guid {
                 bytes: self.session,
             },
-            generation: GENERATION,
+            generation: self.generation,
             expected_release: bytes(&self.release),
             metadata_path: path(&self.metadata),
             home_path: path(&self.home),

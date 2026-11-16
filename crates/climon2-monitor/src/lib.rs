@@ -29,7 +29,7 @@ use climon2_core::{SessionId, protocol::TerminalSize};
 use climon2_discovery::{Batch, Incomplete, Outcome, Progress};
 use climon2_vt::{
     Limits, Parser,
-    view::{self as vt, Modes},
+    view::{self as vt, Modes, MouseReporting},
 };
 use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
@@ -37,7 +37,7 @@ use initial::Initial;
 use introduction::KeyIntroduction;
 use keys::Action;
 use mouse::{Area, Gestures, Mouse, Wheel};
-use registry::{ClientEvent, Kind, Registry, Report};
+use registry::{ClientEvent, Kind, Recovery, Registry, Report};
 use router::{Begin, Key, Pasted, Routed, Router};
 use screen::{Canvas, Scene, Screen, Session};
 use selector::Selector;
@@ -287,11 +287,16 @@ impl Monitor {
             .selected
             .as_ref()
             .and_then(|id| rows.iter().find(|row| &row.id == id));
-        let kind = self.selected.as_ref().and_then(|id| self.registry.kind(id));
-        let terminal = self.selected.as_ref().and_then(|id| self.terminals.get(id));
-        let session = row
-            .zip(kind)
-            .map(|(row, kind)| selected(row, kind, terminal));
+        let session = row.and_then(|row| {
+            let id = &row.id;
+            let kind = self.registry.kind(id)?;
+            let shown = Shown {
+                kind,
+                finished: self.registry.finished(id),
+                recovery: self.registry.recovery(id),
+            };
+            Some(selected(row, shown, self.terminals.get(id)))
+        });
         let scene = Scene {
             introduction: &self.introduction,
             rows: &rows,
@@ -360,18 +365,18 @@ impl Monitor {
 
     /// Enter acts on the row's condition when pressed (spec #73, "Enter"):
     /// a connected row not known to be final is selected and acquired; a
-    /// Starting or Unavailable row with no connected client is selected
-    /// without acquiring. Disconnected and final rows are ignored until
-    /// #116, which owns their retained history. This monitor's own session
-    /// has no row (owner decision on #110).
+    /// Starting or Unavailable row with no connected client, and a
+    /// disconnected or final row, are selected without acquiring, read-only
+    /// (#116). This monitor's own session has no row (owner decision on
+    /// #110).
     fn enter(&mut self, id: SessionId) {
         match self.registry.kind(&id) {
             Some(Kind::Connected) => {
                 self.choose(id.clone());
                 self.acquire(&id);
             }
-            Some(Kind::Unconnected) => self.choose(id),
-            Some(Kind::Retained) | None => {}
+            Some(Kind::Unconnected | Kind::Retained) => self.choose(id),
+            None => {}
         }
     }
 
@@ -481,7 +486,10 @@ impl Monitor {
                 tracing::info!(session = %metadata.session_id, ?uncertainty, "session uncertain");
                 (metadata, registry::Found::Uncertain)
             }
-            Outcome::Stale(metadata, _) => (metadata, registry::Found::Stale),
+            Outcome::Stale(metadata, _) => {
+                self.supervisor.forget(metadata.session_id.clone());
+                (metadata, registry::Found::Stale)
+            }
         };
         if let Some(metadata) = self.registry.discovered(metadata, found, now) {
             self.initial
@@ -594,13 +602,39 @@ impl Monitor {
         let target = taking.as_ref().map(|taking| (&taking.target, taking.area));
         let cell = self.gestures.route(mouse, target);
         let Some((cell, taking)) = cell.zip(taking) else {
-            return;
+            return self.inspect(mouse);
         };
         match mouse::wheel(mouse, &taking.modes, taking.alternate) {
             Some(Wheel::History(rows)) => self.terminal(&taking.target.0).scroll(rows),
             Some(Wheel::Key(key)) => Key::Cursor(key).encode(&taking.modes, typed),
             Some(Wheel::Nothing) => {}
             None => mouse::encode(mouse, cell, &taking.modes, typed),
+        }
+    }
+
+    /// A vertical wheel notch, with no modal open, scrolls the selected
+    /// session's read-only history a row (#116), as it does a live one.
+    fn inspect(&mut self, mouse: Mouse) {
+        let Some(id) = self.selected.clone().filter(|_| !self.covered()) else {
+            return;
+        };
+        let Some(kind) = self.registry.kind(&id) else {
+            return;
+        };
+        let terminal = self.terminals.get(&id);
+        let finished = self.registry.finished(&id);
+        let notch = retained(kind, finished, terminal).and_then(|view| {
+            // Nothing reaches the application: its own mouse reporting
+            // does not apply.
+            let modes = Modes {
+                mouse_reporting: MouseReporting::Off,
+                ..view.modes()
+            };
+            let alternate = matches!(view.screen(), vt::Screen::Alternate { .. });
+            mouse::wheel(mouse, &modes, alternate)
+        });
+        if let Some(Wheel::History(rows)) = notch {
+            self.terminal(&id).scroll(rows);
         }
     }
 
@@ -763,25 +797,48 @@ fn terminal<'a>(
         .or_insert_with(|| Terminal::new(model))
 }
 
+/// What the registry says of a selected row beyond its view.
+struct Shown<'a> {
+    kind: Kind,
+    /// Its final outcome is known.
+    finished: bool,
+    recovery: Option<&'a Recovery>,
+}
+
 /// The selected row as the top row shows it: its label, its row status
-/// (#107), its control, any error, and what its canvas shows.
+/// (#107), its control, any error (its terminal's own, otherwise its
+/// recovery's diagnostic, owner decision on #116), and what its canvas
+/// shows.
 fn selected<'a>(
     row: &'a registry::View,
-    kind: Kind,
+    shown: Shown<'a>,
     terminal: Option<&'a Terminal>,
 ) -> Session<'a> {
     let control = control(terminal);
-    let canvas = terminal
-        .and_then(Terminal::view)
-        .map_or_else(|| without_view(kind, &row.status, control), Canvas::View);
+    let canvas = terminal.and_then(Terminal::view).map_or_else(
+        || {
+            let retained = retained(shown.kind, shown.finished, terminal);
+            without_view(&shown, &row.status, control, retained)
+        },
+        Canvas::View,
+    );
+    let diagnostic = shown.recovery.map(screen::diagnostic);
     Session {
         id: &row.id,
         label: &row.label,
         status: &row.status,
         control: control.label(),
-        error: terminal.and_then(Terminal::error),
+        error: terminal.and_then(Terminal::error).or(diagnostic),
         canvas,
     }
+}
+
+/// The read-only history a selected row shows (#116): a row not connected
+/// and not known final keeps its retained cache, if it ever had one. A
+/// final row shows only the view frozen at its end (#108).
+fn retained(kind: Kind, finished: bool, terminal: Option<&Terminal>) -> Option<vt::View<'_>> {
+    let inspected = kind != Kind::Connected && !finished;
+    terminal.filter(|_| inspected).and_then(Terminal::retained)
 }
 
 /// The control the monitor holds through `terminal`: a session it never
@@ -790,17 +847,22 @@ fn control(terminal: Option<&Terminal>) -> Control {
     terminal.map_or(Control::NotControlling, Terminal::control)
 }
 
-/// The canvas of a selected row of `kind` whose terminal has no view: the
-/// placeholder while the monitor does not control a connected session,
-/// never its cache; no terminal content and the row's `status` for a row
-/// selected without a connected client; otherwise nothing yet.
-fn without_view(kind: Kind, status: &str, control: Control) -> Canvas<'_> {
-    if placeholder(kind, control) {
-        Canvas::Placeholder
-    } else if kind == Kind::Unconnected {
-        Canvas::NoContent(status)
-    } else {
-        Canvas::Nothing
+/// The canvas of a selected row whose terminal has no live or frozen view:
+/// the placeholder while the monitor does not control a connected session,
+/// never its cache; nothing yet while it acquires a connected one; for any
+/// other row its `retained` history read-only, or no terminal content and
+/// its `status`, under its recovery's overlay.
+fn without_view<'a>(
+    shown: &Shown<'a>,
+    status: &'a str,
+    control: Control,
+    retained: Option<vt::View<'a>>,
+) -> Canvas<'a> {
+    match (shown.kind, retained) {
+        (Kind::Connected, _) if placeholder(shown.kind, control) => Canvas::Placeholder,
+        (Kind::Connected, _) => Canvas::Nothing,
+        (_, Some(view)) => Canvas::Retained(view, shown.recovery),
+        (_, None) => Canvas::NoContent(status, shown.recovery),
     }
 }
 
@@ -828,6 +890,7 @@ fn context(startup: &Startup, filter: String) -> io::Result<Context> {
         filter,
         lanes,
         shutdown: Duration::from_millis(lanes.shutdown_ms.into()),
+        retry: limits.retry(),
     })
 }
 
@@ -859,7 +922,10 @@ fn incomplete(progress: &Progress) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Canvas, Control, Kind, control, placeholder, revealed, without_view};
+    use super::{
+        Canvas, Control, Kind, Presentation, Recovery, Shown, Terminal, control, placeholder,
+        retained, revealed, terminal, without_view,
+    };
 
     const CONTROLS: [Control; 5] = [
         Control::Acquiring,
@@ -887,35 +953,91 @@ mod tests {
         assert_eq!(control(None), Control::NotControlling);
     }
 
-    /// Spec #73 Enter and placeholders (pure supplement, #110): with no view
-    /// to paint, a connected row the monitor does not control shows the
-    /// placeholder, a row selected without a connected client says it has
-    /// no terminal content and its status, and any other shows nothing yet.
+    /// Spec #73 Enter and placeholders (pure supplement, #110, #116): with
+    /// no live or frozen view to paint, a connected row the monitor does not
+    /// control shows the placeholder, never a cache, and one it is acquiring
+    /// nothing yet; any other row shows its retained history read-only, or
+    /// that it has no terminal content and its status, under its recovery's
+    /// overlay.
     #[test]
-    fn a_selected_row_without_a_view_shows_the_placeholder_its_condition_or_nothing() {
+    fn a_selected_row_without_a_view_shows_the_placeholder_its_history_or_no_content() {
+        let model = climon2_vt::Model::new(
+            climon2_vt::Geometry::for_host(10, 3).unwrap(),
+            climon2_vt::Limits {
+                bytes: 64 << 20,
+                history_rows: 200,
+            },
+        )
+        .unwrap();
+        let retrying = Recovery::Retrying("lost".into());
         let shape = |canvas: Canvas<'_>| match canvas {
             Canvas::View(_) => "view".to_owned(),
             Canvas::Placeholder => "placeholder".to_owned(),
-            Canvas::NoContent(condition) => format!("no content, {condition}"),
+            Canvas::Retained(_, recovery) => format!("history, {recovery:?}"),
+            Canvas::NoContent(condition, recovery) => {
+                format!("no content, {condition}, {recovery:?}")
+            }
             Canvas::Nothing => "nothing".to_owned(),
         };
-        let shown = |kind, status, control| shape(without_view(kind, status, control));
+        let shown = |kind, control, cached: bool| {
+            let shown = Shown {
+                kind,
+                finished: false,
+                recovery: Some(&retrying),
+            };
+            let view = cached.then(|| model.view());
+            shape(without_view(&shown, "Status", control, view))
+        };
         assert_eq!(
-            shown(Kind::Connected, "Unavailable", Control::NotControlling),
+            shown(Kind::Connected, Control::NotControlling, true),
             "placeholder"
         );
-        assert_eq!(
-            shown(Kind::Connected, "Unavailable", Control::Acquiring),
-            "nothing"
-        );
-        assert_eq!(
-            shown(Kind::Unconnected, "Starting", Control::NotControlling),
-            "no content, Starting"
-        );
-        assert_eq!(
-            shown(Kind::Retained, "Disconnected", Control::NotControlling),
-            "nothing"
-        );
+        assert_eq!(shown(Kind::Connected, Control::Acquiring, true), "nothing");
+        for kind in [Kind::Unconnected, Kind::Retained] {
+            assert_eq!(
+                shown(kind, Control::NotControlling, true),
+                "history, Some(Retrying(\"lost\"))"
+            );
+            assert_eq!(
+                shown(kind, Control::NotControlling, false),
+                "no content, Status, Some(Retrying(\"lost\"))"
+            );
+        }
+    }
+
+    /// REC-02 (pure supplement, #116): only a row neither connected nor
+    /// known final shows a retained cache, and only once one exists; a
+    /// final row keeps to the view frozen at its end (#108).
+    #[test]
+    fn only_a_row_neither_connected_nor_final_shows_its_retained_history() {
+        let mut parser = climon2_vt::Parser::new();
+        let mut terminal = Terminal::new(climon2_vt::Limits {
+            bytes: 64 << 20,
+            history_rows: 200,
+        });
+        assert!(retained(Kind::Retained, false, Some(&terminal)).is_none());
+        let held = terminal::Authority {
+            generation: 1,
+            period: 1,
+            restoration: 1,
+        };
+        let geometry = climon2_vt::Geometry::for_host(10, 3).unwrap();
+        terminal.present(&mut parser, Presentation::Granted(held, geometry));
+        terminal.present(&mut parser, Presentation::Begin(held, geometry));
+        terminal.present(&mut parser, Presentation::Complete);
+        terminal.present(&mut parser, Presentation::Ended);
+        let cases = [
+            (Kind::Retained, false, true),
+            (Kind::Unconnected, false, true),
+            (Kind::Connected, false, false),
+            (Kind::Retained, true, false),
+            (Kind::Unconnected, true, false),
+        ];
+        for (kind, finished, expected) in cases {
+            let shown = retained(kind, finished, Some(&terminal)).is_some();
+            assert_eq!(shown, expected, "{kind:?}, finished {finished}");
+        }
+        assert!(retained(Kind::Retained, false, None).is_none());
     }
 
     /// Owner decision on #109 (pure supplement): only a key that closes the
