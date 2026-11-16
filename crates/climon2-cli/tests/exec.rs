@@ -1154,7 +1154,9 @@ fn an_unconfirmed_kill_fails_at_the_deadline_and_reaps_only_its_helper() {
 
 /// Section 1.3 config-edit race: the configuration is read once, before the
 /// daemon starts. An edit after validation but before the client starts
-/// changes neither the client's settings nor the daemon's retention.
+/// changes neither the client's settings nor the daemon's retention or its
+/// notification assembly limits (LIM-01, exec-provided assembly limits):
+/// the daemon keeps the values `exec` validated for the session's lifetime.
 #[test]
 fn a_config_edit_before_the_client_starts_changes_neither_client_nor_daemon() {
     let layout = Layout::new();
@@ -1162,7 +1164,11 @@ fn a_config_edit_before_the_client_starts_changes_neither_client_nor_daemon() {
     fs::create_dir_all(layout.home()).unwrap();
     fs::write(
         &config,
-        r#"{"scrollback":{"max_rows":123},"client":{"escape_prefix":"Ctrl+B"}}"#,
+        concat!(
+            r#"{"scrollback":{"max_rows":123},"client":{"escape_prefix":"Ctrl+B"},"#,
+            r#""monitor":{"limits":{"payload":{"assembly_records":2,"assembly_bytes":40},"#,
+            r#""deadlines":{"assembly_ms":1000}}}}"#
+        ),
     )
     .unwrap();
     let hold = layout.directory.path().join("release-client");
@@ -1199,10 +1205,12 @@ fn a_config_edit_before_the_client_starts_changes_neither_client_nor_daemon() {
         .arg(metadata.daemon_pid.to_string())
         .output()
         .unwrap();
+    let arguments = String::from_utf8(daemon.stdout).unwrap();
     assert!(
-        String::from_utf8(daemon.stdout)
-            .unwrap()
-            .contains("--scrollback-max-rows 123 ")
+        arguments.contains(
+            "--scrollback-max-rows 123 --assembly-records 2 --assembly-bytes 40 --assembly-ms 1000 "
+        ),
+        "{arguments}"
     );
     type_until(&mut terminal, "probe\n", "probe");
     terminal.send(b"\x02d").unwrap();

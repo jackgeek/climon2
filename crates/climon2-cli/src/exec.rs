@@ -2,7 +2,7 @@ use crate::Error;
 use climon2_core::{
     SessionId,
     cli::CommandArgs,
-    config::{ConfigSource, ExecConfig},
+    config::{Assembly, ConfigSource, ExecConfig},
     layout::{ExecutableLayout, HomeLayout, VersionBinary},
     lifetime::Lifetime,
     metadata::SessionMetadata,
@@ -94,6 +94,7 @@ struct Startup<'a> {
     id: &'a SessionId,
     lifetime: Lifetime,
     max_history_rows: u32,
+    assembly: Assembly,
     metadata: PathBuf,
     socket: PathBuf,
     size: TerminalSize,
@@ -109,7 +110,7 @@ fn launch(
     filter: Option<&str>,
     config: ExecConfig,
 ) -> Result<u32, Error> {
-    let startup = Startup::new(home, layout, id, lifetime, config.scrollback.max_rows.get())?;
+    let startup = Startup::new(home, layout, id, lifetime, &config)?;
     let inherited = std::env::vars_os().collect::<Vec<_>>();
     let environment =
         SessionEnvironment::for_session(id, &inherited).map_err(|error| Error::new(125, error))?;
@@ -130,7 +131,7 @@ impl Startup<'_> {
         layout: &'a ExecutableLayout,
         id: &'a SessionId,
         lifetime: Lifetime,
-        max_history_rows: u32,
+        config: &ExecConfig,
     ) -> Result<Startup<'a>, Error> {
         let socket = RuntimeDirectory::prepare(home)?.socket_path(id)?;
         let metadata = home.join("sessions").join(format!("{id}.pty"));
@@ -145,7 +146,8 @@ impl Startup<'_> {
             socket,
             size,
             cwd,
-            max_history_rows,
+            max_history_rows: config.scrollback.max_rows.get(),
+            assembly: config.assembly,
         })
     }
 
@@ -202,6 +204,12 @@ impl Startup<'_> {
             .arg(self.size.cols.to_string())
             .arg("--scrollback-max-rows")
             .arg(self.max_history_rows.to_string())
+            .arg("--assembly-records")
+            .arg(self.assembly.records().to_string())
+            .arg("--assembly-bytes")
+            .arg(self.assembly.bytes().to_string())
+            .arg("--assembly-ms")
+            .arg(self.assembly.lifetime_ms().to_string())
             .arg("--cwd")
             .arg(&self.cwd);
         if let Some(filter) = filter {

@@ -561,6 +561,53 @@ impl Groups {
     }
 }
 
+/// The session daemon's notification assembly limits:
+/// `payload.assembly_records` incomplete assemblies, holding at most
+/// `payload.assembly_bytes` together, each living `deadlines.assembly_ms`
+/// from its creation. `exec` passes the values it validated to the daemon
+/// it starts, which keeps them for the session's lifetime; no monitor
+/// reconfigures a running daemon.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Assembly {
+    records: u32,
+    bytes: u64,
+    lifetime_ms: u32,
+}
+
+impl Assembly {
+    /// Limits within their settings' ranges: a positive count and byte
+    /// budget, and a lifetime of 1 through 3,600,000 ms.
+    pub fn new(records: u32, bytes: u64, lifetime_ms: u32) -> Option<Self> {
+        let within = POSITIVE_32.contains(records.into())
+            && POSITIVE_64.contains(bytes)
+            && MILLIS.contains(lifetime_ms.into());
+        within.then_some(Self {
+            records,
+            bytes,
+            lifetime_ms,
+        })
+    }
+
+    pub fn records(self) -> u32 {
+        self.records
+    }
+
+    pub fn bytes(self) -> u64 {
+        self.bytes
+    }
+
+    pub fn lifetime_ms(self) -> u32 {
+        self.lifetime_ms
+    }
+}
+
+/// The documented defaults.
+impl Default for Assembly {
+    fn default() -> Self {
+        Limits::default().assembly()
+    }
+}
+
 /// One session's mandatory allocation, as the monitor's terminal model of it
 /// is charged: the current model, and the history holding its recent page,
 /// beside the parser the monitor shares among all its models. The monitor
@@ -579,6 +626,18 @@ pub struct MandatoryAllocation {
 }
 
 impl Limits {
+    /// The daemon's notification assembly limits these settings give.
+    pub fn assembly(&self) -> Assembly {
+        let Groups {
+            payload, deadlines, ..
+        } = &self.0;
+        Assembly {
+            records: payload.assembly_records,
+            bytes: payload.assembly_bytes,
+            lifetime_ms: deadlines.assembly_ms,
+        }
+    }
+
     /// The most rows of local history a session's terminal model keeps.
     pub fn history_rows(&self) -> u32 {
         self.0.history.max_rows
@@ -616,5 +675,31 @@ impl Limits {
             at_most(recent_page, named!(memory.history_bytes_per_session)),
         ])
         .map_or(Ok(()), |detail| Err(ConfigError::Invalid(detail)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Assembly;
+
+    /// LIM-01 (pure, exec-provided assembly limits): the documented
+    /// defaults are 32 assemblies, 65,536 bytes and 5,000 ms; each limit
+    /// is accepted at its bounds and refused one past them.
+    #[test]
+    fn assembly_limits_hold_their_settings_ranges() {
+        let defaults = Assembly::default();
+        assert_eq!(
+            (defaults.records(), defaults.bytes(), defaults.lifetime_ms()),
+            (32, 65_536, 5_000)
+        );
+        let lowest = Assembly::new(1, 1, 1).unwrap();
+        assert_eq!(
+            (lowest.records(), lowest.bytes(), lowest.lifetime_ms()),
+            (1, 1, 1)
+        );
+        assert!(Assembly::new(u32::MAX, u64::MAX, 3_600_000).is_some());
+        for (records, bytes, lifetime_ms) in [(0, 1, 1), (1, 0, 1), (1, 1, 0), (1, 1, 3_600_001)] {
+            assert_eq!(Assembly::new(records, bytes, lifetime_ms), None);
+        }
     }
 }
