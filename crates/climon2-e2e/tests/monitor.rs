@@ -3643,12 +3643,16 @@ fn status_keeps_updating_for_background_covered_and_revoked_rows() {
 /// Slow waits for the slot. While both start the body shows the startup
 /// progress, `Connecting to 2 sessions (0 ready)`; at `deadlines.start_ms`
 /// collection ends without them, selecting nothing, and the body says
-/// discovery is incomplete while a late session still starts. Once Slow's
+/// discovery is incomplete while a late session still starts, also in the
+/// top row's error slot once a row is selected (owner decision on #266,
+/// 2026-11-16). Once Slow's
 /// Initial metadata reports its status, it is the first eligible row and
 /// becomes the one-time initial selection, acquired. Had the user selected
 /// a row meanwhile, even read-only, Slow would not be selected.
 #[test]
 fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible() {
+    // Wide enough for the late note beside the held row's label.
+    const WIDE: u16 = 200;
     let held = fake_id(0xd1);
     for explicit in [false, true] {
         let package = Package::new();
@@ -3683,23 +3687,23 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
                 &ear,
             ),
         ];
-        let mut terminal = outer(&package, "c2 monitor");
+        let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
         let hint = "Press Ctrl+] then x to exit.";
         shows(
             &mut terminal,
-            &empty_monitor(ROWS, COLS, &["Connecting to 2 sessions (0 ready)", hint]),
+            &empty_monitor(ROWS, WIDE, &["Connecting to 2 sessions (0 ready)", hint]),
         );
         let late = "Discovery incomplete: some sessions are still starting";
         shows(
             &mut terminal,
-            &empty_monitor(ROWS, COLS, &["No session selected.", hint, late]),
+            &empty_monitor(ROWS, WIDE, &["No session selected.", hint, late]),
         );
         if explicit {
             terminal.send("\x1ds").unwrap();
             enter_on(&mut terminal, held);
-            whole_frame_shows(&terminal, "the held row selected", |screen| {
-                screen.starts_with(&format!("fake {held}"))
-            });
+            // With a row selected, the top row's error slot says it.
+            let noted = format!("fake {held} | {late} ");
+            whole_frame_shows(&terminal, &noted, |screen| screen.starts_with(&noted));
         }
         fs::write(&go, b"").unwrap();
         if explicit {
@@ -3707,23 +3711,23 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
             listed_with(&terminal, STATUS, "Slow");
             terminal.send(ESCAPE).unwrap();
             selector_closed(&terminal);
-            assert!(
-                terminal.row(0).starts_with(&format!("fake {held}")),
-                "{}",
-                terminal.screen()
-            );
+            let plain = format!("fake {held} ");
+            whole_frame_shows(&terminal, "the held row, no longer late", |screen| {
+                screen.starts_with(&plain) && !screen.contains(late)
+            });
         } else {
-            shows(
-                &mut terminal,
-                &beneath(&session_top_row(
-                    usize::from(COLS),
-                    "Slow",
-                    &[STATUS, "Acquiring", SESSIONS_HINT],
-                )),
+            let top = session_top_row(
+                usize::from(WIDE),
+                "Slow",
+                &[STATUS, "Acquiring", SESSIONS_HINT],
             );
+            shows(&mut terminal, &centred_below(&top, ROWS, WIDE, &[]));
         }
         terminal.send("\x1dx").unwrap();
-        assert_released(&package, &mut terminal, 0);
+        // Its wide frames can outgrow the oracle's recent bytes, so only the
+        // title itself is checked.
+        support::assert_released(&package, &mut terminal, 0);
+        assert_eq!(terminal.title().as_deref(), Some(TITLE));
         drop(daemons);
         package.assert_clean();
     }

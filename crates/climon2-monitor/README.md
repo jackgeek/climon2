@@ -368,8 +368,9 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   connected without `status-v1`) or is `deadlines.start_ms` past the moment
   the monitor started it, measured on the monotonic clock. Clients started
   after the first pass are not waited for. While it collects, the body
-  reads `Connecting to N sessions (M ready)`: N clients started for the
-  first pass, M of them no longer starting. Awaiting resources does not
+  reads `Connecting to N sessions (M ready)` (`1 session` for one, owner
+  decision on #266): N clients started for the first pass, M of them no
+  longer starting. Awaiting resources does not
   exist yet (#120).
 - **Selection.** When collection ends, the monitor selects and acquires the
   first eligible row in row order: connected, its status known and not
@@ -382,10 +383,12 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   Any selection, automatic or explicit (Enter on any row, even read-only),
   ends initial selection: nothing is ever chosen automatically again, and
   the choice stays pinned while it starts.
-- **Uncertainty.** When collection ends with a client still starting, the
-  body (shown while nothing is selected) adds `Discovery incomplete: some
-  sessions are still starting` for as long as one of them still is, below
-  any incomplete discovery pass.
+- **Uncertainty.** When collection ends with a client still starting,
+  `Discovery incomplete: some sessions are still starting` shows for as
+  long as one of them still is: in the body, below any incomplete discovery
+  pass, while nothing is selected, and in the top row's error slot while a
+  row is selected, unless that session shows its own error (owner decision
+  on #266, 2026-11-16).
 
 ## Switching, revocation and taking control back (#110)
 
@@ -460,9 +463,9 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Body, no rows | `No sessions to show.` | `screen.rs` |
 | Body, rows but nothing selected | `No session selected.` | `screen.rs` |
 | Body, key hint | `Press <prefix> then x to exit.` | `screen.rs` |
-| Body, startup progress while the initial collection lasts (#266, owner wording 2026-11-16) | `Connecting to <N> sessions (<M> ready)` | `initial.rs` |
+| Body, startup progress while the initial collection lasts (#266, owner wording 2026-11-16) | `Connecting to <N> sessions (<M> ready)`; for one, `Connecting to 1 session (<M> ready)` | `initial.rs` |
 | Body, incomplete discovery pass | `Discovery incomplete: the pass deadline passed`, `Discovery incomplete: cannot list sessions: <error>` | `lib.rs`, `screen.rs` |
-| Body, initial collection ended with sessions still starting (#266) | `Discovery incomplete: some sessions are still starting` | `screen.rs` |
+| Body, or the top row's error slot with a row selected: initial collection ended with sessions still starting (#266) | `Discovery incomplete: some sessions are still starting` | `screen.rs` |
 | Host too small | `Terminal too small` | `screen.rs` |
 | Placeholder | `This session is being viewed elsewhere.`, `Press <key> to take control` | `screen.rs` |
 | Selected without a connected client | `No terminal content is available.`, then the row status | `screen.rs` |
@@ -515,7 +518,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | Own-session scenario (pure supplement): no row and no client for the own session | `the_own_session_is_hidden_and_never_needs_a_client` (`src/registry.rs`) |
 | DSC-01 (initial-selection case, pure supplement), confirmed exclusion: only a connected row with a known nonfinal status is eligible, the first in row order; Starting until a client opened with `status-v1` reports its status | `only_a_connected_row_with_a_known_nonfinal_status_is_eligible` (`src/registry.rs`) |
 | DSC-01 (initial-selection case, bounded collection, pure supplement), empty start and the owner decisions of 2026-11-16: collection waits for the first pass and each of its clients until ready or `deadlines.start_ms` (at the limit and one nanosecond before), then takes the first eligible row once; with none, the first row to become eligible later, once; an explicit selection ends it; late clients reported while still starting | `collection_waits_for_the_first_pass_and_its_clients_then_takes_the_first_eligible_row`, `with_nothing_eligible_the_first_row_to_become_eligible_is_taken_once`, `an_explicit_selection_ends_initial_selection`, `a_client_past_its_start_deadline_no_longer_holds_collection_and_is_reported_late` (`src/initial.rs`) |
-| Startup progress and incompleteness (pure supplement): the body reads the progress while collecting, otherwise the empty or unselected state, then any incomplete pass and late collection | `the_body_says_the_startup_progress_or_the_state_and_any_incompleteness` (`src/screen.rs`) |
+| Startup progress and incompleteness (pure supplement): the body reads the progress while collecting, otherwise the empty or unselected state, then any incomplete pass and late collection; with a row selected, late collection fills the top row's error slot unless the session has its own error; one session in the singular (1 and 2) | `the_body_says_the_startup_progress_or_the_state_and_any_incompleteness`, `a_late_collection_shows_in_the_error_slot_unless_the_session_has_its_own` (`src/screen.rs`), `the_progress_says_one_session_in_the_singular` (`src/initial.rs`) |
 | DSC-04 (pure supplement): uncertainty never removes rows or tears down clients | `uncertainty_never_removes_rows_or_tears_down_clients` (`src/registry.rs`) |
 | Stale rows (owner decision on #106): a session proven gone drops its row unless it was ever connected | `a_session_proven_gone_drops_its_row_unless_it_was_ever_connected` (`src/registry.rs`) |
 | COM-01 and not-connected labels (pure supplement) | `connection_statuses_are_labelled_as_specified` (`src/registry.rs`) |
@@ -531,7 +534,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | #94 rule for #108 and COM-06 (Monitor labels, #107): a finished session's view freezes at Command final, its top row showing `Failed (exit 3)` after its connection closes; Enter does not acquire a final row | `a_finished_session_keeps_its_last_screen_and_cannot_be_acquired` (e2e) |
 | CTL-02 (Monitor), CTL-03 (Monitor), CTL-05 (Monitor: background and revoked), DSC-05 (Monitor: revocation), INP-01 (Monitor: takeover and the placeholder screen) (#110), titles: switching keeps background control and input reaches only the selection; titles update in the background, under the selector and after revocation; another client's takeover wins and the selection shows only the placeholder with its hint, no input or resize reaches any session, the take-control key does nothing in modals and the monitor never takes control back; the key acquires and is consumed, then is ordinary input; prefix+s and prefix+? act from the placeholder | `a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key` (e2e) |
 | CTL-03 (Monitor, status-value case, moved from #107 to #266): effective status keeps updating for a background controller, a selected row covered by the open selector (and its top row once uncovered) and a row revoked by another client's takeover | `status_keeps_updating_for_background_covered_and_revoked_rows` (e2e) |
-| DSC-01 (Monitor, bounded collection; uncertainty explicit), owner decisions of 2026-11-16, spec #73 initial selection: progress while two first-pass clients start; at `deadlines.start_ms` collection ends selecting nothing, and `Discovery incomplete: some sessions are still starting` shows while one still starts; the late row, once eligible, is selected and acquired once; an explicit read-only selection made meanwhile prevents it | `a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible` (e2e, Fault peers) |
+| DSC-01 (Monitor, bounded collection; uncertainty explicit), owner decisions of 2026-11-16, spec #73 initial selection: progress while two first-pass clients start; at `deadlines.start_ms` collection ends selecting nothing, and `Discovery incomplete: some sessions are still starting` shows while one still starts, in the top row's error slot once a row is selected; the late row, once eligible, is selected and acquired once; an explicit read-only selection made meanwhile prevents it | `a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible` (e2e, Fault peers) |
 | Spec #73 Enter on Starting and Unavailable rows without a connected client (derived scenarios), CTL-05 (Monitor: unavailable) (#110): selected without acquiring, with no terminal content and the condition, keys reach no session; once the client connects, the placeholder until the take-control key acquires | `enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires` (e2e) |
 | CTL-04 (Monitor) (#110): promotion keeps a background model live without selection, resize or input; Enter then shows it at once and only then resizes | `promotion_keeps_a_background_model_without_selection_resize_or_input` (e2e) |
 | INP-01 (Monitor: takeover on a too-small host; owner decision on #110): the take-control key acquires with no placeholder showing, nothing is resized until the host has room; prefix+x exits from the placeholder | `the_take_control_key_acquires_on_a_too_small_host` (e2e) |

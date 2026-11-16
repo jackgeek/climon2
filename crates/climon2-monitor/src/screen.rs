@@ -28,9 +28,9 @@ const NO_SELECTION: &str = "No session selected";
 const EMPTY: &str = "No sessions to show.";
 /// The body once rows exist, while nothing is selected (#107).
 const UNSELECTED: &str = "No session selected.";
-/// Why the list is incomplete when initial collection ended with sessions
-/// still starting (#266).
-const LATE: &str = "some sessions are still starting";
+/// The list is incomplete: initial collection ended with sessions still
+/// starting (#266).
+const LATE_INCOMPLETE: &str = "Discovery incomplete: some sessions are still starting";
 const TOO_SMALL: &str = "Terminal too small";
 /// The non-controller placeholder, as the client executable words it.
 const VIEWED_ELSEWHERE: &str = "This session is being viewed elsewhere.";
@@ -204,7 +204,8 @@ impl Screen {
                 None
             }
             (Some(_), Some(session)) => {
-                session_row(&mut buffer, top, session, self.top_hint.as_deref());
+                let error = error(session.error, scene.late);
+                session_row(&mut buffer, top, session, error, self.top_hint.as_deref());
                 self.canvas(&session.canvas, &mut buffer, below)
             }
             (Some(_), None) => {
@@ -274,12 +275,19 @@ fn state<'a>(progress: Option<&'a str>, rows: &[View]) -> &'a str {
     progress.unwrap_or(idle)
 }
 
+/// The top row's error slot: the session's own error, otherwise, while the
+/// initial collection's late sessions still start, that discovery is
+/// incomplete (owner decision, 2026-11-16).
+fn error(own: Option<&str>, late: bool) -> Option<&str> {
+    own.or(late.then_some(LATE_INCOMPLETE))
+}
+
 /// Why discovery is incomplete: the latest pass's reason, then whether the
 /// initial collection ended with sessions still starting.
 fn incomplete(pass: Option<&str>, late: bool) -> Vec<String> {
-    pass.into_iter()
-        .chain(late.then_some(LATE))
-        .map(|why| format!("Discovery incomplete: {why}"))
+    pass.map(|why| format!("Discovery incomplete: {why}"))
+        .into_iter()
+        .chain(late.then(|| LATE_INCOMPLETE.to_owned()))
         .collect()
 }
 
@@ -314,7 +322,13 @@ fn top_row(buffer: &mut Buffer, top: Rect, text: &str) {
 /// the cells they leave from the left, and any error follows it in what
 /// the label leaves: the error is clipped first, and never squeezes out the
 /// label.
-fn session_row(buffer: &mut Buffer, top: Rect, session: &Session<'_>, hint: Option<&str>) {
+fn session_row(
+    buffer: &mut Buffer,
+    top: Rect,
+    session: &Session<'_>,
+    error: Option<&str>,
+    hint: Option<&str>,
+) {
     let style = Style::new().reversed();
     top_row(buffer, top, "");
     let separator = SEPARATOR.width() as u16;
@@ -335,7 +349,7 @@ fn session_row(buffer: &mut Buffer, top: Rect, session: &Session<'_>, hint: Opti
     }
     let (end, _) = buffer.set_stringn(top.x, top.y, session.label, room.into(), style);
     let left = usize::from(room - (end - top.x));
-    if let Some(error) = session.error.filter(|_| left > SEPARATOR.width()) {
+    if let Some(error) = error.filter(|_| left > SEPARATOR.width()) {
         buffer.set_stringn(end, top.y, format!("{SEPARATOR}{error}"), left, style);
     }
 }
@@ -484,7 +498,13 @@ mod tests {
             error,
             canvas: Canvas::Nothing,
         };
-        session_row(&mut buffer, area, &session, hint.then_some(HINT));
+        session_row(
+            &mut buffer,
+            area,
+            &session,
+            session.error,
+            hint.then_some(HINT),
+        );
         assert!(
             buffer
                 .content()
@@ -649,6 +669,19 @@ mod tests {
             incomplete(None, true),
             ["Discovery incomplete: some sessions are still starting"]
         );
+    }
+
+    /// The owner's decision of 2026-11-16 on #266 (pure supplement): while
+    /// the initial collection's late sessions still start, the top row's
+    /// error slot says discovery is incomplete with a row selected too,
+    /// unless the session has its own error, which it never hides.
+    #[test]
+    fn a_late_collection_shows_in_the_error_slot_unless_the_session_has_its_own() {
+        let late = "Discovery incomplete: some sessions are still starting";
+        assert_eq!(error(None, false), None);
+        assert_eq!(error(None, true), Some(late));
+        assert_eq!(error(Some("timed out"), true), Some("timed out"));
+        assert_eq!(error(Some("timed out"), false), Some("timed out"));
     }
 
     /// A model `cols` by `rows` that took `bytes`.

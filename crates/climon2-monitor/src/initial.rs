@@ -48,10 +48,8 @@ pub(crate) struct Progress {
 impl fmt::Display for Progress {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self { sessions, ready } = self;
-        write!(
-            formatter,
-            "Connecting to {sessions} sessions ({ready} ready)"
-        )
+        let noun = ["sessions", "session"][usize::from(*sessions == 1)];
+        write!(formatter, "Connecting to {sessions} {noun} ({ready} ready)")
     }
 }
 
@@ -234,6 +232,17 @@ mod tests {
         let later = found(&mut registry, &mut initial, 5, t0);
         reports(&mut registry, &later, State::NeedsAttention, 99);
         assert_eq!(initial.choose(&registry, t0), None);
+    }
+
+    /// The owner's wording (2026-11-16, on #266): the startup progress says
+    /// one session in the singular and any other count in the plural, at
+    /// one and one past it.
+    #[test]
+    fn the_progress_says_one_session_in_the_singular() {
+        let shown = |sessions, ready| Progress { sessions, ready }.to_string();
+        assert_eq!(shown(1, 0), "Connecting to 1 session (0 ready)");
+        assert_eq!(shown(2, 1), "Connecting to 2 sessions (1 ready)");
+        assert_eq!(shown(0, 0), "Connecting to 0 sessions (0 ready)");
     }
 
     /// Confirmed 2026-11-08 (empty start) and the owner decision of
