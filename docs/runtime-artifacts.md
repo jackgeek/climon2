@@ -53,6 +53,8 @@ flowchart TB
         tui_fixture["climon2-tui-fixture"]
         library_host["climon2-library-host"]
         library_stand_in[["Client library stand-in<br/>test-only C dylib / .so; faulty library"]]
+        second_library[["Second-release fixture library<br/>test-only cdylib of release 0.0.97"]]
+        second_daemon["climon2-second-release-daemon<br/>second-release fixture's session daemon, release 0.0.97"]
         owned_exec["climon2-test-owned<br/>test ownership exec adapter"]
         terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
@@ -69,7 +71,12 @@ flowchart TB
         library_host -->|"loads through the shared loader; calls through the C ABI"| library
         library_host -->|"hello probes for a session's state"| daemon
         library -->|"daemon wire revision 1 to the host's fake daemon peer"| library_host
+        library -->|"allocates through its exported glibc malloc family; x86-64 GNU/Linux tests only"| library_host
         tests -->|"loads through the shared loader in release-check and Fault-layer tests"| library_stand_in
+        tests -->|"loads through the shared loader in release-check tests"| second_library
+        library_host -->|"loads beside the release under test through the shared loader"| second_library
+        cli -->|"starts 0.0.97 sessions from the 0.0.97 folder"| second_daemon
+        second_library -->|"daemon wire revision 1: passive monitor connections"| second_daemon
         tests -->|"execs registered terminal roots through"| owned_exec
         owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
@@ -112,7 +119,14 @@ display arrive with #94. The library host fixture drives those instances
 through the function table, with the test-hooks library's fault injection,
 as the Library layer's instrumented host. It also serves a clearly labelled
 fake daemon peer that the library under test connects to, and probes real
-session daemons' hello state. The Linux library links the GCC
+session daemons' hello state. On x86-64 GNU/Linux the host exports glibc's
+allocation entry points, which the loaded library binds to, so it can count
+the library's heap independently of the library's own allocation accounting
+(#180). The `climon2-client` crate's `#[global_allocator]`, which measures
+that accounting, replaces the allocator of every artifact that links the
+crate: the client library, the client executable and the package's own test
+binaries ([ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)). The
+Linux library links the GCC
 unwinder statically, because no unwinding leaves it, so it needs only glibc's
 libraries and has no soname, RPATH or RUNPATH, as the
 [Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for
@@ -173,11 +187,12 @@ release resources. Resource-blocked rows remain visible; history pressure
 preserves a recent page. Unsafe growth/cleanup is explicit failure, not client
 eviction or unloading. Allocation-aware terminal qualification reopens the
 narrow unbounded-engine assumption; `climon2-vt`'s allocation-bounded `Model`
-(#76) provides it for the monitor's planned per-session models, which the
-monitor does not keep yet: at startup it reads only their mandatory
-allocation, to check that its limits hold one session's model (#167). It
-chooses no new executable/library or consumption arrow, and does not sandbox
-trusted native code.
+(#76), fed through one `Parser` shared per monitor (#166), provides it for
+the monitor's planned per-session models, which the monitor does not keep
+yet: at startup it reads only their mandatory allocation and the parser's
+size, to check that its limits hold one session's model beside the parser
+(#167). It chooses no new executable/library or consumption arrow, and does
+not sandbox trusted native code.
 
 The client executable will also load its same-release library for ordinary
 operations.
@@ -193,6 +208,22 @@ one defect: xtask's release-check tests
 load it through the same release checks as the real library, and
 `climon2-platform`'s loader tests load it, as the faulty library, through the
 loader. It is never shipped.
+
+**Current (#97):** the [second-release fixture](../GLOSSARY.md#testing) is
+two test-only artifacts of the `climon2-second-release` crate, both release
+0.0.97: its library, the `cdylib` of `climon2-client`'s library source built
+without test hooks, which Cargo leaves in `deps/`; and its session daemon,
+`climon2-second-release-daemon`, the `climon2-daemon` library behind a thin
+main that serves only 0.0.97 and gives its session's command
+`CLIMON2_SECOND_RELEASE_DAEMON`. The mixed-release Library-layer tests package
+both with this build's other executables as a 0.0.97 release and install it
+with the real installer in a sibling version folder, so that folder's CLI
+starts 0.0.97 sessions served by the fixture's daemon. One library host loads
+both releases' libraries through the shared loader, and each release's
+instances open passive monitor connections to their own release's daemons.
+xtask's tests run the release checks on the library as 0.0.97's. Neither is
+ever shipped. The developer accepted this fixture on 2026-11-15
+([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
 
 **Current (#74):** every version folder ships the `climon2-monitor` executable,
 on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 mon`, or their `climon2`

@@ -1,3 +1,4 @@
+pub mod second_release;
 pub mod stand_in;
 
 use std::{

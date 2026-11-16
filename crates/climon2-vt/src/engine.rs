@@ -7,7 +7,7 @@ use alacritty_terminal::{
     event::{Event, EventListener},
     grid::Dimensions,
     term::{Config, Osc52, TermMode, cell::Cell},
-    vte::ansi::{CursorStyle, Processor, Timeout},
+    vte::ansi::{CursorStyle, Handler, NamedPrivateMode, PrivateMode, Processor, Timeout},
 };
 use std::{cell::RefCell, mem, rc::Rc, time::Duration};
 
@@ -61,11 +61,33 @@ fn config(history: usize, unset: CursorStyle) -> Config {
     }
 }
 
-/// The unchanged engine fed by its parser, as the daemon's virtual terminal
-/// and a monitor model both run it.
+/// vte's parser for the engine. A monitor shares one among all its models
+/// (#166): every token it is fed is complete, so it holds nothing from one
+/// model when the next is fed, except the preceding character vte repeats
+/// for `CSI n b`, which models therefore repeat themselves.
+pub struct Parser(Processor<Unbuffered>);
+
+impl Parser {
+    /// What a parser allocates: vte's synchronized-update buffer, which
+    /// `Processor::new` allocates whole. A monitor counts it once, beside its
+    /// models' footprints.
+    pub const BYTES: usize = 2 * 1024 * 1024;
+
+    pub fn new() -> Self {
+        Self(Processor::new())
+    }
+}
+
+impl Default for Parser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The unchanged engine, as the daemon's virtual terminal and a monitor
+/// model both run it, fed by a parser it is given.
 pub(crate) struct Core<L> {
     term: Term<L>,
-    processor: Processor<Unbuffered>,
     /// The cursor style the engine reports while the application has set
     /// none.
     unset: CursorStyle,
@@ -73,15 +95,28 @@ pub(crate) struct Core<L> {
 
 impl<L: EventListener> Core<L> {
     pub(crate) fn new(geometry: Geometry, history: usize, listener: L, unset: CursorStyle) -> Self {
-        Self {
+        let mut core = Self {
             term: Term::new(config(history, unset), &Size(geometry), listener),
-            processor: Processor::new(),
             unset,
-        }
+        };
+        core.reset();
+        core
     }
 
-    pub(crate) fn advance(&mut self, bytes: &[u8]) {
-        self.processor.advance(&mut self.term, bytes);
+    /// Start, or restart after RIS (`ESC c`), with alternate scroll off, as
+    /// xterm does; Alacritty's own engine turns it on (#179).
+    pub(crate) fn reset(&mut self) {
+        self.term
+            .unset_private_mode(PrivateMode::Named(NamedPrivateMode::AlternateScroll));
+    }
+
+    pub(crate) fn advance(&mut self, parser: &mut Parser, bytes: &[u8]) {
+        parser.0.advance(&mut self.term, bytes);
+    }
+
+    /// Print `character` `count` times, as vte does for `CSI n b`.
+    pub(crate) fn repeat(&mut self, character: char, count: usize) {
+        (0..count).for_each(|_| self.term.input(character));
     }
 
     /// Change the normal screen's history capacity, dropping its oldest rows
@@ -170,6 +205,7 @@ fn position(grid: &Grid<Cell>) -> (usize, usize) {
 
 pub(crate) struct Engine {
     core: Core<Listener>,
+    parser: Parser,
     events: Rc<RefCell<Vec<Event>>>,
     signals: Signals,
     normal_cursor: (usize, usize),
@@ -189,6 +225,7 @@ impl Engine {
         let events = listener.0.clone();
         Self {
             core: Core::new(geometry, history, listener, CursorStyle::default()),
+            parser: Parser::new(),
             events,
             signals: Signals::default(),
             normal_cursor: (1, 1),
@@ -197,7 +234,7 @@ impl Engine {
 
     /// Feed one step and collect the replies it produced.
     pub(crate) fn advance(&mut self, bytes: &[u8], replies: &mut Vec<u8>) {
-        self.core.advance(bytes);
+        self.core.advance(&mut self.parser, bytes);
         self.remember_cursor();
         let events = std::mem::take(&mut *self.events.borrow_mut());
         events
@@ -240,9 +277,11 @@ impl Engine {
         self.signals.bells
     }
 
-    /// `ESC c` clears the engine's title without an event.
-    pub(crate) fn reset_title(&mut self) {
+    /// After `ESC c`, which clears the engine's title without an event and
+    /// restarts its modes as Alacritty starts: restart them as xterm does.
+    pub(crate) fn reset(&mut self) {
         self.signals.title = None;
+        self.core.reset();
     }
 
     pub(crate) fn mode(&self) -> TermMode {

@@ -221,7 +221,9 @@ name = "climon2-e2e"
 version = "0.1.0"
 dependencies = [
  "climon2-core",
+ "climon2-fixtures",
  "climon2-install",
+ "climon2-second-release",
  "climon2-test-term",
  "nix 0.31.3",
  "portable-pty",
@@ -277,6 +279,17 @@ dependencies = [
  "socket2",
  "tempfile",
  "time",
+ "tracing",
+]
+
+[[package]]
+name = "climon2-second-release"
+version = "0.0.97"
+dependencies = [
+ "climon2-core",
+ "climon2-daemon",
+ "climon2-platform",
+ "libc",
  "tracing",
 ]
 
@@ -1766,6 +1779,7 @@ dependencies = [
  "climon2-fixtures",
  "climon2-install",
  "climon2-platform",
+ "climon2-second-release",
  "libc",
  "proc-macro2",
  "quote",
