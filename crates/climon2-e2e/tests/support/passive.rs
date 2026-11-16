@@ -47,12 +47,14 @@ pub const SIGNAL: u64 = 2;
 pub const RESULT_NONE: u64 = 0;
 pub const OPENED: u64 = 1;
 pub const LEFT: u64 = 8;
+pub const TERMINATION: u64 = 9;
 pub const KNOWN_FINAL: u64 = 11;
 pub const RESPONSE: u64 = 1;
 pub const INITIAL_METADATA: u64 = 2;
 pub const TITLE: u64 = 3;
 pub const NOTIFICATION: u64 = 5;
 pub const PROGRESS: u64 = 6;
+pub const FINAL: u64 = 12;
 pub const DIAGNOSTIC: u64 = 14;
 pub const DELIVERY: u64 = 1;
 pub const EMPTY: u64 = 2;
@@ -68,6 +70,8 @@ pub const LEAVE_REJECTED: u64 = 3;
 pub const LEAVE_FAILED: u64 = 4;
 pub const LEAVE_INDETERMINATE: u64 = 5;
 pub const CLEANUP_COMPLETE: u64 = 1;
+pub const CLEANUP_INCOMPLETE: u64 = 2;
+pub const CLEANUP_UNKNOWN: u64 = 3;
 /// `sizeof(cm1_request)` and `sizeof(cm1_bytes)`.
 pub const REQUEST: u64 = size_of::<climon2_core::native::Request>() as u64;
 pub const TOKEN: u64 = size_of::<climon2_core::native::Bytes>() as u64;
@@ -137,6 +141,48 @@ pub fn open(id: u64, required: &[&str], optional: &[&str]) -> Value {
 /// A Leave with public `id` of connection `generation`.
 pub fn leave(id: u64, generation: u64) -> Value {
     json!({ "tag": "leave", "request_id": id, "generation": generation })
+}
+
+/// A Kill with public `id` requiring `required` (#96).
+pub fn kill(id: u64, required: &[&str]) -> Value {
+    json!({ "tag": "kill", "request_id": id, "required": required })
+}
+
+/// A command result's native form: `kind` and `value`, and its signal name
+/// (absent is null and zero, as every empty native buffer is).
+pub fn native_command(kind: u64, value: u64, name: Option<&str>) -> Value {
+    let empty = json!({ "null": true, "length": 0 });
+    let signal_name = name.map_or_else(
+        || json!({ "present": 0, "reserved": 0, "value": empty }),
+        |name| json!({ "present": 1, "reserved": 0, "value": name }),
+    );
+    json!({ "kind": kind, "value": value, "signal_name": signal_name })
+}
+
+/// A Command final record of `command` (its native form), status
+/// unavailable because `status-v1` is not selected (#96).
+pub fn assert_final(record: &Value, generation: u64, command: &Value) {
+    assert_header(record, FINAL, generation);
+    let expected = json!({
+        "command_result": command,
+        "status": { "available": 0, "reserved": 0 },
+    });
+    assert_eq!(record["final"], expected, "{record:#}");
+}
+
+/// A Kill's termination result: the command result it knew, if any, and
+/// its cleanup.
+pub fn termination(command: Option<&Value>, cleanup: u64) -> Value {
+    let absent = native_command(0, 0, None);
+    json!({
+        "command_result": {
+            "present": u64::from(command.is_some()),
+            "reserved": 0,
+            "value": command.unwrap_or(&absent),
+        },
+        "cleanup": cleanup,
+        "reserved": 0,
+    })
 }
 
 /// The charge of an Open naming `tokens`: the request and each token.
@@ -287,6 +333,20 @@ pub fn assert_all_released(ledger: &Value) {
 /// The fake daemon's frame of `type` with a JSON `body`.
 pub fn send(code: u8, body: Value) -> Value {
     json!({ "send": { "type": code, "json": body } })
+}
+
+/// A fake daemon that opens with `title-v1`, reports the title `t`, then
+/// sends `after`.
+pub fn opened_then(after: Vec<Value>) -> Value {
+    let mut actions = vec![opened(&SELECTED), initial(json!("t"))];
+    actions.extend(after);
+    json!({ "open": actions })
+}
+
+/// A Command final of the wire `result`, with the null status of an
+/// unselected `status-v1`.
+pub fn command_final(result: Value) -> Value {
+    send(0x4c, json!({ "command_result": result, "status": null }))
 }
 
 /// A Response to the library's request `id` (`"$open"` or `"$leave"`).

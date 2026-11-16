@@ -31,12 +31,15 @@
 //! - `snapshot`, `notification`, `shutdown`; `await_snapshot` until its
 //!   `gauge` reaches `value`;
 //! - `touch` a `path`; `probe` a `socket`'s hello `state`; `signal` a
-//!   real daemon's `pid` to `stop` or `continue`; `clock`: set a real
-//!   daemon's controllable status clock (`CLIMON2_DAEMON_CLOCK`) at `path`
-//!   to `value` milliseconds and wait, up to 30 s, until the daemon writes the
-//!   value to its `.ack` sibling, once the turn that read it has queued its
-//!   records (#95);
+//!   real daemon's `pid` to `stop`, `continue` or `kill` (#96); `clock`: set
+//!   a real daemon's controllable status clock (`CLIMON2_DAEMON_CLOCK`) at
+//!   `path` to `value` milliseconds and wait, up to 30 s, until the daemon
+//!   writes the value to its `.ack` sibling, once the turn that read it has
+//!   queued its records (#95); `await_file`: wait, up to 30 s, until the
+//!   test creates `path`, so later steps follow what the test does outside
+//!   the host, such as attaching an ordinary client (#102);
 //! - `await_peer` until it received `frames` frames;
+//! - `destroy` on the owner thread, ahead of `finish` (#96);
 //! - `finish`: run's report, drains to terminal evidence, handle releases,
 //!   destroy and join.
 //!
@@ -53,7 +56,7 @@ use super::{
 };
 use climon2_core::{
     native,
-    protocol::{self, ClientMessage},
+    protocol::{self, HelloRequest},
 };
 use serde_json::{Map, Value, json};
 use std::{
@@ -135,6 +138,7 @@ impl World<'_> {
             "touch" => return touch(step),
             "signal" => return signal(step),
             "clock" => return clock(step),
+            "await_file" => return await_file(step),
             "probe" => return hello_state(Path::new(step["socket"].as_str().expect("a socket"))),
             _ => {}
         }
@@ -156,6 +160,10 @@ impl World<'_> {
             "notification" => json!(api.notification(handles(instance)).0),
             "shutdown" => api.shutdown(handles(instance)),
             "await_peer" => await_peer(instance, step),
+            "destroy" => {
+                let handles = handles(instance);
+                owner(instance).call(move || api.destroy(handles))
+            }
             "finish" => finish(api, instance),
             _ => panic!("unknown step {action}"),
         }
@@ -415,12 +423,27 @@ fn touch(step: &Value) -> Value {
     json!("touched")
 }
 
-/// Stops or resumes a process, such as a real session daemon.
+/// Whether `path` appeared within 30 s: the test made it once what the
+/// following steps wait for happened outside the host.
+fn await_file(step: &Value) -> Value {
+    let path = Path::new(step["path"].as_str().expect("a path"));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !path.exists() {
+        if Instant::now() >= deadline {
+            return json!(false);
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    json!(true)
+}
+
+/// Stops, resumes or kills a process, such as a real session daemon.
 fn signal(step: &Value) -> Value {
     let pid = step["pid"].as_i64().expect("a pid") as libc::pid_t;
     let signal = match step["signal"].as_str() {
         Some("stop") => libc::SIGSTOP,
         Some("continue") => libc::SIGCONT,
+        Some("kill") => libc::SIGKILL,
         other => panic!("unknown signal {other:?}"),
     };
     // SAFETY: kill has no memory-safety preconditions.
@@ -463,7 +486,7 @@ fn hello_state(socket: &Path) -> Value {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("a read timeout");
-    let hello = ClientMessage::Hello {
+    let hello = HelloRequest {
         protocol: protocol::PROTOCOL_VERSION,
     }
     .to_frame()

@@ -45,6 +45,6 @@ diagnostic message; the code says what failed. It replaces any output not
 yet started on the stream, then closes the connection. The daemon decides
 `frame_too_large` and `invalid_frame_length` from the length prefix before
 any body arrives, and `truncated_frame` when the stream ends inside a frame; a
-stream that ends between frames closes without this event. The first frame
-after hello is judged as revision 1 only once its type selects revision 1, as
-the [post-hello boundary](post-hello.md#choosing-a-protocol) explains.
+stream that ends between frames closes without this event. Every frame after
+hello is judged as revision 1, the first one too, as the
+[post-hello boundary](post-hello.md#after-hello) explains.

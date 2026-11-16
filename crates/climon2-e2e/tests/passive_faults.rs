@@ -85,6 +85,8 @@ fn outcome<'a>(report: &'a Value, index: usize, name: &str) -> (&'a Value, Vec<V
     (step(report, start + 1), records, terminal.clone())
 }
 
+/// REC-01 Fault (startup failure calls for passive retry; missing
+/// revision-1 support or an invalid configuration for none possible) and
 /// COM-01 Fault (missing required support is rejected explicitly
 /// before any role takes effect, support is never inferred from the release,
 /// and incompatible peers are rejected): against fake daemons of this very
@@ -364,13 +366,6 @@ fn installed_library_selects_only_families_both_sides_support() {
     }
     assert_all_released(&report["ledger"]);
     package.assert_clean();
-}
-
-/// A fake daemon that opens with `title-v1` and then sends `after`.
-fn opened_then(after: Vec<Value>) -> Value {
-    let mut actions = vec![opened(&SELECTED), initial(json!("t"))];
-    actions.extend(after);
-    json!({ "open": actions })
 }
 
 /// COM-02 Fault (each boundary's framing, types and records,
@@ -756,7 +751,9 @@ fn assert_scenarios(package: &Package, root: &Path, scenarios: &[Scenario]) {
 }
 
 /// COM-03 Fault (lost responses produce truthful outcomes, a request that
-/// outlives its deadline reports `timeout`, and nothing is replayed): an
+/// outlives its deadline reports `timeout`, and nothing is replayed) and
+/// REC-01 Fault (transport loss calls for passive retry, a protocol
+/// rejection for none possible): an
 /// Open the daemon never answers within `start_ms` is answered
 /// indeterminate `timeout`, and so is a Leave within `leave_ms`; a
 /// connection lost with an Open or a Leave unanswered gives no fabricated

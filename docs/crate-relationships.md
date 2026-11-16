@@ -64,6 +64,7 @@ flowchart TB
     fixtures --> platform
     fixtures -.->|"dev"| test_term
     platform -.->|"dev"| fixtures
+    client -.->|"dev"| fixtures
     xtask --> core
     xtask --> install
     xtask --> platform
@@ -101,7 +102,8 @@ deliberately excluded from this workspace-only diagram.
 artifact of `climon2-client`, not another crate. The `#[repr(C)]` declarations
 of its native interface live in `climon2-core`, so the client library, the
 client executable and the monitor can share them without new edges; today the
-library, the library host fixture and xtask's release checks consume them.
+library, the client executable (#100, #101), the library host fixture and xtask's
+release checks consume them.
 
 **Current (#77):** `climon2-discovery` holds the session discovery that
 [Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59)
@@ -110,9 +112,10 @@ planned to share between the CLI and the monitor. It consumes only `core` and
 
 **Current (#84):** the one validated loader for client libraries lives in
 `climon2-platform`, as [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)
-records. The library-host fixture and xtask release checks use it; the monitor
-and client executable do not yet. Test-only loader fixtures consume the
-platform crate as dev-dependencies.
+records. The library-host fixture, xtask release checks and the client
+executable, for attach and kill (#100, #101), use it; the monitor does not yet. Test-only
+loader fixtures consume the platform crate as dev-dependencies, and the
+client's tests consume `climon2-fixtures` for the client library stand-in.
 
 **Current (#155):** the CLI, the client executable and the monitor share
 their start-up and failure rules instead of copying them; no edge changes.
@@ -154,7 +157,10 @@ Canonical monitor presentation and optional core Focus introduce no new crate.
 The platform-neutral encoder and validator for
 [daemon wire revision 1](protocol/daemon-client/core-v1.md) lives in
 `climon2-core`, which the daemon and client already consume, so it adds no
-crate or edge. The agreed revision also
+crate or edge. Beside it, core's `protocol` module now holds only the frozen
+hello; retiring the version-private post-hello message set
+([#104](https://github.com/jackgeek/climon2/issues/104)) removed no crate or
+edge either. The agreed revision also
 anticipates source-monitor session consumption and browser terminal consumption
 over future forwarding boundaries, shown in the artifact diagram. Their crate
 placement is unassigned; no new crate or Cargo edge is implied. The wire

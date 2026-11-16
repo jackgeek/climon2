@@ -2,7 +2,8 @@
 
 mod support;
 
-use climon2_test_term::{Terminal, controlled_bash, copy_executable};
+use climon2_fixtures::second_release;
+use climon2_test_term::{Terminal, bin_path, controlled_bash, copy_executable};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 use support::{LIBRARY, Package, TIMEOUT, quote, type_until};
@@ -509,9 +510,11 @@ fn installed_log_headers_links_and_filters_survive_exec_handoffs() {
     }
 }
 
-/// #19/#20/#38: a slow pre-hello peer plus invalid framing on unrelated raw
-/// sockets cannot starve the actual installed client's input/output or the
-/// installed list's concurrent probe. No raw peer becomes a controlling client.
+/// #19/#20/#38 and COM-01 (Contract after retirement): a slow pre-hello
+/// peer plus invalid framing on unrelated raw sockets cannot starve the
+/// actual installed client's input/output or the installed list's
+/// concurrent probe. No raw peer becomes a controlling client, and the peer
+/// that never sends a hello is closed at its deadline without a byte.
 #[test]
 fn installed_session_survives_raw_socket_abuse_and_pending_hello() {
     use std::io::{Read, Write};
@@ -546,11 +549,7 @@ fn installed_session_survives_raw_socket_abuse_and_pending_hello() {
     terminal.wait_for_text("54-still-live", TIMEOUT).unwrap();
     let mut response = Vec::new();
     pending.read_to_end(&mut response).unwrap();
-    let frame = climon2_core::protocol::read_frame(&mut response.as_slice()).unwrap();
-    assert!(matches!(
-        climon2_core::protocol::ServerMessage::from_frame(frame).unwrap(),
-        climon2_core::protocol::ServerMessage::Error { .. }
-    ));
+    assert_eq!(response, b"", "the pending peer was answered");
     drop(pending);
     terminal.send("exit 0\n").unwrap();
     assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
@@ -765,11 +764,29 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
     let package = Package::private();
     let old_version = env!("CARGO_PKG_VERSION");
     let old_folder = package.executable_home().join(old_version);
-    let real_client = old_folder.join("client-real");
-    fs::rename(old_folder.join("climon2-client"), &real_client).unwrap();
+    // The real clients attach through their own version folder's library
+    // (#101), so each one lives as `climon2-client` in a folder of its
+    // session's release, beside that release's library.
+    let real_home = package.isolation.home().join("real-clients");
+    let real_client = |version: &str, library: &Path| {
+        let folder = real_home.join(version);
+        fs::create_dir_all(&folder).unwrap();
+        copy_executable(
+            &old_folder.join("client-real"),
+            &folder.join("climon2-client"),
+        );
+        copy_executable(library, &folder.join(LIBRARY));
+        folder.join("climon2-client")
+    };
+    fs::rename(
+        old_folder.join("climon2-client"),
+        old_folder.join("client-real"),
+    )
+    .unwrap();
+    let real_old = real_client(old_version, &old_folder.join(LIBRARY));
     executable_script(
         &old_folder.join("climon2-client"),
-        &frozen_client_fixture(&package, &real_client, old_version),
+        &frozen_client_fixture(&package, &real_old, old_version),
     );
     let start = || {
         let mut command = package.command("climon2");
@@ -809,7 +826,9 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
                 .display()
         )
     );
-    let fixture_version = "9.9.9";
+    // The second-release fixture's library describes its own release.
+    let fixture_version = second_release::VERSION;
+    let fixture_library = second_release::library(bin_path("climon2-cli").parent().unwrap());
     let payload_root = package.isolation.home().join("controlled-payload");
     let fixture_folder = payload_root.join(fixture_version);
     fs::create_dir_all(&fixture_folder).unwrap();
@@ -817,12 +836,14 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
         &package.executable_home().join("climon2"),
         &payload_root.join("climon2"),
     );
-    for binary in ["climon2-cli", "climon2-daemon", "climon2-monitor", LIBRARY] {
+    for binary in ["climon2-cli", "climon2-daemon", "climon2-monitor"] {
         copy_executable(&old_folder.join(binary), &fixture_folder.join(binary));
     }
+    copy_executable(&fixture_library, &fixture_folder.join(LIBRARY));
+    let real_fixture = real_client(fixture_version, &fixture_library);
     executable_script(
         &fixture_folder.join("climon2-client"),
-        &frozen_client_fixture(&package, &real_client, fixture_version),
+        &frozen_client_fixture(&package, &real_fixture, fixture_version),
     );
     let payload = climon2_install::Payload::from_directory(&payload_root, fixture_version).unwrap();
     climon2_install::install(&payload, &package.executable_home()).unwrap();
@@ -836,7 +857,13 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
             .any(|session| session["climon2_version"] == fixture_version)
     );
     assert_eq!(package.list_with_version(old_version).len(), 2);
-    let proof = fs::read_to_string(package.isolation.home().join("frozen-client-9.9.9")).unwrap();
+    let proof = fs::read_to_string(
+        package
+            .isolation
+            .home()
+            .join(format!("frozen-client-{fixture_version}")),
+    )
+    .unwrap();
     let invocation: Vec<_> = proof.lines().collect();
     assert_eq!(invocation.len(), 3);
     assert_eq!(&invocation[..2], ["attach", "--metadata"]);

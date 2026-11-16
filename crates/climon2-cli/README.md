@@ -84,7 +84,12 @@ session's version of the client with a `kill` envelope and null stdin/stdout.
 One ten-second deadline runs from selection to confirmation; the client's own
 status is returned (0 after confirmed termination). On expiry the CLI kills and
 reaps only its own helper and fails with 125
-`termination of session <id> was not confirmed`.
+`termination of session <id> was not confirmed`. The client kills through its
+version folder's client library (#100), whose `kill_ms` equals this bound and
+reports an expiry with the same message. Ordinary attach goes through the same
+library (#101). The exec tests' private installation therefore carries the
+library beside the client, and a test that wraps the real client keeps it as
+`climon2-client` in a folder of its release, beside that library.
 
 With `test-hooks` only, `CLIMON2_CLI_HOLD=<path>` makes exec, after the daemon
 is ready and immediately before the client starts, create `<path>` with its

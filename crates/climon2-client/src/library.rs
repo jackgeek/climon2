@@ -28,6 +28,7 @@ mod handshake;
 #[cfg(feature = "test-hooks")]
 mod hooks;
 mod instance;
+mod kill;
 mod link;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[path = "library/linux.rs"]
